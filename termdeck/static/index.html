@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TermDeck</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/vendor/xterm.css">
+<link rel="stylesheet" href="/static/vendor/codicons/codicon.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="sidebar">
+  <div id="sidebar-header">
+    <select id="project-select" title="Project (url: /p/&lt;name&gt;)"></select>
+    <span class="panel-actions">
+      <button id="new-session-btn" title="New terminal (&#8984;K)">+</button>
+    </span>
+  </div>
+  <div id="session-list" class="side-view"></div>
+  <div id="side-split" class="hidden"></div>
+  <div id="files-section" class="side-view hidden">
+    <div id="files-header-row">
+      <span class="side-section-label" id="files-root-label">files</span>
+      <button id="reveal-toggle" title="Reveal active file in tree"><span class="codicon codicon-target"></span></button>
+      <button id="expand-toggle" title="Expand view to full sidebar (or double-click the files icon below)"><span class="codicon codicon-screen-full"></span></button>
+      <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
+      <button id="sort-toggle" title="Sort by last modified"><span class="codicon codicon-sort-precedence"></span></button>
+      <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-eye-closed"></span></button>
+      <button id="minimize-toggle" class="far-right" title="Minimize panel"><span class="codicon codicon-chrome-minimize"></span></button>
+    </div>
+    <input id="search-name" placeholder="find file by name (fuzzy)" spellcheck="false">
+    <div id="search-controls">
+      <div id="search-bar">
+        <button id="search-back" title="Previous search"><span class="codicon codicon-arrow-left"></span></button>
+        <input id="search-query" placeholder="search in files (&#8984;&#8679;F)" spellcheck="false">
+        <button id="search-case-toggle" title="Match case">Aa</button>
+        <button id="search-word-toggle" title="Whole word">ab|</button>
+        <button id="search-regex-toggle" title="Regular expression">.*</button>
+        <button id="replace-toggle" title="Replace"><span class="codicon codicon-replace-all"></span></button>
+      </div>
+      <input id="search-glob" placeholder="filter (rg globs): !*.json, *.py, trainer/**" spellcheck="false">
+      <div id="replace-bar" class="hidden">
+        <input id="replace-with" placeholder="replace with&hellip;" spellcheck="false">
+        <button id="replace-all-btn" title="Replace all matches in project">Replace</button>
+      </div>
+    </div>
+    <div id="files-tree"></div>
+    <div id="search-results" class="hidden"></div>
+    <div id="name-results" class="hidden"></div>
+  </div>
+  <div id="sidebar-footer">
+    <button id="view-terminals" title="Terminals (&#8984;&#8679;T)"><span class="codicon codicon-terminal"></span></button>
+    <button id="view-project" title="Files (&#8984;&#8679;E)"><span class="codicon codicon-files"></span></button>
+    <button id="view-search" title="Search &amp; replace (&#8984;&#8679;F)"><span class="codicon codicon-search"></span></button>
+    <span class="footer-spacer"></span>
+    <button id="keys-btn" title="Keyboard shortcuts"><span class="codicon codicon-keyboard"></span></button>
+    <button id="settings-gear" title="Settings"><span class="codicon codicon-settings-gear"></span></button>
+  </div>
+</div>
+<div id="keys-backdrop" class="hidden">
+  <div id="keys-modal">
+    <div class="modal-title">Keyboard shortcuts</div>
+    <div id="keys-list"></div>
+    <div id="keys-reference"></div>
+    <div class="modal-actions">
+      <button id="keys-reset">Reset to defaults</button>
+      <button id="keys-done">Done</button>
+    </div>
+  </div>
+</div>
+<div id="sidebar-resizer"></div>
+<div id="main">
+  <div id="editor-area" class="hidden">
+    <div id="monaco-host"></div>
+  </div>
+  <div id="history-area" class="hidden">
+    <div id="history-head">
+      <span id="history-title">Full transcript</span>
+      <button id="history-close" title="Back to terminal">&#10005;</button>
+    </div>
+    <div id="history-body"></div>
+  </div>
+  <div id="terminal-area">
+    <div id="empty-state">no terminals &mdash; press + or &#8984;K to open one</div>
+  </div>
+  <div id="bottombar">
+    <button id="attach-btn" title="Attach file/image → inserts its path (also paste or drag-drop onto the terminal)"><span class="codicon codicon-cloud-upload"></span></button>
+    <button id="history-btn" title="Full session transcript (from the agent's own log)"><span class="codicon codicon-history"></span></button>
+    <span id="status-name"></span>
+    <span class="footer-spacer"></span>
+    <span id="stat-text"></span>
+    <canvas id="stat-spark" width="48" height="20"></canvas>
+  </div>
+</div>
+<div id="settings-popover" class="hidden"></div>
+<div id="context-menu" class="hidden"></div>
+<div id="modal-backdrop" class="hidden">
+  <div id="modal">
+    <div class="modal-title">New terminal</div>
+    <label>Command<input id="modal-command" placeholder="claude, codex, or empty for a shell" spellcheck="false"></label>
+    <label>Directory<input id="modal-cwd" placeholder="~/workspace/stock" spellcheck="false"></label>
+    <div class="modal-actions">
+      <button id="modal-cancel">Cancel</button>
+      <button id="modal-create">Open</button>
+    </div>
+  </div>
+</div>
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/addon-fit.js"></script>
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/monaco/vs/loader.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
