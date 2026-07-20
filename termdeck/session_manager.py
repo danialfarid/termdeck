@@ -225,7 +225,7 @@ class TerminalSessionManager:
         ms.title_recovered_from_buffer = True
         if not ms.buffer:
             return
-        cli_title, _ = OscTitleParser.extract_latest_title(b"", bytes(ms.buffer))
+        cli_title = OscTitleParser.extract_latest_title_from_buffer(bytes(ms.buffer))
         if cli_title is not None and cli_title.strip():
             ms.cli_title = cli_title.strip()
 

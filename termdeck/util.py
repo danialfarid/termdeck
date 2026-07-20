@@ -37,6 +37,26 @@ class OscTitleParser:
                 title = body[sep + 1:].decode("utf-8", errors="replace")
             pos = end + 1
 
+    @staticmethod
+    def extract_latest_title_from_buffer(data: bytes) -> str | None:
+        latest_start = -1
+        latest_title: str | None = None
+        for param in OscTitleParser.TITLE_PARAMS:
+            prefix = OscTitleParser.OSC_PREFIX + param + OscTitleParser.PARAM_SEP
+            pos = data.rfind(prefix)
+            while pos != -1:
+                body_start = pos + len(prefix)
+                bel_end = data.find(OscTitleParser.BEL, body_start)
+                st_end = data.find(OscTitleParser.ST, body_start)
+                ends = [end for end in (bel_end, st_end) if end != -1]
+                if ends:
+                    if pos > latest_start:
+                        latest_start = pos
+                        latest_title = data[body_start:min(ends)].decode("utf-8", errors="replace")
+                    break
+                pos = data.rfind(prefix, 0, pos)
+        return latest_title
+
 
 class TimeUtil:
     """EST-naive timestamps for stored records (house convention: persisted datetimes are EST naive)."""
