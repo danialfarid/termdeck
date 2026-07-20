@@ -34,6 +34,7 @@ class ManagedSession:
         self.rows = TermdeckConfig.INITIAL_ROWS
         self.cli_title: str | None = None
         self.title_carry = b""
+        self.title_recovered_from_buffer = False
         self.osc_query_carry = b""
         self.last_repaint_offset: int | None = None
         self.draft_tracker = DraftInputTracker(record.draft)
@@ -64,6 +65,7 @@ class TerminalSessionManager:
             if saved.exists():
                 ms.buffer.extend(saved.read_bytes()[-TermdeckConfig.SCROLLBACK_BYTES:])
                 saved.unlink()
+            self._recover_title_from_buffer(ms)
             self._spawn(ms, resume=True)
 
     def create_session(self, command: str, cwd: str, title: str) -> ManagedSession:
@@ -216,6 +218,16 @@ class TerminalSessionManager:
             ms.cli_title = cli_title.strip()
         for queue in list(ms.client_queues):
             queue.put_nowait(data)
+
+    def _recover_title_from_buffer(self, ms: ManagedSession) -> None:
+        if ms.cli_title is not None or ms.title_recovered_from_buffer:
+            return
+        ms.title_recovered_from_buffer = True
+        if not ms.buffer:
+            return
+        cli_title, _ = OscTitleParser.extract_latest_title(b"", bytes(ms.buffer))
+        if cli_title is not None and cli_title.strip():
+            ms.cli_title = cli_title.strip()
 
     def _handle_exit(self, ms: ManagedSession, proc: PtyProcess, exit_code: int) -> None:
         if ms.proc is not proc:
@@ -391,6 +403,7 @@ class TerminalSessionManager:
                 if project is None or ms.record.project == project]
 
     def session_summary(self, ms: ManagedSession) -> dict[str, object]:
+        self._recover_title_from_buffer(ms)
         summary: dict[str, object] = dict(ms.record.to_dict())
         summary[ApiFields.RUNNING] = ms.running
         summary[ApiFields.EXIT_CODE] = ms.exit_code
