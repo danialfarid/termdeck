@@ -938,14 +938,6 @@ class TermdeckApp {
     this.renderTopbar();
   }
 
-  forceRepaint(view) {
-    if (!view.ws || view.ws.readyState !== WebSocket.OPEN) return;
-    const { cols, rows } = view.term;
-    if (rows < 4) return;
-    this.sendResize(view, cols, rows - 1);
-    setTimeout(() => this.sendResize(view, cols, rows), 80);
-  }
-
   ensureView(id) {
     if (this.views.has(id)) return this.views.get(id);
     const container = document.createElement("div");
@@ -1024,7 +1016,6 @@ class TermdeckApp {
           clearTimeout(view.replayTimer);
           view.replaying = false;
           view.term.scrollToBottom();
-          this.forceRepaint(view);
         });
         return;
       }
