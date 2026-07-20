@@ -1,23 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <defs>
     <linearGradient id="bg" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#2b1452"/>
-      <stop offset="1" stop-color="#100b26"/>
+      <stop stop-color="#24103f"/>
+      <stop offset="1" stop-color="#0f081c"/>
     </linearGradient>
-    <linearGradient id="back" x1="13" y1="15" x2="45" y2="50" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#6d28d9"/>
-      <stop offset="1" stop-color="#4c1d95"/>
-    </linearGradient>
-    <linearGradient id="front" x1="22" y1="14" x2="51" y2="50" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#c026d3"/>
-      <stop offset="1" stop-color="#7c3aed"/>
+    <linearGradient id="letters" x1="18" y1="19" x2="48" y2="46" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#c084fc"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="16" fill="url(#bg)"/>
-  <g stroke="#a78bfa" stroke-width="2">
-    <rect x="13" y="17" width="29" height="34" rx="5" fill="url(#back)" transform="rotate(-12 27.5 34)"/>
-    <rect x="18" y="13" width="29" height="34" rx="5" fill="#8b5cf6"/>
-    <rect x="23" y="17" width="29" height="34" rx="5" fill="url(#front)" transform="rotate(12 37.5 34)"/>
-  </g>
-  <path d="m32 27 8 7-8 7M40 34H27" fill="none" stroke="#f0abfc" stroke-linecap="round" stroke-linejoin="round" stroke-width="4"/>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#bg)" stroke="#4c1d95" stroke-width="2"/>
+  <text x="32" y="44" fill="url(#letters)" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="800" letter-spacing="-2" text-anchor="middle">TD</text>
 </svg>
