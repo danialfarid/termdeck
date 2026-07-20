@@ -96,6 +96,7 @@ class TermdeckConfig:
     CLAUDE_FORK_FLAG = "--fork-session"
     CODEX_RESUME_TEMPLATE = "codex resume {agent_session_id}"
     CODEX_FORK_TEMPLATE = "codex fork {agent_session_id}"
+    CODEX_SESSION_INDEX_FILE = Path.home() / ".codex" / "session_index.jsonl"
     DRAFT_MAX_CHARS = 20000
     DRAFT_PERSIST_DEBOUNCE_SECONDS = 2.0
     DRAFT_REPLAY_DELAY_AGENT_SECONDS = 4.0

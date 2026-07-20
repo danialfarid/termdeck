@@ -963,7 +963,7 @@ class TermdeckApp {
       const text = cd && (cd.getData("text/plain") || cd.getData("text"));
       if (!text || !view.ws || view.ws.readyState !== WebSocket.OPEN) return;
       const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
-      view.ws.send(JSON.stringify({ type: "input", data: bracketed ? `\x1b[200~${text}\x1b[201~` : text }));
+      this.sendInput(view, bracketed ? `\x1b[200~${text}\x1b[201~` : text);
     }, true);
     container.addEventListener("dragover", (e) => { e.preventDefault(); container.classList.add("drag-over"); });
     container.addEventListener("dragleave", (e) => { if (e.target === container) container.classList.remove("drag-over"); });

@@ -220,14 +220,16 @@ class TerminalSessionManager:
             queue.put_nowait(data)
 
     def _recover_title_from_buffer(self, ms: ManagedSession) -> None:
-        if ms.cli_title is not None or ms.title_recovered_from_buffer:
+        if ms.cli_title is not None:
             return
-        ms.title_recovered_from_buffer = True
-        if not ms.buffer:
-            return
-        cli_title = OscTitleParser.extract_latest_title_from_buffer(bytes(ms.buffer))
-        if cli_title is not None and cli_title.strip():
-            ms.cli_title = cli_title.strip()
+        if not ms.title_recovered_from_buffer:
+            ms.title_recovered_from_buffer = True
+            if ms.buffer:
+                cli_title = OscTitleParser.extract_latest_title_from_buffer(bytes(ms.buffer))
+                if cli_title is not None and cli_title.strip():
+                    ms.cli_title = cli_title.strip()
+        if ms.cli_title is None and ms.record.agent_kind == AgentKind.CODEX:
+            ms.cli_title = self._tracker.codex_thread_name(ms.record.agent_session_id)
 
     def _handle_exit(self, ms: ManagedSession, proc: PtyProcess, exit_code: int) -> None:
         if ms.proc is not proc:

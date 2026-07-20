@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 from datetime import timedelta
 from pathlib import Path
@@ -28,6 +29,34 @@ class AgentSessionTracker:
 
     def __init__(self) -> None:
         self._subagent_file_cache: dict[Path, bool] = {}
+        self._codex_thread_names: dict[str, str] = {}
+        self._codex_index_mtime_ns: int | None = None
+
+    def codex_thread_name(self, session_id: str | None) -> str | None:
+        if not session_id:
+            return None
+        path = TermdeckConfig.CODEX_SESSION_INDEX_FILE
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            return None
+        if mtime_ns != self._codex_index_mtime_ns:
+            names: dict[str, str] = {}
+            try:
+                for line in path.read_text(errors="replace").splitlines():
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    thread_id = payload.get("id")
+                    thread_name = payload.get("thread_name")
+                    if isinstance(thread_id, str) and isinstance(thread_name, str) and thread_name.strip():
+                        names[thread_id] = thread_name.strip()
+            except OSError:
+                return None
+            self._codex_thread_names = names
+            self._codex_index_mtime_ns = mtime_ns
+        return self._codex_thread_names.get(session_id)
 
     def _is_subagent_session_file(self, kind: AgentKind, path: Path) -> bool:
         cached = self._subagent_file_cache.get(path)

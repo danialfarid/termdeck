@@ -24,9 +24,12 @@ class PtyProcess:
         self._on_exit = on_exit
         self._loop = asyncio.get_running_loop()
         self._closed = False
+        self._pending_input = bytearray()
+        self._writer_registered = False
         master_fd, slave_fd = pty.openpty()
         self._master_fd = master_fd
         try:
+            os.set_blocking(master_fd, False)
             self._set_winsize(cols, rows)
             self._proc = subprocess.Popen(self._build_argv(command, dtach_socket), cwd=str(cwd),
                                           env=self._build_child_env(),
@@ -72,6 +75,8 @@ class PtyProcess:
     def _pump_master_output(self) -> None:
         try:
             data = os.read(self._master_fd, TermdeckConfig.PTY_READ_CHUNK)
+        except BlockingIOError:
+            return
         except OSError:
             self._finish()
             return
@@ -85,13 +90,37 @@ class PtyProcess:
             return
         self._closed = True
         self._loop.remove_reader(self._master_fd)
+        if self._writer_registered:
+            self._loop.remove_writer(self._master_fd)
+            self._writer_registered = False
         os.close(self._master_fd)
         exit_code = self._proc.wait()
         self._on_exit(self, exit_code)
 
     def write(self, data: bytes) -> None:
-        if not self._closed:
-            os.write(self._master_fd, data)
+        if self._closed or not data:
+            return
+        self._pending_input.extend(data)
+        self._flush_pending_input()
+
+    def _flush_pending_input(self) -> None:
+        while self._pending_input and not self._closed:
+            try:
+                written = os.write(self._master_fd, self._pending_input)
+            except BlockingIOError:
+                if not self._writer_registered:
+                    self._loop.add_writer(self._master_fd, self._flush_pending_input)
+                    self._writer_registered = True
+                return
+            except OSError:
+                self._finish()
+                return
+            if written <= 0:
+                return
+            del self._pending_input[:written]
+        if not self._pending_input and self._writer_registered:
+            self._loop.remove_writer(self._master_fd)
+            self._writer_registered = False
 
     def resize(self, cols: int, rows: int) -> None:
         if not self._closed:
