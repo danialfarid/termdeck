@@ -1,5 +1,7 @@
 const REFRESH_MS = 5000;
 const TITLE_REFRESH_MS = 1000;
+const TITLE_SPINNER_MS = 120;
+const CODEX_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const RECONNECT_MS = 1500;
 const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~/workspace/stock";
@@ -78,6 +80,7 @@ class TermdeckApp {
     this.openFiles = new Map();
     this.activeId = null;
     this.activeFileKey = null;
+    this.titleSpinnerFrame = 0;
     this.historyOpen = false;
     this.closedExpanded = false;
     this.settings = { ...SETTINGS_DEFAULTS };
@@ -310,6 +313,7 @@ class TermdeckApp {
     this.refresh();
     setInterval(() => this.refresh(), REFRESH_MS);
     setInterval(() => this.refreshTitles(), TITLE_REFRESH_MS);
+    setInterval(() => this.animateTitleSpinners(), TITLE_SPINNER_MS);
   }
 
   navUrl(state) {
@@ -445,10 +449,32 @@ class TermdeckApp {
       if (!current || current.cli_title === incoming.cli_title) continue;
       current.cli_title = incoming.cli_title;
       const titleEl = this.sessionTitleEls.get(incoming.session_id);
-      if (titleEl) titleEl.textContent = this.effectiveTitle(current);
+      if (titleEl) titleEl.textContent = this.animatedTitle(current);
       if (incoming.session_id === this.activeId) activeTitleChanged = true;
     }
     if (activeTitleChanged) this.renderTopbar();
+  }
+
+  animatedTitle(s) {
+    const title = this.effectiveTitle(s);
+    const spinner = title.match(/^[\u2800-\u28ff](\s+)/);
+    if (!spinner) return title;
+    const frame = CODEX_SPINNER_FRAMES[this.titleSpinnerFrame % CODEX_SPINNER_FRAMES.length];
+    return frame + spinner[1] + title.slice(spinner[0].length);
+  }
+
+  animateTitleSpinners() {
+    if (!this.sessions.length) return;
+    this.titleSpinnerFrame = (this.titleSpinnerFrame || 0) + 1;
+    let activeChanged = false;
+    for (const s of this.sessions) {
+      const titleEl = this.sessionTitleEls.get(s.session_id);
+      if (!titleEl) continue;
+      const title = this.animatedTitle(s);
+      if (titleEl.textContent !== title) titleEl.textContent = title;
+      if (s.session_id === this.activeId && title !== this.effectiveTitle(s)) activeChanged = true;
+    }
+    if (activeChanged && this.activeFileKey === null) this.renderTopbar();
   }
 
   session(id) {
@@ -863,11 +889,11 @@ class TermdeckApp {
   renderTopbar() {
     const s = this.session(this.activeId);
     const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    const tabTitle = entry ? entry.name : (s ? this.effectiveTitle(s) : null);
+    const tabTitle = entry ? entry.name : (s ? this.animatedTitle(s) : null);
     document.title = tabTitle ? `${tabTitle} — TermDeck` : "TermDeck";
     const statusEl = this.$("status-name");
     if (entry) statusEl.textContent = entry.fullPath || `${entry.root}/${entry.path}`;
-    else statusEl.textContent = s ? `${this.effectiveTitle(s)}  ·  ${s.cwd}` : "";
+    else statusEl.textContent = s ? `${this.animatedTitle(s)}  ·  ${s.cwd}` : "";
     statusEl.title = statusEl.textContent;
   }
 
