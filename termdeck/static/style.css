@@ -39,7 +39,7 @@ button { font-family: inherit; }
 #new-session-btn { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; width: 26px; height: 26px; font-size: 16px; line-height: 1; cursor: pointer; }
 #new-session-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-.session-item { position: relative; padding: 5px 20px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 0; border: 1px solid transparent; margin-bottom: 1px; min-width: 0; }
+.session-item { position: relative; padding: 5px 16px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 0; border: 1px solid transparent; margin-bottom: 1px; min-width: 0; }
 .session-item:hover { background: var(--panel2); }
 .session-item.active { background: var(--active-bg); border-color: transparent; border-radius: 0; }
 .session-item.active .session-title { color: var(--active-text); }
