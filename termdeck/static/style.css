@@ -53,9 +53,9 @@ button { font-family: inherit; }
 .terminal-type-icon.on { display: inline-flex; }
 .terminal-type-icon svg { display: block; width: 13px; height: 13px; }
 .terminal-type-icon .codicon { font-size: 13px; }
-.session-item:has(.session-spinner.on, .status-dot.unread) .terminal-type-icon.on { margin-left: 10px; }
-.session-item:has(.session-spinner.on, .status-dot.unread) .session-title { margin-left: 12px; }
-.session-item:has(.session-spinner.on, .status-dot.unread) .terminal-type-icon.on + .session-title { margin-left: 4px; }
+.session-item:has(.session-spinner.on, .status-dot.unread, .status-dot.exited) .terminal-type-icon.on { margin-left: 10px; }
+.session-item:has(.session-spinner.on, .status-dot.unread, .status-dot.exited) .session-title { margin-left: 12px; }
+.session-item:has(.session-spinner.on, .status-dot.unread, .status-dot.exited) .terminal-type-icon.on + .session-title { margin-left: 4px; }
 @keyframes termdeck-session-pulse {
   0%, 100% { opacity: 0.45; transform: scale(0.7); box-shadow: 0 0 0 0 rgba(92, 207, 230, 0); }
   50% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 3px rgba(92, 207, 230, 0.14); }
