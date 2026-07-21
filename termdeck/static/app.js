@@ -1620,7 +1620,7 @@ class TermdeckApp {
       if (turn.kind && turn.kind !== "message") {
         const event = document.createElement("details");
         event.className = "history-event " + turn.kind;
-        event.open = turn.kind === "edit" ? !this.historyEditsCollapsed : turn.expanded === true;
+        event.open = turn.kind === "edit" ? !this.historyEditsCollapsed : turn.kind === "plan" ? true : turn.expanded === true;
         if (!this.historyEditsCollapsed && preserveExpanded && previousExpanded[eventIndex] !== undefined) event.open = previousExpanded[eventIndex];
         eventIndex += 1;
         const summary = document.createElement("summary");
@@ -1644,7 +1644,7 @@ class TermdeckApp {
           }
           event.append(summary, results);
         } else if (Array.isArray(turn.plan) && turn.plan.length) {
-          const list = document.createElement("ol");
+          const list = document.createElement("ul");
           list.className = "history-plan";
           for (const item of turn.plan) {
             const status = String(item.status || "pending").toLowerCase().replace(/[^a-z0-9_-]/g, "-");
