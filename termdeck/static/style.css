@@ -143,7 +143,11 @@ body.dragging { user-select: none; cursor: col-resize; }
 #history-area { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
 #history-area.hidden { display: none; }
 #history-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--border); flex: none; }
+#history-title-group { display: flex; align-items: center; gap: 10px; min-width: 0; }
 #history-title { font-size: 12px; color: var(--dim); font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+#history-thinking-indicator { display: inline-flex; align-items: center; gap: 5px; color: var(--accent); font: 600 10px Menlo, monospace; letter-spacing: 0.04em; text-transform: uppercase; }
+#history-thinking-indicator.hidden { display: none; }
+.history-thinking-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: termdeck-status-beacon 1.8s ease-in-out infinite; }
 #history-actions { display: flex; align-items: center; gap: 5px; }
 #history-edits-toggle, #history-close { background: none; border: 1px solid var(--border); color: var(--dim); border-radius: 6px; width: 26px; height: 24px; cursor: pointer; }
 #history-edits-toggle:hover, #history-close:hover { color: var(--text); border-color: var(--dim); }

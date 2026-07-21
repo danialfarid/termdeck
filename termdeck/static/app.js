@@ -320,6 +320,8 @@ class TermdeckApp {
     this.$("history-prompt").addEventListener("input", () => {
       const view = this.views.get(this.activeId);
       if (!view) return;
+      view.promptSubmitting = false;
+      clearTimeout(view.promptSubmitTimer);
       view.promptEditing = true;
       view.promptDraft = this.$("history-prompt").value;
       this.syncPromptToTerminal(view, { writeToTerminal: false });
@@ -589,6 +591,7 @@ class TermdeckApp {
     this.processingStates.set(id, spinning);
     this.updateSessionSpinner(id, spinning);
     this.updateUnreadIndicator(id);
+    this.updateHistoryThinkingIndicator();
   }
 
   session(id) {
@@ -1286,7 +1289,14 @@ class TermdeckApp {
     this.$("terminal-area").classList.toggle("hidden", fileMode || historyMode);
     this.$("history-btn").classList.toggle("on", historyMode);
     this.$("attach-btn").classList.toggle("hidden", historyMode || fileMode);
+    this.updateHistoryThinkingIndicator();
     this.fitActive();
+  }
+
+  updateHistoryThinkingIndicator() {
+    const indicator = this.$("history-thinking-indicator");
+    if (!indicator) return;
+    indicator.classList.toggle("hidden", !this.historyOpen || !this.processingStates.get(this.activeId));
   }
 
   focusActiveEditor() {
@@ -1357,10 +1367,18 @@ class TermdeckApp {
       return;
     }
     view.promptDraft = text;
+    view.promptSubmitting = true;
     view.promptEditing = false;
     this.syncPromptToTerminal(view);
-    // Let the PTY consume the synchronized paste before submitting it. The
-    // authoritative draft control message will clear the editor after Enter.
+    // Clear the local draft immediately so switching views cannot reinsert the
+    // prompt while the PTY consumes the synchronized text and Enter.
+    view.promptDraft = "";
+    this.showPromptDraft(view);
+    clearTimeout(view.promptSubmitTimer);
+    view.promptSubmitTimer = setTimeout(() => {
+      view.promptSubmitting = false;
+    }, 1500);
+    // Let the PTY consume the synchronized paste before submitting it.
     setTimeout(() => {
       if (view.ws && view.ws.readyState === WebSocket.OPEN) this.sendInput(view, "\r");
     }, 40);
@@ -1407,6 +1425,8 @@ class TermdeckApp {
   }
 
   sendTrackedInput(view, data) {
+    view.promptSubmitting = false;
+    clearTimeout(view.promptSubmitTimer);
     view.promptEditing = false;
     this.updatePromptDraftFromTerminal(view, data);
     this.sendInput(view, data);
@@ -1735,7 +1755,8 @@ class TermdeckApp {
     const view = { container, term, fit, ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
                    replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, programmaticScrollUntil: 0, scrollSettleTimer: 0,
                    replayTimer: 0, settleFrame: 0, layoutObserver: null, keepBottom: true, lastSentCols: null, lastSentRows: null,
-                   promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false };
+                   promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
+                   promptSubmitting: false, promptSubmitTimer: 0 };
     container.addEventListener("wheel", () => { view.pinBottomUntil = 0; view.keepBottom = false; }, { passive: true });
     container.addEventListener("paste", (e) => {
       e.preventDefault();
@@ -1898,6 +1919,16 @@ class TermdeckApp {
       view.term.write(`\r\n\x1b[2m[termdeck] process exited (${msg.code})\x1b[0m\r\n`);
       view.pinBottomUntil = Date.now() + 5000;
     } else if (msg.type === "draft") {
+      if (view.promptSubmitting) {
+        const draft = String(msg.draft || "");
+        if (!draft) {
+          view.promptDraft = "";
+          view.promptSubmitting = false;
+          clearTimeout(view.promptSubmitTimer);
+          this.showPromptDraft(view);
+        }
+        return;
+      }
       if (!view.promptEditing) {
         view.promptDraft = String(msg.draft || "");
         this.showPromptDraft(view);
