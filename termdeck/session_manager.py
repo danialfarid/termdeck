@@ -34,6 +34,7 @@ class ManagedSession:
         self.cols = TermdeckConfig.INITIAL_COLS
         self.rows = TermdeckConfig.INITIAL_ROWS
         self.cli_title: str | None = None
+        self.title_updated_monotonic = 0.0
         self.title_carry = b""
         self.title_recovered_from_buffer = False
         self.osc_query_carry = b""
@@ -44,6 +45,14 @@ class ManagedSession:
     @property
     def running(self) -> bool:
         return self.proc is not None and self.proc.alive
+
+    @property
+    def processing(self) -> bool:
+        if not self.cli_title or not self.title_updated_monotonic:
+            return False
+        marker = self.cli_title[:1]
+        return ("\u2800" <= marker <= "\u28ff" or marker == "✳") and \
+            time.monotonic() - self.title_updated_monotonic < 3.0
 
 
 class TerminalSessionManager:
@@ -254,6 +263,7 @@ class TerminalSessionManager:
         cli_title, ms.title_carry = OscTitleParser.extract_latest_title(ms.title_carry, data)
         if cli_title is not None and cli_title.strip():
             ms.cli_title = cli_title.strip()
+            ms.title_updated_monotonic = time.monotonic()
         for queue in list(ms.client_queues):
             queue.put_nowait(data)
 
@@ -448,6 +458,7 @@ class TerminalSessionManager:
         summary[ApiFields.RUNNING] = ms.running
         summary[ApiFields.EXIT_CODE] = ms.exit_code
         summary[ApiFields.CLI_TITLE] = ms.cli_title
+        summary["processing"] = ms.processing
         return summary
 
     def session_summary_by_id(self, session_id: str) -> dict[str, object]:

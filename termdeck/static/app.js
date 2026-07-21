@@ -452,8 +452,9 @@ class TermdeckApp {
     let activeTitleChanged = false;
     for (const incoming of sessions) {
       const current = this.session(incoming.session_id);
-      if (!current || current.cli_title === incoming.cli_title) continue;
+      if (!current || (current.cli_title === incoming.cli_title && current.processing === incoming.processing)) continue;
       current.cli_title = incoming.cli_title;
+      current.processing = incoming.processing;
       const presentation = this.titlePresentation(current);
       const titleEl = this.sessionTitleEls.get(incoming.session_id);
       if (titleEl) titleEl.textContent = presentation.text;
@@ -466,7 +467,7 @@ class TermdeckApp {
   titlePresentation(s) {
     const title = this.effectiveTitle(s);
     const spinner = title.match(TITLE_SPINNER_RE);
-    return spinner ? { text: title.slice(spinner[0].length), spinning: true } : { text: title, spinning: false };
+    return spinner ? { text: title.slice(spinner[0].length), spinning: s.processing !== false } : { text: title, spinning: false };
   }
 
   updateSessionSpinner(id, spinning) {
@@ -1080,7 +1081,7 @@ class TermdeckApp {
       if (!title || title === view.cliTitle) return;
       view.cliTitle = title;
       const s = this.session(id);
-      if (s) s.cli_title = title;
+      if (s) { s.cli_title = title; s.processing = true; }
       const titleEl = this.sessionTitleEls.get(id);
       if (titleEl && s) titleEl.textContent = this.titlePresentation(s).text;
       this.updateProcessingState(id, !!s && this.titlePresentation(s).spinning);
