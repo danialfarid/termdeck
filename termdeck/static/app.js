@@ -1,4 +1,5 @@
 const REFRESH_MS = 5000;
+const TITLE_REFRESH_MS = 1000;
 const RECONNECT_MS = 1500;
 const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~/workspace/stock";
@@ -308,6 +309,7 @@ class TermdeckApp {
     new ResizeObserver(() => this.fitActive()).observe(this.$("terminal-area"));
     this.refresh();
     setInterval(() => this.refresh(), REFRESH_MS);
+    setInterval(() => this.refreshTitles(), TITLE_REFRESH_MS);
   }
 
   navUrl(state) {
@@ -414,10 +416,6 @@ class TermdeckApp {
     for (const [id, view] of [...this.views]) {
       if (!ids.has(id)) this.destroyView(id, view);
     }
-    for (const s of sessions) {
-      const view = this.views.get(s.session_id);
-      if (view && view.cliTitle) s.cli_title = view.cliTitle;
-    }
     if (this.activeId && !ids.has(this.activeId)) this.activeId = null;
     if (this.initialNav) {
       const nav = this.initialNav;
@@ -430,6 +428,27 @@ class TermdeckApp {
     }
     this.renderList();
     this.renderTopbar();
+  }
+
+  async refreshTitles() {
+    let sessions;
+    try {
+      const res = await fetch("/api/sessions" + this.projectQuery());
+      if (!res.ok) return;
+      sessions = await res.json();
+    } catch (err) {
+      return;
+    }
+    let activeTitleChanged = false;
+    for (const incoming of sessions) {
+      const current = this.session(incoming.session_id);
+      if (!current || current.cli_title === incoming.cli_title) continue;
+      current.cli_title = incoming.cli_title;
+      const titleEl = this.sessionTitleEls.get(incoming.session_id);
+      if (titleEl) titleEl.textContent = this.effectiveTitle(current);
+      if (incoming.session_id === this.activeId) activeTitleChanged = true;
+    }
+    if (activeTitleChanged) this.renderTopbar();
   }
 
   session(id) {
