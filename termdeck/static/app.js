@@ -1611,7 +1611,7 @@ class TermdeckApp {
   }
 
   renderHistoryTurns(turns, options = {}) {
-    const body = this.$("history-body");
+    const body = options.target || this.$("history-body");
     const append = options.append === true;
     const preserveExpanded = options.preserveExpanded === true;
     const previousExpanded = preserveExpanded ? [...body.querySelectorAll("details")].map((item) => item.open) : [];
@@ -1734,13 +1734,40 @@ class TermdeckApp {
     if (sessionId !== this.activeId || !this.historyOpen) return;
     const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length, turn.plan, turn.items]))}`;
     if (preserveScroll && fingerprint === this.historyFingerprint) return;
+    let commonPrefix = 0;
+    if (preserveScroll && this.historyLoaded) {
+      while (commonPrefix < this.historyTurns.length && commonPrefix < turns.length &&
+        this.historyTurnKey(this.historyTurns[commonPrefix]) === this.historyTurnKey(turns[commonPrefix])) commonPrefix += 1;
+    }
     const canAppend = preserveScroll && this.historyLoaded && this.historyTurns.length > 0 &&
-      turns.length >= this.historyTurns.length && this.historyTurns.every((turn, index) => this.historyTurnKey(turn) === this.historyTurnKey(turns[index]));
+      commonPrefix === this.historyTurns.length && turns.length >= this.historyTurns.length;
+    const canPatchTail = preserveScroll && this.historyLoaded && this.historyTurns.length > 0 &&
+      commonPrefix === this.historyTurns.length - 1 && turns.length >= this.historyTurns.length;
     this.historyFingerprint = fingerprint;
     this.historyLoaded = true;
     const s = this.session(sessionId);
     this.$("history-title").textContent = s ? `Full transcript · ${this.effectiveTitle(s)}` : "Full transcript";
-    if (!canAppend) {
+    if (canPatchTail) {
+      // Keep the unchanged transcript nodes in place so browser-find selection
+      // and the user's reading position survive live output updates.
+      const existing = body.children[this.historyTurns.length - 1];
+      const scratch = document.createElement("div");
+      this.renderHistoryTurns([turns[this.historyTurns.length - 1]], { target: scratch });
+      const replacement = scratch.firstElementChild;
+      if (existing && replacement) {
+        const wasOpen = existing.matches("details") ? existing.open : false;
+        if (existing.tagName === replacement.tagName && existing.className === replacement.className) {
+          existing.replaceChildren(...replacement.childNodes);
+          if (existing.matches("details")) existing.open = wasOpen;
+        } else {
+          if (replacement.matches("details")) replacement.open = wasOpen;
+          existing.replaceWith(replacement);
+        }
+      }
+      if (turns.length > this.historyTurns.length) {
+        this.renderHistoryTurns(turns.slice(this.historyTurns.length), { target: body });
+      }
+    } else if (!canAppend) {
       body.textContent = "";
       if (!turns.length) {
         const empty = document.createElement("div");
