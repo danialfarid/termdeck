@@ -464,9 +464,7 @@ class TermdeckApp {
   }
 
   displayTitle(s) {
-    const view = this.views.get(s.session_id);
-    return view && view.ws && view.ws.readyState === WebSocket.OPEN
-      ? this.effectiveTitle(s) : this.animatedTitle(s);
+    return this.animatedTitle(s);
   }
 
   animateTitleSpinners() {
@@ -476,8 +474,6 @@ class TermdeckApp {
     for (const s of this.sessions) {
       const titleEl = this.sessionTitleEls.get(s.session_id);
       if (!titleEl) continue;
-      const view = this.views.get(s.session_id);
-      if (view && view.ws && view.ws.readyState === WebSocket.OPEN) continue;
       const title = this.animatedTitle(s);
       if (titleEl.textContent !== title) titleEl.textContent = title;
       if (s.session_id === this.activeId && title !== this.effectiveTitle(s)) activeChanged = true;
@@ -1057,7 +1053,7 @@ class TermdeckApp {
       const s = this.session(id);
       if (s) s.cli_title = title;
       const titleEl = this.sessionTitleEls.get(id);
-      if (titleEl) titleEl.textContent = s ? this.effectiveTitle(s) : title;
+      if (titleEl) titleEl.textContent = s ? this.animatedTitle(s) : title;
       if (id === this.activeId) this.renderTopbar();
     });
     term.attachCustomKeyEventHandler((e) => this.handleTerminalEditingKeys(view, e));
