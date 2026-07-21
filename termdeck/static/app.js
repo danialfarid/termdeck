@@ -1169,6 +1169,7 @@ class TermdeckApp {
     term.onResize(({ cols, rows }) => this.sendResize(view, cols, rows));
     term.onScroll(() => {
       if (!view.container.classList.contains("visible")) return;
+      if (view.replaying && Date.now() < view.pinBottomUntil) return;
       const buffer = term.buffer.active;
       view.keepBottom = buffer.viewportY >= buffer.baseY;
       if (!view.keepBottom) view.pinBottomUntil = 0;
@@ -1189,22 +1190,35 @@ class TermdeckApp {
     view.lastSentCols = null;
     view.lastSentRows = null;
     ws.onopen = () => {
-      if (view.everConnected) view.term.reset();
+      if (view.everConnected) {
+        view.replaying = true;
+        view.keepBottom = true;
+        view.pinBottomUntil = Date.now() + 8000;
+        view.term.reset();
+      }
       view.everConnected = true;
-      if (id === this.activeId) this.fitActive();
+      if (id === this.activeId) {
+        this.fitActive();
+        view.keepBottom = true;
+        view.pinBottomUntil = Date.now() + 8000;
+        view.term.scrollToBottom();
+        this.scheduleViewportSettle(view);
+      }
     };
     ws.onmessage = (e) => {
       if (typeof e.data === "string") { this.handleControl(id, view, JSON.parse(e.data)); return; }
       if (view.awaitingSnapshot) {
         view.awaitingSnapshot = false;
         view.replaying = true;
-        view.pinBottomUntil = Date.now() + 3000;
+        view.keepBottom = true;
+        view.pinBottomUntil = Date.now() + 8000;
         clearTimeout(view.replayTimer);
         view.replayTimer = setTimeout(() => { view.replaying = false; }, 2000);
         view.term.write(new Uint8Array(e.data), () => {
           clearTimeout(view.replayTimer);
           view.replaying = false;
           view.keepBottom = true;
+          view.pinBottomUntil = Date.now() + 5000;
           this.scheduleViewportSettle(view);
         });
         return;
@@ -1342,7 +1356,10 @@ class TermdeckApp {
     view.settleFrame = requestAnimationFrame(() => {
       view.settleFrame = requestAnimationFrame(() => {
         view.settleFrame = 0;
-        if (view.keepBottom) view.term.scrollToBottom();
+        if (view.keepBottom || Date.now() < view.pinBottomUntil) {
+          view.keepBottom = true;
+          view.term.scrollToBottom();
+        }
       });
     });
   }
