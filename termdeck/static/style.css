@@ -241,6 +241,8 @@ body.dragging-side { user-select: none; cursor: row-resize; }
 .keys-label { font-size: 13px; color: var(--text); }
 .keys-bind { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-family: Menlo, monospace; font-size: 13px; color: var(--accent); cursor: pointer; min-width: 70px; text-align: center; }
 .keys-bind:hover { border-color: var(--accent); }
+.keys-bind.builtin, .keys-bind.builtin:disabled { color: var(--text); cursor: default; opacity: 1; }
+.keys-bind.builtin:hover { border-color: var(--border); }
 .keys-bind.capturing { color: var(--red); border-color: var(--red); }
 #keys-reference { margin-top: 14px; }
 #keys-reference .ref-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); margin-bottom: 6px; }

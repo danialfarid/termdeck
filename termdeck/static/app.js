@@ -39,10 +39,10 @@ const KEYBINDINGS = [
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t" },
 ];
 const REFERENCE_KEYS = [
+  { keys: "⌘[ / ⌘]", label: "Browser back / forward (last-clicked navigation)" },
   { keys: "⌘⌫ / ⌥⌫", label: "Delete to line start / delete word (in terminal)" },
   { keys: "⌘← / ⌘→", label: "Line start / end (in terminal)" },
   { keys: "⌘A", label: "Select all terminal text" },
-  { keys: "⌘[ / ⌘]", label: "Browser back / forward (last-clicked navigation)" },
   { keys: "⌃R / ⌃M / ⌘⌫", label: "Rename / move / delete selected tree file" },
   { keys: "↑ ↓ ← → Enter", label: "Navigate the file tree (when focused)" },
 ];
@@ -1169,7 +1169,7 @@ class TermdeckApp {
     term.onResize(({ cols, rows }) => this.sendResize(view, cols, rows));
     term.onScroll(() => {
       if (!view.container.classList.contains("visible")) return;
-      if (view.replaying && Date.now() < view.pinBottomUntil) return;
+      if (Date.now() < view.pinBottomUntil) return;
       const buffer = term.buffer.active;
       view.keepBottom = buffer.viewportY >= buffer.baseY;
       if (!view.keepBottom) view.pinBottomUntil = 0;
@@ -1359,6 +1359,12 @@ class TermdeckApp {
         if (view.keepBottom || Date.now() < view.pinBottomUntil) {
           view.keepBottom = true;
           view.term.scrollToBottom();
+          if (Date.now() < view.pinBottomUntil) {
+            clearTimeout(view.scrollSettleTimer);
+            view.scrollSettleTimer = setTimeout(() => {
+              if (Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
+            }, 250);
+          }
         }
       });
     });
@@ -1983,20 +1989,19 @@ class TermdeckApp {
     }
     const ref = this.$("keys-reference");
     ref.textContent = "";
-    const head = document.createElement("div");
-    head.className = "ref-head";
-    head.textContent = "Built-in (not editable)";
-    ref.appendChild(head);
     for (const r of REFERENCE_KEYS) {
       const row = document.createElement("div");
-      row.className = "ref-row";
+      row.className = "keys-row builtin";
       const lbl = document.createElement("span");
+      lbl.className = "keys-label";
       lbl.textContent = r.label;
-      const keys = document.createElement("span");
-      keys.className = "ref-keys";
-      keys.textContent = r.keys;
-      row.append(lbl, keys);
-      ref.appendChild(row);
+      const bind = document.createElement("button");
+      bind.className = "keys-bind builtin";
+      bind.textContent = r.keys;
+      bind.disabled = true;
+      bind.setAttribute("aria-disabled", "true");
+      row.append(lbl, bind);
+      list.appendChild(row);
     }
     this.$("keys-backdrop").classList.remove("hidden");
   }
