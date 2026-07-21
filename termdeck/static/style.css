@@ -49,7 +49,7 @@ button { font-family: inherit; }
 .session-spinner { position: absolute; left: 2px; top: 50%; width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%; opacity: 0; pointer-events: none; }
 .session-spinner i { display: block; width: 100%; height: 100%; border-radius: 50%; background: var(--accent); animation: termdeck-session-pulse 2.4s ease-in-out infinite; }
 .session-spinner.on { opacity: 1; }
-.session-item:has(.session-spinner.on, .status-dot.unread) .session-title { margin-left: 3px; }
+.session-item:has(.session-spinner.on, .status-dot.unread) .session-title { margin-left: 6px; }
 @keyframes termdeck-session-pulse {
   0%, 100% { opacity: 0.45; transform: scale(0.7); box-shadow: 0 0 0 0 rgba(92, 207, 230, 0); }
   50% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 3px rgba(92, 207, 230, 0.14); }
