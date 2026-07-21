@@ -64,6 +64,7 @@ class TermdeckConfig:
         ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", "dist", "build",
     })
     WS_ROUTE = "/ws/{session_id}"
+    STATUS_WS_ROUTE = "/ws/status"
     WS_CODE_UNKNOWN_SESSION = 4404
     DEFAULT_CWD = Path.home() / "workspace" / "stock"
     SHELL = "/bin/zsh"

@@ -28,6 +28,7 @@ class ManagedSession:
         self.proc: PtyProcess | None = None
         self.buffer = bytearray()
         self.client_queues: set[asyncio.Queue] = set()
+        self.processing_expiry_task: asyncio.Task | None = None
         self.exit_code: int | None = None
         self.detect_task: asyncio.Task | None = None
         self.detect_kind: AgentKind = AgentKind.NONE
@@ -68,6 +69,7 @@ class TerminalSessionManager:
         self.registry = ProjectRegistry(TermdeckConfig.PROJECTS_FILE)
         self._tracker = AgentSessionTracker()
         self._sessions: dict[str, ManagedSession] = {}
+        self._status_queues: set[asyncio.Queue] = set()
         self._draft_persist_task: asyncio.Task | None = None
         self._background_loop: asyncio.AbstractEventLoop | None = None
         self._claude_activity_watcher = ClaudeActivityWatcher(
@@ -244,6 +246,7 @@ class TerminalSessionManager:
             self._persist()
             self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.AGENT_SESSION,
                                          WsMessageFields.AGENT_SESSION_ID: found})
+            self._broadcast_status(ms)
 
     def _initialize_claude_subagent_state(self, ms: ManagedSession) -> None:
         if ms.record.agent_kind != AgentKind.CLAUDE.value or not ms.record.agent_session_id:
@@ -251,6 +254,69 @@ class TerminalSessionManager:
         states = self._tracker.claude_subagent_states(Path(ms.record.cwd), ms.record.agent_session_id)
         ms.claude_subagent_states = states
         ms.claude_subagents_active = any(states.values())
+
+    def _processing_state(self, ms: ManagedSession) -> bool:
+        return ms.processing or ms.claude_subagents_active
+
+    @staticmethod
+    def _display_title(value: str | None) -> str | None:
+        if value and ("\u2800" <= value[0] <= "\u28ff" or value[0] == "✳"):
+            return value[1:].lstrip()
+        return value
+
+    def _status_payload(self, ms: ManagedSession) -> dict[str, object]:
+        self._recover_title_from_buffer(ms)
+        return {
+            WsMessageFields.TYPE: WsMessageFields.SESSION_STATUS,
+            WsMessageFields.SESSION_ID: ms.record.session_id,
+            WsMessageFields.TITLE: ms.record.title,
+            WsMessageFields.TITLE_USER_SET: ms.record.title_user_set,
+            WsMessageFields.CLI_TITLE: ms.cli_title,
+            WsMessageFields.AGENT_SESSION_ID: ms.record.agent_session_id,
+            WsMessageFields.RUNNING: ms.running,
+            WsMessageFields.EXIT_CODE: ms.exit_code,
+            WsMessageFields.PROCESSING: self._processing_state(ms),
+        }
+
+    def _broadcast_status(self, ms: ManagedSession) -> None:
+        payload = self._status_payload(ms)
+        for queue in list(self._status_queues):
+            queue.put_nowait(payload)
+
+    def status_snapshot(self) -> list[dict[str, object]]:
+        return [self._status_payload(ms) for ms in self._sessions.values()]
+
+    def attach_status_client(self) -> asyncio.Queue:
+        queue: asyncio.Queue = asyncio.Queue()
+        self._status_queues.add(queue)
+        return queue
+
+    def detach_status_client(self, queue: asyncio.Queue) -> None:
+        self._status_queues.discard(queue)
+
+    def _schedule_processing_expiry(self, ms: ManagedSession) -> None:
+        if ms.processing_expiry_task is not None and not ms.processing_expiry_task.done():
+            return
+
+        async def expire() -> None:
+            try:
+                while ms.running:
+                    previous = self._processing_state(ms)
+                    remaining = 3.05 - (time.monotonic() - ms.title_updated_monotonic)
+                    if remaining > 0:
+                        await asyncio.sleep(remaining)
+                    if ms.processing:
+                        continue
+                    current = self._processing_state(ms)
+                    if current != previous:
+                        self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.PROCESSING,
+                                                      WsMessageFields.PROCESSING: current})
+                        self._broadcast_status(ms)
+                    return
+            except asyncio.CancelledError:
+                return
+
+        ms.processing_expiry_task = asyncio.create_task(expire())
 
     def _on_claude_file_change(self, path: Path) -> None:
         """Update only the Claude subagent file that generated the filesystem event."""
@@ -273,6 +339,7 @@ class TerminalSessionManager:
             if current_processing != previous_processing:
                 self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.PROCESSING,
                                               WsMessageFields.PROCESSING: current_processing})
+                self._broadcast_status(ms)
 
     def _claimed_agent_ids(self, exclude: ManagedSession) -> set[str]:
         return {ms.record.agent_session_id for ms in self._sessions.values()
@@ -317,12 +384,18 @@ class TerminalSessionManager:
         if not data:
             return
         self._append_collapsing_repaints(ms, data)
+        previous_title = ms.cli_title
+        previous_processing = self._processing_state(ms)
         cli_title, ms.title_carry = OscTitleParser.extract_latest_title(ms.title_carry, data)
         if cli_title is not None and cli_title.strip():
             ms.cli_title = cli_title.strip()
             ms.title_updated_monotonic = time.monotonic()
+            self._schedule_processing_expiry(ms)
             if ms.record.agent_kind == AgentKind.CLAUDE.value and ms.record.agent_session_id is None:
                 self._schedule_detection(ms, 0.1)
+            current_processing = self._processing_state(ms)
+            if self._display_title(ms.cli_title) != self._display_title(previous_title) or current_processing != previous_processing:
+                self._broadcast_status(ms)
         for queue in list(ms.client_queues):
             queue.put_nowait(data)
 
@@ -343,7 +416,10 @@ class TerminalSessionManager:
             return
         ms.proc = None
         ms.exit_code = exit_code
+        if ms.processing_expiry_task is not None and not ms.processing_expiry_task.done():
+            ms.processing_expiry_task.cancel()
         self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.EXIT, WsMessageFields.CODE: exit_code})
+        self._broadcast_status(ms)
 
     def _broadcast_control(self, ms: ManagedSession, payload: dict[str, object]) -> None:
         for queue in list(ms.client_queues):

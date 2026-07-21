@@ -150,6 +150,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_FILE_MOVE_ROUTE, response_model=None)(self._move_file)
         app.post(TermdeckConfig.API_FILE_DELETE_ROUTE, response_model=None)(self._delete_file)
         app.get(TermdeckConfig.API_STATS_ROUTE, response_model=None)(self._resource_stats)
+        app.websocket(TermdeckConfig.STATUS_WS_ROUTE)(self._ws_status)
         app.websocket(TermdeckConfig.WS_ROUTE)(self._ws_terminal)
         return app
 
@@ -334,6 +335,19 @@ class TermdeckServer:
                     raise pump_error
         finally:
             self.manager.detach_client(session_id, queue)
+
+    async def _ws_status(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        queue = self.manager.attach_status_client()
+        try:
+            for status in self.manager.status_snapshot():
+                await websocket.send_text(json.dumps(status))
+            while True:
+                await websocket.send_text(json.dumps(await queue.get()))
+        except WebSocketDisconnect:
+            return
+        finally:
+            self.manager.detach_status_client(queue)
 
     async def _pump_client_to_pty(self, websocket: WebSocket, session_id: str) -> None:
         while True:

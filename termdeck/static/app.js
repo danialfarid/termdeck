@@ -1,6 +1,5 @@
 const REFRESH_MS = 5000;
 const HISTORY_REFRESH_MS = 1500;
-const TITLE_REFRESH_MS = 1000;
 const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
 const RECONNECT_MS = 1500;
 const DEFAULT_COMMAND = "codex";
@@ -130,6 +129,8 @@ class TermdeckApp {
     this.fileBrowserPreviousView = "terminals";
     this.fileBrowserOrigin = null;
     this.pathOverflowEl = null;
+    this.statusWs = null;
+    this.statusWsReconnectTimer = 0;
     this.projects = [];
     const projectMatch = location.pathname.match(/^\/p\/([^/]+)/);
     this.projectSlug = projectMatch ? decodeURIComponent(projectMatch[1]) : null;
@@ -385,9 +386,8 @@ class TermdeckApp {
     window.addEventListener("popstate", (e) => this.applyNavState(e.state));
     history.replaceState({ kind: "init" }, "", location.pathname + location.search);
     new ResizeObserver(() => this.fitActive()).observe(this.$("terminal-area"));
-    this.refresh();
+    this.refresh().finally(() => this.connectStatusStream());
     setInterval(() => this.refresh(), REFRESH_MS);
-    setInterval(() => this.refreshTitles(), TITLE_REFRESH_MS);
   }
 
   navUrl(state) {
@@ -522,28 +522,41 @@ class TermdeckApp {
     this.renderTopbar();
   }
 
-  async refreshTitles() {
-    let sessions;
-    try {
-      const res = await fetch("/api/sessions" + this.projectQuery());
-      if (!res.ok) return;
-      sessions = await res.json();
-    } catch (err) {
-      return;
-    }
-    let activeTitleChanged = false;
-    for (const incoming of sessions) {
-      const current = this.session(incoming.session_id);
-      if (!current || (current.cli_title === incoming.cli_title && current.processing === incoming.processing)) continue;
-      current.cli_title = incoming.cli_title;
-      current.processing = incoming.processing;
-      const presentation = this.titlePresentation(current);
-      const titleEl = this.sessionTitleEls.get(incoming.session_id);
-      if (titleEl) titleEl.textContent = presentation.text;
-      this.updateProcessingState(current.session_id, presentation.spinning);
-      if (incoming.session_id === this.activeId) activeTitleChanged = true;
-    }
-    if (activeTitleChanged) this.renderTopbar();
+  connectStatusStream() {
+    if (this.statusWs && (this.statusWs.readyState === WebSocket.OPEN || this.statusWs.readyState === WebSocket.CONNECTING)) return;
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${location.host}/ws/status`);
+    this.statusWs = ws;
+    ws.onmessage = (event) => {
+      if (typeof event.data !== "string") return;
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type === "session_status") this.applySessionStatus(message);
+      } catch (error) {
+        console.warn("invalid session status event", error);
+      }
+    };
+    ws.onclose = () => {
+      if (this.statusWs !== ws) return;
+      this.statusWs = null;
+      clearTimeout(this.statusWsReconnectTimer);
+      this.statusWsReconnectTimer = setTimeout(() => this.connectStatusStream(), RECONNECT_MS);
+    };
+  }
+
+  applySessionStatus(message) {
+    const session = this.session(message.session_id);
+    if (!session) return;
+    if (Object.prototype.hasOwnProperty.call(message, "cli_title")) session.cli_title = message.cli_title;
+    if (Object.prototype.hasOwnProperty.call(message, "agent_session_id")) session.agent_session_id = message.agent_session_id;
+    if (Object.prototype.hasOwnProperty.call(message, "processing")) session.processing = !!message.processing;
+    if (Object.prototype.hasOwnProperty.call(message, "running")) session.running = !!message.running;
+    if (Object.prototype.hasOwnProperty.call(message, "exit_code")) session.exit_code = message.exit_code;
+    const presentation = this.titlePresentation(session);
+    const titleEl = this.sessionTitleEls.get(session.session_id);
+    if (titleEl) titleEl.textContent = presentation.text;
+    this.updateProcessingState(session.session_id, presentation.spinning);
+    if (session.session_id === this.activeId) this.renderTopbar();
   }
 
   titlePresentation(s) {
@@ -1899,15 +1912,7 @@ class TermdeckApp {
       view.pinBottomUntil = Date.now() + 4000;
       this.scrollTerminalToBottom(view);
     } else if (msg.type === "processing") {
-      const s = this.session(id);
-      if (s) {
-        s.processing = !!msg.processing;
-        const presentation = this.titlePresentation(s);
-        const title = this.sessionTitleEls.get(id);
-        if (title) title.textContent = presentation.text;
-        this.updateProcessingState(id, presentation.spinning);
-        if (id === this.activeId) this.renderTopbar();
-      }
+      this.applySessionStatus({ session_id: id, processing: !!msg.processing });
       return;
     }
     this.refresh();

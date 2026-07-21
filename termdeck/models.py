@@ -53,6 +53,13 @@ class WsMessageFields:
     DRAFT = "draft"
     DRAFT_SYNC = "draft_sync"
     PROCESSING = "processing"
+    SESSION_STATUS = "session_status"
+    SESSION_ID = "session_id"
+    TITLE = "title"
+    TITLE_USER_SET = "title_user_set"
+    CLI_TITLE = "cli_title"
+    RUNNING = "running"
+    EXIT_CODE = "exit_code"
     DELETED = "deleted"
 
 
