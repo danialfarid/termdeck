@@ -625,6 +625,15 @@ class TermdeckApp {
     }
     this.renderClosedInto(list);
     this.$("empty-state").style.display = this.sessions.length || this.openFiles.size ? "none" : "flex";
+    this.keepActiveSessionVisible();
+  }
+
+  keepActiveSessionVisible() {
+    if (!this.activeId || this.activeFileKey !== null) return;
+    const title = this.sessionTitleEls.get(this.activeId);
+    const row = title && title.closest(".session-item");
+    if (!row) return;
+    requestAnimationFrame(() => row.scrollIntoView({ block: "nearest" }));
   }
 
   setSideView(view) {
