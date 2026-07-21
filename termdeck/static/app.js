@@ -539,6 +539,7 @@ class TermdeckApp {
       dot.className = "status-dot" + (s.running ? "" : " exited");
       const spinner = document.createElement("span");
       spinner.className = "session-spinner";
+      spinner.style.animationDelay = `-${Date.now() % 900}ms`;
       const presentation = this.titlePresentation(s);
       spinner.classList.toggle("on", presentation.spinning);
       this.sessionSpinnerEls.set(s.session_id, spinner);
