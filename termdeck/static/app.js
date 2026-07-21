@@ -278,6 +278,13 @@ class TermdeckApp {
     this.$("modal-model").onchange = () => this.updateModalPermissions();
     this.$("history-btn").onclick = () => this.toggleHistory();
     this.$("history-close").onclick = () => this.closeHistory();
+    this.$("history-send").onclick = () => this.sendHistoryPrompt();
+    this.$("history-prompt").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        this.sendHistoryPrompt();
+      }
+    });
     this.$("attach-btn").onclick = () => this.attachToActive();
     this.$("scroll-bottom-btn").onclick = () => this.scrollActiveToBottom();
     this.$("file-browser-close").onclick = () => this.closeFileBrowserModal();
@@ -1150,6 +1157,30 @@ class TermdeckApp {
     this.historyOpen = true;
     this.applyMainLayout();
     await this.loadHistory(this.activeId);
+  }
+
+  sendHistoryPrompt() {
+    if (!this.historyOpen || this.activeFileKey !== null || !this.activeId) return;
+    const prompt = this.$("history-prompt");
+    const text = prompt.value;
+    if (!text.trim()) return;
+    const view = this.views.get(this.activeId);
+    if (!view || !view.ws || view.ws.readyState !== WebSocket.OPEN) {
+      this.$("status-name").textContent = "terminal is still connecting…";
+      return;
+    }
+    const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
+    this.sendInput(view, bracketed ? `\x1b[200~${text}\x1b[201~` : text);
+    this.sendInput(view, "\r");
+    prompt.value = "";
+    prompt.style.height = "auto";
+    view.keepBottom = true;
+    view.pinBottomUntil = Date.now() + 5000;
+    this.$("status-name").textContent = "prompt sent";
+    const sessionId = this.activeId;
+    setTimeout(() => {
+      if (this.historyOpen && sessionId === this.activeId) this.loadHistory(sessionId);
+    }, 700);
   }
 
   async loadHistory(sessionId) {
