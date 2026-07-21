@@ -286,15 +286,17 @@ class TermdeckApp {
     this.$("history-close").onclick = () => this.closeHistory();
     this.$("history-send").onclick = () => this.sendHistoryPrompt();
     this.$("history-prompt").addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      if (e.key !== "Enter" || e.isComposing) return;
+      e.stopPropagation();
+      if (!e.shiftKey) {
         e.preventDefault();
-        e.stopPropagation();
         this.sendHistoryPrompt();
       }
-    });
+    }, true);
     this.$("history-prompt").addEventListener("input", () => {
       const view = this.views.get(this.activeId);
       if (!view) return;
+      view.promptEditing = true;
       view.promptDraft = this.$("history-prompt").value;
       this.syncPromptToTerminal(view);
       this.resizeHistoryPrompt();
@@ -1211,6 +1213,7 @@ class TermdeckApp {
       return;
     }
     view.promptDraft = text;
+    view.promptEditing = false;
     this.syncPromptToTerminal(view);
     // Let the PTY consume the synchronized paste before submitting it. The
     // authoritative draft control message will clear the editor after Enter.
@@ -1246,10 +1249,11 @@ class TermdeckApp {
     const text = view.promptDraft || "";
     const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
     this.sendInput(view, "\x15");
-    if (text) this.sendInput(view, bracketed ? `\x1b[200~${text}\x1b[201~` : text);
+    if (text) this.sendInput(view, text.includes("\n") && bracketed ? `\x1b[200~${text}\x1b[201~` : text);
   }
 
   sendTrackedInput(view, data) {
+    view.promptEditing = false;
     this.updatePromptDraftFromTerminal(view, data);
     this.sendInput(view, data);
   }
@@ -1535,7 +1539,7 @@ class TermdeckApp {
     const view = { container, term, fit, ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
                    replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, programmaticScrollUntil: 0, scrollSettleTimer: 0,
                    replayTimer: 0, settleFrame: 0, layoutObserver: null, keepBottom: true, lastSentCols: null, lastSentRows: null,
-                   promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "" };
+                   promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false };
     container.addEventListener("wheel", () => { view.pinBottomUntil = 0; view.keepBottom = false; }, { passive: true });
     container.addEventListener("paste", (e) => {
       e.preventDefault();
@@ -1697,8 +1701,10 @@ class TermdeckApp {
       view.term.write(`\r\n\x1b[2m[termdeck] process exited (${msg.code})\x1b[0m\r\n`);
       view.pinBottomUntil = Date.now() + 5000;
     } else if (msg.type === "draft") {
-      view.promptDraft = String(msg.draft || "");
-      this.showPromptDraft(view);
+      if (!view.promptEditing) {
+        view.promptDraft = String(msg.draft || "");
+        this.showPromptDraft(view);
+      }
     } else if (msg.type === "agent_session") {
       view.pinBottomUntil = Date.now() + 4000;
       this.scrollTerminalToBottom(view);
