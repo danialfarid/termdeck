@@ -85,8 +85,7 @@ class TerminalSessionManager:
             raise ValueError(f"cwd is not a directory: {cwd_path}")
         return self._create(clean_command, cwd_path, title, initial_command=None)
 
-    @staticmethod
-    def command_for_new_session(model: str, permission: str, session_ref: str) -> str:
+    def command_for_new_session(self, model: str, permission: str, session_ref: str) -> str:
         selected_model = model.strip().lower() or AgentKind.CODEX.value
         selected_permission = permission.strip().lower() or "default"
         reference = session_ref.strip()
@@ -105,7 +104,10 @@ class TerminalSessionManager:
                 raise ValueError(f"unknown codex permission: {permission}")
             parts = ["codex", *permission_flags[selected_permission]]
             if reference:
-                parts.extend(("resume", reference))
+                resolved_reference = self._tracker.codex_session_id_for_reference(reference)
+                if resolved_reference is None:
+                    raise ValueError(f"no saved Codex session found with ID or name: {reference}")
+                parts.extend(("resume", resolved_reference))
             return shlex.join(parts)
         if selected_model == AgentKind.CLAUDE.value:
             permission_flags = {

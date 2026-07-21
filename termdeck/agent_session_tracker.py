@@ -58,6 +58,23 @@ class AgentSessionTracker:
             self._codex_index_mtime_ns = mtime_ns
         return self._codex_thread_names.get(session_id)
 
+    def codex_session_id_for_reference(self, reference: str) -> str | None:
+        """Resolve a Codex UUID or saved thread name to the UUID accepted by resume."""
+        reference = reference.strip()
+        if not reference:
+            return None
+        path = TermdeckConfig.CODEX_SESSION_INDEX_FILE
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            return None
+        if mtime_ns != self._codex_index_mtime_ns:
+            self.codex_thread_name("__refresh__")
+        if self._UUID_RE.fullmatch(reference):
+            return reference if reference in self._codex_thread_names else None
+        matches = [session_id for session_id, name in self._codex_thread_names.items() if name == reference]
+        return matches[-1] if matches else None
+
     def _is_subagent_session_file(self, kind: AgentKind, path: Path) -> bool:
         cached = self._subagent_file_cache.get(path)
         if cached is not None:
