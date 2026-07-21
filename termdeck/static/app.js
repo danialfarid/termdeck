@@ -1,7 +1,6 @@
 const REFRESH_MS = 5000;
 const TITLE_REFRESH_MS = 1000;
-const TITLE_SPINNER_MS = 500;
-const CODEX_SPINNER_FRAMES = ["◐", "◓", "◑", "◒"];
+const TITLE_SPINNER_RE = /^[\u2800-\u28ff✳](\s+)/;
 const RECONNECT_MS = 1500;
 const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~/workspace/stock";
@@ -80,7 +79,6 @@ class TermdeckApp {
     this.openFiles = new Map();
     this.activeId = null;
     this.activeFileKey = null;
-    this.titleSpinnerFrame = 0;
     this.historyOpen = false;
     this.closedExpanded = false;
     this.settings = { ...SETTINGS_DEFAULTS };
@@ -97,6 +95,7 @@ class TermdeckApp {
     this.applyingHistory = false;
     this.lastNavJson = "";
     this.sessionTitleEls = new Map();
+    this.sessionSpinnerEls = new Map();
     this.statHistory = [];
     this.editor = null;
     this.selectedTreeRow = null;
@@ -313,7 +312,6 @@ class TermdeckApp {
     this.refresh();
     setInterval(() => this.refresh(), REFRESH_MS);
     setInterval(() => this.refreshTitles(), TITLE_REFRESH_MS);
-    setInterval(() => this.animateTitleSpinners(), TITLE_SPINNER_MS);
   }
 
   navUrl(state) {
@@ -449,36 +447,22 @@ class TermdeckApp {
       if (!current || current.cli_title === incoming.cli_title) continue;
       current.cli_title = incoming.cli_title;
       const titleEl = this.sessionTitleEls.get(incoming.session_id);
-      if (titleEl) titleEl.textContent = this.displayTitle(current);
+      if (titleEl) titleEl.textContent = this.titlePresentation(current).text;
+      this.updateSessionSpinner(current.session_id, this.titlePresentation(current).spinning);
       if (incoming.session_id === this.activeId) activeTitleChanged = true;
     }
     if (activeTitleChanged) this.renderTopbar();
   }
 
-  animatedTitle(s) {
+  titlePresentation(s) {
     const title = this.effectiveTitle(s);
-    const spinner = title.match(/^[\u2800-\u28ff](\s+)/);
-    if (!spinner) return title;
-    const frame = CODEX_SPINNER_FRAMES[this.titleSpinnerFrame % CODEX_SPINNER_FRAMES.length];
-    return frame + spinner[1] + title.slice(spinner[0].length);
+    const spinner = title.match(TITLE_SPINNER_RE);
+    return spinner ? { text: title.slice(spinner[0].length), spinning: true } : { text: title, spinning: false };
   }
 
-  displayTitle(s) {
-    return this.animatedTitle(s);
-  }
-
-  animateTitleSpinners() {
-    if (!this.sessions.length) return;
-    this.titleSpinnerFrame = (this.titleSpinnerFrame || 0) + 1;
-    let activeChanged = false;
-    for (const s of this.sessions) {
-      const titleEl = this.sessionTitleEls.get(s.session_id);
-      if (!titleEl) continue;
-      const title = this.animatedTitle(s);
-      if (titleEl.textContent !== title) titleEl.textContent = title;
-      if (s.session_id === this.activeId && title !== this.effectiveTitle(s)) activeChanged = true;
-    }
-    if (activeChanged && this.activeFileKey === null) this.renderTopbar();
+  updateSessionSpinner(id, spinning) {
+    const spinner = this.sessionSpinnerEls.get(id);
+    if (spinner) spinner.classList.toggle("on", spinning);
   }
 
   session(id) {
@@ -545,6 +529,7 @@ class TermdeckApp {
     const list = this.$("session-list");
     list.textContent = "";
     this.sessionTitleEls.clear();
+    this.sessionSpinnerEls.clear();
     if (this.sessions.length) list.appendChild(this.sectionLabel("terminals"));
     for (const s of this.sessions) {
       const item = document.createElement("div");
@@ -552,9 +537,14 @@ class TermdeckApp {
       item.title = `${s.command || "zsh"}\n${s.cwd}` + (s.agent_session_id ? `\n${s.agent_kind}: ${s.agent_session_id}` : "") + "\ndouble-click to rename";
       const dot = document.createElement("span");
       dot.className = "status-dot" + (s.running ? "" : " exited");
+      const spinner = document.createElement("span");
+      spinner.className = "session-spinner";
+      const presentation = this.titlePresentation(s);
+      spinner.classList.toggle("on", presentation.spinning);
+      this.sessionSpinnerEls.set(s.session_id, spinner);
       const title = document.createElement("span");
       title.className = "session-title";
-      title.textContent = this.effectiveTitle(s);
+      title.textContent = presentation.text;
       this.sessionTitleEls.set(s.session_id, title);
       const fork = document.createElement("button");
       fork.className = "row-action";
@@ -571,7 +561,7 @@ class TermdeckApp {
       close.textContent = "✕";
       close.title = "Close terminal (⌘⇧⌫ when active)";
       close.onclick = (e) => { e.stopPropagation(); this.closeSession(s.session_id); };
-      item.append(dot, title, fork, restart, close);
+      item.append(dot, spinner, title, fork, restart, close);
       item.onclick = () => this.activate(s.session_id);
       item.ondblclick = () => this.renameSession(s);
       this.makeDraggable(item, "session", s.session_id, (dragged, target) => this.reorderSessions(dragged, target));
@@ -893,11 +883,11 @@ class TermdeckApp {
   renderTopbar() {
     const s = this.session(this.activeId);
     const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    const tabTitle = entry ? entry.name : (s ? this.displayTitle(s) : null);
+    const tabTitle = entry ? entry.name : (s ? this.titlePresentation(s).text : null);
     document.title = tabTitle ? `${tabTitle} — TermDeck` : "TermDeck";
     const statusEl = this.$("status-name");
     if (entry) statusEl.textContent = entry.fullPath || `${entry.root}/${entry.path}`;
-    else statusEl.textContent = s ? `${this.displayTitle(s)}  ·  ${s.cwd}` : "";
+    else statusEl.textContent = s ? `${this.titlePresentation(s).text}  ·  ${s.cwd}` : "";
     statusEl.title = statusEl.textContent;
   }
 
@@ -1053,7 +1043,8 @@ class TermdeckApp {
       const s = this.session(id);
       if (s) s.cli_title = title;
       const titleEl = this.sessionTitleEls.get(id);
-      if (titleEl) titleEl.textContent = s ? this.animatedTitle(s) : title;
+      if (titleEl && s) titleEl.textContent = this.titlePresentation(s).text;
+      this.updateSessionSpinner(id, !!s && this.titlePresentation(s).spinning);
       if (id === this.activeId) this.renderTopbar();
     });
     term.attachCustomKeyEventHandler((e) => this.handleTerminalEditingKeys(view, e));
