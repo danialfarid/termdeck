@@ -7,7 +7,7 @@ const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~/workspace/stock";
 const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 13, terminal_font_size: 13,
   code_font_size: 12, diff_font_size: 13, tree_font_size: 12, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
-  ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, show_stats: true,
+  ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   tree_sort: "name", show_mtime: false, word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
   show_terminal_icons: false, history_mode: false };
@@ -220,6 +220,11 @@ class TermdeckApp {
       if (!row || !filesSection.contains(row) || (event.relatedTarget && row.contains(event.relatedTarget))) return;
       this.hidePathOverflow();
     });
+    filesSection.addEventListener("focusin", (event) => {
+      const row = event.target.closest(".file-item, .search-file, .tree-row");
+      if (row && filesSection.contains(row)) this.showPathOverflow(row);
+    });
+    filesSection.addEventListener("focusout", () => this.hidePathOverflow());
     const replaceToggle = this.$("replace-toggle");
     replaceToggle.onclick = () => {
       const bar = this.$("replace-bar");
@@ -252,7 +257,6 @@ class TermdeckApp {
     });
     nameInput.addEventListener("input", () => this.debouncedNameSearch());
     this.$("replace-all-btn").onclick = () => this.replaceAll();
-    this.$("expand-toggle").onclick = () => this.toggleSideFull();
     this.$("reveal-toggle").onclick = () => this.revealActiveFile();
     this.$("search-back").onclick = () => this.prevSearch();
     const mtimeBtn = this.$("mtime-toggle");
@@ -780,8 +784,9 @@ class TermdeckApp {
     if (this.openFiles.size) {
       list.appendChild(this.sectionLabel("open files"));
       for (const [key, entry] of this.openFiles) {
-        const item = document.createElement("div");
-        item.className = "file-item" + (key === this.activeFileKey ? " active" : "");
+      const item = document.createElement("div");
+      item.className = "file-item" + (key === this.activeFileKey ? " active" : "");
+      item.tabIndex = 0;
         item.title = entry.fullPath || `${entry.root}/${entry.path}`;
         const name = document.createElement("span");
         name.className = "file-item-name";
@@ -923,7 +928,7 @@ class TermdeckApp {
 
   cycleView(view) {
     if (this.sideView !== view) {
-      this.settings.side_full = true;
+      this.settings.side_full = !this.settings.side_split_user_set;
       this.setSideView(view);
       this.saveSettings();
       if (view === "project") this.focusFileNameSearch();
@@ -945,9 +950,6 @@ class TermdeckApp {
     const sectionId = (this.sideView === "project" || this.sideView === "search") ? "files-section" : null;
     const full = !!this.settings.side_full && !!sectionId;
     this.$("session-list").classList.toggle("collapsed", full);
-    const expandBtn = this.$("expand-toggle");
-    expandBtn.classList.toggle("on", full);
-    expandBtn.querySelector(".codicon").className = "codicon " + (full ? "codicon-screen-normal" : "codicon-screen-full");
     if (!sectionId) return;
     const section = this.$(sectionId);
     if (this.fileBrowserModalOpen) {
@@ -980,6 +982,7 @@ class TermdeckApp {
       const rect = this.$("sidebar").getBoundingClientRect();
       const move = (ev) => {
         this.settings.side_full = false;
+        this.settings.side_split_user_set = true;
         this.settings.side_split = Math.min(0.85, Math.max(0.15, (rect.bottom - ev.clientY) / rect.height));
         this.applySideLayout();
       };
@@ -1176,6 +1179,7 @@ class TermdeckApp {
     for (const entry of recent) {
       const item = document.createElement("div");
       item.className = "file-item recent-file-item";
+      item.tabIndex = 0;
       item.title = `${this.recentFilesRoot}/${entry.path}\nmodified ${new Date(entry.mtime * 1000).toLocaleString()}`;
       const name = document.createElement("span");
       name.className = "file-item-name";
@@ -2056,6 +2060,9 @@ class TermdeckApp {
       const res = await fetch("/api/settings");
       const incoming = await res.json();
       if (incoming.code_font_size == null) incoming.code_font_size = incoming.viewer_font_size || SETTINGS_DEFAULTS.code_font_size;
+      if (incoming.side_split != null && incoming.side_split !== SETTINGS_DEFAULTS.side_split) {
+        incoming.side_split_user_set = true;
+      }
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
     } catch (err) {
       this.settings = { ...SETTINGS_DEFAULTS };
@@ -2305,6 +2312,7 @@ class TermdeckApp {
       if (excluded && this.settings.hide_excluded) continue;
       const row = document.createElement("div");
       row.className = "tree-row " + (entry.is_dir ? "dir" : "file") + (excluded ? " excluded" : "");
+      row.tabIndex = 0;
       const childRel = relPath ? `${relPath}/${entry.name}` : entry.name;
       row.title = `${this.treeRoot}/${childRel}`;
       const name = document.createElement("span");
@@ -2914,6 +2922,7 @@ class TermdeckApp {
     for (const file of files) {
       const fileRow = document.createElement("div");
       fileRow.className = "search-file group";
+      fileRow.tabIndex = 0;
       fileRow.title = file.path;
       fileRow.append(this.fileTypeIconEl(file.path.split("/").pop(), "file-type-icon"), document.createTextNode(file.path));
       resultsEl.appendChild(fileRow);
@@ -3021,6 +3030,7 @@ class TermdeckApp {
     for (const hit of hits) {
       const row = document.createElement("div");
       row.className = "search-file clickable";
+      row.tabIndex = 0;
       row.title = hit.path;
       row.append(this.fileTypeIconEl(hit.path.split("/").pop(), "file-type-icon"), document.createTextNode(hit.path));
       row.onclick = () => this.openFile(root, hit.path, null, null);

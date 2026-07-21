@@ -93,6 +93,7 @@ class UiSettings(BaseModel):
     history_mode: bool = False
     side_full: bool = False
     side_split: float = 0.55
+    side_split_user_set: bool = False
 
 
 class TermdeckServer:
