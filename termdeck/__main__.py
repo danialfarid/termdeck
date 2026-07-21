@@ -1,6 +1,6 @@
 from setproctitle import setproctitle
 
-setproctitle("termdeck")
+setproctitle("_termdeck")
 
 from termdeck.server import TermdeckServer
 
