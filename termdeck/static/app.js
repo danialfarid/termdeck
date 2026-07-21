@@ -120,6 +120,8 @@ class TermdeckApp {
     this.sessionListSignature = "";
     this.revealActiveSessionOnLoad = true;
     this.processingStates = new Map();
+    this.processingSince = new Map();
+    this.processingTimer = 0;
     this.viewedCompletedSessions = new Set();
     this.unreadSessions = new Set();
     this.statHistory = [];
@@ -310,6 +312,17 @@ class TermdeckApp {
     this.$("history-attach").onclick = () => this.attachToHistory();
     this.$("history-send").onclick = () => this.sendHistoryPrompt();
     this.$("history-prompt").addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        const view = this.views.get(this.activeId);
+        if (view) {
+          this.sendInput(view, "\x1b");
+          view.keepBottom = true;
+          view.pinBottomUntil = Date.now() + 3000;
+        }
+        return;
+      }
       if (e.key !== "Enter" || e.isComposing) return;
       e.stopPropagation();
       if (!e.shiftKey) {
@@ -496,7 +509,10 @@ class TermdeckApp {
     this.closedSessions = closed;
     for (const s of this.sessions) {
       const spinning = this.titlePresentation(s).spinning;
-      if (!this.processingStates.has(s.session_id)) this.processingStates.set(s.session_id, spinning);
+      if (!this.processingStates.has(s.session_id)) {
+        this.processingStates.set(s.session_id, spinning);
+        if (spinning) this.processingSince.set(s.session_id, Date.now());
+      }
       else this.updateProcessingState(s.session_id, spinning);
     }
     const ids = new Set(sessions.map((s) => s.session_id));
@@ -583,6 +599,8 @@ class TermdeckApp {
   updateProcessingState(id, spinning) {
     const previous = this.processingStates.get(id);
     if (spinning) this.viewedCompletedSessions.delete(id);
+    if (spinning && previous !== true) this.processingSince.set(id, Date.now());
+    if (!spinning) this.processingSince.delete(id);
     if (id !== this.activeId && previous === true && !spinning &&
         !this.viewedCompletedSessions.has(id) && !this.unreadSessions.has(id)) {
       this.unreadSessions.add(id);
@@ -1296,7 +1314,20 @@ class TermdeckApp {
   updateHistoryThinkingIndicator() {
     const indicator = this.$("history-thinking-indicator");
     if (!indicator) return;
-    indicator.classList.toggle("hidden", !this.historyOpen || !this.processingStates.get(this.activeId));
+    const spinning = !!this.historyOpen && !!this.processingStates.get(this.activeId);
+    indicator.classList.toggle("hidden", !spinning);
+    const duration = this.$("history-thinking-duration");
+    if (duration) {
+      const since = this.processingSince.get(this.activeId);
+      const seconds = since ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0;
+      duration.textContent = spinning ? `${seconds}s` : "";
+    }
+    if (spinning && !this.processingTimer) {
+      this.processingTimer = setInterval(() => this.updateHistoryThinkingIndicator(), 1000);
+    } else if (!spinning && this.processingTimer) {
+      clearInterval(this.processingTimer);
+      this.processingTimer = 0;
+    }
   }
 
   focusActiveEditor() {
@@ -1688,7 +1719,12 @@ class TermdeckApp {
     const selected = this.session(id);
     if (selected && !this.titlePresentation(selected).spinning) this.viewedCompletedSessions.add(id);
     else this.viewedCompletedSessions.delete(id);
-    if (selected) this.processingStates.set(id, this.titlePresentation(selected).spinning);
+    if (selected) {
+      const spinning = this.titlePresentation(selected).spinning;
+      this.processingStates.set(id, spinning);
+      if (spinning && !this.processingSince.has(id)) this.processingSince.set(id, Date.now());
+      if (!spinning) this.processingSince.delete(id);
+    }
     this.activeFileKey = null;
     this.stopHistoryRefresh();
     this.historyOpen = false;
