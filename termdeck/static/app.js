@@ -127,7 +127,7 @@ class TermdeckApp {
 
   getProjectState() {
     const states = this.settings.project_state || {};
-    return states[this.projectStateKey()] || { active_session_id: "", open_files: [] };
+    return states[this.projectStateKey()] || { active_session_id: "", open_files: [], pinned_sessions: [] };
   }
 
   patchProjectState(patch) {
@@ -500,10 +500,22 @@ class TermdeckApp {
   }
 
   applySessionOrder(sessions) {
-    const order = this.getProjectState().session_order || [];
+    const state = this.getProjectState();
+    const order = state.session_order || [];
+    const pinned = new Set(state.pinned_sessions || []);
     const rank = new Map(order.map((id, i) => [id, i]));
     return [...sessions].sort((a, b) =>
+      (Number(pinned.has(b.session_id)) - Number(pinned.has(a.session_id))) ||
       (rank.has(a.session_id) ? rank.get(a.session_id) : 1e9) - (rank.has(b.session_id) ? rank.get(b.session_id) : 1e9));
+  }
+
+  togglePin(sessionId) {
+    const pinned = new Set(this.getProjectState().pinned_sessions || []);
+    if (pinned.has(sessionId)) pinned.delete(sessionId);
+    else pinned.add(sessionId);
+    this.patchProjectState({ pinned_sessions: [...pinned] });
+    this.sessions = this.applySessionOrder(this.sessions);
+    this.renderList();
   }
 
   makeDraggable(item, type, key, onReorder) {
@@ -575,6 +587,12 @@ class TermdeckApp {
       title.className = "session-title";
       title.textContent = presentation.text;
       this.sessionTitleEls.set(s.session_id, title);
+      const pin = document.createElement("button");
+      const pinned = (this.getProjectState().pinned_sessions || []).includes(s.session_id);
+      pin.className = "row-action pin-action" + (pinned ? " on" : "");
+      pin.innerHTML = `<span class="codicon codicon-${pinned ? "pinned" : "pin"}"></span>`;
+      pin.title = pinned ? "Unpin terminal" : "Pin terminal to the top";
+      pin.onclick = (e) => { e.stopPropagation(); this.togglePin(s.session_id); };
       const fork = document.createElement("button");
       fork.className = "row-action";
       fork.innerHTML = '<span class="codicon codicon-repo-forked"></span>';
@@ -590,7 +608,7 @@ class TermdeckApp {
       close.textContent = "✕";
       close.title = "Close terminal (⌘⇧⌫ when active)";
       close.onclick = (e) => { e.stopPropagation(); this.closeSession(s.session_id); };
-      item.append(dot, spinner, title, fork, restart, close);
+      item.append(dot, spinner, title, pin, fork, restart, close);
       item.onclick = () => this.activate(s.session_id);
       item.ondblclick = () => this.renameSession(s);
       this.makeDraggable(item, "session", s.session_id, (dragged, target) => this.reorderSessions(dragged, target));

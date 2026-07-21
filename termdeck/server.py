@@ -61,6 +61,7 @@ class ProjectUiState(BaseModel):
     active_session_id: str = ""
     open_files: list[dict[str, str]] = []
     session_order: list[str] = []
+    pinned_sessions: list[str] = []
 
 
 class UiSettings(BaseModel):
