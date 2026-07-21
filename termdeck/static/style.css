@@ -46,11 +46,12 @@ button { font-family: inherit; }
 .status-dot { position: absolute; left: 2px; width: 6px; height: 6px; border-radius: 50%; visibility: hidden; }
 .status-dot.exited { background: var(--red); visibility: visible; }
 .status-dot.unread { background: var(--green); visibility: visible; }
-.session-spinner { position: absolute; left: -2px; top: 50%; width: 10px; height: 10px; margin-top: -5px; display: flex; align-items: center; gap: 2px; opacity: 0; pointer-events: none; }
+.session-spinner { position: absolute; left: 2px; top: 50%; width: 10px; height: 10px; margin-top: -5px; display: flex; align-items: center; gap: 2px; opacity: 0; pointer-events: none; }
 .session-spinner i { display: block; width: 2px; height: 4px; border-radius: 2px; background: var(--accent); transform-origin: center; animation: termdeck-session-bars 1.4s ease-in-out infinite; }
 .session-spinner i:nth-child(2) { animation-delay: -0.2s; }
 .session-spinner i:nth-child(3) { animation-delay: -0.4s; }
 .session-spinner.on { opacity: 1; }
+.session-item:has(.session-spinner.on, .status-dot.unread) .session-title { margin-left: 6px; }
 @keyframes termdeck-session-bars {
   0%, 100% { opacity: 0.45; transform: scaleY(0.65); }
   50% { opacity: 1; transform: scaleY(1.65); }
