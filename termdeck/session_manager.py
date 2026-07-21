@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import os
+import shlex
 import signal
 import subprocess
 import time
@@ -74,6 +75,43 @@ class TerminalSessionManager:
         if not cwd_path.is_dir():
             raise ValueError(f"cwd is not a directory: {cwd_path}")
         return self._create(clean_command, cwd_path, title, initial_command=None)
+
+    @staticmethod
+    def command_for_new_session(model: str, permission: str, session_ref: str) -> str:
+        selected_model = model.strip().lower() or AgentKind.CODEX.value
+        selected_permission = permission.strip().lower() or "default"
+        reference = session_ref.strip()
+        if selected_model == AgentKind.NONE.value:
+            if reference:
+                raise ValueError("a shell terminal cannot resume an agent session")
+            return ""
+        if selected_model == AgentKind.CODEX.value:
+            permission_flags = {
+                "default": (),
+                "read-only": ("--sandbox", "read-only"),
+                "workspace-write": ("--sandbox", "workspace-write"),
+                "full-access": ("--dangerously-bypass-approvals-and-sandbox",),
+            }
+            if selected_permission not in permission_flags:
+                raise ValueError(f"unknown codex permission: {permission}")
+            parts = ["codex", *permission_flags[selected_permission]]
+            if reference:
+                parts.extend(("resume", reference))
+            return shlex.join(parts)
+        if selected_model == AgentKind.CLAUDE.value:
+            permission_flags = {
+                "default": (),
+                "accept-edits": ("--permission-mode", "acceptEdits"),
+                "auto": ("--permission-mode", "auto"),
+                "full-access": ("--dangerously-skip-permissions",),
+            }
+            if selected_permission not in permission_flags:
+                raise ValueError(f"unknown claude permission: {permission}")
+            parts = ["claude", *permission_flags[selected_permission]]
+            if reference:
+                parts.extend(("--resume", reference))
+            return shlex.join(parts)
+        raise ValueError(f"unknown model: {model}")
 
     def _create(self, clean_command: str, cwd_path: Path, title: str, initial_command: str | None) -> ManagedSession:
         kind = self._tracker.detect_agent_kind(clean_command)

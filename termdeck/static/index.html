@@ -98,7 +98,13 @@
 <div id="modal-backdrop" class="hidden">
   <div id="modal">
     <div class="modal-title">New terminal</div>
-    <label>Command<input id="modal-command" placeholder="claude, codex, or empty for a shell" spellcheck="false"></label>
+    <label>Model<select id="modal-model">
+      <option value="codex">Codex</option>
+      <option value="claude">Claude</option>
+      <option value="none">Shell</option>
+    </select></label>
+    <label id="modal-permission-field">Permission<select id="modal-permission"></select></label>
+    <label id="modal-session-ref-field">Resume session ID / name<input id="modal-session-ref" placeholder="optional: UUID or saved session name" spellcheck="false"></label>
     <label>Directory<input id="modal-cwd" placeholder="~/workspace/stock" spellcheck="false"></label>
     <div class="modal-actions">
       <button id="modal-cancel">Cancel</button>

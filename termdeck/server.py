@@ -24,6 +24,9 @@ class CreateSessionRequest(BaseModel):
     command: str = ""
     cwd: str = ""
     title: str = ""
+    model: str = ""
+    permission: str = ""
+    session_ref: str = ""
 
 
 class RenameSessionRequest(BaseModel):
@@ -80,6 +83,8 @@ class UiSettings(BaseModel):
     search_glob: str = "!*.json, !*.csv"
     keybindings: dict[str, str] = {}
     last_command: str = "codex"
+    last_model: str = "codex"
+    last_permissions: dict[str, str] = {}
     side_full: bool = False
     side_split: float = 0.55
 
@@ -253,7 +258,10 @@ class TermdeckServer:
 
     async def _create_session(self, request: CreateSessionRequest) -> dict[str, object]:
         try:
-            ms = self.manager.create_session(request.command, request.cwd, request.title)
+            command = request.command
+            if request.model.strip():
+                command = self.manager.command_for_new_session(request.model, request.permission, request.session_ref)
+            ms = self.manager.create_session(command, request.cwd, request.title)
         except ValueError as bad_request:
             raise HTTPException(status_code=400, detail=str(bad_request)) from bad_request
         return self.manager.session_summary(ms)

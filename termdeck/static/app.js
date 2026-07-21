@@ -6,7 +6,22 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   viewer_font_size: 12, tree_font_size: 12, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, show_stats: true,
   tree_sort: "name", show_mtime: false, word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
-  last_command: "codex" };
+  last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" } };
+const MODEL_PERMISSIONS = {
+  codex: [
+    { value: "default", label: "Default (Codex config)" },
+    { value: "read-only", label: "Read only" },
+    { value: "workspace-write", label: "Workspace write" },
+    { value: "full-access", label: "Full access" },
+  ],
+  claude: [
+    { value: "default", label: "Default (Claude config)" },
+    { value: "accept-edits", label: "Accept edits" },
+    { value: "auto", label: "Auto" },
+    { value: "full-access", label: "Full access" },
+  ],
+  none: [{ value: "default", label: "Shell permissions" }],
+};
 const EXT_PRIORITY = ["py", "ipynb", "js", "ts", "tsx", "jsx", "go", "rs", "java", "c", "h", "cpp", "hpp", "sh", "zsh",
   "md", "rst", "txt", "html", "css", "sql", "yaml", "yml", "toml", "ini", "cfg", "xml", "json", "csv", "log"];
 const SEARCH_DEBOUNCE_MS = 500;
@@ -238,6 +253,7 @@ class TermdeckApp {
     this.$("new-session-btn").onclick = () => this.openModal();
     this.$("modal-cancel").onclick = () => this.closeModal();
     this.$("modal-create").onclick = () => this.createSession();
+    this.$("modal-model").onchange = () => this.updateModalPermissions();
     this.$("history-btn").onclick = () => this.toggleHistory();
     this.$("history-close").onclick = () => this.closeHistory();
     this.$("attach-btn").onclick = () => this.attachToActive();
@@ -1707,7 +1723,10 @@ class TermdeckApp {
   }
 
   openModal() {
-    this.$("modal-command").value = this.settings.last_command || DEFAULT_COMMAND;
+    const model = this.settings.last_model || DEFAULT_COMMAND;
+    this.$("modal-model").value = MODEL_PERMISSIONS[model] ? model : DEFAULT_COMMAND;
+    this.updateModalPermissions();
+    this.$("modal-session-ref").value = "";
     this.$("modal-cwd").value = this.projectRoot() || DEFAULT_CWD;
     this.$("modal-backdrop").classList.remove("hidden");
     this.$("modal-command").focus();
@@ -1718,17 +1737,35 @@ class TermdeckApp {
     this.$("modal-backdrop").classList.add("hidden");
   }
 
+  updateModalPermissions() {
+    const model = this.$("modal-model").value;
+    const permission = this.$("modal-permission");
+    permission.textContent = "";
+    for (const option of MODEL_PERMISSIONS[model] || MODEL_PERMISSIONS.codex) {
+      const el = document.createElement("option");
+      el.value = option.value;
+      el.textContent = option.label;
+      permission.appendChild(el);
+    }
+    const remembered = (this.settings.last_permissions || {})[model] || "default";
+    permission.value = [...permission.options].some((option) => option.value === remembered) ? remembered : "default";
+    const isShell = model === "none";
+    this.$("modal-permission-field").classList.toggle("hidden", isShell);
+    this.$("modal-session-ref-field").classList.toggle("hidden", isShell);
+  }
+
   async createSession() {
     if (this.$("modal-backdrop").classList.contains("hidden")) return;
-    const command = this.$("modal-command").value;
+    const model = this.$("modal-model").value;
+    const permission = this.$("modal-permission").value;
+    const sessionRef = this.$("modal-session-ref").value;
     const cwd = this.$("modal-cwd").value;
-    if (command.trim() && command.trim() !== this.settings.last_command) {
-      this.settings.last_command = command.trim();
-      this.saveSettings();
-    }
+    this.settings.last_model = model;
+    this.settings.last_permissions = { ...(this.settings.last_permissions || {}), [model]: permission };
+    this.saveSettings();
     const res = await fetch("/api/sessions", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command, cwd, title: "" }),
+      body: JSON.stringify({ model, permission, session_ref: sessionRef, cwd, title: "" }),
     });
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
