@@ -53,13 +53,15 @@ class TranscriptService:
     def _tool_event(self, name: str, value: object, role: str = "event") -> dict[str, object]:
         text = self._format_value(value)
         kind = self._tool_kind(name, text)
-        diff = self._edit_diff(name, value, text) if kind == "edit" else []
+        diff, diff_files = self._edit_diff_parts(name, value, text) if kind == "edit" else ([], [])
         if kind == "edit" and not diff and name.strip().lower() not in {"edit", "write", "notebookedit", "apply_patch"}:
             kind = "tool"
         title = "Code edit" if kind == "edit" else "Plan" if kind == "plan" else name or "Tool"
         turn = self._turn(role, text, kind, title, expanded=kind == "edit")
         if diff:
             turn["diff"] = diff
+        if diff_files:
+            turn["diff_files"] = diff_files
         if kind == "plan":
             plan = self._extract_plan(value, text)
             if plan:
@@ -89,19 +91,73 @@ class TranscriptService:
         return "tool"
 
     @classmethod
-    def _edit_diff(cls, name: str, value: object, text: str) -> list[dict[str, str]]:
+    def _edit_diff_parts(cls, name: str, value: object, text: str) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
         if isinstance(value, dict):
             old = value.get("old_string")
             new = value.get("new_string")
             if isinstance(new, str) and (isinstance(old, str) or name.lower() == "edit"):
-                return cls._line_diff(old if isinstance(old, str) else "", new)
+                rows = cls._line_diff(old if isinstance(old, str) else "", new)
+                path = cls._edit_file_path(value) or "edited file"
+                return rows, [{"path": path, "diff": rows}]
             content = value.get("content")
             if isinstance(content, str) and name.lower() in {"write", "create"}:
-                return cls._line_diff("", content)
+                rows = cls._line_diff("", content)
+                path = cls._edit_file_path(value) or "new file"
+                return rows, [{"path": path, "diff": rows}]
 
         patch = cls._extract_patch(text)
         if not patch:
-            return []
+            return [], []
+        files = cls._patch_diff_files(patch)
+        return [line for file in files for line in file["diff"]], files
+
+    @classmethod
+    def _edit_diff(cls, name: str, value: object, text: str) -> list[dict[str, str]]:
+        diff, _ = cls._edit_diff_parts(name, value, text)
+        return diff
+
+    @staticmethod
+    def _edit_file_path(value: dict[str, object]) -> str:
+        for key in ("file_path", "path", "fileName", "filename", "file"):
+            path = value.get(key)
+            if isinstance(path, str) and path.strip():
+                return path.strip()
+        return ""
+
+    @classmethod
+    def _patch_diff_files(cls, patch: str) -> list[dict[str, object]]:
+        files: list[dict[str, object]] = []
+        current: dict[str, object] | None = None
+
+        def finish() -> None:
+            if current is not None and current["diff"]:
+                files.append(current)
+
+        for line in patch.splitlines():
+            if line.startswith(("*** Update File:", "*** Add File:", "*** Delete File:")):
+                finish()
+                current = {"path": line.split(":", 1)[1].strip(), "diff": []}
+                continue
+            if line.startswith("*** End Patch"):
+                finish()
+                current = None
+                continue
+            if line.startswith(("*** Begin Patch", "***", "@@", "+++", "---")):
+                continue
+            if current is None:
+                current = {"path": "edited file", "diff": []}
+            rows = current["diff"]
+            if line.startswith("+"):
+                rows.append({"kind": "add", "prefix": "+", "text": line[1:]})
+            elif line.startswith("-"):
+                rows.append({"kind": "remove", "prefix": "−", "text": line[1:]})
+            elif line.startswith(" "):
+                rows.append({"kind": "context", "prefix": " ", "text": line[1:]})
+        finish()
+        return files
+
+    @staticmethod
+    def _legacy_patch_diff(patch: str) -> list[dict[str, str]]:
         rows: list[dict[str, str]] = []
         for line in patch.splitlines():
             if line.startswith(("***", "@@", "+ +++", "---")):

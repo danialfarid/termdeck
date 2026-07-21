@@ -1625,7 +1625,7 @@ class TermdeckApp {
   }
 
   historyTurnKey(turn) {
-    return JSON.stringify([turn.role, turn.kind, turn.title, turn.text, turn.diff, turn.plan, turn.items]);
+    return JSON.stringify([turn.role, turn.kind, turn.title, turn.text, turn.diff, turn.diff_files, turn.plan, turn.items]);
   }
 
   toggleHistoryEdits() {
@@ -1655,14 +1655,33 @@ class TermdeckApp {
       const file = String(value || "").trim().replace(/^['"]|['"]$/g, "");
       if (file && !files.includes(file)) files.push(file);
     };
-    const text = String(turn.text || "");
-    for (const match of text.matchAll(/\*\*\* (?:Update|Add|Delete) File:\s*([^\\\r\n]+?)(?=(?:\\n|\r?\n)|$)/g)) addFile(match[1]);
-    for (const match of text.matchAll(/(?:file_path|fileName|filename)\s*["']?\s*:\s*["']([^"']+)["']/gi)) addFile(match[1]);
+    if (Array.isArray(turn.diff_files)) {
+      for (const file of turn.diff_files) addFile(file?.path);
+    }
+    if (!files.length) {
+      const text = String(turn.text || "");
+      for (const match of text.matchAll(/\*\*\* (?:Update|Add|Delete) File:\s*([^\\\r\n]+?)(?=(?:\\n|\r?\n)|$)/g)) addFile(match[1]);
+      for (const match of text.matchAll(/(?:file_path|fileName|filename)\s*["']?\s*:\s*["']([^"']+)["']/gi)) addFile(match[1]);
+    }
     const additions = Array.isArray(turn.diff) ? turn.diff.filter((line) => line.kind === "add").length : 0;
     const removals = Array.isArray(turn.diff) ? turn.diff.filter((line) => line.kind === "remove").length : 0;
-    const fileSummary = files.length ? files.slice(0, 2).join(", ") + (files.length > 2 ? ` +${files.length - 2} more` : "") : "file details unavailable";
-    const lineSummary = `+${additions} / −${removals} lines`;
-    return `${fileSummary} · ${lineSummary}`;
+    const fileSummary = files.length ? `${files.length} file${files.length === 1 ? "" : "s"}` : "file details unavailable";
+    return `${fileSummary} · +${additions} / −${removals} lines`;
+  }
+
+  renderHistoryDiffLines(lines, target) {
+    for (const line of lines || []) {
+      const row = document.createElement("div");
+      row.className = "diff-line " + (line.kind || "context");
+      const prefix = document.createElement("span");
+      prefix.className = "diff-line-prefix";
+      prefix.textContent = line.prefix || " ";
+      const content = document.createElement("span");
+      content.className = "diff-line-text";
+      content.textContent = line.text || "";
+      row.append(prefix, content);
+      target.appendChild(row);
+    }
   }
 
   renderHistoryTurns(turns, options = {}) {
@@ -1717,17 +1736,22 @@ class TermdeckApp {
         } else if (Array.isArray(turn.diff) && turn.diff.length) {
           const diff = document.createElement("div");
           diff.className = "history-diff";
-          for (const line of turn.diff) {
-            const row = document.createElement("div");
-            row.className = "diff-line " + (line.kind || "context");
-            const prefix = document.createElement("span");
-            prefix.className = "diff-line-prefix";
-            prefix.textContent = line.prefix || " ";
-            const content = document.createElement("span");
-            content.className = "diff-line-text";
-            content.textContent = line.text || "";
-            row.append(prefix, content);
-            diff.appendChild(row);
+          const files = Array.isArray(turn.diff_files) && turn.diff_files.length
+            ? turn.diff_files
+            : [{ path: "Changes", diff: turn.diff }];
+          for (const file of files) {
+            const section = document.createElement("section");
+            section.className = "history-diff-file";
+            const heading = document.createElement("div");
+            heading.className = "history-diff-file-heading";
+            const additions = (file.diff || []).filter((line) => line.kind === "add").length;
+            const removals = (file.diff || []).filter((line) => line.kind === "remove").length;
+            heading.textContent = `${file.path || "Changes"} · +${additions} / −${removals}`;
+            const body = document.createElement("div");
+            body.className = "history-diff-file-body";
+            this.renderHistoryDiffLines(file.diff, body);
+            section.append(heading, body);
+            diff.appendChild(section);
           }
           event.append(summary, diff);
         } else {
@@ -1788,7 +1812,7 @@ class TermdeckApp {
     this.historyLoadBusy = false;
     if (sessionId !== this.activeId || !this.historyOpen) return;
     this.reconcileHistoryQueue(this.views.get(sessionId), turns);
-    const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length, turn.plan, turn.items]))}`;
+    const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length, turn.diff_files, turn.plan, turn.items]))}`;
     if (preserveScroll && fingerprint === this.historyFingerprint) return;
     let commonPrefix = 0;
     if (preserveScroll && this.historyLoaded) {
