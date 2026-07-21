@@ -40,6 +40,8 @@ const KEYBINDINGS = [
 ];
 const REFERENCE_KEYS = [
   { keys: "⌘[ / ⌘]", label: "Browser back / forward (last-clicked navigation)" },
+  { keys: "⌃⇧E", label: "Focus file-name search" },
+  { keys: "⌃⇧F", label: "Focus file-content search" },
   { keys: "⌘⌫ / ⌥⌫", label: "Delete to line start / delete word (in terminal)" },
   { keys: "⌘← / ⌘→", label: "Line start / end (in terminal)" },
   { keys: "⌘A", label: "Select all terminal text" },
@@ -701,6 +703,20 @@ class TermdeckApp {
     if (view === "search" && this.$("search-query").value.trim()) this.runSearch(null, true);
     else if (this.$("search-name").value.trim()) this.runNameSearch();
     else this.setExplorerMode("tree");
+  }
+
+  focusFileNameSearch() {
+    if (this.sideView !== "project") this.setSideView("project");
+    const input = this.$("search-name");
+    input.focus();
+    input.select();
+  }
+
+  focusFileContentSearch() {
+    if (this.sideView !== "search") this.setSideView("search");
+    const input = this.$("search-query");
+    input.focus();
+    input.select();
   }
 
   setExplorerMode(mode) {
@@ -2068,6 +2084,21 @@ class TermdeckApp {
   }
 
   tryAppShortcut(e) {
+    if (e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey) {
+      const key = e.key.toLowerCase();
+      if (key === "e") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.focusFileNameSearch();
+        return true;
+      }
+      if (key === "f") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.focusFileContentSearch();
+        return true;
+      }
+    }
     const binding = this.eventToBinding(e);
     if (!binding) return false;
     const actionId = this.bindingMap()[binding];
