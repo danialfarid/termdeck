@@ -339,6 +339,7 @@ class TermdeckApp {
       view.promptSubmitting = false;
       clearTimeout(view.promptSubmitTimer);
       view.promptEditing = true;
+      view.promptEditVersion += 1;
       view.promptDraft = this.$("history-prompt").value;
       this.syncPromptToTerminal(view, { writeToTerminal: false });
       this.resizeHistoryPrompt();
@@ -1410,12 +1411,14 @@ class TermdeckApp {
     view.promptSubmitting = true;
     view.promptSubmitEntered = false;
     view.promptEditing = false;
+    view.promptSubmitVersion = view.promptEditVersion;
     const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
     view.ws.send(JSON.stringify({ type: "submit", text, bracketed }));
     // Clear the local draft immediately so switching views cannot reinsert the
     // prompt while the PTY consumes the synchronized text and Enter.
     view.promptDraft = "";
     this.showPromptDraft(view);
+    prompt.focus();
     clearTimeout(view.promptSubmitTimer);
     view.promptSubmitTimer = setTimeout(() => {
       view.promptSubmitting = false;
@@ -1504,6 +1507,7 @@ class TermdeckApp {
     view.promptEditing = false;
     const previousDraft = view.promptDraft;
     this.updatePromptDraftFromTerminal(view, data);
+    if (view.promptDraft !== previousDraft) view.promptEditVersion += 1;
     if (view.promptDraft !== previousDraft) {
       view.promptDraftSyncPending = true;
       clearTimeout(view.promptDraftSyncTimer);
@@ -1846,7 +1850,8 @@ class TermdeckApp {
                    replayTimer: 0, settleFrame: 0, layoutObserver: null, keepBottom: true, lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
-                   promptDraftSyncPending: false, promptDraftSyncTimer: 0, pendingDraftSync: null, pendingTerminalDraft: null };
+                   promptDraftSyncPending: false, promptDraftSyncTimer: 0, pendingDraftSync: null, pendingTerminalDraft: null,
+                   promptEditVersion: 0, promptSubmitVersion: -1 };
     container.addEventListener("wheel", () => { view.pinBottomUntil = 0; view.keepBottom = false; }, { passive: true });
     container.addEventListener("paste", (e) => {
       e.preventDefault();
@@ -2022,16 +2027,22 @@ class TermdeckApp {
       }
       return;
     } else if (msg.type === "prompt_submitted") {
-      view.promptDraft = "";
-      view.pendingDraftSync = null;
-      view.pendingTerminalDraft = null;
-      view.promptDraftSyncPending = false;
-      clearTimeout(view.promptDraftSyncTimer);
-      view.promptDraftSyncTimer = 0;
+      const submissionIsCurrent = view.promptSubmitVersion === view.promptEditVersion;
+      if (submissionIsCurrent) {
+        view.promptDraft = "";
+        view.pendingDraftSync = null;
+        view.pendingTerminalDraft = null;
+        view.promptDraftSyncPending = false;
+        clearTimeout(view.promptDraftSyncTimer);
+        view.promptDraftSyncTimer = 0;
+      }
       view.promptSubmitting = false;
       view.promptSubmitEntered = false;
       clearTimeout(view.promptSubmitTimer);
-      this.showPromptDraft(view);
+      if (submissionIsCurrent) {
+        this.showPromptDraft(view);
+        if (this.historyOpen && id === this.activeId) this.$("history-prompt").focus();
+      }
       return;
     } else if (msg.type === "agent_session") {
       view.pinBottomUntil = Date.now() + 4000;
