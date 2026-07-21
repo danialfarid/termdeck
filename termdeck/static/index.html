@@ -77,7 +77,6 @@
     <div id="history-head">
       <div id="history-title-group">
         <span id="history-title">Full transcript</span>
-        <span id="history-thinking-indicator" class="hidden" aria-live="polite"><span class="history-thinking-dot"></span><span>Thinking</span><span id="history-thinking-duration"></span></span>
       </div>
       <div id="history-actions">
         <button id="history-close" title="Back to terminal" aria-label="Back to terminal"><span class="codicon codicon-terminal"></span></button>
@@ -87,6 +86,11 @@
       </div>
     </div>
     <div id="history-body"></div>
+    <div id="history-thinking-banner" class="hidden" aria-live="polite">
+      <span class="history-thinking-wave" aria-hidden="true"><span>T</span><span>h</span><span>i</span><span>n</span><span>k</span><span>i</span><span>n</span><span>g</span></span>
+      <span class="history-thinking-message">more output is coming</span>
+      <span id="history-thinking-duration"></span>
+    </div>
     <div id="history-composer">
       <textarea id="history-prompt" rows="1" placeholder="Continue this session…  Enter to send · Shift+Enter for a new line" spellcheck="false"></textarea>
       <button id="history-attach" title="Upload file/image into prompt" aria-label="Upload file/image into prompt"><span class="codicon codicon-cloud-upload"></span></button>

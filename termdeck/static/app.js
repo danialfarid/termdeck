@@ -1313,7 +1313,7 @@ class TermdeckApp {
   }
 
   updateHistoryThinkingIndicator() {
-    const indicator = this.$("history-thinking-indicator");
+    const indicator = this.$("history-thinking-banner");
     if (!indicator) return;
     const spinning = !!this.historyOpen && !!this.processingStates.get(this.activeId);
     indicator.classList.toggle("hidden", !spinning);
@@ -1402,7 +1402,8 @@ class TermdeckApp {
     view.promptSubmitting = true;
     view.promptSubmitEntered = false;
     view.promptEditing = false;
-    this.syncPromptToTerminal(view);
+    const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
+    view.ws.send(JSON.stringify({ type: "submit", text, bracketed }));
     // Clear the local draft immediately so switching views cannot reinsert the
     // prompt while the PTY consumes the synchronized text and Enter.
     view.promptDraft = "";
@@ -1412,16 +1413,6 @@ class TermdeckApp {
       view.promptSubmitting = false;
       view.promptSubmitEntered = false;
     }, 1500);
-    // Let the PTY consume the synchronized paste before submitting it.
-    setTimeout(() => {
-      if (view.ws && view.ws.readyState === WebSocket.OPEN) {
-        view.promptSubmitEntered = true;
-        this.sendInput(view, "\r");
-      } else {
-        view.promptSubmitting = false;
-        view.promptSubmitEntered = false;
-      }
-    }, 40);
     view.keepBottom = true;
     view.pinBottomUntil = Date.now() + 5000;
     this.$("status-name").textContent = "prompt sent";
@@ -1966,20 +1957,19 @@ class TermdeckApp {
       view.pinBottomUntil = Date.now() + 5000;
     } else if (msg.type === "draft") {
       if (view.promptSubmitting) {
-        const draft = String(msg.draft || "");
-        if (!draft && view.promptSubmitEntered) {
-          view.promptDraft = "";
-          view.promptSubmitting = false;
-          view.promptSubmitEntered = false;
-          clearTimeout(view.promptSubmitTimer);
-          this.showPromptDraft(view);
-        }
         return;
       }
       if (!view.promptEditing) {
         view.promptDraft = String(msg.draft || "");
         this.showPromptDraft(view);
       }
+      return;
+    } else if (msg.type === "prompt_submitted") {
+      view.promptDraft = "";
+      view.promptSubmitting = false;
+      view.promptSubmitEntered = false;
+      clearTimeout(view.promptSubmitTimer);
+      this.showPromptDraft(view);
       return;
     } else if (msg.type === "agent_session") {
       view.pinBottomUntil = Date.now() + 4000;

@@ -470,6 +470,18 @@ class TerminalSessionManager:
         self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT,
                                      WsMessageFields.DRAFT: normalized})
 
+    def submit_prompt(self, session_id: str, text: str, bracketed: bool) -> None:
+        """Write a Markdown prompt and its Enter atomically from the server's PTY writer."""
+        normalized = str(text or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
+        self.write_input(session_id, "\x15")
+        if normalized:
+            payload = normalized
+            if bracketed:
+                payload = TermdeckConfig.BRACKETED_PASTE_START.decode() + normalized + TermdeckConfig.BRACKETED_PASTE_END.decode()
+            self.write_input(session_id, payload)
+        self.write_input(session_id, "\r")
+        self._broadcast_control(self._sessions[session_id], {WsMessageFields.TYPE: WsMessageFields.PROMPT_SUBMITTED})
+
     def _schedule_draft_persist(self) -> None:
         if self._draft_persist_task is None or self._draft_persist_task.done():
             self._draft_persist_task = asyncio.create_task(self._persist_after_debounce())

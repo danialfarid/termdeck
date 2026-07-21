@@ -42,6 +42,7 @@ class WsMessageFields:
 
     TYPE = "type"
     DATA = "data"
+    TEXT = "text"
     COLS = "cols"
     ROWS = "rows"
     INPUT = "input"
@@ -52,6 +53,8 @@ class WsMessageFields:
     AGENT_SESSION_ID = "agent_session_id"
     DRAFT = "draft"
     DRAFT_SYNC = "draft_sync"
+    SUBMIT = "submit"
+    PROMPT_SUBMITTED = "prompt_submitted"
     PROCESSING = "processing"
     SESSION_STATUS = "session_status"
     SESSION_ID = "session_id"
