@@ -648,7 +648,7 @@ class TermdeckApp {
       this.sessionStatusEls.set(s.session_id, dot);
       const spinner = document.createElement("span");
       spinner.className = "session-spinner";
-      spinner.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><g class="session-spinner-orbit"><path class="session-spinner-tail faint" d="M2.8 4.8 A5.6 5.6 0 0 1 12 4"/><path class="session-spinner-tail bright" d="M5.8 2.6 A5.6 5.6 0 0 1 12 4"/><circle class="session-spinner-head" cx="12" cy="4" r="4.3"/></g></svg>';
+      spinner.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><g class="session-spinner-orbit"><path class="session-spinner-tail faint" d="M2.6 8 C2.6 4.3 4.8 2.4 8 2.4 C9.6 2.4 11 3 12 4"/><path class="session-spinner-tail bright" d="M5 3 C7 2.1 9.6 2.4 12 4"/><circle class="session-spinner-head" cx="12" cy="4" r="4.3"/></g></svg>';
       spinner.querySelector(".session-spinner-orbit").style.animationDelay = `-${Date.now() % 3200}ms`;
       const presentation = this.titlePresentation(s);
       spinner.classList.toggle("on", presentation.spinning);

@@ -46,12 +46,12 @@ button { font-family: inherit; }
 .status-dot { position: absolute; left: 10px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; visibility: hidden; }
 .status-dot.exited { background: var(--red); visibility: visible; }
 .status-dot.unread { background: var(--accent); visibility: visible; }
-.session-spinner { position: absolute; left: 9px; top: 50%; width: 8px; height: 8px; margin-top: -4px; opacity: 0; pointer-events: none; color: var(--accent); }
+.session-spinner { position: absolute; left: 7px; top: 50%; width: 8px; height: 8px; margin-top: -4px; opacity: 0; pointer-events: none; color: var(--accent); }
 .session-spinner svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .session-spinner-orbit { transform-box: view-box; transform-origin: center; animation: termdeck-session-orbit 3.2s linear infinite; }
 .session-spinner-tail { fill: none; stroke: currentColor; stroke-linecap: round; }
-.session-spinner-tail.faint { stroke-width: 2.8; opacity: 0.45; }
-.session-spinner-tail.bright { stroke-width: 1.8; opacity: 0.95; }
+.session-spinner-tail.faint { stroke-width: 4.4; opacity: 0.5; }
+.session-spinner-tail.bright { stroke-width: 2.4; opacity: 0.95; }
 .session-spinner-head { fill: currentColor; filter: drop-shadow(0 0 2px currentColor); }
 .session-spinner.on { opacity: 1; }
 .terminal-type-icon { display: none; flex: none; align-items: center; justify-content: center; width: 14px; height: 14px; margin-right: 4px; color: var(--text); opacity: 0.82; }
