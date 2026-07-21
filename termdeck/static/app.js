@@ -621,6 +621,7 @@ class TermdeckApp {
       icon.innerHTML = '<span class="codicon codicon-terminal"></span>';
     }
     icon.title = s.agent_kind === "claude" ? "Claude" : s.agent_kind === "codex" ? "Codex" : "Shell terminal";
+    icon.classList.toggle("claude-terminal-icon", s.agent_kind === "claude");
     icon.classList.toggle("on", !!this.settings.show_terminal_icons);
     return icon;
   }

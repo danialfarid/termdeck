@@ -52,6 +52,7 @@ button { font-family: inherit; }
 .session-spinner i::after { content: none; }
 .session-spinner.on { opacity: 1; }
 .terminal-type-icon { display: none; flex: none; align-items: center; justify-content: center; width: 14px; height: 14px; margin-right: 4px; color: var(--text); opacity: 0.82; }
+.terminal-type-icon.claude-terminal-icon { display: none !important; }
 .terminal-type-icon.on { display: inline-flex; }
 .terminal-type-icon svg { display: block; width: 13px; height: 13px; }
 .terminal-type-icon .codicon { font-size: 13px; }
