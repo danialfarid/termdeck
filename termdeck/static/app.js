@@ -292,7 +292,13 @@ class TermdeckApp {
         this.sendHistoryPrompt();
       }
     });
-    this.$("history-prompt").addEventListener("input", () => this.resizeHistoryPrompt());
+    this.$("history-prompt").addEventListener("input", () => {
+      const view = this.views.get(this.activeId);
+      if (!view) return;
+      view.promptDraft = this.$("history-prompt").value;
+      this.syncPromptToTerminal(view);
+      this.resizeHistoryPrompt();
+    });
     this.$("attach-btn").onclick = () => this.attachToActive();
     this.$("scroll-bottom-btn").onclick = () => this.scrollActiveToBottom();
     this.$("file-browser-close").onclick = () => this.closeFileBrowserModal();
@@ -1171,6 +1177,7 @@ class TermdeckApp {
     this.applyMainLayout();
     if (this.historyOpen) {
       const sessionId = this.activeId;
+      this.showPromptDraft(this.views.get(sessionId));
       this.loadHistory(sessionId).then(() => {
         if (this.historyOpen && sessionId === this.activeId) this.startHistoryRefresh();
       });
@@ -1203,9 +1210,10 @@ class TermdeckApp {
       this.$("status-name").textContent = "terminal is still connecting…";
       return;
     }
-    const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
-    this.sendInput(view, bracketed ? `\x1b[200~${text}\x1b[201~` : text);
+    view.promptDraft = text;
+    this.syncPromptToTerminal(view);
     this.sendInput(view, "\r");
+    view.promptDraft = "";
     prompt.value = "";
     this.resizeHistoryPrompt();
     view.keepBottom = true;
@@ -1222,6 +1230,66 @@ class TermdeckApp {
     if (!prompt) return;
     prompt.style.height = "auto";
     prompt.style.height = `${Math.min(prompt.scrollHeight, 150)}px`;
+  }
+
+  showPromptDraft(view) {
+    if (view !== this.views.get(this.activeId)) return;
+    const prompt = this.$("history-prompt");
+    if (!prompt) return;
+    prompt.value = view.promptDraft || "";
+    this.resizeHistoryPrompt();
+  }
+
+  syncPromptToTerminal(view) {
+    if (!view.ws || view.ws.readyState !== WebSocket.OPEN) return;
+    const text = view.promptDraft || "";
+    const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
+    this.sendInput(view, "\x15");
+    if (text) this.sendInput(view, bracketed ? `\x1b[200~${text}\x1b[201~` : text);
+  }
+
+  sendTrackedInput(view, data) {
+    this.updatePromptDraftFromTerminal(view, data);
+    this.sendInput(view, data);
+  }
+
+  updatePromptDraftFromTerminal(view, data) {
+    let stream = (view.promptEscape || "") + data;
+    view.promptEscape = "";
+    let i = 0;
+    while (i < stream.length) {
+      if (stream.startsWith("\x1b[200~", i)) { view.promptPaste = true; i += 6; continue; }
+      if (stream.startsWith("\x1b[201~", i)) { view.promptPaste = false; i += 6; continue; }
+      const ch = stream[i];
+      if (ch === "\x1b") {
+        if (i + 1 >= stream.length) { view.promptEscape = stream.slice(i); break; }
+        if (stream[i + 1] === "\r") { view.promptDraft += "\n"; i += 2; continue; }
+        if (stream[i + 1] === "\x7f") { view.promptDraft = view.promptDraft.replace(/\S+\s*$/, ""); i += 2; continue; }
+        if (stream[i + 1] === "[") {
+          let end = i + 2;
+          while (end < stream.length && (stream.charCodeAt(end) < 0x40 || stream.charCodeAt(end) > 0x7e)) end += 1;
+          if (end >= stream.length) { view.promptEscape = stream.slice(i); break; }
+          i = end + 1;
+          continue;
+        }
+        i += 2;
+        continue;
+      }
+      if (ch === "\r" || ch === "\n") {
+        if (view.promptPaste) view.promptDraft += "\n";
+        else view.promptDraft = "";
+      } else if (ch === "\x7f") {
+        view.promptDraft = view.promptDraft.slice(0, -1);
+      } else if (ch === "\x15") {
+        view.promptDraft = view.promptDraft.replace(/[^\n]*$/, "");
+      } else if (ch === "\x17") {
+        view.promptDraft = view.promptDraft.replace(/\s+$/, "").replace(/\S+$/, "");
+      } else if (ch >= " ") {
+        view.promptDraft += ch;
+      }
+      i += 1;
+    }
+    this.showPromptDraft(view);
   }
 
   historyTurnKey(turn) {
@@ -1432,7 +1500,10 @@ class TermdeckApp {
     }
     if (view) {
       if (!view.ws) this.connect(id, view);
-      if (this.historyOpen) this.$("history-prompt").focus();
+      if (this.historyOpen) {
+        this.showPromptDraft(view);
+        this.$("history-prompt").focus();
+      }
       else view.term.focus();
       if (previousId !== id) {
         view.keepBottom = true;
@@ -1462,7 +1533,8 @@ class TermdeckApp {
     term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
     const view = { container, term, fit, ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
                    replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, programmaticScrollUntil: 0, scrollSettleTimer: 0,
-                   replayTimer: 0, settleFrame: 0, layoutObserver: null, keepBottom: true, lastSentCols: null, lastSentRows: null };
+                   replayTimer: 0, settleFrame: 0, layoutObserver: null, keepBottom: true, lastSentCols: null, lastSentRows: null,
+                   promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "" };
     container.addEventListener("wheel", () => { view.pinBottomUntil = 0; view.keepBottom = false; }, { passive: true });
     container.addEventListener("paste", (e) => {
       e.preventDefault();
@@ -1473,7 +1545,7 @@ class TermdeckApp {
       const text = cd && (cd.getData("text/plain") || cd.getData("text"));
       if (!text || !view.ws || view.ws.readyState !== WebSocket.OPEN) return;
       const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
-      this.sendInput(view, bracketed ? `\x1b[200~${text}\x1b[201~` : text);
+      this.sendTrackedInput(view, bracketed ? `\x1b[200~${text}\x1b[201~` : text);
     }, true);
     container.addEventListener("dragover", (e) => { e.preventDefault(); container.classList.add("drag-over"); });
     container.addEventListener("dragleave", (e) => { if (e.target === container) container.classList.remove("drag-over"); });
@@ -1495,7 +1567,7 @@ class TermdeckApp {
       if (id === this.activeId) this.renderTopbar();
     });
     term.attachCustomKeyEventHandler((e) => this.handleTerminalEditingKeys(view, e));
-    term.onData((data) => this.sendInput(view, data));
+    term.onData((data) => this.sendTrackedInput(view, data));
     term.onResize(({ cols, rows }) => this.sendResize(view, cols, rows));
     term.onScroll(() => {
       if (!view.container.classList.contains("visible")) return;
@@ -1582,7 +1654,7 @@ class TermdeckApp {
     if (this.tryAppShortcut(e)) return false;
     if (e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
-      this.sendInput(view, "\x1b\r");
+      this.sendTrackedInput(view, "\x1b\r");
       return false;
     }
     if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "v") {
@@ -1606,15 +1678,15 @@ class TermdeckApp {
         return false;
       }
       if (key === "v") return true;
-      if (key === "backspace") { e.preventDefault(); this.sendInput(view, "\x15"); return false; }
-      if (key === "arrowleft") { e.preventDefault(); this.sendInput(view, "\x01"); return false; }
-      if (key === "arrowright") { e.preventDefault(); this.sendInput(view, "\x05"); return false; }
+      if (key === "backspace") { e.preventDefault(); this.sendTrackedInput(view, "\x15"); return false; }
+      if (key === "arrowleft") { e.preventDefault(); this.sendTrackedInput(view, "\x01"); return false; }
+      if (key === "arrowright") { e.preventDefault(); this.sendTrackedInput(view, "\x05"); return false; }
       if (key === "a") { e.preventDefault(); view.term.selectAll(); return false; }
     }
     if (e.altKey && !e.metaKey && !e.ctrlKey) {
-      if (e.key === "Backspace") { e.preventDefault(); this.sendInput(view, "\x1b\x7f"); return false; }
-      if (e.key === "ArrowLeft") { e.preventDefault(); this.sendInput(view, "\x1bb"); return false; }
-      if (e.key === "ArrowRight") { e.preventDefault(); this.sendInput(view, "\x1bf"); return false; }
+      if (e.key === "Backspace") { e.preventDefault(); this.sendTrackedInput(view, "\x1b\x7f"); return false; }
+      if (e.key === "ArrowLeft") { e.preventDefault(); this.sendTrackedInput(view, "\x1bb"); return false; }
+      if (e.key === "ArrowRight") { e.preventDefault(); this.sendTrackedInput(view, "\x1bf"); return false; }
     }
     return true;
   }
@@ -1654,7 +1726,7 @@ class TermdeckApp {
     const text = paths.map((p) => (/\s/.test(p) ? `'${p}'` : p)).join(" ") + " ";
     if (view.ws && view.ws.readyState === WebSocket.OPEN) {
       const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
-      view.ws.send(JSON.stringify({ type: "input", data: bracketed ? `\x1b[200~${text}\x1b[201~` : text }));
+      this.sendTrackedInput(view, bracketed ? `\x1b[200~${text}\x1b[201~` : text);
     }
     this.$("status-name").textContent = `inserted ${paths.length} path${paths.length === 1 ? "" : "s"}`;
     view.term.focus();
