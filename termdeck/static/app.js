@@ -92,6 +92,8 @@ class TermdeckApp {
     this.historyRefreshTimer = 0;
     this.historyLoadBusy = false;
     this.historyFingerprint = "";
+    this.historyTurns = [];
+    this.historyLoaded = false;
     this.closedExpanded = false;
     this.settings = { ...SETTINGS_DEFAULTS };
     this.saveTimer = null;
@@ -1161,6 +1163,8 @@ class TermdeckApp {
     if (!this.activeId) return;
     this.historyOpen = true;
     this.historyFingerprint = "";
+    this.historyTurns = [];
+    this.historyLoaded = false;
     this.applyMainLayout();
     await this.loadHistory(this.activeId);
     this.startHistoryRefresh();
@@ -1203,55 +1207,43 @@ class TermdeckApp {
     }, 700);
   }
 
-  async loadHistory(sessionId, options = {}) {
+  historyTurnKey(turn) {
+    return JSON.stringify([turn.role, turn.kind, turn.title, turn.text, turn.diff, turn.plan]);
+  }
+
+  renderHistoryTurns(turns, options = {}) {
     const body = this.$("history-body");
-    const preserveScroll = options.preserveScroll === true;
-    const previousScrollTop = body.scrollTop;
-    const wasAtBottom = preserveScroll && body.scrollHeight - body.clientHeight - body.scrollTop < 80;
-    const previousExpanded = preserveScroll ? [...body.querySelectorAll("details")].map((item) => item.open) : [];
-    if (this.historyLoadBusy) return;
-    this.historyLoadBusy = true;
-    body.textContent = "";
-    const loading = document.createElement("div");
-    loading.className = "history-empty";
-    loading.textContent = "loading transcript…";
-    body.appendChild(loading);
-    let turns = [];
-    try {
-      const res = await fetch(`/api/sessions/${sessionId}/history`);
-      turns = await res.json();
-    } catch (err) {
-      turns = [];
-    } finally {
-      this.historyLoadBusy = false;
-    }
-    if (sessionId !== this.activeId || !this.historyOpen) return;
-    const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length]))}`;
-    if (preserveScroll && fingerprint === this.historyFingerprint) return;
-    this.historyFingerprint = fingerprint;
-    body.textContent = "";
-    const s = this.session(sessionId);
-    this.$("history-title").textContent = s ? `Full transcript · ${this.effectiveTitle(s)}` : "Full transcript";
-    if (!turns.length) {
-      const empty = document.createElement("div");
-      empty.className = "history-empty";
-      empty.textContent = s && s.agent_kind !== "none"
-        ? "no transcript found yet (send a message first, or the session id isn't resolved)"
-        : "transcript history is only available for claude/codex terminals";
-      body.appendChild(empty);
-      return;
-    }
+    const append = options.append === true;
+    const preserveExpanded = options.preserveExpanded === true;
+    const previousExpanded = preserveExpanded ? [...body.querySelectorAll("details")].map((item) => item.open) : [];
     let eventIndex = 0;
     for (const turn of turns) {
       if (turn.kind && turn.kind !== "message") {
         const event = document.createElement("details");
         event.className = "history-event " + turn.kind;
         event.open = turn.expanded === true;
-        if (preserveScroll && previousExpanded[eventIndex] !== undefined) event.open = previousExpanded[eventIndex];
+        if (preserveExpanded && previousExpanded[eventIndex] !== undefined) event.open = previousExpanded[eventIndex];
         eventIndex += 1;
         const summary = document.createElement("summary");
-        summary.textContent = turn.title || turn.kind;
-        if (Array.isArray(turn.diff) && turn.diff.length) {
+        summary.textContent = turn.kind === "plan" && Array.isArray(turn.plan)
+          ? `Plan · ${turn.plan.length} steps` : (turn.title || turn.kind);
+        if (Array.isArray(turn.plan) && turn.plan.length) {
+          const list = document.createElement("ol");
+          list.className = "history-plan";
+          for (const item of turn.plan) {
+            const status = String(item.status || "pending").toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+            const step = document.createElement("li");
+            step.className = "plan-step " + status;
+            const marker = document.createElement("span");
+            marker.className = "plan-marker";
+            marker.textContent = status === "completed" || status === "complete" ? "✓" : status === "in_progress" ? "●" : "○";
+            const label = document.createElement("span");
+            label.textContent = item.step || item.content || "";
+            step.append(marker, label);
+            list.appendChild(step);
+          }
+          event.append(summary, list);
+        } else if (Array.isArray(turn.diff) && turn.diff.length) {
           const diff = document.createElement("div");
           diff.className = "history-diff";
           for (const line of turn.diff) {
@@ -1272,7 +1264,7 @@ class TermdeckApp {
           content.textContent = turn.text || "";
           event.append(summary, content);
         }
-        this.$("history-body").appendChild(event);
+        body.appendChild(event);
         continue;
       }
       const block = document.createElement("div");
@@ -1286,6 +1278,64 @@ class TermdeckApp {
       block.append(role, text);
       body.appendChild(block);
     }
+  }
+
+  async loadHistory(sessionId, options = {}) {
+    const body = this.$("history-body");
+    const preserveScroll = options.preserveScroll === true;
+    const previousScrollTop = body.scrollTop;
+    const wasAtBottom = preserveScroll && body.scrollHeight - body.clientHeight - body.scrollTop < 80;
+    if (this.historyLoadBusy) return;
+    this.historyLoadBusy = true;
+    if (!this.historyLoaded) {
+      body.textContent = "";
+      const loading = document.createElement("div");
+      loading.className = "history-empty";
+      loading.textContent = "loading transcript…";
+      body.appendChild(loading);
+    }
+    let turns;
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/history`);
+      if (!res.ok) throw new Error(`history request failed: ${res.status}`);
+      turns = await res.json();
+    } catch (err) {
+      this.historyLoadBusy = false;
+      if (!this.historyLoaded) {
+        body.textContent = "";
+        const error = document.createElement("div");
+        error.className = "history-empty";
+        error.textContent = "unable to load transcript";
+        body.appendChild(error);
+      }
+      return;
+    }
+    this.historyLoadBusy = false;
+    if (sessionId !== this.activeId || !this.historyOpen) return;
+    const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length, turn.plan]))}`;
+    if (preserveScroll && fingerprint === this.historyFingerprint) return;
+    const canAppend = preserveScroll && this.historyLoaded && this.historyTurns.length > 0 &&
+      turns.length >= this.historyTurns.length && this.historyTurns.every((turn, index) => this.historyTurnKey(turn) === this.historyTurnKey(turns[index]));
+    this.historyFingerprint = fingerprint;
+    this.historyLoaded = true;
+    const s = this.session(sessionId);
+    this.$("history-title").textContent = s ? `Full transcript · ${this.effectiveTitle(s)}` : "Full transcript";
+    if (!canAppend) {
+      body.textContent = "";
+      if (!turns.length) {
+        const empty = document.createElement("div");
+        empty.className = "history-empty";
+        empty.textContent = s && s.agent_kind !== "none"
+          ? "no transcript found yet (send a message first, or the session id isn't resolved)"
+          : "transcript history is only available for claude/codex terminals";
+        body.appendChild(empty);
+      } else {
+        this.renderHistoryTurns(turns, { preserveExpanded: preserveScroll });
+      }
+    } else {
+      this.renderHistoryTurns(turns.slice(this.historyTurns.length), { append: true });
+    }
+    this.historyTurns = turns;
     if (wasAtBottom) body.scrollTop = body.scrollHeight;
     else if (preserveScroll) body.scrollTop = Math.min(previousScrollTop, Math.max(0, body.scrollHeight - body.clientHeight));
     else body.scrollTop = body.scrollHeight;
@@ -1320,6 +1370,8 @@ class TermdeckApp {
     this.stopHistoryRefresh();
     this.historyOpen = false;
     this.historyFingerprint = "";
+    this.historyTurns = [];
+    this.historyLoaded = false;
     const previousView = previousId ? this.views.get(previousId) : null;
     this.activeId = id;
     if (options.history !== false) this.pushNav({ kind: "term", id });

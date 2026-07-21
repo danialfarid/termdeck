@@ -140,6 +140,13 @@ body.dragging { user-select: none; cursor: col-resize; }
 .history-event.edit summary { color: var(--green); }
 .history-event.plan summary { color: var(--accent); }
 .history-event pre { margin: 0; padding: 8px 10px; border-top: 1px solid var(--border); overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--text); font: 11px/1.45 Menlo, monospace; }
+.history-plan { margin: 0; padding: 8px 12px 8px 34px; border-top: 1px solid var(--border); color: var(--text); font: 12px/1.5 -apple-system, "SF Pro Text", sans-serif; }
+.plan-step { padding: 3px 0 3px 4px; }
+.plan-marker { display: inline-block; width: 18px; margin-left: -22px; color: var(--dim); font-family: Menlo, monospace; font-weight: 700; }
+.plan-step.in_progress .plan-marker { color: var(--accent); }
+.plan-step.completed .plan-marker, .plan-step.complete .plan-marker { color: var(--green); }
+.plan-step.in_progress { color: var(--active-text); }
+.plan-step.completed, .plan-step.complete { color: var(--dim); }
 .history-diff { border-top: 1px solid var(--border); overflow: auto; background: var(--term-bg); color: var(--text); font: 11px/1.45 Menlo, monospace; }
 .diff-line { display: flex; min-width: max-content; white-space: pre; padding: 0 10px; }
 .diff-line-prefix { width: 1.4em; flex: none; user-select: none; text-align: center; font-weight: 700; }

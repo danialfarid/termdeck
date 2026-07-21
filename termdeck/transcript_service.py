@@ -60,6 +60,10 @@ class TranscriptService:
         turn = self._turn(role, text, kind, title, expanded=kind == "edit")
         if diff:
             turn["diff"] = diff
+        if kind == "plan":
+            plan = self._extract_plan(value, text)
+            if plan:
+                turn["plan"] = plan
         return turn
 
     @staticmethod
@@ -147,6 +151,29 @@ class TranscriptService:
             elif tag == "insert":
                 rows.extend({"kind": "add", "prefix": "+", "text": line} for line in new_lines[new_start:new_end])
         return rows
+
+    @staticmethod
+    def _extract_plan(value: object, text: str) -> list[dict[str, str]]:
+        candidates: object = value.get("plan") if isinstance(value, dict) else None
+        if isinstance(candidates, list):
+            steps = []
+            for item in candidates:
+                if isinstance(item, dict) and item.get("step"):
+                    steps.append({"step": str(item["step"]), "status": str(item.get("status") or "pending")})
+            if steps:
+                return steps
+
+        # Codex's update_plan call is often embedded in a JavaScript snippet,
+        # so its object keys/strings are not valid JSON. Extract the useful
+        # step/status pairs without exposing the implementation wrapper.
+        steps = []
+        pattern = re.compile(
+            r"\{\s*[\"']?(?:step|content)[\"']?\s*:\s*(['\"])(.*?)\1\s*,\s*[\"']?status[\"']?\s*:\s*(['\"])(.*?)\3",
+            re.DOTALL,
+        )
+        for match in pattern.finditer(text):
+            steps.append({"step": match.group(2), "status": match.group(4)})
+        return steps
 
     @staticmethod
     def _tool_call_id(payload: dict[str, object]) -> str:
