@@ -132,7 +132,7 @@ class TermdeckApp {
 
   getProjectState() {
     const states = this.settings.project_state || {};
-    return states[this.projectStateKey()] || { active_session_id: "", open_files: [], pinned_sessions: [] };
+    return states[this.projectStateKey()] || { active_session_id: "", open_files: [], pinned_sessions: [], unread_sessions: [] };
   }
 
   patchProjectState(patch) {
@@ -488,7 +488,10 @@ class TermdeckApp {
 
   updateProcessingState(id, spinning) {
     const previous = this.processingStates.get(id);
-    if (previous === true && !spinning) this.unreadSessions.add(id);
+    if (previous === true && !spinning && !this.unreadSessions.has(id)) {
+      this.unreadSessions.add(id);
+      this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
+    }
     this.processingStates.set(id, spinning);
     this.updateSessionSpinner(id, spinning);
     this.updateUnreadIndicator(id);
@@ -1066,14 +1069,16 @@ class TermdeckApp {
 
   activate(id) {
     const previousId = this.activeId;
+    let unreadChanged = false;
     if (previousId && previousId !== id) {
-      this.unreadSessions.delete(previousId);
+      unreadChanged = this.unreadSessions.delete(previousId) || unreadChanged;
       this.updateUnreadIndicator(previousId);
     }
     if (previousId !== id) {
-      this.unreadSessions.delete(id);
+      unreadChanged = this.unreadSessions.delete(id) || unreadChanged;
       this.updateUnreadIndicator(id);
     }
+    if (unreadChanged) this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
     this.activeFileKey = null;
     this.historyOpen = false;
     const previousView = previousId ? this.views.get(previousId) : null;
@@ -1354,6 +1359,7 @@ class TermdeckApp {
       states.__all__ = { active_session_id: this.settings.active_session_id, open_files: this.settings.open_files };
       this.settings.project_state = states;
     }
+    this.unreadSessions = new Set(this.getProjectState().unread_sessions || []);
     this.applySettings();
   }
 

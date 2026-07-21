@@ -62,6 +62,7 @@ class ProjectUiState(BaseModel):
     open_files: list[dict[str, str]] = []
     session_order: list[str] = []
     pinned_sessions: list[str] = []
+    unread_sessions: list[str] = []
 
 
 class UiSettings(BaseModel):
