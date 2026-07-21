@@ -37,6 +37,7 @@ class TermdeckConfig:
     API_CLOSED_ITEM_ROUTE = "/api/closed/{session_id}"
     API_CLOSED_REOPEN_ROUTE = "/api/closed/{session_id}/reopen"
     API_FILE_LIST_ROUTE = "/api/files/list"
+    API_FILE_RECENT_ROUTE = "/api/files/recent"
     API_FILE_READ_ROUTE = "/api/files/read"
     API_FILE_SEARCH_ROUTE = "/api/files/search"
     API_FILE_FIND_ROUTE = "/api/files/find"
@@ -56,6 +57,12 @@ class TermdeckConfig:
     FILE_ACCESS_ROOT = Path.home()
     FILE_READ_MAX_BYTES = 2_000_000
     FILE_LIST_MAX_ENTRIES = 2000
+    RECENT_FILES_MAX_ENTRIES = 40
+    RECENT_FILES_MAX_SCAN = 20000
+    RECENT_FILES_IGNORED_DIRS = frozenset({
+        ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
+        ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", "dist", "build",
+    })
     WS_ROUTE = "/ws/{session_id}"
     WS_CODE_UNKNOWN_SESSION = 4404
     DEFAULT_CWD = Path.home() / "workspace" / "stock"

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from termdeck.config import TermdeckConfig
@@ -30,6 +31,45 @@ class ProjectFileService:
             except (FileNotFoundError, OSError):
                 mtime = 0
             entries.append({"name": child.name, "is_dir": child.is_dir(), "mtime": mtime})
+        return entries
+
+    def recent_files(self, root: str, rel: str, limit: int) -> list[dict[str, object]]:
+        """Return the most recently modified files below a confined directory.
+
+        This deliberately skips generated/dependency directories and bounds both the
+        result and the amount of filesystem work so the sidebar can refresh safely.
+        """
+        base = self.resolve_confined(root, rel)
+        if not base.is_dir():
+            raise NotADirectoryError(str(base))
+        result_limit = max(1, min(int(limit), TermdeckConfig.RECENT_FILES_MAX_ENTRIES))
+        candidates: list[tuple[float, str, Path]] = []
+        scanned = 0
+        for current, dirs, names in os.walk(base, topdown=True, followlinks=False):
+            dirs[:] = [name for name in dirs if name not in TermdeckConfig.RECENT_FILES_IGNORED_DIRS]
+            for name in names:
+                if scanned >= TermdeckConfig.RECENT_FILES_MAX_SCAN:
+                    break
+                scanned += 1
+                path = Path(current) / name
+                try:
+                    stat = path.stat()
+                    if not path.is_file():
+                        continue
+                    relative = str(path.relative_to(base))
+                except (FileNotFoundError, OSError, ValueError):
+                    continue
+                candidates.append((stat.st_mtime, relative.lower(), path))
+            if scanned >= TermdeckConfig.RECENT_FILES_MAX_SCAN:
+                break
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        entries: list[dict[str, object]] = []
+        for mtime, _, path in candidates[:result_limit]:
+            try:
+                relative = str(path.relative_to(base))
+            except (ValueError, OSError):
+                continue
+            entries.append({"name": path.name, "path": relative, "mtime": int(mtime), "is_dir": False})
         return entries
 
     def save_upload(self, filename: str, data: bytes) -> str:

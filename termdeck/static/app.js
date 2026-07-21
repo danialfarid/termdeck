@@ -42,6 +42,7 @@ const REFERENCE_KEYS = [
   { keys: "⌘[ / ⌘]", label: "Browser back / forward (last-clicked navigation)" },
   { keys: "⌃⇧E", label: "Focus file-name search" },
   { keys: "⌃⇧F", label: "Focus file-content search" },
+  { keys: "⌃⇧Space", label: "Open file browser/search modal" },
   { keys: "⌘⌫ / ⌥⌫", label: "Delete to line start / delete word (in terminal)" },
   { keys: "⌘← / ⌘→", label: "Line start / end (in terminal)" },
   { keys: "⌘A", label: "Select all terminal text" },
@@ -94,6 +95,10 @@ class TermdeckApp {
     this.treeDirs = new Map();
     this.expandedDirs = new Set();
     this.treePollBusy = false;
+    this.recentFiles = [];
+    this.recentFilesRoot = null;
+    this.recentFilesBusy = false;
+    this.recentFilesFetchedAt = 0;
     this.sideView = "terminals";
     this.searchWord = false;
     this.searchCase = false;
@@ -110,6 +115,9 @@ class TermdeckApp {
     this.editor = null;
     this.selectedTreeRow = null;
     this.iconMap = null;
+    this.fileBrowserModalOpen = false;
+    this.fileBrowserPreviousView = "terminals";
+    this.fileBrowserOrigin = null;
     this.projects = [];
     const projectMatch = location.pathname.match(/^\/p\/([^/]+)/);
     this.projectSlug = projectMatch ? decodeURIComponent(projectMatch[1]) : null;
@@ -271,6 +279,12 @@ class TermdeckApp {
     this.$("history-close").onclick = () => this.closeHistory();
     this.$("attach-btn").onclick = () => this.attachToActive();
     this.$("scroll-bottom-btn").onclick = () => this.scrollActiveToBottom();
+    this.$("file-browser-close").onclick = () => this.closeFileBrowserModal();
+    this.$("file-browser-name-mode").onclick = () => { this.focusFileNameSearch(); this.updateFileBrowserMode(); };
+    this.$("file-browser-content-mode").onclick = () => { this.focusFileContentSearch(); this.updateFileBrowserMode(); };
+    this.$("file-browser-backdrop").addEventListener("mousedown", (e) => {
+      if (e.target.id === "file-browser-backdrop") this.closeFileBrowserModal();
+    });
     this.$("keys-btn").onclick = () => this.openKeybindings();
     this.$("keys-done").onclick = () => this.$("keys-backdrop").classList.add("hidden");
     this.$("keys-reset").onclick = () => this.resetKeybindings();
@@ -287,6 +301,11 @@ class TermdeckApp {
       if (modalOpen) {
         if (e.key === "Escape") this.closeModal();
         if (e.key === "Enter") this.createSession();
+        return;
+      }
+      if (this.fileBrowserModalOpen && e.key === "Escape") {
+        e.preventDefault();
+        this.closeFileBrowserModal();
         return;
       }
       if (this.tryAppShortcut(e)) return;
@@ -673,6 +692,7 @@ class TermdeckApp {
         list.appendChild(item);
       }
     }
+    this.renderRecentFilesInto(list);
     this.renderClosedInto(list);
     this.$("empty-state").style.display = this.sessions.length || this.openFiles.size ? "none" : "flex";
     this.keepActiveSessionVisible();
@@ -686,8 +706,8 @@ class TermdeckApp {
     requestAnimationFrame(() => row.scrollIntoView({ block: "nearest" }));
   }
 
-  setSideView(view) {
-    this.sideView = this.sideView === view && view !== "terminals" ? "terminals" : view;
+  setSideView(view, allowToggle = true) {
+    this.sideView = allowToggle && this.sideView === view && view !== "terminals" ? "terminals" : view;
     view = this.sideView;
     const filesVisible = view === "project" || view === "search";
     this.$("files-section").classList.toggle("hidden", !filesVisible);
@@ -708,15 +728,55 @@ class TermdeckApp {
   focusFileNameSearch() {
     if (this.sideView !== "project") this.setSideView("project");
     const input = this.$("search-name");
-    input.focus();
-    input.select();
+    setTimeout(() => { input.focus(); input.select(); }, 0);
   }
 
   focusFileContentSearch() {
     if (this.sideView !== "search") this.setSideView("search");
     const input = this.$("search-query");
-    input.focus();
-    input.select();
+    setTimeout(() => { input.focus(); input.select(); }, 0);
+  }
+
+  updateFileBrowserMode() {
+    const searchMode = this.sideView === "search";
+    this.$("file-browser-name-mode").classList.toggle("on", !searchMode);
+    this.$("file-browser-content-mode").classList.toggle("on", searchMode);
+  }
+
+  openFileBrowserModal() {
+    if (this.fileBrowserModalOpen) {
+      if (this.sideView === "search") this.focusFileContentSearch();
+      else this.focusFileNameSearch();
+      return;
+    }
+    const section = this.$("files-section");
+    this.fileBrowserPreviousView = this.sideView;
+    this.fileBrowserOrigin = { parent: section.parentNode, next: section.nextSibling };
+    const targetView = this.sideView === "search" ? "search" : "project";
+    if (this.sideView !== targetView) this.setSideView(targetView);
+    this.$("file-browser-host").appendChild(section);
+    section.classList.add("file-modal-panel");
+    section.style.height = "";
+    section.style.flex = "1";
+    section.classList.remove("hidden");
+    this.fileBrowserModalOpen = true;
+    this.$("file-browser-backdrop").classList.remove("hidden");
+    this.updateFileBrowserMode();
+    if (targetView === "search") this.focusFileContentSearch();
+    else this.focusFileNameSearch();
+  }
+
+  closeFileBrowserModal() {
+    if (!this.fileBrowserModalOpen) return;
+    const section = this.$("files-section");
+    if (this.fileBrowserOrigin) {
+      this.fileBrowserOrigin.parent.insertBefore(section, this.fileBrowserOrigin.next);
+    }
+    section.classList.remove("file-modal-panel");
+    this.fileBrowserModalOpen = false;
+    this.fileBrowserOrigin = null;
+    this.$("file-browser-backdrop").classList.add("hidden");
+    this.setSideView(this.fileBrowserPreviousView, false);
   }
 
   setExplorerMode(mode) {
@@ -749,6 +809,11 @@ class TermdeckApp {
     expandBtn.querySelector(".codicon").className = "codicon " + (full ? "codicon-screen-normal" : "codicon-screen-full");
     if (!sectionId) return;
     const section = this.$(sectionId);
+    if (this.fileBrowserModalOpen) {
+      section.style.height = "";
+      section.style.flex = "1";
+      return;
+    }
     if (full) {
       section.style.height = "";
       section.style.flex = "1";
@@ -951,13 +1016,58 @@ class TermdeckApp {
     }
   }
 
+  renderRecentFilesInto(list) {
+    const openKeys = new Set(this.openFiles.keys());
+    const recent = this.recentFiles.filter((entry) =>
+      entry.path && !openKeys.has(`${this.recentFilesRoot}|${entry.path}`));
+    if (!recent.length) return;
+    list.appendChild(this.sectionLabel("recently edited files"));
+    const body = document.createElement("div");
+    body.className = "recent-files-list";
+    for (const entry of recent) {
+      const item = document.createElement("div");
+      item.className = "file-item recent-file-item";
+      item.title = `${this.recentFilesRoot}/${entry.path}\nmodified ${new Date(entry.mtime * 1000).toLocaleString()}`;
+      const name = document.createElement("span");
+      name.className = "file-item-name";
+      name.textContent = entry.path;
+      const mtime = document.createElement("span");
+      mtime.className = "recent-mtime";
+      mtime.textContent = this.formatMtime(entry.mtime);
+      mtime.title = new Date(entry.mtime * 1000).toLocaleString();
+      item.append(this.fileTypeIconEl(entry.name, "file-type-icon"), name, mtime);
+      item.onclick = () => this.openFile(this.recentFilesRoot, entry.path, null, null);
+      body.appendChild(item);
+    }
+    list.appendChild(body);
+  }
+
+  async refreshRecentFiles(force = false) {
+    if (this.recentFilesBusy || this.treeRoot === null || this.$("files-section").classList.contains("hidden")) return;
+    if (!force && this.recentFilesRoot === this.treeRoot && Date.now() - this.recentFilesFetchedAt < TREE_POLL_MS) return;
+    const root = this.treeRoot;
+    this.recentFilesBusy = true;
+    try {
+      const res = await fetch(`/api/files/recent?root=${encodeURIComponent(root)}&limit=40`);
+      if (!res.ok || this.treeRoot !== root) return;
+      this.recentFiles = await res.json();
+      this.recentFilesRoot = root;
+      this.recentFilesFetchedAt = Date.now();
+      this.renderList();
+    } catch (error) {
+      console.warn("recent files refresh failed", error);
+    } finally {
+      this.recentFilesBusy = false;
+    }
+  }
+
   renderClosedInto(list) {
     if (!this.closedSessions.length) return;
     const header = document.createElement("div");
     header.className = "side-section-label closed-header";
     const chevron = document.createElement("span");
     chevron.className = "codicon codicon-chevron-right closed-chevron" + (this.closedExpanded ? " open" : "");
-    header.append(chevron, document.createTextNode(`closed (${this.closedSessions.length})`));
+    header.append(chevron, document.createTextNode(`closed terminals (${this.closedSessions.length})`));
     header.onclick = () => { this.closedExpanded = !this.closedExpanded; this.renderList(); };
     list.appendChild(header);
     if (!this.closedExpanded) return;
@@ -1631,9 +1741,13 @@ class TermdeckApp {
     label.title = this.treeRoot;
     this.treeDirs.clear();
     this.expandedDirs.clear();
+    this.recentFiles = [];
+    this.recentFilesRoot = null;
+    this.recentFilesFetchedAt = 0;
     const tree = this.$("files-tree");
     tree.textContent = "";
     await this.renderDirInto(tree, "");
+    this.refreshRecentFiles(true);
   }
 
   async fetchDirEntries(relPath) {
@@ -1734,6 +1848,7 @@ class TermdeckApp {
 
   async pollTree() {
     if (this.treePollBusy || this.treeRoot === null || this.$("files-section").classList.contains("hidden")) return;
+    this.refreshRecentFiles();
     this.treePollBusy = true;
     try {
       for (const [relPath, info] of [...this.treeDirs]) {
@@ -2096,6 +2211,12 @@ class TermdeckApp {
         e.preventDefault();
         e.stopPropagation();
         this.focusFileContentSearch();
+        return true;
+      }
+      if (e.key === " " || e.key === "Spacebar") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.openFileBrowserModal();
         return true;
       }
     }

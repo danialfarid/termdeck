@@ -131,6 +131,7 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._get_settings)
         app.put(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._put_settings)
         app.get(TermdeckConfig.API_FILE_LIST_ROUTE, response_model=None)(self._list_files)
+        app.get(TermdeckConfig.API_FILE_RECENT_ROUTE, response_model=None)(self._recent_files)
         app.get(TermdeckConfig.API_FILE_READ_ROUTE, response_model=None)(self._read_file)
         app.get(TermdeckConfig.API_FILE_SEARCH_ROUTE, response_model=None)(self._search_files)
         app.get(TermdeckConfig.API_FILE_FIND_ROUTE, response_model=None)(self._find_files)
@@ -171,6 +172,12 @@ class TermdeckServer:
             return self.files.list_dir(root, path)
         except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError) as list_error:
             raise HTTPException(status_code=404, detail=str(list_error)) from list_error
+
+    async def _recent_files(self, root: str, path: str = "", limit: int = TermdeckConfig.RECENT_FILES_MAX_ENTRIES) -> list[dict[str, object]]:
+        try:
+            return await asyncio.to_thread(self.files.recent_files, root, path, limit)
+        except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError, OSError) as recent_error:
+            raise HTTPException(status_code=404, detail=str(recent_error)) from recent_error
 
     async def _read_file(self, root: str, path: str) -> dict[str, object]:
         try:
