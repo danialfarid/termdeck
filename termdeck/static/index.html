@@ -91,12 +91,14 @@
     </div>
   </div>
   <div id="terminal-area">
-    <button id="scroll-bottom-btn" title="Scroll terminal to bottom" aria-label="Scroll terminal to bottom"><span class="codicon codicon-fold-down"></span></button>
+    <div id="terminal-actions">
+      <button id="history-btn" title="Full session transcript (from the agent's own log)" aria-label="Open Markdown transcript"><span class="codicon codicon-history"></span></button>
+      <button id="scroll-bottom-btn" title="Scroll terminal to bottom" aria-label="Scroll terminal to bottom"><span class="codicon codicon-fold-down"></span></button>
+    </div>
     <div id="empty-state">no terminals &mdash; press + or &#8984;K to open one</div>
   </div>
   <div id="bottombar">
     <button id="attach-btn" title="Attach file/image → inserts its path (also paste or drag-drop onto the terminal)"><span class="codicon codicon-cloud-upload"></span></button>
-    <button id="history-btn" title="Full session transcript (from the agent's own log)"><span class="codicon codicon-history"></span></button>
     <span id="status-name"></span>
     <span class="footer-spacer"></span>
     <span id="stat-text"></span>

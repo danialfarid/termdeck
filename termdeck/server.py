@@ -88,6 +88,7 @@ class UiSettings(BaseModel):
     last_model: str = "codex"
     last_permissions: dict[str, str] = {}
     show_terminal_icons: bool = False
+    history_mode: bool = False
     side_full: bool = False
     side_split: float = 0.55
 
