@@ -677,6 +677,13 @@ class TermdeckApp {
     return label;
   }
 
+  pinnedSectionLabel() {
+    const label = document.createElement("div");
+    label.className = "side-section-label pinned-section-label";
+    label.textContent = "pinned";
+    return label;
+  }
+
   terminalTypeIcon(s) {
     const icon = document.createElement("span");
     icon.className = "terminal-type-icon";
@@ -699,8 +706,18 @@ class TermdeckApp {
     this.sessionTitleEls.clear();
     this.sessionSpinnerEls.clear();
     this.sessionStatusEls.clear();
-    if (this.sessions.length) list.appendChild(this.sectionLabel("terminals"));
+    const pinnedIds = new Set(this.getProjectState().pinned_sessions || []);
+    let pinnedSectionShown = false;
+    let terminalSectionShown = false;
     for (const s of this.sessions) {
+      const isPinned = pinnedIds.has(s.session_id);
+      if (isPinned && !pinnedSectionShown) {
+        list.appendChild(this.pinnedSectionLabel());
+        pinnedSectionShown = true;
+      } else if (!isPinned && !terminalSectionShown) {
+        list.appendChild(this.sectionLabel("terminals"));
+        terminalSectionShown = true;
+      }
       const item = document.createElement("div");
       item.className = "session-item" + (s.session_id === this.activeId && this.activeFileKey === null ? " active" : "");
       item.title = `${s.command || "zsh"}\n${s.cwd}` + (s.agent_session_id ? `\n${s.agent_kind}: ${s.agent_session_id}` : "") + "\ndouble-click to rename";
@@ -954,10 +971,18 @@ class TermdeckApp {
     if (root) this.renderDirInto(root.container, "", JSON.parse(root.cache));
   }
 
-  addContextItem(menu, label, handler) {
+  addContextItem(menu, label, handler, icon = "") {
     const item = document.createElement("div");
     item.className = "context-item" + (handler ? "" : " disabled");
-    item.textContent = label;
+    if (icon) {
+      const glyph = document.createElement("span");
+      glyph.className = `codicon codicon-${icon}`;
+      glyph.setAttribute("aria-hidden", "true");
+      item.appendChild(glyph);
+    }
+    const text = document.createElement("span");
+    text.textContent = label;
+    item.appendChild(text);
     if (handler) {
       item.onclick = () => {
         menu.classList.add("hidden");
@@ -974,9 +999,9 @@ class TermdeckApp {
     menu.textContent = "";
     const pinned = (this.getProjectState().pinned_sessions || []).includes(session.session_id);
     this.addContextItem(menu, pinned ? "Unpin terminal" : "Pin terminal to the top",
-      () => this.togglePin(session.session_id));
-    this.addContextItem(menu, "Fork into a new terminal", () => this.forkSession(session));
-    this.addContextItem(menu, "Restart terminal", () => this.restartSession(session.session_id));
+      () => this.togglePin(session.session_id), pinned ? "pinned" : "pin");
+    this.addContextItem(menu, "Fork into a new terminal", () => this.forkSession(session), "repo-forked");
+    this.addContextItem(menu, "Restart terminal", () => this.restartSession(session.session_id), "refresh");
     menu.classList.remove("hidden");
     menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 10) + "px";
     menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 10) + "px";

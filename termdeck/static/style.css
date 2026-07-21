@@ -90,6 +90,8 @@ button { font-family: inherit; }
 }
 .session-title { font-size: var(--sidebar-font-size); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .side-section-label { font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--dim); padding: 9px 10px 7px; }
+.pinned-section-label { display: flex; align-items: center; gap: 8px; color: var(--accent); padding-top: 10px; }
+.pinned-section-label::after { content: ""; height: 1px; flex: 1; background: var(--active-border); }
 .side-section-header { display: flex; align-items: center; justify-content: space-between; }
 .section-toggle { border: 1px solid transparent; border-radius: 4px; background: none; color: var(--dim); width: 20px; height: 18px; padding: 0; cursor: pointer; line-height: 1; }
 .section-toggle:hover { color: var(--text); border-color: var(--border); background: var(--panel2); }
@@ -284,7 +286,9 @@ body.dragging-side { user-select: none; cursor: row-resize; }
 .tree-row.excluded .tree-name { font-style: italic; }
 #context-menu { position: fixed; z-index: 40; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 4px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); min-width: 170px; }
 #context-menu.hidden { display: none; }
-.context-item { padding: 5px 10px; border-radius: 5px; font-size: 12px; cursor: pointer; color: var(--text); white-space: nowrap; }
+.context-item { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: 5px; font-size: 12px; cursor: pointer; color: var(--text); white-space: nowrap; }
+.context-item > .codicon { width: 14px; color: var(--dim); font-size: 13px; text-align: center; }
+.context-item:hover > .codicon { color: var(--accent); }
 .context-item:hover { background: var(--active-bg); }
 .context-item.disabled { color: var(--dim); cursor: default; }
 .context-item.disabled:hover { background: none; }
