@@ -1,6 +1,6 @@
 const REFRESH_MS = 5000;
 const TITLE_REFRESH_MS = 1000;
-const TITLE_SPINNER_MS = 1000;
+const TITLE_SPINNER_MS = 500;
 const CODEX_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const RECONNECT_MS = 1500;
 const DEFAULT_COMMAND = "codex";
