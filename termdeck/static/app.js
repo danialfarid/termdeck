@@ -96,6 +96,9 @@ class TermdeckApp {
     this.lastNavJson = "";
     this.sessionTitleEls = new Map();
     this.sessionSpinnerEls = new Map();
+    this.sessionStatusEls = new Map();
+    this.processingStates = new Map();
+    this.unreadSessions = new Set();
     this.statHistory = [];
     this.editor = null;
     this.selectedTreeRow = null;
@@ -414,6 +417,11 @@ class TermdeckApp {
     }
     this.sessions = this.applySessionOrder(sessions);
     this.closedSessions = closed;
+    for (const s of this.sessions) {
+      const spinning = this.titlePresentation(s).spinning;
+      if (!this.processingStates.has(s.session_id)) this.processingStates.set(s.session_id, spinning);
+      else this.updateProcessingState(s.session_id, spinning);
+    }
     const ids = new Set(sessions.map((s) => s.session_id));
     for (const [id, view] of [...this.views]) {
       if (!ids.has(id)) this.destroyView(id, view);
@@ -446,9 +454,10 @@ class TermdeckApp {
       const current = this.session(incoming.session_id);
       if (!current || current.cli_title === incoming.cli_title) continue;
       current.cli_title = incoming.cli_title;
+      const presentation = this.titlePresentation(current);
       const titleEl = this.sessionTitleEls.get(incoming.session_id);
-      if (titleEl) titleEl.textContent = this.titlePresentation(current).text;
-      this.updateSessionSpinner(current.session_id, this.titlePresentation(current).spinning);
+      if (titleEl) titleEl.textContent = presentation.text;
+      this.updateProcessingState(current.session_id, presentation.spinning);
       if (incoming.session_id === this.activeId) activeTitleChanged = true;
     }
     if (activeTitleChanged) this.renderTopbar();
@@ -463,6 +472,20 @@ class TermdeckApp {
   updateSessionSpinner(id, spinning) {
     const spinner = this.sessionSpinnerEls.get(id);
     if (spinner) spinner.classList.toggle("on", spinning);
+  }
+
+  updateUnreadIndicator(id) {
+    const dot = this.sessionStatusEls.get(id);
+    if (!dot) return;
+    dot.classList.toggle("unread", this.unreadSessions.has(id) && !this.processingStates.get(id));
+  }
+
+  updateProcessingState(id, spinning) {
+    const previous = this.processingStates.get(id);
+    if (previous === true && !spinning && id !== this.activeId) this.unreadSessions.add(id);
+    this.processingStates.set(id, spinning);
+    this.updateSessionSpinner(id, spinning);
+    this.updateUnreadIndicator(id);
   }
 
   session(id) {
@@ -530,13 +553,16 @@ class TermdeckApp {
     list.textContent = "";
     this.sessionTitleEls.clear();
     this.sessionSpinnerEls.clear();
+    this.sessionStatusEls.clear();
     if (this.sessions.length) list.appendChild(this.sectionLabel("terminals"));
     for (const s of this.sessions) {
       const item = document.createElement("div");
       item.className = "session-item" + (s.session_id === this.activeId && this.activeFileKey === null ? " active" : "");
       item.title = `${s.command || "zsh"}\n${s.cwd}` + (s.agent_session_id ? `\n${s.agent_kind}: ${s.agent_session_id}` : "") + "\ndouble-click to rename";
       const dot = document.createElement("span");
-      dot.className = "status-dot" + (s.running ? "" : " exited");
+      dot.className = "status-dot" + (s.running ? "" : " exited") +
+        (this.unreadSessions.has(s.session_id) && !this.processingStates.get(s.session_id) ? " unread" : "");
+      this.sessionStatusEls.set(s.session_id, dot);
       const spinner = document.createElement("span");
       spinner.className = "session-spinner";
       spinner.style.animationDelay = `-${Date.now() % 900}ms`;
@@ -970,6 +996,8 @@ class TermdeckApp {
   }
 
   activate(id) {
+    this.unreadSessions.delete(id);
+    this.updateUnreadIndicator(id);
     this.activeFileKey = null;
     this.historyOpen = false;
     this.activeId = id;
@@ -1045,7 +1073,7 @@ class TermdeckApp {
       if (s) s.cli_title = title;
       const titleEl = this.sessionTitleEls.get(id);
       if (titleEl && s) titleEl.textContent = this.titlePresentation(s).text;
-      this.updateSessionSpinner(id, !!s && this.titlePresentation(s).spinning);
+      this.updateProcessingState(id, !!s && this.titlePresentation(s).spinning);
       if (id === this.activeId) this.renderTopbar();
     });
     term.attachCustomKeyEventHandler((e) => this.handleTerminalEditingKeys(view, e));
