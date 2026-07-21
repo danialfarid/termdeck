@@ -462,24 +462,30 @@ class TerminalSessionManager:
     def set_draft(self, session_id: str, draft: str) -> None:
         ms = self._sessions[session_id]
         normalized = str(draft or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
-        if normalized == ms.record.draft:
-            return
-        ms.record.draft = normalized
-        ms.draft_tracker = DraftInputTracker(normalized)
-        self._schedule_draft_persist()
+        if normalized != ms.record.draft:
+            ms.record.draft = normalized
+            ms.draft_tracker = DraftInputTracker(normalized)
+            self._schedule_draft_persist()
+        # Always echo draft_sync, including when the value is unchanged. This
+        # acknowledges the client update without racing the terminal websocket
+        # or the periodic session refresh.
         self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT,
                                      WsMessageFields.DRAFT: normalized})
 
     def submit_prompt(self, session_id: str, text: str, bracketed: bool) -> None:
         """Write a Markdown prompt and its Enter atomically from the server's PTY writer."""
         normalized = str(text or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
-        self.write_input(session_id, "\x15")
+        payload = "\x15"
         if normalized:
-            payload = normalized
             if bracketed:
-                payload = TermdeckConfig.BRACKETED_PASTE_START.decode() + normalized + TermdeckConfig.BRACKETED_PASTE_END.decode()
-            self.write_input(session_id, payload)
-        self.write_input(session_id, "\r")
+                payload += TermdeckConfig.BRACKETED_PASTE_START.decode() + normalized + TermdeckConfig.BRACKETED_PASTE_END.decode()
+            else:
+                payload += normalized
+        payload += "\r"
+        self.write_input(session_id, payload)
+        # A submitted prompt must not be resurrected from the debounce window
+        # if the browser is refreshed immediately afterward.
+        self._persist()
         self._broadcast_control(self._sessions[session_id], {WsMessageFields.TYPE: WsMessageFields.PROMPT_SUBMITTED})
 
     def _schedule_draft_persist(self) -> None:

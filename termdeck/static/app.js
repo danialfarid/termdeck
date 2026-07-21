@@ -509,6 +509,12 @@ class TermdeckApp {
     this.sessions = this.applySessionOrder(sessions);
     this.closedSessions = closed;
     for (const s of this.sessions) {
+      const view = this.views.get(s.session_id);
+      if (view && !view.promptEditing && !view.promptSubmitting && !view.promptDraftSyncPending &&
+          view.pendingDraftSync === null && view.pendingTerminalDraft === null && view.promptDraft !== (s.draft || "")) {
+        view.promptDraft = s.draft || "";
+        if (s.session_id === this.activeId && this.historyOpen) this.showPromptDraft(view);
+      }
       const spinning = this.titlePresentation(s).spinning;
       if (!this.processingStates.has(s.session_id)) {
         this.processingStates.set(s.session_id, spinning);
@@ -1445,14 +1451,48 @@ class TermdeckApp {
   }
 
   syncPromptToTerminal(view, options = {}) {
-    if (!view.ws || view.ws.readyState !== WebSocket.OPEN) return;
     const text = view.promptDraft || "";
-    if (options.writeToTerminal !== false) {
-      const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
-      this.sendInput(view, "\x15");
-      if (text) this.sendInput(view, text.includes("\n") && bracketed ? `\x1b[200~${text}\x1b[201~` : text);
+    const writeToTerminal = options.writeToTerminal !== false;
+    if (!view.ws || view.ws.readyState !== WebSocket.OPEN) {
+      if (writeToTerminal) view.pendingTerminalDraft = text;
+      else view.pendingTerminalDraft = null;
+      view.pendingDraftSync = text;
+      return;
     }
+    if (!writeToTerminal) view.pendingTerminalDraft = null;
+    if (writeToTerminal) this.writePromptDraftToTerminal(view, text);
+    this.sendPromptDraftSync(view, text);
+  }
+
+  writePromptDraftToTerminal(view, text) {
+    const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
+    this.sendInput(view, "\x15");
+    if (text) this.sendInput(view, text.includes("\n") && bracketed ? `\x1b[200~${text}\x1b[201~` : text);
+  }
+
+  sendPromptDraftSync(view, text) {
+    if (!view.ws || view.ws.readyState !== WebSocket.OPEN) {
+      view.pendingDraftSync = text;
+      return;
+    }
+    view.pendingDraftSync = null;
+    view.promptDraftSyncPending = true;
+    clearTimeout(view.promptDraftSyncTimer);
+    view.promptDraftSyncTimer = setTimeout(() => {
+      view.promptDraftSyncPending = false;
+      view.promptDraftSyncTimer = 0;
+    }, 3000);
     view.ws.send(JSON.stringify({ type: "draft_sync", draft: text }));
+  }
+
+  flushPromptSync(view) {
+    if (!view.ws || view.ws.readyState !== WebSocket.OPEN || view.promptSubmitting) return;
+    if (view.pendingTerminalDraft !== null) {
+      const text = view.pendingTerminalDraft;
+      view.pendingTerminalDraft = null;
+      this.writePromptDraftToTerminal(view, text);
+    }
+    if (view.pendingDraftSync !== null) this.sendPromptDraftSync(view, view.pendingDraftSync);
   }
 
   sendTrackedInput(view, data) {
@@ -1460,7 +1500,16 @@ class TermdeckApp {
     view.promptSubmitting = false;
     clearTimeout(view.promptSubmitTimer);
     view.promptEditing = false;
+    const previousDraft = view.promptDraft;
     this.updatePromptDraftFromTerminal(view, data);
+    if (view.promptDraft !== previousDraft) {
+      view.promptDraftSyncPending = true;
+      clearTimeout(view.promptDraftSyncTimer);
+      view.promptDraftSyncTimer = setTimeout(() => {
+        view.promptDraftSyncPending = false;
+        view.promptDraftSyncTimer = 0;
+      }, 3000);
+    }
     this.sendInput(view, data);
   }
 
@@ -1793,7 +1842,8 @@ class TermdeckApp {
                    replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, programmaticScrollUntil: 0, scrollSettleTimer: 0,
                    replayTimer: 0, settleFrame: 0, layoutObserver: null, keepBottom: true, lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
-                   promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0 };
+                   promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
+                   promptDraftSyncPending: false, promptDraftSyncTimer: 0, pendingDraftSync: null, pendingTerminalDraft: null };
     container.addEventListener("wheel", () => { view.pinBottomUntil = 0; view.keepBottom = false; }, { passive: true });
     container.addEventListener("paste", (e) => {
       e.preventDefault();
@@ -1874,6 +1924,7 @@ class TermdeckApp {
         this.scrollTerminalToBottom(view);
         this.scheduleViewportSettle(view);
       }
+      this.flushPromptSync(view);
     };
     ws.onmessage = (e) => {
       if (typeof e.data === "string") { this.handleControl(id, view, JSON.parse(e.data)); return; }
@@ -1956,6 +2007,9 @@ class TermdeckApp {
       view.term.write(`\r\n\x1b[2m[termdeck] process exited (${msg.code})\x1b[0m\r\n`);
       view.pinBottomUntil = Date.now() + 5000;
     } else if (msg.type === "draft") {
+      view.promptDraftSyncPending = false;
+      clearTimeout(view.promptDraftSyncTimer);
+      view.promptDraftSyncTimer = 0;
       if (view.promptSubmitting) {
         return;
       }
@@ -1966,6 +2020,11 @@ class TermdeckApp {
       return;
     } else if (msg.type === "prompt_submitted") {
       view.promptDraft = "";
+      view.pendingDraftSync = null;
+      view.pendingTerminalDraft = null;
+      view.promptDraftSyncPending = false;
+      clearTimeout(view.promptDraftSyncTimer);
+      view.promptDraftSyncTimer = 0;
       view.promptSubmitting = false;
       view.promptSubmitEntered = false;
       clearTimeout(view.promptSubmitTimer);
