@@ -10,7 +10,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, show_stats: true,
   tree_sort: "name", show_mtime: false, word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
-  show_terminal_icons: false };
+  show_terminal_icons: false, history_mode: false };
 const MODEL_PERMISSIONS = {
   codex: [
     { value: "default", label: "Default (Codex config)" },
@@ -1150,24 +1150,32 @@ class TermdeckApp {
   }
 
   closeHistory() {
-    this.historyOpen = false;
-    this.stopHistoryRefresh();
-    this.applyMainLayout();
-    const view = this.views.get(this.activeId);
-    if (view) view.term.focus();
+    this.setHistoryMode(false);
   }
 
   async toggleHistory() {
     if (this.activeFileKey !== null) return;
-    if (this.historyOpen) { this.closeHistory(); return; }
-    if (!this.activeId) return;
-    this.historyOpen = true;
+    this.setHistoryMode(!this.historyOpen);
+  }
+
+  setHistoryMode(enabled) {
+    this.settings.history_mode = !!enabled;
+    this.saveSettings();
+    this.stopHistoryRefresh();
     this.historyFingerprint = "";
     this.historyTurns = [];
     this.historyLoaded = false;
+    this.historyOpen = !!enabled && this.activeFileKey === null && !!this.activeId;
     this.applyMainLayout();
-    await this.loadHistory(this.activeId);
-    this.startHistoryRefresh();
+    if (this.historyOpen) {
+      const sessionId = this.activeId;
+      this.loadHistory(sessionId).then(() => {
+        if (this.historyOpen && sessionId === this.activeId) this.startHistoryRefresh();
+      });
+    } else {
+      const view = this.views.get(this.activeId);
+      if (view) view.term.focus();
+    }
   }
 
   startHistoryRefresh() {
@@ -1208,7 +1216,7 @@ class TermdeckApp {
   }
 
   historyTurnKey(turn) {
-    return JSON.stringify([turn.role, turn.kind, turn.title, turn.text, turn.diff, turn.plan]);
+    return JSON.stringify([turn.role, turn.kind, turn.title, turn.text, turn.diff, turn.plan, turn.items]);
   }
 
   renderHistoryTurns(turns, options = {}) {
@@ -1226,8 +1234,23 @@ class TermdeckApp {
         eventIndex += 1;
         const summary = document.createElement("summary");
         summary.textContent = turn.kind === "plan" && Array.isArray(turn.plan)
-          ? `Plan · ${turn.plan.length} steps` : (turn.title || turn.kind);
-        if (Array.isArray(turn.plan) && turn.plan.length) {
+            ? `Plan · ${turn.plan.length} steps`
+            : turn.kind === "thinking" && Array.isArray(turn.items)
+            ? `Thinking · ${turn.items.length} operations`
+            : (turn.title || turn.kind);
+        if (turn.kind === "thinking" && Array.isArray(turn.items) && turn.items.length) {
+          const results = document.createElement("div");
+          results.className = "history-thinking";
+          for (const item of turn.items) {
+            const label = document.createElement("div");
+            label.className = "history-thinking-label";
+            label.textContent = item.kind === "result" ? "Result" : (item.title || "Tool");
+            const result = document.createElement("pre");
+            result.textContent = item.text || "";
+            results.append(label, result);
+          }
+          event.append(summary, results);
+        } else if (Array.isArray(turn.plan) && turn.plan.length) {
           const list = document.createElement("ol");
           list.className = "history-plan";
           for (const item of turn.plan) {
@@ -1312,7 +1335,7 @@ class TermdeckApp {
     }
     this.historyLoadBusy = false;
     if (sessionId !== this.activeId || !this.historyOpen) return;
-    const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length, turn.plan]))}`;
+    const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length, turn.plan, turn.items]))}`;
     if (preserveScroll && fingerprint === this.historyFingerprint) return;
     const canAppend = preserveScroll && this.historyLoaded && this.historyTurns.length > 0 &&
       turns.length >= this.historyTurns.length && this.historyTurns.every((turn, index) => this.historyTurnKey(turn) === this.historyTurnKey(turns[index]));
@@ -1374,6 +1397,7 @@ class TermdeckApp {
     this.historyLoaded = false;
     const previousView = previousId ? this.views.get(previousId) : null;
     this.activeId = id;
+    this.historyOpen = !!this.settings.history_mode;
     if (options.history !== false) this.pushNav({ kind: "term", id });
     if (this.getProjectState().active_session_id !== id) {
       this.patchProjectState({ active_session_id: id });
@@ -1391,9 +1415,16 @@ class TermdeckApp {
       v.container.classList.toggle("visible", viewId === id);
     }
     this.applyMainLayout();
+    if (this.historyOpen) {
+      const historyId = id;
+      this.loadHistory(historyId).then(() => {
+        if (this.historyOpen && historyId === this.activeId) this.startHistoryRefresh();
+      });
+    }
     if (view) {
       if (!view.ws) this.connect(id, view);
-      view.term.focus();
+      if (this.historyOpen) this.$("history-prompt").focus();
+      else view.term.focus();
       if (previousId !== id) {
         view.keepBottom = true;
         view.pinBottomUntil = Date.now() + 5000;
@@ -1847,6 +1878,8 @@ class TermdeckApp {
       () => { this.settings.show_stats = !this.settings.show_stats; }));
     pop.appendChild(this.buildToggleRow("Editor wrap", () => (this.settings.word_wrap ? "on" : "off"),
       () => { this.settings.word_wrap = !this.settings.word_wrap; }));
+    pop.appendChild(this.buildToggleRow("Markdown transcript", () => (this.settings.history_mode ? "on" : "off"),
+      () => { this.setHistoryMode(!this.settings.history_mode); }));
     pop.appendChild(this.buildActionRow("Keyboard shortcuts", "edit", () => { pop.classList.add("hidden"); this.openKeybindings(); }));
     pop.appendChild(this.buildActionRow("Export settings", "download", () => { pop.classList.add("hidden"); this.exportSettings(); }));
     this.positionPopover(pop, anchor);

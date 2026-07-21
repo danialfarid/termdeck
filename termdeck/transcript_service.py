@@ -204,7 +204,7 @@ class TranscriptService:
                 turns.append(self._turn("event", self._format_value(output), "result", "Result"))
             if len(turns) >= self.MAX_TURNS:
                 break
-        return turns
+        return self._collapse_thinking_events(turns)
 
     @staticmethod
     def _is_codex_boilerplate(text: str) -> bool:
@@ -239,7 +239,40 @@ class TranscriptService:
                         turns.append(self._turn("event", self._format_value(result), "result", "Result"))
             if len(turns) >= self.MAX_TURNS:
                 break
-        return turns
+        return self._collapse_thinking_events(turns)
+
+    @staticmethod
+    def _collapse_thinking_events(turns: list[dict[str, object]]) -> list[dict[str, object]]:
+        collapsed: list[dict[str, object]] = []
+        index = 0
+        while index < len(turns):
+            turn = turns[index]
+            if turn.get("kind") not in {"tool", "result"}:
+                collapsed.append(turn)
+                index += 1
+                continue
+            start = index
+            items: list[dict[str, str]] = []
+            while index < len(turns) and turns[index].get("kind") in {"tool", "result"}:
+                item = turns[index]
+                items.append({
+                    "kind": str(item.get("kind") or "tool"),
+                    "title": str(item.get("title") or "Tool"),
+                    "text": str(item.get("text") or ""),
+                })
+                index += 1
+            if index - start < 2:
+                collapsed.append(turn)
+            else:
+                collapsed.append({
+                    "role": "event",
+                    "text": "",
+                    "kind": "thinking",
+                    "title": f"Thinking · {len(items)} operations",
+                    "expanded": False,
+                    "items": items,
+                })
+        return collapsed
 
     @staticmethod
     def _join_text(content: object, text_keys: tuple[str, ...]) -> str:

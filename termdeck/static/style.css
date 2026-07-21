@@ -139,7 +139,12 @@ body.dragging { user-select: none; cursor: col-resize; }
 .history-event summary:hover { color: var(--text); }
 .history-event.edit summary { color: var(--green); }
 .history-event.plan summary { color: var(--accent); }
+.history-event.thinking summary { color: var(--dim); }
 .history-event pre { margin: 0; padding: 8px 10px; border-top: 1px solid var(--border); overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--text); font: 11px/1.45 Menlo, monospace; }
+.history-thinking { border-top: 1px solid var(--border); }
+.history-thinking-label { padding: 6px 10px 2px; color: var(--dim); font: 600 10px Menlo, monospace; text-transform: uppercase; letter-spacing: 0.05em; }
+.history-thinking pre { margin: 0; border-top: 0; border-bottom: 1px solid var(--border); }
+.history-thinking pre:last-child { border-bottom: 0; }
 .history-plan { margin: 0; padding: 8px 12px 8px 34px; border-top: 1px solid var(--border); color: var(--text); font: 12px/1.5 -apple-system, "SF Pro Text", sans-serif; }
 .plan-step { padding: 3px 0 3px 4px; }
 .plan-marker { display: inline-block; width: 18px; margin-left: -22px; color: var(--dim); font-family: Menlo, monospace; font-weight: 700; }
