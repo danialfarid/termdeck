@@ -42,7 +42,7 @@ const REFERENCE_KEYS = [
   { keys: "⌘⌫ / ⌥⌫", label: "Delete to line start / delete word (in terminal)" },
   { keys: "⌘← / ⌘→", label: "Line start / end (in terminal)" },
   { keys: "⌘A", label: "Select all terminal text" },
-  { keys: "⌘[ / ⌘]", label: "Back / forward (browser history: terminals, files, searches)" },
+  { keys: "⌘[ / ⌘]", label: "Browser back / forward (last-clicked navigation)" },
   { keys: "⌃R / ⌃M / ⌘⌫", label: "Rename / move / delete selected tree file" },
   { keys: "↑ ↓ ← → Enter", label: "Navigate the file tree (when focused)" },
 ];
