@@ -47,9 +47,9 @@ button { font-family: inherit; }
 .status-dot.exited { background: var(--red); visibility: visible; }
 .status-dot.unread { background: var(--accent); visibility: visible; }
 .session-spinner { position: absolute; left: 8px; top: 50%; width: 12px; height: 12px; margin-top: -6px; border-radius: 50%; opacity: 0; pointer-events: none; }
-.session-spinner::before { content: ""; position: absolute; inset: 2px; border: 1px dashed color-mix(in srgb, var(--accent) 22%, transparent); border-right-color: transparent; border-bottom-color: transparent; border-radius: 50%; transform: rotate(-25deg); }
-.session-spinner i { position: absolute; left: 6px; top: 4px; display: block; width: 9px; height: 4px; border-radius: 999px; background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--accent) 20%, transparent) 38%, var(--accent) 82%); transform-origin: 0 2px; animation: termdeck-session-orbit 3.2s linear infinite; }
-.session-spinner i::after { content: ""; position: absolute; right: -1px; top: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 82%, transparent); }
+.session-spinner::before { content: ""; position: absolute; left: 4px; top: 4px; width: 4px; height: 4px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 78%, transparent); }
+.session-spinner i { position: absolute; left: 3.5px; top: -1px; display: block; width: 5px; height: 7px; background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 24%, transparent)); clip-path: polygon(50% 0, 100% 100%, 0 100%); transform-origin: 2.5px 7px; animation: termdeck-session-orbit 3.2s linear infinite; }
+.session-spinner i::after { content: none; }
 .session-spinner.on { opacity: 1; }
 .terminal-type-icon { display: none; flex: none; align-items: center; justify-content: center; width: 14px; height: 14px; margin-right: 4px; color: var(--text); opacity: 0.82; }
 .terminal-type-icon.on { display: inline-flex; }
