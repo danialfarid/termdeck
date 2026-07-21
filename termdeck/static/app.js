@@ -566,6 +566,7 @@ class TermdeckApp {
       const spinner = document.createElement("span");
       spinner.className = "session-spinner";
       spinner.innerHTML = "<i></i>";
+      spinner.firstElementChild.style.animationDelay = `-${Date.now() % 2400}ms`;
       const presentation = this.titlePresentation(s);
       spinner.classList.toggle("on", presentation.spinning);
       this.sessionSpinnerEls.set(s.session_id, spinner);
