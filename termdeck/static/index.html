@@ -92,7 +92,10 @@
       <span id="history-thinking-duration"></span>
     </div>
     <div id="history-composer">
-      <textarea id="history-prompt" rows="1" placeholder="Continue this session…  Enter to send · Shift+Enter for a new line" spellcheck="false"></textarea>
+      <div id="history-prompt-wrap">
+        <textarea id="history-prompt" rows="1" placeholder="Continue this session…" spellcheck="false"></textarea>
+        <div id="history-prompt-help">Enter steer · Tab queue (Codex) · Shift+Enter newline · Esc interrupt</div>
+      </div>
       <button id="history-attach" title="Upload file/image into prompt" aria-label="Upload file/image into prompt"><span class="codicon codicon-cloud-upload"></span></button>
       <button id="history-send" title="Send prompt" aria-label="Send prompt"><span class="codicon codicon-send"></span></button>
     </div>

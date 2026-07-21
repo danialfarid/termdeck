@@ -325,11 +325,18 @@ class TermdeckApp {
         }
         return;
       }
+      if (e.key === "Tab") {
+        if (this.session(this.activeId)?.agent_kind !== "codex") return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.sendHistoryPrompt({ queue: true });
+        return;
+      }
       if (e.key !== "Enter" || e.isComposing) return;
       e.stopPropagation();
       if (!e.shiftKey) {
         e.preventDefault();
-        this.sendHistoryPrompt();
+        this.sendHistoryPrompt({ queue: false });
       }
     }, true);
     this.$("history-prompt").addEventListener("input", () => {
@@ -1397,7 +1404,7 @@ class TermdeckApp {
     this.historyRefreshTimer = 0;
   }
 
-  sendHistoryPrompt() {
+  sendHistoryPrompt(options = {}) {
     if (!this.historyOpen || this.activeFileKey !== null || !this.activeId) return;
     const prompt = this.$("history-prompt");
     const text = prompt.value;
@@ -1413,7 +1420,8 @@ class TermdeckApp {
     view.promptEditing = false;
     view.promptSubmitVersion = view.promptEditVersion;
     const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
-    view.ws.send(JSON.stringify({ type: "submit", text, bracketed }));
+    const queue = !!options.queue && this.session(this.activeId)?.agent_kind === "codex";
+    view.ws.send(JSON.stringify({ type: "submit", text, bracketed, queue }));
     // Clear the local draft immediately so switching views cannot reinsert the
     // prompt while the PTY consumes the synchronized text and Enter.
     view.promptDraft = "";
@@ -1426,7 +1434,7 @@ class TermdeckApp {
     }, 1500);
     view.keepBottom = true;
     view.pinBottomUntil = Date.now() + 5000;
-    this.$("status-name").textContent = "prompt sent";
+    this.$("status-name").textContent = queue ? "prompt queued" : "prompt sent";
     const sessionId = this.activeId;
     setTimeout(() => {
       if (this.historyOpen && sessionId === this.activeId) this.loadHistory(sessionId, { preserveScroll: true });

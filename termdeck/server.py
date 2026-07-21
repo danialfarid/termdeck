@@ -366,8 +366,9 @@ class TermdeckServer:
             elif message_type == WsMessageFields.DRAFT_SYNC:
                 self.manager.set_draft(session_id, message.get(WsMessageFields.DRAFT, ""))
             elif message_type == WsMessageFields.SUBMIT:
-                self.manager.submit_prompt(session_id, message.get(WsMessageFields.TEXT, ""),
-                                            bool(message.get("bracketed", False)))
+                await self.manager.submit_prompt(session_id, message.get(WsMessageFields.TEXT, ""),
+                                                 bool(message.get("bracketed", False)),
+                                                 bool(message.get("queue", False)))
 
     async def _pump_queue_to_client(self, websocket: WebSocket, queue: asyncio.Queue) -> None:
         while True:

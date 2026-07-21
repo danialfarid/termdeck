@@ -472,8 +472,8 @@ class TerminalSessionManager:
         self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT,
                                      WsMessageFields.DRAFT: normalized})
 
-    def submit_prompt(self, session_id: str, text: str, bracketed: bool) -> None:
-        """Write a Markdown prompt and its Enter atomically from the server's PTY writer."""
+    async def submit_prompt(self, session_id: str, text: str, bracketed: bool, queue: bool = False) -> None:
+        """Paste a Markdown prompt, then send Enter or Tab after the agent TUI has consumed it."""
         normalized = str(text or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
         payload = "\x15"
         if normalized:
@@ -481,8 +481,16 @@ class TerminalSessionManager:
                 payload += TermdeckConfig.BRACKETED_PASTE_START.decode() + normalized + TermdeckConfig.BRACKETED_PASTE_END.decode()
             else:
                 payload += normalized
-        payload += "\r"
         self.write_input(session_id, payload)
+        await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
+        self.write_input(session_id, "\t" if queue else "\r")
+        if queue:
+            ms = self._sessions[session_id]
+            ms.record.draft = ""
+            ms.draft_tracker = DraftInputTracker("")
+            self._schedule_draft_persist()
+            self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT,
+                                         WsMessageFields.DRAFT: ""})
         # A submitted prompt must not be resurrected from the debounce window
         # if the browser is refreshed immediately afterward.
         self._persist()
