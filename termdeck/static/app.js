@@ -1,7 +1,7 @@
 const REFRESH_MS = 5000;
 const HISTORY_REFRESH_MS = 1500;
 const TITLE_REFRESH_MS = 1000;
-const TITLE_SPINNER_RE = /^[\u2800-\u28ff](\s+)/;
+const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
 const RECONNECT_MS = 1500;
 const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~/workspace/stock";
@@ -523,8 +523,8 @@ class TermdeckApp {
 
   titlePresentation(s) {
     const title = this.effectiveTitle(s);
-    const spinner = title.match(TITLE_SPINNER_RE);
-    return spinner ? { text: title.slice(spinner[0].length), spinning: s.processing !== false } : { text: title, spinning: s.processing === true };
+    const status = title.match(TITLE_STATUS_RE);
+    return status ? { text: title.slice(status[0].length), spinning: s.processing !== false } : { text: title, spinning: s.processing === true };
   }
 
   updateSessionSpinner(id, spinning) {
@@ -581,7 +581,7 @@ class TermdeckApp {
 
   effectiveTitle(s) {
     if (!s.title_user_set) return s.cli_title || s.title;
-    const spinner = s.cli_title && /^([⠀-⣿○-◗⠁-⣿⏳⚡]+\s*)/.exec(s.cli_title);
+    const spinner = s.cli_title && /^([⠀-⣿○-◗⠁-⣿⏳⚡✳]+\s*)/.exec(s.cli_title);
     return spinner ? spinner[1] + s.title : s.title;
   }
 
@@ -1298,6 +1298,7 @@ class TermdeckApp {
     const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
     this.sendInput(view, "\x15");
     if (text) this.sendInput(view, text.includes("\n") && bracketed ? `\x1b[200~${text}\x1b[201~` : text);
+    view.ws.send(JSON.stringify({ type: "draft_sync", draft: text }));
   }
 
   sendTrackedInput(view, data) {
@@ -1753,6 +1754,7 @@ class TermdeckApp {
         view.promptDraft = String(msg.draft || "");
         this.showPromptDraft(view);
       }
+      return;
     } else if (msg.type === "agent_session") {
       view.pinBottomUntil = Date.now() + 4000;
       this.scrollTerminalToBottom(view);

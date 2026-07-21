@@ -377,6 +377,17 @@ class TerminalSessionManager:
             self._schedule_draft_persist()
             self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT, WsMessageFields.DRAFT: new_draft})
 
+    def set_draft(self, session_id: str, draft: str) -> None:
+        ms = self._sessions[session_id]
+        normalized = str(draft)[:TermdeckConfig.DRAFT_MAX_CHARS]
+        if normalized == ms.record.draft:
+            return
+        ms.record.draft = normalized
+        ms.draft_tracker = DraftInputTracker(normalized)
+        self._schedule_draft_persist()
+        self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT,
+                                     WsMessageFields.DRAFT: normalized})
+
     def _schedule_draft_persist(self) -> None:
         if self._draft_persist_task is None or self._draft_persist_task.done():
             self._draft_persist_task = asyncio.create_task(self._persist_after_debounce())

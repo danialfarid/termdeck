@@ -343,6 +343,8 @@ class TermdeckServer:
                 self.manager.write_input(session_id, message[WsMessageFields.DATA])
             elif message_type == WsMessageFields.RESIZE:
                 self.manager.resize(session_id, int(message[WsMessageFields.COLS]), int(message[WsMessageFields.ROWS]))
+            elif message_type == WsMessageFields.DRAFT_SYNC:
+                self.manager.set_draft(session_id, message.get(WsMessageFields.DRAFT, ""))
 
     async def _pump_queue_to_client(self, websocket: WebSocket, queue: asyncio.Queue) -> None:
         while True:

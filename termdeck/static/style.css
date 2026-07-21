@@ -61,11 +61,13 @@ button { font-family: inherit; }
 .session-spinner-rect-head { fill: currentColor; filter: drop-shadow(0 0 2px currentColor); }
 .session-spinner.on { opacity: 1; }
 .terminal-type-icon { display: none; flex: none; align-items: center; justify-content: center; width: 14px; height: 14px; margin-right: 4px; color: var(--text); opacity: 0.82; }
-.terminal-type-icon.claude-terminal-icon { display: none !important; }
 .terminal-type-icon.on { display: inline-flex; }
 .terminal-type-icon svg { display: block; width: 13px; height: 13px; }
 .terminal-type-icon img { display: block; width: 14px; height: 14px; border-radius: 4px; object-fit: cover; }
 .terminal-type-icon .codicon { font-size: 13px; }
+.session-item:has(.session-spinner.on) .terminal-type-icon.on svg,
+.session-item:has(.session-spinner.on) .terminal-type-icon.on img { animation: termdeck-agent-icon-rotate 1.7s linear infinite; }
+.session-item:has(.terminal-type-icon.on) .session-spinner.on { opacity: 0; }
 .session-item:has(.session-spinner.on, .status-dot.unread, .status-dot.exited) .terminal-type-icon.on { margin-left: 10px; }
 .session-item:has(.session-spinner.on, .status-dot.unread, .status-dot.exited) .session-title { margin-left: 12px; }
 .session-item:has(.session-spinner.on, .status-dot.unread, .status-dot.exited) .terminal-type-icon.on + .session-title { margin-left: 4px; }
@@ -76,6 +78,10 @@ button { font-family: inherit; }
 @keyframes termdeck-session-rectangle {
   from { stroke-dashoffset: 0; }
   to { stroke-dashoffset: -100; }
+}
+@keyframes termdeck-agent-icon-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 .session-title { font-size: var(--sidebar-font-size); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .side-section-label { font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--dim); padding: 9px 10px 7px; }
