@@ -1852,7 +1852,10 @@ class TermdeckApp {
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, pendingDraftSync: null, pendingTerminalDraft: null,
                    promptEditVersion: 0, promptSubmitVersion: -1 };
-    container.addEventListener("wheel", () => { view.pinBottomUntil = 0; view.keepBottom = false; }, { passive: true });
+    container.addEventListener("wheel", () => {
+      view.pinBottomUntil = 0;
+      if (!this.terminalAtBottom(view)) view.keepBottom = false;
+    }, { passive: true });
     container.addEventListener("paste", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1890,10 +1893,15 @@ class TermdeckApp {
       if (!view.container.classList.contains("visible")) return;
       const now = Date.now();
       if ((view.replaying && now < view.pinBottomUntil) || now < view.programmaticScrollUntil) return;
-      const buffer = term.buffer.active;
-      view.keepBottom = buffer.viewportY >= buffer.baseY;
+      view.keepBottom = this.terminalAtBottom(view);
       if (!view.keepBottom) view.pinBottomUntil = 0;
     });
+    const viewport = container.querySelector(".xterm-viewport");
+    if (viewport) viewport.addEventListener("scroll", () => {
+      if (!view.container.classList.contains("visible") || Date.now() < view.programmaticScrollUntil) return;
+      view.keepBottom = this.terminalAtBottom(view);
+      if (!view.keepBottom) view.pinBottomUntil = 0;
+    }, { passive: true });
     const ref = [...this.views.values()].find((v) => v.term.cols > 2);
     if (ref) term.resize(ref.term.cols, ref.term.rows);
     view.layoutObserver = new ResizeObserver(() => {
@@ -1953,8 +1961,10 @@ class TermdeckApp {
         });
         return;
       }
+      const followOutput = view.keepBottom || Date.now() < view.pinBottomUntil;
       view.term.write(new Uint8Array(e.data), () => {
-        if (view.keepBottom || Date.now() < view.pinBottomUntil) {
+        if (followOutput) {
+          view.keepBottom = true;
           clearTimeout(view.scrollSettleTimer);
           view.scrollSettleTimer = setTimeout(() => {
             if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
@@ -2140,6 +2150,14 @@ class TermdeckApp {
     this.scrollTerminalToBottom(view);
     this.scheduleViewportSettle(view);
     view.term.focus();
+  }
+
+  terminalAtBottom(view) {
+    if (!view || !view.term) return false;
+    const buffer = view.term.buffer.active;
+    if (buffer.viewportY >= buffer.baseY - 1) return true;
+    const viewport = view.container.querySelector(".xterm-viewport");
+    return !!viewport && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 2;
   }
 
   scrollTerminalToBottom(view) {
