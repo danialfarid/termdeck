@@ -460,7 +460,10 @@ class TerminalSessionManager:
         summary[ApiFields.RUNNING] = ms.running
         summary[ApiFields.EXIT_CODE] = ms.exit_code
         summary[ApiFields.CLI_TITLE] = ms.cli_title
-        summary["processing"] = ms.processing
+        summary["processing"] = ms.processing or (
+            ms.record.agent_kind == AgentKind.CLAUDE.value and
+            self._tracker.claude_has_active_subagents(Path(ms.record.cwd), ms.cli_title)
+        )
         return summary
 
     def session_summary_by_id(self, session_id: str) -> dict[str, object]:

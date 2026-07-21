@@ -103,6 +103,66 @@ class AgentSessionTracker:
         munged = "".join(ch if ch.isalnum() else "-" for ch in str(cwd))
         return TermdeckConfig.CLAUDE_PROJECTS_DIR / munged
 
+    @staticmethod
+    def _title_words(title: str | None) -> set[str]:
+        if not title:
+            return set()
+        return {word for word in re.split(r"[^a-z0-9]+", title.lower()) if len(word) > 1}
+
+    def _claude_parent_for_title(self, cwd: Path, cli_title: str | None) -> Path | None:
+        project_dir = self.claude_project_dir(cwd)
+        target_words = self._title_words(cli_title)
+        candidates: list[tuple[int, float, Path]] = []
+        try:
+            paths = project_dir.glob("*.jsonl")
+        except OSError:
+            return None
+        for path in paths:
+            try:
+                with path.open(errors="replace") as handle:
+                    ai_title = next((json.loads(line).get("aiTitle") for line in handle
+                                     if '"type":"ai-title"' in line), None)
+                score = len(target_words & self._title_words(ai_title))
+                if score:
+                    candidates.append((score, path.stat().st_mtime, path))
+            except (OSError, json.JSONDecodeError):
+                continue
+        return max(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else None
+
+    @staticmethod
+    def _claude_subagent_is_active(path: Path) -> bool:
+        """Infer active work from the last meaningful Claude subagent event."""
+        try:
+            lines = path.read_text(errors="replace").splitlines()
+        except OSError:
+            return False
+        for line in reversed(lines):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            message = event.get("message") or {}
+            if event.get("type") == "user":
+                return True
+            if event.get("type") != "assistant" or message.get("type") != "message":
+                continue
+            content = message.get("content") or []
+            if any(part.get("type") in {"tool_use", "thinking"} for part in content if isinstance(part, dict)):
+                return True
+            if any(part.get("type") == "text" for part in content if isinstance(part, dict)):
+                return False
+        return False
+
+    def claude_has_active_subagents(self, cwd: Path, cli_title: str | None) -> bool:
+        parent = self._claude_parent_for_title(cwd, cli_title)
+        if parent is None:
+            return False
+        subagents = parent.with_name(parent.stem) / "subagents"
+        try:
+            return any(self._claude_subagent_is_active(path) for path in subagents.glob("*.jsonl"))
+        except OSError:
+            return False
+
     def snapshot_session_files(self, kind: AgentKind, cwd: Path) -> set[Path]:
         return {path for path, _ in self._candidate_session_files(kind, cwd)}
 
