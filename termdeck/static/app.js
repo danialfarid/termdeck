@@ -35,7 +35,7 @@ const KEYBINDINGS = [
   { id: "save-file", label: "Save open file", def: "Meta+s" },
   { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp" },
   { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown" },
-  { id: "view-files", label: "Files view (cycle show / full / hide)", def: "Meta+Shift+e" },
+  { id: "view-files", label: "Files view (open full / split / hide)", def: "Meta+Shift+d" },
   { id: "view-search", label: "Search view (cycle show / full / hide)", def: "Meta+Shift+f" },
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t" },
   { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Meta+Shift+m" },
@@ -129,6 +129,7 @@ class TermdeckApp {
     this.fileBrowserModalOpen = false;
     this.fileBrowserPreviousView = "terminals";
     this.fileBrowserOrigin = null;
+    this.pathOverflowEl = null;
     this.projects = [];
     const projectMatch = location.pathname.match(/^\/p\/([^/]+)/);
     this.projectSlug = projectMatch ? decodeURIComponent(projectMatch[1]) : null;
@@ -209,6 +210,16 @@ class TermdeckApp {
     }
     this.$("view-project").ondblclick = () => { if (this.sideView !== "project") this.setSideView("project"); this.toggleSideFull(); };
     this.$("view-search").ondblclick = () => { if (this.sideView !== "search") this.setSideView("search"); this.toggleSideFull(); };
+    const filesSection = this.$("files-section");
+    filesSection.addEventListener("mouseover", (event) => {
+      const row = event.target.closest(".file-item, .search-file, .tree-row");
+      if (row && filesSection.contains(row)) this.showPathOverflow(row);
+    });
+    filesSection.addEventListener("mouseout", (event) => {
+      const row = event.target.closest(".file-item, .search-file, .tree-row");
+      if (!row || !filesSection.contains(row) || (event.relatedTarget && row.contains(event.relatedTarget))) return;
+      this.hidePathOverflow();
+    });
     const replaceToggle = this.$("replace-toggle");
     replaceToggle.onclick = () => {
       const bar = this.$("replace-bar");
@@ -808,6 +819,26 @@ class TermdeckApp {
     requestAnimationFrame(() => row.scrollIntoView({ block: "nearest" }));
   }
 
+  hidePathOverflow() {
+    if (this.pathOverflowEl) this.pathOverflowEl.remove();
+    this.pathOverflowEl = null;
+  }
+
+  showPathOverflow(row) {
+    this.hidePathOverflow();
+    if (this.activeFileKey !== null || !row || !row.title) return;
+    const label = document.createElement("div");
+    label.className = "path-overflow-label";
+    label.textContent = row.title.split("\n", 1)[0];
+    document.body.appendChild(label);
+    const rect = row.getBoundingClientRect();
+    const left = Math.max(8, rect.left);
+    label.style.left = left + "px";
+    label.style.top = rect.top + "px";
+    label.style.maxWidth = Math.max(180, window.innerWidth - left - 12) + "px";
+    this.pathOverflowEl = label;
+  }
+
   setSideView(view, allowToggle = true) {
     this.sideView = allowToggle && this.sideView === view && view !== "terminals" ? "terminals" : view;
     view = this.sideView;
@@ -820,11 +851,14 @@ class TermdeckApp {
     this.$("side-split").classList.toggle("hidden", view === "terminals");
     this.applySideLayout();
     if (filesVisible && this.treeRoot === null) this.reloadTree();
-    if (!filesVisible) return;
+    if (!filesVisible) {
+      this.hidePathOverflow();
+      return;
+    }
     if (view === "search") this.$("search-query").focus();
     if (view === "search" && this.$("search-query").value.trim()) this.runSearch(null, true);
-    else if (this.$("search-name").value.trim()) this.runNameSearch();
-    else this.setExplorerMode("tree");
+    else if (view === "project" && this.$("search-name").value.trim()) this.runNameSearch();
+    else this.setExplorerMode(view === "project" ? "name" : "content");
   }
 
   focusFileNameSearch() {
@@ -889,12 +923,17 @@ class TermdeckApp {
 
   cycleView(view) {
     if (this.sideView !== view) {
-      this.settings.side_full = false;
+      this.settings.side_full = true;
       this.setSideView(view);
+      this.saveSettings();
+      if (view === "project") this.focusFileNameSearch();
+      else if (view === "search") this.focusFileContentSearch();
     } else if (!this.settings.side_full) {
       this.settings.side_full = true;
       this.applySideLayout();
       this.saveSettings();
+      if (view === "project") this.focusFileNameSearch();
+      else if (view === "search") this.focusFileContentSearch();
     } else {
       this.settings.side_full = false;
       this.saveSettings();
@@ -2267,6 +2306,7 @@ class TermdeckApp {
       const row = document.createElement("div");
       row.className = "tree-row " + (entry.is_dir ? "dir" : "file") + (excluded ? " excluded" : "");
       const childRel = relPath ? `${relPath}/${entry.name}` : entry.name;
+      row.title = `${this.treeRoot}/${childRel}`;
       const name = document.createElement("span");
       name.className = "tree-name";
       name.textContent = entry.name;
@@ -2443,6 +2483,7 @@ class TermdeckApp {
   async activateFile(key, line) {
     const entry = this.openFiles.get(key);
     if (!entry) return;
+    this.hidePathOverflow();
     this.activeFileKey = key;
     this.pushNav({ kind: "file", key });
     this.applyMainLayout();
@@ -2951,7 +2992,7 @@ class TermdeckApp {
 
   debouncedNameSearch() {
     clearTimeout(this.nameDebounce);
-    if (!this.$("search-name").value.trim()) { this.setExplorerMode("tree"); return; }
+    if (!this.$("search-name").value.trim()) { this.setExplorerMode(this.sideView === "project" ? "name" : "tree"); return; }
     this.nameDebounce = setTimeout(() => this.runNameSearch(), SEARCH_DEBOUNCE_MS);
   }
 
@@ -2960,7 +3001,7 @@ class TermdeckApp {
     const resultsEl = this.$("name-results");
     resultsEl.textContent = "";
     if (!query) {
-      this.setExplorerMode("tree");
+      this.setExplorerMode(this.sideView === "project" ? "name" : "tree");
       return;
     }
     if (this.sideView !== "project" && this.sideView !== "search") {
