@@ -66,7 +66,7 @@ button { font-family: inherit; }
 .terminal-type-icon svg { display: block; width: 13px; height: 13px; }
 .codex-terminal-icon svg { width: 12px; height: 12px; }
 .terminal-type-icon img { display: block; width: 14px; height: 14px; border-radius: 50%; object-fit: cover; }
-.codex-terminal-icon { color: #fff; }
+.codex-terminal-icon { color: #d7d9e0; opacity: 0.9; }
 .terminal-type-icon .codicon { font-size: 13px; }
 .session-item:has(.session-spinner.on) .terminal-type-icon.on svg,
 .session-item:has(.session-spinner.on) .terminal-type-icon.on img { animation: termdeck-agent-icon-rotate 1.7s linear infinite; }
