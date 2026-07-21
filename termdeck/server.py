@@ -313,6 +313,8 @@ class TermdeckServer:
         scrollback, queue = self.manager.attach_client(session_id)
         try:
             await websocket.send_bytes(scrollback)
+            await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.DRAFT,
+                                                   WsMessageFields.DRAFT: self.manager.session_draft(session_id)}))
             client_pump = asyncio.create_task(self._pump_client_to_pty(websocket, session_id))
             output_pump = asyncio.create_task(self._pump_queue_to_client(websocket, queue))
             done, pending = await asyncio.wait({client_pump, output_pump}, return_when=asyncio.FIRST_COMPLETED)

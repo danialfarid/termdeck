@@ -324,6 +324,7 @@ class TerminalSessionManager:
         if new_draft != ms.record.draft:
             ms.record.draft = new_draft
             self._schedule_draft_persist()
+            self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT, WsMessageFields.DRAFT: new_draft})
 
     def _schedule_draft_persist(self) -> None:
         if self._draft_persist_task is None or self._draft_persist_task.done():
@@ -478,6 +479,9 @@ class TerminalSessionManager:
     def session_history_source(self, session_id: str) -> tuple[str, str, str | None]:
         record = self._sessions[session_id].record
         return record.agent_kind, record.cwd, record.agent_session_id
+
+    def session_draft(self, session_id: str) -> str:
+        return self._sessions[session_id].record.draft
 
     def _persist(self) -> None:
         self._store.save_all([ms.record for ms in self._sessions.values()])

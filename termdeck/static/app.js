@@ -1212,10 +1212,11 @@ class TermdeckApp {
     }
     view.promptDraft = text;
     this.syncPromptToTerminal(view);
-    this.sendInput(view, "\r");
-    view.promptDraft = "";
-    prompt.value = "";
-    this.resizeHistoryPrompt();
+    // Let the PTY consume the synchronized paste before submitting it. The
+    // authoritative draft control message will clear the editor after Enter.
+    setTimeout(() => {
+      if (view.ws && view.ws.readyState === WebSocket.OPEN) this.sendInput(view, "\r");
+    }, 40);
     view.keepBottom = true;
     view.pinBottomUntil = Date.now() + 5000;
     this.$("status-name").textContent = "prompt sent";
@@ -1695,6 +1696,9 @@ class TermdeckApp {
     if (msg.type === "exit") {
       view.term.write(`\r\n\x1b[2m[termdeck] process exited (${msg.code})\x1b[0m\r\n`);
       view.pinBottomUntil = Date.now() + 5000;
+    } else if (msg.type === "draft") {
+      view.promptDraft = String(msg.draft || "");
+      this.showPromptDraft(view);
     } else if (msg.type === "agent_session") {
       view.pinBottomUntil = Date.now() + 4000;
       this.scrollTerminalToBottom(view);

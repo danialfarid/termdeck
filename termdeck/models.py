@@ -50,6 +50,7 @@ class WsMessageFields:
     CODE = "code"
     AGENT_SESSION = "agent_session"
     AGENT_SESSION_ID = "agent_session_id"
+    DRAFT = "draft"
     DELETED = "deleted"
 
 
