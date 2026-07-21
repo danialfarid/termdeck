@@ -6,7 +6,7 @@ const RECONNECT_MS = 1500;
 const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~/workspace/stock";
 const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 13, terminal_font_size: 13,
-  viewer_font_size: 12, tree_font_size: 12, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
+  code_font_size: 12, diff_font_size: 13, tree_font_size: 12, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, show_stats: true,
   tree_sort: "name", show_mtime: false, word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
@@ -38,6 +38,7 @@ const KEYBINDINGS = [
   { id: "view-files", label: "Files view (cycle show / full / hide)", def: "Meta+Shift+e" },
   { id: "view-search", label: "Search view (cycle show / full / hide)", def: "Meta+Shift+f" },
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t" },
+  { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Meta+Shift+m" },
 ];
 const REFERENCE_KEYS = [
   { keys: "⌘[ / ⌘]", label: "Browser back / forward (last-clicked navigation)" },
@@ -201,7 +202,8 @@ class TermdeckApp {
     this.loadIconMap();
     this.$("settings-gear").onclick = (e) => this.openSettingsPopover(e.currentTarget,
       [{ label: "Sidebar font", key: "sidebar_font_size" }, { label: "Terminal font", key: "terminal_font_size" },
-       { label: "Viewer font", key: "viewer_font_size" }, { label: "Tree/search font", key: "tree_font_size" }]);
+       { label: "Code font", key: "code_font_size" }, { label: "Diff font", key: "diff_font_size" },
+       { label: "Tree/search font", key: "tree_font_size" }]);
     for (const view of ["terminals", "project", "search"]) {
       this.$("view-" + view).onclick = () => this.setSideView(view);
     }
@@ -288,6 +290,7 @@ class TermdeckApp {
     this.$("history-btn").onclick = () => this.toggleHistory();
     this.$("history-edits-toggle").onclick = () => this.toggleHistoryEdits();
     this.$("history-close").onclick = () => this.closeHistory();
+    this.$("history-attach").onclick = () => this.attachToHistory();
     this.$("history-send").onclick = () => this.sendHistoryPrompt();
     this.$("history-prompt").addEventListener("keydown", (e) => {
       if (e.key !== "Enter" || e.isComposing) return;
@@ -1206,7 +1209,19 @@ class TermdeckApp {
     this.$("history-area").classList.toggle("hidden", !historyMode);
     this.$("terminal-area").classList.toggle("hidden", fileMode || historyMode);
     this.$("history-btn").classList.toggle("on", historyMode);
+    this.$("attach-btn").classList.toggle("hidden", historyMode || fileMode);
     this.fitActive();
+  }
+
+  focusActiveEditor() {
+    const view = this.views.get(this.activeId);
+    if (!view || this.activeFileKey !== null) return;
+    if (this.historyOpen) {
+      this.showPromptDraft(view);
+      this.$("history-prompt").focus();
+    } else {
+      view.term.focus();
+    }
   }
 
   closeHistory() {
@@ -1612,11 +1627,6 @@ class TermdeckApp {
     }
     if (view) {
       if (!view.ws) this.connect(id, view);
-      if (this.historyOpen) {
-        this.showPromptDraft(view);
-        this.$("history-prompt").focus();
-      }
-      else view.term.focus();
       if (previousId !== id) {
         view.keepBottom = true;
         view.pinBottomUntil = Date.now() + 5000;
@@ -1628,6 +1638,9 @@ class TermdeckApp {
     }
     this.renderList();
     this.renderTopbar();
+    requestAnimationFrame(() => {
+      if (id === this.activeId) this.focusActiveEditor();
+    });
   }
 
   ensureView(id) {
@@ -1839,7 +1852,7 @@ class TermdeckApp {
     }
   }
 
-  async uploadAndInsert(view, files) {
+  async uploadFiles(files) {
     this.$("status-name").textContent = `uploading ${files.length} file${files.length === 1 ? "" : "s"}…`;
     const paths = [];
     for (const file of files) {
@@ -1852,6 +1865,11 @@ class TermdeckApp {
         // skip failed upload
       }
     }
+    return paths;
+  }
+
+  async uploadAndInsert(view, files) {
+    const paths = await this.uploadFiles(files);
     if (!paths.length) { this.$("status-name").textContent = "upload failed"; return; }
     const text = paths.map((p) => (/\s/.test(p) ? `'${p}'` : p)).join(" ") + " ";
     if (view.ws && view.ws.readyState === WebSocket.OPEN) {
@@ -1860,6 +1878,29 @@ class TermdeckApp {
     }
     this.$("status-name").textContent = `inserted ${paths.length} path${paths.length === 1 ? "" : "s"}`;
     view.term.focus();
+  }
+
+  async attachToHistory() {
+    const view = this.views.get(this.activeId);
+    if (!view || this.activeFileKey !== null || !this.historyOpen) return;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.onchange = async () => {
+      if (!input.files.length) return;
+      const paths = await this.uploadFiles([...input.files]);
+      if (!paths.length) { this.$("status-name").textContent = "upload failed"; return; }
+      const text = paths.map((p) => (/\s/.test(p) ? `'${p}'` : p)).join(" ") + " ";
+      const prompt = this.$("history-prompt");
+      const separator = prompt.value && !/\s$/.test(prompt.value) ? " " : "";
+      view.promptDraft = `${prompt.value}${separator}${text}`;
+      view.promptEditing = true;
+      this.showPromptDraft(view);
+      this.syncPromptToTerminal(view, { writeToTerminal: false });
+      prompt.focus();
+      this.$("status-name").textContent = `inserted ${paths.length} path${paths.length === 1 ? "" : "s"}`;
+    };
+    input.click();
   }
 
   async attachToActive() {
@@ -1949,7 +1990,9 @@ class TermdeckApp {
   async loadSettings() {
     try {
       const res = await fetch("/api/settings");
-      this.settings = { ...SETTINGS_DEFAULTS, ...(await res.json()) };
+      const incoming = await res.json();
+      if (incoming.code_font_size == null) incoming.code_font_size = incoming.viewer_font_size || SETTINGS_DEFAULTS.code_font_size;
+      this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
     } catch (err) {
       this.settings = { ...SETTINGS_DEFAULTS };
     }
@@ -1993,7 +2036,8 @@ class TermdeckApp {
     sidebar.style.width = s.sidebar_width + "px";
     sidebar.style.minWidth = s.sidebar_width + "px";
     document.documentElement.style.setProperty("--sidebar-font-size", s.sidebar_font_size + "px");
-    document.documentElement.style.setProperty("--viewer-font-size", s.viewer_font_size + "px");
+    document.documentElement.style.setProperty("--code-font-size", s.code_font_size + "px");
+    document.documentElement.style.setProperty("--diff-font-size", s.diff_font_size + "px");
     document.documentElement.style.setProperty("--tree-font-size", s.tree_font_size + "px");
     document.body.classList.toggle("theme-light", this.isLight());
     for (const view of this.views.values()) {
@@ -2001,7 +2045,7 @@ class TermdeckApp {
       view.term.options.theme = this.termTheme();
     }
     if (this.editor) {
-      this.editor.updateOptions({ fontSize: s.viewer_font_size, wordWrap: s.word_wrap ? "on" : "off" });
+      this.editor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.word_wrap ? "on" : "off" });
       monaco.editor.setTheme(this.isLight() ? "termdeck-light" : "termdeck-dark");
     }
     this.$("stat-text").classList.toggle("hidden", !s.show_stats);
@@ -2021,7 +2065,7 @@ class TermdeckApp {
         this.editor = monaco.editor.create(this.$("monaco-host"), {
           readOnly: false, theme: this.isLight() ? "termdeck-light" : "termdeck-dark",
           automaticLayout: true, minimap: { enabled: false },
-          scrollBeyondLastLine: false, fontSize: this.settings.viewer_font_size, lineNumbersMinChars: 4,
+          scrollBeyondLastLine: false, fontSize: this.settings.code_font_size, lineNumbersMinChars: 4,
           renderLineHighlight: "all", folding: true, wordWrap: this.settings.word_wrap ? "on" : "off", fixedOverflowWidgets: true,
         });
         this.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => this.saveActiveFile());
@@ -2095,7 +2139,7 @@ class TermdeckApp {
       () => { this.settings.show_stats = !this.settings.show_stats; }));
     pop.appendChild(this.buildToggleRow("Editor wrap", () => (this.settings.word_wrap ? "on" : "off"),
       () => { this.settings.word_wrap = !this.settings.word_wrap; }));
-    pop.appendChild(this.buildToggleRow("Markdown transcript", () => (this.settings.history_mode ? "on" : "off"),
+    pop.appendChild(this.buildToggleRow("Markdown transcript mode", () => (this.settings.history_mode ? "on" : "off"),
       () => { this.setHistoryMode(!this.settings.history_mode); }));
     pop.appendChild(this.buildActionRow("Keyboard shortcuts", "edit", () => { pop.classList.add("hidden"); this.openKeybindings(); }));
     pop.appendChild(this.buildActionRow("Export settings", "download", () => { pop.classList.add("hidden"); this.exportSettings(); }));
@@ -2667,6 +2711,7 @@ class TermdeckApp {
     else if (actionId === "view-files") this.cycleView("project");
     else if (actionId === "view-search") this.cycleView("search");
     else if (actionId === "view-terminals") this.setSideView("terminals");
+    else if (actionId === "toggle-history") this.toggleHistory();
   }
 
   bindingToDisplay(binding) {

@@ -71,6 +71,8 @@ class UiSettings(BaseModel):
     sidebar_font_size: int = 13
     terminal_font_size: int = 13
     viewer_font_size: int = 12
+    code_font_size: int = 12
+    diff_font_size: int = 13
     active_session_id: str = ""
     open_files: list[dict[str, str]] = []
     project_state: dict[str, ProjectUiState] = {}
