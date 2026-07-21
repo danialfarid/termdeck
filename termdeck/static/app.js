@@ -483,7 +483,7 @@ class TermdeckApp {
 
   updateProcessingState(id, spinning) {
     const previous = this.processingStates.get(id);
-    if (previous === true && !spinning && id !== this.activeId) this.unreadSessions.add(id);
+    if (previous === true && !spinning) this.unreadSessions.add(id);
     this.processingStates.set(id, spinning);
     this.updateSessionSpinner(id, spinning);
     this.updateUnreadIndicator(id);
@@ -1007,8 +1007,15 @@ class TermdeckApp {
   }
 
   activate(id) {
-    this.unreadSessions.delete(id);
-    this.updateUnreadIndicator(id);
+    const previousId = this.activeId;
+    if (previousId && previousId !== id) {
+      this.unreadSessions.delete(previousId);
+      this.updateUnreadIndicator(previousId);
+    }
+    if (previousId !== id) {
+      this.unreadSessions.delete(id);
+      this.updateUnreadIndicator(id);
+    }
     this.activeFileKey = null;
     this.historyOpen = false;
     this.activeId = id;
