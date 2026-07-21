@@ -1107,7 +1107,7 @@ class TermdeckApp {
       if (previousId !== id) {
         view.keepBottom = true;
         view.pinBottomUntil = Date.now() + 5000;
-        view.term.scrollToBottom();
+        this.scrollTerminalToBottom(view);
       } else if (view.keepBottom) {
         view.pinBottomUntil = Date.now() + 3000;
       }
@@ -1131,9 +1131,9 @@ class TermdeckApp {
     term.open(container);
     term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
     const view = { container, term, fit, ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
-                   replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, scrollSettleTimer: 0,
+                   replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, programmaticScrollUntil: 0, scrollSettleTimer: 0,
                    replayTimer: 0, settleFrame: 0, keepBottom: true, lastSentCols: null, lastSentRows: null };
-    container.addEventListener("wheel", () => { view.pinBottomUntil = 0; }, { passive: true });
+    container.addEventListener("wheel", () => { view.pinBottomUntil = 0; view.keepBottom = false; }, { passive: true });
     container.addEventListener("paste", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1169,7 +1169,8 @@ class TermdeckApp {
     term.onResize(({ cols, rows }) => this.sendResize(view, cols, rows));
     term.onScroll(() => {
       if (!view.container.classList.contains("visible")) return;
-      if (view.replaying && Date.now() < view.pinBottomUntil) return;
+      const now = Date.now();
+      if ((view.replaying && now < view.pinBottomUntil) || now < view.programmaticScrollUntil) return;
       const buffer = term.buffer.active;
       view.keepBottom = buffer.viewportY >= buffer.baseY;
       if (!view.keepBottom) view.pinBottomUntil = 0;
@@ -1201,7 +1202,7 @@ class TermdeckApp {
         this.fitActive();
         view.keepBottom = true;
         view.pinBottomUntil = Date.now() + 8000;
-        view.term.scrollToBottom();
+        this.scrollTerminalToBottom(view);
         this.scheduleViewportSettle(view);
       }
     };
@@ -1286,7 +1287,7 @@ class TermdeckApp {
       view.pinBottomUntil = Date.now() + 5000;
     } else if (msg.type === "agent_session") {
       view.pinBottomUntil = Date.now() + 4000;
-      view.term.scrollToBottom();
+      this.scrollTerminalToBottom(view);
     }
     this.refresh();
   }
@@ -1346,9 +1347,14 @@ class TermdeckApp {
     if (!view) return;
     view.keepBottom = true;
     view.pinBottomUntil = Date.now() + 5000;
-    view.term.scrollToBottom();
+    this.scrollTerminalToBottom(view);
     this.scheduleViewportSettle(view);
     view.term.focus();
+  }
+
+  scrollTerminalToBottom(view) {
+    view.programmaticScrollUntil = Date.now() + 150;
+    view.term.scrollToBottom();
   }
 
   scheduleViewportSettle(view) {
@@ -1358,7 +1364,7 @@ class TermdeckApp {
         view.settleFrame = 0;
         if (view.keepBottom || Date.now() < view.pinBottomUntil) {
           view.keepBottom = true;
-          view.term.scrollToBottom();
+          this.scrollTerminalToBottom(view);
           if (Date.now() < view.pinBottomUntil) {
             clearTimeout(view.scrollSettleTimer);
             view.scrollSettleTimer = setTimeout(() => {
