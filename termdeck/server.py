@@ -204,8 +204,6 @@ class TermdeckServer:
             raise HTTPException(status_code=404, detail=str(search_error)) from search_error
 
     async def _find_files(self, root: str, q: str, ignore: str = "") -> list[dict[str, str]]:
-        if not q.strip():
-            return []
         try:
             return await self.search.find_files(root, q, ignore)
         except (ValueError, FileNotFoundError, PermissionError) as find_error:

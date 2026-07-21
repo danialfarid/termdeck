@@ -34,8 +34,8 @@ const KEYBINDINGS = [
   { id: "save-file", label: "Save open file", def: "Meta+s" },
   { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp" },
   { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown" },
-  { id: "view-files", label: "Files view (open full / split / hide)", def: "Meta+Shift+d" },
-  { id: "view-search", label: "Search view (cycle show / full / hide)", def: "Meta+Shift+f" },
+  { id: "view-files", label: "Toggle Files view", def: "Meta+Shift+d" },
+  { id: "view-search", label: "Toggle Search view", def: "Meta+Shift+f" },
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t" },
   { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Meta+Shift+m" },
 ];
@@ -111,6 +111,7 @@ class TermdeckApp {
     this.searchCase = false;
     this.searchRegex = false;
     this.searchHistory = [];
+    this.nameSearchGeneration = 0;
     this.applyingHistory = false;
     this.lastNavJson = "";
     this.sessionTitleEls = new Map();
@@ -875,8 +876,8 @@ class TermdeckApp {
     }
     if (view === "search") this.$("search-query").focus();
     if (view === "search" && this.$("search-query").value.trim()) this.runSearch(null, true);
-    else if (view === "project" && this.$("search-name").value.trim()) this.runNameSearch();
-    else this.setExplorerMode(view === "project" ? "name" : "content");
+    else if (view === "project") this.runNameSearch();
+    else this.setExplorerMode("content");
   }
 
   focusFileNameSearch() {
@@ -943,12 +944,6 @@ class TermdeckApp {
     if (this.sideView !== view) {
       this.settings.side_full = !this.settings.side_split_user_set;
       this.setSideView(view);
-      this.saveSettings();
-      if (view === "project") this.focusFileNameSearch();
-      else if (view === "search") this.focusFileContentSearch();
-    } else if (!this.settings.side_full) {
-      this.settings.side_full = true;
-      this.applySideLayout();
       this.saveSettings();
       if (view === "project") this.focusFileNameSearch();
       else if (view === "search") this.focusFileContentSearch();
@@ -3006,28 +3001,34 @@ class TermdeckApp {
 
   debouncedNameSearch() {
     clearTimeout(this.nameDebounce);
-    if (!this.$("search-name").value.trim()) { this.setExplorerMode(this.sideView === "project" ? "name" : "tree"); return; }
+    if (!this.$("search-name").value.trim()) {
+      this.nameDebounce = setTimeout(() => this.runNameSearch(), 0);
+      return;
+    }
     this.nameDebounce = setTimeout(() => this.runNameSearch(), SEARCH_DEBOUNCE_MS);
   }
 
   async runNameSearch() {
+    const generation = ++this.nameSearchGeneration;
     const query = this.$("search-name").value.trim();
     const resultsEl = this.$("name-results");
     resultsEl.textContent = "";
-    if (!query) {
-      this.setExplorerMode(this.sideView === "project" ? "name" : "tree");
-      return;
-    }
     if (this.sideView !== "project" && this.sideView !== "search") {
       this.sideView = "terminals";
       this.setSideView("project");
     }
     this.setExplorerMode("name");
+    const loading = document.createElement("div");
+    loading.className = "search-summary";
+    loading.textContent = "loading project files…";
+    resultsEl.appendChild(loading);
     const root = this.searchRoot();
     const ignore = [...ALWAYS_EXCLUDED, ...(this.settings.ignored_dirs || [])].join(",");
     const res = await fetch(`/api/files/find?${new URLSearchParams({ root, q: query, ignore })}`);
     if (!res.ok) return;
     const hits = await res.json();
+    if (generation !== this.nameSearchGeneration) return;
+    resultsEl.textContent = "";
     const summary = document.createElement("div");
     summary.className = "search-summary";
     summary.textContent = `${hits.length} file${hits.length === 1 ? "" : "s"}`;
