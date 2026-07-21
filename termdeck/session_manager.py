@@ -379,7 +379,7 @@ class TerminalSessionManager:
 
     def set_draft(self, session_id: str, draft: str) -> None:
         ms = self._sessions[session_id]
-        normalized = str(draft)[:TermdeckConfig.DRAFT_MAX_CHARS]
+        normalized = str(draft or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
         if normalized == ms.record.draft:
             return
         ms.record.draft = normalized

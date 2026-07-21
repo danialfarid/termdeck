@@ -299,7 +299,7 @@ class TermdeckApp {
       if (!view) return;
       view.promptEditing = true;
       view.promptDraft = this.$("history-prompt").value;
-      this.syncPromptToTerminal(view);
+      this.syncPromptToTerminal(view, { writeToTerminal: false });
       this.resizeHistoryPrompt();
     });
     this.$("attach-btn").onclick = () => this.attachToActive();
@@ -1233,7 +1233,10 @@ class TermdeckApp {
       });
     } else {
       const view = this.views.get(this.activeId);
-      if (view) view.term.focus();
+      if (view) {
+        this.syncPromptToTerminal(view);
+        view.term.focus();
+      }
     }
   }
 
@@ -1290,14 +1293,23 @@ class TermdeckApp {
     if (!prompt) return;
     prompt.value = view.promptDraft || "";
     this.resizeHistoryPrompt();
+    requestAnimationFrame(() => {
+      if (prompt.value !== (view.promptDraft || "")) return;
+      this.resizeHistoryPrompt();
+      requestAnimationFrame(() => {
+        if (prompt.value === (view.promptDraft || "")) this.resizeHistoryPrompt();
+      });
+    });
   }
 
-  syncPromptToTerminal(view) {
+  syncPromptToTerminal(view, options = {}) {
     if (!view.ws || view.ws.readyState !== WebSocket.OPEN) return;
     const text = view.promptDraft || "";
-    const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
-    this.sendInput(view, "\x15");
-    if (text) this.sendInput(view, text.includes("\n") && bracketed ? `\x1b[200~${text}\x1b[201~` : text);
+    if (options.writeToTerminal !== false) {
+      const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
+      this.sendInput(view, "\x15");
+      if (text) this.sendInput(view, text.includes("\n") && bracketed ? `\x1b[200~${text}\x1b[201~` : text);
+    }
     view.ws.send(JSON.stringify({ type: "draft_sync", draft: text }));
   }
 
@@ -1680,6 +1692,7 @@ class TermdeckApp {
         clearTimeout(view.replayTimer);
         view.replayTimer = setTimeout(() => { view.replaying = false; }, 2000);
         view.term.write(new Uint8Array(e.data), () => {
+          this.refreshTerminal(view);
           clearTimeout(view.replayTimer);
           view.replaying = false;
           view.keepBottom = true;
@@ -1840,6 +1853,11 @@ class TermdeckApp {
     if (viewport) viewport.scrollTop = viewport.scrollHeight;
   }
 
+  refreshTerminal(view) {
+    if (!view || view.term.rows < 1) return;
+    view.term.refresh(0, view.term.rows - 1);
+  }
+
   scheduleViewportSettle(view) {
     if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
     view.settleFrame = requestAnimationFrame(() => {
@@ -1866,6 +1884,7 @@ class TermdeckApp {
     const view = this.views.get(this.activeId);
     if (!view || !view.container.classList.contains("visible")) return;
     view.fit.fit();
+    this.refreshTerminal(view);
     const { cols, rows } = view.term;
     if (cols < 2 || rows < 2) return;
     this.sendResize(view, cols, rows);

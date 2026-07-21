@@ -43,10 +43,10 @@ button { font-family: inherit; }
 .session-item:hover { background: var(--panel2); }
 .session-item.active { background: var(--active-bg); border-color: var(--active-border); }
 .session-item.active .session-title { color: var(--active-text); }
-.status-dot { position: absolute; left: 10px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; visibility: hidden; }
+.status-dot { position: absolute; left: 3px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; visibility: hidden; }
 .status-dot.exited { background: var(--red); visibility: visible; }
 .status-dot.unread { background: var(--accent); visibility: visible; }
-.session-spinner { position: absolute; left: 7px; top: 50%; width: 8px; height: 8px; margin-top: -4px; opacity: 0; pointer-events: none; color: var(--accent); }
+.session-spinner { position: absolute; left: 1px; top: 50%; width: 8px; height: 8px; margin-top: -4px; opacity: 0; pointer-events: none; color: var(--accent); }
 .session-spinner svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .session-spinner-circle-backup { display: none; }
 .session-spinner-orbit { transform-box: view-box; transform-origin: center; animation: termdeck-session-orbit 3.2s linear infinite; }
@@ -63,14 +63,11 @@ button { font-family: inherit; }
 .terminal-type-icon { display: none; flex: none; align-items: center; justify-content: center; width: 14px; height: 14px; margin-right: 4px; color: var(--text); opacity: 0.82; }
 .terminal-type-icon.on { display: inline-flex; }
 .terminal-type-icon svg { display: block; width: 13px; height: 13px; }
-.terminal-type-icon img { display: block; width: 14px; height: 14px; border-radius: 4px; object-fit: cover; }
+.terminal-type-icon img { display: block; width: 14px; height: 14px; border-radius: 50%; object-fit: cover; }
 .terminal-type-icon .codicon { font-size: 13px; }
 .session-item:has(.session-spinner.on) .terminal-type-icon.on svg,
 .session-item:has(.session-spinner.on) .terminal-type-icon.on img { animation: termdeck-agent-icon-rotate 1.7s linear infinite; }
 .session-item:has(.terminal-type-icon.on) .session-spinner.on { opacity: 0; }
-.session-item:has(.session-spinner.on, .status-dot.unread, .status-dot.exited) .terminal-type-icon.on { margin-left: 10px; }
-.session-item:has(.session-spinner.on, .status-dot.unread, .status-dot.exited) .session-title { margin-left: 12px; }
-.session-item:has(.session-spinner.on, .status-dot.unread, .status-dot.exited) .terminal-type-icon.on + .session-title { margin-left: 4px; }
 @keyframes termdeck-session-orbit {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
