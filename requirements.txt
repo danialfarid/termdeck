@@ -2,3 +2,4 @@ fastapi
 uvicorn[standard]
 setproctitle
 python-multipart
+watchdog

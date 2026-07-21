@@ -26,6 +26,7 @@ class AgentSessionTracker:
     _CODEX_SUBAGENT_MARKER = b'"source":{"subagent"'
     _CLAUDE_SIDECHAIN_MARKER = b'"isSidechain":true'
     _SUBAGENT_SNIFF_BYTES = 2048
+    _SUBAGENT_TAIL_BYTES = 256 * 1024
 
     def __init__(self) -> None:
         self._subagent_file_cache: dict[Path, bool] = {}
@@ -133,7 +134,12 @@ class AgentSessionTracker:
     def _claude_subagent_is_active(path: Path) -> bool:
         """Infer active work from the last meaningful Claude subagent event."""
         try:
-            lines = path.read_text(errors="replace").splitlines()
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                size = handle.tell()
+                handle.seek(max(0, size - AgentSessionTracker._SUBAGENT_TAIL_BYTES))
+                raw = handle.read()
+            lines = raw.decode(errors="replace").splitlines()
         except OSError:
             return False
         for line in reversed(lines):
@@ -162,6 +168,16 @@ class AgentSessionTracker:
             return any(self._claude_subagent_is_active(path) for path in subagents.glob("*.jsonl"))
         except OSError:
             return False
+
+    def claude_subagent_states(self, cwd: Path, session_id: str) -> dict[Path, bool]:
+        subagents = self.claude_project_dir(cwd) / session_id / "subagents"
+        try:
+            return {path: self.claude_subagent_is_active(path) for path in subagents.glob("*.jsonl")}
+        except OSError:
+            return {}
+
+    def claude_subagent_is_active(self, path: Path) -> bool:
+        return self._claude_subagent_is_active(path)
 
     def claude_session_id_for_title(self, cwd: Path, cli_title: str | None) -> str | None:
         parent = self._claude_parent_for_title(cwd, cli_title)

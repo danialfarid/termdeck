@@ -1756,6 +1756,17 @@ class TermdeckApp {
     } else if (msg.type === "agent_session") {
       view.pinBottomUntil = Date.now() + 4000;
       this.scrollTerminalToBottom(view);
+    } else if (msg.type === "processing") {
+      const s = this.session(id);
+      if (s) {
+        s.processing = !!msg.processing;
+        const presentation = this.titlePresentation(s);
+        const title = this.sessionTitleEls.get(id);
+        if (title) title.textContent = presentation.text;
+        this.updateProcessingState(id, presentation.spinning);
+        if (id === this.activeId) this.renderTopbar();
+      }
+      return;
     }
     this.refresh();
   }

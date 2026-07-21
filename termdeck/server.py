@@ -108,8 +108,12 @@ class TermdeckServer:
     @asynccontextmanager
     async def _lifespan(self, _app: FastAPI) -> AsyncGenerator[None]:
         await self.manager.startup_respawn_saved_sessions()
-        yield
-        self.manager.terminate_all()
+        self.manager.start_background_tasks()
+        try:
+            yield
+        finally:
+            self.manager.stop_background_tasks()
+            self.manager.terminate_all()
 
     def build_app(self) -> FastAPI:
         app = FastAPI(lifespan=self._lifespan)

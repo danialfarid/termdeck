@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from termdeck.agent_session_tracker import AgentSessionTracker
+from termdeck.claude_activity_watcher import ClaudeActivityWatcher
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeUtil
 from termdeck.draft_tracker import DraftInputTracker
@@ -41,6 +42,8 @@ class ManagedSession:
         self.last_repaint_offset: int | None = None
         self.draft_tracker = DraftInputTracker(record.draft)
         self.last_input_monotonic = 0.0
+        self.claude_subagent_states: dict[Path, bool] = {}
+        self.claude_subagents_active = False
 
     @property
     def running(self) -> bool:
@@ -66,6 +69,21 @@ class TerminalSessionManager:
         self._tracker = AgentSessionTracker()
         self._sessions: dict[str, ManagedSession] = {}
         self._draft_persist_task: asyncio.Task | None = None
+        self._background_loop: asyncio.AbstractEventLoop | None = None
+        self._claude_activity_watcher = ClaudeActivityWatcher(
+            TermdeckConfig.CLAUDE_PROJECTS_DIR, self._on_claude_file_change_from_thread)
+
+    def start_background_tasks(self) -> None:
+        self._background_loop = asyncio.get_running_loop()
+        self._claude_activity_watcher.start()
+
+    def stop_background_tasks(self) -> None:
+        self._claude_activity_watcher.stop()
+        self._background_loop = None
+
+    def _on_claude_file_change_from_thread(self, path: Path) -> None:
+        if self._background_loop is not None:
+            self._background_loop.call_soon_threadsafe(self._on_claude_file_change, path)
 
     async def startup_respawn_saved_sessions(self) -> None:
         for record in self._store.load_all():
@@ -177,6 +195,8 @@ class TerminalSessionManager:
         if kind is not AgentKind.NONE:
             ms.detect_kind = kind
             ms.detect_baseline = baseline
+            if kind is AgentKind.CLAUDE and ms.record.agent_session_id:
+                self._initialize_claude_subagent_state(ms)
             self._schedule_detection(ms, TermdeckConfig.AGENT_DETECT_INITIAL_DELAY_SECONDS)
         if resume and not reattach and ms.record.draft:
             asyncio.create_task(self._replay_draft_into_respawn(ms, ms.proc))
@@ -219,9 +239,40 @@ class TerminalSessionManager:
             found = dir_found
         if found is not None and found != ms.record.agent_session_id:
             ms.record.agent_session_id = found
+            if kind is AgentKind.CLAUDE:
+                self._initialize_claude_subagent_state(ms)
             self._persist()
             self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.AGENT_SESSION,
                                          WsMessageFields.AGENT_SESSION_ID: found})
+
+    def _initialize_claude_subagent_state(self, ms: ManagedSession) -> None:
+        if ms.record.agent_kind != AgentKind.CLAUDE.value or not ms.record.agent_session_id:
+            return
+        states = self._tracker.claude_subagent_states(Path(ms.record.cwd), ms.record.agent_session_id)
+        ms.claude_subagent_states = states
+        ms.claude_subagents_active = any(states.values())
+
+    def _on_claude_file_change(self, path: Path) -> None:
+        """Update only the Claude subagent file that generated the filesystem event."""
+        for ms in self._sessions.values():
+            if ms.record.agent_kind != AgentKind.CLAUDE.value or not ms.record.agent_session_id:
+                continue
+            subagents = self._tracker.claude_project_dir(Path(ms.record.cwd)) / ms.record.agent_session_id / "subagents"
+            try:
+                if not path.is_relative_to(subagents):
+                    continue
+            except ValueError:
+                continue
+            previous_processing = ms.processing or ms.claude_subagents_active
+            if path.is_file():
+                ms.claude_subagent_states[path] = self._tracker.claude_subagent_is_active(path)
+            else:
+                ms.claude_subagent_states.pop(path, None)
+            ms.claude_subagents_active = any(ms.claude_subagent_states.values())
+            current_processing = ms.processing or ms.claude_subagents_active
+            if current_processing != previous_processing:
+                self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.PROCESSING,
+                                              WsMessageFields.PROCESSING: current_processing})
 
     def _claimed_agent_ids(self, exclude: ManagedSession) -> set[str]:
         return {ms.record.agent_session_id for ms in self._sessions.values()
@@ -467,10 +518,7 @@ class TerminalSessionManager:
         summary[ApiFields.RUNNING] = ms.running
         summary[ApiFields.EXIT_CODE] = ms.exit_code
         summary[ApiFields.CLI_TITLE] = ms.cli_title
-        summary["processing"] = ms.processing or (
-            ms.record.agent_kind == AgentKind.CLAUDE.value and
-            self._tracker.claude_has_active_subagents(Path(ms.record.cwd), ms.cli_title)
-        )
+        summary["processing"] = ms.processing or ms.claude_subagents_active
         return summary
 
     def session_summary_by_id(self, session_id: str) -> dict[str, object]:
