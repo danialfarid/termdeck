@@ -502,7 +502,7 @@ class TermdeckApp {
       item.className = "session-item" + (s.session_id === this.activeId && this.activeFileKey === null ? " active" : "");
       item.title = `${s.command || "zsh"}\n${s.cwd}` + (s.agent_session_id ? `\n${s.agent_kind}: ${s.agent_session_id}` : "") + "\ndouble-click to rename";
       const dot = document.createElement("span");
-      dot.className = "status-dot" + (s.running ? "" : " exited");
+      dot.className = "status-dot " + (s.running ? "running" : "exited");
       const title = document.createElement("span");
       title.className = "session-title";
       title.textContent = this.effectiveTitle(s);
