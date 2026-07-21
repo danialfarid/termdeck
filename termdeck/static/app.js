@@ -926,6 +926,11 @@ class TermdeckApp {
       this.reloadTree();
     }
     const view = this.ensureView(id);
+    const previousView = this.views.get(this.activeId);
+    if (previousView && previousView !== view) {
+      const buffer = previousView.term.buffer.active;
+      previousView.keepBottom = buffer.viewportY >= buffer.baseY;
+    }
     for (const [viewId, v] of this.views) {
       v.container.classList.toggle("visible", viewId === id);
     }
@@ -933,6 +938,8 @@ class TermdeckApp {
     if (view) {
       if (!view.ws) this.connect(id, view);
       view.term.focus();
+      if (view.keepBottom) view.pinBottomUntil = Date.now() + 3000;
+      this.scheduleViewportSettle(view);
     }
     this.renderList();
     this.renderTopbar();
@@ -952,7 +959,8 @@ class TermdeckApp {
     term.open(container);
     term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
     const view = { container, term, fit, ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
-                   replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, scrollSettleTimer: 0, replayTimer: 0 };
+                   replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, scrollSettleTimer: 0,
+                   replayTimer: 0, settleFrame: 0, keepBottom: true, lastSentCols: null, lastSentRows: null };
     container.addEventListener("wheel", () => { view.pinBottomUntil = 0; }, { passive: true });
     container.addEventListener("paste", (e) => {
       e.preventDefault();
@@ -986,6 +994,11 @@ class TermdeckApp {
     term.attachCustomKeyEventHandler((e) => this.handleTerminalEditingKeys(view, e));
     term.onData((data) => this.sendInput(view, data));
     term.onResize(({ cols, rows }) => this.sendResize(view, cols, rows));
+    term.onScroll(() => {
+      const buffer = term.buffer.active;
+      view.keepBottom = buffer.viewportY >= buffer.baseY;
+      if (!view.keepBottom) view.pinBottomUntil = 0;
+    });
     const ref = [...this.views.values()].find((v) => v.term.cols > 2);
     if (ref) term.resize(ref.term.cols, ref.term.rows);
     this.views.set(id, view);
@@ -999,6 +1012,8 @@ class TermdeckApp {
     ws.binaryType = "arraybuffer";
     view.awaitingSnapshot = true;
     view.replaying = false;
+    view.lastSentCols = null;
+    view.lastSentRows = null;
     ws.onopen = () => {
       if (view.everConnected) view.term.reset();
       view.everConnected = true;
@@ -1015,7 +1030,8 @@ class TermdeckApp {
         view.term.write(new Uint8Array(e.data), () => {
           clearTimeout(view.replayTimer);
           view.replaying = false;
-          view.term.scrollToBottom();
+          view.keepBottom = true;
+          this.scheduleViewportSettle(view);
         });
         return;
       }
@@ -1023,7 +1039,7 @@ class TermdeckApp {
         if (Date.now() < view.pinBottomUntil) {
           clearTimeout(view.scrollSettleTimer);
           view.scrollSettleTimer = setTimeout(() => {
-            if (Date.now() < view.pinBottomUntil) view.term.scrollToBottom();
+            if (Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
           }, 250);
         }
       });
@@ -1128,9 +1144,22 @@ class TermdeckApp {
   }
 
   sendResize(view, cols, rows) {
-    if (view.ws && view.ws.readyState === WebSocket.OPEN) {
+    if (view.ws && view.ws.readyState === WebSocket.OPEN &&
+        (view.lastSentCols !== cols || view.lastSentRows !== rows)) {
+      view.lastSentCols = cols;
+      view.lastSentRows = rows;
       view.ws.send(JSON.stringify({ type: "resize", cols, rows }));
     }
+  }
+
+  scheduleViewportSettle(view) {
+    if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
+    view.settleFrame = requestAnimationFrame(() => {
+      view.settleFrame = requestAnimationFrame(() => {
+        view.settleFrame = 0;
+        if (view.keepBottom) view.term.scrollToBottom();
+      });
+    });
   }
 
   fitActive() {
@@ -1141,12 +1170,6 @@ class TermdeckApp {
     const { cols, rows } = view.term;
     if (cols < 2 || rows < 2) return;
     this.sendResize(view, cols, rows);
-    for (const other of this.views.values()) {
-      if (other !== view && (other.term.cols !== cols || other.term.rows !== rows)) {
-        other.term.resize(cols, rows);
-        this.sendResize(other, cols, rows);
-      }
-    }
   }
 
   destroyView(id, view) {
