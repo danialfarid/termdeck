@@ -43,7 +43,7 @@ button { font-family: inherit; }
 .session-item:hover { background: var(--panel2); }
 .session-item.active { background: var(--active-bg); border-color: var(--active-border); }
 .session-item.active .session-title { color: var(--active-text); }
-.status-dot { position: absolute; left: 3px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; visibility: hidden; }
+.status-dot { position: absolute; left: 1px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; visibility: hidden; }
 .status-dot.exited { background: var(--red); visibility: visible; }
 .status-dot.unread { background: var(--accent); visibility: visible; }
 .session-spinner { position: absolute; left: 1px; top: 50%; width: 8px; height: 8px; margin-top: -4px; opacity: 0; pointer-events: none; color: var(--accent); }
