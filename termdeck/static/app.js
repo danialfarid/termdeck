@@ -1068,7 +1068,7 @@ class TermdeckApp {
     return escaped.innerHTML;
   }
 
-  activate(id) {
+  activate(id, options = {}) {
     const previousId = this.activeId;
     let unreadChanged = false;
     if (previousId && previousId !== id) {
@@ -1084,7 +1084,7 @@ class TermdeckApp {
     this.historyOpen = false;
     const previousView = previousId ? this.views.get(previousId) : null;
     this.activeId = id;
-    this.pushNav({ kind: "term", id });
+    if (options.history !== false) this.pushNav({ kind: "term", id });
     if (this.getProjectState().active_session_id !== id) {
       this.patchProjectState({ active_session_id: id });
     }
@@ -2071,7 +2071,7 @@ class TermdeckApp {
     const ids = this.sessions.map((s) => s.session_id);
     const current = ids.indexOf(this.activeId);
     const next = current === -1 ? 0 : (current + delta + ids.length) % ids.length;
-    this.activate(ids[next]);
+    this.activate(ids[next], { history: false });
   }
 
   async forkSession(s) {
