@@ -1,4 +1,5 @@
 const REFRESH_MS = 5000;
+const HISTORY_REFRESH_MS = 1500;
 const TITLE_REFRESH_MS = 1000;
 const TITLE_SPINNER_RE = /^[\u2800-\u28ff](\s+)/;
 const RECONNECT_MS = 1500;
@@ -88,6 +89,9 @@ class TermdeckApp {
     this.activeId = null;
     this.activeFileKey = null;
     this.historyOpen = false;
+    this.historyRefreshTimer = 0;
+    this.historyLoadBusy = false;
+    this.historyFingerprint = "";
     this.closedExpanded = false;
     this.settings = { ...SETTINGS_DEFAULTS };
     this.saveTimer = null;
@@ -1145,6 +1149,7 @@ class TermdeckApp {
 
   closeHistory() {
     this.historyOpen = false;
+    this.stopHistoryRefresh();
     this.applyMainLayout();
     const view = this.views.get(this.activeId);
     if (view) view.term.focus();
@@ -1155,8 +1160,23 @@ class TermdeckApp {
     if (this.historyOpen) { this.closeHistory(); return; }
     if (!this.activeId) return;
     this.historyOpen = true;
+    this.historyFingerprint = "";
     this.applyMainLayout();
     await this.loadHistory(this.activeId);
+    this.startHistoryRefresh();
+  }
+
+  startHistoryRefresh() {
+    this.stopHistoryRefresh();
+    this.historyRefreshTimer = setInterval(() => {
+      if (!this.historyOpen || this.activeFileKey !== null || !this.activeId) return;
+      this.loadHistory(this.activeId, { preserveScroll: true });
+    }, HISTORY_REFRESH_MS);
+  }
+
+  stopHistoryRefresh() {
+    if (this.historyRefreshTimer) clearInterval(this.historyRefreshTimer);
+    this.historyRefreshTimer = 0;
   }
 
   sendHistoryPrompt() {
@@ -1179,12 +1199,18 @@ class TermdeckApp {
     this.$("status-name").textContent = "prompt sent";
     const sessionId = this.activeId;
     setTimeout(() => {
-      if (this.historyOpen && sessionId === this.activeId) this.loadHistory(sessionId);
+      if (this.historyOpen && sessionId === this.activeId) this.loadHistory(sessionId, { preserveScroll: true });
     }, 700);
   }
 
-  async loadHistory(sessionId) {
+  async loadHistory(sessionId, options = {}) {
     const body = this.$("history-body");
+    const preserveScroll = options.preserveScroll === true;
+    const previousScrollTop = body.scrollTop;
+    const wasAtBottom = preserveScroll && body.scrollHeight - body.clientHeight - body.scrollTop < 80;
+    const previousExpanded = preserveScroll ? [...body.querySelectorAll("details")].map((item) => item.open) : [];
+    if (this.historyLoadBusy) return;
+    this.historyLoadBusy = true;
     body.textContent = "";
     const loading = document.createElement("div");
     loading.className = "history-empty";
@@ -1196,8 +1222,13 @@ class TermdeckApp {
       turns = await res.json();
     } catch (err) {
       turns = [];
+    } finally {
+      this.historyLoadBusy = false;
     }
     if (sessionId !== this.activeId || !this.historyOpen) return;
+    const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length]))}`;
+    if (preserveScroll && fingerprint === this.historyFingerprint) return;
+    this.historyFingerprint = fingerprint;
     body.textContent = "";
     const s = this.session(sessionId);
     this.$("history-title").textContent = s ? `Full transcript · ${this.effectiveTitle(s)}` : "Full transcript";
@@ -1210,11 +1241,14 @@ class TermdeckApp {
       body.appendChild(empty);
       return;
     }
+    let eventIndex = 0;
     for (const turn of turns) {
       if (turn.kind && turn.kind !== "message") {
         const event = document.createElement("details");
         event.className = "history-event " + turn.kind;
         event.open = turn.expanded === true;
+        if (preserveScroll && previousExpanded[eventIndex] !== undefined) event.open = previousExpanded[eventIndex];
+        eventIndex += 1;
         const summary = document.createElement("summary");
         summary.textContent = turn.title || turn.kind;
         if (Array.isArray(turn.diff) && turn.diff.length) {
@@ -1252,7 +1286,9 @@ class TermdeckApp {
       block.append(role, text);
       body.appendChild(block);
     }
-    body.scrollTop = body.scrollHeight;
+    if (wasAtBottom) body.scrollTop = body.scrollHeight;
+    else if (preserveScroll) body.scrollTop = Math.min(previousScrollTop, Math.max(0, body.scrollHeight - body.clientHeight));
+    else body.scrollTop = body.scrollHeight;
   }
 
   renderMarkdown(text) {
@@ -1281,7 +1317,9 @@ class TermdeckApp {
     else this.viewedCompletedSessions.delete(id);
     if (selected) this.processingStates.set(id, this.titlePresentation(selected).spinning);
     this.activeFileKey = null;
+    this.stopHistoryRefresh();
     this.historyOpen = false;
+    this.historyFingerprint = "";
     const previousView = previousId ? this.views.get(previousId) : null;
     this.activeId = id;
     if (options.history !== false) this.pushNav({ kind: "term", id });
