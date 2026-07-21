@@ -176,6 +176,9 @@ body.dragging-side { user-select: none; cursor: row-resize; }
 .search-summary { padding: 4px 8px; color: var(--dim); font-size: 11px; }
 
 #terminal-area { flex: 1; position: relative; background: var(--term-bg); }
+#scroll-bottom-btn { position: absolute; top: 10px; right: 14px; z-index: 5; width: 26px; height: 23px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--dim); cursor: pointer; opacity: 0.8; }
+#scroll-bottom-btn:hover { color: var(--text); border-color: var(--accent); background: var(--panel2); opacity: 1; }
+#scroll-bottom-btn .codicon { font-size: 13px; }
 .term-container { position: absolute; inset: 8px 4px 24px 10px; display: none; overflow: hidden; }
 .term-container.visible { display: block; }
 .term-container .xterm { height: 100%; }

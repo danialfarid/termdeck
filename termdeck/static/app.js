@@ -268,6 +268,7 @@ class TermdeckApp {
     this.$("history-btn").onclick = () => this.toggleHistory();
     this.$("history-close").onclick = () => this.closeHistory();
     this.$("attach-btn").onclick = () => this.attachToActive();
+    this.$("scroll-bottom-btn").onclick = () => this.scrollActiveToBottom();
     this.$("keys-btn").onclick = () => this.openKeybindings();
     this.$("keys-done").onclick = () => this.$("keys-backdrop").classList.add("hidden");
     this.$("keys-reset").onclick = () => this.resetKeybindings();
@@ -1103,7 +1104,13 @@ class TermdeckApp {
     if (view) {
       if (!view.ws) this.connect(id, view);
       view.term.focus();
-      if (view.keepBottom) view.pinBottomUntil = Date.now() + 3000;
+      if (previousId !== id) {
+        view.keepBottom = true;
+        view.pinBottomUntil = Date.now() + 5000;
+        view.term.scrollToBottom();
+      } else if (view.keepBottom) {
+        view.pinBottomUntil = Date.now() + 3000;
+      }
       this.scheduleViewportSettle(view);
     }
     this.renderList();
@@ -1317,6 +1324,17 @@ class TermdeckApp {
       view.lastSentRows = rows;
       view.ws.send(JSON.stringify({ type: "resize", cols, rows }));
     }
+  }
+
+  scrollActiveToBottom() {
+    if (this.activeFileKey !== null) return;
+    const view = this.views.get(this.activeId);
+    if (!view) return;
+    view.keepBottom = true;
+    view.pinBottomUntil = Date.now() + 5000;
+    view.term.scrollToBottom();
+    this.scheduleViewportSettle(view);
+    view.term.focus();
   }
 
   scheduleViewportSettle(view) {
