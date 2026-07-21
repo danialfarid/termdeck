@@ -1,6 +1,6 @@
 const REFRESH_MS = 5000;
 const TITLE_REFRESH_MS = 1000;
-const TITLE_SPINNER_RE = /^[\u2800-\u28ff✳](\s+)/;
+const TITLE_SPINNER_RE = /^[\u2800-\u28ff](\s+)/;
 const RECONNECT_MS = 1500;
 const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~/workspace/stock";
@@ -472,7 +472,7 @@ class TermdeckApp {
   titlePresentation(s) {
     const title = this.effectiveTitle(s);
     const spinner = title.match(TITLE_SPINNER_RE);
-    return spinner ? { text: title.slice(spinner[0].length), spinning: s.processing !== false } : { text: title, spinning: false };
+    return spinner ? { text: title.slice(spinner[0].length), spinning: s.processing !== false } : { text: title, spinning: s.processing === true };
   }
 
   updateSessionSpinner(id, spinning) {
@@ -1076,6 +1076,7 @@ class TermdeckApp {
     }
     this.activeFileKey = null;
     this.historyOpen = false;
+    const previousView = previousId ? this.views.get(previousId) : null;
     this.activeId = id;
     this.pushNav({ kind: "term", id });
     if (this.getProjectState().active_session_id !== id) {
@@ -1086,7 +1087,6 @@ class TermdeckApp {
       this.reloadTree();
     }
     const view = this.ensureView(id);
-    const previousView = this.views.get(this.activeId);
     if (previousView && previousView !== view) {
       const buffer = previousView.term.buffer.active;
       previousView.keepBottom = buffer.viewportY >= buffer.baseY;
@@ -1156,6 +1156,7 @@ class TermdeckApp {
     term.onData((data) => this.sendInput(view, data));
     term.onResize(({ cols, rows }) => this.sendResize(view, cols, rows));
     term.onScroll(() => {
+      if (!view.container.classList.contains("visible")) return;
       const buffer = term.buffer.active;
       view.keepBottom = buffer.viewportY >= buffer.baseY;
       if (!view.keepBottom) view.pinBottomUntil = 0;
