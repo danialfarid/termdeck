@@ -587,6 +587,13 @@ class TermdeckApp {
       title.className = "session-title";
       title.textContent = presentation.text;
       this.sessionTitleEls.set(s.session_id, title);
+      const agentKind = document.createElement("span");
+      agentKind.className = "agent-kind agent-kind-" + (s.agent_kind || "none");
+      const agentLabel = { claude: "Cl", codex: "Cx" }[s.agent_kind];
+      if (agentLabel) {
+        agentKind.textContent = agentLabel;
+        agentKind.title = s.agent_kind === "claude" ? "Claude" : "Codex";
+      }
       const pin = document.createElement("button");
       const pinned = (this.getProjectState().pinned_sessions || []).includes(s.session_id);
       pin.className = "row-action pin-action" + (pinned ? " on" : "");
@@ -608,7 +615,7 @@ class TermdeckApp {
       close.textContent = "✕";
       close.title = "Close terminal (⌘⇧⌫ when active)";
       close.onclick = (e) => { e.stopPropagation(); this.closeSession(s.session_id); };
-      item.append(dot, spinner, title, pin, fork, restart, close);
+      item.append(dot, spinner, agentKind, title, pin, fork, restart, close);
       item.onclick = () => this.activate(s.session_id);
       item.ondblclick = () => this.renameSession(s);
       this.makeDraggable(item, "session", s.session_id, (dragged, target) => this.reorderSessions(dragged, target));

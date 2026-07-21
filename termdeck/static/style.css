@@ -49,7 +49,12 @@ button { font-family: inherit; }
 .session-spinner { position: absolute; left: 10px; top: 50%; width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%; opacity: 0; pointer-events: none; }
 .session-spinner i { display: block; width: 100%; height: 100%; border-radius: 50%; background: var(--accent); animation: termdeck-session-pulse 2.4s ease-in-out infinite; }
 .session-spinner.on { opacity: 1; }
-.session-item:has(.session-spinner.on, .status-dot.unread) .session-title { margin-left: 10px; }
+.agent-kind { display: none; flex: none; align-items: center; justify-content: center; width: 14px; height: 13px; margin-right: 4px; color: var(--dim); font-size: 8px; font-weight: 700; letter-spacing: -0.04em; line-height: 1; }
+.agent-kind-claude { display: inline-flex; color: #e5a17e; }
+.agent-kind-codex { display: inline-flex; color: var(--accent); }
+.session-item:has(.session-spinner.on, .status-dot.unread) .agent-kind { margin-left: 10px; }
+.session-item:has(.session-spinner.on, .status-dot.unread) .session-title { margin-left: 12px; }
+.session-item:has(.session-spinner.on, .status-dot.unread) .agent-kind + .session-title { margin-left: 4px; }
 @keyframes termdeck-session-pulse {
   0%, 100% { opacity: 0.45; transform: scale(0.7); box-shadow: 0 0 0 0 rgba(92, 207, 230, 0); }
   50% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 3px rgba(92, 207, 230, 0.14); }
