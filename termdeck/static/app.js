@@ -1271,7 +1271,7 @@ class TermdeckApp {
     term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
     const view = { container, term, fit, ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
                    replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, programmaticScrollUntil: 0, scrollSettleTimer: 0,
-                   replayTimer: 0, settleFrame: 0, keepBottom: true, lastSentCols: null, lastSentRows: null };
+                   replayTimer: 0, settleFrame: 0, layoutObserver: null, keepBottom: true, lastSentCols: null, lastSentRows: null };
     container.addEventListener("wheel", () => { view.pinBottomUntil = 0; view.keepBottom = false; }, { passive: true });
     container.addEventListener("paste", (e) => {
       e.preventDefault();
@@ -1316,6 +1316,14 @@ class TermdeckApp {
     });
     const ref = [...this.views.values()].find((v) => v.term.cols > 2);
     if (ref) term.resize(ref.term.cols, ref.term.rows);
+    view.layoutObserver = new ResizeObserver(() => {
+      if (!view.container.classList.contains("visible") || view.closed) return;
+      view.fit.fit();
+      const { cols, rows } = view.term;
+      if (cols >= 2 && rows >= 2) this.sendResize(view, cols, rows);
+      if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
+    });
+    view.layoutObserver.observe(container);
     this.views.set(id, view);
     return view;
   }
@@ -1532,6 +1540,7 @@ class TermdeckApp {
 
   destroyView(id, view) {
     view.closed = true;
+    if (view.layoutObserver) view.layoutObserver.disconnect();
     if (view.ws) view.ws.close();
     view.term.dispose();
     view.container.remove();
