@@ -31,7 +31,7 @@ const EXT_PRIORITY = ["py", "ipynb", "js", "ts", "tsx", "jsx", "go", "rs", "java
   "md", "rst", "txt", "html", "css", "sql", "yaml", "yml", "toml", "ini", "cfg", "xml", "json", "csv", "log"];
 const SEARCH_DEBOUNCE_MS = 500;
 const KEYBINDINGS = [
-  { id: "new-terminal", label: "New terminal", def: "Meta+k" },
+  { id: "new-terminal", label: "New terminal", def: "Meta+b" },
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
   { id: "save-file", label: "Save open file", def: "Meta+s" },
   { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp" },
@@ -1826,7 +1826,7 @@ class TermdeckApp {
     this.historyFingerprint = fingerprint;
     this.historyLoaded = true;
     const s = this.session(sessionId);
-    this.$("history-title").textContent = s ? `Full transcript · ${this.effectiveTitle(s)}` : "Full transcript";
+    this.$("history-title").textContent = s ? this.effectiveTitle(s) : "";
     if (canPatchTail) {
       // Keep the unchanged transcript nodes in place so browser-find selection
       // and the user's reading position survive live output updates.
