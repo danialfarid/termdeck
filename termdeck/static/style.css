@@ -46,10 +46,13 @@ button { font-family: inherit; }
 .status-dot { position: absolute; left: 10px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; visibility: hidden; }
 .status-dot.exited { background: var(--red); visibility: visible; }
 .status-dot.unread { background: var(--accent); visibility: visible; }
-.session-spinner { position: absolute; left: 9px; top: 50%; width: 8px; height: 8px; margin-top: -4px; border-radius: 50%; opacity: 0; pointer-events: none; }
-.session-spinner i { position: absolute; left: 0; top: 0; display: block; width: 8px; height: 5px; transform-origin: 4px 4px; animation: termdeck-session-orbit 3.2s linear infinite; }
-.session-spinner i::before { content: ""; position: absolute; left: 5px; top: 0.5px; width: 3px; height: 3px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 4px color-mix(in srgb, var(--accent) 82%, transparent); }
-.session-spinner i::after { content: ""; position: absolute; left: 0; top: 1.5px; width: 6px; height: 4px; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 18%, transparent) 42%, var(--accent)); clip-path: polygon(0 55%, 30% 45%, 55% 25%, 100% 0, 100% 45%, 58% 58%, 32% 78%, 0 75%); }
+.session-spinner { position: absolute; left: 9px; top: 50%; width: 8px; height: 8px; margin-top: -4px; opacity: 0; pointer-events: none; color: var(--accent); }
+.session-spinner svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.session-spinner-orbit { transform-box: view-box; transform-origin: center; animation: termdeck-session-orbit 3.2s linear infinite; }
+.session-spinner-tail { fill: none; stroke: currentColor; stroke-linecap: round; }
+.session-spinner-tail.faint { stroke-width: 1.8; opacity: 0.2; }
+.session-spinner-tail.bright { stroke-width: 1.1; opacity: 0.7; }
+.session-spinner-head { fill: currentColor; filter: drop-shadow(0 0 2px currentColor); }
 .session-spinner.on { opacity: 1; }
 .terminal-type-icon { display: none; flex: none; align-items: center; justify-content: center; width: 14px; height: 14px; margin-right: 4px; color: var(--text); opacity: 0.82; }
 .terminal-type-icon.claude-terminal-icon { display: none !important; }
