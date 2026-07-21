@@ -63,7 +63,7 @@ button { font-family: inherit; }
 .terminal-type-icon { display: none; flex: none; align-items: center; justify-content: center; width: 14px; height: 14px; margin-right: 4px; color: var(--text); opacity: 0.82; }
 .terminal-type-icon.on { display: inline-flex; }
 .terminal-type-icon svg { display: block; width: 13px; height: 13px; }
-.terminal-type-icon img { display: block; width: 14px; height: 14px; border-radius: 50%; object-fit: cover; }
+.terminal-type-icon img { display: block; width: 14px; height: 14px; border-radius: 50%; object-fit: cover; filter: invert(1); background: #0a0c10; }
 .terminal-type-icon .codicon { font-size: 13px; }
 .session-item:has(.session-spinner.on) .terminal-type-icon.on svg,
 .session-item:has(.session-spinner.on) .terminal-type-icon.on img { animation: termdeck-agent-icon-rotate 1.7s linear infinite; }
