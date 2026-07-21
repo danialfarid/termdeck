@@ -542,6 +542,7 @@ class TermdeckApp {
   updateUnreadIndicator(id) {
     const dot = this.sessionStatusEls.get(id);
     if (!dot) return;
+    dot.classList.toggle("processing", !!this.processingStates.get(id));
     dot.classList.toggle("unread", this.unreadSessions.has(id) && !this.processingStates.get(id));
   }
 
@@ -574,7 +575,7 @@ class TermdeckApp {
       const dot = this.sessionStatusEls.get(s.session_id);
       if (dot) {
         dot.className = "status-dot" + (s.running ? "" : " exited") +
-          (this.unreadSessions.has(s.session_id) && !this.processingStates.get(s.session_id) ? " unread" : "");
+          (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "");
       }
       const spinner = this.sessionSpinnerEls.get(s.session_id);
       if (spinner) spinner.classList.toggle("on", presentation.spinning);
@@ -700,9 +701,10 @@ class TermdeckApp {
       const item = document.createElement("div");
       item.className = "session-item" + (s.session_id === this.activeId && this.activeFileKey === null ? " active" : "");
       item.title = `${s.command || "zsh"}\n${s.cwd}` + (s.agent_session_id ? `\n${s.agent_kind}: ${s.agent_session_id}` : "") + "\ndouble-click to rename";
+      const presentation = this.titlePresentation(s);
       const dot = document.createElement("span");
       dot.className = "status-dot" + (s.running ? "" : " exited") +
-        (this.unreadSessions.has(s.session_id) && !this.processingStates.get(s.session_id) ? " unread" : "");
+        (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "");
       this.sessionStatusEls.set(s.session_id, dot);
       const spinner = document.createElement("span");
       spinner.className = "session-spinner";
@@ -725,7 +727,6 @@ class TermdeckApp {
       </svg>`;
       const backupOrbit = spinner.querySelector(".session-spinner-circle-backup");
       if (backupOrbit) backupOrbit.style.animationDelay = `-${Date.now() % 3200}ms`;
-      const presentation = this.titlePresentation(s);
       spinner.classList.toggle("on", presentation.spinning);
       this.sessionSpinnerEls.set(s.session_id, spinner);
       const title = document.createElement("span");
