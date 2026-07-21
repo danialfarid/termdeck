@@ -597,7 +597,7 @@ class TermdeckApp {
     const toggle = document.createElement("button");
     const showIcons = !!this.settings.show_terminal_icons;
     toggle.className = "section-toggle" + (showIcons ? " on" : "");
-    toggle.innerHTML = `<span class="codicon codicon-${showIcons ? "eye" : "eye-closed"}"></span>`;
+    toggle.innerHTML = '<span class="codicon codicon-terminal"></span>';
     toggle.title = showIcons ? "Hide terminal type icons" : "Show terminal type icons";
     toggle.setAttribute("aria-label", toggle.title);
     toggle.setAttribute("aria-pressed", String(showIcons));
@@ -615,7 +615,12 @@ class TermdeckApp {
     const icon = document.createElement("span");
     icon.className = "terminal-type-icon";
     icon.setAttribute("aria-hidden", "true");
-    if (TERMINAL_TYPE_SVGS[s.agent_kind]) {
+    if (s.agent_kind === "codex") {
+      const image = document.createElement("img");
+      image.src = "/static/codex-icon.png";
+      image.alt = "";
+      icon.appendChild(image);
+    } else if (TERMINAL_TYPE_SVGS[s.agent_kind]) {
       icon.innerHTML = TERMINAL_TYPE_SVGS[s.agent_kind];
     } else {
       icon.innerHTML = '<span class="codicon codicon-terminal"></span>';
