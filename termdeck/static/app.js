@@ -1180,6 +1180,18 @@ class TermdeckApp {
       return;
     }
     for (const turn of turns) {
+      if (turn.kind && turn.kind !== "message") {
+        const event = document.createElement("details");
+        event.className = "history-event " + turn.kind;
+        event.open = turn.expanded === true;
+        const summary = document.createElement("summary");
+        summary.textContent = turn.title || turn.kind;
+        const body = document.createElement("pre");
+        body.textContent = turn.text || "";
+        event.append(summary, body);
+        this.$("history-body").appendChild(event);
+        continue;
+      }
       const block = document.createElement("div");
       block.className = "turn " + turn.role;
       const role = document.createElement("div");

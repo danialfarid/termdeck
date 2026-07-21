@@ -163,6 +163,10 @@ class AgentSessionTracker:
         except OSError:
             return False
 
+    def claude_session_id_for_title(self, cwd: Path, cli_title: str | None) -> str | None:
+        parent = self._claude_parent_for_title(cwd, cli_title)
+        return parent.stem if parent else None
+
     def snapshot_session_files(self, kind: AgentKind, cwd: Path) -> set[Path]:
         return {path for path, _ in self._candidate_session_files(kind, cwd)}
 

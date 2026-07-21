@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from termdeck.config import TermdeckConfig
@@ -39,14 +40,45 @@ class TranscriptService:
             return path
         return None
 
-    def _turn(self, role: str, text: str) -> dict[str, str]:
+    def _turn(self, role: str, text: str, kind: str = "message", title: str = "", expanded: bool = False) -> dict[str, object]:
         clean = text.strip()
         if len(clean) > self.MAX_TEXT_CHARS:
             clean = clean[:self.MAX_TEXT_CHARS] + "\n… (truncated)"
-        return {"role": role, "text": clean}
+        turn: dict[str, object] = {"role": role, "text": clean}
+        if kind != "message":
+            turn.update({"kind": kind, "title": title or kind.title(), "expanded": expanded})
+        return turn
 
-    def _parse_codex(self, path: Path) -> list[dict[str, str]]:
-        turns: list[dict[str, str]] = []
+    def _tool_event(self, name: str, value: object, role: str = "event") -> dict[str, object]:
+        text = self._format_value(value)
+        kind = self._tool_kind(name, text)
+        title = "Code edit" if kind == "edit" else "Plan" if kind == "plan" else name or "Tool"
+        return self._turn(role, text, kind, title, expanded=kind == "edit")
+
+    @staticmethod
+    def _format_value(value: object) -> str:
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _tool_kind(name: str, text: str) -> str:
+        lowered = f"{name}\n{text}".lower()
+        if re.search(r"update_plan|enterplanmode|exitplanmode|taskcreate|taskupdate", lowered):
+            return "plan"
+        if re.search(r"apply_patch|old_string|new_string|notebookedit|\b(edit|write)\b", lowered):
+            return "edit"
+        return "tool"
+
+    @staticmethod
+    def _tool_call_id(payload: dict[str, object]) -> str:
+        return str(payload.get("call_id") or payload.get("id") or "")
+
+    def _parse_codex(self, path: Path) -> list[dict[str, object]]:
+        turns: list[dict[str, object]] = []
         for line in path.read_text(errors="replace").splitlines():
             payload = self._loads(line)
             if payload is None:
@@ -61,6 +93,13 @@ class TranscriptService:
                 text = self._join_text(body.get("content"), ("input_text", "text"))
                 if text and not self._is_codex_boilerplate(text):
                     turns.append(self._turn(self.ROLE_USER, text))
+            elif entry_type == "response_item" and body_type in ("custom_tool_call", "function_call"):
+                name = str(body.get("name") or "tool")
+                value = body.get("input") if body_type == "custom_tool_call" else body.get("arguments", "")
+                turns.append(self._tool_event(name, value))
+            elif entry_type == "response_item" and body_type in ("custom_tool_call_output", "function_call_output"):
+                output = body.get("output", body.get("result", ""))
+                turns.append(self._turn("event", self._format_value(output), "result", "Result"))
             if len(turns) >= self.MAX_TURNS:
                 break
         return turns
@@ -70,8 +109,8 @@ class TranscriptService:
         head = text.lstrip()[:40]
         return head.startswith("# AGENTS.md") or head.startswith("<INSTRUCTIONS>") or head.startswith("<environment_context>")
 
-    def _parse_claude(self, path: Path) -> list[dict[str, str]]:
-        turns: list[dict[str, str]] = []
+    def _parse_claude(self, path: Path) -> list[dict[str, object]]:
+        turns: list[dict[str, object]] = []
         for line in path.read_text(errors="replace").splitlines():
             payload = self._loads(line)
             if payload is None or payload.get("type") not in (self.ROLE_USER, self.ROLE_ASSISTANT):
@@ -81,9 +120,21 @@ class TranscriptService:
                 continue
             role = str(payload["type"])
             content = message.get("content")
-            text = content if isinstance(content, str) else self._join_text(content, ("text",))
-            if text.strip():
-                turns.append(self._turn(role, text))
+            if isinstance(content, str):
+                if content.strip():
+                    turns.append(self._turn(role, content))
+            elif isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    block_type = block.get("type")
+                    if block_type == "text" and str(block.get("text", "")).strip():
+                        turns.append(self._turn(role, str(block.get("text", ""))))
+                    elif block_type == "tool_use":
+                        turns.append(self._tool_event(str(block.get("name", "tool")), block.get("input", {})))
+                    elif block_type == "tool_result":
+                        result = block.get("content", block.get("output", ""))
+                        turns.append(self._turn("event", self._format_value(result), "result", "Result"))
             if len(turns) >= self.MAX_TURNS:
                 break
         return turns

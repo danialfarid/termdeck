@@ -129,6 +129,12 @@ body.dragging { user-select: none; cursor: col-resize; }
 .turn-text { word-break: break-word; font-size: calc(var(--viewer-font-size) + 1px); line-height: 1.55; color: var(--text); font-family: -apple-system, "SF Pro Text", sans-serif; }
 .turn.user .turn-text { background: var(--panel); border-left: 2px solid var(--accent); padding: 8px 12px; border-radius: 4px; }
 .history-empty { color: var(--dim); font-size: 13px; padding: 20px; text-align: center; }
+.history-event { margin: 0 0 10px; max-width: 1100px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); }
+.history-event summary { padding: 6px 10px; cursor: pointer; color: var(--dim); font: 600 11px Menlo, monospace; }
+.history-event summary:hover { color: var(--text); }
+.history-event.edit summary { color: var(--green); }
+.history-event.plan summary { color: var(--accent); }
+.history-event pre { margin: 0; padding: 8px 10px; border-top: 1px solid var(--border); overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--text); font: 11px/1.45 Menlo, monospace; }
 .markdown > *:first-child { margin-top: 0; }
 .markdown > *:last-child { margin-bottom: 0; }
 .markdown p { margin: 0 0 8px; }

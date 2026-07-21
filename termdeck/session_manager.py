@@ -207,6 +207,10 @@ class TerminalSessionManager:
         kind = ms.detect_kind
         socket = self._dtach_socket(ms.record.session_id)
         found = await self._tracker.session_id_from_open_files(kind, socket)
+        if found is None and kind is AgentKind.CLAUDE:
+            candidate = self._tracker.claude_session_id_for_title(Path(ms.record.cwd), ms.cli_title)
+            if candidate not in self._claimed_agent_ids(ms):
+                found = candidate
         recent_input = (time.monotonic() - ms.last_input_monotonic) < TermdeckConfig.AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS
         dir_found = self._tracker.absorb_and_find_new_session_file(kind, Path(ms.record.cwd), ms.detect_baseline,
                                                                    self._claimed_agent_ids(ms),
@@ -266,6 +270,8 @@ class TerminalSessionManager:
         if cli_title is not None and cli_title.strip():
             ms.cli_title = cli_title.strip()
             ms.title_updated_monotonic = time.monotonic()
+            if ms.record.agent_kind == AgentKind.CLAUDE.value and ms.record.agent_session_id is None:
+                self._schedule_detection(ms, 0.1)
         for queue in list(ms.client_queues):
             queue.put_nowait(data)
 
