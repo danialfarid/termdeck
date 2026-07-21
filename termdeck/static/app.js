@@ -674,8 +674,25 @@ class TermdeckApp {
       this.sessionStatusEls.set(s.session_id, dot);
       const spinner = document.createElement("span");
       spinner.className = "session-spinner";
-      spinner.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><g class="session-spinner-orbit"><path class="session-spinner-tail faint" d="M2.6 6.1 C2.7 4.5 5 3.4 8 3.4 C9.5 3.4 10.2 4.5 10.7 5.3"/><path class="session-spinner-tail bright" d="M5 4 C7 3.3 9.6 4 10.7 5.3"/><circle class="session-spinner-head" cx="10.7" cy="5.3" r="4.3"/></g></svg>';
-      spinner.querySelector(".session-spinner-orbit").style.animationDelay = `-${Date.now() % 3200}ms`;
+      const rectPathId = `session-spinner-path-${s.session_id}`;
+      const rectPath = "M8 2.2 H12 Q13.8 2.2 13.8 4 V12 Q13.8 13.8 12 13.8 H4 Q2.2 13.8 2.2 12 V4 Q2.2 2.2 4 2.2 H8";
+      spinner.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">
+        <g class="session-spinner-circle-backup session-spinner-orbit">
+          <path class="session-spinner-tail faint" d="M2.6 6.1 C2.7 4.5 5 3.4 8 3.4 C9.5 3.4 10.2 4.5 10.7 5.3"/>
+          <path class="session-spinner-tail bright" d="M5 4 C7 3.3 9.6 4 10.7 5.3"/>
+          <circle class="session-spinner-head" cx="10.7" cy="5.3" r="4.3"/>
+        </g>
+        <g class="session-spinner-rectangle-current">
+          <path id="${rectPathId}" class="session-spinner-rect-motion" d="${rectPath}" pathLength="100"/>
+          <path class="session-spinner-rect-tail faint" d="${rectPath}" pathLength="100"/>
+          <path class="session-spinner-rect-tail bright" d="${rectPath}" pathLength="100"/>
+          <circle class="session-spinner-rect-head" cx="8" cy="2.2" r="1.65">
+            <animateMotion dur="1.7s" repeatCount="indefinite" rotate="auto"><mpath href="#${rectPathId}"/></animateMotion>
+          </circle>
+        </g>
+      </svg>`;
+      const backupOrbit = spinner.querySelector(".session-spinner-circle-backup");
+      if (backupOrbit) backupOrbit.style.animationDelay = `-${Date.now() % 3200}ms`;
       const presentation = this.titlePresentation(s);
       spinner.classList.toggle("on", presentation.spinning);
       this.sessionSpinnerEls.set(s.session_id, spinner);
