@@ -1446,7 +1446,9 @@ class TermdeckApp {
     const prompt = this.$("history-prompt");
     if (!prompt) return;
     prompt.style.height = "auto";
-    prompt.style.height = `${Math.min(prompt.scrollHeight, 150)}px`;
+    const height = Math.min(prompt.scrollHeight, 150);
+    prompt.style.height = `${height}px`;
+    prompt.style.overflowY = prompt.scrollHeight > height ? "auto" : "hidden";
   }
 
   showPromptDraft(view) {
