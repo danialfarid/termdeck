@@ -1,4 +1,6 @@
-const REFRESH_MS = 5000;
+// Status/title/processing changes arrive through /ws/status. This slower
+// fallback only reconciles session-list metadata such as created/closed tabs.
+const SESSION_LIST_REFRESH_MS = 30000;
 const HISTORY_REFRESH_MS = 1500;
 const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
 const RECONNECT_MS = 1500;
@@ -404,7 +406,7 @@ class TermdeckApp {
     history.replaceState({ kind: "init" }, "", location.pathname + location.search);
     new ResizeObserver(() => this.fitActive()).observe(this.$("terminal-area"));
     this.refresh().finally(() => this.connectStatusStream());
-    setInterval(() => this.refresh(), REFRESH_MS);
+    setInterval(() => this.refresh(), SESSION_LIST_REFRESH_MS);
   }
 
   navUrl(state) {
@@ -3185,7 +3187,8 @@ class TermdeckApp {
     if (!this.settings.show_stats) return;
     let data;
     try {
-      const res = await fetch("/api/stats");
+      const query = this.activeId ? `?session_id=${encodeURIComponent(this.activeId)}` : "";
+      const res = await fetch(`/api/stats${query}`);
       if (!res.ok) return;
       data = await res.json();
     } catch (err) {

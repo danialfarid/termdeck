@@ -209,8 +209,12 @@ class TermdeckServer:
         except (ValueError, FileNotFoundError, PermissionError) as find_error:
             raise HTTPException(status_code=404, detail=str(find_error)) from find_error
 
-    async def _resource_stats(self) -> dict[str, object]:
-        return await self.stats.sample(self.manager.session_dtach_sockets())
+    async def _resource_stats(self, session_id: str = "") -> dict[str, object]:
+        sockets = self.manager.session_dtach_sockets()
+        if session_id:
+            socket = sockets.get(session_id)
+            sockets = {session_id: socket} if socket else {}
+        return await self.stats.sample(sockets)
 
     async def _write_file(self, request: FileWriteRequest) -> dict[str, int]:
         try:

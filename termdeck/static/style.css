@@ -149,7 +149,7 @@ body.dragging { user-select: none; cursor: col-resize; }
 #history-thinking-banner.hidden { display: none; }
 #history-thinking-banner #history-thinking-duration { min-width: 30px; opacity: 0.82; }
 #history-thinking-wave { display: inline-flex; gap: 0; }
-#history-thinking-wave span { display: inline-block; animation: history-thinking-wave 1.25s ease-in-out infinite; }
+#history-thinking-wave span { display: inline-block; color: var(--dim); animation: history-thinking-wave 1.65s ease-in-out infinite; }
 #history-thinking-wave span:nth-child(2) { animation-delay: 0.08s; }
 #history-thinking-wave span:nth-child(3) { animation-delay: 0.16s; }
 #history-thinking-wave span:nth-child(4) { animation-delay: 0.24s; }
@@ -159,8 +159,8 @@ body.dragging { user-select: none; cursor: col-resize; }
 #history-thinking-wave span:nth-child(8) { animation-delay: 0.56s; }
 .history-thinking-message { color: var(--dim); font-weight: 500; letter-spacing: 0.02em; text-transform: none; }
 @keyframes history-thinking-wave {
-  0%, 100% { opacity: 0.42; transform: translateY(1px); }
-  45% { opacity: 1; transform: translateY(-2px); }
+  0%, 100% { color: var(--dim); opacity: 0.5; transform: translateY(1px); text-shadow: none; }
+  45% { color: var(--accent); opacity: 1; transform: translateY(-2px); text-shadow: 0 0 5px color-mix(in srgb, var(--accent) 45%, transparent); }
 }
 #history-actions { display: flex; align-items: center; gap: 5px; }
 #history-edits-toggle, #history-close { background: none; border: 1px solid var(--border); color: var(--dim); border-radius: 6px; width: 26px; height: 24px; cursor: pointer; }
