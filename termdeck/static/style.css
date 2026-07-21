@@ -50,7 +50,7 @@ button { font-family: inherit; }
 .session-spinner::before { content: none; }
 .session-spinner i { position: absolute; left: 1px; top: 0; display: block; width: 10px; height: 6px; transform-origin: 5px 6px; animation: termdeck-session-orbit 3.2s linear infinite; }
 .session-spinner i::before { content: ""; position: absolute; left: 6px; top: 1px; width: 3.5px; height: 3.5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 4px color-mix(in srgb, var(--accent) 82%, transparent); }
-.session-spinner i::after { content: ""; position: absolute; left: 0; top: 2px; width: 7px; height: 2px; border-radius: 999px; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 16%, transparent) 42%, var(--accent)); clip-path: polygon(0 50%, 100% 0, 100% 100%); }
+.session-spinner i::after { content: ""; position: absolute; left: 0; top: 0.5px; width: 7px; height: 5px; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 18%, transparent) 42%, var(--accent)); clip-path: polygon(0 55%, 30% 45%, 55% 25%, 100% 0, 100% 45%, 58% 58%, 32% 78%, 0 75%); }
 .session-spinner.on { opacity: 1; }
 .terminal-type-icon { display: none; flex: none; align-items: center; justify-content: center; width: 14px; height: 14px; margin-right: 4px; color: var(--text); opacity: 0.82; }
 .terminal-type-icon.claude-terminal-icon { display: none !important; }
