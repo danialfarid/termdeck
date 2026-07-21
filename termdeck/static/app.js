@@ -286,11 +286,13 @@ class TermdeckApp {
     this.$("history-close").onclick = () => this.closeHistory();
     this.$("history-send").onclick = () => this.sendHistoryPrompt();
     this.$("history-prompt").addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
+        e.stopPropagation();
         this.sendHistoryPrompt();
       }
     });
+    this.$("history-prompt").addEventListener("input", () => this.resizeHistoryPrompt());
     this.$("attach-btn").onclick = () => this.attachToActive();
     this.$("scroll-bottom-btn").onclick = () => this.scrollActiveToBottom();
     this.$("file-browser-close").onclick = () => this.closeFileBrowserModal();
@@ -1205,7 +1207,7 @@ class TermdeckApp {
     this.sendInput(view, bracketed ? `\x1b[200~${text}\x1b[201~` : text);
     this.sendInput(view, "\r");
     prompt.value = "";
-    prompt.style.height = "auto";
+    this.resizeHistoryPrompt();
     view.keepBottom = true;
     view.pinBottomUntil = Date.now() + 5000;
     this.$("status-name").textContent = "prompt sent";
@@ -1213,6 +1215,13 @@ class TermdeckApp {
     setTimeout(() => {
       if (this.historyOpen && sessionId === this.activeId) this.loadHistory(sessionId, { preserveScroll: true });
     }, 700);
+  }
+
+  resizeHistoryPrompt() {
+    const prompt = this.$("history-prompt");
+    if (!prompt) return;
+    prompt.style.height = "auto";
+    prompt.style.height = `${Math.min(prompt.scrollHeight, 150)}px`;
   }
 
   historyTurnKey(turn) {
