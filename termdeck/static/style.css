@@ -151,7 +151,7 @@ body.dragging { user-select: none; cursor: col-resize; }
 .footer-spacer { flex: 1; }
 .side-view { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 0 4px 4px; }
 .side-view.hidden { display: none; }
-#session-list { display: block; overflow-y: auto; padding: 6px; }
+#session-list { display: block; overflow-y: auto; padding: 6px 10px; }
 #files-section { flex: none; height: 55%; border-top: none; }
 #side-split { height: 6px; flex: none; cursor: row-resize; position: relative; }
 #side-split.hidden { display: none; }
