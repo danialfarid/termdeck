@@ -2670,11 +2670,11 @@ class TermdeckApp {
     const model = this.settings.last_model || DEFAULT_COMMAND;
     this.$("modal-model").value = MODEL_PERMISSIONS[model] ? model : DEFAULT_COMMAND;
     this.updateModalPermissions();
+    this.$("modal-session-title").value = "";
     this.$("modal-session-ref").value = "";
     this.$("modal-cwd").value = this.projectRoot() || DEFAULT_CWD;
     this.$("modal-backdrop").classList.remove("hidden");
-    this.$("modal-command").focus();
-    this.$("modal-command").select();
+    this.$("modal-session-title").focus();
   }
 
   closeModal() {
@@ -2702,6 +2702,7 @@ class TermdeckApp {
     if (this.$("modal-backdrop").classList.contains("hidden")) return;
     const model = this.$("modal-model").value;
     const permission = this.$("modal-permission").value;
+    const title = this.$("modal-session-title").value;
     const sessionRef = this.$("modal-session-ref").value;
     const cwd = this.$("modal-cwd").value;
     this.settings.last_model = model;
@@ -2709,7 +2710,7 @@ class TermdeckApp {
     this.saveSettings();
     const res = await fetch("/api/sessions", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, permission, session_ref: sessionRef, cwd, title: "" }),
+      body: JSON.stringify({ model, permission, session_ref: sessionRef, cwd, title }),
     });
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
