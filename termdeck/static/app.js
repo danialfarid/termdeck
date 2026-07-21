@@ -488,7 +488,7 @@ class TermdeckApp {
 
   updateProcessingState(id, spinning) {
     const previous = this.processingStates.get(id);
-    if (previous === true && !spinning && !this.unreadSessions.has(id)) {
+    if (id !== this.activeId && previous === true && !spinning && !this.unreadSessions.has(id)) {
       this.unreadSessions.add(id);
       this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
     }
