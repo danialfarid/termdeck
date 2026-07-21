@@ -1820,6 +1820,7 @@ class TermdeckApp {
     }
     this.renderList();
     this.renderTopbar();
+    if (options.reveal) this.keepActiveSessionVisible();
     requestAnimationFrame(() => {
       if (id === this.activeId) this.focusActiveEditor();
     });
@@ -2779,7 +2780,7 @@ class TermdeckApp {
     const created = await res.json();
     this.closeModal();
     await this.refresh();
-    this.activate(created.session_id);
+    this.activate(created.session_id, { reveal: true });
   }
 
   openKeybindings() {
@@ -2940,7 +2941,7 @@ class TermdeckApp {
     if (!res.ok) { alert("fork failed"); return; }
     const created = await res.json();
     await this.refresh();
-    this.activate(created.session_id);
+    this.activate(created.session_id, { reveal: true });
     const view = this.views.get(created.session_id);
     if (view) view.pinBottomUntil = Date.now() + 8000;
   }
