@@ -110,6 +110,7 @@ class TermdeckApp {
     this.sessionSpinnerEls = new Map();
     this.sessionStatusEls = new Map();
     this.processingStates = new Map();
+    this.viewedCompletedSessions = new Set();
     this.unreadSessions = new Set();
     this.statHistory = [];
     this.editor = null;
@@ -510,7 +511,9 @@ class TermdeckApp {
 
   updateProcessingState(id, spinning) {
     const previous = this.processingStates.get(id);
-    if (id !== this.activeId && previous === true && !spinning && !this.unreadSessions.has(id)) {
+    if (spinning) this.viewedCompletedSessions.delete(id);
+    if (id !== this.activeId && previous === true && !spinning &&
+        !this.viewedCompletedSessions.has(id) && !this.unreadSessions.has(id)) {
       this.unreadSessions.add(id);
       this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
     }
@@ -1212,6 +1215,10 @@ class TermdeckApp {
       this.updateUnreadIndicator(id);
     }
     if (unreadChanged) this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
+    const selected = this.session(id);
+    if (selected && !this.titlePresentation(selected).spinning) this.viewedCompletedSessions.add(id);
+    else this.viewedCompletedSessions.delete(id);
+    if (selected) this.processingStates.set(id, this.titlePresentation(selected).spinning);
     this.activeFileKey = null;
     this.historyOpen = false;
     const previousView = previousId ? this.views.get(previousId) : null;
