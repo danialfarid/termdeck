@@ -334,6 +334,17 @@ class TermdeckApp {
         this.sendHistoryPrompt({ queue: true });
         return;
       }
+      if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.metaKey && !e.ctrlKey && !e.altKey &&
+          !this.$("history-prompt").value && this.views.get(this.activeId)?.promptQueue?.length) {
+        e.preventDefault();
+        e.stopPropagation();
+        const view = this.views.get(this.activeId);
+        view.promptSubmitting = false;
+        view.promptEditing = false;
+        clearTimeout(view.promptSubmitTimer);
+        this.sendInput(view, e.key === "ArrowUp" ? "\x1b[A" : "\x1b[B");
+        return;
+      }
       if (e.key !== "Enter" || e.isComposing) return;
       e.stopPropagation();
       if (!e.shiftKey) {
@@ -1327,6 +1338,7 @@ class TermdeckApp {
     this.$("history-btn").classList.toggle("on", historyMode);
     this.$("attach-btn").classList.toggle("hidden", historyMode || fileMode);
     this.updateHistoryThinkingIndicator();
+    this.renderHistoryQueue();
     this.fitActive();
   }
 
@@ -1347,6 +1359,44 @@ class TermdeckApp {
       clearInterval(this.processingTimer);
       this.processingTimer = 0;
     }
+  }
+
+  renderHistoryQueue(view = this.views.get(this.activeId)) {
+    const container = this.$("history-queued");
+    const items = this.$("history-queued-items");
+    const count = this.$("history-queued-count");
+    if (!container || !items || !count) return;
+    const queued = view?.promptQueue || [];
+    container.classList.toggle("hidden", !this.historyOpen || !queued.length);
+    count.textContent = queued.length ? `${queued.length} message${queued.length === 1 ? "" : "s"}` : "";
+    items.textContent = "";
+    queued.forEach((item, index) => {
+      const row = document.createElement("div");
+      row.className = "history-queued-item";
+      const number = document.createElement("span");
+      number.className = "history-queued-index";
+      number.textContent = `${index + 1}.`;
+      const text = document.createElement("span");
+      text.className = "history-queued-text";
+      text.textContent = item.text;
+      row.append(number, text);
+      items.appendChild(row);
+    });
+  }
+
+  reconcileHistoryQueue(view, turns) {
+    if (!view?.promptQueue?.length) return;
+    const userTexts = turns.filter((turn) => turn.role === "user").map((turn) => String(turn.text || ""));
+    for (let index = 0; index < view.promptQueue.length;) {
+      const queued = view.promptQueue[index];
+      const match = userTexts.slice(queued.userCount || 0).indexOf(queued.text);
+      if (match < 0) {
+        index += 1;
+        continue;
+      }
+      view.promptQueue.splice(index, 1);
+    }
+    this.renderHistoryQueue(view);
   }
 
   focusActiveEditor() {
@@ -1423,6 +1473,10 @@ class TermdeckApp {
     view.promptSubmitVersion = view.promptEditVersion;
     const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
     const queue = !!options.queue && this.session(this.activeId)?.agent_kind === "codex";
+    if (queue) {
+      view.promptQueue.push({ text, userCount: this.historyTurns.filter((turn) => turn.role === "user").length });
+      this.renderHistoryQueue(view);
+    }
     view.ws.send(JSON.stringify({ type: "submit", text, bracketed, queue }));
     // Clear the local draft immediately so switching views cannot reinsert the
     // prompt while the PTY consumes the synchronized text and Enter.
@@ -1733,6 +1787,7 @@ class TermdeckApp {
     }
     this.historyLoadBusy = false;
     if (sessionId !== this.activeId || !this.historyOpen) return;
+    this.reconcileHistoryQueue(this.views.get(sessionId), turns);
     const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length, turn.plan, turn.items]))}`;
     if (preserveScroll && fingerprint === this.historyFingerprint) return;
     let commonPrefix = 0;
@@ -1889,6 +1944,7 @@ class TermdeckApp {
                    replayTimer: 0, reconnectTimer: 0, settleFrame: 0, layoutObserver: null, keepBottom: true, lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
+                   promptQueue: [],
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, pendingDraftSync: null, pendingTerminalDraft: null,
                    promptEditVersion: 0, promptSubmitVersion: -1 };
     container.addEventListener("wheel", () => {

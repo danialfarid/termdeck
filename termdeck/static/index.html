@@ -87,15 +87,18 @@
       </div>
     </div>
     <div id="history-body"></div>
+    <div id="history-queued" class="hidden" aria-live="polite">
+      <div id="history-queued-head"><span>Queued</span><span id="history-queued-count"></span><span class="history-queued-help">↑↓ edit</span></div>
+      <div id="history-queued-items"></div>
+    </div>
     <div id="history-thinking-banner" class="hidden" aria-live="polite">
-      <span class="history-thinking-wave" aria-hidden="true"><span>T</span><span>h</span><span>i</span><span>n</span><span>k</span><span>i</span><span>n</span><span>g</span></span>
-      <span class="history-thinking-message">more output is coming</span>
+      <span class="history-thinking-wave" aria-hidden="true">THINKING</span>
       <span id="history-thinking-duration"></span>
     </div>
     <div id="history-composer">
       <div id="history-prompt-wrap">
         <textarea id="history-prompt" rows="1" placeholder="Continue this session…" spellcheck="false"></textarea>
-        <div id="history-prompt-help">Enter submit · Tab queue (Codex) · Shift+Enter newline · Esc interrupt</div>
+        <div id="history-prompt-help">Enter submit · Tab queue (Codex) · ↑↓ edit queued · Shift+Enter newline · Esc interrupt</div>
       </div>
       <div id="history-composer-actions">
         <button id="history-send" title="Send prompt" aria-label="Send prompt"><span class="codicon codicon-send"></span></button>
