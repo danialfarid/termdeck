@@ -63,7 +63,7 @@ const MATERIAL_ICONS_BASE = "/static/vendor/material-icons/icons/";
 const MATERIAL_ICONS_MAP_URL = "/static/vendor/material-icons/dist/material-icons.json";
 const TERMINAL_TYPE_SVGS = {
   claude: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.25c.42 0 .76.34.76.76v4.08l3.53-2.04a.76.76 0 1 1 .76 1.31L9.52 7.4l3.53 2.04a.76.76 0 1 1-.76 1.31L8.76 8.72v4.08a.76.76 0 0 1-1.52 0V8.72l-3.53 2.04a.76.76 0 1 1-.76-1.31L6.48 7.4 2.95 5.36a.76.76 0 1 1 .76-1.31l3.53 2.04V2.01c0-.42.34-.76.76-.76Z"/></svg>',
-  codex: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" d="M8 1.75a2.35 2.35 0 0 1 2.03 1.17l1.18 2.04a2.35 2.35 0 0 1 2.35 4.07l-1.18 2.04a2.35 2.35 0 0 1-4.7 0L6.5 9.03a2.35 2.35 0 0 1-2.35-4.07l1.18-2.04A2.35 2.35 0 0 1 8 1.75Zm0 2.35v7.8m-3.38-5.85 6.76 3.9m0-3.9-6.76 3.9"/></svg>',
+  codex: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zM3.5988 18.304a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1412-1.6462zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5968 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zm-12.6413 4.1347-2.0201-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805-4.783 2.7582a.7948.7948 0 0 0-.3927.6813zM9.4041 10.4976l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"/></svg>',
 };
 const TERM_THEME_DARK = {
   background: "#0a0c10", foreground: "#d8dee9", cursor: "#8fbcbb", selectionBackground: "#3b4252",
@@ -677,18 +677,14 @@ class TermdeckApp {
     const icon = document.createElement("span");
     icon.className = "terminal-type-icon";
     icon.setAttribute("aria-hidden", "true");
-    if (s.agent_kind === "codex") {
-      const image = document.createElement("img");
-      image.src = "/static/codex-icon.png";
-      image.alt = "";
-      icon.appendChild(image);
-    } else if (TERMINAL_TYPE_SVGS[s.agent_kind]) {
+    if (TERMINAL_TYPE_SVGS[s.agent_kind]) {
       icon.innerHTML = TERMINAL_TYPE_SVGS[s.agent_kind];
     } else {
       icon.innerHTML = '<span class="codicon codicon-terminal"></span>';
     }
     icon.title = s.agent_kind === "claude" ? "Claude" : s.agent_kind === "codex" ? "Codex" : "Shell terminal";
     icon.classList.toggle("claude-terminal-icon", s.agent_kind === "claude");
+    icon.classList.toggle("codex-terminal-icon", s.agent_kind === "codex");
     icon.classList.toggle("on", !!this.settings.show_terminal_icons);
     return icon;
   }
