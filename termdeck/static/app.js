@@ -1186,9 +1186,27 @@ class TermdeckApp {
         event.open = turn.expanded === true;
         const summary = document.createElement("summary");
         summary.textContent = turn.title || turn.kind;
-        const body = document.createElement("pre");
-        body.textContent = turn.text || "";
-        event.append(summary, body);
+        if (Array.isArray(turn.diff) && turn.diff.length) {
+          const diff = document.createElement("div");
+          diff.className = "history-diff";
+          for (const line of turn.diff) {
+            const row = document.createElement("div");
+            row.className = "diff-line " + (line.kind || "context");
+            const prefix = document.createElement("span");
+            prefix.className = "diff-line-prefix";
+            prefix.textContent = line.prefix || " ";
+            const content = document.createElement("span");
+            content.className = "diff-line-text";
+            content.textContent = line.text || "";
+            row.append(prefix, content);
+            diff.appendChild(row);
+          }
+          event.append(summary, diff);
+        } else {
+          const content = document.createElement("pre");
+          content.textContent = turn.text || "";
+          event.append(summary, content);
+        }
         this.$("history-body").appendChild(event);
         continue;
       }

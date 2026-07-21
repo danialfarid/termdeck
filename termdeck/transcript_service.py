@@ -1,5 +1,6 @@
 import json
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from termdeck.config import TermdeckConfig
@@ -18,7 +19,7 @@ class TranscriptService:
     MAX_TURNS = 4000
     MAX_TEXT_CHARS = 20000
 
-    def transcript_for(self, agent_kind: str, cwd: str, agent_session_id: str | None) -> list[dict[str, str]]:
+    def transcript_for(self, agent_kind: str, cwd: str, agent_session_id: str | None) -> list[dict[str, object]]:
         if not agent_session_id:
             return []
         kind = AgentKind(agent_kind)
@@ -53,7 +54,12 @@ class TranscriptService:
         text = self._format_value(value)
         kind = self._tool_kind(name, text)
         title = "Code edit" if kind == "edit" else "Plan" if kind == "plan" else name or "Tool"
-        return self._turn(role, text, kind, title, expanded=kind == "edit")
+        turn = self._turn(role, text, kind, title, expanded=kind == "edit")
+        if kind == "edit":
+            diff = self._edit_diff(name, value, text)
+            if diff:
+                turn["diff"] = diff
+        return turn
 
     @staticmethod
     def _format_value(value: object) -> str:
@@ -72,6 +78,70 @@ class TranscriptService:
         if re.search(r"apply_patch|old_string|new_string|notebookedit|\b(edit|write)\b", lowered):
             return "edit"
         return "tool"
+
+    @classmethod
+    def _edit_diff(cls, name: str, value: object, text: str) -> list[dict[str, str]]:
+        if isinstance(value, dict):
+            old = value.get("old_string")
+            new = value.get("new_string")
+            if isinstance(new, str) and (isinstance(old, str) or name.lower() == "edit"):
+                return cls._line_diff(old if isinstance(old, str) else "", new)
+            content = value.get("content")
+            if isinstance(content, str) and name.lower() in {"write", "create"}:
+                return cls._line_diff("", content)
+
+        patch = cls._extract_patch(text)
+        if not patch:
+            return []
+        rows: list[dict[str, str]] = []
+        for line in patch.splitlines():
+            if line.startswith(("***", "@@", "+ +++", "---")):
+                continue
+            if line.startswith("+++") or line.startswith("---"):
+                continue
+            if line.startswith("+"):
+                rows.append({"kind": "add", "prefix": "+", "text": line[1:]})
+            elif line.startswith("-"):
+                rows.append({"kind": "remove", "prefix": "−", "text": line[1:]})
+            elif line.startswith(" "):
+                rows.append({"kind": "context", "prefix": " ", "text": line[1:]})
+        return rows
+
+    @staticmethod
+    def _extract_patch(text: str) -> str:
+        marker = text.find("*** Begin Patch")
+        if marker < 0:
+            return ""
+        # Codex commonly wraps an apply_patch payload in a JavaScript string.
+        # Decode that string so escaped \n sequences become real diff lines.
+        assignment = text.rfind("const patch =", 0, marker)
+        if assignment >= 0:
+            quote = text.find('"', assignment)
+            if quote >= 0:
+                try:
+                    decoded, _ = json.JSONDecoder().raw_decode(text[quote:])
+                    if isinstance(decoded, str) and "*** Begin Patch" in decoded:
+                        return decoded
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return text[marker:].replace("\\n", "\n")
+
+    @staticmethod
+    def _line_diff(old: str, new: str) -> list[dict[str, str]]:
+        old_lines = old.splitlines()
+        new_lines = new.splitlines()
+        rows: list[dict[str, str]] = []
+        matcher = SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+        for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+            if tag == "equal":
+                rows.extend({"kind": "context", "prefix": " ", "text": line} for line in old_lines[old_start:old_end])
+            elif tag in ("delete", "replace"):
+                rows.extend({"kind": "remove", "prefix": "−", "text": line} for line in old_lines[old_start:old_end])
+                if tag == "replace":
+                    rows.extend({"kind": "add", "prefix": "+", "text": line} for line in new_lines[new_start:new_end])
+            elif tag == "insert":
+                rows.extend({"kind": "add", "prefix": "+", "text": line} for line in new_lines[new_start:new_end])
+        return rows
 
     @staticmethod
     def _tool_call_id(payload: dict[str, object]) -> str:

@@ -135,6 +135,13 @@ body.dragging { user-select: none; cursor: col-resize; }
 .history-event.edit summary { color: var(--green); }
 .history-event.plan summary { color: var(--accent); }
 .history-event pre { margin: 0; padding: 8px 10px; border-top: 1px solid var(--border); overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--text); font: 11px/1.45 Menlo, monospace; }
+.history-diff { border-top: 1px solid var(--border); overflow: auto; background: var(--term-bg); color: var(--text); font: 11px/1.45 Menlo, monospace; }
+.diff-line { display: flex; min-width: max-content; white-space: pre; padding: 0 10px; }
+.diff-line-prefix { width: 1.4em; flex: none; user-select: none; text-align: center; font-weight: 700; }
+.diff-line-text { padding-right: 12px; }
+.diff-line.context { color: var(--dim); }
+.diff-line.add { color: var(--green); background: rgba(159, 232, 162, 0.11); }
+.diff-line.remove { color: var(--red); background: rgba(242, 135, 121, 0.11); }
 .markdown > *:first-child { margin-top: 0; }
 .markdown > *:last-child { margin-bottom: 0; }
 .markdown p { margin: 0 0 8px; }
