@@ -1351,10 +1351,10 @@ class TermdeckApp {
         return;
       }
       view.term.write(new Uint8Array(e.data), () => {
-        if (Date.now() < view.pinBottomUntil) {
+        if (view.keepBottom || Date.now() < view.pinBottomUntil) {
           clearTimeout(view.scrollSettleTimer);
           view.scrollSettleTimer = setTimeout(() => {
-            if (Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
+            if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
           }, 250);
         }
       });
@@ -1479,8 +1479,10 @@ class TermdeckApp {
   }
 
   scrollTerminalToBottom(view) {
-    view.programmaticScrollUntil = Date.now() + 150;
+    view.programmaticScrollUntil = Date.now() + 1000;
     view.term.scrollToBottom();
+    const viewport = view.container.querySelector(".xterm-viewport");
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
   }
 
   scheduleViewportSettle(view) {
@@ -1491,10 +1493,12 @@ class TermdeckApp {
         if (view.keepBottom || Date.now() < view.pinBottomUntil) {
           view.keepBottom = true;
           this.scrollTerminalToBottom(view);
-          if (Date.now() < view.pinBottomUntil) {
+          const buffer = view.term.buffer.active;
+          const atBottom = buffer.viewportY >= buffer.baseY;
+          if (!atBottom || Date.now() < view.pinBottomUntil) {
             clearTimeout(view.scrollSettleTimer);
             view.scrollSettleTimer = setTimeout(() => {
-              if (Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
+              if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
             }, 250);
           }
         }
@@ -1510,6 +1514,7 @@ class TermdeckApp {
     const { cols, rows } = view.term;
     if (cols < 2 || rows < 2) return;
     this.sendResize(view, cols, rows);
+    if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
   }
 
   destroyView(id, view) {
