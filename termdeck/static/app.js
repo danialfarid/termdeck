@@ -8,7 +8,8 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   viewer_font_size: 12, tree_font_size: 12, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, show_stats: true,
   tree_sort: "name", show_mtime: false, word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
-  last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" } };
+  last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
+  show_terminal_icons: false };
 const MODEL_PERMISSIONS = {
   codex: [
     { value: "default", label: "Default (Codex config)" },
@@ -56,6 +57,10 @@ const KNOWN_EXTS = new Set(["py", "md", "json", "js", "ts", "tsx", "css", "html"
   "toml", "csv", "log", "plist", "sql", "xml", "ini", "cfg", "lock", "ipynb", "rs", "go", "c", "h", "cpp", "hpp", "java"]);
 const MATERIAL_ICONS_BASE = "/static/vendor/material-icons/icons/";
 const MATERIAL_ICONS_MAP_URL = "/static/vendor/material-icons/dist/material-icons.json";
+const TERMINAL_TYPE_SVGS = {
+  claude: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.25c.42 0 .76.34.76.76v4.08l3.53-2.04a.76.76 0 1 1 .76 1.31L9.52 7.4l3.53 2.04a.76.76 0 0 1-.76 1.31L8.76 8.72v4.08a.76.76 0 0 1-1.52 0V8.72l-3.53 2.04a.76.76 0 1 1-.76-1.31L6.48 7.4 2.95 5.36a.76.76 0 1 1 .76-1.31l3.53 2.04V2.01c0-.42.34-.76.76-.76Z"/></svg>',
+  codex: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" d="M8 1.75a2.35 2.35 0 0 1 2.03 1.17l1.18 2.04a2.35 2.35 0 0 1 2.35 4.07l-1.18 2.04a2.35 2.35 0 0 1-4.7 0L6.5 9.03a2.35 2.35 0 0 1-2.35-4.07l1.18-2.04A2.35 2.35 0 0 1 8 1.75Zm0 2.35v7.8m-3.38-5.85 6.76 3.9m0-3.9-6.76 3.9"/></svg>',
+};
 const TERM_THEME_DARK = {
   background: "#0a0c10", foreground: "#d8dee9", cursor: "#8fbcbb", selectionBackground: "#3b4252",
   black: "#3b4252", red: "#bf616a", green: "#a3be8c", yellow: "#ebcb8b",
@@ -557,8 +562,42 @@ class TermdeckApp {
   sectionLabel(text) {
     const label = document.createElement("div");
     label.className = "side-section-label";
-    label.textContent = text;
+    if (text !== "terminals") {
+      label.textContent = text;
+      return label;
+    }
+    label.classList.add("side-section-header");
+    const name = document.createElement("span");
+    name.textContent = text;
+    const toggle = document.createElement("button");
+    const showIcons = !!this.settings.show_terminal_icons;
+    toggle.className = "section-toggle" + (showIcons ? " on" : "");
+    toggle.innerHTML = `<span class="codicon codicon-${showIcons ? "eye" : "eye-closed"}"></span>`;
+    toggle.title = showIcons ? "Hide terminal type icons" : "Show terminal type icons";
+    toggle.setAttribute("aria-label", toggle.title);
+    toggle.setAttribute("aria-pressed", String(showIcons));
+    toggle.onclick = (event) => {
+      event.stopPropagation();
+      this.settings.show_terminal_icons = !this.settings.show_terminal_icons;
+      this.saveSettings();
+      this.renderList();
+    };
+    label.append(name, toggle);
     return label;
+  }
+
+  terminalTypeIcon(s) {
+    const icon = document.createElement("span");
+    icon.className = "terminal-type-icon";
+    icon.setAttribute("aria-hidden", "true");
+    if (TERMINAL_TYPE_SVGS[s.agent_kind]) {
+      icon.innerHTML = TERMINAL_TYPE_SVGS[s.agent_kind];
+    } else {
+      icon.innerHTML = '<span class="codicon codicon-terminal"></span>';
+    }
+    icon.title = s.agent_kind === "claude" ? "Claude" : s.agent_kind === "codex" ? "Codex" : "Shell terminal";
+    icon.classList.toggle("on", !!this.settings.show_terminal_icons);
+    return icon;
   }
 
   renderList() {
@@ -587,13 +626,7 @@ class TermdeckApp {
       title.className = "session-title";
       title.textContent = presentation.text;
       this.sessionTitleEls.set(s.session_id, title);
-      const agentKind = document.createElement("span");
-      agentKind.className = "agent-kind agent-kind-" + (s.agent_kind || "none");
-      const agentLabel = { claude: "Cl", codex: "Cx" }[s.agent_kind];
-      if (agentLabel) {
-        agentKind.textContent = agentLabel;
-        agentKind.title = s.agent_kind === "claude" ? "Claude" : "Codex";
-      }
+      const typeIcon = this.terminalTypeIcon(s);
       const pin = document.createElement("button");
       const pinned = (this.getProjectState().pinned_sessions || []).includes(s.session_id);
       pin.className = "row-action pin-action" + (pinned ? " on" : "");
@@ -615,7 +648,7 @@ class TermdeckApp {
       close.textContent = "✕";
       close.title = "Close terminal (⌘⇧⌫ when active)";
       close.onclick = (e) => { e.stopPropagation(); this.closeSession(s.session_id); };
-      item.append(dot, spinner, agentKind, title, pin, fork, restart, close);
+      item.append(dot, spinner, typeIcon, title, pin, fork, restart, close);
       item.onclick = () => this.activate(s.session_id);
       item.ondblclick = () => this.renameSession(s);
       this.makeDraggable(item, "session", s.session_id, (dragged, target) => this.reorderSessions(dragged, target));

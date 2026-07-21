@@ -49,18 +49,24 @@ button { font-family: inherit; }
 .session-spinner { position: absolute; left: 10px; top: 50%; width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%; opacity: 0; pointer-events: none; }
 .session-spinner i { display: block; width: 100%; height: 100%; border-radius: 50%; background: var(--accent); animation: termdeck-session-pulse 2.4s ease-in-out infinite; }
 .session-spinner.on { opacity: 1; }
-.agent-kind { display: none; flex: none; align-items: center; justify-content: center; width: 14px; height: 13px; margin-right: 4px; color: var(--dim); font-size: 8px; font-weight: 700; letter-spacing: -0.04em; line-height: 1; }
-.agent-kind-claude { display: inline-flex; color: #e5a17e; }
-.agent-kind-codex { display: inline-flex; color: var(--accent); }
-.session-item:has(.session-spinner.on, .status-dot.unread) .agent-kind { margin-left: 10px; }
+.terminal-type-icon { display: none; flex: none; align-items: center; justify-content: center; width: 14px; height: 14px; margin-right: 4px; color: var(--text); opacity: 0.82; }
+.terminal-type-icon.on { display: inline-flex; }
+.terminal-type-icon svg { display: block; width: 13px; height: 13px; }
+.terminal-type-icon .codicon { font-size: 13px; }
+.session-item:has(.session-spinner.on, .status-dot.unread) .terminal-type-icon.on { margin-left: 10px; }
 .session-item:has(.session-spinner.on, .status-dot.unread) .session-title { margin-left: 12px; }
-.session-item:has(.session-spinner.on, .status-dot.unread) .agent-kind + .session-title { margin-left: 4px; }
+.session-item:has(.session-spinner.on, .status-dot.unread) .terminal-type-icon.on + .session-title { margin-left: 4px; }
 @keyframes termdeck-session-pulse {
   0%, 100% { opacity: 0.45; transform: scale(0.7); box-shadow: 0 0 0 0 rgba(92, 207, 230, 0); }
   50% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 3px rgba(92, 207, 230, 0.14); }
 }
 .session-title { font-size: var(--sidebar-font-size); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .side-section-label { font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--dim); padding: 9px 10px 7px; }
+.side-section-header { display: flex; align-items: center; justify-content: space-between; }
+.section-toggle { border: 1px solid transparent; border-radius: 4px; background: none; color: var(--dim); width: 20px; height: 18px; padding: 0; cursor: pointer; line-height: 1; }
+.section-toggle:hover { color: var(--text); border-color: var(--border); background: var(--panel2); }
+.section-toggle.on { color: var(--text); border-color: var(--active-border); background: var(--active-bg); }
+.section-toggle .codicon { font-size: 11px; }
 .closed-header { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
 .closed-header:hover { color: var(--text); }
 .closed-chevron { font-size: 12px; transition: transform 0.08s ease; }
