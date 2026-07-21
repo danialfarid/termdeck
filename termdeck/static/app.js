@@ -1,6 +1,6 @@
 const REFRESH_MS = 5000;
 const TITLE_REFRESH_MS = 1000;
-const TITLE_SPINNER_MS = 120;
+const TITLE_SPINNER_MS = 200;
 const CODEX_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const RECONNECT_MS = 1500;
 const DEFAULT_COMMAND = "codex";
@@ -449,7 +449,7 @@ class TermdeckApp {
       if (!current || current.cli_title === incoming.cli_title) continue;
       current.cli_title = incoming.cli_title;
       const titleEl = this.sessionTitleEls.get(incoming.session_id);
-      if (titleEl) titleEl.textContent = this.animatedTitle(current);
+      if (titleEl) titleEl.textContent = this.displayTitle(current);
       if (incoming.session_id === this.activeId) activeTitleChanged = true;
     }
     if (activeTitleChanged) this.renderTopbar();
@@ -463,6 +463,12 @@ class TermdeckApp {
     return frame + spinner[1] + title.slice(spinner[0].length);
   }
 
+  displayTitle(s) {
+    const view = this.views.get(s.session_id);
+    return view && view.ws && view.ws.readyState === WebSocket.OPEN
+      ? this.effectiveTitle(s) : this.animatedTitle(s);
+  }
+
   animateTitleSpinners() {
     if (!this.sessions.length) return;
     this.titleSpinnerFrame = (this.titleSpinnerFrame || 0) + 1;
@@ -470,6 +476,8 @@ class TermdeckApp {
     for (const s of this.sessions) {
       const titleEl = this.sessionTitleEls.get(s.session_id);
       if (!titleEl) continue;
+      const view = this.views.get(s.session_id);
+      if (view && view.ws && view.ws.readyState === WebSocket.OPEN) continue;
       const title = this.animatedTitle(s);
       if (titleEl.textContent !== title) titleEl.textContent = title;
       if (s.session_id === this.activeId && title !== this.effectiveTitle(s)) activeChanged = true;
@@ -889,11 +897,11 @@ class TermdeckApp {
   renderTopbar() {
     const s = this.session(this.activeId);
     const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    const tabTitle = entry ? entry.name : (s ? this.animatedTitle(s) : null);
+    const tabTitle = entry ? entry.name : (s ? this.displayTitle(s) : null);
     document.title = tabTitle ? `${tabTitle} — TermDeck` : "TermDeck";
     const statusEl = this.$("status-name");
     if (entry) statusEl.textContent = entry.fullPath || `${entry.root}/${entry.path}`;
-    else statusEl.textContent = s ? `${this.animatedTitle(s)}  ·  ${s.cwd}` : "";
+    else statusEl.textContent = s ? `${this.displayTitle(s)}  ·  ${s.cwd}` : "";
     statusEl.title = statusEl.textContent;
   }
 
