@@ -1169,7 +1169,7 @@ class TermdeckApp {
     term.onResize(({ cols, rows }) => this.sendResize(view, cols, rows));
     term.onScroll(() => {
       if (!view.container.classList.contains("visible")) return;
-      if (Date.now() < view.pinBottomUntil) return;
+      if (view.replaying && Date.now() < view.pinBottomUntil) return;
       const buffer = term.buffer.active;
       view.keepBottom = buffer.viewportY >= buffer.baseY;
       if (!view.keepBottom) view.pinBottomUntil = 0;
