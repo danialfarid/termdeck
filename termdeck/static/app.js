@@ -333,6 +333,7 @@ class TermdeckApp {
     this.$("history-prompt").addEventListener("input", () => {
       const view = this.views.get(this.activeId);
       if (!view) return;
+      view.promptSubmitEntered = false;
       view.promptSubmitting = false;
       clearTimeout(view.promptSubmitTimer);
       view.promptEditing = true;
@@ -566,7 +567,7 @@ class TermdeckApp {
   applySessionStatus(message) {
     const session = this.session(message.session_id);
     if (!session) return;
-    if (Object.prototype.hasOwnProperty.call(message, "cli_title")) session.cli_title = message.cli_title;
+    if (Object.prototype.hasOwnProperty.call(message, "cli_title") && message.cli_title) session.cli_title = message.cli_title;
     if (Object.prototype.hasOwnProperty.call(message, "agent_session_id")) session.agent_session_id = message.agent_session_id;
     if (Object.prototype.hasOwnProperty.call(message, "processing")) session.processing = !!message.processing;
     if (Object.prototype.hasOwnProperty.call(message, "running")) session.running = !!message.running;
@@ -1399,6 +1400,7 @@ class TermdeckApp {
     }
     view.promptDraft = text;
     view.promptSubmitting = true;
+    view.promptSubmitEntered = false;
     view.promptEditing = false;
     this.syncPromptToTerminal(view);
     // Clear the local draft immediately so switching views cannot reinsert the
@@ -1408,10 +1410,17 @@ class TermdeckApp {
     clearTimeout(view.promptSubmitTimer);
     view.promptSubmitTimer = setTimeout(() => {
       view.promptSubmitting = false;
+      view.promptSubmitEntered = false;
     }, 1500);
     // Let the PTY consume the synchronized paste before submitting it.
     setTimeout(() => {
-      if (view.ws && view.ws.readyState === WebSocket.OPEN) this.sendInput(view, "\r");
+      if (view.ws && view.ws.readyState === WebSocket.OPEN) {
+        view.promptSubmitEntered = true;
+        this.sendInput(view, "\r");
+      } else {
+        view.promptSubmitting = false;
+        view.promptSubmitEntered = false;
+      }
     }, 40);
     view.keepBottom = true;
     view.pinBottomUntil = Date.now() + 5000;
@@ -1456,6 +1465,7 @@ class TermdeckApp {
   }
 
   sendTrackedInput(view, data) {
+    view.promptSubmitEntered = false;
     view.promptSubmitting = false;
     clearTimeout(view.promptSubmitTimer);
     view.promptEditing = false;
@@ -1792,7 +1802,7 @@ class TermdeckApp {
                    replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, programmaticScrollUntil: 0, scrollSettleTimer: 0,
                    replayTimer: 0, settleFrame: 0, layoutObserver: null, keepBottom: true, lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
-                   promptSubmitting: false, promptSubmitTimer: 0 };
+                   promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0 };
     container.addEventListener("wheel", () => { view.pinBottomUntil = 0; view.keepBottom = false; }, { passive: true });
     container.addEventListener("paste", (e) => {
       e.preventDefault();
@@ -1957,9 +1967,10 @@ class TermdeckApp {
     } else if (msg.type === "draft") {
       if (view.promptSubmitting) {
         const draft = String(msg.draft || "");
-        if (!draft) {
+        if (!draft && view.promptSubmitEntered) {
           view.promptDraft = "";
           view.promptSubmitting = false;
+          view.promptSubmitEntered = false;
           clearTimeout(view.promptSubmitTimer);
           this.showPromptDraft(view);
         }
