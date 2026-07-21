@@ -59,6 +59,57 @@ class AgentSessionTracker:
             self._codex_index_mtime_ns = mtime_ns
         return self._codex_thread_names.get(session_id)
 
+    def codex_session_title(self, session_id: str | None) -> str | None:
+        """Return the saved Codex thread name, with a rollout-derived fallback for older sessions."""
+        title = self.codex_thread_name(session_id)
+        if title or not session_id:
+            return title
+        needle = f"-{session_id}.jsonl"
+        try:
+            path = next(TermdeckConfig.CODEX_SESSIONS_DIR.rglob(f"rollout-*{needle}"), None)
+        except OSError:
+            return None
+        if path is None:
+            return None
+        first_prompt = None
+        try:
+            for line in path.open(errors="replace"):
+                try:
+                    payload = json.loads(line).get("payload", {})
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("type") == "thread_name_updated" and str(payload.get("thread_name", "")).strip():
+                    return str(payload["thread_name"]).strip()
+                if first_prompt is None and payload.get("type") == "user_message":
+                    first_prompt = str(payload.get("message", "")).strip()
+        except OSError:
+            return None
+        if not first_prompt:
+            return None
+        markdown_match = re.search(r"(?:^|[/\s])([A-Za-z0-9][A-Za-z0-9_.-]*\.md)\b", first_prompt)
+        if markdown_match:
+            return Path(markdown_match.group(1)).stem
+        compact = re.sub(r"\s+", " ", first_prompt)
+        return compact[:56].rstrip() + ("…" if len(compact) > 56 else "")
+
+    def claude_session_title(self, cwd: Path, session_id: str | None) -> str | None:
+        """Read Claude's durable aiTitle when the terminal has not emitted its OSC title yet."""
+        if not session_id:
+            return None
+        path = self.claude_project_dir(cwd) / f"{session_id}.jsonl"
+        title = None
+        try:
+            for line in path.open(errors="replace"):
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("type") == "ai-title" and str(payload.get("aiTitle", "")).strip():
+                    title = str(payload["aiTitle"]).strip()
+        except OSError:
+            return None
+        return title
+
     def codex_session_id_for_reference(self, reference: str) -> str | None:
         """Resolve a Codex UUID or saved thread name to the UUID accepted by resume."""
         reference = reference.strip()

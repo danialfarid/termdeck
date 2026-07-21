@@ -243,6 +243,10 @@ class TerminalSessionManager:
             ms.record.agent_session_id = found
             if kind is AgentKind.CLAUDE:
                 self._initialize_claude_subagent_state(ms)
+                if ms.cli_title is None:
+                    ms.cli_title = self._tracker.claude_session_title(Path(ms.record.cwd), found)
+            elif kind is AgentKind.CODEX and ms.cli_title is None:
+                ms.cli_title = self._tracker.codex_session_title(found)
             self._persist()
             self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.AGENT_SESSION,
                                          WsMessageFields.AGENT_SESSION_ID: found})
@@ -409,7 +413,9 @@ class TerminalSessionManager:
                 if cli_title is not None and cli_title.strip():
                     ms.cli_title = cli_title.strip()
         if ms.cli_title is None and ms.record.agent_kind == AgentKind.CODEX:
-            ms.cli_title = self._tracker.codex_thread_name(ms.record.agent_session_id)
+            ms.cli_title = self._tracker.codex_session_title(ms.record.agent_session_id)
+        if ms.cli_title is None and ms.record.agent_kind == AgentKind.CLAUDE:
+            ms.cli_title = self._tracker.claude_session_title(Path(ms.record.cwd), ms.record.agent_session_id)
 
     def _handle_exit(self, ms: ManagedSession, proc: PtyProcess, exit_code: int) -> None:
         if ms.proc is not proc:
