@@ -55,9 +55,9 @@ button { font-family: inherit; }
 .session-spinner-tail.bright { stroke-width: 2.4; opacity: 0.95; }
 .session-spinner-head { fill: currentColor; filter: drop-shadow(0 0 2px currentColor); }
 .session-spinner-rect-motion { fill: none; stroke: none; }
-.session-spinner-rect-tail { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 18 82; animation: termdeck-session-rectangle 1.7s linear infinite; }
-.session-spinner-rect-tail.faint { stroke-width: 4.2; opacity: 0.42; }
-.session-spinner-rect-tail.bright { stroke-width: 2.2; opacity: 0.95; animation-delay: -0.05s; }
+.session-spinner-rect-tail { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 26 74; animation: termdeck-session-rectangle 1.7s linear infinite; }
+.session-spinner-rect-tail.faint { stroke-width: 5.8; opacity: 0.42; }
+.session-spinner-rect-tail.bright { stroke-width: 3; opacity: 0.95; animation-delay: -0.05s; }
 .session-spinner-rect-head { fill: currentColor; filter: drop-shadow(0 0 2px currentColor); }
 .session-spinner.on { opacity: 1; }
 .terminal-type-icon { display: none; flex: none; align-items: center; justify-content: center; width: 14px; height: 14px; margin-right: 4px; color: var(--text); opacity: 0.82; }

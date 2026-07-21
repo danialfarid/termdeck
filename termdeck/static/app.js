@@ -115,6 +115,7 @@ class TermdeckApp {
     this.sessionTitleEls = new Map();
     this.sessionSpinnerEls = new Map();
     this.sessionStatusEls = new Map();
+    this.sessionListSignature = "";
     this.processingStates = new Map();
     this.viewedCompletedSessions = new Set();
     this.unreadSessions = new Set();
@@ -466,6 +467,7 @@ class TermdeckApp {
     } catch (err) {
       return;
     }
+    const previousSessionListSignature = this.sessionListSignature;
     this.sessions = this.applySessionOrder(sessions);
     this.closedSessions = closed;
     for (const s of this.sessions) {
@@ -487,7 +489,11 @@ class TermdeckApp {
       const remembered = this.getProjectState().active_session_id;
       this.activate(ids.has(remembered) ? remembered : sessions[0].session_id);
     }
-    this.renderList();
+    if (previousSessionListSignature !== this.sessionListSignatureFor(this.sessions) || !this.sessionTitleEls.size) {
+      this.renderList();
+    } else {
+      this.updateSessionRows();
+    }
     this.renderTopbar();
   }
 
@@ -547,6 +553,30 @@ class TermdeckApp {
 
   session(id) {
     return this.sessions.find((s) => s.session_id === id) || null;
+  }
+
+  sessionListSignatureFor(sessions = this.sessions) {
+    return sessions.map((s) => s.session_id).join("|");
+  }
+
+  updateSessionRows() {
+    for (const s of this.sessions) {
+      const presentation = this.titlePresentation(s);
+      const title = this.sessionTitleEls.get(s.session_id);
+      if (title) title.textContent = presentation.text;
+      const dot = this.sessionStatusEls.get(s.session_id);
+      if (dot) {
+        dot.className = "status-dot" + (s.running ? "" : " exited") +
+          (this.unreadSessions.has(s.session_id) && !this.processingStates.get(s.session_id) ? " unread" : "");
+      }
+      const spinner = this.sessionSpinnerEls.get(s.session_id);
+      if (spinner) spinner.classList.toggle("on", presentation.spinning);
+      if (title) {
+        const item = title.closest(".session-item");
+        if (item) item.classList.toggle("active", s.session_id === this.activeId && this.activeFileKey === null);
+      }
+    }
+    this.keepActiveSessionVisible();
   }
 
   effectiveTitle(s) {
@@ -744,6 +774,7 @@ class TermdeckApp {
     this.renderRecentFilesInto(list);
     this.renderClosedInto(list);
     this.$("empty-state").style.display = this.sessions.length || this.openFiles.size ? "none" : "flex";
+    this.sessionListSignature = this.sessionListSignatureFor();
     this.keepActiveSessionVisible();
   }
 
