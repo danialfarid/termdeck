@@ -311,6 +311,7 @@ class TermdeckApp {
     this.$("history-btn").onclick = () => this.toggleHistory();
     this.$("history-edits-toggle").onclick = () => this.toggleHistoryEdits();
     this.$("history-close").onclick = () => this.closeHistory();
+    this.$("terminal-resync-btn").onclick = () => this.resyncActiveTerminal();
     this.$("history-attach").onclick = () => this.attachToHistory();
     this.$("history-send").onclick = () => this.sendHistoryPrompt();
     this.$("history-prompt").addEventListener("keydown", (e) => {
@@ -1855,7 +1856,7 @@ class TermdeckApp {
     term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
     const view = { container, term, fit, ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
                    replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, programmaticScrollUntil: 0, scrollSettleTimer: 0,
-                   replayTimer: 0, settleFrame: 0, layoutObserver: null, keepBottom: true, lastSentCols: null, lastSentRows: null,
+                   replayTimer: 0, reconnectTimer: 0, settleFrame: 0, layoutObserver: null, keepBottom: true, lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, pendingDraftSync: null, pendingTerminalDraft: null,
@@ -1981,7 +1982,13 @@ class TermdeckApp {
       });
     };
     ws.onclose = () => {
-      if (!view.closed) setTimeout(() => this.connect(id, view), RECONNECT_MS);
+      if (!view.closed) {
+        clearTimeout(view.reconnectTimer);
+        view.reconnectTimer = setTimeout(() => {
+          view.reconnectTimer = 0;
+          this.connect(id, view);
+        }, RECONNECT_MS);
+      }
     };
     view.ws = ws;
   }
@@ -2158,6 +2165,24 @@ class TermdeckApp {
     this.scrollTerminalToBottom(view);
     this.scheduleViewportSettle(view);
     view.term.focus();
+  }
+
+  resyncActiveTerminal() {
+    if (this.activeFileKey !== null || this.historyOpen || !this.activeId) return;
+    const view = this.views.get(this.activeId);
+    if (!view || view.closed) return;
+    view.keepBottom = true;
+    view.pinBottomUntil = Date.now() + 8000;
+    view.term.reset();
+    this.$("status-name").textContent = "resyncing terminal…";
+    const ws = view.ws;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      ws.close();
+    } else {
+      clearTimeout(view.reconnectTimer);
+      view.reconnectTimer = 0;
+      this.connect(this.activeId, view);
+    }
   }
 
   terminalAtBottom(view) {
