@@ -53,12 +53,13 @@ class TranscriptService:
     def _tool_event(self, name: str, value: object, role: str = "event") -> dict[str, object]:
         text = self._format_value(value)
         kind = self._tool_kind(name, text)
+        diff = self._edit_diff(name, value, text) if kind == "edit" else []
+        if kind == "edit" and not diff and name.strip().lower() not in {"edit", "write", "notebookedit", "apply_patch"}:
+            kind = "tool"
         title = "Code edit" if kind == "edit" else "Plan" if kind == "plan" else name or "Tool"
         turn = self._turn(role, text, kind, title, expanded=kind == "edit")
-        if kind == "edit":
-            diff = self._edit_diff(name, value, text)
-            if diff:
-                turn["diff"] = diff
+        if diff:
+            turn["diff"] = diff
         return turn
 
     @staticmethod
@@ -75,7 +76,11 @@ class TranscriptService:
         lowered = f"{name}\n{text}".lower()
         if re.search(r"update_plan|enterplanmode|exitplanmode|taskcreate|taskupdate", lowered):
             return "plan"
-        if re.search(r"apply_patch|old_string|new_string|notebookedit|\b(edit|write)\b", lowered):
+        tool_name = name.strip().lower()
+        if (
+            tool_name in {"edit", "write", "notebookedit", "apply_patch"}
+            or "*** begin patch" in lowered and "*** end patch" in lowered
+        ):
             return "edit"
         return "tool"
 
