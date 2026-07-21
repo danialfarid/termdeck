@@ -77,7 +77,12 @@
   <div id="history-area" class="hidden">
     <div id="history-head">
       <span id="history-title">Full transcript</span>
-      <button id="history-close" title="Back to terminal">&#10005;</button>
+      <div id="history-actions">
+        <button id="history-edits-toggle" title="Collapse all code edits" aria-label="Collapse all code edits">
+          <span class="codicon codicon-collapse-all"></span>
+        </button>
+        <button id="history-close" title="Back to terminal">&#10005;</button>
+      </div>
     </div>
     <div id="history-body"></div>
     <div id="history-composer">

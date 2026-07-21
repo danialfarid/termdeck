@@ -65,6 +65,7 @@ const TERMINAL_TYPE_SVGS = {
   claude: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.25c.42 0 .76.34.76.76v4.08l3.53-2.04a.76.76 0 1 1 .76 1.31L9.52 7.4l3.53 2.04a.76.76 0 0 1-.76 1.31L8.76 8.72v4.08a.76.76 0 0 1-1.52 0V8.72l-3.53 2.04a.76.76 0 1 1-.76-1.31L6.48 7.4 2.95 5.36a.76.76 0 1 1 .76-1.31l3.53 2.04V2.01c0-.42.34-.76.76-.76Z"/></svg>',
   codex: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" d="M8 1.75a2.35 2.35 0 0 1 2.03 1.17l1.18 2.04a2.35 2.35 0 0 1 2.35 4.07l-1.18 2.04a2.35 2.35 0 0 1-4.7 0L6.5 9.03a2.35 2.35 0 0 1-2.35-4.07l1.18-2.04A2.35 2.35 0 0 1 8 1.75Zm0 2.35v7.8m-3.38-5.85 6.76 3.9m0-3.9-6.76 3.9"/></svg>',
 };
+TERMINAL_TYPE_SVGS.codex = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.15" fill="none" stroke="currentColor" stroke-width="1.15"/><path fill="none" stroke="currentColor" stroke-width="1.05" stroke-linecap="round" stroke-linejoin="round" d="M8 2.7v3.05c0 1.05-.53 1.88-1.44 2.4l-2.64 1.52m9.56 0-2.64-1.52C9.93 7.63 9.4 6.8 9.4 5.75V2.7m-4.5 10.6v-3.05c0-1.05.53-1.88 1.44-2.4l2.64-1.52m2.12 6.97v-3.05c0-1.05-.53-1.88-1.44-2.4L7.02 8.33"/></svg>';
 const TERM_THEME_DARK = {
   background: "#0a0c10", foreground: "#d8dee9", cursor: "#8fbcbb", selectionBackground: "#3b4252",
   black: "#3b4252", red: "#bf616a", green: "#a3be8c", yellow: "#ebcb8b",
@@ -94,6 +95,7 @@ class TermdeckApp {
     this.historyFingerprint = "";
     this.historyTurns = [];
     this.historyLoaded = false;
+    this.historyEditsCollapsed = false;
     this.closedExpanded = false;
     this.settings = { ...SETTINGS_DEFAULTS };
     this.saveTimer = null;
@@ -284,6 +286,7 @@ class TermdeckApp {
     this.$("modal-create").onclick = () => this.createSession();
     this.$("modal-model").onchange = () => this.updateModalPermissions();
     this.$("history-btn").onclick = () => this.toggleHistory();
+    this.$("history-edits-toggle").onclick = () => this.toggleHistoryEdits();
     this.$("history-close").onclick = () => this.closeHistory();
     this.$("history-send").onclick = () => this.sendHistoryPrompt();
     this.$("history-prompt").addEventListener("keydown", (e) => {
@@ -671,12 +674,7 @@ class TermdeckApp {
     const icon = document.createElement("span");
     icon.className = "terminal-type-icon";
     icon.setAttribute("aria-hidden", "true");
-    if (s.agent_kind === "codex") {
-      const image = document.createElement("img");
-      image.src = "/static/codex-icon.png";
-      image.alt = "";
-      icon.appendChild(image);
-    } else if (TERMINAL_TYPE_SVGS[s.agent_kind]) {
+    if (TERMINAL_TYPE_SVGS[s.agent_kind]) {
       icon.innerHTML = TERMINAL_TYPE_SVGS[s.agent_kind];
     } else {
       icon.innerHTML = '<span class="codicon codicon-terminal"></span>';
@@ -1362,6 +1360,43 @@ class TermdeckApp {
     return JSON.stringify([turn.role, turn.kind, turn.title, turn.text, turn.diff, turn.plan, turn.items]);
   }
 
+  toggleHistoryEdits() {
+    this.historyEditsCollapsed = !this.historyEditsCollapsed;
+    for (const event of this.$("history-body").querySelectorAll(".history-event.edit")) {
+      event.open = !this.historyEditsCollapsed;
+    }
+    this.updateHistoryEditToggle();
+  }
+
+  updateHistoryEditToggle() {
+    const button = this.$("history-edits-toggle");
+    if (!button) return;
+    const hasEdits = !!this.$("history-body").querySelector(".history-event.edit");
+    button.disabled = !hasEdits;
+    button.classList.toggle("on", this.historyEditsCollapsed && hasEdits);
+    const label = this.historyEditsCollapsed ? "Expand all code edits" : "Collapse all code edits";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    const icon = button.querySelector(".codicon");
+    if (icon) icon.className = `codicon codicon-${this.historyEditsCollapsed ? "expand-all" : "collapse-all"}`;
+  }
+
+  historyEditSummary(turn) {
+    const files = [];
+    const addFile = (value) => {
+      const file = String(value || "").trim().replace(/^['"]|['"]$/g, "");
+      if (file && !files.includes(file)) files.push(file);
+    };
+    const text = String(turn.text || "");
+    for (const match of text.matchAll(/\*\*\* (?:Update|Add|Delete) File:\s*([^\\\r\n]+?)(?=(?:\\n|\r?\n)|$)/g)) addFile(match[1]);
+    for (const match of text.matchAll(/(?:file_path|fileName|filename)\s*["']?\s*:\s*["']([^"']+)["']/gi)) addFile(match[1]);
+    const additions = Array.isArray(turn.diff) ? turn.diff.filter((line) => line.kind === "add").length : 0;
+    const removals = Array.isArray(turn.diff) ? turn.diff.filter((line) => line.kind === "remove").length : 0;
+    const fileSummary = files.length ? files.slice(0, 2).join(", ") + (files.length > 2 ? ` +${files.length - 2} more` : "") : "file details unavailable";
+    const lineSummary = `+${additions} / −${removals} lines`;
+    return `${fileSummary} · ${lineSummary}`;
+  }
+
   renderHistoryTurns(turns, options = {}) {
     const body = this.$("history-body");
     const append = options.append === true;
@@ -1372,11 +1407,13 @@ class TermdeckApp {
       if (turn.kind && turn.kind !== "message") {
         const event = document.createElement("details");
         event.className = "history-event " + turn.kind;
-        event.open = turn.expanded === true;
-        if (preserveExpanded && previousExpanded[eventIndex] !== undefined) event.open = previousExpanded[eventIndex];
+        event.open = turn.kind === "edit" ? !this.historyEditsCollapsed : turn.expanded === true;
+        if (!this.historyEditsCollapsed && preserveExpanded && previousExpanded[eventIndex] !== undefined) event.open = previousExpanded[eventIndex];
         eventIndex += 1;
         const summary = document.createElement("summary");
-        summary.textContent = turn.kind === "plan" && Array.isArray(turn.plan)
+        summary.textContent = turn.kind === "edit"
+            ? this.historyEditSummary(turn)
+            : turn.kind === "plan" && Array.isArray(turn.plan)
             ? `Plan · ${turn.plan.length} steps`
             : turn.kind === "thinking" && Array.isArray(turn.items)
             ? `Thinking · ${turn.items.length} operations`
@@ -1435,15 +1472,19 @@ class TermdeckApp {
       }
       const block = document.createElement("div");
       block.className = "turn " + turn.role;
-      const role = document.createElement("div");
-      role.className = "turn-role";
-      role.textContent = turn.role;
       const text = document.createElement("div");
       text.className = "turn-text markdown";
       text.innerHTML = this.renderMarkdown(turn.text);
-      block.append(role, text);
+      if (turn.role === "user") {
+        const role = document.createElement("div");
+        role.className = "turn-role";
+        role.textContent = "You";
+        block.append(role);
+      }
+      block.append(text);
       body.appendChild(block);
     }
+    this.updateHistoryEditToggle();
   }
 
   async loadHistory(sessionId, options = {}) {
@@ -1502,6 +1543,7 @@ class TermdeckApp {
       this.renderHistoryTurns(turns.slice(this.historyTurns.length), { append: true });
     }
     this.historyTurns = turns;
+    this.updateHistoryEditToggle();
     if (wasAtBottom) body.scrollTop = body.scrollHeight;
     else if (preserveScroll) body.scrollTop = Math.min(previousScrollTop, Math.max(0, body.scrollHeight - body.clientHeight));
     else body.scrollTop = body.scrollHeight;
