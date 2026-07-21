@@ -597,7 +597,7 @@ class TermdeckApp {
     const toggle = document.createElement("button");
     const showIcons = !!this.settings.show_terminal_icons;
     toggle.className = "section-toggle" + (showIcons ? " on" : "");
-    toggle.innerHTML = '<span class="codicon codicon-terminal"></span>';
+    toggle.textContent = "i";
     toggle.title = showIcons ? "Hide terminal type icons" : "Show terminal type icons";
     toggle.setAttribute("aria-label", toggle.title);
     toggle.setAttribute("aria-pressed", String(showIcons));

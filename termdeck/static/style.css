@@ -47,7 +47,7 @@ button { font-family: inherit; }
 .status-dot.exited { background: var(--red); visibility: visible; }
 .status-dot.unread { background: var(--accent); visibility: visible; }
 .session-spinner { position: absolute; left: 8px; top: 50%; width: 12px; height: 12px; margin-top: -6px; border-radius: 50%; opacity: 0; pointer-events: none; }
-.session-spinner::before { content: ""; position: absolute; left: 4.5px; top: 4.5px; width: 3px; height: 3px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 78%, transparent); }
+.session-spinner::before { content: none; }
 .session-spinner i { position: absolute; left: 1px; top: 0; display: block; width: 10px; height: 6px; transform-origin: 5px 6px; animation: termdeck-session-orbit 3.2s linear infinite; }
 .session-spinner i::before { content: ""; position: absolute; left: 6px; top: 1px; width: 4px; height: 4px; background: var(--accent); clip-path: polygon(100% 50%, 0 0, 0 100%); filter: drop-shadow(0 0 2px color-mix(in srgb, var(--accent) 72%, transparent)); }
 .session-spinner i::after { content: ""; position: absolute; left: 0; top: 2px; width: 7px; height: 2px; border-radius: 999px; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 80%, transparent)); }
@@ -72,6 +72,7 @@ button { font-family: inherit; }
 .section-toggle:hover { color: var(--text); border-color: var(--border); background: var(--panel2); }
 .section-toggle.on { color: var(--text); border-color: var(--active-border); background: var(--active-bg); }
 .section-toggle .codicon { font-size: 11px; }
+.section-toggle { font-family: Menlo, monospace; font-size: 12px; font-weight: 700; }
 .closed-header { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
 .closed-header:hover { color: var(--text); }
 .closed-chevron { font-size: 12px; transition: transform 0.08s ease; }
