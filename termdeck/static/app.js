@@ -631,29 +631,14 @@ class TermdeckApp {
       title.textContent = presentation.text;
       this.sessionTitleEls.set(s.session_id, title);
       const typeIcon = this.terminalTypeIcon(s);
-      const pin = document.createElement("button");
-      const pinned = (this.getProjectState().pinned_sessions || []).includes(s.session_id);
-      pin.className = "row-action pin-action" + (pinned ? " on" : "");
-      pin.innerHTML = `<span class="codicon codicon-${pinned ? "pinned" : "pin"}"></span>`;
-      pin.title = pinned ? "Unpin terminal" : "Pin terminal to the top";
-      pin.onclick = (e) => { e.stopPropagation(); this.togglePin(s.session_id); };
-      const fork = document.createElement("button");
-      fork.className = "row-action";
-      fork.innerHTML = '<span class="codicon codicon-repo-forked"></span>';
-      fork.title = "Fork into a new terminal (branches the agent session)";
-      fork.onclick = (e) => { e.stopPropagation(); this.forkSession(s); };
-      const restart = document.createElement("button");
-      restart.className = "row-action";
-      restart.innerHTML = '<span class="codicon codicon-refresh"></span>';
-      restart.title = "Restart — relaunch this terminal, resuming the same session (recovery for a hung agent)";
-      restart.onclick = (e) => { e.stopPropagation(); this.restartSession(s.session_id); };
       const close = document.createElement("button");
       close.className = "item-close";
       close.textContent = "✕";
       close.title = "Close terminal (⌘⇧⌫ when active)";
       close.onclick = (e) => { e.stopPropagation(); this.closeSession(s.session_id); };
-      item.append(dot, spinner, typeIcon, title, pin, fork, restart, close);
+      item.append(dot, spinner, typeIcon, title, close);
       item.onclick = () => this.activate(s.session_id);
+      item.oncontextmenu = (e) => this.openSessionContextMenu(e, s);
       item.ondblclick = () => this.renameSession(s);
       this.makeDraggable(item, "session", s.session_id, (dragged, target) => this.reorderSessions(dragged, target));
       list.appendChild(item);
@@ -814,6 +799,21 @@ class TermdeckApp {
       };
     }
     menu.appendChild(item);
+  }
+
+  openSessionContextMenu(event, session) {
+    event.preventDefault();
+    event.stopPropagation();
+    const menu = this.$("context-menu");
+    menu.textContent = "";
+    const pinned = (this.getProjectState().pinned_sessions || []).includes(session.session_id);
+    this.addContextItem(menu, pinned ? "Unpin terminal" : "Pin terminal to the top",
+      () => this.togglePin(session.session_id));
+    this.addContextItem(menu, "Fork into a new terminal", () => this.forkSession(session));
+    this.addContextItem(menu, "Restart terminal", () => this.restartSession(session.session_id));
+    menu.classList.remove("hidden");
+    menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 10) + "px";
+    menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 10) + "px";
   }
 
   openTreeContextMenu(event, row) {

@@ -83,11 +83,6 @@ button { font-family: inherit; }
 .item-close { display: none; border: none; background: none; color: var(--dim); cursor: pointer; font-size: 12px; padding: 0 2px; flex: none; }
 .file-item:hover .item-close, .closed-item:hover .item-close, .session-item:hover .item-close { display: inline-block; }
 .item-close:hover { color: var(--red); }
-.row-action { display: none; border: none; background: none; color: var(--dim); cursor: pointer; padding: 0 3px; flex: none; line-height: 1; }
-.row-action .codicon { font-size: calc(var(--sidebar-font-size) + 3px); }
-.session-item:hover .row-action { display: inline-flex; align-items: center; }
-.row-action:hover { color: var(--accent); }
-.row-action.pin-action.on { display: inline-flex; color: var(--accent); align-items: center; }
 #closed-section { border-top: 1px solid var(--border); max-height: 30%; overflow-y: auto; flex: none; padding: 0 6px 8px; }
 .file-type-icon { width: calc(var(--sidebar-font-size) + 2px); height: calc(var(--sidebar-font-size) + 2px); flex: none; }
 .panel-actions { display: flex; gap: 6px; align-items: center; }
