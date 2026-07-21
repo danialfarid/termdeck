@@ -117,6 +117,7 @@ class TermdeckApp {
     this.sessionSpinnerEls = new Map();
     this.sessionStatusEls = new Map();
     this.sessionListSignature = "";
+    this.revealActiveSessionOnLoad = true;
     this.processingStates = new Map();
     this.viewedCompletedSessions = new Set();
     this.unreadSessions = new Set();
@@ -496,6 +497,10 @@ class TermdeckApp {
     } else {
       this.updateSessionRows();
     }
+    if (this.revealActiveSessionOnLoad) {
+      this.revealActiveSessionOnLoad = false;
+      this.keepActiveSessionVisible();
+    }
     this.renderTopbar();
   }
 
@@ -578,7 +583,6 @@ class TermdeckApp {
         if (item) item.classList.toggle("active", s.session_id === this.activeId && this.activeFileKey === null);
       }
     }
-    this.keepActiveSessionVisible();
   }
 
   effectiveTitle(s) {
@@ -777,7 +781,6 @@ class TermdeckApp {
     this.renderClosedInto(list);
     this.$("empty-state").style.display = this.sessions.length || this.openFiles.size ? "none" : "flex";
     this.sessionListSignature = this.sessionListSignatureFor();
-    this.keepActiveSessionVisible();
   }
 
   keepActiveSessionVisible() {
