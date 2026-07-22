@@ -183,14 +183,14 @@ body.dragging { user-select: none; cursor: col-resize; }
 #history-send { border: 1px solid var(--accent); background: var(--accent); color: #06232b; }
 #history-attach .codicon, #history-send .codicon { font-size: 11px; }
 #history-send:hover { filter: brightness(1.1); }
-.turn { margin-bottom: 16px; max-width: 900px; }
+.turn { width: 100%; margin-bottom: 16px; }
 .turn-role { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 4px; }
 .turn.user .turn-role { color: var(--accent); }
 .turn.assistant .turn-role { color: var(--green); }
-.turn-text { word-break: break-word; font-size: calc(var(--code-font-size) + 1px); line-height: 1.55; color: var(--text); font-family: -apple-system, "SF Pro Text", sans-serif; }
+.turn-text { word-break: break-word; font-size: calc(var(--code-font-size) + 1px); line-height: 1.55; color: var(--text); font-family: "SF Mono", Menlo, monospace; }
 .turn.user .turn-text { background: var(--active-bg); border: 1px solid var(--active-border); border-left: 3px solid var(--accent); padding: 8px 12px; border-radius: 5px; }
 .history-empty { color: var(--dim); font-size: 13px; padding: 20px; text-align: center; }
-.history-event { margin: 0 0 10px; max-width: 1100px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); }
+.history-event { width: 100%; margin: 0 0 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); }
 .history-event summary { display: flex; align-items: center; gap: 7px; list-style: none; padding: 6px 10px; cursor: pointer; color: var(--dim); font: 600 11px Menlo, monospace; }
 .history-event summary::-webkit-details-marker { display: none; }
 .history-event summary::before { content: "+"; display: inline-grid; place-items: center; width: 15px; height: 15px; flex: none; border: 1px solid var(--border); border-radius: 4px; color: var(--dim); font: 13px/1 Menlo, monospace; }
@@ -204,7 +204,7 @@ body.dragging { user-select: none; cursor: col-resize; }
 .history-thinking-label { padding: 6px 10px 2px; color: var(--dim); font: 600 10px Menlo, monospace; text-transform: uppercase; letter-spacing: 0.05em; }
 .history-thinking pre { margin: 0; border-top: 0; border-bottom: 1px solid var(--border); }
 .history-thinking pre:last-child { border-bottom: 0; }
-.history-plan { margin: 0; padding: 8px 12px 8px 34px; border-top: 1px solid var(--border); list-style: none; color: var(--text); font: 12px/1.5 -apple-system, "SF Pro Text", sans-serif; }
+.history-plan { margin: 0; padding: 8px 12px 8px 34px; border-top: 1px solid var(--border); list-style: none; color: var(--text); font: 12px/1.5 "SF Mono", Menlo, monospace; }
 .plan-step { padding: 3px 0 3px 4px; }
 .plan-marker { display: inline-block; width: 18px; margin-left: -22px; color: var(--dim); font-family: Menlo, monospace; font-weight: 700; }
 .plan-step.in_progress .plan-marker { color: var(--accent); }
