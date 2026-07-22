@@ -7,7 +7,7 @@ const RECONNECT_MS = 1500;
 const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~/workspace/stock";
 const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 13, terminal_font_size: 13,
-  code_font_size: 12, diff_font_size: 13, tree_font_size: 12, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
+  ui_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   tree_sort: "name", show_mtime: false, word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
@@ -209,7 +209,7 @@ class TermdeckApp {
     this.loadIconMap();
     this.$("settings-gear").onclick = (e) => this.openSettingsPopover(e.currentTarget,
       [{ label: "Sidebar font", key: "sidebar_font_size" }, { label: "Terminal font", key: "terminal_font_size" },
-       { label: "Code font", key: "code_font_size" }, { label: "Diff font", key: "diff_font_size" },
+       { label: "UI font", key: "ui_font_size" }, { label: "Code font", key: "code_font_size" }, { label: "Diff font", key: "diff_font_size" },
        { label: "Tree/search font", key: "tree_font_size" }]);
     for (const view of ["terminals", "project", "search"]) {
       this.$("view-" + view).onclick = () => this.setSideView(view);
@@ -2472,6 +2472,7 @@ class TermdeckApp {
     sidebar.style.width = s.sidebar_width + "px";
     sidebar.style.minWidth = s.sidebar_width + "px";
     document.documentElement.style.setProperty("--sidebar-font-size", s.sidebar_font_size + "px");
+    document.documentElement.style.setProperty("--ui-font-size", s.ui_font_size + "px");
     document.documentElement.style.setProperty("--code-font-size", s.code_font_size + "px");
     const codeFontSize = Number(s.code_font_size) || SETTINGS_DEFAULTS.code_font_size;
     const configuredDiffFontSize = Number(s.diff_font_size) || SETTINGS_DEFAULTS.diff_font_size;
