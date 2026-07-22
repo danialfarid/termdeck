@@ -1,8 +1,15 @@
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 .DS_Store
 *.log
 *.bin
+
+dist/
+build/
+*.egg-info/
+packaging/homebrew/termdeck.rb

@@ -39,12 +39,16 @@ class ManagedSession:
         self.title_updated_monotonic = 0.0
         self.title_carry = b""
         self.title_recovered_from_buffer = False
+        # Set briefly after a Codex /rename command.  The next OSC title is
+        # the user-chosen name and should become the persisted tab title.
+        self.pending_cli_rename_until = 0.0
         self.osc_query_carry = b""
         self.last_repaint_offset: int | None = None
         self.draft_tracker = DraftInputTracker(record.draft)
         self.last_input_monotonic = 0.0
         self.claude_subagent_states: dict[Path, bool] = {}
         self.claude_subagents_active = False
+        self.processing_started_at: float | None = None
 
     @property
     def running(self) -> bool:
@@ -72,8 +76,12 @@ class TerminalSessionManager:
         self._status_queues: set[asyncio.Queue] = set()
         self._draft_persist_task: asyncio.Task | None = None
         self._background_loop: asyncio.AbstractEventLoop | None = None
+        self._transcript_service = None
         self._claude_activity_watcher = ClaudeActivityWatcher(
             TermdeckConfig.CLAUDE_PROJECTS_DIR, self._on_claude_file_change_from_thread)
+
+    def attach_transcript_service(self, service) -> None:
+        self._transcript_service = service
 
     def start_background_tasks(self) -> None:
         self._background_loop = asyncio.get_running_loop()
@@ -84,6 +92,8 @@ class TerminalSessionManager:
         self._background_loop = None
 
     def _on_claude_file_change_from_thread(self, path: Path) -> None:
+        if self._transcript_service is not None:
+            self._transcript_service.notify_file_change(path)
         if self._background_loop is not None:
             self._background_loop.call_soon_threadsafe(self._on_claude_file_change, path)
 
@@ -262,6 +272,18 @@ class TerminalSessionManager:
     def _processing_state(self, ms: ManagedSession) -> bool:
         return ms.processing or ms.claude_subagents_active
 
+    def _sync_processing_started(self, ms: ManagedSession, processing: bool | None = None) -> bool:
+        current = self._processing_state(ms) if processing is None else processing
+        if current and ms.processing_started_at is None:
+            transcript_since = None
+            if self._transcript_service is not None:
+                transcript_since = self._transcript_service.last_user_timestamp(
+                    ms.record.agent_kind, ms.record.cwd, ms.record.agent_session_id)
+            ms.processing_started_at = transcript_since or time.time()
+        elif not current:
+            ms.processing_started_at = None
+        return current
+
     @staticmethod
     def _display_title(value: str | None) -> str | None:
         if value and ("\u2800" <= value[0] <= "\u28ff" or value[0] == "✳"):
@@ -270,6 +292,7 @@ class TerminalSessionManager:
 
     def _status_payload(self, ms: ManagedSession) -> dict[str, object]:
         self._recover_title_from_buffer(ms)
+        processing = self._sync_processing_started(ms)
         return {
             WsMessageFields.TYPE: WsMessageFields.SESSION_STATUS,
             WsMessageFields.SESSION_ID: ms.record.session_id,
@@ -279,7 +302,8 @@ class TerminalSessionManager:
             WsMessageFields.AGENT_SESSION_ID: ms.record.agent_session_id,
             WsMessageFields.RUNNING: ms.running,
             WsMessageFields.EXIT_CODE: ms.exit_code,
-            WsMessageFields.PROCESSING: self._processing_state(ms),
+            WsMessageFields.PROCESSING: processing,
+            "processing_since": ms.processing_started_at,
         }
 
     def _broadcast_status(self, ms: ManagedSession) -> None:
@@ -394,6 +418,15 @@ class TerminalSessionManager:
         if cli_title is not None and cli_title.strip():
             ms.cli_title = cli_title.strip()
             ms.title_updated_monotonic = time.monotonic()
+            if ms.pending_cli_rename_until >= time.monotonic():
+                renamed_title = self._display_title(ms.cli_title)
+                if renamed_title and renamed_title.strip():
+                    ms.record.title = renamed_title.strip()
+                    ms.record.title_user_set = True
+                    self._persist()
+                ms.pending_cli_rename_until = 0.0
+            elif ms.pending_cli_rename_until:
+                ms.pending_cli_rename_until = 0.0
             self._schedule_processing_expiry(ms)
             if ms.record.agent_kind == AgentKind.CLAUDE.value and ms.record.agent_session_id is None:
                 self._schedule_detection(ms, 0.1)
@@ -447,6 +480,11 @@ class TerminalSessionManager:
 
     def write_input(self, session_id: str, text: str) -> None:
         ms = self._sessions[session_id]
+        draft_before_input = ms.draft_tracker.draft
+        if ms.record.agent_kind in (AgentKind.CODEX.value, AgentKind.CLAUDE.value) and ("\r" in text or "\n" in text):
+            command = draft_before_input.strip()
+            if command.lower().startswith("/rename") and (len(command) == 7 or command[7].isspace()):
+                ms.pending_cli_rename_until = time.monotonic() + 10.0
         if ms.proc is not None:
             ms.proc.write(text.encode())
         ms.last_input_monotonic = time.monotonic()
@@ -454,6 +492,13 @@ class TerminalSessionManager:
             self._schedule_detection(ms, TermdeckConfig.AGENT_DETECT_INPUT_DEBOUNCE_SECONDS)
         ms.draft_tracker.feed(text)
         new_draft = ms.draft_tracker.draft
+        # In Codex, Tab queues the current composer instead of submitting it.
+        # DraftInputTracker intentionally treats Tab as layout/control input,
+        # so clear the persisted draft explicitly or Markdown will resurrect
+        # the already-queued prompt when the view changes.
+        if text == "\t" and ms.record.agent_kind == AgentKind.CODEX.value:
+            new_draft = ""
+            ms.draft_tracker = DraftInputTracker("")
         if new_draft != ms.record.draft:
             ms.record.draft = new_draft
             self._schedule_draft_persist()
@@ -696,11 +741,13 @@ class TerminalSessionManager:
 
     def session_summary(self, ms: ManagedSession) -> dict[str, object]:
         self._recover_title_from_buffer(ms)
+        processing = self._sync_processing_started(ms)
         summary: dict[str, object] = dict(ms.record.to_dict())
         summary[ApiFields.RUNNING] = ms.running
         summary[ApiFields.EXIT_CODE] = ms.exit_code
         summary[ApiFields.CLI_TITLE] = ms.cli_title
-        summary["processing"] = ms.processing or ms.claude_subagents_active
+        summary["processing"] = processing
+        summary["processing_since"] = ms.processing_started_at
         return summary
 
     def session_summary_by_id(self, session_id: str) -> dict[str, object]:

@@ -1,5 +1,3 @@
-fastapi
-uvicorn[standard]
-setproctitle
-python-multipart
-watchdog
+# Dependencies are declared in pyproject.toml; this file just installs the project itself
+# so `pip install -r requirements.txt` keeps working for a source checkout.
+-e .

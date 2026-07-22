@@ -1,0 +1,43 @@
+TermDeck
+Copyright 2026 Danial Farid
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Third-party components bundled in termdeck/static/vendor/
+--------------------------------------------------------------------------------
+
+xterm.js  -  termdeck/static/vendor/xterm.js, xterm.css, addon-fit.js
+  https://github.com/xtermjs/xterm.js
+  MIT License
+  Copyright (c) 2017-2022, The xterm.js authors (https://github.com/xtermjs/xterm.js/graphs/contributors)
+  Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com)
+  Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/)
+
+Monaco Editor  -  termdeck/static/vendor/monaco/
+  https://github.com/microsoft/monaco-editor
+  MIT License
+  Copyright (c) 2016 - present Microsoft Corporation
+
+VS Code Codicons  -  termdeck/static/vendor/codicons/
+  https://github.com/microsoft/vscode-codicons
+  Icons: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+  Code:  MIT License
+  Copyright (c) Microsoft Corporation
+
+Material Icon Theme  -  termdeck/static/vendor/material-icons/
+  https://github.com/material-extensions/vscode-material-icon-theme
+  MIT License
+  Copyright (c) 2017 Philipp Kief
+
+marked  -  termdeck/static/vendor/marked.min.js
+  https://github.com/markedjs/marked
+  MIT License
+  Copyright (c) 2018+, MarkedJS (https://github.com/markedjs/)
+  Copyright (c) 2011-2018, Christopher Jeffrey (https://github.com/chjj/)
+
+--------------------------------------------------------------------------------
+
+The full text of the MIT License is available at https://opensource.org/licenses/MIT
+and applies to each MIT-licensed component listed above, with the copyright notice
+shown next to that component.

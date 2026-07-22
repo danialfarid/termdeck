@@ -1,15 +1,14 @@
 // Status/title/processing changes arrive through /ws/status. This slower
 // fallback only reconciles session-list metadata such as created/closed tabs.
 const SESSION_LIST_REFRESH_MS = 30000;
-const HISTORY_REFRESH_MS = 1500;
 const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
 const RECONNECT_MS = 1500;
 const DEFAULT_COMMAND = "codex";
-const DEFAULT_CWD = "~/workspace/stock";
+const DEFAULT_CWD = "~";
 const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 13, terminal_font_size: 13,
   ui_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
-  tree_sort: "name", show_mtime: false, word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
+  show_mtime: false, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
   show_terminal_icons: false, history_mode: false };
 const MODEL_PERMISSIONS = {
@@ -94,6 +93,13 @@ class TermdeckApp {
     this.historyOpen = false;
     this.historyRefreshTimer = 0;
     this.historyLoadBusy = false;
+    this.historyWs = null;
+    this.historyWsReconnectTimer = 0;
+    this.historyStreamSessionId = null;
+    this.historySnapshotBuffers = new Map();
+    this.historyTurnsBySession = new Map();
+    this.historyRevisions = new Map();
+    this.historyPendingPrompts = new Map();
     this.historyFingerprint = "";
     this.historyTurns = [];
     this.historyLoaded = false;
@@ -109,6 +115,7 @@ class TermdeckApp {
     this.recentFilesRoot = null;
     this.recentFilesBusy = false;
     this.recentFilesFetchedAt = 0;
+    this.recentFilesExpanded = false;
     this.sideView = "terminals";
     this.searchWord = false;
     this.searchCase = false;
@@ -271,14 +278,6 @@ class TermdeckApp {
     mtimeBtn.onclick = () => {
       this.settings.show_mtime = !this.settings.show_mtime;
       mtimeBtn.classList.toggle("on", this.settings.show_mtime);
-      this.saveSettings();
-      this.rerenderTree();
-    };
-    const sortBtn = this.$("sort-toggle");
-    sortBtn.classList.toggle("on", this.settings.tree_sort === "mtime");
-    sortBtn.onclick = () => {
-      this.settings.tree_sort = this.settings.tree_sort === "mtime" ? "name" : "mtime";
-      sortBtn.classList.toggle("on", this.settings.tree_sort === "mtime");
       this.saveSettings();
       this.rerenderTree();
     };
@@ -557,9 +556,11 @@ class TermdeckApp {
         if (s.session_id === this.activeId && this.historyOpen) this.showPromptDraft(view);
       }
       const spinning = this.titlePresentation(s).spinning;
+      const processingSince = Number(s.processing_since);
+      if (processingSince > 0) this.processingSince.set(s.session_id, processingSince * 1000);
       if (!this.processingStates.has(s.session_id)) {
         this.processingStates.set(s.session_id, spinning);
-        if (spinning) this.processingSince.set(s.session_id, Date.now());
+        if (spinning && !this.processingSince.has(s.session_id)) this.processingSince.set(s.session_id, Date.now());
       }
       else this.updateProcessingState(s.session_id, spinning);
     }
@@ -582,6 +583,9 @@ class TermdeckApp {
     } else {
       this.updateSessionRows();
     }
+    // Recently modified files are shown below the terminal/open-file list,
+    // so they must be fetched even while the Files panel itself is hidden.
+    this.refreshRecentFiles();
     if (this.revealActiveSessionOnLoad) {
       this.revealActiveSessionOnLoad = false;
       this.keepActiveSessionVisible();
@@ -614,16 +618,30 @@ class TermdeckApp {
   applySessionStatus(message) {
     const session = this.session(message.session_id);
     if (!session) return;
+    const previousAgentSessionId = session.agent_session_id;
+    if (Object.prototype.hasOwnProperty.call(message, "title") && message.title) session.title = message.title;
+    if (Object.prototype.hasOwnProperty.call(message, "title_user_set")) session.title_user_set = !!message.title_user_set;
     if (Object.prototype.hasOwnProperty.call(message, "cli_title") && message.cli_title) session.cli_title = message.cli_title;
     if (Object.prototype.hasOwnProperty.call(message, "agent_session_id")) session.agent_session_id = message.agent_session_id;
     if (Object.prototype.hasOwnProperty.call(message, "processing")) session.processing = !!message.processing;
+    if (Object.prototype.hasOwnProperty.call(message, "processing_since")) {
+      session.processing_since = message.processing_since;
+      const processingSince = Number(message.processing_since);
+      if (processingSince > 0) this.processingSince.set(session.session_id, processingSince * 1000);
+      else if (!message.processing) this.processingSince.delete(session.session_id);
+    }
     if (Object.prototype.hasOwnProperty.call(message, "running")) session.running = !!message.running;
     if (Object.prototype.hasOwnProperty.call(message, "exit_code")) session.exit_code = message.exit_code;
     const presentation = this.titlePresentation(session);
     const titleEl = this.sessionTitleEls.get(session.session_id);
     if (titleEl) titleEl.textContent = presentation.text;
     this.updateProcessingState(session.session_id, presentation.spinning);
-    if (session.session_id === this.activeId) this.renderTopbar();
+    if (session.session_id === this.activeId) {
+      if (this.historyOpen && previousAgentSessionId !== session.agent_session_id) {
+        this.connectHistoryStream(session.session_id, { fresh: true });
+      }
+      this.renderTopbar();
+    }
   }
 
   titlePresentation(s) {
@@ -647,7 +665,7 @@ class TermdeckApp {
   updateProcessingState(id, spinning) {
     const previous = this.processingStates.get(id);
     if (spinning) this.viewedCompletedSessions.delete(id);
-    if (spinning && previous !== true) this.processingSince.set(id, Date.now());
+    if (spinning && previous !== true && !this.processingSince.has(id)) this.processingSince.set(id, Date.now());
     if (!spinning) this.processingSince.delete(id);
     if (id !== this.activeId && previous === true && !spinning &&
         !this.viewedCompletedSessions.has(id) && !this.unreadSessions.has(id)) {
@@ -945,7 +963,7 @@ class TermdeckApp {
     }
     if (view === "search") this.$("search-query").focus();
     if (view === "search" && this.$("search-query").value.trim()) this.runSearch(null, true);
-    else if (view === "project") this.runNameSearch();
+    else if (view === "project") this.setExplorerMode("tree");
     else this.setExplorerMode("content");
   }
 
@@ -1247,35 +1265,96 @@ class TermdeckApp {
 
   renderRecentFilesInto(list) {
     const openKeys = new Set(this.openFiles.keys());
-    const recent = this.recentFiles.filter((entry) =>
-      entry.path && !openKeys.has(`${this.recentFilesRoot}|${entry.path}`));
-    if (!recent.length) return;
-    list.appendChild(this.sectionLabel("recently edited files"));
+    const header = document.createElement("div");
+    header.className = "side-section-label side-section-header recent-files-header";
+    const title = document.createElement("span");
+    title.textContent = "recently modified";
+    const toggle = document.createElement("button");
+    toggle.className = "section-toggle";
+    header.append(title, toggle);
+    list.appendChild(header);
+    const controls = document.createElement("div");
+    controls.className = "recent-files-controls";
+    const filter = document.createElement("input");
+    filter.className = "recent-files-filter";
+    filter.placeholder = "exclude types: .json, .csv";
+    filter.title = "Comma-separated extensions or globs to exclude";
+    filter.value = this.settings.recent_exclude || "";
+    controls.appendChild(filter);
+    list.appendChild(controls);
     const body = document.createElement("div");
     body.className = "recent-files-list";
-    for (const entry of recent) {
-      const item = document.createElement("div");
-      item.className = "file-item recent-file-item";
-      item.tabIndex = 0;
-      item.title = `${this.recentFilesRoot}/${entry.path}\nmodified ${new Date(entry.mtime * 1000).toLocaleString()}`;
-      const name = document.createElement("span");
-      name.className = "file-item-name";
-      name.textContent = entry.path;
-      const mtime = document.createElement("span");
-      mtime.className = "recent-mtime";
-      mtime.textContent = this.formatMtime(entry.mtime);
-      mtime.title = new Date(entry.mtime * 1000).toLocaleString();
-      item.append(this.fileTypeIconEl(entry.name, "file-type-icon"), name, mtime);
-      item.onclick = () => this.openFile(this.recentFilesRoot, entry.path, null, null);
-      body.appendChild(item);
-    }
     list.appendChild(body);
+
+    const renderBody = () => {
+      const recent = this.recentFiles.filter((entry) => entry.path &&
+        !openKeys.has(`${this.recentFilesRoot}|${entry.path}`) && !this.recentFileExcluded(entry, filter.value));
+      const limit = this.recentFilesExpanded ? 30 : 8;
+      body.textContent = "";
+      for (const entry of recent.slice(0, limit)) {
+        const item = document.createElement("div");
+        item.className = "file-item recent-file-item";
+        item.tabIndex = 0;
+        item.title = `${this.recentFilesRoot}/${entry.path}\nmodified ${new Date(entry.mtime * 1000).toLocaleString()}`;
+        const name = document.createElement("span");
+        name.className = "file-item-name";
+        name.textContent = entry.name;
+        const mtime = document.createElement("span");
+        mtime.className = "recent-mtime";
+        mtime.textContent = this.formatMtime(entry.mtime);
+        mtime.title = new Date(entry.mtime * 1000).toLocaleString();
+        item.append(this.fileTypeIconEl(entry.name, "file-type-icon"), name, mtime);
+        item.onclick = () => this.openFile(this.recentFilesRoot, entry.path, null, null);
+        body.appendChild(item);
+      }
+      const hiddenCount = Math.max(0, recent.length - 8);
+      toggle.textContent = this.recentFilesExpanded ? "8" : (hiddenCount ? `+${Math.min(22, hiddenCount)}` : "30");
+      toggle.title = this.recentFilesExpanded ? "Show 8 recently modified files" : "Show up to 30 recently modified files";
+      toggle.classList.toggle("on", this.recentFilesExpanded);
+      toggle.disabled = recent.length <= 8;
+      if (!recent.length) {
+        const empty = document.createElement("div");
+        empty.className = "recent-files-empty";
+        empty.textContent = "No matching files";
+        body.appendChild(empty);
+      }
+    };
+    toggle.onclick = (event) => {
+      event.stopPropagation();
+      this.recentFilesExpanded = !this.recentFilesExpanded;
+      renderBody();
+    };
+    filter.addEventListener("input", () => {
+      this.settings.recent_exclude = filter.value;
+      this.saveSettings();
+      this.recentFilesExpanded = false;
+      renderBody();
+    });
+    renderBody();
+  }
+
+  recentFileExcluded(entry, rawPatterns) {
+    const path = String(entry.path || "").toLowerCase();
+    const name = String(entry.name || path.split("/").pop() || "").toLowerCase();
+    const patterns = String(rawPatterns || "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
+    return patterns.some((pattern) => {
+      if (pattern.startsWith("*.")) return path.endsWith(pattern.slice(1));
+      if (pattern.startsWith(".")) return path.endsWith(pattern);
+      if (!pattern.includes("/") && !pattern.includes("*")) {
+        return name === pattern || path.endsWith(`.${pattern}`);
+      }
+      const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+      return new RegExp(`(?:^|/)${escaped}$`).test(path);
+    });
   }
 
   async refreshRecentFiles(force = false) {
-    if (this.recentFilesBusy || this.treeRoot === null || this.$("files-section").classList.contains("hidden")) return;
-    if (!force && this.recentFilesRoot === this.treeRoot && Date.now() - this.recentFilesFetchedAt < TREE_POLL_MS) return;
-    const root = this.treeRoot;
+    if (this.recentFilesBusy) return;
+    const activeRoot = this.session(this.activeId)?.cwd || this.projectRoot();
+    const filesVisible = !this.$("files-section").classList.contains("hidden");
+    const root = (filesVisible && this.treeRoot) || activeRoot;
+    if (!root) return;
+    if (!force && this.recentFilesRoot === root && Date.now() - this.recentFilesFetchedAt < TREE_POLL_MS) return;
     this.recentFilesBusy = true;
     try {
       const res = await fetch(`/api/files/recent?root=${encodeURIComponent(root)}&limit=40`);
@@ -1362,14 +1441,15 @@ class TermdeckApp {
 
   updateHistoryThinkingIndicator() {
     const indicator = this.$("history-thinking-banner");
-    if (!indicator) return;
     const spinning = !!this.historyOpen && !!this.processingStates.get(this.activeId);
-    indicator.classList.toggle("hidden", !spinning);
+    if (indicator) indicator.classList.add("hidden");
     const duration = this.$("history-thinking-duration");
     if (duration) {
-      const since = this.processingSince.get(this.activeId);
+      const session = this.session(this.activeId);
+      const sessionSince = Number(session?.processing_since);
+      const since = sessionSince > 0 ? sessionSince * 1000 : this.processingSince.get(this.activeId);
       const seconds = since ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0;
-      duration.textContent = spinning ? `${seconds}s` : "";
+      duration.textContent = spinning ? this.formatElapsed(seconds) : "";
     }
     if (spinning && !this.processingTimer) {
       this.processingTimer = setInterval(() => this.updateHistoryThinkingIndicator(), 1000);
@@ -1377,6 +1457,32 @@ class TermdeckApp {
       clearInterval(this.processingTimer);
       this.processingTimer = 0;
     }
+    this.updateActiveThinkingBlock();
+  }
+
+  updateActiveThinkingBlock() {
+    const body = this.$("history-body");
+    if (!body) return;
+    body.querySelectorAll(".history-event.thinking.active").forEach((event) => event.classList.remove("active"));
+    body.querySelectorAll(".history-thinking-duration-inline").forEach((duration) => { duration.textContent = ""; });
+    if (!this.historyOpen || !this.processingStates.get(this.activeId)) return;
+    const last = body.lastElementChild;
+    if (last?.classList.contains("history-event") && last.classList.contains("thinking")) {
+      last.classList.add("active");
+      const duration = last.querySelector(".history-thinking-duration-inline");
+      const session = this.session(this.activeId);
+      const sessionSince = Number(session?.processing_since);
+      const since = sessionSince > 0 ? sessionSince * 1000 : this.processingSince.get(this.activeId);
+      const seconds = since ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0;
+      if (duration) duration.textContent = ` · ${this.formatElapsed(seconds)}`;
+    }
+  }
+
+  formatElapsed(seconds) {
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   }
 
   renderHistoryQueue(view = this.views.get(this.activeId)) {
@@ -1520,6 +1626,7 @@ class TermdeckApp {
     this.settings.history_mode = !!enabled;
     this.saveSettings();
     this.stopHistoryRefresh();
+    this.disconnectHistoryStream();
     this.historyFingerprint = "";
     this.historyTurns = [];
     this.historyLoaded = false;
@@ -1528,9 +1635,9 @@ class TermdeckApp {
     if (this.historyOpen) {
       const sessionId = this.activeId;
       this.showPromptDraft(this.views.get(sessionId));
-      this.loadHistory(sessionId).then(() => {
-        if (this.historyOpen && sessionId === this.activeId) this.startHistoryRefresh();
-      });
+      const cached = this.historyTurnsBySession.get(sessionId);
+      if (cached) this.applyHistoryTurns(sessionId, cached, { preserveScroll: false });
+      this.connectHistoryStream(sessionId, { fresh: true });
     } else {
       const view = this.views.get(this.activeId);
       if (view) {
@@ -1541,16 +1648,128 @@ class TermdeckApp {
   }
 
   startHistoryRefresh() {
+    // Transcript updates arrive from the file watcher over the transcript
+    // websocket. Kept as a no-op for callers from older saved UI state.
     this.stopHistoryRefresh();
-    this.historyRefreshTimer = setInterval(() => {
-      if (!this.historyOpen || this.activeFileKey !== null || !this.activeId) return;
-      this.loadHistory(this.activeId, { preserveScroll: true });
-    }, HISTORY_REFRESH_MS);
   }
 
   stopHistoryRefresh() {
     if (this.historyRefreshTimer) clearInterval(this.historyRefreshTimer);
     this.historyRefreshTimer = 0;
+  }
+
+  disconnectHistoryStream() {
+    clearTimeout(this.historyWsReconnectTimer);
+    this.historyWsReconnectTimer = 0;
+    const ws = this.historyWs;
+    this.historyWs = null;
+    this.historyStreamSessionId = null;
+    if (ws) ws.close();
+  }
+
+  connectHistoryStream(sessionId, options = {}) {
+    if (!sessionId || !this.historyOpen || this.activeFileKey !== null) return;
+    this.disconnectHistoryStream();
+    const fresh = options.fresh === true;
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${location.host}/ws/transcript/${encodeURIComponent(sessionId)}`);
+    this.historyWs = ws;
+    this.historyStreamSessionId = sessionId;
+    ws.onopen = () => {
+      // A tab switch can carry a cached revision from before a fork/resume
+      // changed the underlying rollout. Request the authoritative snapshot in
+      // that case instead of treating inherited history as current.
+      const revision = fresh ? 0 : (this.historyRevisions.get(sessionId) || 0);
+      ws.send(JSON.stringify({ type: "transcript_subscribe", revision }));
+    };
+    ws.onmessage = (event) => {
+      if (typeof event.data !== "string") return;
+      try {
+        const message = JSON.parse(event.data);
+        if (message.session_id === sessionId) this.applyHistoryStreamMessage(sessionId, message);
+      } catch (error) {
+        console.warn("invalid transcript event", error);
+      }
+    };
+    ws.onerror = () => {
+      if (this.historyOpen && sessionId === this.activeId) this.loadHistory(sessionId);
+    };
+    ws.onclose = () => {
+      if (this.historyWs !== ws) return;
+      this.historyWs = null;
+      this.historyStreamSessionId = null;
+      if (!this.historyOpen || sessionId !== this.activeId) return;
+      clearTimeout(this.historyWsReconnectTimer);
+      this.historyWsReconnectTimer = setTimeout(() => this.connectHistoryStream(sessionId), RECONNECT_MS);
+    };
+  }
+
+  applyHistoryStreamMessage(sessionId, message) {
+    if (sessionId !== this.activeId || !this.historyOpen) return;
+    const type = message.type;
+    if (type === "transcript_snapshot_start") {
+      this.historySnapshotBuffers.set(sessionId, { revision: Number(message.revision || 0), turns: [] });
+      return;
+    }
+    if (type === "transcript_snapshot_chunk") {
+      const buffer = this.historySnapshotBuffers.get(sessionId);
+      if (!buffer || !Array.isArray(message.turns)) return;
+      buffer.turns.push(...message.turns);
+      return;
+    }
+    if (type === "transcript_snapshot_end") {
+      const buffer = this.historySnapshotBuffers.get(sessionId);
+      if (!buffer) return;
+      this.historySnapshotBuffers.delete(sessionId);
+      const turns = this.mergePendingHistoryPrompts(sessionId, buffer.turns);
+      this.historyTurnsBySession.set(sessionId, turns);
+      this.historyRevisions.set(sessionId, Number(message.revision || buffer.revision || 0));
+      this.applyHistoryTurns(sessionId, turns, { preserveScroll: false });
+      return;
+    }
+    if (type === "transcript_snapshot") {
+      const turns = this.mergePendingHistoryPrompts(sessionId, Array.isArray(message.turns) ? message.turns : []);
+      this.historyTurnsBySession.set(sessionId, turns);
+      this.historyRevisions.set(sessionId, Number(message.revision || 0));
+      this.applyHistoryTurns(sessionId, turns, { preserveScroll: false });
+      return;
+    }
+    if (type === "transcript_ready") {
+      this.historyRevisions.set(sessionId, Number(message.revision || 0));
+      return;
+    }
+    if (type !== "transcript_update") return;
+    const revision = Number(message.revision || 0);
+    if (revision <= (this.historyRevisions.get(sessionId) || 0)) return;
+    const previous = this.historyTurnsBySession.get(sessionId) || [];
+    const replaceFrom = Number(message.replace_from);
+    if (!Number.isInteger(replaceFrom) || replaceFrom < 0 || replaceFrom > previous.length) {
+      this.connectHistoryStream(sessionId, { fresh: true });
+      return;
+    }
+    const turns = this.mergePendingHistoryPrompts(
+      sessionId,
+      previous.slice(0, replaceFrom).concat(Array.isArray(message.turns) ? message.turns : []),
+    );
+    this.historyTurnsBySession.set(sessionId, turns);
+    this.historyRevisions.set(sessionId, revision);
+    this.applyHistoryTurns(sessionId, turns, { preserveScroll: true });
+  }
+
+  mergePendingHistoryPrompts(sessionId, turns) {
+    const pending = this.historyPendingPrompts.get(sessionId) || [];
+    if (!pending.length) return turns;
+    const merged = turns.slice();
+    const remaining = [];
+    for (const item of pending) {
+      const seen = merged.filter((turn) => turn.role === "user" && turn.text === item.text).length;
+      if (seen > item.beforeCount) continue;
+      merged.push({ role: "user", text: item.text });
+      remaining.push(item);
+    }
+    if (remaining.length) this.historyPendingPrompts.set(sessionId, remaining);
+    else this.historyPendingPrompts.delete(sessionId);
+    return merged;
   }
 
   sendHistoryPrompt(options = {}) {
@@ -1570,6 +1789,21 @@ class TermdeckApp {
     view.promptSubmitVersion = view.promptEditVersion;
     const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
     const queue = !!options.queue && this.session(this.activeId)?.agent_kind === "codex";
+    const sessionId = this.activeId;
+    if (!queue) {
+      // The agent transcript may not contain the submitted user turn until it
+      // starts producing its next event. Show it immediately, then let the
+      // authoritative transcript update reconcile this optimistic row.
+      const turns = this.historyTurnsBySession.get(sessionId) || this.historyTurns;
+      const pending = this.historyPendingPrompts.get(sessionId) || [];
+      const beforeCount = turns.filter((turn) => turn.role === "user" && turn.text === text).length -
+        pending.filter((item) => item.text === text).length;
+      pending.push({ text, beforeCount });
+      this.historyPendingPrompts.set(sessionId, pending);
+      const optimisticTurns = this.mergePendingHistoryPrompts(sessionId, turns);
+      this.historyTurnsBySession.set(sessionId, optimisticTurns);
+      this.applyHistoryTurns(sessionId, optimisticTurns, { preserveScroll: true });
+    }
     if (queue) {
       view.promptQueue.push({ text, userCount: this.historyTurns.filter((turn) => turn.role === "user").length });
       this.renderHistoryQueue(view);
@@ -1588,10 +1822,6 @@ class TermdeckApp {
     view.keepBottom = true;
     view.pinBottomUntil = Date.now() + 5000;
     this.$("status-name").textContent = queue ? "prompt queued" : "prompt sent";
-    const sessionId = this.activeId;
-    setTimeout(() => {
-      if (this.historyOpen && sessionId === this.activeId) this.loadHistory(sessionId, { preserveScroll: true });
-    }, 700);
   }
 
   resizeHistoryPrompt() {
@@ -1664,6 +1894,9 @@ class TermdeckApp {
   }
 
   sendTrackedInput(view, data) {
+    const queueText = data === "\t" && this.session(view.sessionId)?.agent_kind === "codex" && view.promptDraft.trim()
+      ? view.promptDraft
+      : "";
     view.promptSubmitEntered = false;
     view.promptSubmitting = false;
     clearTimeout(view.promptSubmitTimer);
@@ -1680,6 +1913,22 @@ class TermdeckApp {
       }, 3000);
     }
     this.sendInput(view, data);
+    if (queueText) {
+      // Codex has accepted this composer into its queue. Keep the two editors
+      // consistent with the terminal instead of leaving the queued text as a
+      // draft that reappears when Markdown is opened.
+      view.promptDraft = "";
+      view.promptEditing = false;
+      view.pendingTerminalDraft = null;
+      view.pendingDraftSync = null;
+      view.promptQueue.push({
+        text: queueText,
+        userCount: this.historyTurns.filter((turn) => turn.role === "user").length,
+      });
+      this.sendPromptDraftSync(view, "");
+      this.showPromptDraft(view);
+      if (this.historyOpen && view.sessionId === this.activeId) this.renderHistoryQueue(view);
+    }
   }
 
   updatePromptDraftFromTerminal(view, data) {
@@ -1731,6 +1980,7 @@ class TermdeckApp {
       event.open = !this.historyEditsCollapsed;
     }
     this.updateHistoryEditToggle();
+    if (body === this.$("history-body")) this.updateActiveThinkingBlock();
   }
 
   updateHistoryEditToggle() {
@@ -1802,13 +2052,23 @@ class TermdeckApp {
         if (!this.historyEditsCollapsed && preserveExpanded && previousExpanded[eventIndex] !== undefined) event.open = previousExpanded[eventIndex];
         eventIndex += 1;
         const summary = document.createElement("summary");
-        summary.textContent = turn.kind === "edit"
-            ? this.historyEditSummary(turn)
-            : turn.kind === "plan" && Array.isArray(turn.plan)
-            ? `Plan · ${turn.plan.length} steps`
-            : turn.kind === "thinking" && Array.isArray(turn.items)
-            ? `Thinking · ${turn.items.length} operations`
-            : (turn.title || turn.kind);
+        if (turn.kind === "thinking" && Array.isArray(turn.items)) {
+          const thinkingTitle = document.createElement("span");
+          thinkingTitle.className = "history-thinking-title";
+          thinkingTitle.textContent = "Thinking";
+          const thinkingCount = document.createElement("span");
+          thinkingCount.className = "history-thinking-count";
+          thinkingCount.textContent = ` · ${turn.items.length} operations`;
+          const thinkingDuration = document.createElement("span");
+          thinkingDuration.className = "history-thinking-duration-inline";
+          summary.append(thinkingTitle, thinkingCount, thinkingDuration);
+        } else {
+          summary.textContent = turn.kind === "edit"
+              ? this.historyEditSummary(turn)
+              : turn.kind === "plan" && Array.isArray(turn.plan)
+              ? `Plan · ${turn.plan.length} steps`
+              : (turn.title || turn.kind);
+        }
         if (turn.kind === "thinking" && Array.isArray(turn.items) && turn.items.length) {
           const results = document.createElement("div");
           results.className = "history-thinking";
@@ -1955,6 +2215,12 @@ class TermdeckApp {
       return;
     }
     this.historyLoadBusy = false;
+    return this.applyHistoryTurns(sessionId, this.mergePendingHistoryPrompts(sessionId, turns), options);
+  }
+
+  applyHistoryTurns(sessionId, turns, options = {}) {
+    const body = this.$("history-body");
+    const preserveScroll = options.preserveScroll === true;
     if (sessionId !== this.activeId || !this.historyOpen) return;
     this.reconcileHistoryQueue(this.views.get(sessionId), turns);
     // Capture this after the request completes so scrolling while the refresh
@@ -2011,7 +2277,9 @@ class TermdeckApp {
       this.renderHistoryTurns(turns.slice(this.historyTurns.length), { append: true });
     }
     this.historyTurns = turns;
+    this.historyTurnsBySession.set(sessionId, turns);
     this.updateHistoryEditToggle();
+    this.updateActiveThinkingBlock();
     this.restoreHistoryScroll(body, scrollSnapshot);
   }
 
@@ -2041,16 +2309,20 @@ class TermdeckApp {
     else this.viewedCompletedSessions.delete(id);
     if (selected) {
       const spinning = this.titlePresentation(selected).spinning;
+      const processingSince = Number(selected.processing_since);
+      if (processingSince > 0) this.processingSince.set(id, processingSince * 1000);
       this.processingStates.set(id, spinning);
       if (spinning && !this.processingSince.has(id)) this.processingSince.set(id, Date.now());
       if (!spinning) this.processingSince.delete(id);
     }
     this.activeFileKey = null;
     this.stopHistoryRefresh();
+    this.disconnectHistoryStream();
     this.historyOpen = false;
     this.historyFingerprint = "";
-    this.historyTurns = [];
-    this.historyLoaded = false;
+    const cachedHistory = this.historyTurnsBySession.get(id) || [];
+    this.historyTurns = cachedHistory;
+    this.historyLoaded = cachedHistory.length > 0;
     const previousView = previousId ? this.views.get(previousId) : null;
     this.activeId = id;
     this.historyOpen = !!this.settings.history_mode;
@@ -2073,15 +2345,35 @@ class TermdeckApp {
     this.applyMainLayout();
     if (this.historyOpen) {
       const historyId = id;
-      this.loadHistory(historyId).then(() => {
-        if (this.historyOpen && historyId === this.activeId) this.startHistoryRefresh();
-      });
+      if (previousId !== id) {
+        // Do not leave the previous tab's transcript rendered while a fork's
+        // authoritative snapshot is being loaded.
+        this.historyTurns = [];
+        this.historyLoaded = false;
+        const body = this.$("history-body");
+        if (body) {
+          body.textContent = "";
+          const loading = document.createElement("div");
+          loading.className = "history-empty";
+          loading.textContent = "loading transcript…";
+          body.appendChild(loading);
+        }
+      } else if (cachedHistory.length) {
+        this.applyHistoryTurns(historyId, cachedHistory, { preserveScroll: false });
+      }
+      this.connectHistoryStream(historyId, { fresh: previousId !== id });
     }
     if (view) {
       if (!view.ws) this.connect(id, view);
       if (previousId !== id) {
         view.keepBottom = true;
-        view.pinBottomUntil = Date.now() + 5000;
+        // A replay/new connection may need a few frames to settle, but an
+        // already-connected terminal should not be held at the bottom for
+        // seconds after every tab switch.  That window used to make the
+        // native xterm scrollbar feel locked when the user immediately
+        // scrolled back through a finished session.
+        const settleWindow = view.replaying || !view.ws || view.awaitingSnapshot ? 5000 : 750;
+        view.pinBottomUntil = Date.now() + settleWindow;
         this.scrollTerminalToBottom(view);
       } else if (view.keepBottom) {
         view.pinBottomUntil = Date.now() + 3000;
@@ -2092,7 +2384,17 @@ class TermdeckApp {
     this.renderTopbar();
     if (options.reveal) this.keepActiveSessionVisible();
     requestAnimationFrame(() => {
-      if (id === this.activeId) this.focusActiveEditor();
+      if (id !== this.activeId) return;
+      this.focusActiveEditor();
+      // xterm can restore focus and recalculate its viewport after the first
+      // activation scroll.  Settle once more after that work has completed so
+      // switching tabs cannot leave the DOM scrollbar above the last row.
+      if (this.activeFileKey === null && !this.historyOpen && view &&
+          (view.keepBottom || Date.now() < view.pinBottomUntil)) {
+        this.fitActive();
+        this.scrollTerminalToBottom(view);
+        this.scheduleViewportSettle(view);
+      }
     });
   }
 
@@ -2111,15 +2413,23 @@ class TermdeckApp {
     term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
     const view = { sessionId: id, container, term, fit, ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
                    replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, programmaticScrollUntil: 0, scrollSettleTimer: 0,
-                   replayTimer: 0, reconnectTimer: 0, settleFrame: 0, layoutObserver: null, keepBottom: true, lastSentCols: null, lastSentRows: null,
+                   replayTimer: 0, reconnectTimer: 0, settleFrame: 0, viewportRepairFrame: 0,
+                   layoutObserver: null, scrollObserver: null,
+                   keepBottom: true, manualScroll: false, wasAtBottom: true, lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, pendingDraftSync: null, pendingTerminalDraft: null,
                    promptEditVersion: 0, promptSubmitVersion: -1 };
     container.addEventListener("wheel", () => {
+      // wheel fires before the browser moves the native xterm viewport, so
+      // checking terminalAtBottom() here can still report the old bottom
+      // position and leave auto-follow enabled.  Any wheel gesture is an
+      // explicit request to browse, regardless of its current position.
       view.pinBottomUntil = 0;
-      if (!this.terminalAtBottom(view)) view.keepBottom = false;
+      view.keepBottom = false;
+      view.manualScroll = true;
+      view.wasAtBottom = false;
     }, { passive: true });
     container.addEventListener("paste", (e) => {
       e.preventDefault();
@@ -2157,16 +2467,47 @@ class TermdeckApp {
     term.onScroll(() => {
       if (!view.container.classList.contains("visible")) return;
       const now = Date.now();
-      if ((view.replaying && now < view.pinBottomUntil) || now < view.programmaticScrollUntil) return;
-      view.keepBottom = this.terminalAtBottom(view);
+      // Do not suppress native scroll events just because the app recently
+      // called scrollToBottom(). Keyboard scrolling can happen during that
+      // same window and must be allowed to leave auto-follow immediately.
+      if (view.replaying && now < view.pinBottomUntil && !view.manualScroll) return;
+      const atBottom = this.terminalAtBottom(view);
+      if (atBottom && !view.wasAtBottom) this.repairTerminalViewport(view);
+      view.wasAtBottom = atBottom;
+      view.keepBottom = atBottom;
       if (!view.keepBottom) view.pinBottomUntil = 0;
     });
     const viewport = container.querySelector(".xterm-viewport");
-    if (viewport) viewport.addEventListener("scroll", () => {
-      if (!view.container.classList.contains("visible") || Date.now() < view.programmaticScrollUntil) return;
-      view.keepBottom = this.terminalAtBottom(view);
-      if (!view.keepBottom) view.pinBottomUntil = 0;
-    }, { passive: true });
+    if (viewport) {
+      viewport.addEventListener("pointerdown", (event) => {
+        const rect = viewport.getBoundingClientRect();
+        const scrollbarEdge = Math.max(18, viewport.offsetWidth - viewport.clientWidth + 4);
+        const onScrollbar = event.clientX >= rect.right - scrollbarEdge;
+        const touchScroll = event.pointerType && event.pointerType !== "mouse";
+        if (onScrollbar || touchScroll) {
+          view.pinBottomUntil = 0;
+          view.keepBottom = false;
+          view.manualScroll = true;
+          view.wasAtBottom = false;
+        }
+      }, { passive: true });
+      viewport.addEventListener("scroll", () => {
+        if (!view.container.classList.contains("visible")) return;
+        const atBottom = this.terminalAtBottom(view);
+        if (atBottom && !view.wasAtBottom) this.repairTerminalViewport(view);
+        view.wasAtBottom = atBottom;
+        view.keepBottom = atBottom;
+        if (!view.keepBottom) view.pinBottomUntil = 0;
+      }, { passive: true });
+    }
+    const scrollArea = container.querySelector(".xterm-scroll-area");
+    if (scrollArea) {
+      view.scrollObserver = new ResizeObserver(() => {
+        if (!view.container.classList.contains("visible") || view.closed) return;
+        if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
+      });
+      view.scrollObserver.observe(scrollArea);
+    }
     const ref = [...this.views.values()].find((v) => v.term.cols > 2);
     if (ref) term.resize(ref.term.cols, ref.term.rows);
     view.layoutObserver = new ResizeObserver(() => {
@@ -2473,16 +2814,49 @@ class TermdeckApp {
   terminalAtBottom(view) {
     if (!view || !view.term) return false;
     const buffer = view.term.buffer.active;
-    if (buffer.viewportY >= buffer.baseY - 1) return true;
     const viewport = view.container.querySelector(".xterm-viewport");
-    return !!viewport && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 2;
+    if (!viewport) return buffer.viewportY >= buffer.baseY - 1;
+    // The browser position is the authoritative position for the native
+    // scrollbar. xterm's buffer viewport can lag it by a frame during a fit or
+    // resize; requiring both made a real bottom position look non-bottom and
+    // caused the follow-bottom state to fight the user's scrolling.
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    const domAtBottom = maxScrollTop - viewport.scrollTop <= 2;
+    return domAtBottom;
+  }
+
+  repairTerminalViewport(view) {
+    if (!view || view.closed || view.viewportRepairFrame || !view.container.classList.contains("visible")) return;
+    view.viewportRepairFrame = requestAnimationFrame(() => {
+      view.viewportRepairFrame = 0;
+      if (view.closed || !view.container.classList.contains("visible") || !this.terminalAtBottom(view)) return;
+      // Returning to the native maximum can happen before xterm has rebuilt
+      // its row geometry. Refit/refresh once so the final prompt row remains
+      // reachable even when no new output arrives to trigger a repaint.
+      view.fit.fit();
+      this.refreshTerminal(view);
+      const { cols, rows } = view.term;
+      if (cols >= 2 && rows >= 2) this.sendResize(view, cols, rows);
+      view.term.scrollToBottom();
+      const viewport = view.container.querySelector(".xterm-viewport");
+      if (viewport) viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+      view.wasAtBottom = true;
+      view.keepBottom = true;
+    });
   }
 
   scrollTerminalToBottom(view) {
+    view.manualScroll = false;
+    view.wasAtBottom = true;
     view.programmaticScrollUntil = Date.now() + 1000;
     view.term.scrollToBottom();
     const viewport = view.container.querySelector(".xterm-viewport");
-    if (viewport) viewport.scrollTop = viewport.scrollHeight;
+    if (viewport) {
+      // Assign the maximum scrollTop, rather than scrollHeight.  The latter
+      // is clamped by the browser but can leave xterm one viewport short while
+      // its row geometry is being updated.
+      viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    }
   }
 
   refreshTerminal(view) {
@@ -2498,8 +2872,7 @@ class TermdeckApp {
         if (view.keepBottom || Date.now() < view.pinBottomUntil) {
           view.keepBottom = true;
           this.scrollTerminalToBottom(view);
-          const buffer = view.term.buffer.active;
-          const atBottom = buffer.viewportY >= buffer.baseY;
+          const atBottom = this.terminalAtBottom(view);
           if (!atBottom || Date.now() < view.pinBottomUntil) {
             clearTimeout(view.scrollSettleTimer);
             view.scrollSettleTimer = setTimeout(() => {
@@ -2526,6 +2899,8 @@ class TermdeckApp {
   destroyView(id, view) {
     view.closed = true;
     if (view.layoutObserver) view.layoutObserver.disconnect();
+    if (view.scrollObserver) view.scrollObserver.disconnect();
+    if (view.viewportRepairFrame) cancelAnimationFrame(view.viewportRepairFrame);
     if (view.ws) view.ws.close();
     view.term.dispose();
     view.container.remove();
@@ -2770,6 +3145,7 @@ class TermdeckApp {
     this.recentFiles = [];
     this.recentFilesRoot = null;
     this.recentFilesFetchedAt = 0;
+    this.recentFilesExpanded = false;
     const tree = this.$("files-tree");
     tree.textContent = "";
     await this.renderDirInto(tree, "");
@@ -2786,11 +3162,7 @@ class TermdeckApp {
     if (entries === null) return;
     this.treeDirs.set(relPath, { container, cache: JSON.stringify(entries) });
     container.textContent = "";
-    let ordered = entries;
-    if (this.settings.tree_sort === "mtime") {
-      ordered = [...entries].sort((a, b) => (b.is_dir ? 1 : 0) - (a.is_dir ? 1 : 0) || (b.mtime || 0) - (a.mtime || 0));
-    }
-    for (const entry of ordered) {
+    for (const entry of entries) {
       const excluded = entry.is_dir && this.isExcludedName(entry.name);
       if (excluded && this.settings.hide_excluded) continue;
       const row = document.createElement("div");
@@ -3448,7 +3820,6 @@ class TermdeckApp {
   }
 
   compareSearchFiles(a, b) {
-    if (this.settings.tree_sort === "mtime") return (b.mtime - a.mtime) || a.path.localeCompare(b.path);
     return (this.extRank(a.path) - this.extRank(b.path)) || a.path.localeCompare(b.path);
   }
 
@@ -3506,6 +3877,10 @@ class TermdeckApp {
     const query = this.$("search-name").value.trim();
     const resultsEl = this.$("name-results");
     resultsEl.textContent = "";
+    if (!query) {
+      this.setExplorerMode("tree");
+      return;
+    }
     if (this.sideView !== "project" && this.sideView !== "search") {
       this.sideView = "terminals";
       this.setSideView("project");

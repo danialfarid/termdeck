@@ -81,8 +81,8 @@ class UiSettings(BaseModel):
     tree_font_size: int = 12
     hide_excluded: bool = False
     show_stats: bool = True
-    tree_sort: str = "name"
     show_mtime: bool = False
+    recent_exclude: str = ""
     word_wrap: bool = False
     search_glob: str = "!*.json, !*.csv"
     keybindings: dict[str, str] = {}
@@ -107,15 +107,18 @@ class TermdeckServer:
         self.search = ProjectSearchService(self.files)
         self.stats = ResourceStatsService()
         self.transcripts = TranscriptService()
+        self.manager.attach_transcript_service(self.transcripts)
         self.settings_store = UiSettingsStore(TermdeckConfig.SETTINGS_FILE)
 
     @asynccontextmanager
     async def _lifespan(self, _app: FastAPI) -> AsyncGenerator[None]:
         await self.manager.startup_respawn_saved_sessions()
         self.manager.start_background_tasks()
+        self.transcripts.start(asyncio.get_running_loop())
         try:
             yield
         finally:
+            self.transcripts.stop()
             self.manager.stop_background_tasks()
             self.manager.terminate_all()
 
@@ -151,6 +154,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_FILE_DELETE_ROUTE, response_model=None)(self._delete_file)
         app.get(TermdeckConfig.API_STATS_ROUTE, response_model=None)(self._resource_stats)
         app.websocket(TermdeckConfig.STATUS_WS_ROUTE)(self._ws_status)
+        app.websocket(TermdeckConfig.TRANSCRIPT_WS_ROUTE)(self._ws_transcript)
         app.websocket(TermdeckConfig.WS_ROUTE)(self._ws_terminal)
         return app
 
@@ -287,7 +291,7 @@ class TermdeckServer:
             raise HTTPException(status_code=400, detail=str(bad_request)) from bad_request
         return self.manager.session_summary(ms)
 
-    async def _session_history(self, session_id: str) -> list[dict[str, str]]:
+    async def _session_history(self, session_id: str) -> list[dict[str, object]]:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
         agent_kind, cwd, agent_session_id = self.manager.session_history_source(session_id)
@@ -350,6 +354,79 @@ class TermdeckServer:
             return
         finally:
             self.manager.detach_status_client(queue)
+
+    async def _ws_transcript(self, websocket: WebSocket, session_id: str) -> None:
+        if not self.manager.has_session(session_id):
+            await websocket.close(code=TermdeckConfig.WS_CODE_UNKNOWN_SESSION)
+            return
+        await websocket.accept()
+        try:
+            request = json.loads(await websocket.receive_text())
+            since_revision = int(request.get(WsMessageFields.REVISION, 0))
+        except (WebSocketDisconnect, ValueError, TypeError, json.JSONDecodeError):
+            return
+        agent_kind, cwd, agent_session_id = self.manager.session_history_source(session_id)
+        path, turns, revision, queue = self.transcripts.subscribe(agent_kind, cwd, agent_session_id)
+        try:
+            updates = self.transcripts.updates_since(path, since_revision)
+            if since_revision == revision:
+                await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.TRANSCRIPT_READY,
+                                                       WsMessageFields.SESSION_ID: session_id,
+                                                       WsMessageFields.REVISION: revision}))
+            elif updates is not None:
+                for update in updates:
+                    message = dict(update)
+                    message[WsMessageFields.SESSION_ID] = session_id
+                    await websocket.send_text(json.dumps(message))
+            else:
+                await self._send_transcript_snapshot(websocket, session_id, revision, turns)
+            while True:
+                update = await queue.get()
+                update[WsMessageFields.SESSION_ID] = session_id
+                await websocket.send_text(json.dumps(update))
+        except WebSocketDisconnect:
+            return
+        finally:
+            self.transcripts.unsubscribe(path, queue)
+
+    async def _send_transcript_snapshot(self, websocket: WebSocket, session_id: str,
+                                        revision: int, turns: list[dict[str, object]]) -> None:
+        """Send large transcript snapshots in browser-friendly frames.
+
+        Long Codex sessions contain many collapsed tool/result blocks. Sending
+        all of them as one JSON WebSocket message can exceed the browser's
+        frame limit and leaves Markdown stuck on its previous partial render.
+        Keep each frame comfortably below 1 MB; the client reassembles the
+        ordered chunks before applying the authoritative snapshot.
+        """
+        chunk_limit = 256_000
+        chunks: list[list[dict[str, object]]] = []
+        current: list[dict[str, object]] = []
+        current_size = 2
+        for turn in turns:
+            turn_size = len(json.dumps(turn, ensure_ascii=False, separators=(",", ":"))) + 1
+            if current and current_size + turn_size > chunk_limit:
+                chunks.append(current)
+                current = []
+                current_size = 2
+            current.append(turn)
+            current_size += turn_size
+        if current or not chunks:
+            chunks.append(current)
+        await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.TRANSCRIPT_SNAPSHOT_START,
+                                               WsMessageFields.SESSION_ID: session_id,
+                                               WsMessageFields.REVISION: revision,
+                                               "chunks": len(chunks)}))
+        for index, chunk in enumerate(chunks):
+            await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.TRANSCRIPT_SNAPSHOT_CHUNK,
+                                                   WsMessageFields.SESSION_ID: session_id,
+                                                   "index": index,
+                                                   WsMessageFields.TURNS: chunk},
+                                                  ensure_ascii=False, separators=(",", ":")))
+        await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.TRANSCRIPT_SNAPSHOT_END,
+                                               WsMessageFields.SESSION_ID: session_id,
+                                               WsMessageFields.REVISION: revision,
+                                               "chunks": len(chunks)}))
 
     async def _pump_client_to_pty(self, websocket: WebSocket, session_id: str) -> None:
         while True:

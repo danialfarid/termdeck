@@ -71,6 +71,16 @@ class WsMessageFields:
     REMOVE = "remove"
     OK = "ok"
     ERROR = "error"
+    TRANSCRIPT_SNAPSHOT = "transcript_snapshot"
+    TRANSCRIPT_SNAPSHOT_START = "transcript_snapshot_start"
+    TRANSCRIPT_SNAPSHOT_CHUNK = "transcript_snapshot_chunk"
+    TRANSCRIPT_SNAPSHOT_END = "transcript_snapshot_end"
+    TRANSCRIPT_UPDATE = "transcript_update"
+    REVISION = "revision"
+    REPLACE_FROM = "replace_from"
+    TURNS = "turns"
+    TRANSCRIPT_SUBSCRIBE = "transcript_subscribe"
+    TRANSCRIPT_READY = "transcript_ready"
 
 
 class ApiFields:

@@ -1,13 +1,19 @@
 from pathlib import Path
 
+from termdeck.platform_paths import PlatformPaths
+
 
 class TermdeckConfig:
     """All static configuration for termdeck: server binding, storage paths, pty spawn settings, and the
-    claude/codex session-file locations + resume-command shapes used for restart-and-resume."""
+    claude/codex session-file locations + resume-command shapes used for restart-and-resume.
 
-    HOST = "127.0.0.1"
-    PORT = 8530
-    DATA_DIR = Path.home() / "data" / "termdeck"
+    Machine-dependent values are read from TERMDECK_* environment variables at import time (see PlatformPaths)
+    so `termdeck --port 9000` and a launchd/systemd unit's environment block land in exactly the same place.
+    An override therefore has to be in the environment BEFORE this module is first imported."""
+
+    HOST = PlatformPaths.env_text(PlatformPaths.ENV_HOST, "127.0.0.1")
+    PORT = PlatformPaths.env_int(PlatformPaths.ENV_PORT, 8530)
+    DATA_DIR = PlatformPaths.env_directory(PlatformPaths.ENV_DATA_DIR, PlatformPaths.default_data_dir())
     SESSIONS_FILE = DATA_DIR / "sessions.json"
     SETTINGS_FILE = DATA_DIR / "settings.json"
     CLOSED_SESSIONS_FILE = DATA_DIR / "closed_sessions.json"
@@ -48,13 +54,13 @@ class TermdeckConfig:
     API_FILE_RENAME_ROUTE = "/api/files/rename"
     API_FILE_MOVE_ROUTE = "/api/files/move"
     API_FILE_DELETE_ROUTE = "/api/files/delete"
-    TRASH_DIR = Path.home() / ".Trash"
+    TRASH_DIR = PlatformPaths.user_trash_dir()
     API_STATS_ROUTE = "/api/stats"
-    RG_BIN = "/opt/homebrew/bin/rg"
+    RG_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_RG_BIN, "rg")
     SEARCH_MAX_RESULTS = 400
     SEARCH_TIMEOUT_SECONDS = 15.0
-    PS_BIN = "/bin/ps"
-    FILE_ACCESS_ROOT = Path.home()
+    PS_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_PS_BIN, "ps")
+    FILE_ACCESS_ROOT = PlatformPaths.env_directory(PlatformPaths.ENV_FILE_ROOT, Path.home())
     FILE_READ_MAX_BYTES = 2_000_000
     FILE_LIST_MAX_ENTRIES = 2000
     RECENT_FILES_MAX_ENTRIES = 40
@@ -65,12 +71,13 @@ class TermdeckConfig:
     })
     WS_ROUTE = "/ws/{session_id}"
     STATUS_WS_ROUTE = "/ws/status"
+    TRANSCRIPT_WS_ROUTE = "/ws/transcript/{session_id}"
     WS_CODE_UNKNOWN_SESSION = 4404
-    DEFAULT_CWD = Path.home() / "workspace" / "stock"
-    SHELL = "/bin/zsh"
+    DEFAULT_CWD = PlatformPaths.env_directory(PlatformPaths.ENV_DEFAULT_CWD, Path.home())
+    SHELL = PlatformPaths.login_shell()
     SHELL_INTERACTIVE_ARGS = ("-il",)
     SHELL_COMMAND_ARGS = ("-ilc",)
-    DTACH_BIN = "/opt/homebrew/bin/dtach"
+    DTACH_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_DTACH_BIN, "dtach")
     DTACH_DIR = DATA_DIR / "dtach"
     DTACH_SOCKET_SUFFIX = ".sock"
     DTACH_ARGS = ("-E", "-z", "-r", "winch")
@@ -97,8 +104,8 @@ class TermdeckConfig:
     AGENT_DETECT_INITIAL_DELAY_SECONDS = 3.0
     AGENT_DETECT_INPUT_DEBOUNCE_SECONDS = 2.0
     AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS = 20.0
-    PGREP_BIN = "/usr/bin/pgrep"
-    LSOF_BIN = "/usr/sbin/lsof"
+    PGREP_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_PGREP_BIN, "pgrep")
+    LSOF_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_LSOF_BIN, "lsof")
     SUBPROCESS_TIMEOUT_SECONDS = 10.0
     CLAUDE_RESUME_FLAG = "--resume"
     CLAUDE_FORK_FLAG = "--fork-session"
@@ -123,4 +130,4 @@ class TermdeckConfig:
     RESPAWN_DIVIDER = "\x1b[2m──────────── restarted ────────────\x1b[0m"
     REATTACH_DIVIDER = "\x1b[2m──────────── reconnected (kept running) ────────────\x1b[0m"
     SPAWN_ERROR_TEMPLATE = "\x1b[31m[termdeck] spawn failed: {error}\x1b[0m\r\n"
-    UVICORN_LOG_LEVEL = "info"
+    UVICORN_LOG_LEVEL = PlatformPaths.env_text(PlatformPaths.ENV_LOG_LEVEL, "info")

@@ -1,7 +1,5 @@
-from setproctitle import setproctitle
+import sys
 
-setproctitle("_termdeck")
+from termdeck.cli import TermdeckCli
 
-from termdeck.server import TermdeckServer
-
-TermdeckServer().run()
+sys.exit(TermdeckCli.main())
