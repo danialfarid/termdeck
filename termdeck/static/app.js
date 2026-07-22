@@ -312,12 +312,6 @@ class TermdeckApp {
     this.$("history-edits-toggle").onclick = () => this.toggleHistoryEdits();
     this.$("history-close").onclick = () => this.closeHistory();
     this.$("history-scroll-bottom").onclick = () => this.scrollHistoryToBottom();
-    this.$("history-body").addEventListener("click", (e) => {
-      if (e.target.closest("a, button, input, textarea, select")) return;
-      requestAnimationFrame(() => {
-        if (this.historyOpen && this.activeFileKey === null) this.$("history-prompt").focus();
-      });
-    });
     this.$("terminal-resync-btn").onclick = () => this.resyncActiveTerminal();
     this.$("history-attach").onclick = () => this.attachToHistory();
     this.$("history-send").onclick = () => this.sendHistoryPrompt();
