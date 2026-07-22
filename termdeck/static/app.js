@@ -40,6 +40,7 @@ const KEYBINDINGS = [
   { id: "view-search", label: "Toggle Search view", def: "Meta+Shift+f" },
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t" },
   { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Meta+Shift+m" },
+  { id: "select-terminal-all", label: "Select all terminal text", def: "Meta+Shift+a" },
 ];
 const REFERENCE_KEYS = [
   { keys: "⌘[ / ⌘]", label: "Browser back / forward (last-clicked navigation)" },
@@ -406,6 +407,13 @@ class TermdeckApp {
         return;
       }
       if (this.tryAppShortcut(e)) return;
+      if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a" &&
+          e.target.closest && e.target.closest(".xterm") && this.activeFileKey === null && !this.historyOpen) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.selectActiveTerminalText();
+        return;
+      }
       if (this.isTypingTarget(e)) return;
       const treeVisible = this.sideView === "project" && !this.$("files-section").classList.contains("hidden");
       const selectedRel = this.selectedTreeRow?.dataset?.rel;
@@ -2279,7 +2287,7 @@ class TermdeckApp {
       if (key === "backspace") { e.preventDefault(); this.sendTrackedInput(view, "\x15"); return false; }
       if (key === "arrowleft") { e.preventDefault(); this.sendTrackedInput(view, "\x01"); return false; }
       if (key === "arrowright") { e.preventDefault(); this.sendTrackedInput(view, "\x05"); return false; }
-      if (key === "a") { e.preventDefault(); view.term.selectAll(); return false; }
+      if (key === "a") { e.preventDefault(); this.selectActiveTerminalText(); return false; }
     }
     if (e.altKey && !e.metaKey && !e.ctrlKey) {
       if (e.key === "Backspace") { e.preventDefault(); this.sendTrackedInput(view, "\x1b\x7f"); return false; }
@@ -3262,6 +3270,15 @@ class TermdeckApp {
     else if (actionId === "view-search") this.cycleView("search");
     else if (actionId === "view-terminals") this.setSideView("terminals");
     else if (actionId === "toggle-history") this.toggleHistory();
+    else if (actionId === "select-terminal-all") this.selectActiveTerminalText();
+  }
+
+  selectActiveTerminalText() {
+    if (this.activeFileKey !== null || this.historyOpen) return;
+    const view = this.views.get(this.activeId);
+    if (!view) return;
+    view.term.selectAll();
+    view.term.focus();
   }
 
   bindingToDisplay(binding) {
