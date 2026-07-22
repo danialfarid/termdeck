@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import subprocess
@@ -9,45 +10,70 @@ from pathlib import Path
 
 
 class HomebrewFormulaGenerator:
-    """Emits a complete Homebrew formula for termdeck, resource blocks included.
+    """Emits the Homebrew formula for termdeck, built entirely from prebuilt CPython 3.13 wheels.
 
-    Homebrew builds Python apps from source, so the formula must list every transitive dependency as a
-    `resource` with a pinned sdist url and sha256. This resolves that set the only reliable way: build a
-    throwaway venv, install the released termdeck from PyPI, read back exactly what pip chose, then look up
-    each package's sdist on PyPI.
+    termdeck itself is NOT on PyPI — the formula builds it from the GitHub release tarball (pure Python, so
+    hatchling is enough). Its dependencies ARE on PyPI, and the important design choice is to install them
+    from WHEELS rather than sdists: a source build would drag in a Rust toolchain (pydantic-core builds via
+    maturin/setuptools-rust) plus a C compiler, and Homebrew's install sandbox has no network, so every build
+    backend would have to be vendored too. Wheels sidestep all of it — nothing compiles at install time.
 
-    Run it AFTER `termdeck <version>` is live on PyPI (it downloads from there), then copy the output into
+    The cost is that the four packages with native extensions (pydantic-core, setproctitle, watchdog,
+    websockets) are architecture-specific, so their wheels go in per-arch on_arm/on_intel blocks; the rest are
+    universal `py3-none-any` wheels. macOS only (Apple Silicon + Intel); Linux users install with uv/pipx.
+
+    Run it AFTER the `vX.Y.Z` tag exists on GitHub (it hashes the release tarball), then copy the output into
     the tap repo as Formula/termdeck.rb:
 
         python packaging/homebrew/generate_formula.py            # version from termdeck/__init__.py
         python packaging/homebrew/generate_formula.py 0.2.0
     """
 
-    PYPI_JSON_URL = "https://pypi.org/pypi/{package}/{version}/json"
-    SDIST_PACKAGE_TYPE = "sdist"
+    OWNER_REPO = "danialfarid/termdeck"
+    GITHUB_TARBALL_URL = "https://github.com/{owner_repo}/archive/refs/tags/v{version}.tar.gz"
+    PYPI_JSON_URL = "https://pypi.org/pypi/{package}/json"
     PACKAGE_NAME = "termdeck"
-    VERSION_FILE = Path(__file__).resolve().parents[2] / "termdeck" / "__init__.py"
-    VERSION_PATTERN = r'__version__\s*=\s*"([^"]+)"'
-    OUTPUT_FILE = Path(__file__).resolve().parent / "termdeck.rb"
+    BUILD_BACKEND = "hatchling"
+    PYTHON_TAG = "3.13"
     PYTHON_FORMULA = "python@3.13"
+    ABI = "cp313"
+    ARM_PLATFORMS = ("macosx_11_0_arm64", "macosx_10_12_universal2")
+    INTEL_PLATFORMS = ("macosx_10_13_x86_64", "macosx_10_12_x86_64", "macosx_11_0_x86_64", "macosx_10_9_x86_64")
+    NATIVE_PACKAGES = ("pydantic-core", "setproctitle", "watchdog", "websockets")
+    UNIVERSAL_WHEEL_SUFFIX = "py3-none-any.whl"
     SYSTEM_DEPENDENCIES = ("dtach", "ripgrep")
     PIP_FREEZE_SEPARATOR = "=="
-    EXCLUDED_FROM_RESOURCES = frozenset({"pip", "setuptools", "wheel", PACKAGE_NAME})
+    EXCLUDED = frozenset({"pip", "setuptools", "wheel", PACKAGE_NAME})
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    VERSION_FILE = PROJECT_ROOT / "termdeck" / "__init__.py"
+    VERSION_PATTERN = r'__version__\s*=\s*"([^"]+)"'
+    OUTPUT_FILE = Path(__file__).resolve().parent / "termdeck.rb"
+    DOWNLOAD_CHUNK = 1 << 16
 
     FORMULA_TEMPLATE = '''class Termdeck < Formula
-  include Language::Python::Virtualenv
-
   desc "Browser terminal deck with persistent sessions and claude/codex resume"
   homepage "https://github.com/danialfarid/termdeck"
-  url "{sdist_url}"
-  sha256 "{sdist_sha256}"
+  url "{tarball_url}"
+  sha256 "{tarball_sha256}"
   license "Apache-2.0"
 
   depends_on "{python_formula}"
 {system_dependency_lines}
-{resource_blocks}
-  def install
-    virtualenv_install_with_resources
+  on_macos do
+    on_arm do
+{arm_blocks}    end
+
+    on_intel do
+{intel_blocks}    end
+  end
+
+{universal_blocks}  def install
+    venv_root = libexec
+    system Formula["{python_formula}"].opt_bin/"python{python_tag}", "-m", "venv", venv_root
+    pip = venv_root/"bin/pip"
+    system pip, "install", "--no-deps", "--no-index", *resources.map(&:cached_download)
+    system pip, "install", "--no-deps", "--no-build-isolation", buildpath
+    bin.install_symlink venv_root/"bin/termdeck"
   end
 
   service do
@@ -59,16 +85,9 @@ class HomebrewFormulaGenerator:
 
   test do
     assert_match "termdeck #{{version}}", shell_output("#{{bin}}/termdeck --version")
-    assert_match "data dir", shell_output("#{{bin}}/termdeck doctor", 1)
+    assert_match "all required programs present", shell_output("#{{bin}}/termdeck doctor")
   end
 end
-'''
-
-    RESOURCE_TEMPLATE = '''  resource "{name}" do
-    url "{url}"
-    sha256 "{sha256}"
-  end
-
 '''
 
     @staticmethod
@@ -80,49 +99,95 @@ end
         return match.group(1)
 
     @staticmethod
-    def fetch_sdist(package: str, version: str) -> tuple[str, str]:
-        url = HomebrewFormulaGenerator.PYPI_JSON_URL.format(package=package, version=version)
-        with urllib.request.urlopen(url, timeout=30) as response:
-            metadata = json.loads(response.read())
-        for entry in metadata["urls"]:
-            if entry["packagetype"] == HomebrewFormulaGenerator.SDIST_PACKAGE_TYPE:
-                return entry["url"], entry["digests"]["sha256"]
-        raise RuntimeError(f"{package} {version} has no sdist on PyPI; Homebrew cannot build it from source")
+    def tarball_url_and_sha256(version: str) -> tuple[str, str]:
+        url = HomebrewFormulaGenerator.GITHUB_TARBALL_URL.format(
+            owner_repo=HomebrewFormulaGenerator.OWNER_REPO, version=version)
+        digest = hashlib.sha256()
+        with urllib.request.urlopen(url, timeout=60) as response:
+            for chunk in iter(lambda: response.read(HomebrewFormulaGenerator.DOWNLOAD_CHUNK), b""):
+                digest.update(chunk)
+        return url, digest.hexdigest()
 
     @staticmethod
-    def resolve_dependency_versions(version: str) -> list[tuple[str, str]]:
+    def resolve_dependency_specs() -> list[str]:
         with tempfile.TemporaryDirectory() as temp_dir:
             environment_dir = Path(temp_dir) / "resolver"
             venv.create(environment_dir, with_pip=True)
             pip = environment_dir / "bin" / "pip"
-            subprocess.run([str(pip), "install", "--quiet",
-                            f"{HomebrewFormulaGenerator.PACKAGE_NAME}=={version}"], check=True)
+            subprocess.run([str(pip), "install", "--quiet", str(HomebrewFormulaGenerator.PROJECT_ROOT),
+                            HomebrewFormulaGenerator.BUILD_BACKEND], check=True)
             frozen = subprocess.run([str(pip), "freeze"], check=True, capture_output=True, text=True).stdout
-        packages: list[tuple[str, str]] = []
+        specs: list[str] = []
         for line in frozen.splitlines():
             if HomebrewFormulaGenerator.PIP_FREEZE_SEPARATOR not in line:
                 continue
-            name, pinned = line.split(HomebrewFormulaGenerator.PIP_FREEZE_SEPARATOR, 1)
-            if name.lower() not in HomebrewFormulaGenerator.EXCLUDED_FROM_RESOURCES:
-                packages.append((name, pinned))
-        return sorted(packages, key=lambda item: item[0].lower())
+            name, _ = line.split(HomebrewFormulaGenerator.PIP_FREEZE_SEPARATOR, 1)
+            if name.lower() not in HomebrewFormulaGenerator.EXCLUDED:
+                specs.append(line.strip())
+        return specs
+
+    @staticmethod
+    def download_wheels(specs: list[str], platforms: tuple[str, ...], destination: Path) -> None:
+        destination.mkdir(parents=True, exist_ok=True)
+        for spec in specs:
+            for platform in platforms:
+                argv = [sys.executable, "-m", "pip", "download", spec, "--only-binary", ":all:", "--no-deps",
+                        "--python-version", HomebrewFormulaGenerator.PYTHON_TAG, "--implementation", "cp",
+                        "--abi", HomebrewFormulaGenerator.ABI, "--platform", platform, "--dest", str(destination)]
+                if subprocess.run(argv, capture_output=True).returncode == 0:
+                    break
+            else:
+                raise RuntimeError(f"no {HomebrewFormulaGenerator.ABI} wheel for {spec} on {platforms}")
+
+    @staticmethod
+    def package_from_wheel(filename: str) -> str:
+        return filename.split("-")[0].replace("_", "-")
+
+    @staticmethod
+    def wheel_url_and_sha(filename: str) -> tuple[str, str]:
+        package = HomebrewFormulaGenerator.package_from_wheel(filename)
+        with urllib.request.urlopen(HomebrewFormulaGenerator.PYPI_JSON_URL.format(package=package), timeout=30) as r:
+            metadata = json.loads(r.read())
+        for release in metadata["releases"].values():
+            for entry in release:
+                if entry["filename"] == filename:
+                    return entry["url"], entry["digests"]["sha256"]
+        raise RuntimeError(f"no PyPI url for {filename}")
+
+    @staticmethod
+    def resource_block(name: str, filename: str, indent: str) -> str:
+        url, sha = HomebrewFormulaGenerator.wheel_url_and_sha(filename)
+        return f'{indent}resource "{name}" do\n{indent}  url "{url}"\n{indent}  sha256 "{sha}"\n{indent}end\n\n'
 
     @staticmethod
     def render(version: str) -> str:
-        sdist_url, sdist_sha256 = HomebrewFormulaGenerator.fetch_sdist(
-            HomebrewFormulaGenerator.PACKAGE_NAME, version)
-        print(f"termdeck {version} sdist resolved", file=sys.stderr)
-        resource_blocks = ""
-        for name, pinned in HomebrewFormulaGenerator.resolve_dependency_versions(version):
-            resource_url, resource_sha256 = HomebrewFormulaGenerator.fetch_sdist(name, pinned)
-            print(f"  resource {name} {pinned}", file=sys.stderr)
-            resource_blocks += HomebrewFormulaGenerator.RESOURCE_TEMPLATE.format(
-                name=name, url=resource_url, sha256=resource_sha256)
+        tarball_url, tarball_sha256 = HomebrewFormulaGenerator.tarball_url_and_sha256(version)
+        specs = HomebrewFormulaGenerator.resolve_dependency_specs()
+        print(f"termdeck {version}: {len(specs)} dependencies", file=sys.stderr)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            arm_dir, intel_dir = Path(temp_dir) / "arm", Path(temp_dir) / "intel"
+            native_specs = [s for s in specs
+                            if s.split(HomebrewFormulaGenerator.PIP_FREEZE_SEPARATOR)[0].lower().replace("_", "-")
+                            in HomebrewFormulaGenerator.NATIVE_PACKAGES]
+            HomebrewFormulaGenerator.download_wheels(specs, HomebrewFormulaGenerator.ARM_PLATFORMS, arm_dir)
+            HomebrewFormulaGenerator.download_wheels(native_specs, HomebrewFormulaGenerator.INTEL_PLATFORMS, intel_dir)
+            universal_blocks, arm_blocks, intel_blocks = "", "", ""
+            for wheel in sorted(arm_dir.glob("*.whl")):
+                name = HomebrewFormulaGenerator.package_from_wheel(wheel.name)
+                if wheel.name.endswith(HomebrewFormulaGenerator.UNIVERSAL_WHEEL_SUFFIX):
+                    universal_blocks += HomebrewFormulaGenerator.resource_block(name, wheel.name, "  ")
+                else:
+                    arm_blocks += HomebrewFormulaGenerator.resource_block(name, wheel.name, "      ")
+            for wheel in sorted(intel_dir.glob("*.whl")):
+                name = HomebrewFormulaGenerator.package_from_wheel(wheel.name)
+                intel_blocks += HomebrewFormulaGenerator.resource_block(name, wheel.name, "      ")
         system_dependency_lines = "".join(f'  depends_on "{name}"\n'
                                           for name in HomebrewFormulaGenerator.SYSTEM_DEPENDENCIES)
         return HomebrewFormulaGenerator.FORMULA_TEMPLATE.format(
-            sdist_url=sdist_url, sdist_sha256=sdist_sha256, python_formula=HomebrewFormulaGenerator.PYTHON_FORMULA,
-            system_dependency_lines=system_dependency_lines, resource_blocks="\n" + resource_blocks)
+            tarball_url=tarball_url, tarball_sha256=tarball_sha256,
+            python_formula=HomebrewFormulaGenerator.PYTHON_FORMULA, python_tag=HomebrewFormulaGenerator.PYTHON_TAG,
+            system_dependency_lines=system_dependency_lines, arm_blocks=arm_blocks, intel_blocks=intel_blocks,
+            universal_blocks=universal_blocks)
 
     @staticmethod
     def main(argv: list[str]) -> int:

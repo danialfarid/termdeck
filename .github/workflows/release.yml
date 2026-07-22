@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,47 +30,24 @@ jobs:
             exit 1
           fi
 
+      - name: Create or update the GitHub release with the build artifacts
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
+              --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md).
+
+          \`\`\`sh
+          brew install danialfarid/tap/termdeck
+          # or, anywhere:
+          uv tool install \"git+https://github.com/${GITHUB_REPOSITORY}.git@${GITHUB_REF_NAME}\"
+          \`\`\`"
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
-
-  publish-pypi:
-    needs: build
-    runs-on: ubuntu-latest
-    environment: release
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
-
-  github-release:
-    needs: publish-pypi
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Create the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "$GITHUB_REF_NAME" \
-            --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md) for what changed.
-
-          \`\`\`sh
-          brew install danialfarid/tap/termdeck
-          # or
-          uv tool install termdeck
-          \`\`\`"

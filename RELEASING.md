@@ -2,26 +2,20 @@
 
 The steps to cut a TermDeck release. Only the maintainer needs this.
 
+TermDeck is distributed two ways, both from GitHub — there is no PyPI package (yet):
+
+- **Homebrew** (macOS): the [`danialfarid/homebrew-tap`](https://github.com/danialfarid/homebrew-tap) formula.
+- **uv / pipx** (everywhere): installed straight from the GitHub release tag.
+
 ## One-time setup
 
-### PyPI
-
-1. Create the project token at <https://pypi.org/manage/account/token/>.
-   For the very first release the project doesn't exist yet, so create an **account-scoped** token, publish
-   once, then replace it with a project-scoped one.
-2. Add it to the repository: **Settings → Secrets and variables → Actions → New repository secret**
-   - Name: `PYPI_API_TOKEN`
-   - Value: the `pypi-…` token
-3. Create an environment named `release` (**Settings → Environments**). The workflow references it, and it
-   gives you a place to require manual approval later if you want one.
-
-### Homebrew tap
+The Homebrew tap repository:
 
 ```sh
 gh repo create danialfarid/homebrew-tap --public --description "Homebrew tap for termdeck"
 ```
 
-See [packaging/homebrew/README.md](packaging/homebrew/README.md) for the details.
+That's it — no PyPI account or token is needed for the current flow.
 
 ---
 
@@ -47,37 +41,33 @@ python3 -m venv /tmp/termdeck-verify
 /tmp/termdeck-verify/bin/pip install dist/termdeck-0.2.0-py3-none-any.whl
 /tmp/termdeck-verify/bin/termdeck --version
 /tmp/termdeck-verify/bin/termdeck doctor
-TERMDECK_PORT=8532 TERMDECK_DATA_DIR=/tmp/termdeck-verify-data /tmp/termdeck-verify/bin/termdeck
-# open http://127.0.0.1:8532, create a terminal, run a command, restart the server, confirm it resumes
 ```
 
-### 3. Commit and tag
+### 3. Commit, tag, and push
+
+`main` is branch-protected, so land the version bump through a PR, then tag the merged commit:
 
 ```sh
-git add -A && git commit -m "Release 0.2.0"
-git tag v0.2.0
-git push && git push --tags
+git switch -c release-0.2.0 && git commit -am "Release 0.2.0" && git push -u origin release-0.2.0
+gh pr create --fill && gh pr merge --squash --admin       # review, then merge
+git switch main && git pull
+git tag v0.2.0 && git push --tags
 ```
 
-The tag push triggers `.github/workflows/release.yml`, which:
+Pushing the tag triggers `.github/workflows/release.yml`, which builds the sdist and wheel, checks the tag
+matches `termdeck/__init__.py`, and creates the GitHub release with both artifacts attached. Watch it with
+`gh run watch`.
 
-1. builds the sdist and wheel and runs `twine check`
-2. fails the build if the tag doesn't match `termdeck/__init__.py`
-3. publishes to PyPI using `PYPI_API_TOKEN`
-4. creates the GitHub release with both artifacts attached
-
-Watch it: `gh run watch`.
-
-### 4. Verify the published package
+### 4. Verify the git install
 
 ```sh
-uv tool install termdeck==0.2.0     # or: pipx install termdeck==0.2.0
+uv tool install --force "git+https://github.com/danialfarid/termdeck.git@v0.2.0"
 termdeck --version
 ```
 
 ### 5. Update the Homebrew tap
 
-Only after PyPI has the release, since the formula hashes the published sdist.
+Only after the tag exists — the formula hashes the release tarball.
 
 ```sh
 python packaging/homebrew/generate_formula.py
@@ -85,13 +75,16 @@ cp packaging/homebrew/termdeck.rb ../homebrew-tap/Formula/termdeck.rb
 cd ../homebrew-tap && git add -A && git commit -m "termdeck 0.2.0" && git push
 ```
 
-Then confirm from a clean state:
+Then confirm from a clean state (`brew fetch` verifies every wheel checksum without compiling):
 
 ```sh
 brew update
+brew fetch danialfarid/tap/termdeck
 brew install danialfarid/tap/termdeck
 termdeck doctor
 ```
+
+See [packaging/homebrew/README.md](packaging/homebrew/README.md) for how the wheel-based formula works.
 
 ---
 
@@ -102,11 +95,20 @@ termdeck doctor
 - **patch** (`0.1.0` → `0.1.1`) — bug fixes, docs
 - **minor** (`0.1.0` → `0.2.0`) — new features, and any breaking change
 
-Things that count as breaking for this project: renaming or removing a `TERMDECK_*` variable or CLI flag,
-changing the data directory layout, or changing the on-disk format of `sessions.json` without a migration.
+Breaking, for this project: renaming or removing a `TERMDECK_*` variable or CLI flag, changing the data
+directory layout, or changing the on-disk format of `sessions.json` without a migration.
 
 ## If a release goes wrong
 
-PyPI does not allow re-uploading a version, even after deletion. Bump the patch version and release again —
-yanking the bad one (`pip`'s "yank" on the PyPI web UI) hides it from new resolutions without breaking anyone
-who already pinned it.
+Delete the tag and release, fix, and re-tag:
+
+```sh
+gh release delete v0.2.0 --yes
+git push --delete origin v0.2.0
+```
+
+## Adding PyPI later
+
+If TermDeck is later published to PyPI, re-add a `publish-pypi` job to `release.yml` (create a `release`
+environment and a `PYPI_API_TOKEN` secret), point the Homebrew formula's `url` at the PyPI sdist, and switch
+the install docs to `pip install termdeck`.

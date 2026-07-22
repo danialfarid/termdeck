@@ -79,8 +79,17 @@ Run `termdeck doctor` at any time to see exactly what was found and what's missi
 
 ## Install
 
-TermDeck installs straight from its GitHub release. Two external tools come first:
-`dtach` (required — it keeps terminals alive across restarts) and `ripgrep` (recommended — project search).
+### Homebrew (macOS)
+
+```sh
+brew install danialfarid/tap/termdeck
+```
+
+This pulls in `dtach` and `ripgrep` automatically and needs nothing compiled. Then `termdeck --open`.
+
+### uv (macOS and Linux)
+
+`uv` brings its own Python and works everywhere. Install the two external tools first:
 
 ```sh
 brew install dtach ripgrep                 # macOS / Linuxbrew
@@ -89,9 +98,7 @@ sudo dnf install dtach ripgrep             # Fedora
 sudo pacman -S dtach ripgrep               # Arch
 ```
 
-### uv (recommended)
-
-`uv` brings its own Python, so nothing else is needed.
+then TermDeck itself:
 
 ```sh
 uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.1.0"
@@ -115,11 +122,7 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 .venv/bin/termdeck
 ```
 
-### Homebrew and PyPI
-
-A one-line `brew install` and `pip install termdeck` are planned but not published yet
-([tracking issue](https://github.com/danialfarid/termdeck/issues)). Use the `uv`/`pipx`
-commands above in the meantime.
+> **PyPI:** `pip install termdeck` is planned but not published yet — use `uv`/`pipx` from GitHub above.
 
 ---
 

@@ -15,12 +15,25 @@ its job — `dtach` above all, because that is what keeps terminals alive when t
 
 `lsof` and `ps` are also used, and are present by default on both macOS and every mainstream Linux distro.
 
-> **Not yet on PyPI or a Homebrew tap.** For now TermDeck installs straight from its GitHub release, which is
-> tested and works on macOS and Linux. `brew install` and `pip install termdeck` are planned.
+> **Not yet on PyPI.** `pip install termdeck` is planned. On macOS use the Homebrew tap below; everywhere
+> else install from the GitHub release with `uv` or `pipx`.
 
 ---
 
-## uv (recommended)
+## Homebrew (macOS)
+
+```sh
+brew install danialfarid/tap/termdeck
+```
+
+The tap pulls in `dtach` and `ripgrep` automatically, and installs TermDeck's Python dependencies from
+prebuilt CPython 3.13 wheels, so nothing compiles at install time. Works on Apple Silicon and Intel.
+
+Upgrade later with `brew update && brew upgrade termdeck`.
+
+---
+
+## uv (macOS and Linux)
 
 `uv` brings its own Python, so the system Python version doesn't matter.
 
@@ -160,6 +173,7 @@ Remove it with `termdeck service uninstall`.
 
 | Installed with | Upgrade |
 |---|---|
+| Homebrew | `brew update && brew upgrade termdeck` |
 | uv | `uv tool install --force "git+https://github.com/danialfarid/termdeck.git@v0.1.0"` |
 | pipx | `pipx install --force "git+https://github.com/danialfarid/termdeck.git@v0.1.0"` |
 | pip | `pip install --upgrade "git+https://github.com/danialfarid/termdeck.git@v0.1.0"` |
@@ -179,7 +193,7 @@ Your terminals will respawn and resume, so an upgrade costs you nothing but a fe
 
 ```sh
 termdeck service uninstall     # stop the service and remove the unit file first
-uv tool uninstall termdeck     # or: pipx uninstall termdeck
+brew uninstall termdeck        # or: uv tool uninstall termdeck / pipx uninstall termdeck
 ```
 
 Your data in `~/.termdeck` is left alone. Delete it yourself if you want it gone.
