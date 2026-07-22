@@ -1669,6 +1669,13 @@ class TermdeckApp {
     return `${fileSummary} · +${additions} / −${removals} lines`;
   }
 
+  historyDiffPath(path) {
+    const value = String(path || "Changes").replaceAll("\\", "/");
+    const cwd = String(this.session(this.activeId)?.cwd || "").replace(/[\\/]$/, "");
+    if (cwd && (value === cwd || value.startsWith(`${cwd}/`))) return value.slice(cwd.length + 1) || value;
+    return value;
+  }
+
   renderHistoryDiffLines(lines, target) {
     for (const line of lines || []) {
       const row = document.createElement("div");
@@ -1746,7 +1753,7 @@ class TermdeckApp {
             heading.className = "history-diff-file-heading";
             const additions = (file.diff || []).filter((line) => line.kind === "add").length;
             const removals = (file.diff || []).filter((line) => line.kind === "remove").length;
-            heading.textContent = `${file.path || "Changes"} · +${additions} / −${removals}`;
+            heading.textContent = `${this.historyDiffPath(file.path)} · +${additions} / −${removals}`;
             const body = document.createElement("div");
             body.className = "history-diff-file-body";
             this.renderHistoryDiffLines(file.diff, body);
@@ -2418,7 +2425,12 @@ class TermdeckApp {
     sidebar.style.minWidth = s.sidebar_width + "px";
     document.documentElement.style.setProperty("--sidebar-font-size", s.sidebar_font_size + "px");
     document.documentElement.style.setProperty("--code-font-size", s.code_font_size + "px");
-    document.documentElement.style.setProperty("--diff-font-size", s.diff_font_size + "px");
+    const codeFontSize = Number(s.code_font_size) || SETTINGS_DEFAULTS.code_font_size;
+    const configuredDiffFontSize = Number(s.diff_font_size) || SETTINGS_DEFAULTS.diff_font_size;
+    const relativeDiffFontSize = configuredDiffFontSize === SETTINGS_DEFAULTS.diff_font_size
+      ? Math.max(8, codeFontSize - 1)
+      : Math.min(configuredDiffFontSize, Math.max(8, codeFontSize - 1));
+    document.documentElement.style.setProperty("--diff-font-size", relativeDiffFontSize + "px");
     document.documentElement.style.setProperty("--tree-font-size", s.tree_font_size + "px");
     document.body.classList.toggle("theme-light", this.isLight());
     for (const view of this.views.values()) {
