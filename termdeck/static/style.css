@@ -142,8 +142,8 @@ body.dragging { user-select: none; cursor: col-resize; }
 .term-container.drag-over::after { content: "drop to attach → inserts file path"; position: absolute; inset: 6px; border: 2px dashed var(--accent); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--accent); font-size: 13px; background: rgba(92, 207, 230, 0.08); pointer-events: none; z-index: 10; }
 #history-area { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
 #history-area.hidden { display: none; }
-#history-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--border); flex: none; }
-#history-title-group { display: flex; align-items: center; gap: 10px; min-width: 0; }
+#history-head { display: flex; align-items: center; justify-content: flex-end; padding: 7px 12px; border-bottom: 1px solid var(--border); flex: none; }
+#history-title-group { display: none; }
 #history-title { font-size: 12px; color: var(--dim); font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
 #history-thinking-banner { display: flex; align-items: center; gap: 8px; padding: 5px 12px 4px; border-top: 1px solid var(--border); color: var(--accent); font: 600 10px Menlo, monospace; letter-spacing: 0.04em; text-transform: uppercase; }
 #history-thinking-banner:not(.hidden) .history-thinking-message { animation: history-thinking-message-pulse 1.65s ease-in-out infinite; }
