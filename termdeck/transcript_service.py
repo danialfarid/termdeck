@@ -9,13 +9,15 @@ from pathlib import Path
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
-try:
-    from watchdog.observers.kqueue import KqueueObserver
-except ImportError:  # pragma: no cover - unavailable outside macOS
-    KqueueObserver = None
 
 from termdeck.config import TermdeckConfig
 from termdeck.models import AgentKind
+from termdeck.platform_paths import PlatformPaths
+
+if PlatformPaths.IS_MACOS:
+    from watchdog.observers.kqueue import KqueueObserver
+else:
+    KqueueObserver = None
 
 
 @dataclass
