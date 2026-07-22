@@ -312,6 +312,12 @@ class TermdeckApp {
     this.$("history-edits-toggle").onclick = () => this.toggleHistoryEdits();
     this.$("history-close").onclick = () => this.closeHistory();
     this.$("history-scroll-bottom").onclick = () => this.scrollHistoryToBottom();
+    this.$("history-body").addEventListener("click", (e) => {
+      if (e.target.closest("a, button, input, textarea, select")) return;
+      requestAnimationFrame(() => {
+        if (this.historyOpen && this.activeFileKey === null) this.$("history-prompt").focus();
+      });
+    });
     this.$("terminal-resync-btn").onclick = () => this.resyncActiveTerminal();
     this.$("history-attach").onclick = () => this.attachToHistory();
     this.$("history-send").onclick = () => this.sendHistoryPrompt();
@@ -1786,11 +1792,52 @@ class TermdeckApp {
     this.updateHistoryEditToggle();
   }
 
+  captureHistoryScroll(body) {
+    const snapshot = {
+      top: body.scrollTop,
+      atBottom: body.scrollHeight - body.clientHeight - body.scrollTop < 80,
+      anchorIndex: -1,
+      anchorOffset: 0,
+    };
+    const bodyTop = body.getBoundingClientRect().top;
+    const children = [...body.children];
+    for (let index = 0; index < children.length; index += 1) {
+      if (children[index].getBoundingClientRect().bottom > bodyTop + 1) {
+        snapshot.anchorIndex = index;
+        snapshot.anchorOffset = children[index].getBoundingClientRect().top - bodyTop;
+        break;
+      }
+    }
+    if (snapshot.anchorIndex < 0 && children.length) {
+      snapshot.anchorIndex = children.length - 1;
+      snapshot.anchorOffset = children[snapshot.anchorIndex].getBoundingClientRect().top - bodyTop;
+    }
+    return snapshot;
+  }
+
+  restoreHistoryScroll(body, snapshot) {
+    if (!snapshot) {
+      body.scrollTop = body.scrollHeight;
+      return;
+    }
+    if (snapshot.atBottom) {
+      body.scrollTop = body.scrollHeight;
+      return;
+    }
+    const anchor = snapshot.anchorIndex >= 0 ? body.children[snapshot.anchorIndex] : null;
+    if (anchor) {
+      const bodyTop = body.getBoundingClientRect().top;
+      const currentOffset = anchor.getBoundingClientRect().top - bodyTop;
+      body.scrollTop += currentOffset - snapshot.anchorOffset;
+    } else {
+      body.scrollTop = snapshot.top;
+    }
+    body.scrollTop = Math.min(body.scrollTop, Math.max(0, body.scrollHeight - body.clientHeight));
+  }
+
   async loadHistory(sessionId, options = {}) {
     const body = this.$("history-body");
     const preserveScroll = options.preserveScroll === true;
-    const previousScrollTop = body.scrollTop;
-    const wasAtBottom = preserveScroll && body.scrollHeight - body.clientHeight - body.scrollTop < 80;
     if (this.historyLoadBusy) return;
     this.historyLoadBusy = true;
     if (!this.historyLoaded) {
@@ -1819,6 +1866,9 @@ class TermdeckApp {
     this.historyLoadBusy = false;
     if (sessionId !== this.activeId || !this.historyOpen) return;
     this.reconcileHistoryQueue(this.views.get(sessionId), turns);
+    // Capture this after the request completes so scrolling while the refresh
+    // is in flight is never overwritten by an older scroll position.
+    const scrollSnapshot = preserveScroll ? this.captureHistoryScroll(body) : null;
     const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length, turn.diff_files, turn.plan, turn.items]))}`;
     if (preserveScroll && fingerprint === this.historyFingerprint) return;
     let commonPrefix = 0;
@@ -1871,9 +1921,7 @@ class TermdeckApp {
     }
     this.historyTurns = turns;
     this.updateHistoryEditToggle();
-    if (wasAtBottom) body.scrollTop = body.scrollHeight;
-    else if (preserveScroll) body.scrollTop = Math.min(previousScrollTop, Math.max(0, body.scrollHeight - body.clientHeight));
-    else body.scrollTop = body.scrollHeight;
+    this.restoreHistoryScroll(body, scrollSnapshot);
   }
 
   renderMarkdown(text) {
