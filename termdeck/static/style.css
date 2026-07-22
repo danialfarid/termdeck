@@ -175,7 +175,7 @@ body.dragging { user-select: none; cursor: col-resize; }
 #history-prompt-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 #history-prompt { width: 100%; min-height: 32px; height: 32px; max-height: 150px; resize: none; overflow-y: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 10px; outline: none; font: var(--code-font-size)/1.45 Menlo, monospace; }
 #history-prompt:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--active-border); }
-#history-prompt-help { color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 2px; }
+#history-prompt-help { color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 4px 0 0 2px; }
 #history-composer-actions { display: flex; flex-direction: column; gap: 3px; flex: none; padding-top: 1px; }
 #history-attach, #history-send { flex: none; width: 23px; height: 22px; padding: 0; border-radius: 5px; cursor: pointer; }
 #history-attach { border: 1px solid var(--border); background: none; color: var(--dim); }
