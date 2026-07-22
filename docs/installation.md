@@ -15,38 +15,26 @@ its job — `dtach` above all, because that is what keeps terminals alive when t
 
 `lsof` and `ps` are also used, and are present by default on both macOS and every mainstream Linux distro.
 
----
-
-## Homebrew
-
-The tap installs TermDeck along with `dtach` and `ripgrep`.
-
-```sh
-brew install danialfarid/tap/termdeck
-```
-
-Upgrade later with:
-
-```sh
-brew update && brew upgrade termdeck
-```
-
-Works on macOS (Apple Silicon and Intel) and on Linuxbrew.
+> **Not yet on PyPI or a Homebrew tap.** For now TermDeck installs straight from its GitHub release, which is
+> tested and works on macOS and Linux. `brew install` and `pip install termdeck` are planned.
 
 ---
 
-## uv
+## uv (recommended)
+
+`uv` brings its own Python, so the system Python version doesn't matter.
 
 ```sh
-uv tool install termdeck
-uv tool upgrade termdeck      # later
+uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.1.0"
 ```
+
+Upgrade to a newer release by re-running with the new tag. Pin to `main` instead of a tag for the latest
+development version.
 
 ## pipx
 
 ```sh
-pipx install termdeck
-pipx upgrade termdeck         # later
+pipx install "git+https://github.com/danialfarid/termdeck.git@v0.1.0"
 ```
 
 ## pip
@@ -54,7 +42,7 @@ pipx upgrade termdeck         # later
 Only if you want it inside a specific environment rather than as a standalone tool:
 
 ```sh
-python3 -m pip install termdeck
+python3 -m pip install "git+https://github.com/danialfarid/termdeck.git@v0.1.0"
 ```
 
 ### Installing the external tools
@@ -172,10 +160,9 @@ Remove it with `termdeck service uninstall`.
 
 | Installed with | Upgrade |
 |---|---|
-| Homebrew | `brew update && brew upgrade termdeck` |
-| uv | `uv tool upgrade termdeck` |
-| pipx | `pipx upgrade termdeck` |
-| pip | `pip install --upgrade termdeck` |
+| uv | `uv tool install --force "git+https://github.com/danialfarid/termdeck.git@v0.1.0"` |
+| pipx | `pipx install --force "git+https://github.com/danialfarid/termdeck.git@v0.1.0"` |
+| pip | `pip install --upgrade "git+https://github.com/danialfarid/termdeck.git@v0.1.0"` |
 | Source | `git pull` |
 
 If you run it as a service, restart it afterwards so the new version is picked up:
@@ -192,7 +179,7 @@ Your terminals will respawn and resume, so an upgrade costs you nothing but a fe
 
 ```sh
 termdeck service uninstall     # stop the service and remove the unit file first
-brew uninstall termdeck        # or: uv tool uninstall termdeck / pipx uninstall termdeck
+uv tool uninstall termdeck     # or: pipx uninstall termdeck
 ```
 
 Your data in `~/.termdeck` is left alone. Delete it yourself if you want it gone.

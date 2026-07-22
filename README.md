@@ -5,8 +5,8 @@
 **A deck of persistent terminals in your browser — where your Claude Code and Codex sessions
 survive restarts, reboots, and closed tabs.**
 
-[![PyPI](https://img.shields.io/pypi/v/termdeck.svg)](https://pypi.org/project/termdeck/)
-[![Python](https://img.shields.io/pypi/pyversions/termdeck.svg)](https://pypi.org/project/termdeck/)
+[![Release](https://img.shields.io/github/v/release/danialfarid/termdeck?sort=semver)](https://github.com/danialfarid/termdeck/releases)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/danialfarid/termdeck/actions/workflows/ci.yml/badge.svg)](https://github.com/danialfarid/termdeck/actions/workflows/ci.yml)
 
@@ -79,27 +79,31 @@ Run `termdeck doctor` at any time to see exactly what was found and what's missi
 
 ## Install
 
-### Homebrew (macOS and Linux)
-
-```sh
-brew install danialfarid/tap/termdeck
-```
-
-This pulls in `dtach` and `ripgrep` automatically.
-
-### pipx / uv
-
-```sh
-uv tool install termdeck      # or: pipx install termdeck
-```
-
-Then install the external tools yourself:
+TermDeck installs straight from its GitHub release. Two external tools come first:
+`dtach` (required — it keeps terminals alive across restarts) and `ripgrep` (recommended — project search).
 
 ```sh
 brew install dtach ripgrep                 # macOS / Linuxbrew
 sudo apt install dtach ripgrep             # Debian / Ubuntu
 sudo dnf install dtach ripgrep             # Fedora
 sudo pacman -S dtach ripgrep               # Arch
+```
+
+### uv (recommended)
+
+`uv` brings its own Python, so nothing else is needed.
+
+```sh
+uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.1.0"
+termdeck --open
+```
+
+Upgrade to a newer release by re-running the same command with the new tag.
+
+### pipx
+
+```sh
+pipx install "git+https://github.com/danialfarid/termdeck.git@v0.1.0"
 ```
 
 ### From source
@@ -110,6 +114,12 @@ cd termdeck
 python3 -m venv .venv && .venv/bin/pip install -e .
 .venv/bin/termdeck
 ```
+
+### Homebrew and PyPI
+
+A one-line `brew install` and `pip install termdeck` are planned but not published yet
+([tracking issue](https://github.com/danialfarid/termdeck/issues)). Use the `uv`/`pipx`
+commands above in the meantime.
 
 ---
 
