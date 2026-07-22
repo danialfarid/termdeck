@@ -1956,7 +1956,7 @@ class TermdeckApp {
     container.className = "term-container";
     this.$("terminal-area").appendChild(container);
     const term = new Terminal({
-      fontSize: this.settings.terminal_font_size, fontFamily: '"SF Mono", Menlo, monospace', theme: this.termTheme(),
+      fontSize: this.settings.terminal_font_size, fontFamily: '"SF Mono", Menlo, monospace', letterSpacing: -0.2, theme: this.termTheme(),
       scrollback: 20000, cursorBlink: true, macOptionIsMeta: true, allowProposedApi: true,
     });
     const fit = new FitAddon.FitAddon();

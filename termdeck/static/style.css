@@ -187,7 +187,7 @@ body.dragging { user-select: none; cursor: col-resize; }
 .turn-role { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 4px; }
 .turn.user .turn-role { color: var(--accent); }
 .turn.assistant .turn-role { color: var(--green); }
-.turn-text { word-break: break-word; font-size: calc(var(--code-font-size) + 1px); line-height: 1.55; color: var(--text); font-family: "SF Mono", Menlo, monospace; }
+.turn-text { word-break: break-word; font-size: calc(var(--code-font-size) + 1px); line-height: 1.55; color: var(--text); font-family: "SF Mono", Menlo, monospace; letter-spacing: -0.15px; }
 .turn.user .turn-text { background: var(--active-bg); border: 1px solid var(--active-border); border-left: 3px solid var(--accent); padding: 8px 12px; border-radius: 5px; }
 .history-empty { color: var(--dim); font-size: 13px; padding: 20px; text-align: center; }
 .history-event { width: 100%; margin: 0 0 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); }
@@ -204,7 +204,7 @@ body.dragging { user-select: none; cursor: col-resize; }
 .history-thinking-label { padding: 6px 10px 2px; color: var(--dim); font: 600 10px Menlo, monospace; text-transform: uppercase; letter-spacing: 0.05em; }
 .history-thinking pre { margin: 0; border-top: 0; border-bottom: 1px solid var(--border); }
 .history-thinking pre:last-child { border-bottom: 0; }
-.history-plan { margin: 0; padding: 8px 12px 8px 34px; border-top: 1px solid var(--border); list-style: none; color: var(--text); font: 12px/1.5 "SF Mono", Menlo, monospace; }
+.history-plan { margin: 0; padding: 8px 12px 8px 34px; border-top: 1px solid var(--border); list-style: none; color: var(--text); font: 12px/1.5 "SF Mono", Menlo, monospace; letter-spacing: -0.15px; }
 .plan-step { padding: 3px 0 3px 4px; }
 .plan-marker { display: inline-block; width: 18px; margin-left: -22px; color: var(--dim); font-family: Menlo, monospace; font-weight: 700; }
 .plan-step.in_progress .plan-marker { color: var(--accent); }
@@ -232,7 +232,7 @@ body.dragging { user-select: none; cursor: col-resize; }
 .markdown em { font-style: italic; }
 .markdown a { color: var(--accent); text-decoration: none; }
 .markdown a:hover { text-decoration: underline; }
-.markdown code { font-family: "SF Mono", Menlo, monospace; font-size: 0.88em; background: var(--panel2); padding: 1px 5px; border-radius: 4px; }
+.markdown code { font-family: "SF Mono", Menlo, monospace; font-size: 0.88em; letter-spacing: -0.15px; background: var(--panel2); padding: 1px 5px; border-radius: 4px; }
 .markdown pre { background: var(--term-bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 0 0 10px; }
 .markdown pre code { background: none; padding: 0; font-size: var(--diff-font-size); line-height: 1.45; }
 .markdown blockquote { margin: 0 0 8px; padding-left: 12px; border-left: 3px solid var(--border); color: var(--dim); }
