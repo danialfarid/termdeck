@@ -339,10 +339,20 @@ class TermdeckApp {
         e.preventDefault();
         e.stopPropagation();
         const view = this.views.get(this.activeId);
-        view.promptSubmitting = false;
-        view.promptEditing = false;
-        clearTimeout(view.promptSubmitTimer);
-        this.sendInput(view, e.key === "ArrowUp" ? "\x1b[A" : "\x1b[B");
+        const queueLength = view.promptQueue.length;
+        const current = Number.isInteger(view.promptQueueEditIndex) ? view.promptQueueEditIndex :
+          (e.key === "ArrowUp" ? queueLength - 1 : 0);
+        view.promptQueueEditIndex = Math.max(0, Math.min(queueLength - 1,
+          Number.isInteger(view.promptQueueEditIndex) ? current + (e.key === "ArrowUp" ? -1 : 1) : current));
+        this.renderHistoryQueue(view);
+        requestAnimationFrame(() => {
+          const editor = this.$("history-queued-items")?.querySelector(
+            `[data-queue-index="${view.promptQueueEditIndex}"] .history-queued-editor`);
+          if (editor) {
+            editor.focus();
+            editor.select();
+          }
+        });
         return;
       }
       if (e.key !== "Enter" || e.isComposing) return;
@@ -1369,19 +1379,98 @@ class TermdeckApp {
     const queued = view?.promptQueue || [];
     container.classList.toggle("hidden", !this.historyOpen || !queued.length);
     count.textContent = queued.length ? `${queued.length} message${queued.length === 1 ? "" : "s"}` : "";
+    const activeEditor = document.activeElement?.classList?.contains("history-queued-editor") ? document.activeElement : null;
+    if (activeEditor && items.contains(activeEditor) && activeEditor.dataset.sessionId === view?.sessionId &&
+        !view?.promptQueueMutation) return;
     items.textContent = "";
     queued.forEach((item, index) => {
       const row = document.createElement("div");
       row.className = "history-queued-item";
+      row.dataset.queueIndex = `${index}`;
       const number = document.createElement("span");
       number.className = "history-queued-index";
       number.textContent = `${index + 1}.`;
-      const text = document.createElement("span");
-      text.className = "history-queued-text";
-      text.textContent = item.text;
-      row.append(number, text);
+      const editor = document.createElement("textarea");
+      editor.className = "history-queued-editor";
+      editor.dataset.sessionId = view?.sessionId || "";
+      editor.disabled = !!view?.promptQueueMutation;
+      editor.value = item.draftText ?? item.text;
+      editor.rows = 1;
+      editor.spellcheck = false;
+      editor.setAttribute("aria-label", `Queued prompt ${index + 1}`);
+      const resize = () => {
+        editor.style.height = "auto";
+        editor.style.height = `${Math.min(editor.scrollHeight, 120)}px`;
+      };
+      editor.addEventListener("focus", () => { if (view) view.promptQueueEditIndex = index; });
+      editor.addEventListener("input", () => {
+        const current = view?.promptQueue?.[index];
+        if (!current) return;
+        current.draftText = editor.value;
+        resize();
+      });
+      editor.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          const current = view?.promptQueue?.[index];
+          if (current) delete current.draftText;
+          this.renderHistoryQueue(view);
+          return;
+        }
+        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault();
+          editor.blur();
+        }
+      });
+      editor.addEventListener("blur", () => {
+        const current = view?.promptQueue?.[index];
+        if (!current) return;
+        const next = editor.value;
+        current.draftText = next;
+        this.commitHistoryQueueEdit(view, index, next);
+      });
+      resize();
+      const remove = document.createElement("button");
+      remove.className = "history-queued-remove";
+      remove.type = "button";
+      remove.disabled = !!view?.promptQueueMutation;
+      remove.title = "Remove queued prompt";
+      remove.setAttribute("aria-label", `Remove queued prompt ${index + 1}`);
+      remove.textContent = "×";
+      remove.addEventListener("mousedown", (event) => event.preventDefault());
+      remove.addEventListener("click", () => this.removeHistoryQueueItem(view, index));
+      row.append(number, editor, remove);
       items.appendChild(row);
     });
+  }
+
+  commitHistoryQueueEdit(view, index, text) {
+    const item = view?.promptQueue?.[index];
+    if (!item || item.mutationPending) return;
+    const next = String(text || "");
+    if (next === item.text) {
+      delete item.draftText;
+      return;
+    }
+    this.mutateHistoryQueue(view, index, next, !next.trim());
+  }
+
+  removeHistoryQueueItem(view, index) {
+    if (!view?.promptQueue?.[index] || view.promptQueueMutation) return;
+    this.mutateHistoryQueue(view, index, "", true);
+  }
+
+  mutateHistoryQueue(view, index, text, remove) {
+    if (!view || view.promptQueueMutation || this.session(view.sessionId)?.agent_kind !== "codex" ||
+        !view.ws || view.ws.readyState !== WebSocket.OPEN) return;
+    const queue = view.promptQueue.map((item) => String(item.text || ""));
+    if (index < 0 || index >= queue.length) return;
+    view.promptQueueMutation = true;
+    view.promptQueue.forEach((item) => { item.mutationPending = true; });
+    this.renderHistoryQueue(view);
+    const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
+    view.ws.send(JSON.stringify({ type: "queue_edit", index, queue, text: String(text || ""), remove, bracketed }));
+    this.$("status-name").textContent = remove ? "removing queued prompt…" : "updating queued prompt…";
   }
 
   reconcileHistoryQueue(view, turns) {
@@ -2012,12 +2101,12 @@ class TermdeckApp {
     term.loadAddon(fit);
     term.open(container);
     term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
-    const view = { container, term, fit, ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
+    const view = { sessionId: id, container, term, fit, ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
                    replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, programmaticScrollUntil: 0, scrollSettleTimer: 0,
                    replayTimer: 0, reconnectTimer: 0, settleFrame: 0, layoutObserver: null, keepBottom: true, lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
-                   promptQueue: [],
+                   promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, pendingDraftSync: null, pendingTerminalDraft: null,
                    promptEditVersion: 0, promptSubmitVersion: -1 };
     container.addEventListener("wheel", () => {
@@ -2141,6 +2230,12 @@ class TermdeckApp {
       });
     };
     ws.onclose = () => {
+      if (view.promptQueueMutation) {
+        view.promptQueueMutation = false;
+        view.promptQueue.forEach((item) => { delete item.mutationPending; });
+        this.renderHistoryQueue(view);
+        if (id === this.activeId) this.$("status-name").textContent = "queued prompt update disconnected — retry";
+      }
       if (!view.closed) {
         clearTimeout(view.reconnectTimer);
         view.reconnectTimer = setTimeout(() => {
@@ -2202,6 +2297,7 @@ class TermdeckApp {
       view.promptDraftSyncPending = false;
       clearTimeout(view.promptDraftSyncTimer);
       view.promptDraftSyncTimer = 0;
+      if (view.promptQueueMutation) return;
       if (view.promptSubmitting) {
         return;
       }
@@ -2226,6 +2322,20 @@ class TermdeckApp {
       if (submissionIsCurrent) {
         this.showPromptDraft(view);
         if (this.historyOpen && id === this.activeId) this.$("history-prompt").focus();
+      }
+      return;
+    } else if (msg.type === "queue_mutation") {
+      view.promptQueueMutation = false;
+      view.promptQueue.forEach((item) => { delete item.mutationPending; });
+      if (msg.ok && Array.isArray(msg.queue)) {
+        const userCount = this.historyTurns.filter((turn) => turn.role === "user").length;
+        view.promptQueue = msg.queue.map((text) => ({ text: String(text || ""), userCount }));
+        view.promptQueueEditIndex = null;
+        this.renderHistoryQueue(view);
+        this.$("status-name").textContent = "queued prompt updated";
+      } else {
+        this.renderHistoryQueue(view);
+        this.$("status-name").textContent = msg.error || "queued prompt update failed";
       }
       return;
     } else if (msg.type === "agent_session") {

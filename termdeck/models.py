@@ -54,6 +54,8 @@ class WsMessageFields:
     DRAFT = "draft"
     DRAFT_SYNC = "draft_sync"
     SUBMIT = "submit"
+    QUEUE_EDIT = "queue_edit"
+    QUEUE_MUTATION = "queue_mutation"
     PROMPT_SUBMITTED = "prompt_submitted"
     PROCESSING = "processing"
     SESSION_STATUS = "session_status"
@@ -64,6 +66,11 @@ class WsMessageFields:
     RUNNING = "running"
     EXIT_CODE = "exit_code"
     DELETED = "deleted"
+    INDEX = "index"
+    QUEUE = "queue"
+    REMOVE = "remove"
+    OK = "ok"
+    ERROR = "error"
 
 
 class ApiFields:

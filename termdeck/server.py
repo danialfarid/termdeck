@@ -369,6 +369,15 @@ class TermdeckServer:
                 await self.manager.submit_prompt(session_id, message.get(WsMessageFields.TEXT, ""),
                                                  bool(message.get("bracketed", False)),
                                                  bool(message.get("queue", False)))
+            elif message_type == WsMessageFields.QUEUE_EDIT:
+                await self.manager.edit_queued_prompt(
+                    session_id,
+                    int(message.get(WsMessageFields.INDEX, -1)),
+                    message.get(WsMessageFields.QUEUE, []),
+                    message.get(WsMessageFields.TEXT, ""),
+                    bool(message.get(WsMessageFields.REMOVE, False)),
+                    bool(message.get("bracketed", False)),
+                )
 
     async def _pump_queue_to_client(self, websocket: WebSocket, queue: asyncio.Queue) -> None:
         while True:

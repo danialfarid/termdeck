@@ -496,6 +496,69 @@ class TerminalSessionManager:
         self._persist()
         self._broadcast_control(self._sessions[session_id], {WsMessageFields.TYPE: WsMessageFields.PROMPT_SUBMITTED})
 
+    async def edit_queued_prompt(self, session_id: str, index: int, queue: object, text: str,
+                                 remove: bool, bracketed: bool) -> None:
+        """Edit or remove a Codex queued prompt through Codex's own TUI queue controls.
+
+        Codex exposes editing for the newest queued message only. To support an arbitrary
+        Markdown row, pop the target and newer rows from the back, change the target, then
+        re-queue the newer rows in their original order.
+        """
+        ms = self._sessions[session_id]
+        texts = [str(value or "")[:TermdeckConfig.DRAFT_MAX_CHARS] for value in (queue if isinstance(queue, list) else [])]
+        if index < 0 or index >= len(texts):
+            self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.QUEUE_MUTATION,
+                                         WsMessageFields.OK: False,
+                                         WsMessageFields.ERROR: "queued prompt is no longer available"})
+            return
+
+        replacement = str(text or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
+        resulting_queue = texts[:index] + ([] if remove or not replacement.strip() else [replacement]) + texts[index + 1:]
+        try:
+            # With TERM_PROGRAM intentionally absent, Codex detects this as an unknown terminal
+            # and binds queued-message editing to Alt+Up (CSI 1;3 A).
+            for _ in range(len(texts) - index):
+                self.write_input(session_id, "\x1b[1;3A")
+                await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
+
+            # Alt+Up restores the target into Codex's composer. Ctrl+U removes it from the
+            # composer; a non-empty replacement is then queued with the normal Tab action.
+            self.write_input(session_id, "\x15")
+            await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
+            if not remove and replacement.strip():
+                await self._queue_prompt_text(session_id, replacement, bracketed)
+
+            # Rebuild only the messages newer than the edited row. Their order is preserved.
+            for newer_text in texts[index + 1:]:
+                await self._queue_prompt_text(session_id, newer_text, bracketed)
+
+            ms.record.draft = ""
+            ms.draft_tracker = DraftInputTracker("")
+            self._schedule_draft_persist()
+            self._persist()
+            self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT,
+                                         WsMessageFields.DRAFT: ""})
+            self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.QUEUE_MUTATION,
+                                         WsMessageFields.OK: True,
+                                         WsMessageFields.QUEUE: resulting_queue})
+        except Exception as exc:
+            self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.QUEUE_MUTATION,
+                                         WsMessageFields.OK: False,
+                                         WsMessageFields.ERROR: str(exc)})
+
+    async def _queue_prompt_text(self, session_id: str, text: str, bracketed: bool) -> None:
+        normalized = str(text or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
+        payload = "\x15"
+        if normalized:
+            if bracketed:
+                payload += TermdeckConfig.BRACKETED_PASTE_START.decode() + normalized + TermdeckConfig.BRACKETED_PASTE_END.decode()
+            else:
+                payload += normalized
+        self.write_input(session_id, payload)
+        await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
+        self.write_input(session_id, "\t")
+        await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
+
     def _schedule_draft_persist(self) -> None:
         if self._draft_persist_task is None or self._draft_persist_task.done():
             self._draft_persist_task = asyncio.create_task(self._persist_after_debounce())
