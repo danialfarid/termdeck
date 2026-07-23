@@ -41,8 +41,9 @@ First public release.
 - **Linux support** alongside macOS: binary discovery via `PATH` with well-known fallbacks, XDG trash,
   `$SHELL` detection, systemd units.
 - **Configuration via `TERMDECK_*` environment variables**, with every CLI flag mapping to one.
-- Packaging for PyPI and Homebrew; Apache 2.0 license; full README, installation, configuration,
-  troubleshooting, and architecture documentation.
+- **Homebrew tap** (`danialfarid/tap/termdeck`) for macOS, installing dependencies from prebuilt wheels so
+  nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
+  installation, configuration, troubleshooting, and architecture documentation.
 
 [Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/danialfarid/termdeck/releases/tag/v0.1.0
