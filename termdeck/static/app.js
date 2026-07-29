@@ -45,6 +45,7 @@ const DESKTOP_KEYBINDINGS = [
   { id: "mark-terminal-unread", label: "Mark active terminal as unread", def: "Alt+u" },
   { id: "create-terminal-group-from-active", label: "Create group from active terminal", def: "Alt+Shift+g" },
   { id: "move-active-to-top", label: "Move active terminal / group to top", def: "Alt+t" },
+  { id: "open-move-menu", label: "Open active terminal Move to menu", def: "Alt+m" },
   { id: "save-file", label: "Save open file", def: "Meta+s" },
   { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp" },
   { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown" },
@@ -240,6 +241,7 @@ class TermdeckApp {
     this.dragGroupHoverKey = null;
     this.sidebarSelectedSessionIds = new Set();
     this.sidebarSelectionAnchorId = null;
+    this.contextMenuTarget = null;
     this.modalGroupId = null;
     this.revealActiveSessionOnLoad = true;
     this.processingStates = new Map();
@@ -599,6 +601,15 @@ class TermdeckApp {
       .sort((left, right) => (order.get(left) ?? Number.MAX_SAFE_INTEGER) - (order.get(right) ?? Number.MAX_SAFE_INTEGER));
   }
 
+  selectContextMenuSessionIds(sessionId) {
+    if (!this.sidebarSelectedSessionIds.has(sessionId)) {
+      this.sidebarSelectedSessionIds = new Set([sessionId]);
+      this.sidebarSelectionAnchorId = sessionId;
+      this.applySidebarSelectionStyles();
+    }
+    return this.selectedSessionIdsForDrag(sessionId);
+  }
+
   sessionIdsFromDragItem(dragItem) {
     if (dragItem?.kind !== "session") return [];
     const tokens = Array.isArray(dragItem.tokens) ? dragItem.tokens : [dragItem.token];
@@ -637,6 +648,26 @@ class TermdeckApp {
     this.patchProjectState(patch);
     this.sessions = this.applySessionOrder(this.sessions);
     this.renderList();
+  }
+
+  async moveSelectedSessionsToProject(sessionIds, project) {
+    const sessions = [...new Set(sessionIds)].map((id) => this.session(id))
+      .filter((session) => !!session && session.project !== project);
+    if (!project || !sessions.length) return;
+    const responses = await Promise.all(sessions.map((session) => fetch(`/api/sessions/${session.session_id}/project`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project }),
+    })));
+    const failure = responses.find((response) => !response.ok);
+    if (failure) {
+      alert(`move ${sessions.length === 1 ? "terminal" : "terminals"} to project failed (${failure.status})`);
+      await this.refresh();
+      return;
+    }
+    if (this.projectSlug && this.projectSlug !== project) {
+      location.href = `/p/${encodeURIComponent(project)}`;
+      return;
+    }
+    await this.refresh();
   }
 
   repositionSelectedSessions(sessionIds, targetId, after = false) {
@@ -895,19 +926,31 @@ class TermdeckApp {
   }
 
   createTerminalGroupFromSession(sessionId) {
-    const session = this.session(sessionId);
-    if (!session) return;
-    const name = prompt("Name for the new terminal group", `${this.effectiveTitle(session)} group`);
+    this.createTerminalGroupFromSessions([sessionId]);
+  }
+
+  createTerminalGroupFromSessions(sessionIds) {
+    const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id));
+    if (!ids.length) return;
+    const firstSession = this.session(ids[0]);
+    const suggestion = ids.length === 1 ? `${this.effectiveTitle(firstSession)} group`
+      : `${this.effectiveTitle(firstSession)} + ${ids.length - 1} group`;
+    const name = prompt("Name for the new terminal group", suggestion);
     if (!name || !name.trim()) return;
-    const sessionGroups = { ...(this.getProjectState().session_groups || {}) };
+    const state = this.getProjectState();
+    const sessionGroups = { ...(state.session_groups || {}) };
     const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
     const layout = this.terminalLayout();
-    const token = `session:${sessionId}`;
-    const oldGroupToken = sessionGroups[sessionId] ? `group:${sessionGroups[sessionId]}` : "";
-    const index = layout.indexOf(token) >= 0 ? layout.indexOf(token) : layout.indexOf(oldGroupToken);
-    const nextLayout = layout.filter((entry) => entry !== token);
+    const selectedTokens = new Set(ids.map((id) => `session:${id}`));
+    const indexes = ids.map((id) => {
+      const tokenIndex = layout.indexOf(`session:${id}`);
+      if (tokenIndex >= 0) return tokenIndex;
+      return sessionGroups[id] ? layout.indexOf(`group:${sessionGroups[id]}`) : -1;
+    }).filter((index) => index >= 0);
+    const index = indexes.length ? Math.min(...indexes) : -1;
+    const nextLayout = layout.filter((entry) => !selectedTokens.has(entry));
     nextLayout.splice(index < 0 ? nextLayout.length : Math.min(index, nextLayout.length), 0, `group:${group.id}`);
-    sessionGroups[sessionId] = group.id;
+    for (const id of ids) sessionGroups[id] = group.id;
     this.patchProjectState({
       terminal_groups: [...this.terminalGroups(), group],
       session_groups: sessionGroups,
@@ -949,15 +992,20 @@ class TermdeckApp {
     group = this.terminalGroups().find((candidate) => candidate.id === group.id) || group;
     const menu = this.$("context-menu");
     menu.textContent = "";
-    this.addContextItem(menu, "Move group to top", () => this.moveTerminalLayoutToTop(`group:${group.id}`), "arrow-up");
+    this.contextMenuTarget = { type: "group", id: group.id };
+    this.addContextItem(menu, this.shortcutLabel("Move group to top", "move-active-to-top"),
+      () => this.moveTerminalLayoutToTop(`group:${group.id}`), "arrow-up");
     this.addContextItem(menu, group.collapsed ? "Expand group" : "Collapse group",
       () => this.toggleTerminalGroup(group.id), group.collapsed ? "chevron-down" : "chevron-up");
-    this.addContextItem(menu, "Rename group", () => this.renameTerminalGroup(group.id), "edit");
-    this.addContextItem(menu, "Remove grouping", () => this.removeTerminalGroup(group.id), "ungroup-by-ref-type");
-    this.addContextItem(menu, "Close all terminals", () => this.closeAllInTerminalGroup(group.id), "close-all");
-    menu.classList.remove("hidden");
-    menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 10) + "px";
-    menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 10) + "px";
+    this.addContextItem(menu, this.shortcutLabel("Rename group", "rename-terminal"),
+      () => this.renameTerminalGroup(group.id), "edit");
+    this.addContextItem(menu, this.shortcutLabel("Mark group as unread", "mark-terminal-unread"),
+      () => this.markTerminalGroupUnread(group.id), "eye-closed");
+    this.addContextItem(menu, this.shortcutLabel("Remove grouping", "create-terminal-group-from-active"),
+      () => this.removeTerminalGroup(group.id), "ungroup-by-ref-type");
+    this.addContextItem(menu, this.shortcutLabel("Close all terminals", "close-item"),
+      () => this.closeAllInTerminalGroup(group.id), "close-all");
+    this.positionContextMenu(menu, event.clientX, event.clientY);
   }
 
   attachGroupDropTarget(element, groupId) {
@@ -1242,7 +1290,10 @@ class TermdeckApp {
     document.addEventListener("mousedown", (e) => {
       for (const id of ["settings-popover", "context-menu"]) {
         const pop = this.$(id);
-        if (!pop.classList.contains("hidden") && !pop.contains(e.target)) pop.classList.add("hidden");
+        if (!pop.classList.contains("hidden") && !pop.contains(e.target)) {
+          pop.classList.add("hidden");
+          if (id === "context-menu") this.contextMenuTarget = null;
+        }
       }
       const searchBar = this.$("terminal-search-bar");
       const searchToggle = this.$("terminal-search-toggle");
@@ -1781,16 +1832,31 @@ class TermdeckApp {
   }
 
   setSessionUnread(id, unread) {
-    if (!this.session(id)) return;
-    if (unread) {
-      this.unreadSessions.add(id);
-      this.viewedCompletedSessions.delete(id);
-    } else {
-      this.unreadSessions.delete(id);
-      if (!this.processingStates.get(id)) this.viewedCompletedSessions.add(id);
+    this.setSessionsUnread([id], unread);
+  }
+
+  setSessionsUnread(sessionIds, unread) {
+    const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id));
+    if (!ids.length) return;
+    for (const id of ids) {
+      if (unread) {
+        this.unreadSessions.add(id);
+        this.viewedCompletedSessions.delete(id);
+      } else {
+        this.unreadSessions.delete(id);
+        if (!this.processingStates.get(id)) this.viewedCompletedSessions.add(id);
+      }
+      this.updateUnreadIndicator(id);
     }
-    this.updateUnreadIndicator(id);
     this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
+  }
+
+  markTerminalGroupUnread(groupId) {
+    const sessionGroups = this.getProjectState().session_groups || {};
+    const ids = this.sessions
+      .filter((session) => sessionGroups[session.session_id] === groupId)
+      .map((session) => session.session_id);
+    this.setSessionsUnread(ids, true);
   }
 
   updateTerminalIconState(id) {
@@ -3054,17 +3120,20 @@ class TermdeckApp {
     item.appendChild(text);
     if (handler) {
       item.onclick = () => {
-        (item.closest("#context-menu") || menu).classList.add("hidden");
+        const rootMenu = item.closest("#context-menu") || menu;
+        rootMenu.classList.add("hidden");
+        if (rootMenu.id === "context-menu") this.contextMenuTarget = null;
         handler();
       };
     }
     menu.appendChild(item);
   }
 
-  addContextSubmenu(menu, label, entries, icon = "chevron-right") {
+  addContextSubmenu(menu, label, entries, icon = "chevron-right", options = {}) {
     const wrapper = document.createElement("div");
     const enabledEntries = entries.filter((entry) => entry);
     wrapper.className = "context-submenu" + (enabledEntries.length ? "" : " disabled");
+    wrapper.classList.toggle("open", !!options.open);
     const item = document.createElement("div");
     item.className = "context-item";
     if (icon) {
@@ -3095,6 +3164,12 @@ class TermdeckApp {
     }
     wrapper.appendChild(submenu);
     menu.appendChild(wrapper);
+  }
+
+  positionContextMenu(menu, x, y) {
+    menu.classList.remove("hidden");
+    menu.style.left = Math.min(x, window.innerWidth - menu.offsetWidth - 10) + "px";
+    menu.style.top = Math.min(y, window.innerHeight - menu.offsetHeight - 10) + "px";
   }
 
   async copyTextToClipboard(text, label = "copied") {
@@ -3162,62 +3237,93 @@ class TermdeckApp {
     this.updateTerminalSearchGroupButton();
   }
 
-  openSessionContextMenu(event, session) {
+  openSessionContextMenu(event, session, options = {}) {
     event.preventDefault();
     event.stopPropagation();
     const menu = this.$("context-menu");
     menu.textContent = "";
+    const sessionIds = this.selectContextMenuSessionIds(session.session_id);
+    const multiple = sessionIds.length > 1;
+    this.contextMenuTarget = multiple ? { type: "sessions", ids: sessionIds } : { type: "session", id: session.session_id };
     const state = this.getProjectState();
     const assignedGroupId = state.session_groups?.[session.session_id] || "";
-    this.addContextItem(menu, this.shortcutLabel("Fork into a new terminal", "fork-terminal"), () => this.forkSession(session), "repo-forked");
-    this.addContextItem(menu, this.shortcutLabel("Restart terminal", "restart-terminal"), () => this.restartSession(session.session_id), "refresh");
-    this.addContextItem(menu, this.shortcutLabel("Close terminal", "close-item"), () => this.closeSession(session.session_id), "close");
-    this.addContextItem(menu, this.shortcutLabel("Rename terminal", "rename-terminal"), () => this.renameSession(session), "edit");
-    this.addContextItem(menu, this.shortcutLabel("Copy session id", "copy-session-id"),
-      () => this.copyTextToClipboard(session.session_id, "session id copied"), "copy");
-    this.addContextItem(menu, this.shortcutLabel("Mark as unread", "mark-terminal-unread"),
-      () => this.setSessionUnread(session.session_id, true), "eye-closed");
-    this.addContextItem(menu, this.shortcutLabel("Create group from this terminal", "create-terminal-group-from-active"),
-      () => this.createTerminalGroupFromSession(session.session_id), "folder-library");
-    const moveEntries = [
-      {
-        label: this.shortcutLabel(assignedGroupId ? "Top of group" : "Top of terminals", "move-active-to-top"),
-        handler: () => this.moveTerminalLayoutToTop(assignedGroupId ? `group:${assignedGroupId}` : `session:${session.session_id}`),
-        icon: "arrow-up",
-      },
-    ];
+    if (!multiple) {
+      this.addContextItem(menu, this.shortcutLabel("Fork into a new terminal", "fork-terminal"),
+        () => this.forkSession(session), "repo-forked");
+      this.addContextItem(menu, this.shortcutLabel("Restart terminal", "restart-terminal"),
+        () => this.restartSession(session.session_id), "refresh");
+      this.addContextItem(menu, this.shortcutLabel("Close terminal", "close-item"),
+        () => this.closeSession(session.session_id), "close");
+      this.addContextItem(menu, this.shortcutLabel("Rename terminal", "rename-terminal"),
+        () => this.renameSession(session), "edit");
+      this.addContextItem(menu, this.shortcutLabel("Copy session id", "copy-session-id"),
+        () => this.copyTextToClipboard(session.session_id, "session id copied"), "copy");
+    }
+    const terminalLabel = multiple ? `${sessionIds.length} terminals` : "terminal";
+    this.addContextItem(menu, multiple ? `Mark ${terminalLabel} as unread`
+      : this.shortcutLabel("Mark as unread", "mark-terminal-unread"),
+    () => this.setSessionsUnread(sessionIds, true), "eye-closed");
+    this.addContextItem(menu, multiple ? `Create group from ${terminalLabel}`
+      : this.shortcutLabel("Create group from this terminal", "create-terminal-group-from-active"),
+    () => this.createTerminalGroupFromSessions(sessionIds), "folder-library");
+    const moveEntries = multiple ? [] : [{
+      label: this.shortcutLabel(assignedGroupId ? "Top of group" : "Top of terminals", "move-active-to-top"),
+      handler: () => this.moveTerminalLayoutToTop(
+        assignedGroupId ? `group:${assignedGroupId}` : `session:${session.session_id}`),
+      icon: "arrow-up",
+    }];
     const groups = this.terminalGroups();
     if (groups.length) {
       moveEntries.push({ kind: "label", label: "Groups" });
       moveEntries.push({
         label: "Ungrouped",
-        handler: assignedGroupId ? () => this.assignSessionGroup(session.session_id, null) : null,
+        handler: sessionIds.some((id) => state.session_groups?.[id])
+          ? () => this.moveSelectedSessionsIntoGroup(sessionIds, null) : null,
         icon: "folder",
       });
       for (const group of groups) {
         moveEntries.push({
           label: group.name,
-          handler: assignedGroupId === group.id ? null : () => this.assignSessionGroup(session.session_id, group.id),
+          handler: sessionIds.every((id) => state.session_groups?.[id] === group.id)
+            ? null : () => this.moveSelectedSessionsIntoGroup(sessionIds, group.id),
           icon: "folder-library",
         });
       }
     }
     if (!this.vscodeMode) {
-      const otherProjects = this.projects.filter((project) => project.name && project.name !== session.project);
+      const otherProjects = this.projects.filter((project) => project.name &&
+        sessionIds.some((id) => this.session(id)?.project !== project.name));
       moveEntries.push({ kind: "label", label: "Projects" });
       for (const project of otherProjects) {
         moveEntries.push({
           label: project.name,
-          handler: () => this.moveSessionToProject(session, project.name),
+          handler: () => this.moveSelectedSessionsToProject(sessionIds, project.name),
           icon: "folder",
         });
       }
       if (!otherProjects.length) moveEntries.push({ label: "No other registered projects", handler: null, icon: "info" });
     }
-    this.addContextSubmenu(menu, "Move to…", moveEntries, "arrow-swap");
-    menu.classList.remove("hidden");
-    menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 10) + "px";
-    menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 10) + "px";
+    this.addContextSubmenu(menu, this.shortcutLabel("Move to…", "open-move-menu"), moveEntries, "arrow-swap",
+      { open: !!options.openMove });
+    this.positionContextMenu(menu, event.clientX, event.clientY);
+  }
+
+  openActiveMoveMenu() {
+    if (!this.activeId || this.activeFileKey !== null) return;
+    const session = this.session(this.activeId);
+    if (!session) return;
+    this.setSideView("terminals", false);
+    const title = this.sessionTitleEls.get(this.activeId);
+    const row = title?.closest(".session-item");
+    const rect = row?.getBoundingClientRect();
+    const x = rect ? Math.min(rect.right - 4, window.innerWidth - 12) : 12;
+    const y = rect ? rect.top + Math.min(24, Math.max(8, rect.height / 2)) : 80;
+    this.openSessionContextMenu({
+      preventDefault() {},
+      stopPropagation() {},
+      clientX: x,
+      clientY: y,
+    }, session, { openMove: true });
   }
 
   openTreeContextMenu(event, row) {
@@ -7029,7 +7135,49 @@ class TermdeckApp {
     return true;
   }
 
+  closeContextMenu() {
+    const menu = this.$("context-menu");
+    if (menu) menu.classList.add("hidden");
+    this.contextMenuTarget = null;
+  }
+
+  runContextMenuAction(actionId) {
+    const menu = this.$("context-menu");
+    if (!this.contextMenuTarget || !menu || menu.classList.contains("hidden")) return false;
+    if (this.contextMenuTarget.type === "group") {
+      const groupId = this.contextMenuTarget.id;
+      if (!this.terminalGroups().some((group) => group.id === groupId)) return false;
+      if (actionId === "move-active-to-top") {
+        this.closeContextMenu();
+        this.moveTerminalLayoutToTop(`group:${groupId}`);
+        return true;
+      }
+      if (actionId === "rename-terminal") {
+        this.closeContextMenu();
+        this.renameTerminalGroup(groupId);
+        return true;
+      }
+      if (actionId === "mark-terminal-unread") {
+        this.closeContextMenu();
+        this.markTerminalGroupUnread(groupId);
+        return true;
+      }
+      if (actionId === "create-terminal-group-from-active") {
+        this.closeContextMenu();
+        this.removeTerminalGroup(groupId);
+        return true;
+      }
+      if (actionId === "close-item") {
+        this.closeContextMenu();
+        this.closeAllInTerminalGroup(groupId);
+        return true;
+      }
+    }
+    return false;
+  }
+
   runAction(actionId) {
+    if (this.runContextMenuAction(actionId)) return;
     if (actionId === "new-terminal") this.openModal();
     else if (actionId === "new-group") this.createTerminalGroup();
     else if (actionId === "close-item") this.closeActiveItem();
@@ -7051,6 +7199,7 @@ class TermdeckApp {
         this.moveTerminalLayoutToTop(assignedGroupId ? `group:${assignedGroupId}` : `session:${this.activeId}`);
       }
     }
+    else if (actionId === "open-move-menu") this.openActiveMoveMenu();
     else if (actionId === "save-file") { if (this.activeFileKey !== null) this.saveActiveFile(); }
     else if (actionId === "prev-terminal") this.cycleTerminal(-1);
     else if (actionId === "next-terminal") this.cycleTerminal(1);

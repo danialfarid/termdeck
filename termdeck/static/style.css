@@ -541,7 +541,8 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
 }
 .context-submenu:hover > .context-submenu-menu,
-.context-submenu:focus-within > .context-submenu-menu { display: block; }
+.context-submenu:focus-within > .context-submenu-menu,
+.context-submenu.open > .context-submenu-menu { display: block; }
 .context-submenu-label {
   padding: 5px 10px 3px 10px;
   color: var(--dim);
