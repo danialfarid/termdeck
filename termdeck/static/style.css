@@ -521,6 +521,35 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
 .context-item:hover { background: var(--active-bg); }
 .context-item.disabled { color: var(--dim); cursor: default; }
 .context-item.disabled:hover { background: none; }
+.context-submenu { position: relative; }
+.context-submenu.disabled { color: var(--dim); pointer-events: none; }
+.context-submenu .context-item { padding-right: 6px; }
+.context-submenu-arrow { margin-left: auto; color: var(--dim); font-size: 12px; }
+.context-submenu-menu {
+  display: none;
+  position: absolute;
+  left: calc(100% + 4px);
+  top: -4px;
+  z-index: 41;
+  min-width: 190px;
+  max-height: min(420px, calc(100vh - 24px));
+  overflow: auto;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+.context-submenu:hover > .context-submenu-menu,
+.context-submenu:focus-within > .context-submenu-menu { display: block; }
+.context-submenu-label {
+  padding: 5px 10px 3px 10px;
+  color: var(--dim);
+  font-size: calc(var(--ui-font-size) - 1px);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
 #editor-area { flex: 1; min-height: 0; position: relative; background: var(--term-bg); }
 #editor-area.hidden, #terminal-area.hidden { display: none; }
 #monaco-host { position: absolute; inset: 0; }

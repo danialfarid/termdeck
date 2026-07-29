@@ -3049,11 +3049,68 @@ class TermdeckApp {
     item.appendChild(text);
     if (handler) {
       item.onclick = () => {
-        menu.classList.add("hidden");
+        (item.closest("#context-menu") || menu).classList.add("hidden");
         handler();
       };
     }
     menu.appendChild(item);
+  }
+
+  addContextSubmenu(menu, label, entries, icon = "chevron-right") {
+    const wrapper = document.createElement("div");
+    const enabledEntries = entries.filter((entry) => entry);
+    wrapper.className = "context-submenu" + (enabledEntries.length ? "" : " disabled");
+    const item = document.createElement("div");
+    item.className = "context-item";
+    if (icon) {
+      const glyph = document.createElement("span");
+      glyph.className = `codicon codicon-${icon}`;
+      glyph.setAttribute("aria-hidden", "true");
+      item.appendChild(glyph);
+    }
+    const text = document.createElement("span");
+    text.textContent = label;
+    item.appendChild(text);
+    const arrow = document.createElement("span");
+    arrow.className = "codicon codicon-chevron-right context-submenu-arrow";
+    arrow.setAttribute("aria-hidden", "true");
+    item.appendChild(arrow);
+    wrapper.appendChild(item);
+    const submenu = document.createElement("div");
+    submenu.className = "context-submenu-menu";
+    for (const entry of enabledEntries) {
+      if (entry.kind === "label") {
+        const labelItem = document.createElement("div");
+        labelItem.className = "context-submenu-label";
+        labelItem.textContent = entry.label;
+        submenu.appendChild(labelItem);
+        continue;
+      }
+      this.addContextItem(submenu, entry.label, entry.handler, entry.icon || "");
+    }
+    wrapper.appendChild(submenu);
+    menu.appendChild(wrapper);
+  }
+
+  async copyTextToClipboard(text, label = "copied") {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+      }
+      this.$("status-name").textContent = label;
+    } catch (error) {
+      this.$("status-name").textContent = "clipboard blocked";
+    }
   }
 
   shortcutLabel(label, actionId) {
@@ -3107,33 +3164,51 @@ class TermdeckApp {
     menu.textContent = "";
     const state = this.getProjectState();
     const assignedGroupId = state.session_groups?.[session.session_id] || "";
-    this.addContextItem(menu, assignedGroupId ? "Move group to top" : "Move terminal to top",
-      () => this.moveTerminalLayoutToTop(assignedGroupId ? `group:${assignedGroupId}` : `session:${session.session_id}`), "arrow-up");
     this.addContextItem(menu, this.shortcutLabel("Fork into a new terminal", "fork-terminal"), () => this.forkSession(session), "repo-forked");
     this.addContextItem(menu, this.shortcutLabel("Restart terminal", "restart-terminal"), () => this.restartSession(session.session_id), "refresh");
     this.addContextItem(menu, this.shortcutLabel("Close terminal", "close-item"), () => this.closeSession(session.session_id), "close");
     this.addContextItem(menu, "Rename terminal", () => this.renameSession(session), "edit");
+    this.addContextItem(menu, "Copy session id", () => this.copyTextToClipboard(session.session_id, "session id copied"), "copy");
     const unread = this.unreadSessions.has(session.session_id);
     this.addContextItem(menu, unread ? "Mark as read" : "Mark as unread",
       () => this.setSessionUnread(session.session_id, !unread), unread ? "eye" : "eye-closed");
     this.addContextItem(menu, "Create group from this terminal", () => this.createTerminalGroupFromSession(session.session_id), "folder-library");
+    const moveEntries = [
+      {
+        label: assignedGroupId ? "Top of group" : "Top of terminals",
+        handler: () => this.moveTerminalLayoutToTop(assignedGroupId ? `group:${assignedGroupId}` : `session:${session.session_id}`),
+        icon: "arrow-up",
+      },
+    ];
     const groups = this.terminalGroups();
     if (groups.length) {
-      this.addContextItem(menu, "Move to ungrouped", assignedGroupId
-        ? () => this.assignSessionGroup(session.session_id, null) : null, "folder");
+      moveEntries.push({ kind: "label", label: "Groups" });
+      moveEntries.push({
+        label: "Ungrouped",
+        handler: assignedGroupId ? () => this.assignSessionGroup(session.session_id, null) : null,
+        icon: "folder",
+      });
       for (const group of groups) {
-        this.addContextItem(menu, `Move to ${group.name}`, assignedGroupId === group.id
-          ? null : () => this.assignSessionGroup(session.session_id, group.id), "folder-library");
+        moveEntries.push({
+          label: group.name,
+          handler: assignedGroupId === group.id ? null : () => this.assignSessionGroup(session.session_id, group.id),
+          icon: "folder-library",
+        });
       }
     }
     if (!this.vscodeMode) {
       const otherProjects = this.projects.filter((project) => project.name && project.name !== session.project);
-      this.addContextItem(menu, "Move terminal to project", null, "folder-opened");
+      moveEntries.push({ kind: "label", label: "Projects" });
       for (const project of otherProjects) {
-        this.addContextItem(menu, `Move to ${project.name}`, () => this.moveSessionToProject(session, project.name), "folder");
+        moveEntries.push({
+          label: project.name,
+          handler: () => this.moveSessionToProject(session, project.name),
+          icon: "folder",
+        });
       }
-      if (!otherProjects.length) this.addContextItem(menu, "No other registered projects", null, "info");
+      if (!otherProjects.length) moveEntries.push({ label: "No other registered projects", handler: null, icon: "info" });
     }
+    this.addContextSubmenu(menu, "Move to…", moveEntries, "arrow-swap");
     menu.classList.remove("hidden");
     menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 10) + "px";
     menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 10) + "px";
