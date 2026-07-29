@@ -98,16 +98,6 @@ class NotebookTrashTest(unittest.TestCase):
 
 
 class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self) -> None:
-        self._scrollback_tmp = tempfile.TemporaryDirectory()
-        self._scrollback_patch = patch.object(
-            TermdeckConfig, "SCROLLBACK_DIR", Path(self._scrollback_tmp.name) / "scrollback")
-        self._scrollback_patch.start()
-
-    async def asyncTearDown(self) -> None:
-        self._scrollback_patch.stop()
-        self._scrollback_tmp.cleanup()
-
     async def test_startup_marks_live_socket_as_detached_not_dormant(self) -> None:
         manager = TerminalSessionManager()
         saved = record()
@@ -134,26 +124,10 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
             with patch.object(manager, "_dtach_socket", return_value=socket), \
                  patch.object(ProcTreeUtil, "tree_pids_for_socket", new=AsyncMock(return_value=set())):
                 await manager.startup_respawn_saved_sessions()
-        self.assertFalse(socket.exists())
+            self.assertFalse(socket.exists())
         session = manager._sessions[saved.session_id]
         self.assertFalse(session.running)
         self.assertTrue(session.dormant)
-
-    async def test_startup_loads_persisted_scrollback_without_removing_it(self) -> None:
-        manager = TerminalSessionManager()
-        saved = record()
-        manager._store.load_all = lambda: [saved]  # type: ignore[method-assign]
-        TermdeckConfig.SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
-        scrollback = TermdeckConfig.SCROLLBACK_DIR / f"{saved.session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
-        scrollback.write_bytes(b"persisted output\n")
-        with tempfile.TemporaryDirectory() as directory:
-            socket = Path(directory) / "abc123.sock"
-            with patch.object(manager, "_dtach_socket", return_value=socket), \
-                 patch.object(ProcTreeUtil, "tree_pids_for_socket", new=AsyncMock(return_value=set())):
-                await manager.startup_respawn_saved_sessions()
-        session = manager._sessions[saved.session_id]
-        self.assertEqual(bytes(session.buffer), b"persisted output\n")
-        self.assertTrue(scrollback.exists())
 
     async def test_delete_keeps_record_when_socket_cleanup_fails(self) -> None:
         manager = TerminalSessionManager()
@@ -242,31 +216,6 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(await queue.get(), raw)
         self.assertEqual(bytes(session.buffer), raw)
-
-    async def test_empty_agent_snapshot_uses_transcript_fallback(self) -> None:
-        manager = TerminalSessionManager()
-        saved = record()
-        saved.agent_kind = AgentKind.CODEX.value
-        saved.agent_session_id = "codex-thread-id"
-        session = ManagedSession(saved)
-        session.buffer.extend(b"\r\n\x1b[0m")
-        manager._sessions[saved.session_id] = session
-
-        class FakeTranscriptService:
-            @staticmethod
-            def transcript_for(agent_kind: str, cwd: str, agent_session_id: str) -> list[dict[str, object]]:
-                return [
-                    {"role": "user", "text": "what changed?"},
-                    {"role": "assistant", "text": "terminal content is restored"},
-                ]
-
-        manager.attach_transcript_service(FakeTranscriptService())
-        snapshot, queue = manager.attach_client(saved.session_id)
-
-        self.assertIn(b"restored codex transcript", snapshot)
-        self.assertIn(b"what changed?", snapshot)
-        self.assertIn(b"terminal content is restored", snapshot)
-        self.assertIn(queue, session.client_queues)
 
     async def test_rename_codex_session_sends_codex_rename_command(self) -> None:
         manager = TerminalSessionManager()

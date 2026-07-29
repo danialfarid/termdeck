@@ -129,9 +129,10 @@ class TerminalSessionManager:
             ms = ManagedSession(record)
             self._sessions[record.session_id] = ms
             ms.lazy_start_pending = True
-            saved = self._scrollback_path(record.session_id)
+            saved = TermdeckConfig.SCROLLBACK_DIR / f"{record.session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
             if saved.exists():
                 ms.buffer.extend(saved.read_bytes()[-TermdeckConfig.SCROLLBACK_BYTES:])
+                saved.unlink()
             self._recover_title_from_buffer(ms)
         # Do not launch old terminals merely because the web server came up.
         # Reconcile their dtach sockets instead: live sockets remain running
@@ -269,81 +270,6 @@ class TerminalSessionManager:
         except (subprocess.SubprocessError, OSError):
             return False
         return bool(result.stdout.strip())
-
-    @staticmethod
-    def _scrollback_path(session_id: str) -> Path:
-        return TermdeckConfig.SCROLLBACK_DIR / f"{session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
-
-    @staticmethod
-    def _bytes_have_printable_text(data: bytes) -> bool:
-        if not data:
-            return False
-        data = re.sub(rb"\x1b\][^\x07]*(?:\x07|\x1b\\)", b"", data)
-        data = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", data)
-        data = re.sub(rb"\x1b[()][0-2A-Za-z]", b"", data)
-        data = re.sub(rb"\x1b[78DEHM]", b"", data)
-        text = data.decode("utf-8", errors="ignore")
-        return any(character not in "\r\n\t " and ord(character) >= 0x20 for character in text)
-
-    def _persist_scrollback(self, ms: ManagedSession) -> None:
-        TermdeckConfig.SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
-        self._scrollback_path(ms.record.session_id).write_bytes(bytes(ms.buffer)[-TermdeckConfig.SCROLLBACK_BYTES:])
-
-    def _append_scrollback_file(self, ms: ManagedSession, durable: bytes) -> None:
-        if not durable:
-            return
-        TermdeckConfig.SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
-        path = self._scrollback_path(ms.record.session_id)
-        with path.open("ab") as handle:
-            handle.write(durable)
-        try:
-            size = path.stat().st_size
-        except OSError:
-            return
-        if size <= TermdeckConfig.SCROLLBACK_BYTES:
-            return
-        with path.open("rb") as handle:
-            handle.seek(max(0, size - TermdeckConfig.SCROLLBACK_BYTES))
-            tail = handle.read()
-        path.write_bytes(tail)
-
-    def _agent_transcript_scrollback(self, ms: ManagedSession) -> bytes:
-        if self._transcript_service is None or ms.record.agent_kind == AgentKind.NONE.value:
-            return b""
-        turns = self._transcript_service.transcript_for(
-            ms.record.agent_kind, ms.record.cwd, ms.record.agent_session_id)
-        if not turns:
-            return b""
-        kind = ms.record.agent_kind
-        title = ms.record.title or self._display_title(ms.cli_title) or ms.record.session_id
-        lines: list[str] = [
-            f"[termdeck] restored {kind} transcript for {title} after server restart",
-            "[termdeck] live terminal process is still attached; this is transcript fallback scrollback.",
-            "",
-        ]
-        for turn in turns[-120:]:
-            role = str(turn.get("role") or "event")
-            text = str(turn.get("text") or "").strip()
-            if not text and role == "event":
-                text = str(turn.get("title") or "").strip()
-            if not text:
-                continue
-            prefix = "›" if role == "user" else "•" if role == "assistant" else "·"
-            lines.append(f"{prefix} {role}")
-            lines.extend(text.splitlines())
-            lines.append("")
-        payload = "\r\n".join(lines).encode(errors="replace")
-        return payload[-TermdeckConfig.SCROLLBACK_BYTES:]
-
-    def _ensure_replayable_buffer(self, ms: ManagedSession) -> None:
-        if self._bytes_have_printable_text(bytes(ms.buffer)):
-            return
-        fallback = self._agent_transcript_scrollback(ms)
-        if not fallback:
-            return
-        ms.buffer.clear()
-        ms.buffer.extend(fallback)
-        self._persist_scrollback(ms)
 
     def _schedule_detection(self, ms: ManagedSession, delay: float) -> None:
         if ms.detect_kind is AgentKind.NONE:
@@ -620,7 +546,6 @@ class TerminalSessionManager:
             del ms.buffer[:overflow]
             if ms.last_repaint_offset is not None:
                 ms.last_repaint_offset = max(0, ms.last_repaint_offset - overflow)
-        self._append_scrollback_file(ms, durable)
         return durable
 
     def _answer_and_strip_color_queries(self, ms: ManagedSession, data: bytes) -> bytes:
@@ -792,7 +717,6 @@ class TerminalSessionManager:
         if ms.lazy_start_pending:
             self._spawn(ms, resume=True)
             self._broadcast_status(ms)
-        self._ensure_replayable_buffer(ms)
         queue: asyncio.Queue = asyncio.Queue()
         ms.client_queues.add(queue)
         return bytes(ms.buffer), queue
@@ -1229,7 +1153,8 @@ class TerminalSessionManager:
         TermdeckConfig.SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
         for ms in self._sessions.values():
             if ms.buffer:
-                self._persist_scrollback(ms)
+                target = TermdeckConfig.SCROLLBACK_DIR / f"{ms.record.session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
+                target.write_bytes(bytes(ms.buffer))
 
     def list_sessions(self, project: str | None) -> list[dict[str, object]]:
         return [self.session_summary(ms) for ms in self._sessions.values()
