@@ -88,7 +88,7 @@ class HistorySearchIndex:
                 if "locked" not in str(search_error).lower():
                     raise
         chunk_cache: dict[tuple[str, int, int], list[dict[str, object]]] = {}
-        for source_path, agent_kind, session_id, cwd, title, line_no, line_end, byte_start, byte_end in rows:
+        for source_path, agent_kind, session_id, cwd, title, line_no, _line_end, byte_start, byte_end in rows:
             source = Path(source_path)
             parent_session_id = self._parent_session_id_for_source(source)
             parent_source = self._parent_source_path(source)
@@ -274,11 +274,11 @@ class HistorySearchIndex:
             )
             database.executemany(
                 "INSERT INTO history_fts(rowid, text) VALUES (?, ?)",
-                ((row[0], text) for row, (_, _, _, _, _, text) in zip(document_rows, documents)),
+                ((row[0], text) for row, (_, _, _, _, _, text) in zip(document_rows, documents, strict=True)),
             )
             database.executemany(
                 "INSERT INTO history_fts_conversation(rowid, text) VALUES (?, ?)",
-                ((row[0], text) for row, (_, _, _, _, scope, text) in zip(document_rows, documents) if scope == "conversation"),
+                ((row[0], text) for row, (_, _, _, _, scope, text) in zip(document_rows, documents, strict=True) if scope == "conversation"),
             )
             database.execute(
                 "INSERT INTO history_sources(source_path, agent_kind, agent_session_id, cwd, title, size, mtime_ns) "

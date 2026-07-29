@@ -144,7 +144,7 @@ class TranscriptService:
         # The server primes a bounded tail before sending the initial snapshot;
         # this registration must stay cheap so the browser can start loading
         # without waiting for a potentially huge JSONL file.
-        kind = AgentKind(agent_kind)
+        AgentKind(agent_kind)
         state = self._states.get(path)
         if state is not None:
             self._refresh_state(state)
