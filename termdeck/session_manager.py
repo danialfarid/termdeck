@@ -321,23 +321,36 @@ class TerminalSessionManager:
                                          WsMessageFields.AGENT_SESSION_ID: found})
             self._broadcast_status(ms)
 
-    async def _rename_forked_codex(self, ms: ManagedSession, title: str) -> None:
-        """Apply the requested TermDeck fork label to Codex's child thread."""
-        # The rollout file can appear before the new Codex TUI has finished
-        # initializing its composer.  Sending immediately loses the first
-        # characters and can leave a partial command in the composer.
-        await asyncio.sleep(TermdeckConfig.FORK_RENAME_READY_DELAY_SECONDS)
+    async def _send_codex_rename_command(self, ms: ManagedSession, title: str, *,
+                                         ready_delay: float = 0.0, clear_composer: bool = True) -> None:
+        """Send Codex's own /rename command so TermDeck title and Codex thread title converge."""
+        title = " ".join(str(title or "").splitlines()).strip()
+        if not title:
+            return
+        if ready_delay > 0:
+            await asyncio.sleep(ready_delay)
         if ms.proc is None or not ms.proc.alive or not ms.record.agent_session_id:
             return
-        # A bracketed paste is delivered as one composer edit, so the slash
-        # command cannot be truncated or have its first character interpreted
-        # as a Codex keyboard shortcut while the TUI settles.
+        ms.pending_codex_rename = title
+        ms.pending_codex_rename_deadline = time.monotonic() + 30.0
         command = f"/rename {title}"
-        payload = (TermdeckConfig.BRACKETED_PASTE_START + command.encode() +
+        payload = ((b"\x15" if clear_composer else b"") +
+                   TermdeckConfig.BRACKETED_PASTE_START + command.encode() +
                    TermdeckConfig.BRACKETED_PASTE_END).decode()
         self.write_input(ms.record.session_id, payload)
         await asyncio.sleep(TermdeckConfig.FORK_RENAME_SUBMIT_DELAY_SECONDS)
         self.write_input(ms.record.session_id, "\r")
+
+    async def _rename_forked_codex(self, ms: ManagedSession, title: str) -> None:
+        """Apply the requested TermDeck fork label to Codex's child thread."""
+        # The rollout file can appear before the new Codex TUI has finished
+        # initializing its composer. Sending immediately loses the first
+        # characters and can leave a partial command in the composer.
+        await self._send_codex_rename_command(
+            ms, title,
+            ready_delay=TermdeckConfig.FORK_RENAME_READY_DELAY_SECONDS,
+            clear_composer=True,
+        )
 
     def _initialize_claude_subagent_state(self, ms: ManagedSession) -> None:
         if ms.record.agent_kind != AgentKind.CLAUDE.value or not ms.record.agent_session_id:
@@ -881,8 +894,22 @@ class TerminalSessionManager:
 
     def rename_session(self, session_id: str, title: str) -> None:
         ms = self._sessions[session_id]
-        ms.record.title = title.strip() or ms.record.title
+        clean_title = " ".join(str(title or "").splitlines()).strip()
+        if not clean_title:
+            return
+        ms.record.title = clean_title
         ms.record.title_user_set = True
+        if ms.record.agent_kind == AgentKind.CODEX.value:
+            if ms.record.agent_session_id:
+                if ms.agent_rename_task is not None and not ms.agent_rename_task.done():
+                    ms.agent_rename_task.cancel()
+                ms.agent_rename_task = asyncio.create_task(
+                    self._send_codex_rename_command(ms, clean_title, clear_composer=True)
+                )
+            else:
+                ms.pending_agent_rename = clean_title
+                ms.pending_agent_rename_deadline = time.monotonic() + 20.0
+                self._schedule_detection(ms, 0.1)
         self._persist()
         self._broadcast_status(ms)
 

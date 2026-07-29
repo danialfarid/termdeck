@@ -1,9 +1,10 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from termdeck.models import SessionRecord
+from termdeck.models import AgentKind, SessionRecord
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeUtil
 from termdeck.server import TermdeckServer
@@ -142,3 +143,35 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         manager._append_collapsing_repaints(session, b" redraw" + TermdeckConfig.SYNC_UPDATE_END + b"\r\nafter\n")
         self.assertEqual(bytes(session.buffer), b"before\nafter\n")
         self.assertEqual(session.scrollback_sync_carry, b"")
+
+    async def test_rename_codex_session_sends_codex_rename_command(self) -> None:
+        manager = TerminalSessionManager()
+        saved = record()
+        saved.agent_kind = AgentKind.CODEX.value
+        saved.agent_session_id = "codex-thread-id"
+        session = ManagedSession(saved)
+
+        class FakeProc:
+            alive = True
+
+            def __init__(self) -> None:
+                self.writes: list[bytes] = []
+
+            def write(self, data: bytes) -> None:
+                self.writes.append(data)
+
+        proc = FakeProc()
+        session.proc = proc
+        manager._sessions[saved.session_id] = session
+        manager._persist = lambda: None  # type: ignore[method-assign]
+        with patch.object(TermdeckConfig, "FORK_RENAME_SUBMIT_DELAY_SECONDS", 0):
+            manager.rename_session(saved.session_id, "renamed thread")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        self.assertEqual(saved.title, "renamed thread")
+        self.assertEqual(proc.writes, [
+            b"\x15" + TermdeckConfig.BRACKETED_PASTE_START + b"/rename renamed thread" +
+            TermdeckConfig.BRACKETED_PASTE_END,
+            b"\r",
+        ])
