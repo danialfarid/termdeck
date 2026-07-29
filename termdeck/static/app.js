@@ -5356,7 +5356,6 @@ class TermdeckApp {
         this.scheduleV2Fit(view);
         this.scheduleInitialV2Fit(view);
         if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
-        this.scheduleBlankTerminalRecovery(view);
       } else if (previousId !== id) {
         const needsInitialFollow = !view.everConnected || view.awaitingSnapshot || view.replaying;
         if (needsInitialFollow || view.keepBottom) {
@@ -5419,7 +5418,6 @@ class TermdeckApp {
                    forceResizeAfterFit: true, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
                    suppressResizeToServer: false, resyncResizeRepairPending: false,
                    hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
-                   blankRecoveryTimer: 0, blankRecoveryAttempts: 0,
                    tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
                    lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
@@ -5673,7 +5671,6 @@ class TermdeckApp {
           if (v2 && view.container.classList.contains("visible")) {
             view.forceResizeAfterFit = true;
             this.scheduleV2Fit(view);
-            this.scheduleBlankTerminalRecovery(view);
           }
           if (view.resyncResizeRepairPending && view.container.classList.contains("visible")) {
             view.resyncResizeRepairPending = false;
@@ -6126,45 +6123,6 @@ class TermdeckApp {
     });
   }
 
-  terminalRenderedHasText(view) {
-    const rows = [...(view?.container?.querySelectorAll(".xterm-rows > div") || [])];
-    return rows.some((row) => String(row.textContent || "").trim());
-  }
-
-  scheduleBlankTerminalRecovery(view, delay = 1200) {
-    if (!view || view.closed || view.blankRecoveryTimer || !view.container.classList.contains("visible")) return;
-    if (!this.isTerminalScrollV2() || this.historyOpen || this.activeFileKey !== null) return;
-    view.blankRecoveryTimer = setTimeout(() => {
-      view.blankRecoveryTimer = 0;
-      if (view.closed || !view.container.classList.contains("visible") || view.sessionId !== this.activeId ||
-          this.historyOpen || this.activeFileKey !== null) return;
-      if (this.terminalRenderedHasText(view)) {
-        view.blankRecoveryAttempts = 0;
-        return;
-      }
-      if (view.awaitingSnapshot || view.replaying || view.outputWriteInFlight || view.outputQueue.length) {
-        this.scheduleBlankTerminalRecovery(view, 900);
-        return;
-      }
-      if (view.blankRecoveryAttempts >= 2) return;
-      view.blankRecoveryAttempts += 1;
-      view.forceResizeAfterFit = true;
-      view.scrollMode = "follow";
-      view.resyncResizeRepairPending = true;
-      view.outputQueue = [];
-      view.outputWriteGeneration += 1;
-      view.term.reset();
-      const ws = view.ws;
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-        view.suppressReconnect = true;
-        view.ws = null;
-        ws.close();
-      }
-      this.connect(view.sessionId, view);
-      this.$("status-name").textContent = "recovered blank terminal snapshot";
-    }, delay);
-  }
-
   scrollTerminalToBottom(view) {
     if (this.isTerminalScrollV2()) {
       this.scrollTerminalV2ToBottom(view);
@@ -6524,7 +6482,6 @@ class TermdeckApp {
     clearTimeout(view.manualScrollReleaseTimer);
     clearTimeout(view.scrollSettleTimer);
     clearTimeout(view.resizeRepairTimer);
-    clearTimeout(view.blankRecoveryTimer);
     if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
     if (view.viewportRepairFrame) cancelAnimationFrame(view.viewportRepairFrame);
     if (view.v2ViewportSyncFrame) cancelAnimationFrame(view.v2ViewportSyncFrame);
