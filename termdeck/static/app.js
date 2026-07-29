@@ -35,6 +35,7 @@ const CLOSED_SESSIONS_INITIAL_DISPLAY = 50;
 const CLOSED_SESSIONS_MAX_DISPLAY = 100;
 const ACTIVITY_SORT_BUCKET_MS = 15 * 60 * 1000;
 const TERMINAL_TAIL_REPAIR_LINES = 16;
+const TERMINAL_ACTIVATION_REFLOW_IDLE_MS = 1200;
 const DESKTOP_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Meta+b" },
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
@@ -4896,8 +4897,17 @@ class TermdeckApp {
         if (!previousView.keepBottom) previousView.pinBottomUntil = 0;
       }
     }
+    const switchedViews = previousView !== view;
+    const activatedAt = Date.now();
     for (const [viewId, v] of this.views) {
-      v.container.classList.toggle("visible", viewId === id);
+      const visible = viewId === id;
+      const wasVisible = v.container.classList.contains("visible");
+      v.container.classList.toggle("visible", visible);
+      if (visible) {
+        v.lastShownAt = activatedAt;
+      } else if (wasVisible) {
+        v.hiddenAt = activatedAt;
+      }
     }
     this.applyMainLayout();
     this.scheduleTerminalLayoutFit();
@@ -4931,7 +4941,9 @@ class TermdeckApp {
         this.scheduleV2Fit(view);
         this.scheduleInitialV2Fit(view);
         if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
-        this.scheduleTerminalActivationRepair(view);
+        this.scheduleTerminalActivationRepair(view, {
+          forceReflow: this.shouldForceTerminalActivationReflow(view, switchedViews),
+        });
       } else if (previousId !== id) {
         const needsInitialFollow = !view.everConnected || view.awaitingSnapshot || view.replaying;
         if (needsInitialFollow || view.keepBottom) {
@@ -4989,6 +5001,7 @@ class TermdeckApp {
                    v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
                    forceResizeAfterFit: true, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
                    suppressResizeToServer: false, resyncResizeRepairPending: false,
+                   hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
                    tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
                    lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
@@ -5842,6 +5855,17 @@ class TermdeckApp {
     return true;
   }
 
+  shouldForceTerminalActivationReflow(view, switchedViews) {
+    if (!view || view.closed || !this.isTerminalScrollV2() ||
+        !view.container.classList.contains("visible")) return false;
+    const now = Date.now();
+    if (now - (view.lastActivationReflowAt || 0) < TERMINAL_ACTIVATION_REFLOW_IDLE_MS) return false;
+    if (view.forceResizeAfterFit || !view.lastActivationReflowAt) return true;
+    if (!switchedViews) return false;
+    const hiddenFor = view.hiddenAt ? now - view.hiddenAt : Number.POSITIVE_INFINITY;
+    return hiddenFor >= TERMINAL_ACTIVATION_REFLOW_IDLE_MS;
+  }
+
   scheduleTerminalTailRepair(view) {
     if (!view || view.closed || view.tailRepairFrame || !view.container.classList.contains("visible")) return;
     if (!this.isTerminalScrollV2() || view.scrollMode !== "follow") return;
@@ -5854,16 +5878,26 @@ class TermdeckApp {
     });
   }
 
-  scheduleTerminalActivationRepair(view) {
+  scheduleTerminalActivationRepair(view, options = {}) {
     if (!view || view.closed || view.activationRepairFrame || !view.container.classList.contains("visible")) return;
     if (!this.isTerminalScrollV2()) return;
     const generation = view.outputWriteGeneration;
+    const forceReflow = !!options.forceReflow;
     view.activationRepairFrame = requestAnimationFrame(() => {
       view.activationRepairFrame = requestAnimationFrame(() => {
         view.activationRepairFrame = 0;
         if (view.closed || !view.container.classList.contains("visible")) return;
         if (view.outputWriteInFlight && generation !== view.outputWriteGeneration) return;
-        this.repairTerminalRenderIfStale(view);
+        const repaired = this.repairTerminalRenderIfStale(view);
+        if (repaired) {
+          view.lastActivationReflowAt = Date.now();
+          return;
+        }
+        if (forceReflow) {
+          view.lastActivationReflowAt = Date.now();
+          view.forceResizeAfterFit = true;
+          this.scheduleV2Fit(view);
+        }
       });
     });
   }
