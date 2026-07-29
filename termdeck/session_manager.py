@@ -129,10 +129,9 @@ class TerminalSessionManager:
             ms = ManagedSession(record)
             self._sessions[record.session_id] = ms
             ms.lazy_start_pending = True
-            saved = TermdeckConfig.SCROLLBACK_DIR / f"{record.session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
+            saved = self._scrollback_path(record.session_id)
             if saved.exists():
                 ms.buffer.extend(saved.read_bytes()[-TermdeckConfig.SCROLLBACK_BYTES:])
-                saved.unlink()
             self._recover_title_from_buffer(ms)
         # Do not launch old terminals merely because the web server came up.
         # Reconcile their dtach sockets instead: live sockets remain running
@@ -270,6 +269,32 @@ class TerminalSessionManager:
         except (subprocess.SubprocessError, OSError):
             return False
         return bool(result.stdout.strip())
+
+    @staticmethod
+    def _scrollback_path(session_id: str) -> Path:
+        return TermdeckConfig.SCROLLBACK_DIR / f"{session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
+
+    def _persist_scrollback(self, ms: ManagedSession) -> None:
+        TermdeckConfig.SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        self._scrollback_path(ms.record.session_id).write_bytes(bytes(ms.buffer)[-TermdeckConfig.SCROLLBACK_BYTES:])
+
+    def _append_scrollback_file(self, ms: ManagedSession, durable: bytes) -> None:
+        if not durable:
+            return
+        TermdeckConfig.SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        path = self._scrollback_path(ms.record.session_id)
+        with path.open("ab") as handle:
+            handle.write(durable)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return
+        if size <= TermdeckConfig.SCROLLBACK_BYTES:
+            return
+        with path.open("rb") as handle:
+            handle.seek(max(0, size - TermdeckConfig.SCROLLBACK_BYTES))
+            tail = handle.read()
+        path.write_bytes(tail)
 
     def _schedule_detection(self, ms: ManagedSession, delay: float) -> None:
         if ms.detect_kind is AgentKind.NONE:
@@ -546,6 +571,7 @@ class TerminalSessionManager:
             del ms.buffer[:overflow]
             if ms.last_repaint_offset is not None:
                 ms.last_repaint_offset = max(0, ms.last_repaint_offset - overflow)
+        self._append_scrollback_file(ms, durable)
         return durable
 
     def _answer_and_strip_color_queries(self, ms: ManagedSession, data: bytes) -> bytes:
@@ -571,7 +597,7 @@ class TerminalSessionManager:
         if not data:
             return
         ms.last_activity_at = time.time()
-        durable = self._append_collapsing_repaints(ms, data)
+        self._append_collapsing_repaints(ms, data)
         previous_title = ms.cli_title
         previous_processing = self._processing_state(ms)
         cli_title, ms.title_carry = OscTitleParser.extract_latest_title(ms.title_carry, data)
@@ -590,9 +616,8 @@ class TerminalSessionManager:
             title_renamed = self._reconcile_codex_rename(ms, previous_title)
             if title_renamed:
                 self._broadcast_status(ms)
-        if durable:
-            for queue in list(ms.client_queues):
-                queue.put_nowait(durable)
+        for queue in list(ms.client_queues):
+            queue.put_nowait(data)
         self._broadcast_activity_if_due(ms)
 
     def _reconcile_codex_rename(self, ms: ManagedSession, previous_title: str | None) -> bool:
@@ -1153,8 +1178,7 @@ class TerminalSessionManager:
         TermdeckConfig.SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
         for ms in self._sessions.values():
             if ms.buffer:
-                target = TermdeckConfig.SCROLLBACK_DIR / f"{ms.record.session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
-                target.write_bytes(bytes(ms.buffer))
+                self._persist_scrollback(ms)
 
     def list_sessions(self, project: str | None) -> list[dict[str, object]]:
         return [self.session_summary(ms) for ms in self._sessions.values()

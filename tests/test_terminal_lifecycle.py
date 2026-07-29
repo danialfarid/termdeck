@@ -98,6 +98,16 @@ class NotebookTrashTest(unittest.TestCase):
 
 
 class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._scrollback_tmp = tempfile.TemporaryDirectory()
+        self._scrollback_patch = patch.object(
+            TermdeckConfig, "SCROLLBACK_DIR", Path(self._scrollback_tmp.name) / "scrollback")
+        self._scrollback_patch.start()
+
+    async def asyncTearDown(self) -> None:
+        self._scrollback_patch.stop()
+        self._scrollback_tmp.cleanup()
+
     async def test_startup_marks_live_socket_as_detached_not_dormant(self) -> None:
         manager = TerminalSessionManager()
         saved = record()
@@ -128,6 +138,22 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         session = manager._sessions[saved.session_id]
         self.assertFalse(session.running)
         self.assertTrue(session.dormant)
+
+    async def test_startup_loads_persisted_scrollback_without_removing_it(self) -> None:
+        manager = TerminalSessionManager()
+        saved = record()
+        manager._store.load_all = lambda: [saved]  # type: ignore[method-assign]
+        TermdeckConfig.SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        scrollback = TermdeckConfig.SCROLLBACK_DIR / f"{saved.session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
+        scrollback.write_bytes(b"persisted output\n")
+        with tempfile.TemporaryDirectory() as directory:
+            socket = Path(directory) / "abc123.sock"
+            with patch.object(manager, "_dtach_socket", return_value=socket), \
+                 patch.object(ProcTreeUtil, "tree_pids_for_socket", new=AsyncMock(return_value=set())):
+                await manager.startup_respawn_saved_sessions()
+        session = manager._sessions[saved.session_id]
+        self.assertEqual(bytes(session.buffer), b"persisted output\n")
+        self.assertTrue(scrollback.exists())
 
     async def test_delete_keeps_record_when_socket_cleanup_fails(self) -> None:
         manager = TerminalSessionManager()
@@ -175,33 +201,34 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bytes(session.buffer), b"before\nafter\n")
         self.assertEqual(session.scrollback_sync_carry, b"")
 
-    async def test_sync_repaint_frames_are_not_sent_to_browser_clients(self) -> None:
+    async def test_sync_repaint_frames_are_sent_raw_to_browser_clients(self) -> None:
         manager = TerminalSessionManager()
         session = ManagedSession(record())
         queue: asyncio.Queue = asyncio.Queue()
         session.client_queues.add(queue)
-
-        manager._handle_output(
-            session,
+        raw = (
             b"before\n" + TermdeckConfig.SYNC_UPDATE_START + b"\rstatus redraw" +
-            TermdeckConfig.SYNC_UPDATE_END + b"\r\nafter\n",
+            TermdeckConfig.SYNC_UPDATE_END + b"\r\nafter\n"
         )
 
-        self.assertEqual(await queue.get(), b"before\nafter\n")
+        manager._handle_output(session, raw)
+
+        self.assertEqual(await queue.get(), raw)
         self.assertTrue(queue.empty())
         self.assertEqual(bytes(session.buffer), b"before\nafter\n")
 
-    async def test_agent_cursor_repaint_controls_are_not_sent_to_browser_clients(self) -> None:
+    async def test_agent_cursor_repaint_controls_are_sent_raw_to_browser_clients(self) -> None:
         manager = TerminalSessionManager()
         saved = record()
         saved.agent_kind = AgentKind.CODEX.value
         session = ManagedSession(saved)
         queue: asyncio.Queue = asyncio.Queue()
         session.client_queues.add(queue)
+        raw = b"answer\n\x1b[2Arewritten\x1b[0m\n\x1b]2;title\x07"
 
-        manager._handle_output(session, b"answer\n\x1b[2Arewritten\x1b[0m\n\x1b]2;title\x07")
+        manager._handle_output(session, raw)
 
-        self.assertEqual(await queue.get(), b"answer\nrewritten\x1b[0m\n")
+        self.assertEqual(await queue.get(), raw)
         self.assertTrue(queue.empty())
         self.assertEqual(bytes(session.buffer), b"answer\nrewritten\x1b[0m\n")
 
