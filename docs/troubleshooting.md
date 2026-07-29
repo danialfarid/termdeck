@@ -81,8 +81,9 @@ session is preserved.
 
 ### Scrollback is empty after a server restart
 
-Expected. The per-terminal ring buffer survives page reloads but not a server restart. For agent terminals
-the resume redraw restores the conversation anyway; for shells, the history is gone.
+The server preserves live terminals through a normal restart and saves a scrollback snapshot. If the computer
+restarted, opening the saved terminal restores that snapshot before starting a new process. For agent terminals,
+the resume command also restores the conversation; shell history remains the shell's own history.
 
 ---
 

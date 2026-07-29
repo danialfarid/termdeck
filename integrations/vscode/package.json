@@ -1,0 +1,248 @@
+{
+  "name": "termdeck-vscode",
+  "displayName": "TermDeck",
+  "description": "Persistent TermDeck terminals and agent transcripts inside VS Code.",
+  "version": "0.2.7",
+  "publisher": "danialfarid",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/danialfarid/termdeck/tree/main/integrations/vscode",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danialfarid/termdeck.git",
+    "directory": "integrations/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/danialfarid/termdeck/issues"
+  },
+  "keywords": [
+    "termdeck",
+    "terminal",
+    "persistent terminal",
+    "codex",
+    "claude",
+    "ai agent",
+    "developer tools"
+  ],
+  "preview": true,
+  "galleryBanner": {
+    "color": "#151a21",
+    "theme": "dark"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "scripts": {
+    "reinstall": "npx --yes @vscode/vsce package && code --install-extension termdeck-vscode-0.2.7.vsix --force"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:termdeck.refresh",
+    "onCommand:termdeck.newSession",
+    "onCommand:termdeck.newGroup",
+    "onCommand:termdeck.settings",
+    "onView:termdeck.sidebar"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "termdeck",
+          "title": "TermDeck",
+          "icon": "media/termdeck.svg"
+        }
+      ]
+    },
+    "views": {
+      "termdeck": [
+        {
+          "id": "termdeck.sidebar",
+          "name": "TermDeck",
+          "type": "tree"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "termdeck.refresh",
+        "title": "TermDeck: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "termdeck.newGroup",
+        "title": "TermDeck: New Group",
+        "icon": "$(folder-library)"
+      },
+      {
+        "command": "termdeck.newSession",
+        "title": "TermDeck: New Terminal",
+        "icon": "$(add)"
+      },
+      {
+        "command": "termdeck.selectSession",
+        "title": "TermDeck: Open Terminal"
+      },
+      {
+        "command": "termdeck.renameSession",
+        "title": "TermDeck: Rename Terminal"
+      },
+      {
+        "command": "termdeck.restartSession",
+        "title": "TermDeck: Restart Terminal"
+      },
+      {
+        "command": "termdeck.forkSession",
+        "title": "TermDeck: Fork Terminal"
+      },
+      {
+        "command": "termdeck.closeSession",
+        "title": "TermDeck: Close Terminal"
+      },
+      {
+        "command": "termdeck.pinSession",
+        "title": "TermDeck: Pin or Unpin Terminal"
+      },
+      {
+        "command": "termdeck.assignSession",
+        "title": "TermDeck: Move Terminal to Group"
+      },
+      {
+        "command": "termdeck.openTranscript",
+        "title": "TermDeck: Open Transcript"
+      },
+      {
+        "command": "termdeck.renameGroup",
+        "title": "TermDeck: Rename Group"
+      },
+      {
+        "command": "termdeck.removeGroup",
+        "title": "TermDeck: Remove Grouping"
+      },
+      {
+        "command": "termdeck.closeGroup",
+        "title": "TermDeck: Close Group Terminals"
+      },
+      {
+        "command": "termdeck.toggleGroup",
+        "title": "TermDeck: Toggle Group"
+      },
+      {
+        "command": "termdeck.settings",
+        "title": "TermDeck: Settings",
+        "icon": "$(settings-gear)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "termdeck.refresh",
+          "when": "view == termdeck.sidebar",
+          "group": "navigation"
+        },
+        {
+          "command": "termdeck.newGroup",
+          "when": "view == termdeck.sidebar",
+          "group": "navigation"
+        },
+        {
+          "command": "termdeck.newSession",
+          "when": "view == termdeck.sidebar",
+          "group": "navigation"
+        },
+        {
+          "command": "termdeck.settings",
+          "when": "view == termdeck.sidebar",
+          "group": "navigation@99"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "termdeck.openTranscript",
+          "when": "view == termdeck.sidebar && viewItem == termdeckSession",
+          "group": "1_session"
+        },
+        {
+          "command": "termdeck.renameSession",
+          "when": "view == termdeck.sidebar && viewItem == termdeckSession",
+          "group": "1_session"
+        },
+        {
+          "command": "termdeck.restartSession",
+          "when": "view == termdeck.sidebar && viewItem == termdeckSession",
+          "group": "1_session"
+        },
+        {
+          "command": "termdeck.forkSession",
+          "when": "view == termdeck.sidebar && viewItem == termdeckSession",
+          "group": "1_session"
+        },
+        {
+          "command": "termdeck.pinSession",
+          "when": "view == termdeck.sidebar && viewItem == termdeckSession",
+          "group": "2_organize"
+        },
+        {
+          "command": "termdeck.assignSession",
+          "when": "view == termdeck.sidebar && viewItem == termdeckSession",
+          "group": "2_organize"
+        },
+        {
+          "command": "termdeck.closeSession",
+          "when": "view == termdeck.sidebar && viewItem == termdeckSession",
+          "group": "3_close"
+        },
+        {
+          "command": "termdeck.renameGroup",
+          "when": "view == termdeck.sidebar && viewItem == termdeckGroup",
+          "group": "1_group"
+        },
+        {
+          "command": "termdeck.removeGroup",
+          "when": "view == termdeck.sidebar && viewItem == termdeckGroup",
+          "group": "1_group"
+        },
+        {
+          "command": "termdeck.closeGroup",
+          "when": "view == termdeck.sidebar && viewItem == termdeckGroup",
+          "group": "2_close"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "TermDeck",
+      "properties": {
+        "termdeck.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8530",
+          "description": "URL of the standalone TermDeck server. The extension uses its HTTP and WebSocket API unchanged."
+        },
+        "termdeck.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start TermDeck with the configured command when the server is not already running."
+        },
+        "termdeck.command": {
+          "type": "string",
+          "default": "termdeck",
+          "description": "TermDeck executable used when autoStart is enabled."
+        },
+        "termdeck.singleTabMode": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "description": "Show the selected TermDeck terminal in one TermDeck editor tab instead of opening separate native VS Code terminals."
+        }
+      }
+    }
+  }
+}

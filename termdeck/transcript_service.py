@@ -2,7 +2,7 @@ import asyncio
 import datetime as dt
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -76,6 +76,12 @@ class TranscriptService:
     MAX_TEXT_CHARS = 20000
     MAX_THINKING_ITEM_CHARS = 1800
     MAX_THINKING_BLOCK_CHARS = 9000
+    HISTORY_PAGE_TURNS = 160
+    HISTORY_PAGE_INITIAL_BYTES = 512 * 1024
+    HISTORY_PAGE_MAX_BYTES = 8 * 1024 * 1024
+    STATE_RELOAD_MAX_BYTES = 64 * 1024 * 1024
+    MODEL_NAME_RE = re.compile(r"\b(gpt-[a-z0-9.+-]+(?:-[a-z0-9.+-]+)*(?:\s+x(?:high|medium|low|standard|mini|turbo))?)\b", re.IGNORECASE)
+    GENERIC_MODELS = {"codex", "claude", "none", "shell", "bash", "zsh", "sh"}
 
     def __init__(self) -> None:
         self._states: dict[Path, _TranscriptState] = {}
@@ -84,6 +90,10 @@ class TranscriptService:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._observer: Observer | None = None
         self._codex_leaf_observer = None
+        self._file_change_listeners: list[Callable[[Path], None]] = []
+
+    def add_file_change_listener(self, listener: Callable[[Path], None]) -> None:
+        self._file_change_listeners.append(listener)
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
         if self._observer is not None:
@@ -99,10 +109,11 @@ class TranscriptService:
                 observer.schedule(handler, str(root), recursive=True)
         observer.start()
         self._observer = observer
-        # FSEvents is useful for discovering new rollout files, but on macOS
-        # it can omit append/modify events for an already-open Codex JSONL.
-        # kqueue watches the existing date directories directly and delivers
-        # those changes without polling the files or scanning all sessions.
+        # The recursive observer is useful for discovering new rollout files,
+        # but macOS FSEvents can omit appends to a JSONL file that Codex keeps
+        # open. Watch the existing date directories with kqueue as well so
+        # active Markdown sessions receive each append promptly. This is
+        # event-driven: it does not poll files or rescan the transcript tree.
         if KqueueObserver is not None and TermdeckConfig.CODEX_SESSIONS_DIR.is_dir():
             leaf_observer = KqueueObserver()
             leaf_dirs = {path.parent for path in TermdeckConfig.CODEX_SESSIONS_DIR.rglob("*.jsonl")}
@@ -129,10 +140,36 @@ class TranscriptService:
         queue: asyncio.Queue = asyncio.Queue()
         if path is None:
             return None, [], 0, queue
-        turns = self._transcript_for_path(AgentKind(agent_kind), path)
-        self._subscribers.setdefault(path, set()).add(queue)
+        # Do not build the large live cache on the websocket's first request.
+        # The server primes a bounded tail before sending the initial snapshot;
+        # this registration must stay cheap so the browser can start loading
+        # without waiting for a potentially huge JSONL file.
+        kind = AgentKind(agent_kind)
         state = self._states.get(path)
-        return path, turns, state.revision if state else 0, queue
+        if state is not None:
+            self._refresh_state(state)
+        self._subscribers.setdefault(path, set()).add(queue)
+        return path, state.turns if state else [], state.revision if state else 0, queue
+
+    def prime_subscription(self, agent_kind: str, path: Path | None) -> int:
+        """Initialize a new live subscription from a bounded tail only.
+
+        A subscription is registered before this runs, so appends that happen
+        during priming are either included by the tail read or remain queued as
+        live updates. The old full-state reload is still available for history
+        search/other callers, but is no longer on the initial Markdown path.
+        """
+        if path is None:
+            return 0
+        kind = AgentKind(agent_kind)
+        state = self._states.get(path)
+        if state is None or state.agent_kind is not kind:
+            state = _TranscriptState(path=path, agent_kind=kind)
+            self._states[path] = state
+            self._reload_state(state, max_bytes=self.HISTORY_PAGE_MAX_BYTES)
+        else:
+            self._refresh_state(state)
+        return state.revision
 
     def updates_since(self, path: Path | None, revision: int) -> list[dict[str, object]] | None:
         if path is None:
@@ -183,6 +220,88 @@ class TranscriptService:
         path = self.source_path(agent_kind, cwd, agent_session_id)
         return self._transcript_for_path(AgentKind(agent_kind), path) if path else []
 
+    def history_page(self, agent_kind: str, cwd: str, agent_session_id: str | None,
+                    before: int | None = None, limit: int = HISTORY_PAGE_TURNS) -> dict[str, object]:
+        """Read one bounded page from the end of a durable JSONL transcript.
+
+        ``before`` is a byte offset at a line boundary. Appending to JSONL does
+        not change older offsets, so the cursor remains valid while an agent is
+        producing more output. The page is parsed only from a bounded tail
+        window, not from the beginning of the session.
+        """
+        path = self.source_path(agent_kind, cwd, agent_session_id)
+        if path is None:
+            return {"turns": [], "before": None, "has_more": False}
+        kind = AgentKind(agent_kind)
+        try:
+            size = path.stat().st_size
+        except (FileNotFoundError, OSError):
+            return {"turns": [], "before": None, "has_more": False}
+        if before is not None and int(before) > size:
+            return {"turns": [], "before": None, "has_more": False, "reset": True}
+        end_byte = size if before is None else max(0, int(before))
+        limit = max(20, min(int(limit), self.HISTORY_PAGE_TURNS))
+        window_bytes = self.HISTORY_PAGE_INITIAL_BYTES
+        records: list[tuple[int, bytes]] = []
+        parsed_records: list[tuple[int, list[dict[str, object]]]] = []
+        while True:
+            _, records = self._read_history_window(path, end_byte, window_bytes)
+            parsed_records = []
+            for offset, raw_line in records:
+                parsed = self._parse_lines(kind, [raw_line.decode(errors="replace")])
+                if parsed:
+                    parsed_records.append((offset, parsed))
+            total_turns = sum(len(turns) for _, turns in parsed_records)
+            if total_turns >= limit or not records or records[0][0] == 0 or window_bytes >= self.HISTORY_PAGE_MAX_BYTES:
+                break
+            window_bytes = min(window_bytes * 2, self.HISTORY_PAGE_MAX_BYTES)
+        if not parsed_records:
+            return {"turns": [], "before": records[0][0] if records and records[0][0] > 0 else None,
+                    "has_more": bool(records and records[0][0] > 0)}
+
+        first_record = len(parsed_records) - 1
+        collected = 0
+        for index in range(len(parsed_records) - 1, -1, -1):
+            collected += len(parsed_records[index][1])
+            first_record = index
+            if collected >= limit:
+                break
+        page_start = parsed_records[first_record][0]
+        page_lines = [raw for offset, raw in records if offset >= page_start]
+        turns = self._collapse_thinking_events(self._parse_lines(kind, [line.decode(errors="replace") for line in page_lines]))
+        next_before = page_start if page_start > 0 else None
+        return {"turns": turns, "before": next_before, "has_more": next_before is not None,
+                "file_size": size}
+
+    @staticmethod
+    def _read_history_window(path: Path, end_byte: int, max_bytes: int) -> tuple[int, list[tuple[int, bytes]]]:
+        start_byte = max(0, end_byte - max_bytes)
+        try:
+            with path.open("rb") as source:
+                if start_byte > 0:
+                    source.seek(start_byte - 1)
+                    previous = source.read(1)
+                    source.seek(start_byte)
+                else:
+                    previous = b"\n"
+                data = source.read(max(0, end_byte - start_byte))
+        except OSError:
+            return end_byte, []
+        if start_byte > 0 and previous not in (b"\n", b"\r"):
+            boundary = data.find(b"\n")
+            if boundary < 0:
+                return end_byte, []
+            start_byte += boundary + 1
+            data = data[boundary + 1:]
+        records: list[tuple[int, bytes]] = []
+        offset = start_byte
+        for raw_line in data.splitlines(keepends=True):
+            if not raw_line.endswith((b"\n", b"\r")):
+                break
+            records.append((offset, raw_line.rstrip(b"\r\n")))
+            offset += len(raw_line)
+        return start_byte, records
+
     def _transcript_for_path(self, kind: AgentKind, path: Path) -> list[dict[str, object]]:
         state = self._states.get(path)
         if state is None or state.agent_kind is not kind:
@@ -194,6 +313,8 @@ class TranscriptService:
         return state.turns
 
     def _on_file_change_from_thread(self, path: Path) -> None:
+        for listener in self._file_change_listeners:
+            listener(path)
         if self._loop is not None:
             self._loop.call_soon_threadsafe(self._refresh_changed_path, path)
 
@@ -208,21 +329,20 @@ class TranscriptService:
         self._refresh_state(state)
         if state.turns == previous:
             return
-        replace_from = 0
-        while replace_from < len(previous) and replace_from < len(state.turns) and \
-                previous[replace_from] == state.turns[replace_from]:
-            replace_from += 1
+        # The browser keeps only the newest bounded live window. Older pages
+        # are fetched separately by byte cursor, so every live update can
+        # replace that tail without invalidating the older-page positions.
         payload = {"type": "transcript_update", "revision": state.revision,
-                   "replace_from": replace_from, "turns": state.turns[replace_from:]}
+                   "replace_from": 0, "windowed": True,
+                   "turns": state.turns[-self.HISTORY_PAGE_TURNS:]}
         state.update_log.append(payload)
         del state.update_log[:-128]
         for queue in list(self._subscribers.get(path, ())):
             queue.put_nowait(payload)
 
-    def _reload_state(self, state: _TranscriptState) -> None:
+    def _reload_state(self, state: _TranscriptState, max_bytes: int | None = None) -> None:
         try:
             stat = state.path.stat()
-            data = state.path.read_bytes()
         except (FileNotFoundError, OSError):
             state.raw_turns = []
             state.turns = []
@@ -233,23 +353,58 @@ class TranscriptService:
             state.update_log.clear()
             state.last_user_at = None
             return
-        chunks = data.splitlines(keepends=True)
+        reload_limit = max_bytes or self.STATE_RELOAD_MAX_BYTES
+        window_bytes = self.HISTORY_PAGE_INITIAL_BYTES
         complete: list[bytes] = []
         carry = b""
-        for chunk in chunks:
-            if chunk.endswith((b"\n", b"\r")):
-                complete.append(chunk.rstrip(b"\r\n"))
-            else:
-                carry = chunk
+        offset = stat.st_size
+        while True:
+            _, complete, carry, offset = self._read_recent_transcript_lines(state.path, stat.st_size, window_bytes)
+            parsed_count = len(self._parse_lines(state.agent_kind, [line.decode(errors="replace") for line in complete]))
+            if parsed_count >= self.MAX_RAW_TURNS or offset == 0 or window_bytes >= reload_limit:
+                break
+            window_bytes = min(window_bytes * 2, reload_limit)
         lines = [line.decode(errors="replace") for line in complete]
         state.last_user_at = self._latest_user_timestamp(state.agent_kind, lines)
         state.raw_turns = self._trim_recent_raw_turns(self._parse_lines(state.agent_kind, lines))
         state.turns = self._trim_display_turns(self._collapse_thinking_events(state.raw_turns))
-        state.offset = len(data) - len(carry)
+        state.offset = offset
         state.carry = carry
         state.inode = getattr(stat, "st_ino", None)
         state.revision += 1
         state.update_log.clear()
+
+    @staticmethod
+    def _read_recent_transcript_lines(path: Path, end_byte: int, max_bytes: int) -> tuple[int, list[bytes], bytes, int]:
+        start_byte = max(0, end_byte - max_bytes)
+        try:
+            with path.open("rb") as source:
+                if start_byte > 0:
+                    source.seek(start_byte - 1)
+                    previous = source.read(1)
+                    source.seek(start_byte)
+                else:
+                    previous = b"\n"
+                data = source.read(max(0, end_byte - start_byte))
+        except OSError:
+            return end_byte, [], b"", end_byte
+        if start_byte > 0 and previous not in (b"\n", b"\r"):
+            boundary = data.find(b"\n")
+            if boundary < 0:
+                return end_byte, [], data, end_byte
+            start_byte += boundary + 1
+            data = data[boundary + 1:]
+        complete: list[bytes] = []
+        carry = b""
+        consumed = 0
+        for raw_line in data.splitlines(keepends=True):
+            if raw_line.endswith((b"\n", b"\r")):
+                complete.append(raw_line.rstrip(b"\r\n"))
+                consumed += len(raw_line)
+            else:
+                carry = raw_line
+                break
+        return start_byte, complete, carry, start_byte + consumed
 
     def _refresh_state(self, state: _TranscriptState) -> None:
         try:
@@ -338,23 +493,26 @@ class TranscriptService:
             return path
         return None
 
-    def _turn(self, role: str, text: str, kind: str = "message", title: str = "", expanded: bool = False) -> dict[str, object]:
+    def _turn(self, role: str, text: str, kind: str = "message", title: str = "", expanded: bool = False,
+              model: str | None = None) -> dict[str, object]:
         clean = text.strip()
         if len(clean) > self.MAX_TEXT_CHARS:
             clean = clean[:self.MAX_TEXT_CHARS] + "\n… (truncated)"
         turn: dict[str, object] = {"role": role, "text": clean}
+        if model:
+            turn["model"] = model
         if kind != "message":
             turn.update({"kind": kind, "title": title or kind.title(), "expanded": expanded})
         return turn
 
-    def _tool_event(self, name: str, value: object, role: str = "event") -> dict[str, object]:
+    def _tool_event(self, name: str, value: object, role: str = "event", model: str | None = None) -> dict[str, object]:
         text = self._format_value(value)
         kind = self._tool_kind(name, text)
         diff, diff_files = self._edit_diff_parts(name, value, text) if kind == "edit" else ([], [])
         if kind == "edit" and not diff and name.strip().lower() not in {"edit", "write", "notebookedit", "apply_patch"}:
             kind = "tool"
         title = "Code edit" if kind == "edit" else "Plan" if kind == "plan" else name or "Tool"
-        turn = self._turn(role, text, kind, title, expanded=kind == "edit")
+        turn = self._turn(role, text, kind, title, expanded=kind == "edit", model=model)
         if diff:
             # The structured diff is what the Markdown view renders. Keeping
             # the original apply_patch wrapper as well duplicates a large
@@ -368,6 +526,64 @@ class TranscriptService:
             if plan:
                 turn["plan"] = plan
         return turn
+
+    @classmethod
+    def _extract_turn_model(
+        cls,
+        payload: dict[str, object] | list[object],
+        seen: set[int] | None = None,
+        strict: bool = False,
+    ) -> str:
+        if seen is None:
+            seen = set()
+        payload_id = id(payload)
+        if payload_id in seen:
+            return ""
+        seen.add(payload_id)
+        if isinstance(payload, dict):
+            fallback = ""
+            for key in ("model", "model_name", "modelName", "assistant_model", "model_slug", "modelid"):
+                raw_value = payload.get(key)
+                if not isinstance(raw_value, str):
+                    continue
+                explicit = cls._extract_gpt_model(raw_value)
+                if explicit:
+                    return explicit
+                value = raw_value.strip().lower()
+                if strict:
+                    continue
+                if not fallback and value and value not in cls.GENERIC_MODELS and value.startswith("gpt-"):
+                    fallback = value
+                if not fallback and value and value not in cls.GENERIC_MODELS:
+                    fallback = value
+            preferred = payload.get("payload") or payload.get("message") or payload.get("metadata")
+            if isinstance(preferred, (dict, list)):
+                model = cls._extract_turn_model(preferred, seen, strict)
+                if model:
+                    return model
+            for value in payload.values():
+                if isinstance(value, (dict, list)):
+                    model = cls._extract_turn_model(value, seen, strict)
+                    if model:
+                        return model
+            return fallback
+        if isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, (dict, list)):
+                    model = cls._extract_turn_model(item, seen, strict)
+                    if model:
+                        return model
+        return ""
+
+    @classmethod
+    def _extract_gpt_model(cls, value: object) -> str:
+        if not isinstance(value, str):
+            return ""
+        text = value.strip()
+        if not text:
+            return ""
+        match = cls.MODEL_NAME_RE.search(text)
+        return match.group(1) if match else ""
 
     @staticmethod
     def _format_value(value: object) -> str:
@@ -562,6 +778,7 @@ class TranscriptService:
 
     def _parse_codex_lines(self, lines: Iterable[str]) -> list[dict[str, object]]:
         turns: list[dict[str, object]] = []
+        current_model = ""
         for line in lines:
             payload = self._loads(line)
             if payload is None:
@@ -570,19 +787,25 @@ class TranscriptService:
             raw_body = payload.get("payload")
             body: dict[str, object] = raw_body if isinstance(raw_body, dict) else {}
             body_type = body.get("type")
+            model = self._extract_turn_model(payload)
+            if not model:
+                model = self._extract_turn_model(body)
+            if model:
+                current_model = model
+            model = current_model
             if entry_type == "event_msg" and body_type == "agent_message":
-                turns.append(self._turn(self.ROLE_ASSISTANT, str(body.get("message", ""))))
+                turns.append(self._turn(self.ROLE_ASSISTANT, str(body.get("message", "")), model=model))
             elif entry_type == "response_item" and body_type == "message" and body.get("role") == "user":
                 text = self._join_text(body.get("content"), ("input_text", "text"))
                 if text and not self._is_codex_boilerplate(text):
-                    turns.append(self._turn(self.ROLE_USER, text))
+                    turns.append(self._turn(self.ROLE_USER, text, model=model))
             elif entry_type == "response_item" and body_type in ("custom_tool_call", "function_call"):
                 name = str(body.get("name") or "tool")
                 value = body.get("input") if body_type == "custom_tool_call" else body.get("arguments", "")
-                turns.append(self._tool_event(name, value))
+                turns.append(self._tool_event(name, value, model=model))
             elif entry_type == "response_item" and body_type in ("custom_tool_call_output", "function_call_output"):
                 output = body.get("output", body.get("result", ""))
-                turns.append(self._turn("event", self._format_result_value(output), "result", "Result"))
+                turns.append(self._turn("event", self._format_result_value(output), "result", "Result", model=model))
         return turns
 
     def _trim_recent_raw_turns(self, turns: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -620,21 +843,22 @@ class TranscriptService:
                 continue
             role = str(payload["type"])
             content = message.get("content")
+            model = self._extract_turn_model(payload) or self._extract_turn_model(message)
             if isinstance(content, str):
                 if content.strip():
-                    turns.append(self._turn(role, content))
+                    turns.append(self._turn(role, content, model=model))
             elif isinstance(content, list):
                 for block in content:
                     if not isinstance(block, dict):
                         continue
                     block_type = block.get("type")
                     if block_type == "text" and str(block.get("text", "")).strip():
-                        turns.append(self._turn(role, str(block.get("text", ""))))
+                        turns.append(self._turn(role, str(block.get("text", "")), model=model))
                     elif block_type == "tool_use":
-                        turns.append(self._tool_event(str(block.get("name", "tool")), block.get("input", {})))
+                        turns.append(self._tool_event(str(block.get("name", "tool")), block.get("input", {}), model=model))
                     elif block_type == "tool_result":
                         result = block.get("content", block.get("output", ""))
-                        turns.append(self._turn("event", self._format_result_value(result), "result", "Result"))
+                        turns.append(self._turn("event", self._format_result_value(result), "result", "Result", model=model))
         return turns
 
     @staticmethod

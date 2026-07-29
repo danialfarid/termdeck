@@ -98,7 +98,7 @@ class ProjectSearchService:
                 total_replacements += count
         return {"files": files_changed, "replacements": total_replacements}
 
-    async def find_files(self, root: str, query: str, ignore: str) -> list[dict[str, str]]:
+    async def find_files(self, root: str, query: str, ignore: str) -> list[dict[str, str | bool]]:
         base = self._files.resolve_confined(root, "")
         argv = [TermdeckConfig.RG_BIN, "--files"]
         for directory in (token.strip() for token in ignore.split(",") if token.strip()):
@@ -110,16 +110,28 @@ class ProjectSearchService:
         except asyncio.TimeoutError:
             proc.kill()
             return []
-        scored: list[tuple[int, int, int, str]] = []
+        # `rg --files` intentionally returns files only. Add the parent
+        # directories of those files as candidates so a folder name is a real
+        # filename-search result too (while retaining rg's ignore/gitignore
+        # behavior and avoiding a second full filesystem walk).
+        candidates: set[tuple[str, bool]] = set()
         for rel in stdout.decode(errors="replace").splitlines():
+            rel = rel.strip()
+            if not rel:
+                continue
+            candidates.add((rel, False))
+            parts = rel.split("/")
+            candidates.update(("/".join(parts[:index]), True) for index in range(1, len(parts)))
+        scored: list[tuple[int, int, int, int, str, bool]] = []
+        for rel, is_dir in candidates:
             basename = rel.rsplit("/", 1)[-1]
             basename_score = self._fuzzy_span_score(query, basename)
             path_score = basename_score if basename_score is not None else self._fuzzy_span_score(query, rel)
             if path_score is None:
                 continue
-            scored.append((0 if basename_score is not None else 1, path_score, len(rel), rel))
+            scored.append((0 if basename_score is not None else 1, path_score, len(rel), int(not is_dir), rel, is_dir))
         scored.sort()
-        return [{"path": rel} for _, _, _, rel in scored[:TermdeckConfig.FIND_MAX_RESULTS]]
+        return [{"path": rel, "is_dir": is_dir} for _, _, _, _, rel, is_dir in scored[:TermdeckConfig.FIND_MAX_RESULTS]]
 
     @staticmethod
     def _fuzzy_span_score(query: str, candidate: str) -> int | None:

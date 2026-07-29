@@ -51,6 +51,7 @@ class WsMessageFields:
     CODE = "code"
     AGENT_SESSION = "agent_session"
     AGENT_SESSION_ID = "agent_session_id"
+    DORMANT = "dormant"
     DRAFT = "draft"
     DRAFT_SYNC = "draft_sync"
     SUBMIT = "submit"
@@ -88,5 +89,7 @@ class ApiFields:
 
     RUNNING = "running"
     EXIT_CODE = "exit_code"
+    DORMANT = "dormant"
+    DETACHED = "detached"
     CLI_TITLE = "cli_title"
     DELETED = "deleted"

@@ -214,7 +214,7 @@ that terminal is on right now**:
 - **Falling back to directory watching.** New or growing files under `~/.claude/projects/<munged-cwd>/` and
   `~/.codex/sessions/YYYY/MM/DD/` are attributed to the terminal that was most recently typed into.
 
-When the server restarts, each terminal respawns as:
+After a computer restart, opening a saved terminal starts it as:
 
 | Kind | Respawn command |
 |---|---|
@@ -230,10 +230,9 @@ on the session you were actually on — not the one you started with.
 
 ### Terminals that outlive the server
 
-Every terminal runs under `dtach`. When TermDeck restarts, it first checks whether the old `dtach` socket is
-still live: if it is, it **reattaches to the still-running process** and prints
-`──── reconnected (kept running) ────` — your build keeps building, your agent keeps thinking. Only if the
-socket is dead does it respawn and resume, printing `──── restarted ────`.
+Every terminal runs under `dtach`. When TermDeck's server restarts, it leaves live terminal processes alone and
+reattaches to them when opened. If the computer restarted and the old socket is gone, opening a saved terminal
+starts it with the saved session and prints `──── restarted ────`.
 
 ### Unsent prompt drafts
 
@@ -372,7 +371,7 @@ Everything lives under `~/.termdeck` (or `$TERMDECK_DATA_DIR`):
 ```
 ~/.termdeck/
 ├── sessions.json          terminals: command, cwd, title, agent session id, draft
-├── closed_sessions.json   the last 20 closed terminals
+├── closed_sessions.json   the last 100 closed terminals
 ├── projects.json          registered project directories
 ├── settings.json          fonts, panel widths, theme, keybindings, open files
 ├── scrollback/            per-terminal ring buffer
@@ -428,8 +427,8 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 
 - **Compound commands:** the resume flag is appended to the whole command string, so keep `claude`/`codex`
   last. `cd x && claude` is fine; `claude; echo done` is not.
-- **Scrollback across server restarts:** the per-terminal ring buffer survives page reloads but not a server
-  restart. In practice claude/codex resume redraws the conversation anyway.
+- **Scrollback across server restarts:** the per-terminal ring buffer is snapshotted during a graceful server
+  restart and restored when the terminal is opened.
 - **macOS-first:** developed and used daily on macOS. Linux support is implemented and the code paths are
   portable, but it gets far less mileage — [bug reports welcome](https://github.com/danialfarid/termdeck/issues).
 - **Single user:** no authentication, no multi-tenancy. It's a local tool.
@@ -444,6 +443,7 @@ renders it. A separate tracker watches `lsof` and the agent CLIs' session direct
 current session ID up to date, and the session store persists everything needed to rebuild the whole deck.
 
 See [docs/architecture.md](docs/architecture.md) for the module-by-module walkthrough.
+For programmatic terminal creation and prompt submission, see [docs/api.md](docs/api.md).
 
 ---
 

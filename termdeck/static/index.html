@@ -14,8 +14,21 @@
   <div id="sidebar-header">
     <select id="project-select" title="Project (url: /p/&lt;name&gt;)"></select>
     <span class="panel-actions">
+      <button id="vscode-refresh-btn" class="vscode-only" title="Refresh TermDeck (Ctrl+R)" aria-label="Refresh TermDeck"><span class="codicon codicon-refresh"></span></button>
+      <button id="terminal-search-toggle" title="Search all terminal output"><span class="codicon codicon-search"></span></button>
+      <button id="new-group-btn" title="New terminal group"><span class="codicon codicon-folder-library"></span></button>
       <button id="new-session-btn" title="New terminal (&#8984;B)">+</button>
     </span>
+  </div>
+  <div id="terminal-search-bar" class="hidden">
+    <div id="terminal-search-description">Search terminal conversations (prompts and responses)</div>
+    <div id="terminal-search-input-row">
+      <input id="terminal-search-input" placeholder="search conversations" spellcheck="false">
+      <button id="terminal-search-submit" title="Search terminal conversations" aria-label="Search terminal conversations"><span class="codicon codicon-search"></span></button>
+      <button id="terminal-search-group-toggle" title="Group similar matched text" aria-label="Group similar matched text" aria-pressed="false"><span class="codicon codicon-list-tree"></span></button>
+    </div>
+    <div id="terminal-search-summary" aria-live="polite"></div>
+    <div id="terminal-search-results"></div>
   </div>
   <div id="session-list" class="side-view"></div>
   <div id="side-split" class="hidden"></div>
@@ -24,7 +37,9 @@
       <span class="side-section-label" id="files-root-label">files</span>
       <button id="reveal-toggle" title="Reveal active file in tree"><span class="codicon codicon-target"></span></button>
       <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
+      <button id="git-status-toggle" title="Show Git status"><span class="codicon codicon-source-control"></span></button>
       <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-eye-closed"></span></button>
+      <button id="files-pin-toggle" title="Keep this panel open after opening a file" aria-label="Pin file panel" aria-pressed="false"><span class="codicon codicon-pin"></span></button>
       <button id="minimize-toggle" class="far-right" title="Minimize panel"><span class="codicon codicon-chrome-minimize"></span></button>
     </div>
     <input id="search-name" placeholder="find file by name (fuzzy)" spellcheck="false">
@@ -43,7 +58,7 @@
         <button id="replace-all-btn" title="Replace all matches in project">Replace</button>
       </div>
     </div>
-    <div id="files-tree"></div>
+    <div id="files-tree" tabindex="0" aria-label="Project file tree"></div>
     <div id="search-results" class="hidden"></div>
     <div id="name-results" class="hidden"></div>
   </div>
@@ -73,16 +88,9 @@
     <div id="monaco-host"></div>
   </div>
   <div id="history-area" class="hidden">
-    <div id="history-head">
+      <div id="history-head">
       <div id="history-title-group">
         <span id="history-title"></span>
-      </div>
-      <div id="history-actions">
-        <button id="history-edits-toggle" title="Collapse all code edits" aria-label="Collapse all code edits">
-          <span class="codicon codicon-collapse-all"></span>
-        </button>
-        <button id="history-close" title="Back to terminal" aria-label="Back to terminal"><span class="codicon codicon-terminal"></span></button>
-        <button id="history-scroll-bottom" title="Scroll transcript to bottom" aria-label="Scroll transcript to bottom"><span class="codicon codicon-fold-down"></span></button>
       </div>
     </div>
     <div id="history-body"></div>
@@ -91,13 +99,13 @@
       <div id="history-queued-items"></div>
     </div>
     <div id="history-thinking-banner" class="hidden" aria-live="polite">
-      <span class="history-thinking-message" aria-hidden="true">THINKING</span>
       <span id="history-thinking-duration"></span>
     </div>
-    <div id="history-composer">
+      <div id="history-composer">
       <div id="history-prompt-wrap">
         <textarea id="history-prompt" rows="1" placeholder="Continue this session…" spellcheck="false"></textarea>
-        <div id="history-prompt-help">Enter submit · Tab queue (Codex) · ↑↓ edit queued · Shift+Enter newline · Esc interrupt</div>
+        <span id="history-model" class="hidden"></span>
+        <div id="history-prompt-help">Enter submit · Tab queue (model) · ↑↓ edit queued · Shift+Enter newline · Esc interrupt</div>
       </div>
       <div id="history-composer-actions">
         <button id="history-send" title="Send prompt" aria-label="Send prompt"><span class="codicon codicon-send"></span></button>
@@ -105,33 +113,40 @@
       </div>
     </div>
   </div>
-  <div id="terminal-area">
-    <div id="terminal-actions">
-      <button id="terminal-resync-btn" title="Resync terminal content" aria-label="Resync terminal content"><span class="codicon codicon-refresh"></span></button>
-      <button id="history-btn" title="Open Markdown transcript" aria-label="Open Markdown transcript"><span class="codicon codicon-markdown"></span></button>
-      <button id="scroll-bottom-btn" title="Scroll terminal to bottom" aria-label="Scroll terminal to bottom"><span class="codicon codicon-fold-down"></span></button>
-    </div>
+    <div id="terminal-area">
+      <div id="terminal-actions" class="vscode-terminal-actions">
+      <button id="vscode-terminal-resync-btn" title="Resync terminal content" aria-label="Resync terminal content"><span class="codicon codicon-refresh"></span></button>
+      <button id="vscode-history-btn" title="Open Markdown transcript" aria-label="Open Markdown transcript"><span class="codicon codicon-markdown"></span></button>
+      <button id="vscode-scroll-bottom-btn" title="Scroll terminal to bottom" aria-label="Scroll terminal to bottom"><span class="codicon codicon-fold-down"></span></button>
+      </div>
     <div id="empty-state">no terminals &mdash; press + or &#8984;K to open one</div>
   </div>
   <div id="bottombar">
+    <button id="history-btn" title="Open Markdown transcript" aria-label="Open Markdown transcript"><span class="codicon codicon-markdown"></span></button>
+    <button id="terminal-resync-btn" title="Resync terminal content" aria-label="Resync terminal content"><span class="codicon codicon-refresh"></span></button>
+    <button id="scroll-bottom-btn" title="Scroll terminal to bottom" aria-label="Scroll terminal to bottom"><span class="codicon codicon-fold-down"></span></button>
+    <button id="history-scroll-bottom" class="hidden" title="Scroll transcript to bottom" aria-label="Scroll transcript to bottom"><span class="codicon codicon-fold-down"></span></button>
+    <button id="history-edits-toggle" class="hidden" title="Collapse all code edits" aria-label="Collapse all code edits">
+      <span class="codicon codicon-collapse-all"></span>
+    </button>
     <button id="attach-btn" title="Attach file/image → inserts its path (also paste or drag-drop onto the terminal)"><span class="codicon codicon-cloud-upload"></span></button>
     <span id="status-name"></span>
+    <span id="history-meta" class="hidden"></span>
     <span class="footer-spacer"></span>
     <span id="stat-text"></span>
     <canvas id="stat-spark" width="48" height="20"></canvas>
   </div>
 </div>
-<div id="file-browser-backdrop" class="hidden">
-  <div id="file-browser-modal">
-    <div id="file-browser-head">
-      <span class="file-browser-title">files &amp; search</span>
-      <div class="file-browser-actions">
-        <button id="file-browser-name-mode" title="Show file name search">Files</button>
-        <button id="file-browser-content-mode" title="Show file content search">Search</button>
-        <button id="file-browser-close" title="Close file browser">&#10005;</button>
-      </div>
+<div id="history-search-backdrop" class="hidden">
+  <div id="history-search-modal">
+    <div id="history-search-head">
+      <span id="history-search-title">History match</span>
+      <button id="history-search-close" title="Close history match">&#10005;</button>
     </div>
-    <div id="file-browser-host"></div>
+    <div id="history-search-context"></div>
+    <div id="history-search-actions">
+      <button id="history-search-open"></button>
+    </div>
   </div>
 </div>
 <div id="settings-popover" class="hidden"></div>
@@ -145,6 +160,7 @@
       <option value="none">Shell</option>
     </select></label>
     <label id="modal-permission-field">Permission<select id="modal-permission"></select></label>
+    <label id="modal-project-field">Project folder<div id="modal-project-picker"><select id="modal-project"></select><button id="modal-project-add-btn" title="Add project folder" aria-label="Add project folder"><span class="codicon codicon-new-folder"></span></button></div></label>
     <label>Session name<input id="modal-session-title" placeholder="optional: name this terminal" spellcheck="false"></label>
     <label id="modal-session-ref-field">Resume existing session<input id="modal-session-ref" placeholder="optional: saved ID or existing name" spellcheck="false"></label>
     <label>Directory<input id="modal-cwd" placeholder="~/projects/my-app" spellcheck="false"></label>

@@ -123,7 +123,12 @@ class AgentSessionTracker:
         if mtime_ns != self._codex_index_mtime_ns:
             self.codex_thread_name("__refresh__")
         if self._UUID_RE.fullmatch(reference):
-            return reference if reference in self._codex_thread_names else None
+            if reference in self._codex_thread_names:
+                return reference
+            try:
+                return reference if next(TermdeckConfig.CODEX_SESSIONS_DIR.rglob(f"rollout-*{reference}.jsonl"), None) else None
+            except OSError:
+                return None
         matches = [session_id for session_id, name in self._codex_thread_names.items() if name == reference]
         return matches[-1] if matches else None
 
@@ -228,6 +233,10 @@ class AgentSessionTracker:
             return {}
 
     def claude_subagent_is_active(self, path: Path) -> bool:
+        return self._claude_subagent_is_active(path)
+
+    def claude_session_is_active(self, path: Path) -> bool:
+        """Infer whether the latest event in a Claude parent transcript is still working."""
         return self._claude_subagent_is_active(path)
 
     def claude_session_id_for_title(self, cwd: Path, cli_title: str | None) -> str | None:

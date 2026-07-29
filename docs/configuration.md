@@ -28,7 +28,7 @@ Layout inside the data directory:
 | Path | Contents |
 |---|---|
 | `sessions.json` | Every terminal: command, cwd, title, agent session ID, unsent draft |
-| `closed_sessions.json` | The last 20 closed terminals, so they can be reopened |
+| `closed_sessions.json` | The last 100 closed terminals, so they can be reopened |
 | `projects.json` | Registered project directories and their slugs |
 | `settings.json` | Fonts, panel widths, theme, keybindings, open files, active terminal |
 | `scrollback/` | One ring-buffer file per terminal |

@@ -31,11 +31,27 @@ class ProjectRegistry:
     def root_for(self, name: str) -> str | None:
         return self._projects.get(name)
 
+    def add_project(self, root: str | Path, name: str = "") -> dict[str, str]:
+        """Register a directory explicitly and return its stable project entry."""
+        root_path = Path(root).expanduser()
+        if not root_path.is_dir():
+            raise ValueError(f"project root is not a directory: {root_path}")
+        root_path = root_path.resolve()
+        root_str = str(root_path)
+        for project_name, project_root in self._projects.items():
+            if Path(project_root).expanduser().resolve() == root_path:
+                return {"name": project_name, "root": project_root}
+        project_name = self._unique_slug(name.strip() or root_path.name)
+        self._projects[project_name] = root_str
+        self._save()
+        return {"name": project_name, "root": root_str}
+
     def ensure_project_for_cwd(self, cwd: Path) -> str:
         cwd_str = str(cwd)
-        for name, root in self._projects.items():
-            if cwd_str == root or cwd_str.startswith(root + "/"):
-                return name
+        matches = [(len(root), name) for name, root in self._projects.items()
+                   if cwd_str == root or cwd_str.startswith(root + "/")]
+        if matches:
+            return max(matches)[1]
         name = self._unique_slug(cwd.name or TermdeckConfig.PROJECT_FALLBACK_SLUG)
         self._projects[name] = cwd_str
         self._save()

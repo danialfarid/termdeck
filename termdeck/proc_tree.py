@@ -56,6 +56,29 @@ class ProcTreeUtil:
         return rows
 
     @staticmethod
+    async def process_details(pids: set[int]) -> list[dict[str, int | float | str]]:
+        """Return a small, local-only process snapshot for a resolved dtach tree."""
+        if not pids:
+            return []
+        output = await ProcTreeUtil._run(TermdeckConfig.PS_BIN, "-axo",
+                                         "pid=,ppid=,state=,pcpu=,rss=,etime=,command=")
+        details: list[dict[str, int | float | str]] = []
+        for line in output.splitlines():
+            parts = line.split(maxsplit=6)
+            if len(parts) < 7:
+                continue
+            try:
+                pid, ppid = int(parts[0]), int(parts[1])
+                cpu, rss_kb = float(parts[3]), int(parts[4])
+            except ValueError:
+                continue
+            if pid not in pids:
+                continue
+            details.append({"pid": pid, "ppid": ppid, "state": parts[2], "cpu_percent": cpu,
+                            "rss_kb": rss_kb, "elapsed": parts[5], "command": parts[6]})
+        return sorted(details, key=lambda item: int(item["pid"]))
+
+    @staticmethod
     async def tree_pids_for_socket(socket_path: str) -> set[int]:
         holders = await ProcTreeUtil.socket_holder_pids(socket_path)
         if not holders:

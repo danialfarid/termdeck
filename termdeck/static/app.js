@@ -8,9 +8,9 @@ const DEFAULT_CWD = "~";
 const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 13, terminal_font_size: 13,
   ui_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
-  show_mtime: false, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
+  show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
-  show_terminal_icons: false, history_mode: false };
+  show_terminal_icons: false, history_mode: false, files_pinned: false, sidebar_text_color: "#d5dbe5", vscode_keybindings: {} };
 const MODEL_PERMISSIONS = {
   codex: [
     { value: "default", label: "Default (Codex config)" },
@@ -29,40 +29,105 @@ const MODEL_PERMISSIONS = {
 const EXT_PRIORITY = ["py", "ipynb", "js", "ts", "tsx", "jsx", "go", "rs", "java", "c", "h", "cpp", "hpp", "sh", "zsh",
   "md", "rst", "txt", "html", "css", "sql", "yaml", "yml", "toml", "ini", "cfg", "xml", "json", "csv", "log"];
 const SEARCH_DEBOUNCE_MS = 500;
-const KEYBINDINGS = [
+const TERMINAL_SEARCH_DEBOUNCE_MS = 250;
+const SESSION_GROUP_HOVER_DELAY_MS = 700;
+const CLOSED_SESSIONS_INITIAL_DISPLAY = 50;
+const CLOSED_SESSIONS_MAX_DISPLAY = 100;
+const DESKTOP_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Meta+b" },
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
+  { id: "fork-terminal", label: "Fork active terminal", def: "Meta+Shift+b" },
+  { id: "restart-terminal", label: "Restart active terminal", def: "Meta+Alt+r" },
   { id: "save-file", label: "Save open file", def: "Meta+s" },
   { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp" },
   { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown" },
   { id: "view-files", label: "Toggle Files view", def: "Meta+Shift+d" },
   { id: "view-search", label: "Toggle Search view", def: "Meta+Shift+f" },
+  { id: "terminal-search", label: "Search terminal output", def: "Meta+Shift+q" },
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t" },
   { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Meta+Shift+m" },
+  { id: "focus-prompt", label: "Focus active terminal / Markdown prompt", def: "Meta+Shift+i" },
+  { id: "show-usages", label: "Show usages of editor symbol", def: "Shift+F12" },
   { id: "select-terminal-all", label: "Select all terminal text", def: "Meta+Shift+a" },
+];
+const VSCODE_KEYBINDINGS = [
+  { id: "new-terminal", label: "New terminal", def: "Ctrl+Alt+b" },
+  { id: "close-item", label: "Close active terminal", def: "Ctrl+Alt+Backspace" },
+  { id: "fork-terminal", label: "Fork active terminal", def: "Ctrl+Alt+Shift+b" },
+  { id: "restart-terminal", label: "Restart active terminal", def: "Ctrl+Alt+Shift+r" },
+  { id: "prev-terminal", label: "Previous terminal", def: "Ctrl+Alt+ArrowUp" },
+  { id: "next-terminal", label: "Next terminal", def: "Ctrl+Alt+ArrowDown" },
+  { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Ctrl+Alt+m" },
+  { id: "select-terminal-all", label: "Select all terminal text", def: "Ctrl+Alt+Shift+a" },
+  { id: "vscode-refresh", label: "Refresh TermDeck", def: "Ctrl+r" },
+  { id: "vscode-reload", label: "Reload TermDeck webview", def: "Ctrl+Shift+r" },
 ];
 const REFERENCE_KEYS = [
   { keys: "⌘[ / ⌘]", label: "Browser back / forward (last-clicked navigation)" },
   { keys: "⌃⇧E", label: "Focus file-name search" },
   { keys: "⌃⇧F", label: "Focus file-content search" },
-  { keys: "⌃⇧Space", label: "Open file browser/search modal" },
+  { keys: "⌃⇧Space", label: "Open file browser/search" },
+  { keys: "↓ then ↑ ↓ ← → Enter", label: "Navigate the filtered file tree from a file-search input" },
   { keys: "⌘⌫ / ⌥⌫", label: "Delete to line start / delete word (in terminal)" },
   { keys: "⌘← / ⌘→", label: "Line start / end (in terminal)" },
   { keys: "⌘A", label: "Select all terminal text" },
+  { keys: "⇧F12", label: "Show usages of the editor symbol" },
   { keys: "⌃R / ⌃M / ⌘⌫", label: "Rename / move / delete selected tree file" },
   { keys: "↑ ↓ ← → Enter", label: "Navigate the file tree (when focused)" },
 ];
+const VSCODE_REFERENCE_KEYS = [
+  { keys: "⌘⇧P", label: "Open VS Code Command Palette" },
+  { keys: "⌘⇧E", label: "Open VS Code Explorer" },
+  { keys: "⌘W", label: "Close editor tab" },
+];
+function parseModeFlag(raw) {
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "number") return raw === 1;
+  const value = String(raw || "").trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(value)) return true;
+  if (["0", "false", "no", "off"].includes(value)) return false;
+  return false;
+}
 const ALWAYS_EXCLUDED = [".git", "node_modules", "__pycache__", ".venv", "_"];
 const STATS_POLL_MS = 5000;
 const STAT_HISTORY_MAX = 48;
 const FONT_MIN = 8, FONT_MAX = 32;
 const TREE_POLL_MS = 4000;
+const RECENT_FILES_REFRESH_MS = 5000;
 const QUERY_RESPONSE_RE = /^\x1b\[[?>]?[\d;]*[Rc]$/;
-const PATH_LINK_RE = /(?:~\/|\.{1,2}\/|\/)?[\w@%+=.-]+(?:\/[\w@%+=.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+)?/g;
+const PATH_LINK_RE = /(?:~\/|\.{1,2}\/|\/)?[\w@%+=.-]+(?:\/[\w@%+=.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+){0,2}/g;
 const KNOWN_EXTS = new Set(["py", "md", "json", "js", "ts", "tsx", "css", "html", "sh", "zsh", "txt", "yaml", "yml",
   "toml", "csv", "log", "plist", "sql", "xml", "ini", "cfg", "lock", "ipynb", "rs", "go", "c", "h", "cpp", "hpp", "java"]);
 const MATERIAL_ICONS_BASE = "/static/vendor/material-icons/icons/";
 const MATERIAL_ICONS_MAP_URL = "/static/vendor/material-icons/dist/material-icons.json";
+const HAS_VSCODE_WEBVIEW_API = typeof acquireVsCodeApi === "function";
+const IS_VSCODE_EMBEDDED = window.parent !== window;
+const HOST_HINT = String(location.host || "").toLowerCase();
+const PATH_HINT = String(location.pathname || "").toLowerCase();
+const LOCATION_HINT = String(location.href || "").toLowerCase();
+const LOCATION_PARAMS = new URLSearchParams(location.search);
+const WORKSPACE_ROOT_QUERY = LOCATION_PARAMS.get("workspace_root") || "";
+if (location.hash) {
+  const hash = location.hash.replace(/^#/, "");
+  for (const [key, value] of new URLSearchParams(hash)) {
+    LOCATION_PARAMS.set(key, value);
+  }
+}
+const VS_CODE_PARAM = String(LOCATION_PARAMS.get("vscode") || "").toLowerCase();
+const NATIVE_VSCODE_PARAM = String(LOCATION_PARAMS.get("native_terminal") || "").toLowerCase();
+const VSCODE_EDITOR_PARAM = String(LOCATION_PARAMS.get("termdeck_editor") || "").toLowerCase();
+const VSCODE_EDITOR_MODE = ["1", "true", "yes", "on"].includes(VSCODE_EDITOR_PARAM);
+const REFERRER_HINT = String(document.referrer || "").toLowerCase();
+const REFERRER_IS_VSCODE = /vscode-(webview|resource)|vscode-(?:assets|file)/.test(REFERRER_HINT) ||
+  REFERRER_HINT.includes("vscode-webview://") || REFERRER_HINT.includes("vscode-resource:");
+const URL_HINTS_VSCODE = LOCATION_HINT.includes("vscode-webview") ||
+  LOCATION_HINT.includes("vscode-resource") || HOST_HINT.includes("vscode-webview") || PATH_HINT.includes("vscode-webview");
+const VS_CODE_MODE = HAS_VSCODE_WEBVIEW_API || IS_VSCODE_EMBEDDED || URL_HINTS_VSCODE || (VS_CODE_PARAM &&
+  ["1", "true", "yes", "on"].includes(VS_CODE_PARAM)) ||
+  (NATIVE_VSCODE_PARAM && ["1", "true", "yes", "on"].includes(NATIVE_VSCODE_PARAM)) ||
+  REFERRER_IS_VSCODE;
+const NATIVE_VSCODE_MODE = VS_CODE_MODE &&
+  (NATIVE_VSCODE_PARAM ? ["1", "true", "yes", "on"].includes(NATIVE_VSCODE_PARAM) : true);
 const TERMINAL_TYPE_SVGS = {
   claude: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.25c.42 0 .76.34.76.76v4.08l3.53-2.04a.76.76 0 1 1 .76 1.31L9.52 7.4l3.53 2.04a.76.76 0 1 1-.76 1.31L8.76 8.72v4.08a.76.76 0 0 1-1.52 0V8.72l-3.53 2.04a.76.76 0 1 1-.76-1.31L6.48 7.4 2.95 5.36a.76.76 0 1 1 .76-1.31l3.53 2.04V2.01c0-.42.34-.76.76-.76Z"/></svg>',
   codex: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zM3.5988 18.304a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1412-1.6462zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5968 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zm-12.6413 4.1347-2.0201-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805-4.783 2.7582a.7948.7948 0 0 0-.3927.6813zM9.4041 10.4976l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"/></svg>',
@@ -84,6 +149,16 @@ const TERM_THEME_LIGHT = {
 
 class TermdeckApp {
   constructor() {
+    this.vscodeMode = VS_CODE_MODE;
+    this.nativeVscodeMode = NATIVE_VSCODE_MODE;
+    this.vscodeEditorMode = VSCODE_EDITOR_MODE;
+    this.vscodeWorkspaceRoot = WORKSPACE_ROOT_QUERY || "";
+    this.vscodeProjectName = "";
+    document.body.classList.toggle("vscode-mode", this.vscodeMode);
+    document.body.classList.toggle("vscode-native-mode", this.nativeVscodeMode);
+    document.body.classList.toggle("vscode-editor-mode", this.vscodeEditorMode);
+    this.hostStatePatched = false;
+    this.handleHostMessageBound = this.handleHostMessage.bind(this);
     this.sessions = [];
     this.closedSessions = [];
     this.views = new Map();
@@ -98,6 +173,12 @@ class TermdeckApp {
     this.historyStreamSessionId = null;
     this.historySnapshotBuffers = new Map();
     this.historyTurnsBySession = new Map();
+    this.historyLiveTurnsBySession = new Map();
+    this.historyOlderTurnsBySession = new Map();
+    this.historyBeforeBySession = new Map();
+    this.historyHasMoreBySession = new Map();
+    this.historyOlderLoadBusy = false;
+    this.historyStreamFresh = false;
     this.historyRevisions = new Map();
     this.historyPendingPrompts = new Map();
     this.historyFingerprint = "";
@@ -105,14 +186,17 @@ class TermdeckApp {
     this.historyLoaded = false;
     this.historyEditsCollapsed = false;
     this.closedExpanded = false;
+    this.closedDisplayLimit = CLOSED_SESSIONS_INITIAL_DISPLAY;
     this.settings = { ...SETTINGS_DEFAULTS };
     this.saveTimer = null;
     this.treeRoot = null;
     this.treeDirs = new Map();
+    this.treeReloadPromise = null;
     this.expandedDirs = new Set();
     this.treePollBusy = false;
     this.recentFiles = [];
     this.recentFilesRoot = null;
+    this.recentFilesFingerprint = "";
     this.recentFilesBusy = false;
     this.recentFilesFetchedAt = 0;
     this.recentFilesExpanded = false;
@@ -121,45 +205,207 @@ class TermdeckApp {
     this.searchCase = false;
     this.searchRegex = false;
     this.searchHistory = [];
+    this.searchSelection = { content: -1, name: -1 };
+    this.contentSearchTree = null;
+    this.nameSearchTree = null;
+    this.treeSearchFilter = null;
+    this.terminalSearchMatches = new Map();
+    this.historySearchResults = [];
+    this.historySearchOperations = false;
+    this.terminalSearchGroupSimilar = false;
+    this.terminalSearchAbort = null;
+    this.terminalSearchTimer = 0;
     this.nameSearchGeneration = 0;
     this.applyingHistory = false;
     this.lastNavJson = "";
+    this.activitySort = false;
+    this.sessionActivityAt = new Map();
+    this.activitySortRenderTimer = 0;
     this.sessionTitleEls = new Map();
     this.sessionSpinnerEls = new Map();
     this.sessionStatusEls = new Map();
     this.sessionListSignature = "";
+    this.dragGroupTimer = 0;
+    this.dragGroupTargetKey = null;
+    this.dragGroupHoverKey = null;
+    this.sidebarSelectedSessionIds = new Set();
+    this.sidebarSelectionAnchorId = null;
+    this.modalGroupId = null;
     this.revealActiveSessionOnLoad = true;
     this.processingStates = new Map();
     this.processingSince = new Map();
+    // A prompt can be accepted by the PTY before the agent reports
+    // processing=true. Keep that hand-off visible in Markdown mode.
+    this.historyPendingProcessing = new Map();
     this.processingTimer = 0;
     this.viewedCompletedSessions = new Set();
     this.unreadSessions = new Set();
     this.statHistory = [];
     this.editor = null;
+    this.nativeSessionIds = new Set();
+    this.sessionModelById = new Map();
     this.selectedTreeRow = null;
     this.iconMap = null;
-    this.fileBrowserModalOpen = false;
-    this.fileBrowserPreviousView = "terminals";
-    this.fileBrowserOrigin = null;
-    this.pathOverflowEl = null;
+    this.lastValidNavState = null;
     this.statusWs = null;
     this.statusWsReconnectTimer = 0;
+    this.layoutFitSettleTimer = 0;
     this.projects = [];
     const projectMatch = location.pathname.match(/^\/p\/([^/]+)/);
-    this.projectSlug = projectMatch ? decodeURIComponent(projectMatch[1]) : null;
+    this.projectSlug = projectMatch ? decodeURIComponent(projectMatch[1])
+      : this.vscodeEditorMode ? (LOCATION_PARAMS.get("project") || null) : null;
     const urlParams = new URLSearchParams(location.search);
     if (urlParams.get("t")) this.initialNav = { kind: "term", id: urlParams.get("t") };
-    else if (urlParams.get("f")) this.initialNav = { kind: "file", key: urlParams.get("f") };
+    else if (urlParams.get("f")) {
+      this.initialNav = {
+        kind: "file",
+        key: urlParams.get("f"),
+        return_to: String(urlParams.get("rt") || "").trim(),
+      };
+    }
     else if (urlParams.get("q")) {
       this.initialNav = { kind: "search", q: urlParams.get("q"), glob: urlParams.get("glob") || "",
                           word: urlParams.get("w") === "1", case_sensitive: urlParams.get("c") === "1",
                           regex: urlParams.get("re") === "1" };
     } else this.initialNav = null;
     this.$ = (id) => document.getElementById(id);
+    this.applyVscodeModeLayout();
   }
 
   projectQuery() {
     return this.projectSlug ? `?project=${encodeURIComponent(this.projectSlug)}` : "";
+  }
+
+  applyVscodeModeLayout() {
+    document.body.classList.toggle("vscode-mode", this.vscodeMode);
+    document.body.classList.toggle("vscode-native-mode", this.nativeVscodeMode);
+    document.body.classList.toggle("vscode-editor-mode", this.vscodeEditorMode);
+    if (!this.vscodeMode) return;
+    const forceHidden = ["active-toggle", "terminal-search-toggle", "terminal-search-bar",
+      "view-project", "view-search", "files-section", "side-split", "project-select", "project-select-label"];
+    for (const id of forceHidden) {
+      const el = this.$(id);
+      if (el) {
+        el.style.display = "none";
+        el.classList.add("hidden");
+      }
+    }
+    this.setSideView("terminals", false);
+  }
+
+  applyHostModeState({ vscode, nativeTerminal }) {
+    const nextVscodeMode = parseModeFlag(vscode);
+    const nextNativeMode = typeof nativeTerminal === "undefined" ? this.nativeVscodeMode : parseModeFlag(nativeTerminal);
+    const shouldRefreshNative = !this.hostStatePatched && nextVscodeMode && nextNativeMode &&
+      (this.vscodeMode !== nextVscodeMode || this.nativeVscodeMode !== nextNativeMode);
+    this.vscodeMode = nextVscodeMode;
+    this.nativeVscodeMode = nextNativeMode;
+    this.hostStatePatched = true;
+    this.applyVscodeModeLayout();
+    if (shouldRefreshNative) void this.refresh();
+  }
+
+  applyVscodeContextState(payload) {
+    const nextWorkspaceRoot = typeof payload.workspaceRoot === "string" ? payload.workspaceRoot
+      : typeof payload.workspace_root === "string" ? payload.workspace_root : "";
+    const nextProjectName = typeof payload.projectName === "string" ? payload.projectName
+      : typeof payload.project_name === "string" ? payload.project_name : null;
+    if (nextWorkspaceRoot) this.vscodeWorkspaceRoot = nextWorkspaceRoot;
+    this.vscodeProjectName = nextProjectName === null ? this.vscodeProjectName : nextProjectName;
+    if (!this.vscodeProjectName) this.vscodeProjectName = "";
+  }
+
+  projectFallbackFromWorkspaceRoot() {
+    if (!this.vscodeMode || !this.vscodeWorkspaceRoot || !this.projects.length) return "";
+    const fallback = this.projects.find((candidate) => {
+      const root = String(candidate.root || "").replace(/\\/g, "/").replace(/\/+$/, "");
+      const source = this.vscodeWorkspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+      return root === source;
+    });
+    if (!fallback) return "";
+    this.vscodeProjectName = fallback.name;
+    return fallback.root;
+  }
+
+  applyVscodeDefaultProjectState() {
+    if (!this.vscodeMode) {
+      if (this.vscodeProjectName) {
+        if (this.projectSlug !== this.vscodeProjectName) this.projectSlug = this.vscodeProjectName;
+        const select = this.$("project-select");
+        if (select && select.value !== this.projectSlug) select.value = this.projectSlug;
+        return;
+      }
+      if (this.projectFallbackFromWorkspaceRoot()) {
+        this.projectSlug = this.vscodeProjectName;
+        return;
+      }
+      this.projectSlug = this.projectSlug || null;
+      return;
+    }
+    if (!this.vscodeEditorMode) this.projectSlug = null;
+    return;
+  }
+
+  resolveVscodeDefaultCwd() {
+    const workspaceRoot = this.vscodeWorkspaceRoot || WORKSPACE_ROOT_QUERY;
+    if (workspaceRoot) return workspaceRoot;
+    if (this.vscodeMode) {
+      const fallback = this.projectFallbackFromWorkspaceRoot();
+      if (fallback) return fallback;
+    }
+    const activeSession = this.session(this.activeId);
+    return activeSession?.cwd || this.projectRoot() || DEFAULT_CWD;
+  }
+
+  handleHostMessage(event) {
+    if (!event?.data) return;
+    if (event.data.type === "termdeck-action") {
+      const action = String(event.data.action || "");
+      const payload = event.data.payload || {};
+      if (!action) return;
+      if (action === "new-terminal" || action === "new-group" || action === "vscode-refresh" || action === "vscode-reload") {
+        this.runAction(action);
+        return;
+      }
+      if (action === "select-session") {
+        const sessionId = String(payload.session_id || payload.sessionId || "");
+        if (sessionId) {
+          if (this.session(sessionId)) this.activate(sessionId, { reveal: false });
+          else void this.refresh().then(() => {
+            if (this.session(sessionId)) this.activate(sessionId, { reveal: false });
+          });
+        }
+        return;
+      }
+      if (action === "toggle-history") {
+        this.toggleHistory();
+        return;
+      }
+      if (action === "set-history") {
+        this.setHistoryMode(!!payload.enabled);
+        return;
+      }
+      if (action === "refresh") {
+        this.requestVscodeRefresh(!!payload.hard);
+        return;
+      }
+      return;
+    }
+    if (event.data.type !== "termdeck-host-state") return;
+    if (typeof event.data.vscode === "undefined") return;
+    const previousProjectSlug = this.projectSlug;
+    this.applyHostModeState({
+      vscode: event.data.vscode,
+      native_terminal: event.data.native_terminal,
+    });
+    this.applyVscodeContextState(event.data);
+    this.applyVscodeDefaultProjectState();
+    if (this.vscodeEditorMode && this.vscodeProjectName && this.projectSlug !== this.vscodeProjectName) {
+      this.projectSlug = this.vscodeProjectName;
+    }
+    if (this.projectSlug && this.projectSlug !== previousProjectSlug) {
+      void this.refresh();
+    }
   }
 
   projectStateKey() {
@@ -168,7 +414,11 @@ class TermdeckApp {
 
   getProjectState() {
     const states = this.settings.project_state || {};
-    return states[this.projectStateKey()] || { active_session_id: "", open_files: [], pinned_sessions: [], unread_sessions: [] };
+    return states[this.projectStateKey()] || {
+      active_session_id: "", open_files: [], open_files_collapsed: false, recent_files_collapsed: false,
+      unread_sessions: [],
+      terminal_groups: [], session_groups: {},
+    };
   }
 
   patchProjectState(patch) {
@@ -178,7 +428,561 @@ class TermdeckApp {
     this.saveSettings();
   }
 
+  sectionCollapsed(field) {
+    const storageKey = `termdeck.${this.projectStateKey()}.${field}`;
+    try {
+      const stored = window.localStorage.getItem(storageKey);
+      if (stored === "1" || stored === "0") return stored === "1";
+    } catch (error) {
+      // localStorage can be unavailable in restricted webviews; use settings below.
+    }
+    return !!this.getProjectState()[field];
+  }
+
+  setSectionCollapsed(field, collapsed) {
+    this.patchProjectState({ [field]: collapsed });
+    try {
+      window.localStorage.setItem(`termdeck.${this.projectStateKey()}.${field}`, collapsed ? "1" : "0");
+    } catch (error) {
+      // The server-backed project state is still updated.
+    }
+  }
+
+  toggleSectionCollapsed(field) {
+    this.setSectionCollapsed(field, !this.sectionCollapsed(field));
+    this.renderList();
+  }
+
+  terminalGroups() {
+    return (this.getProjectState().terminal_groups || [])
+      .filter((group) => group && group.id && String(group.name || "").trim())
+      .map((group) => ({ id: String(group.id), name: String(group.name).trim(), collapsed: !!group.collapsed }));
+  }
+
+  createTerminalGroup() {
+    const name = prompt("Name for the terminal group", "New group");
+    if (!name || !name.trim()) return;
+    const groups = this.terminalGroups();
+    const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
+    this.patchProjectState({ terminal_groups: [...groups, group] });
+    this.renderList();
+  }
+
+  renameTerminalGroup(groupId) {
+    const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
+    if (!group) return;
+    const name = prompt("Rename terminal group", group.name);
+    if (!name || !name.trim() || name.trim() === group.name) return;
+    const groups = this.terminalGroups().map((candidate) => candidate.id === groupId
+      ? { ...candidate, name: name.trim() } : candidate);
+    this.patchProjectState({ terminal_groups: groups });
+    this.renderList();
+  }
+
+  deleteTerminalGroup(groupId) {
+    const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
+    if (!group || !confirm(`Delete group "${group.name}"? Terminals will remain ungrouped.`)) return;
+    const state = this.getProjectState();
+    const sessionGroups = { ...(state.session_groups || {}) };
+    for (const [sessionId, assignedGroupId] of Object.entries(sessionGroups)) {
+      if (assignedGroupId === groupId) delete sessionGroups[sessionId];
+    }
+    this.patchProjectState({
+      terminal_groups: this.terminalGroups().filter((candidate) => candidate.id !== groupId),
+      session_groups: sessionGroups,
+    });
+    this.renderList();
+  }
+
+  toggleTerminalGroup(groupId) {
+    const current = this.terminalGroups().find((group) => group.id === groupId);
+    if (!current) return;
+    const collapsed = !current.collapsed;
+    const groups = this.terminalGroups().map((group) => group.id === groupId
+      ? { ...group, collapsed } : group);
+    this.patchProjectState({ terminal_groups: groups });
+    const groupBox = this.$("session-list").querySelector(`[data-group-id="${CSS.escape(groupId)}"]`);
+    const members = groupBox?.querySelector(".terminal-group-members");
+    if (!members) {
+      this.renderList();
+      return;
+    }
+    members.classList.toggle("collapsed", collapsed);
+    const chevron = groupBox.querySelector(".terminal-group-label > .codicon");
+    if (chevron) chevron.className = `codicon ${collapsed ? "codicon-chevron-right" : "codicon-chevron-down"}`;
+  }
+
+  groupSessionIds(groupId, sessionGroups = this.getProjectState().session_groups || {}) {
+    return Object.entries(sessionGroups)
+      .filter(([, assignedGroupId]) => assignedGroupId === groupId)
+      .map(([sessionId]) => sessionId);
+  }
+
+  assignSessionGroup(sessionId, groupId) {
+    const state = this.getProjectState();
+    const layout = this.terminalLayout();
+    const sessionGroups = { ...(state.session_groups || {}) };
+    const oldGroupId = sessionGroups[sessionId] || null;
+    if (groupId) sessionGroups[sessionId] = groupId;
+    else delete sessionGroups[sessionId];
+    const patch = { session_groups: sessionGroups };
+    if (groupId) {
+      const token = `session:${sessionId}`;
+      patch.terminal_layout = layout.filter((entry) => entry !== token);
+    } else if (!layout.includes(`session:${sessionId}`)) {
+      const groupIndex = oldGroupId ? layout.indexOf(`group:${oldGroupId}`) : -1;
+      const insertAt = groupIndex < 0 ? layout.length : groupIndex + 1;
+      layout.splice(insertAt, 0, `session:${sessionId}`);
+      patch.terminal_layout = layout;
+    }
+    this.patchProjectState(patch);
+    this.renderList();
+  }
+
+  sidebarSessionIdsInRenderOrder() {
+    const rows = this.$("session-list")?.querySelectorAll(".session-item[data-session-id]") || [];
+    const ids = [...rows].map((row) => row.dataset.sessionId).filter((id) => !!this.session(id));
+    return ids.length ? ids : this.sessions.map((session) => session.session_id);
+  }
+
+  applySidebarSelectionStyles() {
+    const rows = this.$("session-list")?.querySelectorAll(".session-item[data-session-id]") || [];
+    for (const row of rows) row.classList.toggle("sidebar-selected", this.sidebarSelectedSessionIds.has(row.dataset.sessionId));
+  }
+
+  handleSessionRowSelection(event, sessionId) {
+    const orderedIds = this.sidebarSessionIdsInRenderOrder();
+    const multiSelect = event.metaKey || event.ctrlKey;
+    if (event.shiftKey) {
+      const anchorId = this.sidebarSelectionAnchorId && orderedIds.includes(this.sidebarSelectionAnchorId)
+        ? this.sidebarSelectionAnchorId : sessionId;
+      const anchorIndex = orderedIds.indexOf(anchorId);
+      const targetIndex = orderedIds.indexOf(sessionId);
+      const start = Math.min(anchorIndex, targetIndex);
+      const end = Math.max(anchorIndex, targetIndex);
+      const range = orderedIds.slice(start, end + 1);
+      this.sidebarSelectedSessionIds = multiSelect
+        ? new Set([...this.sidebarSelectedSessionIds, ...range])
+        : new Set(range);
+      this.sidebarSelectionAnchorId = anchorId;
+    } else if (multiSelect) {
+      const next = new Set(this.sidebarSelectedSessionIds);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      this.sidebarSelectedSessionIds = next;
+      this.sidebarSelectionAnchorId = sessionId;
+    } else {
+      this.sidebarSelectedSessionIds = new Set([sessionId]);
+      this.sidebarSelectionAnchorId = sessionId;
+    }
+    this.applySidebarSelectionStyles();
+    this.activate(sessionId);
+  }
+
+  selectedSessionIdsForDrag(sessionId) {
+    const selected = this.sidebarSelectedSessionIds.has(sessionId)
+      ? [...this.sidebarSelectedSessionIds]
+      : [sessionId];
+    const order = new Map(this.sidebarSessionIdsInRenderOrder().map((id, index) => [id, index]));
+    return [...new Set(selected)]
+      .filter((id) => !!this.session(id))
+      .sort((left, right) => (order.get(left) ?? Number.MAX_SAFE_INTEGER) - (order.get(right) ?? Number.MAX_SAFE_INTEGER));
+  }
+
+  sessionIdsFromDragItem(dragItem) {
+    if (dragItem?.kind !== "session") return [];
+    const tokens = Array.isArray(dragItem.tokens) ? dragItem.tokens : [dragItem.token];
+    return [...new Set(tokens
+      .filter((token) => String(token).startsWith("session:"))
+      .map((token) => String(token).slice("session:".length)))]
+      .filter((id) => !!this.session(id));
+  }
+
+  sessionOrderWithSelectedIdsAroundTarget(selectedIds, targetId, after = false) {
+    const selected = new Set(selectedIds);
+    const order = this.sessions.map((session) => session.session_id).filter((id) => !selected.has(id));
+    const targetIndex = order.indexOf(targetId);
+    if (targetIndex < 0) return order;
+    order.splice(targetIndex + (after ? 1 : 0), 0, ...selectedIds);
+    return order;
+  }
+
+  moveSelectedSessionsIntoGroup(sessionIds, groupId, targetId = null, after = false) {
+    const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id));
+    if (!ids.length) return;
+    const state = this.getProjectState();
+    const sessionGroups = { ...(state.session_groups || {}) };
+    const selectedTokens = new Set(ids.map((id) => `session:${id}`));
+    const layout = this.terminalLayout().filter((entry) => !selectedTokens.has(entry));
+    for (const id of ids) {
+      if (groupId) sessionGroups[id] = groupId;
+      else delete sessionGroups[id];
+    }
+    if (!groupId) layout.push(...ids.map((id) => `session:${id}`));
+    const patch = { session_groups: sessionGroups, terminal_layout: layout };
+    if (groupId && targetId) {
+      patch.session_order = this.sessionOrderWithSelectedIdsAroundTarget(
+        ids.filter((id) => id !== targetId), targetId, after);
+    }
+    this.patchProjectState(patch);
+    this.sessions = this.applySessionOrder(this.sessions);
+    this.renderList();
+  }
+
+  repositionSelectedSessions(sessionIds, targetId, after = false) {
+    const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id) && id !== targetId);
+    const target = this.session(targetId);
+    if (!ids.length || !target) return;
+    const state = this.getProjectState();
+    const targetGroupId = state.session_groups?.[targetId] || null;
+    if (targetGroupId) {
+      this.moveSelectedSessionsIntoGroup(ids, targetGroupId, targetId, after);
+      return;
+    }
+    const selectedTokens = new Set(ids.map((id) => `session:${id}`));
+    const sessionGroups = { ...(state.session_groups || {}) };
+    for (const id of ids) delete sessionGroups[id];
+    const layout = this.terminalLayout().filter((entry) => !selectedTokens.has(entry));
+    const targetIndex = layout.indexOf(`session:${targetId}`);
+    if (targetIndex < 0) return;
+    layout.splice(targetIndex + (after ? 1 : 0), 0, ...ids.map((id) => `session:${id}`));
+    this.patchProjectState({
+      session_groups: sessionGroups,
+      terminal_layout: layout,
+      session_order: this.sessionOrderWithSelectedIdsAroundTarget(ids, targetId, after),
+    });
+    this.sessions = this.applySessionOrder(this.sessions);
+    this.renderList();
+  }
+
+  groupSelectedSessionsFromDrop(sessionIds, targetId, after = false) {
+    const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id) && id !== targetId);
+    const target = this.session(targetId);
+    if (!ids.length || !target) return;
+    const state = this.getProjectState();
+    const sessionGroups = state.session_groups || {};
+    const targetGroupId = sessionGroups[targetId] || null;
+    if (targetGroupId) {
+      this.moveSelectedSessionsIntoGroup(ids, targetGroupId, targetId, after);
+      return;
+    }
+    const sourceGroupIds = [...new Set(ids.map((id) => sessionGroups[id]).filter(Boolean))];
+    if (sourceGroupIds.length === 1) {
+      this.moveSelectedSessionsIntoGroup([...ids, targetId], sourceGroupIds[0], targetId, after);
+      return;
+    }
+    const name = prompt("Name for the new terminal group", `${this.effectiveTitle(target)} group`);
+    if (!name || !name.trim()) return;
+    const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
+    const allIds = [...ids, targetId];
+    const allTokens = new Set(allIds.map((id) => `session:${id}`));
+    const currentLayout = this.terminalLayout();
+    const targetIndex = currentLayout.indexOf(`session:${targetId}`);
+    const layout = currentLayout.filter((entry) => !allTokens.has(entry));
+    layout.splice(targetIndex < 0 ? layout.length : Math.min(targetIndex, layout.length), 0, `group:${group.id}`);
+    const nextSessionGroups = { ...sessionGroups };
+    for (const id of allIds) nextSessionGroups[id] = group.id;
+    this.patchProjectState({
+      terminal_groups: [...this.terminalGroups(), group],
+      session_groups: nextSessionGroups,
+      terminal_layout: layout,
+      session_order: this.sessionOrderWithSelectedIdsAroundTarget(ids, targetId, after),
+    });
+    this.sessions = this.applySessionOrder(this.sessions);
+    this.renderList();
+  }
+
+  moveSessionToGroup(sessionId, groupId, targetId = null, after = false) {
+    const state = this.getProjectState();
+    const currentGroupId = state.session_groups?.[sessionId] || null;
+    if (currentGroupId === groupId && targetId) {
+      this.reorderGroupedSessions(sessionId, targetId, after);
+      return;
+    }
+    const sessionGroups = { ...(state.session_groups || {}) };
+    if (groupId) sessionGroups[sessionId] = groupId;
+    else delete sessionGroups[sessionId];
+    const patch = { session_groups: sessionGroups };
+    const layout = this.terminalLayout().filter((entry) => entry !== `session:${sessionId}`);
+    if (groupId) {
+      patch.terminal_layout = layout;
+    } else {
+      const targetIndex = targetId ? layout.indexOf(`session:${targetId}`) : -1;
+      if (targetIndex >= 0) layout.splice(targetIndex + (after ? 1 : 0), 0, `session:${sessionId}`);
+      else {
+        const oldGroupIndex = currentGroupId ? layout.indexOf(`group:${currentGroupId}`) : -1;
+        layout.splice(oldGroupIndex >= 0 ? oldGroupIndex + 1 : layout.length, 0, `session:${sessionId}`);
+      }
+      patch.terminal_layout = layout;
+    }
+    if (groupId && targetId) {
+      const order = this.sessions.map((session) => session.session_id).filter((id) => id !== sessionId);
+      const targetIndex = order.indexOf(targetId);
+      if (targetIndex >= 0) order.splice(targetIndex + (after ? 1 : 0), 0, sessionId);
+      patch.session_order = order;
+    }
+    this.patchProjectState(patch);
+    this.sessions = this.applySessionOrder(this.sessions);
+    this.renderList();
+  }
+
+  terminalLayout() {
+    const state = this.getProjectState();
+    const groups = this.terminalGroups();
+    const groupIds = new Set(groups.map((group) => group.id));
+    const sessionIds = new Set(this.sessions.map((session) => session.session_id));
+    const sessionGroups = state.session_groups || {};
+    const layout = [];
+    const seen = new Set();
+    const add = (entry) => {
+      if (seen.has(entry)) return;
+      const [kind, id] = String(entry).split(":", 2);
+      if (kind === "group" && !groupIds.has(id)) return;
+      if (kind === "session" && (!sessionIds.has(id) || sessionGroups[id])) return;
+      if (kind !== "group" && kind !== "session") return;
+      seen.add(entry);
+      layout.push(entry);
+    };
+    if (Array.isArray(state.terminal_layout)) {
+      state.terminal_layout.forEach(add);
+    } else {
+      // Migrate older group state by placing each group beside its earliest
+      // member instead of losing the relationship at the end of the list.
+      const orderedIds = state.session_order?.length
+        ? state.session_order
+        : this.sessions.map((session) => session.session_id);
+      const groupsAt = new Map();
+      for (const group of groups) {
+        const memberIndex = orderedIds.findIndex((id) => sessionGroups[id] === group.id);
+        if (memberIndex >= 0) {
+          if (!groupsAt.has(memberIndex)) groupsAt.set(memberIndex, []);
+          groupsAt.get(memberIndex).push(group);
+        }
+      }
+      for (let index = 0; index <= orderedIds.length; index += 1) {
+        for (const group of groupsAt.get(index) || []) add(`group:${group.id}`);
+        if (index < orderedIds.length) add(`session:${orderedIds[index]}`);
+      }
+    }
+    for (const session of this.sessions) add(`session:${session.session_id}`);
+    for (const group of groups) add(`group:${group.id}`);
+    return layout;
+  }
+
+  migrateLegacyPinnedLayout() {
+    const state = this.getProjectState();
+    const pinnedSessions = new Set(state.pinned_sessions || []);
+    const pinnedGroups = new Set(state.pinned_groups || []);
+    if (!pinnedSessions.size && !pinnedGroups.size) return;
+    const sessionGroups = state.session_groups || {};
+    for (const [sessionId, groupId] of Object.entries(sessionGroups)) {
+      if (pinnedSessions.has(sessionId)) pinnedGroups.add(groupId);
+    }
+    const legacyTokens = new Set([
+      ...[...pinnedGroups].map((id) => `group:${id}`),
+      ...[...pinnedSessions]
+        .filter((id) => !sessionGroups[id])
+        .map((id) => `session:${id}`),
+    ]);
+    const layout = this.terminalLayout();
+    const top = layout.filter((entry) => legacyTokens.has(entry));
+    this.patchProjectState({
+      terminal_layout: [...top, ...layout.filter((entry) => !legacyTokens.has(entry))],
+      pinned_sessions: [],
+      pinned_groups: [],
+    });
+  }
+
+  moveTerminalLayoutToTop(token) {
+    const current = this.terminalLayout();
+    if (!current.includes(token)) return;
+    const layout = current.filter((entry) => entry !== token);
+    layout.unshift(token);
+    this.patchProjectState({ terminal_layout: layout });
+    this.renderList();
+  }
+
+  reorderTerminalLayout(draggedToken, targetToken, after = false) {
+    const state = this.getProjectState();
+    const layout = this.terminalLayout().filter((entry) => entry !== draggedToken);
+    const targetIndex = layout.indexOf(targetToken);
+    if (targetIndex < 0) return;
+    layout.splice(targetIndex + (after ? 1 : 0), 0, draggedToken);
+    const patch = { terminal_layout: layout };
+    const [kind, id] = draggedToken.split(":", 2);
+    if (kind === "session" && state.session_groups?.[id]) {
+      const oldGroupId = state.session_groups[id];
+      const sessionGroups = { ...(state.session_groups || {}) };
+      delete sessionGroups[id];
+      patch.session_groups = sessionGroups;
+    }
+    this.patchProjectState(patch);
+    this.renderList();
+  }
+
+  reorderGroupedSessions(draggedId, targetId, after = false) {
+    const ids = this.sessions.map((session) => session.session_id).filter((id) => id !== draggedId);
+    const targetIndex = ids.indexOf(targetId);
+    if (targetIndex < 0) return;
+    ids.splice(targetIndex + (after ? 1 : 0), 0, draggedId);
+    this.patchProjectState({ session_order: ids });
+    this.sessions = this.applySessionOrder(this.sessions);
+    this.renderList();
+  }
+
+  mergeTerminalGroups(sourceId, targetId) {
+    if (!sourceId || !targetId || sourceId === targetId) return;
+    const groups = this.terminalGroups();
+    if (!groups.some((group) => group.id === sourceId) || !groups.some((group) => group.id === targetId)) return;
+    const state = this.getProjectState();
+    const sessionGroups = { ...(state.session_groups || {}) };
+    for (const [sessionId, groupId] of Object.entries(sessionGroups)) {
+      if (groupId === sourceId) sessionGroups[sessionId] = targetId;
+    }
+    this.patchProjectState({
+      terminal_groups: groups.filter((group) => group.id !== sourceId),
+      session_groups: sessionGroups,
+      terminal_layout: this.terminalLayout().filter((entry) => entry !== `group:${sourceId}`),
+    });
+    this.renderList();
+  }
+
+  groupSessionsFromDrop(draggedId, targetId, after = false) {
+    const state = this.getProjectState();
+    const sessionGroups = { ...(state.session_groups || {}) };
+    const draggedGroupId = sessionGroups[draggedId] || null;
+    const targetGroupId = sessionGroups[targetId] || null;
+    if (draggedGroupId && draggedGroupId === targetGroupId) {
+      this.reorderGroupedSessions(draggedId, targetId, after);
+      return;
+    }
+    if (targetGroupId) {
+      this.assignSessionGroup(draggedId, targetGroupId);
+      this.reorderGroupedSessions(draggedId, targetId, after);
+      return;
+    }
+    if (draggedGroupId) {
+      this.assignSessionGroup(targetId, draggedGroupId);
+      // The dragged member remains the anchor: dropping after the target
+      // means the target belongs immediately before the dragged member.
+      this.reorderGroupedSessions(targetId, draggedId, !after);
+      return;
+    }
+    const dragged = this.session(draggedId), target = this.session(targetId);
+    if (!dragged || !target) return;
+    const suggestion = `${this.effectiveTitle(target)} group`;
+    const name = prompt("Name for the new terminal group", suggestion);
+    if (!name || !name.trim()) return;
+    const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
+    const layout = this.terminalLayout().filter((entry) => entry !== `session:${draggedId}` && entry !== `session:${targetId}`);
+    const targetIndex = this.terminalLayout().indexOf(`session:${targetId}`);
+    layout.splice(targetIndex < 0 ? layout.length : Math.min(targetIndex, layout.length), 0, `group:${group.id}`);
+    sessionGroups[draggedId] = group.id;
+    sessionGroups[targetId] = group.id;
+    this.patchProjectState({ terminal_groups: [...this.terminalGroups(), group], session_groups: sessionGroups,
+      terminal_layout: layout });
+    this.reorderGroupedSessions(draggedId, targetId, after);
+  }
+
+  createTerminalGroupFromSession(sessionId) {
+    const session = this.session(sessionId);
+    if (!session) return;
+    const name = prompt("Name for the new terminal group", `${this.effectiveTitle(session)} group`);
+    if (!name || !name.trim()) return;
+    const sessionGroups = { ...(this.getProjectState().session_groups || {}) };
+    const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
+    const layout = this.terminalLayout();
+    const token = `session:${sessionId}`;
+    const oldGroupToken = sessionGroups[sessionId] ? `group:${sessionGroups[sessionId]}` : "";
+    const index = layout.indexOf(token) >= 0 ? layout.indexOf(token) : layout.indexOf(oldGroupToken);
+    const nextLayout = layout.filter((entry) => entry !== token);
+    nextLayout.splice(index < 0 ? nextLayout.length : Math.min(index, nextLayout.length), 0, `group:${group.id}`);
+    sessionGroups[sessionId] = group.id;
+    this.patchProjectState({
+      terminal_groups: [...this.terminalGroups(), group],
+      session_groups: sessionGroups,
+      terminal_layout: nextLayout,
+    });
+    this.renderList();
+  }
+
+  removeTerminalGroup(groupId) {
+    const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
+    if (!group) return;
+    const state = this.getProjectState();
+    const sessionGroups = { ...(state.session_groups || {}) };
+    for (const [sessionId, assignedGroupId] of Object.entries(sessionGroups)) {
+      if (assignedGroupId === groupId) delete sessionGroups[sessionId];
+    }
+    this.patchProjectState({
+      terminal_groups: this.terminalGroups().filter((candidate) => candidate.id !== groupId),
+      session_groups: sessionGroups,
+    });
+    this.renderList();
+  }
+
+  async closeAllInTerminalGroup(groupId) {
+    const sessionGroups = this.getProjectState().session_groups || {};
+    const sessions = this.sessions.filter((session) => sessionGroups[session.session_id] === groupId);
+    if (!sessions.length) return;
+    const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
+    const label = group?.name || "this group";
+    if (!confirm(`Close all ${sessions.length} terminals in "${label}"?`)) return;
+    if (!confirm(`Confirm closing all terminals in "${label}". Running agents will be stopped.`)) return;
+    await Promise.all(sessions.map((session) => fetch(`/api/sessions/${session.session_id}`, { method: "DELETE" })));
+    this.refresh();
+  }
+
+  openTerminalGroupContextMenu(event, group) {
+    event.preventDefault();
+    event.stopPropagation();
+    group = this.terminalGroups().find((candidate) => candidate.id === group.id) || group;
+    const menu = this.$("context-menu");
+    menu.textContent = "";
+    this.addContextItem(menu, "Move group to top", () => this.moveTerminalLayoutToTop(`group:${group.id}`), "arrow-up");
+    this.addContextItem(menu, group.collapsed ? "Expand group" : "Collapse group",
+      () => this.toggleTerminalGroup(group.id), group.collapsed ? "chevron-down" : "chevron-up");
+    this.addContextItem(menu, "Rename group", () => this.renameTerminalGroup(group.id), "edit");
+    this.addContextItem(menu, "Remove grouping", () => this.removeTerminalGroup(group.id), "ungroup-by-ref-type");
+    this.addContextItem(menu, "Close all terminals", () => this.closeAllInTerminalGroup(group.id), "close-all");
+    menu.classList.remove("hidden");
+    menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 10) + "px";
+    menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 10) + "px";
+  }
+
+  attachGroupDropTarget(element, groupId) {
+    element.ondragover = (event) => {
+      if (this.dragItem?.type !== "layout" || this.dragItem.kind !== "session") return;
+      event.preventDefault();
+      this.clearDragLandingIndicator();
+      element.classList.add("drop-group");
+    };
+    element.ondragleave = () => {
+      element.classList.remove("drop-group");
+      this.clearDragGroupingTimer();
+    };
+    element.ondrop = (event) => {
+      if (this.dragItem?.type !== "layout" || this.dragItem.kind !== "session") return;
+      event.preventDefault();
+      const sessionIds = this.sessionIdsFromDragItem(this.dragItem);
+      this.clearDragLandingIndicator();
+      this.moveSelectedSessionsIntoGroup(sessionIds, groupId);
+      this.dragItem = null;
+    };
+  }
+
   async loadProjects() {
+    if (this.vscodeMode) {
+      this.projects = [];
+      const select = this.$("project-select");
+      select.textContent = "";
+      select.onchange = null;
+      select.disabled = true;
+      select.style.display = "none";
+      select.classList.add("hidden");
+      if (!this.vscodeEditorMode) this.projectSlug = null;
+      return;
+    }
     try {
       const res = await fetch("/api/projects");
       this.projects = await res.json();
@@ -198,6 +1002,14 @@ class TermdeckApp {
       option.title = p.root;
       select.appendChild(option);
     }
+    this.applyVscodeDefaultProjectState();
+    if (this.vscodeMode) {
+      select.onchange = null;
+      select.disabled = true;
+      select.style.display = "none";
+      select.classList.add("hidden");
+      return;
+    }
     select.value = this.projectSlug || "";
     select.onchange = () => {
       location.href = select.value ? `/p/${encodeURIComponent(select.value)}` : "/";
@@ -209,36 +1021,106 @@ class TermdeckApp {
     return p ? p.root : null;
   }
 
+  compactProjectPath(root) {
+    return String(root || "").replace(/^\/Users\/[^/]+/, "~");
+  }
+
+  projectForCwd(cwd) {
+    const normalized = String(cwd || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    return this.projects
+      .filter((project) => {
+        const root = String(project.root || "").replace(/\\/g, "/").replace(/\/+$/, "");
+        return normalized === root || normalized.startsWith(root + "/");
+      })
+      .sort((a, b) => String(b.root || "").length - String(a.root || "").length)[0] || null;
+  }
+
+  populateModalProjects() {
+    const select = this.$("modal-project");
+    if (!select) return;
+    const cwd = this.resolveVscodeDefaultCwd();
+    const currentProject = this.projects.find((project) => project.name === this.projectSlug);
+    const preferred = currentProject || this.projectForCwd(cwd);
+    select.textContent = "";
+    for (const project of this.projects) {
+      const option = document.createElement("option");
+      option.value = project.name;
+      option.textContent = `${project.name} · ${this.compactProjectPath(project.root)}`;
+      option.title = project.root;
+      select.appendChild(option);
+    }
+    const custom = document.createElement("option");
+    custom.value = "";
+    custom.textContent = "Choose folder…";
+    select.appendChild(custom);
+    select.value = preferred?.name || "";
+    select.disabled = !!this.modalGroupId;
+    this.syncModalProjectCwd();
+  }
+
+  syncModalProjectCwd() {
+    const select = this.$("modal-project");
+    const cwdInput = this.$("modal-cwd");
+    if (!select || !cwdInput) return;
+    const project = this.projects.find((candidate) => candidate.name === select.value);
+    if (project) {
+      cwdInput.value = project.root;
+      cwdInput.readOnly = true;
+      cwdInput.dataset.projectSeeded = "1";
+      return;
+    }
+    if (cwdInput.dataset.projectSeeded === "1") cwdInput.value = this.resolveVscodeDefaultCwd();
+    cwdInput.readOnly = false;
+    cwdInput.dataset.projectSeeded = "0";
+  }
+
+  async chooseProjectFolder() {
+    if (this.vscodeMode) return;
+    const button = this.$("modal-project-add-btn");
+    if (button?.disabled) return;
+    if (button) button.disabled = true;
+    try {
+      const res = await fetch("/api/projects/pick-folder", { method: "POST" });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(payload.detail || "failed to choose project folder");
+        return;
+      }
+      if (payload.cancelled) return;
+      const project = payload.project;
+      if (!project?.name) {
+        alert("native folder selection returned no project");
+        return;
+      }
+      await this.loadProjects();
+      this.populateModalProjects();
+      this.$("modal-project").value = project.name;
+      this.syncModalProjectCwd();
+    } catch (error) {
+      alert(error.message || "failed to choose project folder");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async init() {
+    window.addEventListener("message", this.handleHostMessageBound, false);
     await this.loadSettings();
     await this.loadProjects();
-    this.restoreOpenFiles();
-    this.initMonaco();
-    this.loadIconMap();
+    this.applyVscodeModeLayout();
+    if (!this.vscodeMode) {
+      this.restoreOpenFiles();
+      this.initMonaco();
+      this.loadIconMap();
+    }
     this.$("settings-gear").onclick = (e) => this.openSettingsPopover(e.currentTarget,
       [{ label: "Sidebar font", key: "sidebar_font_size" }, { label: "Terminal font", key: "terminal_font_size" },
-       { label: "UI font", key: "ui_font_size" }, { label: "Code font", key: "code_font_size" }, { label: "Diff font", key: "diff_font_size" },
-       { label: "Tree/search font", key: "tree_font_size" }]);
+       { label: "UI font", key: "ui_font_size" }, { label: "Code font", key: "code_font_size" },
+       { label: "Diff font", key: "diff_font_size" }, { label: "Tree/search font", key: "tree_font_size" },
+       { label: "Sidebar text color", key: "sidebar_text_color", type: "color" }]);
     for (const view of ["terminals", "project", "search"]) {
       this.$("view-" + view).onclick = () => this.setSideView(view);
     }
-    this.$("view-project").ondblclick = () => { if (this.sideView !== "project") this.setSideView("project"); this.toggleSideFull(); };
-    this.$("view-search").ondblclick = () => { if (this.sideView !== "search") this.setSideView("search"); this.toggleSideFull(); };
-    const filesSection = this.$("files-section");
-    filesSection.addEventListener("mouseover", (event) => {
-      const row = event.target.closest(".file-item, .search-file, .tree-row");
-      if (row && filesSection.contains(row)) this.showPathOverflow(row);
-    });
-    filesSection.addEventListener("mouseout", (event) => {
-      const row = event.target.closest(".file-item, .search-file, .tree-row");
-      if (!row || !filesSection.contains(row) || (event.relatedTarget && row.contains(event.relatedTarget))) return;
-      this.hidePathOverflow();
-    });
-    filesSection.addEventListener("focusin", (event) => {
-      const row = event.target.closest(".file-item, .search-file, .tree-row");
-      if (row && filesSection.contains(row)) this.showPathOverflow(row);
-    });
-    filesSection.addEventListener("focusout", () => this.hidePathOverflow());
     const replaceToggle = this.$("replace-toggle");
     replaceToggle.onclick = () => {
       const bar = this.$("replace-bar");
@@ -246,9 +1128,34 @@ class TermdeckApp {
       replaceToggle.classList.toggle("on", !bar.classList.contains("hidden"));
     };
     this.$("view-terminals").classList.add("on");
+    this.$("vscode-refresh-btn").onclick = () => this.requestVscodeRefresh(false);
+    this.$("modal-project-add-btn").onclick = () => this.chooseProjectFolder();
+    this.$("modal-project").onchange = () => {
+      if (!this.$("modal-project").value) {
+        this.chooseProjectFolder();
+        return;
+      }
+      this.syncModalProjectCwd();
+    };
+    this.$("modal-cwd").addEventListener("input", () => {
+      this.$("modal-cwd").dataset.projectSeeded = "0";
+      const projectSelect = this.$("modal-project");
+      if (projectSelect && !projectSelect.disabled) projectSelect.value = "";
+    });
+    this.$("new-group-btn").onclick = () => this.createTerminalGroup();
     const queryInput = this.$("search-query");
     queryInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { clearTimeout(this.searchDebounce); this.runSearch(); }
+      if (e.key === "ArrowDown" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        void this.enterFileTreeNavigation("content");
+        return;
+      }
+      if (this.handleFileSearchNavigation(e, "content")) return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        clearTimeout(this.searchDebounce);
+        if (!this.activateFileSearchSelection("content")) this.runSearch();
+      }
       if (e.key === "Escape") { queryInput.value = ""; this.setExplorerMode("tree"); }
     });
     queryInput.addEventListener("input", () => this.debouncedSearch());
@@ -259,14 +1166,23 @@ class TermdeckApp {
       this.saveSettings();
       this.debouncedSearch();
     });
-    this.$("minimize-toggle").onclick = () => { if (this.sideView !== "terminals") this.setSideView(this.sideView); };
+    this.$("minimize-toggle").onclick = () => this.setSideView("terminals");
     const wordBtn = this.$("search-word-toggle"), caseBtn = this.$("search-case-toggle"), regexBtn = this.$("search-regex-toggle");
     wordBtn.onclick = () => { this.searchWord = !this.searchWord; wordBtn.classList.toggle("on", this.searchWord); };
     caseBtn.onclick = () => { this.searchCase = !this.searchCase; caseBtn.classList.toggle("on", this.searchCase); };
     regexBtn.onclick = () => { this.searchRegex = !this.searchRegex; regexBtn.classList.toggle("on", this.searchRegex); };
     const nameInput = this.$("search-name");
     nameInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") this.runNameSearch();
+      if (e.key === "ArrowDown" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        void this.enterFileTreeNavigation("name");
+        return;
+      }
+      if (this.handleFileSearchNavigation(e, "name")) return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (!this.activateFileSearchSelection("name")) this.runNameSearch();
+      }
       if (e.key === "Escape") { nameInput.value = ""; this.setExplorerMode("tree"); }
     });
     nameInput.addEventListener("input", () => this.debouncedNameSearch());
@@ -281,6 +1197,14 @@ class TermdeckApp {
       this.saveSettings();
       this.rerenderTree();
     };
+    const gitBtn = this.$("git-status-toggle");
+    gitBtn.classList.toggle("on", this.settings.show_git_status !== false);
+    gitBtn.onclick = () => {
+      this.settings.show_git_status = this.settings.show_git_status === false;
+      gitBtn.classList.toggle("on", this.settings.show_git_status);
+      this.saveSettings();
+      this.rerenderTree();
+    };
     const hideBtn = this.$("hide-excluded-toggle");
     hideBtn.classList.toggle("on", !!this.settings.hide_excluded);
     hideBtn.onclick = () => {
@@ -289,13 +1213,21 @@ class TermdeckApp {
       this.saveSettings();
       this.rerenderTree();
     };
+    this.$("files-pin-toggle").onclick = () => this.toggleFilesPinned();
+    this.updateFilesPinButton();
     this.$("files-tree").addEventListener("contextmenu", (e) => {
       const row = e.target.closest(".tree-row");
       if (row && row.dataset.rel) this.openTreeContextMenu(e, row);
     });
+    this.$("main").addEventListener("pointerdown", (e) => {
+      if (e.target.closest("#editor-area, #terminal-area, #history-area")) this.dismissUnpinnedFilesPanel();
+    });
     this.initResizer("sidebar-resizer", "sidebar_width", false, 236, 520);
     this.initSideSplit();
-    setInterval(() => this.pollTree(), TREE_POLL_MS);
+    if (!this.vscodeMode) {
+      setInterval(() => this.pollTree(), TREE_POLL_MS);
+      setInterval(() => this.refreshRecentFiles(), RECENT_FILES_REFRESH_MS);
+    }
     setInterval(() => this.pollStats(), STATS_POLL_MS);
     this.pollStats();
     document.addEventListener("mousedown", (e) => {
@@ -303,16 +1235,51 @@ class TermdeckApp {
         const pop = this.$(id);
         if (!pop.classList.contains("hidden") && !pop.contains(e.target)) pop.classList.add("hidden");
       }
+      const searchBar = this.$("terminal-search-bar");
+      const searchToggle = this.$("terminal-search-toggle");
+      if (searchBar && !searchBar.classList.contains("hidden") &&
+          !searchBar.contains(e.target) && !searchToggle?.contains(e.target)) {
+        this.clearTerminalSearch(true);
+      }
     });
     this.$("new-session-btn").onclick = () => this.openModal();
+    this.$("terminal-search-toggle").onclick = () => this.toggleTerminalSearch();
+    this.$("terminal-search-submit").onclick = () => {
+      clearTimeout(this.terminalSearchTimer);
+      this.runTerminalSearch();
+    };
+    this.$("terminal-search-group-toggle").onclick = () => {
+      this.terminalSearchGroupSimilar = !this.terminalSearchGroupSimilar;
+      this.updateTerminalSearchGroupButton();
+      this.renderTerminalHistoryResults();
+    };
+    this.$("terminal-search-input").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); clearTimeout(this.terminalSearchTimer); this.runTerminalSearch(); }
+      if (event.key === "Escape") { event.preventDefault(); this.clearTerminalSearch(true); }
+    });
+    this.$("history-search-close").onclick = () => this.closeHistorySearchContext();
+    this.$("history-search-open").onclick = () => this.openHistorySearchSession();
+    this.$("history-search-backdrop").onclick = (event) => {
+      if (event.target === this.$("history-search-backdrop")) this.closeHistorySearchContext();
+    };
     this.$("modal-cancel").onclick = () => this.closeModal();
     this.$("modal-create").onclick = () => this.createSession();
     this.$("modal-model").onchange = () => this.updateModalPermissions();
-    this.$("history-btn").onclick = () => this.toggleHistory();
+    for (const id of ["history-btn", "vscode-history-btn"]) {
+      const button = this.$(id);
+      if (button) button.onclick = () => this.toggleHistory();
+    }
+    this.updateShortcutTitles();
     this.$("history-edits-toggle").onclick = () => this.toggleHistoryEdits();
-    this.$("history-close").onclick = () => this.closeHistory();
     this.$("history-scroll-bottom").onclick = () => this.scrollHistoryToBottom();
-    this.$("terminal-resync-btn").onclick = () => this.resyncActiveTerminal();
+    this.$("history-body").addEventListener("scroll", () => {
+      if (this.historyOpen && this.$("history-body").scrollTop < 80) this.loadOlderHistory();
+    });
+    this.$("history-body").addEventListener("click", (event) => this.handleVscodeFileLink(event));
+    for (const id of ["terminal-resync-btn", "vscode-terminal-resync-btn"]) {
+      const button = this.$(id);
+      if (button) button.onclick = () => this.resyncActiveTerminal();
+    }
     this.$("history-attach").onclick = () => this.attachToHistory();
     this.$("history-send").onclick = () => this.sendHistoryPrompt();
     this.$("history-prompt").addEventListener("keydown", (e) => {
@@ -322,6 +1289,8 @@ class TermdeckApp {
         const view = this.views.get(this.activeId);
         if (view) {
           this.sendInput(view, "\x1b");
+          this.historyPendingProcessing.delete(this.activeId);
+          this.updateHistoryThinkingIndicator();
           view.keepBottom = true;
           view.pinBottomUntil = Date.now() + 3000;
         }
@@ -375,13 +1344,10 @@ class TermdeckApp {
       this.resizeHistoryPrompt();
     });
     this.$("attach-btn").onclick = () => this.attachToActive();
-    this.$("scroll-bottom-btn").onclick = () => this.scrollActiveToBottom();
-    this.$("file-browser-close").onclick = () => this.closeFileBrowserModal();
-    this.$("file-browser-name-mode").onclick = () => { this.focusFileNameSearch(); this.updateFileBrowserMode(); };
-    this.$("file-browser-content-mode").onclick = () => { this.focusFileContentSearch(); this.updateFileBrowserMode(); };
-    this.$("file-browser-backdrop").addEventListener("mousedown", (e) => {
-      if (e.target.id === "file-browser-backdrop") this.closeFileBrowserModal();
-    });
+    for (const id of ["scroll-bottom-btn", "vscode-scroll-bottom-btn"]) {
+      const button = this.$(id);
+      if (button) button.onclick = () => this.scrollActiveToBottom();
+    }
     this.$("keys-btn").onclick = () => this.openKeybindings();
     this.$("keys-done").onclick = () => this.$("keys-backdrop").classList.add("hidden");
     this.$("keys-reset").onclick = () => this.resetKeybindings();
@@ -389,6 +1355,24 @@ class TermdeckApp {
     this.$("modal-backdrop").addEventListener("mousedown", (e) => {
       if (e.target.id === "modal-backdrop") this.closeModal();
     });
+    document.addEventListener("keydown", (e) => {
+      if (!this.isDesktopTerminalSelectAllEvent(e)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.selectActiveTerminalText();
+    }, true);
+    // Cmd+B is a browser bookmark/sidebar shortcut on macOS. Capture the
+    // configured TermDeck bindings before the browser gets a chance to act.
+    window.addEventListener("keydown", (e) => {
+      if (!e.metaKey || e.ctrlKey || e.altKey || e.key.toLowerCase() !== "b") return;
+      if (!this.$("keys-backdrop").classList.contains("hidden") ||
+          !this.$("modal-backdrop").classList.contains("hidden")) return;
+      const actionId = this.bindingMap()[this.eventToBinding(e)];
+      if (actionId !== "new-terminal" && actionId !== "fork-terminal") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.runAction(actionId);
+    }, true);
     document.addEventListener("keydown", (e) => {
       if (!this.$("keys-backdrop").classList.contains("hidden")) {
         if (e.key === "Escape") this.$("keys-backdrop").classList.add("hidden");
@@ -400,11 +1384,6 @@ class TermdeckApp {
         if (e.key === "Enter") this.createSession();
         return;
       }
-      if (this.fileBrowserModalOpen && e.key === "Escape") {
-        e.preventDefault();
-        this.closeFileBrowserModal();
-        return;
-      }
       if (this.tryAppShortcut(e)) return;
       if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a" &&
           e.target.closest && e.target.closest(".xterm") && this.activeFileKey === null && !this.historyOpen) {
@@ -414,7 +1393,8 @@ class TermdeckApp {
         return;
       }
       if (this.isTypingTarget(e)) return;
-      const treeVisible = this.sideView === "project" && !this.$("files-section").classList.contains("hidden");
+      const treeVisible = !this.$("files-section").classList.contains("hidden") &&
+        !this.$("files-tree").classList.contains("hidden");
       const selectedRel = this.selectedTreeRow?.dataset?.rel;
       if (treeVisible && ["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Enter"].includes(e.key) &&
           !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -441,8 +1421,18 @@ class TermdeckApp {
       else if (key === "m") { e.preventDefault(); this.moveTreePath(selectedRel); }
     });
     window.addEventListener("popstate", (e) => this.applyNavState(e.state));
-    history.replaceState({ kind: "init" }, "", location.pathname + location.search);
-    new ResizeObserver(() => this.fitActive()).observe(this.$("terminal-area"));
+    const startupNav = this.initialNav && this.initialNav.kind !== "file" ? this.initialNav : { kind: "init" };
+    this.lastValidNavState = startupNav;
+    this.lastNavJson = JSON.stringify(startupNav);
+    history.replaceState(startupNav, "", location.pathname + location.search);
+    const scheduleLayoutFit = () => {
+      this.positionFloatingFilesPanel();
+      this.positionFloatingTerminalSearch();
+      this.scheduleTerminalLayoutFit();
+    };
+    new ResizeObserver(scheduleLayoutFit).observe(this.$("terminal-area"));
+    new ResizeObserver(scheduleLayoutFit).observe(this.$("main"));
+    window.addEventListener("resize", scheduleLayoutFit);
     this.refresh().finally(() => this.connectStatusStream());
     setInterval(() => this.refresh(), SESSION_LIST_REFRESH_MS);
   }
@@ -450,7 +1440,10 @@ class TermdeckApp {
   navUrl(state) {
     const params = new URLSearchParams();
     if (state.kind === "term") params.set("t", state.id);
-    else if (state.kind === "file") params.set("f", state.key);
+    else if (state.kind === "file") {
+      params.set("f", state.key);
+      if (state.return_to) params.set("rt", String(state.return_to));
+    }
     else if (state.kind === "search") {
       params.set("q", state.q);
       if (state.glob) params.set("glob", state.glob);
@@ -467,18 +1460,49 @@ class TermdeckApp {
     const json = JSON.stringify(state);
     if (json === this.lastNavJson) return;
     this.lastNavJson = json;
+    this.lastValidNavState = state;
     history.pushState(state, "", this.navUrl(state));
+  }
+
+  replaceNav(state) {
+    const json = JSON.stringify(state);
+    this.lastNavJson = json;
+    this.lastValidNavState = state;
+    history.replaceState(state, "", this.navUrl(state));
+  }
+
+  parseNavState(rawState) {
+    if (!rawState) return null;
+    if (typeof rawState === "object" && !Array.isArray(rawState)) return rawState;
+    if (typeof rawState !== "string") return null;
+    try {
+      const parsed = JSON.parse(rawState);
+      return typeof parsed === "object" && parsed && !Array.isArray(parsed) ? parsed : null;
+    } catch (_error) {
+      return null;
+    }
   }
 
   applyNavState(state) {
     if (!state || state.kind === "init") return;
+    if (state.kind === "file" && !this.openFiles.has(state.key)) {
+      const returnId = String(state.return_to || "");
+      const fallback = returnId && this.session(returnId)
+        ? { kind: "term", id: returnId }
+        : (this.lastValidNavState && this.lastValidNavState.kind !== "init"
+          ? this.lastValidNavState
+          : (this.activeId ? { kind: "term", id: this.activeId } : { kind: "init" }));
+      this.replaceNav(fallback);
+      return;
+    }
     this.applyingHistory = true;
     this.lastNavJson = JSON.stringify(state);
+    this.lastValidNavState = state;
     try {
       if (state.kind === "term" && this.session(state.id)) {
-        this.activate(state.id);
+        this.activate(state.id, { history: false });
       } else if (state.kind === "file" && this.openFiles.has(state.key)) {
-        this.activateFile(state.key, null);
+        this.activateFile(state.key, null, { history: false });
       } else if (state.kind === "search") {
         this.searchWord = !!state.word;
         this.searchCase = !!state.case_sensitive;
@@ -549,24 +1573,41 @@ class TermdeckApp {
     this.sessions = this.applySessionOrder(sessions);
     this.closedSessions = closed;
     for (const s of this.sessions) {
+      this.cacheSessionModel(s);
       const view = this.views.get(s.session_id);
       if (view && !view.promptEditing && !view.promptSubmitting && !view.promptDraftSyncPending &&
           view.pendingDraftSync === null && view.pendingTerminalDraft === null && view.promptDraft !== (s.draft || "")) {
         view.promptDraft = s.draft || "";
         if (s.session_id === this.activeId && this.historyOpen) this.showPromptDraft(view);
       }
-      const spinning = this.titlePresentation(s).spinning;
+      // The session list already carries the server's authoritative working
+      // state. Do not infer it from the CLI title marker: that marker can be
+      // restored only after a terminal websocket is opened, which made a
+      // browser refresh appear idle until the user clicked that tab.
+      const spinning = !s.dormant && s.processing === true;
       const processingSince = Number(s.processing_since);
-      if (processingSince > 0) this.processingSince.set(s.session_id, processingSince * 1000);
+      if (processingSince > 0 && !this.processingStates.get(s.session_id) &&
+          !this.historyPendingProcessing.has(s.session_id)) {
+        this.processingSince.set(s.session_id, processingSince * 1000);
+      }
       if (!this.processingStates.has(s.session_id)) {
         this.processingStates.set(s.session_id, spinning);
         if (spinning && !this.processingSince.has(s.session_id)) this.processingSince.set(s.session_id, Date.now());
       }
       else this.updateProcessingState(s.session_id, spinning);
     }
+    for (const s of this.closedSessions) this.cacheSessionModel(s);
     const ids = new Set(sessions.map((s) => s.session_id));
+    if (this.nativeVscodeMode) {
+      for (const existingId of this.nativeSessionIds) {
+        if (!ids.has(existingId)) this.postVscodeNativeClose(existingId);
+      }
+    }
     for (const [id, view] of [...this.views]) {
-      if (!ids.has(id)) this.destroyView(id, view);
+      if (!ids.has(id)) {
+        this.postVscodeNativeClose(id);
+        this.destroyView(id, view);
+      }
     }
     if (this.activeId && !ids.has(this.activeId)) this.activeId = null;
     if (this.initialNav) {
@@ -583,14 +1624,22 @@ class TermdeckApp {
     } else {
       this.updateSessionRows();
     }
-    // Recently modified files are shown below the terminal/open-file list,
-    // so they must be fetched even while the Files panel itself is hidden.
-    this.refreshRecentFiles();
+    // Recently modified files are a standalone-only sidebar section.
+    if (!this.vscodeMode) this.refreshRecentFiles();
     if (this.revealActiveSessionOnLoad) {
       this.revealActiveSessionOnLoad = false;
       this.keepActiveSessionVisible();
     }
     this.renderTopbar();
+    if (this.nativeVscodeMode) {
+      for (const session of this.sessions) {
+        const isActive = this.activeId === session.session_id;
+        const visible = this.activeId ? (isActive && !this.historyOpen) : undefined;
+        this.postVscodeNativeSession(session, visible);
+      }
+      this.nativeSessionIds = new Set(this.sessions.map((s) => s.session_id));
+    }
+    this.scheduleTerminalLayoutFit();
   }
 
   connectStatusStream() {
@@ -623,19 +1672,39 @@ class TermdeckApp {
     if (Object.prototype.hasOwnProperty.call(message, "title_user_set")) session.title_user_set = !!message.title_user_set;
     if (Object.prototype.hasOwnProperty.call(message, "cli_title") && message.cli_title) session.cli_title = message.cli_title;
     if (Object.prototype.hasOwnProperty.call(message, "agent_session_id")) session.agent_session_id = message.agent_session_id;
+    if (Object.prototype.hasOwnProperty.call(message, "agent_kind")) session.agent_kind = message.agent_kind;
+    if (Object.prototype.hasOwnProperty.call(message, "last_activity_at")) {
+      session.last_activity_at = message.last_activity_at;
+      const activity = Number(message.last_activity_at || 0);
+      if (activity > 0) this.touchSessionActivity(session.session_id, activity > 1e12 ? activity : activity * 1000);
+    }
     if (Object.prototype.hasOwnProperty.call(message, "processing")) session.processing = !!message.processing;
+    if (message.processing === true) this.touchSessionActivity(session.session_id);
     if (Object.prototype.hasOwnProperty.call(message, "processing_since")) {
       session.processing_since = message.processing_since;
       const processingSince = Number(message.processing_since);
-      if (processingSince > 0) this.processingSince.set(session.session_id, processingSince * 1000);
+      if (processingSince > 0 && !this.processingStates.get(session.session_id) &&
+          !this.historyPendingProcessing.has(session.session_id)) {
+        this.processingSince.set(session.session_id, processingSince * 1000);
+      }
       else if (!message.processing) this.processingSince.delete(session.session_id);
     }
     if (Object.prototype.hasOwnProperty.call(message, "running")) session.running = !!message.running;
     if (Object.prototype.hasOwnProperty.call(message, "exit_code")) session.exit_code = message.exit_code;
+    if (Object.prototype.hasOwnProperty.call(message, "dormant")) session.dormant = !!message.dormant;
+    this.cacheSessionModel(session);
     const presentation = this.titlePresentation(session);
+    const spinning = !session.dormant && session.processing === true;
     const titleEl = this.sessionTitleEls.get(session.session_id);
-    if (titleEl) titleEl.textContent = presentation.text;
-    this.updateProcessingState(session.session_id, presentation.spinning);
+    if (titleEl) this.setSessionTitleText(titleEl, presentation.text,
+      !this.vscodeMode && !this.settings.show_terminal_icons && presentation.spinning);
+    this.postVscodeNativeSession(session, session.session_id === this.activeId ? !this.historyOpen : undefined);
+    this.updateProcessingState(session.session_id, spinning);
+    // The initial session list is rendered before the status websocket sends
+    // its snapshot. Keep the row's running/dormant dot in sync with the
+    // session object as soon as that snapshot arrives; selecting the row
+    // should not be required to repaint it.
+    this.updateSessionRows();
     if (session.session_id === this.activeId) {
       if (this.historyOpen && previousAgentSessionId !== session.agent_session_id) {
         this.connectHistoryStream(session.session_id, { fresh: true });
@@ -647,27 +1716,102 @@ class TermdeckApp {
   titlePresentation(s) {
     const title = this.effectiveTitle(s);
     const status = title.match(TITLE_STATUS_RE);
-    return status ? { text: title.slice(status[0].length), spinning: s.processing !== false } : { text: title, spinning: s.processing === true };
+    const processing = s && this.processingStates.has(s.session_id)
+      ? this.processingStates.get(s.session_id) === true
+      : s?.processing === true;
+    return { text: status ? title.slice(status[0].length) : title, spinning: processing };
   }
 
   updateSessionSpinner(id, spinning) {
     const spinner = this.sessionSpinnerEls.get(id);
     if (spinner) spinner.classList.toggle("on", spinning);
+    this.updateSessionTextStatus(id, spinning);
+  }
+
+  updateSessionTextStatus(id, spinning = !!this.processingStates.get(id)) {
+    const title = this.sessionTitleEls.get(id);
+    if (!title) return;
+    const textOnly = !this.vscodeMode && !this.settings.show_terminal_icons;
+    const working = textOnly && !!spinning;
+    title.classList.toggle("session-title-working", working);
+    title.classList.toggle("session-title-unread", textOnly && !working && this.unreadSessions.has(id));
+  }
+
+  setSessionTitleText(title, text) {
+    title.textContent = text;
   }
 
   updateUnreadIndicator(id) {
     const dot = this.sessionStatusEls.get(id);
-    if (!dot) return;
-    dot.classList.toggle("processing", !!this.processingStates.get(id));
-    dot.classList.toggle("unread", this.unreadSessions.has(id) && !this.processingStates.get(id));
+    if (dot) {
+      dot.classList.toggle("processing", !!this.processingStates.get(id));
+      dot.classList.toggle("unread", this.unreadSessions.has(id) && !this.processingStates.get(id));
+    }
+    this.updateSessionTextStatus(id);
+    this.updateTerminalGroupStatus(id);
+    this.updateTerminalIconState(id);
+  }
+
+  updateTerminalGroupStatus(sessionId) {
+    const groupId = this.getProjectState().session_groups?.[sessionId];
+    if (!groupId) return;
+    const label = this.$("session-list")?.querySelector(
+      `[data-group-id="${CSS.escape(groupId)}"] > .terminal-group-label`);
+    if (!label) return;
+    const memberIds = this.groupSessionIds(groupId);
+    const working = memberIds.some((id) => this.processingStates.get(id));
+    const unreadCount = memberIds.filter((id) => this.unreadSessions.has(id)).length;
+    label.classList.remove("group-working", "group-unread");
+    const unreadDot = label.querySelector(".group-unread-dot");
+    if (unreadDot) {
+      unreadDot.classList.toggle("on", unreadCount > 0);
+      unreadDot.title = unreadCount ? `${unreadCount} unread terminal${unreadCount === 1 ? "" : "s"}` : "";
+    }
+    const suffix = [working ? "working" : "", unreadCount ? `${unreadCount} unread` : ""]
+      .filter(Boolean).join(" · ");
+    label.title = `Click to collapse/expand · right-click for group actions · drop terminals here${suffix ? ` · ${suffix}` : ""}`;
+  }
+
+  setSessionUnread(id, unread) {
+    if (!this.session(id)) return;
+    if (unread) {
+      this.unreadSessions.add(id);
+      this.viewedCompletedSessions.delete(id);
+    } else {
+      this.unreadSessions.delete(id);
+      if (!this.processingStates.get(id)) this.viewedCompletedSessions.add(id);
+    }
+    this.updateUnreadIndicator(id);
+    this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
+  }
+
+  updateTerminalIconState(id) {
+    if (this.vscodeMode) return;
+    const title = this.sessionTitleEls.get(id);
+    const icon = title?.closest(".session-item")?.querySelector(".terminal-type-icon");
+    const session = this.session(id);
+    if (!icon || !session) return;
+    const enabled = !!this.settings.show_terminal_icons;
+    const active = enabled && (!!this.processingStates.get(id) || this.unreadSessions.has(id));
+    const exited = enabled && !session.running && !session.dormant;
+    icon.classList.toggle("terminal-status-active", active);
+    icon.classList.toggle("terminal-status-exited", !active && exited);
   }
 
   updateProcessingState(id, spinning) {
+    const session = this.session(id);
+    const dormant = !!session?.dormant;
+    spinning = spinning && !dormant;
     const previous = this.processingStates.get(id);
+    const pendingSince = this.historyPendingProcessing.get(id);
+    if (spinning && previous !== true) {
+      this.processingSince.set(id, pendingSince || this.processingSince.get(id) || Date.now());
+    }
+    if (spinning) this.historyPendingProcessing.delete(id);
     if (spinning) this.viewedCompletedSessions.delete(id);
     if (spinning && previous !== true && !this.processingSince.has(id)) this.processingSince.set(id, Date.now());
     if (!spinning) this.processingSince.delete(id);
-    if (id !== this.activeId && previous === true && !spinning &&
+    if (id !== this.activeId && !dormant && previous === true && !spinning &&
         !this.viewedCompletedSessions.has(id) && !this.unreadSessions.has(id)) {
       this.unreadSessions.add(id);
       this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
@@ -676,10 +1820,15 @@ class TermdeckApp {
     this.updateSessionSpinner(id, spinning);
     this.updateUnreadIndicator(id);
     this.updateHistoryThinkingIndicator();
+    this.renderHistoryMeta();
   }
 
   session(id) {
     return this.sessions.find((s) => s.session_id === id) || null;
+  }
+
+  sessionOrClosed(id) {
+    return this.session(id) || this.closedSessions.find((s) => s.session_id === id) || null;
   }
 
   sessionListSignatureFor(sessions = this.sessions) {
@@ -690,17 +1839,22 @@ class TermdeckApp {
     for (const s of this.sessions) {
       const presentation = this.titlePresentation(s);
       const title = this.sessionTitleEls.get(s.session_id);
-      if (title) title.textContent = presentation.text;
+      if (title) this.setSessionTitleText(title, presentation.text,
+        !this.vscodeMode && !this.settings.show_terminal_icons && presentation.spinning);
       const dot = this.sessionStatusEls.get(s.session_id);
       if (dot) {
-        dot.className = "status-dot" + (s.running ? "" : " exited") +
+        dot.className = "status-dot" + (s.running ? "" : s.dormant ? " dormant" : " exited") +
           (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "");
       }
       const spinner = this.sessionSpinnerEls.get(s.session_id);
       if (spinner) spinner.classList.toggle("on", presentation.spinning);
+      this.updateSessionTextStatus(s.session_id, presentation.spinning);
       if (title) {
         const item = title.closest(".session-item");
-        if (item) item.classList.toggle("active", s.session_id === this.activeId && this.activeFileKey === null);
+        if (item) {
+          item.classList.toggle("active", s.session_id === this.activeId && this.activeFileKey === null);
+          this.updateTerminalIconState(s.session_id);
+        }
       }
     }
   }
@@ -714,52 +1868,233 @@ class TermdeckApp {
   applySessionOrder(sessions) {
     const state = this.getProjectState();
     const order = state.session_order || [];
-    const pinned = new Set(state.pinned_sessions || []);
     const rank = new Map(order.map((id, i) => [id, i]));
     return [...sessions].sort((a, b) =>
-      (Number(pinned.has(b.session_id)) - Number(pinned.has(a.session_id))) ||
       (rank.has(a.session_id) ? rank.get(a.session_id) : 1e9) - (rank.has(b.session_id) ? rank.get(b.session_id) : 1e9));
-  }
-
-  togglePin(sessionId) {
-    const pinned = new Set(this.getProjectState().pinned_sessions || []);
-    if (pinned.has(sessionId)) pinned.delete(sessionId);
-    else pinned.add(sessionId);
-    this.patchProjectState({ pinned_sessions: [...pinned] });
-    this.sessions = this.applySessionOrder(this.sessions);
-    this.renderList();
   }
 
   makeDraggable(item, type, key, onReorder) {
     item.draggable = true;
     item.ondragstart = (e) => {
       this.dragItem = { type, key };
+      this.clearDragGroupingTimer();
+      item.classList.add("dragging-tab");
       e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", key);
     };
     item.ondragover = (e) => {
       if (this.dragItem && this.dragItem.type === type && this.dragItem.key !== key) {
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
+        const isSessionDrop = type === "session";
+        if (isSessionDrop && this.dragGroupTargetKey === key) {
+          item.classList.remove("drop-before", "drop-after");
+          item.classList.add("group-drop-target");
+          return;
+        }
+        const rect = item.getBoundingClientRect();
+        if (!isSessionDrop) {
+          this.clearDragLandingIndicator();
+          item.classList.add(e.clientY >= rect.top + rect.height / 2 ? "drop-after" : "drop-before");
+          return;
+        }
+        if (this.dragGroupHoverKey !== key) {
+          this.clearDragLandingIndicator();
+          item.classList.add(e.clientY >= rect.top + rect.height / 2 ? "drop-after" : "drop-before");
+          this.dragGroupHoverKey = key;
+          const draggedId = this.dragItem.key;
+          this.dragGroupTimer = window.setTimeout(() => {
+            if (this.dragItem?.type !== "session" || this.dragItem.key !== draggedId) return;
+            this.dragGroupTargetKey = key;
+            item.classList.remove("drop-before", "drop-after");
+            const targetGroup = this.getProjectState().session_groups?.[key];
+            const draggedGroup = this.getProjectState().session_groups?.[draggedId];
+            const label = item.querySelector(".group-drop-indicator span:last-child");
+            if (label) label.textContent = targetGroup || draggedGroup ? "group" : "new group";
+            item.classList.add("group-drop-target");
+          }, SESSION_GROUP_HOVER_DELAY_MS);
+        } else {
+          item.classList.remove("group-drop-target");
+          item.classList.add(e.clientY >= rect.top + rect.height / 2 ? "drop-after" : "drop-before");
+        }
       }
+    };
+    item.ondragleave = (e) => {
+      if (!e.relatedTarget || !item.contains(e.relatedTarget)) this.clearDragLandingIndicator();
     };
     item.ondrop = (e) => {
       e.preventDefault();
-      if (this.dragItem && this.dragItem.type === type && this.dragItem.key !== key) onReorder(this.dragItem.key, key);
+      if (this.dragItem && this.dragItem.type === type && this.dragItem.key !== key) {
+        const draggedId = this.dragItem.key;
+        if (type === "session" && this.dragGroupTargetKey === key) this.groupSessionsFromDrop(draggedId, key);
+        else onReorder(draggedId, key, item.classList.contains("drop-after"));
+      }
+      this.clearDragLandingIndicator();
+      this.dragItem = null;
+    };
+    item.ondragend = () => {
+      this.clearDragLandingIndicator(true);
       this.dragItem = null;
     };
   }
 
-  reorderSessions(draggedId, targetId) {
+  makeLayoutDraggable(item, token, kind) {
+    item.draggable = true;
+    item.ondragstart = (event) => {
+      const sessionId = kind === "session" ? token.slice("session:".length) : null;
+      const sessionIds = sessionId ? this.selectedSessionIdsForDrag(sessionId) : [];
+      const tokens = kind === "session" ? sessionIds.map((id) => `session:${id}`) : [token];
+      if (sessionId) {
+        this.sidebarSelectedSessionIds = new Set(sessionIds);
+        this.sidebarSelectionAnchorId = sessionId;
+        this.applySidebarSelectionStyles();
+        for (const row of this.$("session-list").querySelectorAll(".session-item[data-session-id]")) {
+          row.classList.toggle("dragging-tab", this.sidebarSelectedSessionIds.has(row.dataset.sessionId));
+        }
+      } else {
+        item.classList.add("dragging-tab");
+      }
+      this.dragItem = { type: "layout", token, kind, tokens };
+      this.clearDragGroupingTimer();
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", tokens.join("\n"));
+    };
+    item.ondragover = (event) => {
+      const source = this.dragItem;
+      if (!source || source.type !== "layout" || source.token === token) return;
+      const sourceSessionIds = this.sessionIdsFromDragItem(source);
+      const targetId = kind === "session" ? token.slice("session:".length) : null;
+      if (targetId && sourceSessionIds.includes(targetId)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      if (source.kind === "session" && kind === "group") {
+        this.clearDragLandingIndicator();
+        item.classList.add("drop-group");
+        const hint = item.querySelector(".group-drop-indicator span:last-child");
+        if (hint) hint.textContent = "group";
+        return;
+      }
+      const holdToMerge = source.kind === "group" && kind === "group";
+      const sessionGroups = this.getProjectState().session_groups || {};
+      const sourceGroupIds = [...new Set(sourceSessionIds.map((id) => sessionGroups[id]).filter(Boolean))];
+      const targetGroup = targetId ? sessionGroups[targetId] : null;
+      const rect = item.getBoundingClientRect();
+      const holdToCreate = source.kind === "session" && kind === "session" &&
+        !sourceGroupIds.length && !targetGroup;
+      const centerDrop = holdToCreate && event.clientY >= rect.top + rect.height * 0.25 &&
+        event.clientY <= rect.top + rect.height * 0.75;
+      if (holdToCreate && !centerDrop) {
+        this.clearDragLandingIndicator();
+        item.classList.add(event.clientY >= rect.top + rect.height / 2 ? "drop-after" : "drop-before");
+        return;
+      }
+      if (holdToMerge || holdToCreate) {
+        if (this.dragGroupTargetKey === token) {
+          item.classList.remove("drop-before", "drop-after");
+          item.classList.add("group-drop-target");
+          return;
+        }
+        if (this.dragGroupHoverKey !== token) {
+          this.clearDragLandingIndicator();
+          if (!holdToCreate) {
+            item.classList.add(event.clientY >= rect.top + rect.height / 2 ? "drop-after" : "drop-before");
+          }
+          this.dragGroupHoverKey = token;
+          const sourceToken = source.token;
+          this.dragGroupTimer = window.setTimeout(() => {
+            if (this.dragItem?.type !== "layout" || this.dragItem.token !== sourceToken) return;
+            this.dragGroupTargetKey = token;
+            item.classList.remove("drop-before", "drop-after");
+            const hint = item.querySelector(".group-drop-indicator span:last-child");
+            if (hint) hint.textContent = holdToMerge ? "merge" : targetGroup || sourceGroupIds.length ? "group" : "new group";
+            item.classList.add("group-drop-target");
+          }, SESSION_GROUP_HOVER_DELAY_MS);
+        } else if (!holdToCreate) {
+          item.classList.remove("group-drop-target");
+          item.classList.add(event.clientY >= rect.top + rect.height / 2 ? "drop-after" : "drop-before");
+        }
+        return;
+      }
+      this.clearDragLandingIndicator();
+      item.classList.add(event.clientY >= rect.top + rect.height / 2 ? "drop-after" : "drop-before");
+    };
+    item.ondragleave = (event) => {
+      if (!event.relatedTarget || !item.contains(event.relatedTarget)) this.clearDragLandingIndicator();
+    };
+    item.ondrop = (event) => {
+      event.preventDefault();
+      const source = this.dragItem;
+      if (source?.type === "layout" && source.token !== token) {
+        const sourceSessionIds = this.sessionIdsFromDragItem(source);
+        const sourceId = source.token.slice(source.token.indexOf(":") + 1);
+        const targetId = token.slice(token.indexOf(":") + 1);
+        if (kind === "session" && sourceSessionIds.includes(targetId)) {
+          this.clearDragLandingIndicator();
+          this.dragItem = null;
+          return;
+        }
+        const sessionGroups = this.getProjectState().session_groups || {};
+        const targetGroup = kind === "session" ? sessionGroups[targetId] : null;
+        const targetRect = kind === "session" ? item.getBoundingClientRect() : null;
+        if (source.kind === "session" && kind === "group") this.moveSelectedSessionsIntoGroup(sourceSessionIds, targetId);
+        else if (source.kind === "group" && kind === "group" && this.dragGroupTargetKey === token) {
+          this.mergeTerminalGroups(sourceId, targetId);
+        } else if (source.kind === "session" && kind === "session" && this.dragGroupTargetKey === token) {
+          const rect = item.getBoundingClientRect();
+          this.groupSelectedSessionsFromDrop(sourceSessionIds, targetId, event.clientY >= rect.top + rect.height / 2);
+        } else {
+          const after = item.classList.contains("drop-after") ||
+            (targetRect && event.clientY >= targetRect.top + targetRect.height / 2);
+          if (source.kind === "session" && kind === "session" && targetGroup) {
+            this.moveSelectedSessionsIntoGroup(sourceSessionIds, targetGroup, targetId, after);
+          } else if (source.kind === "session" && kind === "session") {
+            this.repositionSelectedSessions(sourceSessionIds, targetId, after);
+          } else {
+            this.reorderTerminalLayout(source.token, token, after);
+          }
+        }
+      }
+      this.clearDragLandingIndicator();
+      this.dragItem = null;
+    };
+    item.ondragend = () => {
+      this.clearDragLandingIndicator(true);
+      this.dragItem = null;
+    };
+  }
+
+  clearDragLandingIndicator(clearSource = false) {
+    const list = this.$("session-list");
+    if (!list) return;
+    this.clearDragGroupingTimer();
+    list.querySelectorAll(".drop-before, .drop-after, .drop-group, .group-drop-target")
+      .forEach((row) => row.classList.remove("drop-before", "drop-after", "drop-group", "group-drop-target"));
+    if (clearSource) list.querySelectorAll(".dragging-tab")
+      .forEach((row) => row.classList.remove("dragging-tab"));
+  }
+
+  clearDragGroupingTimer() {
+    if (this.dragGroupTimer) window.clearTimeout(this.dragGroupTimer);
+    this.dragGroupTimer = 0;
+    this.dragGroupTargetKey = null;
+    this.dragGroupHoverKey = null;
+  }
+
+  reorderSessions(draggedId, targetId, after = false) {
     const ids = this.sessions.map((s) => s.session_id).filter((id) => id !== draggedId);
-    ids.splice(ids.indexOf(targetId), 0, draggedId);
+    const targetIndex = ids.indexOf(targetId);
+    if (targetIndex < 0) return;
+    ids.splice(targetIndex + (after ? 1 : 0), 0, draggedId);
     this.patchProjectState({ session_order: ids });
     this.sessions = this.applySessionOrder(this.sessions);
     this.renderList();
   }
 
-  reorderFiles(draggedKey, targetKey) {
+  reorderFiles(draggedKey, targetKey, after = false) {
     const keys = [...this.openFiles.keys()].filter((k) => k !== draggedKey);
-    keys.splice(keys.indexOf(targetKey), 0, draggedKey);
+    const targetIndex = keys.indexOf(targetKey);
+    if (targetIndex < 0) return;
+    keys.splice(targetIndex + (after ? 1 : 0), 0, draggedKey);
     const reordered = new Map(keys.map((k) => [k, this.openFiles.get(k)]));
     this.openFiles = reordered;
     this.persistOpenFiles();
@@ -776,28 +2111,383 @@ class TermdeckApp {
     label.classList.add("side-section-header");
     const name = document.createElement("span");
     name.textContent = text;
-    const toggle = document.createElement("button");
-    const showIcons = !!this.settings.show_terminal_icons;
-    toggle.className = "section-toggle" + (showIcons ? " on" : "");
-    toggle.textContent = "i";
-    toggle.title = showIcons ? "Hide terminal type icons" : "Show terminal type icons";
-    toggle.setAttribute("aria-label", toggle.title);
-    toggle.setAttribute("aria-pressed", String(showIcons));
-    toggle.onclick = (event) => {
-      event.stopPropagation();
-      this.settings.show_terminal_icons = !this.settings.show_terminal_icons;
-      this.saveSettings();
-      this.renderList();
-    };
-    label.append(name, toggle);
+    label.append(name);
+    if (!this.vscodeMode) {
+      const controls = document.createElement("span");
+      controls.className = "section-header-controls";
+      const sort = document.createElement("button");
+      sort.id = "active-toggle";
+      sort.className = "section-toggle terminals-sort-toggle";
+      sort.innerHTML = '<span class="codicon codicon-sort-precedence"></span>';
+      sort.setAttribute("aria-pressed", String(this.activitySort));
+      sort.title = this.activitySort ? "Show grouped terminals" : "Sort terminals by recent activity";
+      sort.setAttribute("aria-label", sort.title);
+      sort.onclick = (event) => {
+        event.stopPropagation();
+        this.toggleActivitySort();
+      };
+      controls.appendChild(sort);
+      label.appendChild(controls);
+    }
     return label;
   }
 
-  pinnedSectionLabel() {
+  collapsibleSectionLabel(text, field, extra = null) {
+    const collapsed = this.sectionCollapsed(field);
     const label = document.createElement("div");
-    label.className = "side-section-label pinned-section-label";
-    label.textContent = "pinned";
+    label.className = "side-section-label side-section-header collapsible-section-header";
+    const name = document.createElement("span");
+    name.textContent = text;
+    const controls = document.createElement("span");
+    controls.className = "section-header-controls";
+    const toggle = document.createElement("button");
+    toggle.className = "section-toggle section-collapse-toggle";
+    toggle.innerHTML = `<span class="codicon codicon-chevron-${collapsed ? "right" : "down"}"></span>`;
+    toggle.title = collapsed ? `Expand ${text}` : `Collapse ${text}`;
+    toggle.setAttribute("aria-label", toggle.title);
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    label.title = toggle.title;
+    label.onclick = () => this.toggleSectionCollapsed(field);
+    toggle.onclick = (event) => {
+      event.stopPropagation();
+      this.toggleSectionCollapsed(field);
+    };
+    label.append(toggle, name);
+    if (extra) {
+      controls.appendChild(extra);
+      label.appendChild(controls);
+    }
     return label;
+  }
+
+  sessionActivityTime(session) {
+    if (!session) return 0;
+    const known = Number(this.sessionActivityAt.get(session.session_id) || 0);
+    const serverActivity = Number(session.last_activity_at || 0);
+    const serverActivityMs = serverActivity > 1e12 ? serverActivity : serverActivity * 1000;
+    const processingSince = Number(session.processing_since || 0) * 1000;
+    const created = Date.parse(String(session.created_at_est || "").replace(" ", "T")) || 0;
+    return Math.max(known, serverActivityMs, processingSince, created);
+  }
+
+  touchSessionActivity(sessionId, timestamp = Date.now()) {
+    if (!sessionId) return;
+    const previous = Number(this.sessionActivityAt.get(sessionId) || 0);
+    if (timestamp <= previous) return;
+    this.sessionActivityAt.set(sessionId, timestamp);
+    if (this.activitySort && !this.activitySortRenderTimer) {
+      this.activitySortRenderTimer = window.setTimeout(() => {
+        this.activitySortRenderTimer = 0;
+        this.renderList();
+      }, 180);
+    }
+  }
+
+  updateActivitySortButton() {
+    const button = this.$("active-toggle");
+    if (!button) return;
+    button.classList.toggle("on", this.activitySort);
+    button.setAttribute("aria-pressed", String(this.activitySort));
+    button.title = this.activitySort ? "Show grouped terminals" : "Sort terminals by recent activity";
+    button.setAttribute("aria-label", button.title);
+  }
+
+  toggleActivitySort() {
+    this.activitySort = !this.activitySort;
+    this.updateActivitySortButton();
+    this.renderList();
+  }
+
+  toggleTerminalSearch() {
+    const bar = this.$("terminal-search-bar");
+    const opening = bar.classList.contains("hidden");
+    bar.classList.toggle("hidden", !opening);
+    bar.classList.toggle("expanded", opening && !this.vscodeMode);
+    this.$("terminal-search-toggle").classList.toggle("on", opening);
+    this.updateTerminalSearchGroupButton();
+    this.positionFloatingTerminalSearch();
+    if (opening) this.$("terminal-search-input").focus();
+    else this.clearTerminalSearch(true);
+  }
+
+  updateTerminalSearchGroupButton() {
+    const button = this.$("terminal-search-group-toggle");
+    if (!button) return;
+    button.classList.toggle("on", this.terminalSearchGroupSimilar);
+    button.setAttribute("aria-pressed", String(this.terminalSearchGroupSimilar));
+    button.title = this.terminalSearchGroupSimilar
+      ? "Show search results by terminal"
+      : "Group similar matched text";
+  }
+
+  clearTerminalSearch(closeBar = false) {
+    clearTimeout(this.terminalSearchTimer);
+    if (this.terminalSearchAbort) this.terminalSearchAbort.abort();
+    this.terminalSearchAbort = null;
+    this.$("terminal-search-input").value = "";
+    this.$("terminal-search-summary").textContent = "";
+    this.$("terminal-search-results").textContent = "";
+    this.historySearchResults = [];
+    this.terminalSearchMatches.clear();
+    this.$("terminal-search-toggle").classList.toggle("on", !closeBar);
+    if (closeBar) {
+      this.$("terminal-search-bar").classList.add("hidden");
+      this.$("terminal-search-bar").classList.remove("expanded");
+    }
+    this.positionFloatingTerminalSearch();
+    this.renderList();
+  }
+
+  async runTerminalSearch() {
+    const input = this.$("terminal-search-input");
+    const query = input.value.trim();
+    if (!query) {
+      this.clearTerminalSearch(false);
+      return;
+    }
+    if (this.terminalSearchAbort) this.terminalSearchAbort.abort();
+    this.terminalSearchAbort = new AbortController();
+    this.$("terminal-search-summary").textContent = "searching…";
+    try {
+      const historyParams = new URLSearchParams({ q: query, include_operations: String(this.historySearchOperations) });
+      const requests = [fetch(`/api/history-search?${historyParams}`, { signal: this.terminalSearchAbort.signal })];
+      if (this.historySearchOperations) {
+        const liveParams = new URLSearchParams({ q: query });
+        requests.push(fetch(`/api/terminal-search?${liveParams}`, { signal: this.terminalSearchAbort.signal }));
+      }
+      const [historyResponse, liveResponse] = await Promise.all(requests);
+      if (!historyResponse.ok) throw new Error(await historyResponse.text());
+      if (liveResponse && !liveResponse.ok) throw new Error(await liveResponse.text());
+      const liveResults = liveResponse ? await liveResponse.json() : [];
+      const historyPayload = await historyResponse.json();
+      this.historySearchResults = Array.isArray(historyPayload.results) ? historyPayload.results : [];
+      this.terminalSearchMatches = new Map(liveResults.map((result) => [result.session_id, result]));
+      for (const result of this.historySearchResults) {
+        const openSessionId = result.open_session_id || result.parent_open_session_id;
+        if (!openSessionId) continue;
+        this.terminalSearchMatches.set(openSessionId, {
+          count: result.count, snippets: (result.matches || []).map((match) => ({ line: match.line_no, text: match.text })),
+        });
+      }
+      const terminalCount = new Set([...liveResults.map((result) => result.session_id),
+        ...this.historySearchResults.map((result) => result.open_session_id || result.parent_open_session_id).filter(Boolean)]).size;
+      const matchCount = liveResults.reduce((sum, result) => sum + Number(result.count || 0), 0) +
+        this.historySearchResults.reduce((sum, result) => sum + Number(result.count || 0), 0);
+      const indexing = historyPayload.indexing ? " · indexing history" : "";
+      const scope = this.historySearchOperations ? "all output" : "conversation";
+      this.$("terminal-search-summary").textContent = terminalCount || this.historySearchResults.length
+        ? `${scope} · ${terminalCount} open terminal${terminalCount === 1 ? "" : "s"} · ${matchCount} match${matchCount === 1 ? "" : "es"}${indexing}`
+        : `no ${scope} matches${indexing}`;
+      this.renderList();
+      this.renderTerminalHistoryResults();
+    } catch (error) {
+      if (error.name === "AbortError") return;
+      this.terminalSearchMatches.clear();
+      this.historySearchResults = [];
+      this.$("terminal-search-results").textContent = "";
+      this.$("terminal-search-summary").textContent = error.message || "search failed";
+      this.renderList();
+    }
+  }
+
+  renderTerminalHistoryResults() {
+    const container = this.$("terminal-search-results");
+    container.textContent = "";
+    if (this.terminalSearchGroupSimilar) {
+      this.renderSimilarTerminalHistoryResults(container);
+      return;
+    }
+    const groups = new Map();
+    for (const result of this.historySearchResults) {
+      const sessionKey = this.searchResultSessionKey(result);
+      if (!groups.has(sessionKey)) {
+        groups.set(sessionKey, {
+          title: this.searchResultTitle(result), count: 0, results: [],
+        });
+      }
+      const group = groups.get(sessionKey);
+      group.count += Number(result.count || 0);
+      group.results.push(result);
+    }
+    for (const group of groups.values()) {
+      const groupBox = document.createElement("div");
+      groupBox.className = "terminal-history-group";
+      const heading = document.createElement("div");
+      heading.className = "terminal-history-group-title";
+      const title = document.createElement("span");
+      title.className = "terminal-history-group-name";
+      title.textContent = group.title;
+      const count = document.createElement("span");
+      count.className = "terminal-history-result-count";
+      count.textContent = String(group.count);
+      heading.append(title, count, this.searchResultStatusIcon(group.results[0]));
+      groupBox.appendChild(heading);
+      for (const result of group.results) {
+        for (const match of (result.matches || []).slice(0, 6)) {
+          const item = document.createElement("div");
+          item.className = "terminal-history-result-match";
+          item.textContent = this.searchMatchText(match.text);
+          item.title = `${result.is_subagent ? `${result.title} · ` : ""}Open ${group.title} at line ${match.line_no}`;
+          item.onclick = () => this.openHistorySearchContext(result, match.line_no || 1);
+          groupBox.appendChild(item);
+        }
+      }
+      container.appendChild(groupBox);
+    }
+  }
+
+  searchResultSessionKey(result) {
+    if (result.is_subagent && result.parent_agent_session_id) {
+      return `parent:${result.agent_kind}:${result.parent_agent_session_id}`;
+    }
+    return result.open_session_id || result.closed_session_id ||
+      (result.agent_session_id ? `${result.agent_kind}:${result.agent_session_id}` :
+        result.title ? `title:${result.title}` : `source:${result.source_path}`);
+  }
+
+  searchResultTitle(result) {
+    return result.is_subagent && result.parent_title
+      ? result.parent_title
+      : result.title || `${result.agent_kind} session`;
+  }
+
+  searchResultStatus(result) {
+    return result.parent_status || result.status || "not_open";
+  }
+
+  searchResultStatusIcon(result) {
+    const status = this.searchResultStatus(result);
+    const wrapper = document.createElement("span");
+    wrapper.className = `terminal-history-result-status ${status.replace(/_/g, "-")}`;
+    const iconClass = status === "open" ? "codicon-circle-filled" :
+      status === "closed" ? "codicon-history" : "codicon-circle-outline";
+    const label = status === "open" ? "open terminal" : status === "closed" ? "closed terminal" : "not opened";
+    const icon = document.createElement("span");
+    icon.className = `codicon ${iconClass}`;
+    icon.setAttribute("aria-hidden", "true");
+    wrapper.appendChild(icon);
+    wrapper.title = label;
+    wrapper.setAttribute("aria-label", label);
+    return wrapper;
+  }
+
+  searchMatchText(text) {
+    return String(text || "").replace(/\s+/g, " ").trim();
+  }
+
+  renderSimilarTerminalHistoryResults(container) {
+    const groups = new Map();
+    for (const result of this.historySearchResults) {
+      for (const match of (result.matches || []).slice(0, 6)) {
+        const text = this.searchMatchText(match.text);
+        if (!text) continue;
+        const key = text.toLocaleLowerCase();
+        if (!groups.has(key)) groups.set(key, { text, entries: new Map() });
+        const group = groups.get(key);
+        const sessionKey = this.searchResultSessionKey(result);
+        if (!group.entries.has(sessionKey)) group.entries.set(sessionKey, { result, match });
+      }
+    }
+    for (const group of groups.values()) {
+      const groupBox = document.createElement("div");
+      groupBox.className = "terminal-history-group terminal-history-similar-group";
+      const heading = document.createElement("div");
+      heading.className = "terminal-history-group-title";
+      const text = document.createElement("span");
+      text.className = "terminal-history-group-name";
+      text.textContent = group.text;
+      text.title = group.text;
+      const count = document.createElement("span");
+      count.className = "terminal-history-result-count";
+      count.textContent = String(group.entries.size);
+      heading.append(text, count);
+      groupBox.appendChild(heading);
+      for (const { result, match } of group.entries.values()) {
+        const row = document.createElement("div");
+        row.className = "terminal-history-similar-terminal";
+        const name = document.createElement("span");
+        name.className = "terminal-history-similar-terminal-name";
+        name.textContent = result.is_subagent && result.parent_title
+          ? `${result.parent_title} · ${result.title || "subagent"}`
+          : this.searchResultTitle(result);
+        row.append(name, this.searchResultStatusIcon(result));
+        row.title = `Open ${name.textContent} at line ${match.line_no}`;
+        row.onclick = () => this.openHistorySearchContext(result, match.line_no || 1);
+        groupBox.appendChild(row);
+      }
+      container.appendChild(groupBox);
+    }
+  }
+
+  async openHistorySearchContext(result, lineNo) {
+    this.historySearchContextResult = result;
+    this.$("history-search-backdrop").classList.remove("hidden");
+    const resultTitle = result.is_subagent && result.parent_title
+      ? `${result.parent_title} · ${result.title || "subagent"}`
+      : result.title || "History match";
+    this.$("history-search-title").textContent = `${resultTitle} · line ${lineNo}`;
+    const openButton = this.$("history-search-open");
+    const status = this.searchResultStatus(result);
+    openButton.textContent = status === "open" ? "Activate terminal" : status === "closed" ? "Reopen terminal" : "Open parent terminal";
+    const context = this.$("history-search-context");
+    context.textContent = "loading history context…";
+    try {
+      const params = new URLSearchParams({ source: result.source_path, line: String(lineNo), radius: "4",
+        q: this.$("terminal-search-input").value, include_operations: String(this.historySearchOperations) });
+      const response = await fetch(`/api/history-context?${params}`);
+      if (!response.ok) throw new Error("history context unavailable");
+      const payload = await response.json();
+      context.textContent = "";
+      for (const line of payload.lines || []) {
+        const row = document.createElement("div");
+        row.className = "history-search-context-line" + (Number(line.line_no) === Number(payload.line_no) ? " target" : "");
+        const number = document.createElement("span");
+        number.className = "history-search-context-number";
+        number.textContent = line.line_no;
+        const text = document.createElement("span");
+        text.className = "history-search-context-text";
+        text.textContent = line.text;
+        row.append(number, text);
+        context.appendChild(row);
+      }
+    } catch (error) {
+      context.textContent = error.message || "history context unavailable";
+    }
+  }
+
+  closeHistorySearchContext() {
+    this.$("history-search-backdrop").classList.add("hidden");
+    this.historySearchContextResult = null;
+  }
+
+  async openHistorySearchSession() {
+    const result = this.historySearchContextResult;
+    if (!result) return;
+    const isSubagent = !!result.is_subagent;
+    let sessionId = isSubagent ? result.parent_open_session_id : result.open_session_id;
+    const closedSessionId = isSubagent ? result.parent_closed_session_id : result.closed_session_id;
+    const sessionReference = isSubagent ? result.parent_agent_session_id : result.agent_session_id;
+    const sessionTitle = isSubagent ? (result.parent_title || result.title) : result.title;
+    if (closedSessionId) {
+      const response = await fetch(`/api/closed/${closedSessionId}/reopen`, { method: "POST" });
+      if (!response.ok) return;
+      sessionId = closedSessionId;
+    } else if (!sessionId) {
+      const response = await fetch("/api/sessions", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: result.agent_kind, permission: "default", session_ref: sessionReference,
+          cwd: (isSubagent ? result.parent_cwd : result.cwd) || result.cwd || "~", title: sessionTitle || "" }),
+      });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        alert(detail.detail || "unable to open saved session");
+        return;
+      }
+      sessionId = (await response.json()).session_id;
+    }
+    this.closeHistorySearchContext();
+    await this.refresh();
+    this.activate(sessionId, { reveal: true });
   }
 
   terminalTypeIcon(s) {
@@ -816,104 +2506,243 @@ class TermdeckApp {
     return icon;
   }
 
+  terminalGroupLabel(group, count, unreadCount = 0, working = false) {
+    const label = document.createElement("div");
+    label.className = "side-section-label terminal-group-label";
+    const chevron = document.createElement("span");
+    chevron.className = "codicon " + (group.collapsed ? "codicon-chevron-right" : "codicon-chevron-down");
+    const name = document.createElement("span");
+    name.className = "terminal-group-name";
+    name.textContent = group.name;
+    const total = document.createElement("span");
+    total.className = "terminal-group-count";
+    total.textContent = String(count);
+    const unreadDot = document.createElement("span");
+    unreadDot.className = "group-unread-dot" + (unreadCount ? " on" : "");
+    unreadDot.title = unreadCount ? `${unreadCount} unread terminal${unreadCount === 1 ? "" : "s"}` : "";
+    const indicator = document.createElement("span");
+    indicator.className = "group-drop-indicator";
+    indicator.innerHTML = '<span class="codicon codicon-folder-library"></span><span>group</span>';
+    label.title = "Click to collapse/expand · right-click for group actions · drop terminals here" +
+      (working ? " · working" : "") + (unreadCount ? ` · ${unreadCount} unread` : "");
+    label.append(chevron, name, total, unreadDot, indicator);
+    if (!this.vscodeMode) {
+      const add = document.createElement("button");
+      add.className = "terminal-group-add";
+      add.type = "button";
+      add.textContent = "+";
+      add.title = `New terminal in ${group.name}`;
+      add.setAttribute("aria-label", add.title);
+      add.addEventListener("pointerdown", (event) => event.stopPropagation());
+      add.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.openModal(group.id);
+      });
+      label.appendChild(add);
+    }
+    label.onclick = () => this.toggleTerminalGroup(group.id);
+    label.oncontextmenu = (event) => this.openTerminalGroupContextMenu(event, group);
+    this.makeLayoutDraggable(label, `group:${group.id}`, "group");
+    return label;
+  }
+
+  renderTerminalItem(s, list) {
+    const searchMatch = this.terminalSearchMatches.get(s.session_id);
+    const item = document.createElement("div");
+    item.className = "session-item" + (s.session_id === this.activeId && this.activeFileKey === null ? " active" : "") +
+      (searchMatch ? " terminal-search-match" : "");
+    item.dataset.sessionId = s.session_id;
+    item.classList.toggle("sidebar-selected", this.sidebarSelectedSessionIds.has(s.session_id));
+    item.title = `${s.command || "zsh"}\n${s.cwd}` + (s.agent_session_id ? `\n${s.agent_kind}: ${s.agent_session_id}` : "") + "\nright-click for actions";
+    if (searchMatch) {
+      const snippets = (searchMatch.snippets || []).map((snippet) => `${snippet.line}: ${snippet.text}`).join("\n");
+      item.title += `\n${searchMatch.count} terminal match${searchMatch.count === 1 ? "" : "es"}${snippets ? `\n${snippets}` : ""}`;
+    }
+    const presentation = this.titlePresentation(s);
+    const useTextStatusIndicator = !this.vscodeMode && !this.settings.show_terminal_icons;
+    if (useTextStatusIndicator) item.classList.add("terminal-icons-hidden");
+    const dot = document.createElement("span");
+    dot.className = "status-dot" + (s.running ? "" : s.dormant ? " dormant" : " exited") +
+      (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "");
+    this.sessionStatusEls.set(s.session_id, dot);
+    const spinner = document.createElement("span");
+    spinner.className = "session-spinner";
+    const rectPathId = `session-spinner-path-${s.session_id}`;
+    const rectPath = "M8 2.2 H12 Q13.8 2.2 13.8 4 V12 Q13.8 13.8 12 13.8 H4 Q2.2 13.8 2.2 12 V4 Q2.2 2.2 4 2.2 H8";
+    spinner.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">
+      <g class="session-spinner-circle-backup session-spinner-orbit">
+        <path class="session-spinner-tail faint" d="M2.6 6.1 C2.7 4.5 5 3.4 8 3.4 C9.5 3.4 10.2 4.5 10.7 5.3"/>
+        <path class="session-spinner-tail bright" d="M5 4 C7 3.3 9.6 4 10.7 5.3"/>
+        <circle class="session-spinner-head" cx="10.7" cy="5.3" r="4.3"/>
+      </g>
+      <g class="session-spinner-rectangle-current">
+        <path id="${rectPathId}" class="session-spinner-rect-motion" d="${rectPath}" pathLength="100"/>
+        <path class="session-spinner-rect-tail faint" d="${rectPath}" pathLength="100"/>
+        <path class="session-spinner-rect-tail bright" d="${rectPath}" pathLength="100"/>
+        <circle class="session-spinner-rect-head" cx="8" cy="2.2" r="1.65">
+          <animateMotion dur="1.7s" repeatCount="indefinite" rotate="auto"><mpath href="#${rectPathId}"/></animateMotion>
+        </circle>
+      </g>
+    </svg>`;
+    const backupOrbit = spinner.querySelector(".session-spinner-circle-backup");
+    if (backupOrbit) backupOrbit.style.animationDelay = `-${Date.now() % 3200}ms`;
+    spinner.classList.toggle("on", !useTextStatusIndicator && presentation.spinning);
+    this.sessionSpinnerEls.set(s.session_id, spinner);
+    const title = document.createElement("span");
+    title.className = "session-title";
+    title.classList.toggle("session-title-working", useTextStatusIndicator && presentation.spinning);
+    title.classList.toggle("session-title-unread",
+      useTextStatusIndicator && !presentation.spinning && this.unreadSessions.has(s.session_id));
+    this.setSessionTitleText(title, presentation.text, useTextStatusIndicator && presentation.spinning);
+    this.sessionTitleEls.set(s.session_id, title);
+    const typeIcon = this.terminalTypeIcon(s);
+    const showDesktopBrandIndicator = !this.vscodeMode && this.settings.show_terminal_icons;
+    const iconStatusActive = showDesktopBrandIndicator &&
+      (presentation.spinning || this.unreadSessions.has(s.session_id));
+    const iconStatusExited = showDesktopBrandIndicator && !s.running && !s.dormant;
+    typeIcon.classList.toggle("terminal-status-active", iconStatusActive);
+    typeIcon.classList.toggle("terminal-status-exited", !iconStatusActive && iconStatusExited);
+    const close = document.createElement("button");
+    close.className = "item-close";
+    close.textContent = "✕";
+    close.title = "Close terminal (⌘⇧⌫ when active)";
+    close.onclick = (event) => { event.stopPropagation(); this.closeSession(s.session_id); };
+    const groupIndicator = document.createElement("span");
+    groupIndicator.className = "group-drop-indicator";
+    groupIndicator.innerHTML = '<span class="codicon codicon-folder-library"></span><span>group</span>';
+    groupIndicator.title = "Release to group with this terminal";
+    if (showDesktopBrandIndicator) item.append(spinner, typeIcon, title, groupIndicator, close);
+    else if (useTextStatusIndicator) item.append(dot, typeIcon, title, groupIndicator, close);
+    else item.append(dot, typeIcon, title, groupIndicator, close);
+    item.onclick = (event) => this.handleSessionRowSelection(event, s.session_id);
+    item.oncontextmenu = (event) => this.openSessionContextMenu(event, s);
+    this.makeLayoutDraggable(item, `session:${s.session_id}`, "session");
+    list.appendChild(item);
+  }
+
+  renderTerminalGroup(group, members, list) {
+    const groupBox = document.createElement("div");
+    // Without brand icons, retain a little breathing room between grouped
+    // rows and the group border instead of pinning their status mark to it.
+    groupBox.className = "terminal-group" + (!this.vscodeMode && !this.settings.show_terminal_icons
+      ? " terminal-icons-hidden" : "");
+    groupBox.dataset.groupId = group.id;
+    const unreadCount = members.filter((session) => this.unreadSessions.has(session.session_id)).length;
+    const working = members.some((session) => this.processingStates.get(session.session_id));
+    groupBox.appendChild(this.terminalGroupLabel(group, members.length, unreadCount, working));
+    const membersBox = document.createElement("div");
+    membersBox.className = "terminal-group-members" + (group.collapsed ? " collapsed" : "");
+    const membersInner = document.createElement("div");
+    membersInner.className = "terminal-group-members-inner";
+    for (const session of members) this.renderTerminalItem(session, membersInner);
+    membersBox.appendChild(membersInner);
+    groupBox.appendChild(membersBox);
+    list.appendChild(groupBox);
+  }
+
   renderList() {
+    this.migrateLegacyPinnedLayout();
     const list = this.$("session-list");
     list.textContent = "";
+    const currentSessionIds = new Set(this.sessions.map((session) => session.session_id));
+    this.sidebarSelectedSessionIds = new Set([...this.sidebarSelectedSessionIds]
+      .filter((sessionId) => currentSessionIds.has(sessionId)));
+    if (!this.sidebarSelectedSessionIds.has(this.sidebarSelectionAnchorId)) {
+      this.sidebarSelectionAnchorId = [...this.sidebarSelectedSessionIds][0] || null;
+    }
     this.sessionTitleEls.clear();
     this.sessionSpinnerEls.clear();
     this.sessionStatusEls.clear();
-    const pinnedIds = new Set(this.getProjectState().pinned_sessions || []);
-    let pinnedSectionShown = false;
-    let terminalSectionShown = false;
-    for (const s of this.sessions) {
-      const isPinned = pinnedIds.has(s.session_id);
-      if (isPinned && !pinnedSectionShown) {
-        list.appendChild(this.pinnedSectionLabel());
-        pinnedSectionShown = true;
-      } else if (!isPinned && !terminalSectionShown) {
-        list.appendChild(this.sectionLabel("terminals"));
-        terminalSectionShown = true;
+    const state = this.getProjectState();
+    const groups = this.terminalGroups();
+    const groupsById = new Map(groups.map((group) => [group.id, group]));
+    const sessionGroups = state.session_groups || {};
+    const visibleSessions = this.activitySort
+      ? [...this.sessions].sort((a, b) => this.sessionActivityTime(b) - this.sessionActivityTime(a))
+      : this.sessions;
+    const sessionsById = new Map(visibleSessions.map((session) => [session.session_id, session]));
+    const grouped = new Map(groups.map((group) => [group.id, []]));
+    for (const session of visibleSessions) {
+      if (grouped.has(sessionGroups[session.session_id])) {
+        grouped.get(sessionGroups[session.session_id]).push(session);
       }
-      const item = document.createElement("div");
-      item.className = "session-item" + (s.session_id === this.activeId && this.activeFileKey === null ? " active" : "");
-      item.title = `${s.command || "zsh"}\n${s.cwd}` + (s.agent_session_id ? `\n${s.agent_kind}: ${s.agent_session_id}` : "") + "\ndouble-click to rename";
-      const presentation = this.titlePresentation(s);
-      const dot = document.createElement("span");
-      dot.className = "status-dot" + (s.running ? "" : " exited") +
-        (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "");
-      this.sessionStatusEls.set(s.session_id, dot);
-      const spinner = document.createElement("span");
-      spinner.className = "session-spinner";
-      const rectPathId = `session-spinner-path-${s.session_id}`;
-      const rectPath = "M8 2.2 H12 Q13.8 2.2 13.8 4 V12 Q13.8 13.8 12 13.8 H4 Q2.2 13.8 2.2 12 V4 Q2.2 2.2 4 2.2 H8";
-      spinner.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">
-        <g class="session-spinner-circle-backup session-spinner-orbit">
-          <path class="session-spinner-tail faint" d="M2.6 6.1 C2.7 4.5 5 3.4 8 3.4 C9.5 3.4 10.2 4.5 10.7 5.3"/>
-          <path class="session-spinner-tail bright" d="M5 4 C7 3.3 9.6 4 10.7 5.3"/>
-          <circle class="session-spinner-head" cx="10.7" cy="5.3" r="4.3"/>
-        </g>
-        <g class="session-spinner-rectangle-current">
-          <path id="${rectPathId}" class="session-spinner-rect-motion" d="${rectPath}" pathLength="100"/>
-          <path class="session-spinner-rect-tail faint" d="${rectPath}" pathLength="100"/>
-          <path class="session-spinner-rect-tail bright" d="${rectPath}" pathLength="100"/>
-          <circle class="session-spinner-rect-head" cx="8" cy="2.2" r="1.65">
-            <animateMotion dur="1.7s" repeatCount="indefinite" rotate="auto"><mpath href="#${rectPathId}"/></animateMotion>
-          </circle>
-        </g>
-      </svg>`;
-      const backupOrbit = spinner.querySelector(".session-spinner-circle-backup");
-      if (backupOrbit) backupOrbit.style.animationDelay = `-${Date.now() % 3200}ms`;
-      spinner.classList.toggle("on", presentation.spinning);
-      this.sessionSpinnerEls.set(s.session_id, spinner);
-      const title = document.createElement("span");
-      title.className = "session-title";
-      title.textContent = presentation.text;
-      this.sessionTitleEls.set(s.session_id, title);
-      const typeIcon = this.terminalTypeIcon(s);
-      const close = document.createElement("button");
-      close.className = "item-close";
-      close.textContent = "✕";
-      close.title = "Close terminal (⌘⇧⌫ when active)";
-      close.onclick = (e) => { e.stopPropagation(); this.closeSession(s.session_id); };
-      item.append(dot, spinner, typeIcon, title, close);
-      item.onclick = () => this.activate(s.session_id);
-      item.oncontextmenu = (e) => this.openSessionContextMenu(e, s);
-      item.ondblclick = () => this.renameSession(s);
-      this.makeDraggable(item, "session", s.session_id, (dragged, target) => this.reorderSessions(dragged, target));
-      list.appendChild(item);
     }
-    if (this.openFiles.size) {
-      list.appendChild(this.sectionLabel("open files"));
-      for (const [key, entry] of this.openFiles) {
-      const item = document.createElement("div");
-      item.className = "file-item" + (key === this.activeFileKey ? " active" : "");
-      item.tabIndex = 0;
-        item.title = entry.fullPath || `${entry.root}/${entry.path}`;
-        const name = document.createElement("span");
-        name.className = "file-item-name";
-        name.textContent = entry.name;
-        const close = document.createElement("button");
-        close.className = "item-close";
-        close.textContent = "✕";
-        close.title = "Close file (⌘⇧⌫ when active)";
-        close.onclick = (e) => { e.stopPropagation(); this.closeFile(key); };
-        item.append(this.fileTypeIconEl(entry.name, "file-type-icon"), name);
-        if (entry.dirty) {
-          const dirty = document.createElement("span");
-          dirty.className = "file-dirty";
-          dirty.textContent = "●";
-          dirty.title = "unsaved changes (⌘S to save)";
-          item.appendChild(dirty);
+    const layout = this.terminalLayout();
+    if (this.activitySort) {
+      for (const members of grouped.values()) {
+        members.sort((a, b) => this.sessionActivityTime(b) - this.sessionActivityTime(a));
+      }
+      const entryActivity = (entry) => {
+        const [kind, id] = entry.split(":", 2);
+        if (kind !== "group") return this.sessionActivityTime(sessionsById.get(id));
+        return Math.max(0, ...(grouped.get(id) || []).map((session) => this.sessionActivityTime(session)));
+      };
+      layout.sort((a, b) => entryActivity(b) - entryActivity(a));
+    }
+    let terminalsHeaderShown = false;
+    const ensureTerminalsHeader = () => {
+      if (terminalsHeaderShown) return;
+      const header = this.sectionLabel("terminals");
+      this.attachGroupDropTarget(header, null);
+      list.appendChild(header);
+      terminalsHeaderShown = true;
+    };
+    if (this.activitySort) {
+      ensureTerminalsHeader();
+      for (const session of visibleSessions) this.renderTerminalItem(session, list);
+    } else {
+      for (const entry of layout) {
+        const [kind, id] = entry.split(":", 2);
+        if (kind === "group") {
+          const group = groupsById.get(id);
+          if (!group) continue;
+          const members = grouped.get(id) || [];
+          ensureTerminalsHeader();
+          this.renderTerminalGroup(group, members, list);
+          continue;
         }
-        item.appendChild(close);
-        item.onclick = () => this.activateFile(key, null);
-        this.makeDraggable(item, "file", key, (dragged, target) => this.reorderFiles(dragged, target));
-        list.appendChild(item);
+        const session = sessionsById.get(id);
+        if (!session || sessionGroups[id]) continue;
+        ensureTerminalsHeader();
+        this.renderTerminalItem(session, list);
       }
     }
-    this.renderRecentFilesInto(list);
+    if (!this.vscodeMode && this.openFiles.size) {
+      const collapsed = this.sectionCollapsed("open_files_collapsed");
+      list.appendChild(this.collapsibleSectionLabel("open files", "open_files_collapsed"));
+      if (!collapsed) {
+        for (const [key, entry] of this.openFiles) {
+          const item = document.createElement("div");
+          item.className = "file-item" + (key === this.activeFileKey ? " active" : "");
+          item.tabIndex = 0;
+          item.title = entry.fullPath || `${entry.root}/${entry.path}`;
+          const name = document.createElement("span");
+          name.className = "file-item-name";
+          name.textContent = entry.name;
+          const close = document.createElement("button");
+          close.className = "item-close";
+          close.textContent = "✕";
+          close.title = "Close file (⌘⇧⌫ when active)";
+          close.onclick = (e) => { e.stopPropagation(); this.closeFile(key); };
+          item.append(this.fileTypeIconEl(entry.name, "file-type-icon"), name);
+          if (entry.dirty) {
+            const dirty = document.createElement("span");
+            dirty.className = "file-dirty";
+            dirty.textContent = "●";
+            dirty.title = "unsaved changes (⌘S to save)";
+            item.appendChild(dirty);
+          }
+          item.appendChild(close);
+          item.onclick = () => this.activateFile(key, null);
+          this.makeDraggable(item, "file", key, (dragged, target, after) => this.reorderFiles(dragged, target, after));
+          list.appendChild(item);
+        }
+      }
+    }
+    if (!this.vscodeMode) this.renderRecentFilesInto(list);
     this.renderClosedInto(list);
-    this.$("empty-state").style.display = this.sessions.length || this.openFiles.size ? "none" : "flex";
+    this.$("empty-state").style.display = this.sessions.length || (!this.vscodeMode && this.openFiles.size) ? "none" : "flex";
     this.sessionListSignature = this.sessionListSignatureFor();
   }
 
@@ -925,100 +2754,57 @@ class TermdeckApp {
     requestAnimationFrame(() => row.scrollIntoView({ block: "nearest" }));
   }
 
-  hidePathOverflow() {
-    if (this.pathOverflowEl) this.pathOverflowEl.remove();
-    this.pathOverflowEl = null;
-  }
-
-  showPathOverflow(row) {
-    this.hidePathOverflow();
-    if (this.activeFileKey !== null || !row || !row.title) return;
-    const label = document.createElement("div");
-    label.className = "path-overflow-label";
-    label.textContent = row.title.split("\n", 1)[0];
-    document.body.appendChild(label);
-    const rect = row.getBoundingClientRect();
-    const left = Math.max(8, rect.left);
-    label.style.left = left + "px";
-    label.style.top = rect.top + "px";
-    label.style.maxWidth = Math.max(180, window.innerWidth - left - 12) + "px";
-    this.pathOverflowEl = label;
-  }
-
-  setSideView(view, allowToggle = true) {
-    this.sideView = allowToggle && this.sideView === view && view !== "terminals" ? "terminals" : view;
+  setSideView(view, allowToggle = true, allowFloating = true) {
+    if (this.vscodeMode && (view === "project" || view === "search")) return;
+    const nextView = allowToggle && this.sideView === view && view !== "terminals" ? "terminals" : view;
+    this.sideView = nextView;
     view = this.sideView;
     const filesVisible = view === "project" || view === "search";
+    const filesPinned = filesVisible && !!this.settings.files_pinned;
+    this.settings.side_full = filesVisible;
+    if (filesPinned) {
+      const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
+      this.settings.files_width = Math.max(Number(this.settings.files_width) || 0, normalWidth * 2);
+    }
     this.$("files-section").classList.toggle("hidden", !filesVisible);
     this.$("files-section").classList.toggle("with-search", view === "search");
+    this.$("files-section").classList.toggle("floating", filesVisible && !filesPinned);
     for (const name of ["terminals", "project", "search"]) {
       this.$("view-" + name).classList.toggle("on", name === view);
     }
-    this.$("side-split").classList.toggle("hidden", view === "terminals");
+    this.$("side-split").classList.toggle("hidden", view === "terminals" || filesVisible);
+    this.applySettings();
     this.applySideLayout();
-    if (filesVisible && this.treeRoot === null) this.reloadTree();
+    if (filesVisible) {
+      const session = this.session(this.activeId);
+      const expectedRoot = session ? session.cwd : (this.projectRoot() || "~");
+      if (this.treeRoot !== expectedRoot || !this.treeDirs.has("")) {
+        this.treeReloadPromise = this.reloadTree(expectedRoot);
+      }
+    }
     if (!filesVisible) {
-      this.hidePathOverflow();
+      this.scheduleTerminalFitAfterSidebarChange();
       return;
     }
     if (view === "search") this.$("search-query").focus();
     if (view === "search" && this.$("search-query").value.trim()) this.runSearch(null, true);
     else if (view === "project") this.setExplorerMode("tree");
     else this.setExplorerMode("content");
+    this.scheduleTerminalFitAfterSidebarChange();
   }
 
   focusFileNameSearch() {
+    if (this.vscodeMode) return;
     if (this.sideView !== "project") this.setSideView("project");
     const input = this.$("search-name");
     setTimeout(() => { input.focus(); input.select(); }, 0);
   }
 
   focusFileContentSearch() {
+    if (this.vscodeMode) return;
     if (this.sideView !== "search") this.setSideView("search");
     const input = this.$("search-query");
     setTimeout(() => { input.focus(); input.select(); }, 0);
-  }
-
-  updateFileBrowserMode() {
-    const searchMode = this.sideView === "search";
-    this.$("file-browser-name-mode").classList.toggle("on", !searchMode);
-    this.$("file-browser-content-mode").classList.toggle("on", searchMode);
-  }
-
-  openFileBrowserModal() {
-    if (this.fileBrowserModalOpen) {
-      if (this.sideView === "search") this.focusFileContentSearch();
-      else this.focusFileNameSearch();
-      return;
-    }
-    const section = this.$("files-section");
-    this.fileBrowserPreviousView = this.sideView;
-    this.fileBrowserOrigin = { parent: section.parentNode, next: section.nextSibling };
-    const targetView = this.sideView === "search" ? "search" : "project";
-    if (this.sideView !== targetView) this.setSideView(targetView);
-    this.$("file-browser-host").appendChild(section);
-    section.classList.add("file-modal-panel");
-    section.style.height = "";
-    section.style.flex = "1";
-    section.classList.remove("hidden");
-    this.fileBrowserModalOpen = true;
-    this.$("file-browser-backdrop").classList.remove("hidden");
-    this.updateFileBrowserMode();
-    if (targetView === "search") this.focusFileContentSearch();
-    else this.focusFileNameSearch();
-  }
-
-  closeFileBrowserModal() {
-    if (!this.fileBrowserModalOpen) return;
-    const section = this.$("files-section");
-    if (this.fileBrowserOrigin) {
-      this.fileBrowserOrigin.parent.insertBefore(section, this.fileBrowserOrigin.next);
-    }
-    section.classList.remove("file-modal-panel");
-    this.fileBrowserModalOpen = false;
-    this.fileBrowserOrigin = null;
-    this.$("file-browser-backdrop").classList.add("hidden");
-    this.setSideView(this.fileBrowserPreviousView, false);
   }
 
   setExplorerMode(mode) {
@@ -1027,18 +2813,123 @@ class TermdeckApp {
     this.$("name-results").classList.toggle("hidden", mode !== "name");
   }
 
-  cycleView(view) {
-    if (this.sideView !== view) {
-      this.settings.side_full = !this.settings.side_split_user_set;
-      this.setSideView(view);
-      this.saveSettings();
-      if (view === "project") this.focusFileNameSearch();
-      else if (view === "search") this.focusFileContentSearch();
-    } else {
-      this.settings.side_full = false;
-      this.saveSettings();
-      this.setSideView("terminals");
+  updateFilesPinButton() {
+    const button = this.$("files-pin-toggle");
+    if (!button) return;
+    const pinned = !!this.settings.files_pinned;
+    button.classList.toggle("on", pinned);
+    button.title = pinned ? "Unpin panel (it will close after opening a file)" :
+      "Keep this panel open after opening a file";
+    button.setAttribute("aria-label", pinned ? "Unpin file panel" : "Pin file panel");
+    button.setAttribute("aria-pressed", String(pinned));
+    const icon = button.querySelector(".codicon");
+    if (icon) icon.className = `codicon ${pinned ? "codicon-pinned" : "codicon-pin"}`;
+  }
+
+  toggleFilesPinned() {
+    this.settings.files_pinned = !this.settings.files_pinned;
+    localStorage.setItem("termdeck.files_pinned", this.settings.files_pinned ? "1" : "0");
+    if (this.settings.files_pinned) {
+      const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
+      this.settings.files_width = Math.max(Number(this.settings.files_width) || 0, normalWidth * 2);
     }
+    const filesVisible = this.sideView === "project" || this.sideView === "search";
+    this.$("files-section").classList.toggle("floating", filesVisible && !this.settings.files_pinned);
+    this.updateFilesPinButton();
+    this.applySettings();
+    this.scheduleTerminalFitAfterSidebarChange();
+    this.saveSettings();
+  }
+
+  dismissUnpinnedFilesPanel() {
+    if (this.settings.files_pinned || (this.sideView !== "project" && this.sideView !== "search")) return;
+    this.setSideView("terminals", false);
+  }
+
+  scheduleTerminalFitAfterSidebarChange() {
+    this.scheduleTerminalLayoutFit();
+  }
+
+  positionFloatingFilesPanel(fileWidth = null) {
+    const section = this.$("files-section");
+    if (!section || !section.classList.contains("floating") || section.classList.contains("hidden")) {
+      if (section) {
+        section.style.top = "";
+        section.style.bottom = "";
+        section.style.width = "";
+      }
+      return;
+    }
+    const sidebar = this.$("sidebar");
+    const header = this.$("sidebar-header");
+    const footer = this.$("sidebar-footer");
+    const terminalSearch = this.$("terminal-search-bar");
+    const searchOffset = terminalSearch && !terminalSearch.classList.contains("hidden") ? terminalSearch.offsetHeight : 0;
+    const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
+    const requestedWidth = Number(fileWidth) || Math.max(Number(this.settings.files_width) || 0, normalWidth * 2);
+    const availableWidth = Math.max(normalWidth, window.innerWidth - sidebar.getBoundingClientRect().left - 20);
+    section.style.top = `${(header?.offsetHeight || 0) + searchOffset}px`;
+    section.style.bottom = `${footer?.offsetHeight || 0}px`;
+    section.style.width = `${Math.min(requestedWidth, availableWidth)}px`;
+    document.documentElement.style.setProperty("--files-panel-width", `${Math.min(requestedWidth, availableWidth)}px`);
+  }
+
+  positionFloatingTerminalSearch() {
+    const bar = this.$("terminal-search-bar");
+    if (!bar || !bar.classList.contains("expanded") || bar.classList.contains("hidden")) {
+      if (bar) {
+        bar.style.top = "";
+        bar.style.width = "";
+        bar.style.maxHeight = "";
+      }
+      return;
+    }
+    const sidebar = this.$("sidebar");
+    const header = this.$("sidebar-header");
+    const footer = this.$("sidebar-footer");
+    const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
+    const requestedWidth = Math.max(Number(this.settings.files_width) || 0, normalWidth * 2);
+    const availableWidth = Math.max(normalWidth, window.innerWidth - sidebar.getBoundingClientRect().left - 20);
+    const top = header?.offsetHeight || 0;
+    bar.style.top = `${top}px`;
+    bar.style.width = `${Math.min(requestedWidth, availableWidth)}px`;
+    bar.style.maxHeight = `calc(100vh - ${top + (footer?.offsetHeight || 0) + 8}px)`;
+  }
+
+  scheduleTerminalLayoutFit() {
+    if (this.layoutFitFrame) cancelAnimationFrame(this.layoutFitFrame);
+    clearTimeout(this.layoutFitTimer);
+    clearTimeout(this.layoutFitSettleTimer);
+    this.layoutFitFrame = requestAnimationFrame(() => {
+      this.layoutFitFrame = requestAnimationFrame(() => {
+        this.layoutFitFrame = 0;
+        this.fitActive();
+      });
+    });
+    // A webview/sidebar can finish its flex layout after the first two frames
+    // (notably during startup or after a browser refresh). Refit once more
+    // after that layout has settled, without changing terminal scroll mode.
+    this.layoutFitTimer = setTimeout(() => {
+      this.layoutFitTimer = 0;
+      this.fitActive();
+    }, 180);
+    // A refresh can finish the sidebar/main flex pass after the first timer
+    // (especially when several long session names change row widths). Give
+    // the active xterm one final bounded fit/repaint after that pass. v2
+    // preserves the xterm-owned scroll mode, so this does not reintroduce
+    // the old browser-scroll repair race.
+    this.layoutFitSettleTimer = setTimeout(() => {
+      this.layoutFitSettleTimer = 0;
+      this.fitActive();
+    }, 420);
+  }
+
+  cycleView(view) {
+    if (this.vscodeMode && (view === "project" || view === "search")) return;
+    this.setSideView(view);
+    if (this.sideView !== view) return;
+    if (view === "project") this.focusFileNameSearch();
+    else if (view === "search") this.focusFileContentSearch();
   }
 
   applySideLayout() {
@@ -1047,9 +2938,10 @@ class TermdeckApp {
     this.$("session-list").classList.toggle("collapsed", full);
     if (!sectionId) return;
     const section = this.$(sectionId);
-    if (this.fileBrowserModalOpen) {
-      section.style.height = "";
-      section.style.flex = "1";
+    if (section.classList.contains("floating")) {
+      section.style.height = "auto";
+      section.style.flex = "none";
+      this.positionFloatingFilesPanel();
       return;
     }
     if (full) {
@@ -1129,16 +3021,72 @@ class TermdeckApp {
     menu.appendChild(item);
   }
 
+  shortcutLabel(label, actionId) {
+    const binding = this.bindingFor(actionId);
+    return binding ? `${label}   ${this.bindingToDisplay(binding)}` : label;
+  }
+
+  keybindingDefinitions() {
+    return this.vscodeMode ? VSCODE_KEYBINDINGS : DESKTOP_KEYBINDINGS;
+  }
+
+  keybindingsStorageKey() {
+    return this.vscodeMode ? "vscode_keybindings" : "keybindings";
+  }
+
+  updateShortcutTitles() {
+    const action = this.bindingToDisplay(this.bindingFor("toggle-history"));
+    for (const id of ["history-btn", "vscode-history-btn"]) {
+      const historyButton = this.$(id);
+      if (historyButton) historyButton.title = `Open Markdown transcript (${action})`;
+    }
+    const historyClose = this.$("history-close");
+    if (historyClose) historyClose.title = `Switch to terminal (${action})`;
+    const refreshButton = this.$("vscode-refresh-btn");
+    if (refreshButton && this.vscodeMode) {
+      refreshButton.title = `Refresh TermDeck (${this.bindingToDisplay(this.bindingFor("vscode-refresh"))})`;
+    }
+    const terminalSearch = this.$("terminal-search-toggle");
+    if (terminalSearch) {
+      terminalSearch.title = `Search terminal output (${this.bindingToDisplay(this.bindingFor("terminal-search"))})`;
+    }
+    this.updateTerminalSearchGroupButton();
+  }
+
   openSessionContextMenu(event, session) {
     event.preventDefault();
     event.stopPropagation();
     const menu = this.$("context-menu");
     menu.textContent = "";
-    const pinned = (this.getProjectState().pinned_sessions || []).includes(session.session_id);
-    this.addContextItem(menu, pinned ? "Unpin terminal" : "Pin terminal to the top",
-      () => this.togglePin(session.session_id), pinned ? "pinned" : "pin");
-    this.addContextItem(menu, "Fork into a new terminal", () => this.forkSession(session), "repo-forked");
-    this.addContextItem(menu, "Restart terminal", () => this.restartSession(session.session_id), "refresh");
+    const state = this.getProjectState();
+    const assignedGroupId = state.session_groups?.[session.session_id] || "";
+    this.addContextItem(menu, assignedGroupId ? "Move group to top" : "Move terminal to top",
+      () => this.moveTerminalLayoutToTop(assignedGroupId ? `group:${assignedGroupId}` : `session:${session.session_id}`), "arrow-up");
+    this.addContextItem(menu, this.shortcutLabel("Fork into a new terminal", "fork-terminal"), () => this.forkSession(session), "repo-forked");
+    this.addContextItem(menu, this.shortcutLabel("Restart terminal", "restart-terminal"), () => this.restartSession(session.session_id), "refresh");
+    this.addContextItem(menu, this.shortcutLabel("Close terminal", "close-item"), () => this.closeSession(session.session_id), "close");
+    this.addContextItem(menu, "Rename terminal", () => this.renameSession(session), "edit");
+    const unread = this.unreadSessions.has(session.session_id);
+    this.addContextItem(menu, unread ? "Mark as read" : "Mark as unread",
+      () => this.setSessionUnread(session.session_id, !unread), unread ? "eye" : "eye-closed");
+    this.addContextItem(menu, "Create group from this terminal", () => this.createTerminalGroupFromSession(session.session_id), "folder-library");
+    const groups = this.terminalGroups();
+    if (groups.length) {
+      this.addContextItem(menu, "Move to ungrouped", assignedGroupId
+        ? () => this.assignSessionGroup(session.session_id, null) : null, "folder");
+      for (const group of groups) {
+        this.addContextItem(menu, `Move to ${group.name}`, assignedGroupId === group.id
+          ? null : () => this.assignSessionGroup(session.session_id, group.id), "folder-library");
+      }
+    }
+    if (!this.vscodeMode) {
+      const otherProjects = this.projects.filter((project) => project.name && project.name !== session.project);
+      this.addContextItem(menu, "Move terminal to project", null, "folder-opened");
+      for (const project of otherProjects) {
+        this.addContextItem(menu, `Move to ${project.name}`, () => this.moveSessionToProject(session, project.name), "folder");
+      }
+      if (!otherProjects.length) this.addContextItem(menu, "No other registered projects", null, "info");
+    }
     menu.classList.remove("hidden");
     menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 10) + "px";
     menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 10) + "px";
@@ -1265,14 +3213,13 @@ class TermdeckApp {
 
   renderRecentFilesInto(list) {
     const openKeys = new Set(this.openFiles.keys());
-    const header = document.createElement("div");
-    header.className = "side-section-label side-section-header recent-files-header";
-    const title = document.createElement("span");
-    title.textContent = "recently modified";
     const toggle = document.createElement("button");
     toggle.className = "section-toggle";
-    header.append(title, toggle);
+    const collapsed = this.sectionCollapsed("recent_files_collapsed");
+    const header = this.collapsibleSectionLabel("recently modified", "recent_files_collapsed", toggle);
+    header.classList.add("recent-files-header");
     list.appendChild(header);
+    if (collapsed) return;
     const controls = document.createElement("div");
     controls.className = "recent-files-controls";
     const filter = document.createElement("input");
@@ -1295,15 +3242,16 @@ class TermdeckApp {
         const item = document.createElement("div");
         item.className = "file-item recent-file-item";
         item.tabIndex = 0;
-        item.title = `${this.recentFilesRoot}/${entry.path}\nmodified ${new Date(entry.mtime * 1000).toLocaleString()}`;
+        item.title = `${this.recentFilesRoot}/${entry.path}\nmodified ${this.exactMtime(entry.mtime)}`;
         const name = document.createElement("span");
         name.className = "file-item-name";
         name.textContent = entry.name;
         const mtime = document.createElement("span");
         mtime.className = "recent-mtime";
         mtime.textContent = this.formatMtime(entry.mtime);
-        mtime.title = new Date(entry.mtime * 1000).toLocaleString();
+        mtime.title = `modified ${this.exactMtime(entry.mtime)}`;
         item.append(this.fileTypeIconEl(entry.name, "file-type-icon"), name, mtime);
+        this.appendGitStatus(item, entry);
         item.onclick = () => this.openFile(this.recentFilesRoot, entry.path, null, null);
         body.appendChild(item);
       }
@@ -1349,20 +3297,28 @@ class TermdeckApp {
   }
 
   async refreshRecentFiles(force = false) {
+    if (this.vscodeMode) return;
     if (this.recentFilesBusy) return;
     const activeRoot = this.session(this.activeId)?.cwd || this.projectRoot();
     const filesVisible = !this.$("files-section").classList.contains("hidden");
     const root = (filesVisible && this.treeRoot) || activeRoot;
     if (!root) return;
-    if (!force && this.recentFilesRoot === root && Date.now() - this.recentFilesFetchedAt < TREE_POLL_MS) return;
+    if (!force && this.recentFilesRoot === root && Date.now() - this.recentFilesFetchedAt < RECENT_FILES_REFRESH_MS) return;
     this.recentFilesBusy = true;
     try {
       const res = await fetch(`/api/files/recent?root=${encodeURIComponent(root)}&limit=40`);
-      if (!res.ok || this.treeRoot !== root) return;
-      this.recentFiles = await res.json();
+      // Recent files are also rendered below terminals while the Files view is
+      // hidden, so treeRoot may intentionally be stale or null in that state.
+      if (!res.ok || (filesVisible && this.treeRoot !== root)) return;
+      const next = await res.json();
+      const fingerprint = `${root}|${next.map((entry) => `${entry.path}:${entry.mtime}`).join("|")}`;
       this.recentFilesRoot = root;
       this.recentFilesFetchedAt = Date.now();
-      this.renderList();
+      if (fingerprint !== this.recentFilesFingerprint) {
+        this.recentFiles = next;
+        this.recentFilesFingerprint = fingerprint;
+        this.renderList();
+      }
     } catch (error) {
       console.warn("recent files refresh failed", error);
     } finally {
@@ -1380,7 +3336,9 @@ class TermdeckApp {
     header.onclick = () => { this.closedExpanded = !this.closedExpanded; this.renderList(); };
     list.appendChild(header);
     if (!this.closedExpanded) return;
-    for (const c of this.closedSessions) {
+    const visibleClosed = this.closedSessions.slice(0, Math.min(
+      this.closedDisplayLimit, CLOSED_SESSIONS_MAX_DISPLAY));
+    for (const c of visibleClosed) {
       const item = document.createElement("div");
       item.className = "closed-item";
       item.title = `${c.command || "zsh"}\n${c.cwd}\nclosed ${c.closed_at_est}` +
@@ -1398,6 +3356,21 @@ class TermdeckApp {
       item.append(icon, name, purge);
       item.onclick = () => this.reopenClosed(c.session_id);
       list.appendChild(item);
+    }
+    if (this.closedSessions.length > visibleClosed.length && visibleClosed.length < CLOSED_SESSIONS_MAX_DISPLAY) {
+      const loadMore = document.createElement("button");
+      loadMore.className = "closed-load-more";
+      loadMore.textContent = `load more (${Math.min(
+        CLOSED_SESSIONS_MAX_DISPLAY - visibleClosed.length,
+        this.closedSessions.length - visibleClosed.length)})`;
+      loadMore.title = "Show more recently closed terminals";
+      loadMore.onclick = (event) => {
+        event.stopPropagation();
+        this.closedDisplayLimit = Math.min(
+          CLOSED_SESSIONS_MAX_DISPLAY, this.closedDisplayLimit + CLOSED_SESSIONS_INITIAL_DISPLAY);
+        this.renderList();
+      };
+      list.appendChild(loadMore);
     }
   }
 
@@ -1419,11 +3392,206 @@ class TermdeckApp {
     const s = this.session(this.activeId);
     const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
     const tabTitle = entry ? entry.name : (s ? this.titlePresentation(s).text : null);
-    document.title = tabTitle ? `${tabTitle} — TermDeck` : "TermDeck";
+    document.title = this.vscodeMode ? "TermDeck" : (tabTitle ? `${tabTitle} — TermDeck` : "TermDeck");
     const statusEl = this.$("status-name");
-    if (entry) statusEl.textContent = entry.fullPath || `${entry.root}/${entry.path}`;
-    else statusEl.textContent = s ? `${this.titlePresentation(s).text}  ·  ${s.cwd}` : "";
+    if (entry) {
+      statusEl.textContent = this.vscodeMode ? entry.name : (entry.fullPath || `${entry.root}/${entry.path}`);
+    } else {
+      statusEl.textContent = this.vscodeMode ? (s ? this.titlePresentation(s).text : "") : (s ? `${this.titlePresentation(s).text}  ·  ${s.cwd}` : "");
+    }
     statusEl.title = statusEl.textContent;
+    this.renderHistoryMeta();
+  }
+
+  renderHistoryMeta() {
+    const meta = this.$("history-meta");
+    if (!meta) return;
+    const visible = this.historyOpen && this.activeFileKey === null;
+    meta.classList.toggle("hidden", !visible);
+    if (!visible) {
+      meta.textContent = "";
+      meta.title = "";
+      return;
+    }
+    const session = this.sessionOrClosed(this.activeId);
+    const turns = this.historyTurnsBySession.get(this.activeId) || this.historyTurns;
+    const plan = [...turns].reverse().find((turn) => turn.kind === "plan" && Array.isArray(turn.plan) && turn.plan.length);
+    const parts = [];
+    if (plan) {
+      const completed = plan.plan.filter((item) => ["complete", "completed", "done"].includes(String(item.status || "").toLowerCase())).length;
+      const active = plan.plan.find((item) => String(item.status || "").toLowerCase() === "in_progress");
+      parts.push(`goal ${completed}/${plan.plan.length}`);
+      if (active?.step) parts.push(String(active.step));
+    }
+    if (this.processingStates.get(this.activeId)) parts.push("working");
+    meta.textContent = parts.join(" · ");
+    meta.title = meta.textContent;
+    meta.classList.toggle("hidden", parts.length === 0);
+    this.renderHistoryModel(session, turns);
+  }
+
+  historyModel(session, turns = []) {
+    const sessionId = session?.session_id || this.activeId;
+    const cachedModel = sessionId ? this.sessionModelById.get(sessionId) || "" : "";
+    if (cachedModel && !this.historyModelIsGeneric(cachedModel)) return cachedModel;
+    const titleModel = this.historyModelFromText(session?.title);
+    if (titleModel && !this.historyModelIsGeneric(titleModel)) return titleModel;
+    const cliTitleModel = this.historyModelFromText(session?.cli_title);
+    if (cliTitleModel && !this.historyModelIsGeneric(cliTitleModel)) return cliTitleModel;
+    const titleCliModel = this.historyModelFromText(session?.title || session?.cli_title);
+    if (titleCliModel && !this.historyModelIsGeneric(titleCliModel)) return titleCliModel;
+    const fromCommand = this.historyModelFromCommand(session?.command || "");
+    if (fromCommand && !this.historyModelIsGeneric(fromCommand)) return fromCommand;
+    const fromTranscript = this.historyModelFromTranscript(turns);
+    if (fromTranscript) return fromTranscript;
+    const sessionTitle = String(session?.title || "").toLowerCase();
+    if (sessionTitle.includes("codex")) return "codex";
+    if (sessionTitle.includes("claude")) return "claude";
+    const sessionCliTitle = String(session?.cli_title || "").toLowerCase();
+    if (sessionCliTitle.includes("codex")) return "codex";
+    if (sessionCliTitle.includes("claude")) return "claude";
+    if (String(session?.command || "").toLowerCase().includes("zsh") ||
+        String(session?.command || "").toLowerCase().includes("bash") ||
+        String(session?.command || "").toLowerCase().includes("sh")) return "none";
+    if (this.historyModelFromText(session?.agent_kind)) return this.historyModelFromText(session?.agent_kind);
+    return "none";
+  }
+
+  historyModelFromCommand(command) {
+    const text = this.normalizeModelText(command);
+    if (!text) return "";
+    const modelFromFlag = this.historyModelFromCommandFlags(text);
+    if (modelFromFlag) return modelFromFlag;
+    return this.historyModelFromValue(text);
+  }
+
+  historyModelFromCommandFlags(text) {
+    const rawTokens = text.match(/"([^"\\]|\\.)*"|'([^'\\]|\\.)*'|[^\s]+/g);
+    const tokens = rawTokens === null ? [] : rawTokens;
+    for (let i = 0; i < tokens.length; i++) {
+      const token = this.normalizeModelText(tokens[i]);
+      const lower = token.toLowerCase();
+      if (lower === "--model" || lower === "--model-name" || lower === "--model_name" || lower === "-m") {
+        const candidate = this.historyModelFromValue(tokens[i + 1]);
+        if (candidate) return candidate;
+      }
+      const assignmentMatch = /^(?:--model|--model-name|--model_name|-m)=(.+)$/i.exec(token);
+      if (!assignmentMatch) continue;
+      const candidate = this.historyModelFromValue(assignmentMatch[1]);
+      if (candidate) return candidate;
+    }
+    return "";
+  }
+
+  historyModelFromValue(raw) {
+    const value = this.normalizeModelText(raw).replace(/^["']|["']$/g, "");
+    if (!value) return "";
+    const modelPattern = /\b(gpt-[a-z0-9.+-]+(?:-[a-z0-9.+-]+)*(?:\s+x(?:high|medium|low|standard|mini|turbo))?)\b/gi;
+    const match = value.match(modelPattern);
+    if (!match) return "";
+    return match[0];
+  }
+
+  historyModelFromText(raw) {
+    const value = this.historyModelFromValue(raw);
+    if (value) return value;
+    return this.normalizeModelKind(raw);
+  }
+
+  normalizeModelText(raw) {
+    return typeof raw === "string" ? raw.trim() : "";
+  }
+
+  normalizeModelKind(raw) {
+    const text = String(raw || "").toLowerCase();
+    if (!text) return "";
+    if (text.includes("codex")) return "codex";
+    if (text.includes("claude")) return "claude";
+    if (text.includes("none") || /\b(shell|zsh|bash)\b/.test(text)) return "none";
+    return "";
+  }
+
+  cacheSessionModel(session) {
+    if (!session || !session.session_id) return;
+    const sessionId = session.session_id;
+    const commandModel = this.historyModelFromCommand(session.command);
+    const titleModel = this.historyModelFromText(session.title);
+    const cliTitleModel = this.historyModelFromText(session.cli_title);
+    const specific = [commandModel, titleModel, cliTitleModel].find((value) => value && !this.historyModelIsGeneric(value));
+    if (specific) this.sessionModelById.set(sessionId, specific);
+    else this.sessionModelById.delete(sessionId);
+  }
+
+  cacheSessionModelFromHistory(sessionId, turns = []) {
+    if (!sessionId) return;
+    const specific = this.historyModelFromTranscript(turns);
+    if (specific) this.sessionModelById.set(sessionId, specific);
+  }
+
+  historyModelFromTranscript(turns = []) {
+    if (!Array.isArray(turns)) return "";
+    for (const turn of turns) {
+      const candidates = [
+        this.historyModelFromValue(this.normalizeModelText(turn?.model)),
+        this.historyModelFromValue(this.normalizeModelText(turn?.model_name)),
+        this.historyModelFromValue(this.normalizeModelText(turn?.model_slug)),
+        this.historyModelFromValue(this.normalizeModelText(turn?.assistant_model)),
+        this.historyModelFromValue(this.normalizeModelText(turn?.text)),
+      ];
+      const explicit = candidates.find((candidate) => candidate);
+      if (explicit) return explicit;
+    }
+    return "";
+  }
+
+  historyModelDisplayFromTranscript(turns = []) {
+    if (!Array.isArray(turns)) return "";
+    return this.historyModelFromTranscript(turns);
+  }
+
+  historyModelIsGeneric(raw) {
+    const text = this.normalizeModelText(raw).toLowerCase();
+    return text === "codex" || text === "claude" || text === "none" || text === "shell"
+      || text === "bash" || text === "zsh" || text === "sh";
+  }
+
+  historyModelDisplay(session, turns = []) {
+    const fromTranscript = this.historyModelDisplayFromTranscript(turns);
+    if (fromTranscript) return fromTranscript;
+    return this.historyModelLabel(session, turns);
+  }
+
+  historyModelLabel(session, turns = []) {
+    const model = this.historyModel(session, turns);
+    if (this.historyModelIsGeneric(model)) {
+      const label = model === "codex" ? "Codex" : model === "claude" ? "Claude" : "Shell";
+      return label;
+    }
+    const label = this.historyModelModelLabel(model);
+    return label || "";
+  }
+
+  historyModelModelLabel(model) {
+    return this.normalizeModelText(model);
+  }
+
+  renderHistoryModel(session, turns = []) {
+    const modelEl = this.$("history-model");
+    if (!modelEl) return;
+    if (!this.historyOpen || this.activeFileKey !== null) {
+      modelEl.textContent = "";
+      modelEl.classList.add("hidden");
+      return;
+    }
+    const model = this.historyModelDisplay(session, turns);
+    if (!model) {
+      modelEl.textContent = "";
+      modelEl.classList.add("hidden");
+      return;
+    }
+    modelEl.textContent = model;
+    modelEl.classList.remove("hidden");
+    modelEl.title = modelEl.textContent;
   }
 
   applyMainLayout() {
@@ -1432,8 +3600,26 @@ class TermdeckApp {
     this.$("editor-area").classList.toggle("hidden", !fileMode);
     this.$("history-area").classList.toggle("hidden", !historyMode);
     this.$("terminal-area").classList.toggle("hidden", fileMode || historyMode);
-    this.$("history-btn").classList.toggle("on", historyMode);
+    for (const id of ["history-btn", "vscode-history-btn"]) {
+      const historyButton = this.$(id);
+      if (historyButton) historyButton.classList.toggle("on", historyMode);
+    }
+    for (const id of ["history-edits-toggle", "history-scroll-bottom"]) {
+      const button = this.$(id);
+      if (button) button.classList.toggle("hidden", !historyMode);
+    }
+    this.updateShortcutTitles();
     this.$("attach-btn").classList.toggle("hidden", historyMode || fileMode);
+    for (const id of ["terminal-resync-btn"]) {
+      const button = this.$(id);
+      if (button) button.classList.toggle("hidden", fileMode);
+    }
+    const terminalScrollButton = this.$("scroll-bottom-btn");
+    if (terminalScrollButton) {
+      terminalScrollButton.classList.toggle("hidden", historyMode || fileMode);
+    }
+    this.$("history-btn").classList.toggle("hidden", fileMode);
+    this.renderHistoryMeta();
     this.updateHistoryThinkingIndicator();
     this.renderHistoryQueue();
     this.fitActive();
@@ -1441,13 +3627,17 @@ class TermdeckApp {
 
   updateHistoryThinkingIndicator() {
     const indicator = this.$("history-thinking-banner");
-    const spinning = !!this.historyOpen && !!this.processingStates.get(this.activeId);
-    if (indicator) indicator.classList.add("hidden");
+    const processing = !!this.processingStates.get(this.activeId);
+    const awaitingProcessing = this.historyPendingProcessing.has(this.activeId);
+    const spinning = !!this.historyOpen && (processing || awaitingProcessing);
+    if (indicator) indicator.classList.toggle("hidden", !spinning);
     const duration = this.$("history-thinking-duration");
     if (duration) {
       const session = this.session(this.activeId);
       const sessionSince = Number(session?.processing_since);
-      const since = sessionSince > 0 ? sessionSince * 1000 : this.processingSince.get(this.activeId);
+      const since = processing
+        ? (this.processingSince.get(this.activeId) || (sessionSince > 0 ? sessionSince * 1000 : 0))
+        : this.historyPendingProcessing.get(this.activeId);
       const seconds = since ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0;
       duration.textContent = spinning ? this.formatElapsed(seconds) : "";
     }
@@ -1464,17 +3654,10 @@ class TermdeckApp {
     const body = this.$("history-body");
     if (!body) return;
     body.querySelectorAll(".history-event.thinking.active").forEach((event) => event.classList.remove("active"));
-    body.querySelectorAll(".history-thinking-duration-inline").forEach((duration) => { duration.textContent = ""; });
     if (!this.historyOpen || !this.processingStates.get(this.activeId)) return;
     const last = body.lastElementChild;
     if (last?.classList.contains("history-event") && last.classList.contains("thinking")) {
       last.classList.add("active");
-      const duration = last.querySelector(".history-thinking-duration-inline");
-      const session = this.session(this.activeId);
-      const sessionSince = Number(session?.processing_since);
-      const since = sessionSince > 0 ? sessionSince * 1000 : this.processingSince.get(this.activeId);
-      const seconds = since ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0;
-      if (duration) duration.textContent = ` · ${this.formatElapsed(seconds)}`;
     }
   }
 
@@ -1606,9 +3789,14 @@ class TermdeckApp {
     const view = this.views.get(this.activeId);
     if (!view || this.activeFileKey !== null) return;
     if (this.historyOpen) {
+      if (this.nativeVscodeMode) this.postVscodeNativeSession(this.session(this.activeId), false);
       this.showPromptDraft(view);
       this.$("history-prompt").focus();
     } else {
+      if (this.nativeVscodeMode) {
+        this.postVscodeNativeSession(this.session(this.activeId), true);
+        return;
+      }
       view.term.focus();
     }
   }
@@ -1631,7 +3819,9 @@ class TermdeckApp {
     this.historyTurns = [];
     this.historyLoaded = false;
     this.historyOpen = !!enabled && this.activeFileKey === null && !!this.activeId;
+    this.postVscodeNativeSession(this.session(this.activeId), !this.historyOpen);
     this.applyMainLayout();
+    this.scheduleTerminalLayoutFit();
     if (this.historyOpen) {
       const sessionId = this.activeId;
       this.showPromptDraft(this.views.get(sessionId));
@@ -1642,7 +3832,8 @@ class TermdeckApp {
       const view = this.views.get(this.activeId);
       if (view) {
         this.syncPromptToTerminal(view);
-        view.term.focus();
+        if (this.nativeVscodeMode) this.postVscodeNativeSession(this.session(this.activeId), true);
+        else view.term.focus();
       }
     }
   }
@@ -1662,8 +3853,10 @@ class TermdeckApp {
     clearTimeout(this.historyWsReconnectTimer);
     this.historyWsReconnectTimer = 0;
     const ws = this.historyWs;
+    const sessionId = this.historyStreamSessionId;
     this.historyWs = null;
     this.historyStreamSessionId = null;
+    if (sessionId) this.historySnapshotBuffers.delete(sessionId);
     if (ws) ws.close();
   }
 
@@ -1671,6 +3864,7 @@ class TermdeckApp {
     if (!sessionId || !this.historyOpen || this.activeFileKey !== null) return;
     this.disconnectHistoryStream();
     const fresh = options.fresh === true;
+    this.historyStreamFresh = fresh;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws/transcript/${encodeURIComponent(sessionId)}`);
     this.historyWs = ws;
@@ -1680,7 +3874,7 @@ class TermdeckApp {
       // changed the underlying rollout. Request the authoritative snapshot in
       // that case instead of treating inherited history as current.
       const revision = fresh ? 0 : (this.historyRevisions.get(sessionId) || 0);
-      ws.send(JSON.stringify({ type: "transcript_subscribe", revision }));
+      ws.send(JSON.stringify({ type: "transcript_subscribe", revision, fresh }));
     };
     ws.onmessage = (event) => {
       if (typeof event.data !== "string") return;
@@ -1692,7 +3886,9 @@ class TermdeckApp {
       }
     };
     ws.onerror = () => {
-      if (this.historyOpen && sessionId === this.activeId) this.loadHistory(sessionId);
+      // The close event owns reconnects. Reconnecting here as well can leave
+      // two sockets racing to update the same Markdown view after a transient
+      // browser/network error.
     };
     ws.onclose = () => {
       if (this.historyWs !== ws) return;
@@ -1708,7 +3904,8 @@ class TermdeckApp {
     if (sessionId !== this.activeId || !this.historyOpen) return;
     const type = message.type;
     if (type === "transcript_snapshot_start") {
-      this.historySnapshotBuffers.set(sessionId, { revision: Number(message.revision || 0), turns: [] });
+      this.historySnapshotBuffers.set(sessionId, { revision: Number(message.revision || 0), turns: [],
+        before: message.before == null ? null : Number(message.before), hasMore: !!message.has_more });
       return;
     }
     if (type === "transcript_snapshot_chunk") {
@@ -1722,16 +3919,16 @@ class TermdeckApp {
       if (!buffer) return;
       this.historySnapshotBuffers.delete(sessionId);
       const turns = this.mergePendingHistoryPrompts(sessionId, buffer.turns);
-      this.historyTurnsBySession.set(sessionId, turns);
       this.historyRevisions.set(sessionId, Number(message.revision || buffer.revision || 0));
-      this.applyHistoryTurns(sessionId, turns, { preserveScroll: false });
+      this.applyHistoryWindow(sessionId, turns, { before: buffer.before, hasMore: buffer.hasMore },
+        { resetOlder: this.historyStreamFresh, preserveScroll: this.historyLoaded && this.historyTurns.length > 0 });
       return;
     }
     if (type === "transcript_snapshot") {
       const turns = this.mergePendingHistoryPrompts(sessionId, Array.isArray(message.turns) ? message.turns : []);
-      this.historyTurnsBySession.set(sessionId, turns);
       this.historyRevisions.set(sessionId, Number(message.revision || 0));
-      this.applyHistoryTurns(sessionId, turns, { preserveScroll: false });
+      this.applyHistoryWindow(sessionId, turns, { before: message.before, hasMore: !!message.has_more },
+        { resetOlder: this.historyStreamFresh, preserveScroll: this.historyLoaded && this.historyTurns.length > 0 });
       return;
     }
     if (type === "transcript_ready") {
@@ -1742,18 +3939,91 @@ class TermdeckApp {
     const revision = Number(message.revision || 0);
     if (revision <= (this.historyRevisions.get(sessionId) || 0)) return;
     const previous = this.historyTurnsBySession.get(sessionId) || [];
+    const previousLive = this.historyLiveTurnsBySession.get(sessionId) || previous;
+    if (message.windowed) {
+      const liveTurns = this.mergePendingHistoryPrompts(sessionId, Array.isArray(message.turns) ? message.turns : []);
+      this.historyLiveTurnsBySession.set(sessionId, liveTurns);
+      const turns = this.combineHistoryWindow(sessionId, liveTurns);
+      this.historyRevisions.set(sessionId, revision);
+      this.applyHistoryTurns(sessionId, turns, { preserveScroll: true });
+      return;
+    }
     const replaceFrom = Number(message.replace_from);
-    if (!Number.isInteger(replaceFrom) || replaceFrom < 0 || replaceFrom > previous.length) {
+    if (!Number.isInteger(replaceFrom) || replaceFrom < 0 || replaceFrom > previousLive.length) {
       this.connectHistoryStream(sessionId, { fresh: true });
       return;
     }
     const turns = this.mergePendingHistoryPrompts(
       sessionId,
-      previous.slice(0, replaceFrom).concat(Array.isArray(message.turns) ? message.turns : []),
+      previousLive.slice(0, replaceFrom).concat(Array.isArray(message.turns) ? message.turns : []),
     );
-    this.historyTurnsBySession.set(sessionId, turns);
+    this.historyLiveTurnsBySession.set(sessionId, turns);
+    const combined = this.combineHistoryWindow(sessionId, turns);
+    this.historyTurnsBySession.set(sessionId, combined);
     this.historyRevisions.set(sessionId, revision);
-    this.applyHistoryTurns(sessionId, turns, { preserveScroll: true });
+    this.applyHistoryTurns(sessionId, combined, { preserveScroll: true });
+  }
+
+  combineHistoryWindow(sessionId, liveTurns) {
+    const older = this.historyOlderTurnsBySession.get(sessionId) || [];
+    return older.concat(liveTurns);
+  }
+
+  applyHistoryWindow(sessionId, liveTurns, metadata = {}, options = {}) {
+    if (options.resetOlder) {
+      this.historyOlderTurnsBySession.set(sessionId, []);
+    }
+    const live = Array.isArray(liveTurns) ? liveTurns : [];
+    this.historyLiveTurnsBySession.set(sessionId, live);
+    this.historyBeforeBySession.set(sessionId, metadata.before == null ? null : Number(metadata.before));
+    this.historyHasMoreBySession.set(sessionId, !!metadata.hasMore);
+    const turns = this.combineHistoryWindow(sessionId, live);
+    this.applyHistoryTurns(sessionId, turns, { preserveScroll: options.preserveScroll === true });
+  }
+
+  async loadOlderHistory() {
+    if (this.historyOlderLoadBusy || !this.historyOpen || !this.activeId || this.activeFileKey !== null) return;
+    const sessionId = this.activeId;
+    if (!this.historyHasMoreBySession.get(sessionId)) return;
+    const before = this.historyBeforeBySession.get(sessionId);
+    if (before == null) return;
+    this.historyOlderLoadBusy = true;
+    const body = this.$("history-body");
+    const previousHeight = body.scrollHeight;
+    try {
+      const params = new URLSearchParams({ before: String(before), limit: "160" });
+      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/history-page?${params}`);
+      if (!response.ok) throw new Error(`history page failed: ${response.status}`);
+      const page = await response.json();
+      if (page.reset) {
+        this.historyOlderTurnsBySession.set(sessionId, []);
+        this.historyBeforeBySession.set(sessionId, null);
+        this.historyHasMoreBySession.set(sessionId, false);
+        this.connectHistoryStream(sessionId, { fresh: true });
+        return;
+      }
+      const olderPage = Array.isArray(page.turns) ? page.turns : [];
+      const existingOlder = this.historyOlderTurnsBySession.get(sessionId) || [];
+      this.historyOlderTurnsBySession.set(sessionId, olderPage.concat(existingOlder));
+      this.historyBeforeBySession.set(sessionId, page.before == null ? null : Number(page.before));
+      this.historyHasMoreBySession.set(sessionId, !!page.has_more);
+      const live = this.historyLiveTurnsBySession.get(sessionId) || [];
+      const combined = this.combineHistoryWindow(sessionId, live);
+      this.historyTurnsBySession.set(sessionId, combined);
+      this.historyTurns = combined;
+      const empty = body.querySelector(".history-empty");
+      if (empty) empty.remove();
+      if (olderPage.length) {
+        const scratch = document.createElement("div");
+        this.renderHistoryTurns(olderPage, { target: scratch, preserveExpanded: true });
+        while (scratch.firstChild) body.insertBefore(scratch.firstChild, body.firstChild);
+        requestAnimationFrame(() => { body.scrollTop += body.scrollHeight - previousHeight; });
+      }
+    } catch (error) {
+      console.warn("unable to load older transcript history", error);
+    } finally {
+      this.historyOlderLoadBusy = false;
+    }
   }
 
   mergePendingHistoryPrompts(sessionId, turns) {
@@ -1791,6 +4061,10 @@ class TermdeckApp {
     const queue = !!options.queue && this.session(this.activeId)?.agent_kind === "codex";
     const sessionId = this.activeId;
     if (!queue) {
+      this.historyPendingProcessing.set(sessionId, Date.now());
+      this.updateHistoryThinkingIndicator();
+    }
+    if (!queue) {
       // The agent transcript may not contain the submitted user turn until it
       // starts producing its next event. Show it immediately, then let the
       // authoritative transcript update reconcile this optimistic row.
@@ -1800,15 +4074,25 @@ class TermdeckApp {
         pending.filter((item) => item.text === text).length;
       pending.push({ text, beforeCount });
       this.historyPendingPrompts.set(sessionId, pending);
-      const optimisticTurns = this.mergePendingHistoryPrompts(sessionId, turns);
-      this.historyTurnsBySession.set(sessionId, optimisticTurns);
+      const live = this.historyLiveTurnsBySession.get(sessionId) || turns;
+      const optimisticLive = this.mergePendingHistoryPrompts(sessionId, live);
+      this.historyLiveTurnsBySession.set(sessionId, optimisticLive);
+      const optimisticTurns = this.combineHistoryWindow(sessionId, optimisticLive);
       this.applyHistoryTurns(sessionId, optimisticTurns, { preserveScroll: true });
     }
     if (queue) {
       view.promptQueue.push({ text, userCount: this.historyTurns.filter((turn) => turn.role === "user").length });
       this.renderHistoryQueue(view);
     }
-    view.ws.send(JSON.stringify({ type: "submit", text, bracketed, queue }));
+    try {
+      view.ws.send(JSON.stringify({ type: "submit", text, bracketed, queue }));
+    } catch (error) {
+      this.historyPendingProcessing.delete(sessionId);
+      this.updateHistoryThinkingIndicator();
+      this.$("status-name").textContent = "unable to send prompt";
+      console.warn("unable to send Markdown prompt", error);
+      return;
+    }
     // Clear the local draft immediately so switching views cannot reinsert the
     // prompt while the PTY consumes the synchronized text and Enter.
     view.promptDraft = "";
@@ -1913,6 +4197,7 @@ class TermdeckApp {
       }, 3000);
     }
     this.sendInput(view, data);
+    if (view.promptDraft !== previousDraft) this.sendPromptDraftSync(view, view.promptDraft);
     if (queueText) {
       // Codex has accepted this composer into its queue. Keep the two editors
       // consistent with the terminal instead of leaving the queued text as a
@@ -2059,9 +4344,7 @@ class TermdeckApp {
           const thinkingCount = document.createElement("span");
           thinkingCount.className = "history-thinking-count";
           thinkingCount.textContent = ` · ${turn.items.length} operations`;
-          const thinkingDuration = document.createElement("span");
-          thinkingDuration.className = "history-thinking-duration-inline";
-          summary.append(thinkingTitle, thinkingCount, thinkingDuration);
+          summary.append(thinkingTitle, thinkingCount);
         } else {
           summary.textContent = turn.kind === "edit"
               ? this.historyEditSummary(turn)
@@ -2143,11 +4426,13 @@ class TermdeckApp {
     this.updateHistoryEditToggle();
   }
 
-  captureHistoryScroll(body) {
+  captureHistoryScroll(body, turns = this.historyTurns) {
     const snapshot = {
       top: body.scrollTop,
       atBottom: body.scrollHeight - body.clientHeight - body.scrollTop < 80,
       anchorIndex: -1,
+      anchorKey: "",
+      anchorOccurrence: 0,
       anchorOffset: 0,
     };
     const bodyTop = body.getBoundingClientRect().top;
@@ -2163,10 +4448,15 @@ class TermdeckApp {
       snapshot.anchorIndex = children.length - 1;
       snapshot.anchorOffset = children[snapshot.anchorIndex].getBoundingClientRect().top - bodyTop;
     }
+    if (snapshot.anchorIndex >= 0 && turns[snapshot.anchorIndex]) {
+      snapshot.anchorKey = this.historyTurnKey(turns[snapshot.anchorIndex]);
+      snapshot.anchorOccurrence = turns.slice(0, snapshot.anchorIndex + 1)
+        .filter((turn) => this.historyTurnKey(turn) === snapshot.anchorKey).length - 1;
+    }
     return snapshot;
   }
 
-  restoreHistoryScroll(body, snapshot) {
+  restoreHistoryScroll(body, snapshot, turns = this.historyTurns, settling = false) {
     if (!snapshot) {
       body.scrollTop = body.scrollHeight;
       return;
@@ -2175,7 +4465,15 @@ class TermdeckApp {
       body.scrollTop = body.scrollHeight;
       return;
     }
-    const anchor = snapshot.anchorIndex >= 0 ? body.children[snapshot.anchorIndex] : null;
+    let anchorIndex = snapshot.anchorIndex;
+    if (snapshot.anchorKey && Array.isArray(turns)) {
+      let occurrence = 0;
+      anchorIndex = turns.findIndex((turn) => {
+        if (this.historyTurnKey(turn) !== snapshot.anchorKey) return false;
+        return occurrence++ === snapshot.anchorOccurrence;
+      });
+    }
+    const anchor = anchorIndex >= 0 ? body.children[anchorIndex] : null;
     if (anchor) {
       const bodyTop = body.getBoundingClientRect().top;
       const currentOffset = anchor.getBoundingClientRect().top - bodyTop;
@@ -2184,6 +4482,16 @@ class TermdeckApp {
       body.scrollTop = snapshot.top;
     }
     body.scrollTop = Math.min(body.scrollTop, Math.max(0, body.scrollHeight - body.clientHeight));
+    // A live update can reflow Markdown one frame after the DOM replacement.
+    // Reapply the same anchor after layout, without changing the user's
+    // intentional position when they are reading above the newest output.
+    if (!settling && !snapshot.atBottom) {
+      requestAnimationFrame(() => {
+        if (this.historyOpen && body === this.$("history-body")) {
+          this.restoreHistoryScroll(body, snapshot, turns, true);
+        }
+      });
+    }
   }
 
   async loadHistory(sessionId, options = {}) {
@@ -2222,10 +4530,11 @@ class TermdeckApp {
     const body = this.$("history-body");
     const preserveScroll = options.preserveScroll === true;
     if (sessionId !== this.activeId || !this.historyOpen) return;
+    this.cacheSessionModelFromHistory(sessionId, turns);
     this.reconcileHistoryQueue(this.views.get(sessionId), turns);
     // Capture this after the request completes so scrolling while the refresh
     // is in flight is never overwritten by an older scroll position.
-    const scrollSnapshot = preserveScroll ? this.captureHistoryScroll(body) : null;
+    const scrollSnapshot = preserveScroll ? this.captureHistoryScroll(body, this.historyTurns) : null;
     const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length, turn.diff_files, turn.plan, turn.items]))}`;
     if (preserveScroll && fingerprint === this.historyFingerprint) return;
     let commonPrefix = 0;
@@ -2239,8 +4548,9 @@ class TermdeckApp {
       commonPrefix === this.historyTurns.length - 1 && turns.length >= this.historyTurns.length;
     this.historyFingerprint = fingerprint;
     this.historyLoaded = true;
-    const s = this.session(sessionId);
+    const s = this.sessionOrClosed(sessionId);
     this.$("history-title").textContent = s ? this.effectiveTitle(s) : "";
+    this.renderHistoryModel(s, turns);
     if (canPatchTail) {
       // Keep the unchanged transcript nodes in place so browser-find selection
       // and the user's reading position survive live output updates.
@@ -2278,9 +4588,10 @@ class TermdeckApp {
     }
     this.historyTurns = turns;
     this.historyTurnsBySession.set(sessionId, turns);
+    this.renderHistoryMeta();
     this.updateHistoryEditToggle();
     this.updateActiveThinkingBlock();
-    this.restoreHistoryScroll(body, scrollSnapshot);
+    this.restoreHistoryScroll(body, scrollSnapshot, turns);
   }
 
   renderMarkdown(text) {
@@ -2310,7 +4621,7 @@ class TermdeckApp {
     if (selected) {
       const spinning = this.titlePresentation(selected).spinning;
       const processingSince = Number(selected.processing_since);
-      if (processingSince > 0) this.processingSince.set(id, processingSince * 1000);
+      if (processingSince > 0 && !this.processingSince.has(id)) this.processingSince.set(id, processingSince * 1000);
       this.processingStates.set(id, spinning);
       if (spinning && !this.processingSince.has(id)) this.processingSince.set(id, Date.now());
       if (!spinning) this.processingSince.delete(id);
@@ -2331,18 +4642,31 @@ class TermdeckApp {
       this.patchProjectState({ active_session_id: id });
     }
     const s = this.session(id);
+    this.postVscodeNativeSession(s, !this.historyOpen);
     if (s && this.treeRoot !== null && this.treeRoot !== s.cwd && !this.$("files-section").classList.contains("hidden")) {
       this.reloadTree();
     }
     const view = this.ensureView(id);
     if (previousView && previousView !== view) {
-      const buffer = previousView.term.buffer.active;
-      previousView.keepBottom = buffer.viewportY >= buffer.baseY;
+      if (this.isTerminalScrollV2()) {
+        // v2 deliberately trusts xterm's own buffer state instead of the
+        // browser's private viewport scroll position.
+        previousView.scrollMode = this.xtermAtBottom(previousView) ? "follow" : "preserve";
+      } else {
+        // xterm's buffer viewport can still report the old bottom row while
+        // the browser scrollbar has already moved. Carry the native position
+        // across tab switches so returning to a manually scrolled tab does not
+        // re-enable bottom-follow and jump by several pages.
+        previousView.keepBottom = !previousView.manualScroll && this.terminalAtBottom(previousView);
+        previousView.wasAtBottom = previousView.keepBottom;
+        if (!previousView.keepBottom) previousView.pinBottomUntil = 0;
+      }
     }
     for (const [viewId, v] of this.views) {
       v.container.classList.toggle("visible", viewId === id);
     }
     this.applyMainLayout();
+    this.scheduleTerminalLayoutFit();
     if (this.historyOpen) {
       const historyId = id;
       if (previousId !== id) {
@@ -2364,21 +4688,38 @@ class TermdeckApp {
       this.connectHistoryStream(historyId, { fresh: previousId !== id });
     }
     if (view) {
+      this.refreshTerminalAppearance(view);
       if (!view.ws) this.connect(id, view);
-      if (previousId !== id) {
-        view.keepBottom = true;
-        // A replay/new connection may need a few frames to settle, but an
-        // already-connected terminal should not be held at the bottom for
-        // seconds after every tab switch.  That window used to make the
-        // native xterm scrollbar feel locked when the user immediately
-        // scrolled back through a finished session.
-        const settleWindow = view.replaying || !view.ws || view.awaitingSnapshot ? 5000 : 750;
-        view.pinBottomUntil = Date.now() + settleWindow;
-        this.scrollTerminalToBottom(view);
+      if (this.isTerminalScrollV2()) {
+        if (previousId !== id && (!view.everConnected || view.awaitingSnapshot || view.replaying)) {
+          view.scrollMode = "follow";
+        }
+        this.scheduleV2Fit(view);
+        this.scheduleInitialV2Fit(view);
+        if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+      } else if (previousId !== id) {
+        const needsInitialFollow = !view.everConnected || view.awaitingSnapshot || view.replaying;
+        if (needsInitialFollow || view.keepBottom) {
+          // A new/replaying terminal needs a few frames to settle. An
+          // already-connected terminal is only settled when it was already at
+          // the bottom; manually scrolled tabs must retain their position.
+          view.keepBottom = true;
+          const settleWindow = needsInitialFollow ? 5000 : 750;
+          view.pinBottomUntil = Date.now() + settleWindow;
+          this.scrollTerminalToBottom(view);
+        } else {
+          view.pinBottomUntil = 0;
+        }
       } else if (view.keepBottom) {
         view.pinBottomUntil = Date.now() + 3000;
       }
-      this.scheduleViewportSettle(view);
+      if (!this.isTerminalScrollV2()) {
+        this.scheduleViewportSettle(view);
+        if (view.needsViewportRepair && !view.outputQueue.length && !view.manualScroll && view.keepBottom) {
+          view.needsViewportRepair = false;
+          this.repairTerminalViewport(view);
+        }
+      }
     }
     this.renderList();
     this.renderTopbar();
@@ -2386,15 +4727,6 @@ class TermdeckApp {
     requestAnimationFrame(() => {
       if (id !== this.activeId) return;
       this.focusActiveEditor();
-      // xterm can restore focus and recalculate its viewport after the first
-      // activation scroll.  Settle once more after that work has completed so
-      // switching tabs cannot leave the DOM scrollbar above the last row.
-      if (this.activeFileKey === null && !this.historyOpen && view &&
-          (view.keepBottom || Date.now() < view.pinBottomUntil)) {
-        this.fitActive();
-        this.scrollTerminalToBottom(view);
-        this.scheduleViewportSettle(view);
-      }
     });
   }
 
@@ -2412,16 +4744,56 @@ class TermdeckApp {
     term.open(container);
     term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
     const view = { sessionId: id, container, term, fit, ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
-                   replaying: false, pasting: false, cliTitle: null, pinBottomUntil: 0, programmaticScrollUntil: 0, scrollSettleTimer: 0,
-                   replayTimer: 0, reconnectTimer: 0, settleFrame: 0, viewportRepairFrame: 0,
-                   layoutObserver: null, scrollObserver: null,
-                   keepBottom: true, manualScroll: false, wasAtBottom: true, lastSentCols: null, lastSentRows: null,
+                   replaying: false, pasting: false, suppressReconnect: false, cliTitle: null, pinBottomUntil: 0,
+                   programmaticScrollUntil: 0, programmaticScrollGeneration: 0, scrollSettleTimer: 0,
+                   reconnectTimer: 0, settleFrame: 0, viewportRepairFrame: 0, needsViewportRepair: false,
+                   outputQueue: [], outputWriteInFlight: false, outputWriteGeneration: 0,
+                   layoutObserver: null, scrollObserver: null, layoutFitRetryTimer: 0, layoutFitRetryCount: 0,
+                   keepBottom: true, manualScroll: false, manualScrollGeneration: 0, manualScrollReleaseTimer: 0,
+                   wasAtBottom: true, scrollMode: "follow", v2Programmatic: false, v2FitFrame: 0,
+                   v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
+                   forceResizeAfterFit: true, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
+                   suppressResizeToServer: false,
+                   lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, pendingDraftSync: null, pendingTerminalDraft: null,
                    promptEditVersion: 0, promptSubmitVersion: -1 };
-    container.addEventListener("wheel", () => {
+    const releaseManualScrollWhenStable = () => {
+      clearTimeout(view.manualScrollReleaseTimer);
+      const generation = view.manualScrollGeneration;
+      view.manualScrollReleaseTimer = setTimeout(() => {
+        view.manualScrollReleaseTimer = 0;
+        if (view.closed || !view.manualScroll || generation !== view.manualScrollGeneration) return;
+        const atBottom = this.terminalAtBottom(view);
+        if (!atBottom) {
+          view.wasAtBottom = false;
+          view.keepBottom = false;
+          view.pinBottomUntil = 0;
+          return;
+        }
+        // A wheel event can be delivered before xterm has updated its native
+        // viewport. Only leave manual mode after the position remains at the
+        // bottom long enough for that layout/reflow to settle.
+        view.manualScroll = false;
+        view.wasAtBottom = true;
+        view.keepBottom = true;
+      }, 180);
+    };
+    const markV2Preserve = () => {
+      if (!this.isTerminalScrollV2()) return;
+      // Wheel/scrollbar intent arrives before xterm publishes onScroll().
+      // Preserve immediately so a live output callback in that gap cannot
+      // pull the viewport back to the prompt.
+      view.v2Programmatic = false;
+      view.scrollMode = "preserve";
+    };
+    const markManualScroll = () => {
+      if (this.isTerminalScrollV2()) {
+        markV2Preserve();
+        return;
+      }
       // wheel fires before the browser moves the native xterm viewport, so
       // checking terminalAtBottom() here can still report the old bottom
       // position and leave auto-follow enabled.  Any wheel gesture is an
@@ -2429,8 +4801,24 @@ class TermdeckApp {
       view.pinBottomUntil = 0;
       view.keepBottom = false;
       view.manualScroll = true;
+      view.manualScrollGeneration += 1;
       view.wasAtBottom = false;
-    }, { passive: true });
+      releaseManualScrollWhenStable();
+      if (view.settleFrame) {
+        cancelAnimationFrame(view.settleFrame);
+        view.settleFrame = 0;
+      }
+      if (view.viewportRepairFrame) {
+        cancelAnimationFrame(view.viewportRepairFrame);
+        view.viewportRepairFrame = 0;
+      }
+      view.needsViewportRepair = false;
+      clearTimeout(view.scrollSettleTimer);
+      view.scrollSettleTimer = 0;
+    };
+    // Capture before xterm's wheel handler so the first wheel after a tab
+    // switch cannot be mistaken for an automatic bottom-follow scroll.
+    container.addEventListener("wheel", markManualScroll, { passive: true, capture: true });
     container.addEventListener("paste", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -2455,24 +4843,52 @@ class TermdeckApp {
       if (!title || title === view.cliTitle) return;
       view.cliTitle = title;
       const s = this.session(id);
-      if (s) { s.cli_title = title; s.processing = true; }
+      // The backend status stream is authoritative for processing. Do not
+      // mark a session active merely because its xterm title was replayed
+      // when the user selected the tab.
+      if (s) s.cli_title = title;
       const titleEl = this.sessionTitleEls.get(id);
       if (titleEl && s) titleEl.textContent = this.titlePresentation(s).text;
       this.updateProcessingState(id, !!s && this.titlePresentation(s).spinning);
       if (id === this.activeId) this.renderTopbar();
     });
-    term.attachCustomKeyEventHandler((e) => this.handleTerminalEditingKeys(view, e));
+    term.attachCustomKeyEventHandler((e) => {
+      // xterm's PageUp/Home family scrolls its viewport without a wheel or
+      // scrollbar pointer event. Treat those as an explicit browse action so
+      // a pending output/layout repair cannot pull the terminal back down.
+      if (e.type === "keydown" && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) {
+        if (this.isTerminalScrollV2()) markV2Preserve();
+        else markManualScroll();
+      }
+      return this.handleTerminalEditingKeys(view, e);
+    });
     term.onData((data) => this.sendTrackedInput(view, data));
-    term.onResize(({ cols, rows }) => this.sendResize(view, cols, rows));
+    term.onResize(({ cols, rows }) => { if (!view.suppressResizeToServer) this.sendResize(view, cols, rows); });
     term.onScroll(() => {
       if (!view.container.classList.contains("visible")) return;
-      const now = Date.now();
-      // Do not suppress native scroll events just because the app recently
-      // called scrollToBottom(). Keyboard scrolling can happen during that
-      // same window and must be allowed to leave auto-follow immediately.
-      if (view.replaying && now < view.pinBottomUntil && !view.manualScroll) return;
+      if (this.isTerminalScrollV2()) {
+        if (!view.v2Programmatic) view.scrollMode = this.xtermAtBottom(view) ? "follow" : "preserve";
+        return;
+      }
+      // xterm can emit its internal scroll event before the browser updates
+      // .xterm-viewport.scrollTop. Keep the manual-scroll lock until the
+      // delayed stability check sees the user's real position.
+      if (view.manualScroll) {
+        if (this.terminalAtBottom(view)) releaseManualScrollWhenStable();
+        return;
+      }
+      // scrollToBottom() can emit before xterm has committed the matching DOM
+      // scroll position. Do not let that stale event turn off following and
+      // strand the live prompt one viewport above the bottom. Manual wheel,
+      // scrollbar, and keyboard browsing increment the generation first, so
+      // they still leave follow mode immediately.
+      if (Date.now() < view.programmaticScrollUntil
+          && view.programmaticScrollGeneration === view.manualScrollGeneration) {
+        view.wasAtBottom = true;
+        view.keepBottom = true;
+        return;
+      }
       const atBottom = this.terminalAtBottom(view);
-      if (atBottom && !view.wasAtBottom) this.repairTerminalViewport(view);
       view.wasAtBottom = atBottom;
       view.keepBottom = atBottom;
       if (!view.keepBottom) view.pinBottomUntil = 0;
@@ -2485,33 +4901,28 @@ class TermdeckApp {
         const onScrollbar = event.clientX >= rect.right - scrollbarEdge;
         const touchScroll = event.pointerType && event.pointerType !== "mouse";
         if (onScrollbar || touchScroll) {
-          view.pinBottomUntil = 0;
-          view.keepBottom = false;
-          view.manualScroll = true;
-          view.wasAtBottom = false;
+          if (this.isTerminalScrollV2()) markV2Preserve();
+          else markManualScroll();
         }
-      }, { passive: true });
-      viewport.addEventListener("scroll", () => {
-        if (!view.container.classList.contains("visible")) return;
-        const atBottom = this.terminalAtBottom(view);
-        if (atBottom && !view.wasAtBottom) this.repairTerminalViewport(view);
-        view.wasAtBottom = atBottom;
-        view.keepBottom = atBottom;
-        if (!view.keepBottom) view.pinBottomUntil = 0;
       }, { passive: true });
     }
     const scrollArea = container.querySelector(".xterm-scroll-area");
     if (scrollArea) {
       view.scrollObserver = new ResizeObserver(() => {
         if (!view.container.classList.contains("visible") || view.closed) return;
+        if (this.isTerminalScrollV2()) return;
         if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
       });
       view.scrollObserver.observe(scrollArea);
     }
-    const ref = [...this.views.values()].find((v) => v.term.cols > 2);
-    if (ref) term.resize(ref.term.cols, ref.term.rows);
     view.layoutObserver = new ResizeObserver(() => {
       if (!view.container.classList.contains("visible") || view.closed) return;
+      if (this.isTerminalScrollV2()) {
+        this.scheduleV2Fit(view);
+        return;
+      }
+      const rect = view.container.getBoundingClientRect();
+      if (rect.width < 40 || rect.height < 40) return;
       view.fit.fit();
       const { cols, rows } = view.term;
       if (cols >= 2 && rows >= 2) this.sendResize(view, cols, rows);
@@ -2524,52 +4935,111 @@ class TermdeckApp {
 
   connect(id, view) {
     if (view.closed) return;
+    view.suppressReconnect = false;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws/${id}`);
     ws.binaryType = "arraybuffer";
     view.awaitingSnapshot = true;
     view.replaying = false;
+    view.needsViewportRepair = false;
+    view.outputWriteGeneration += 1;
+    view.outputQueue = [];
     view.lastSentCols = null;
     view.lastSentRows = null;
     ws.onopen = () => {
       if (view.everConnected) {
         view.replaying = true;
-        view.keepBottom = true;
-        view.pinBottomUntil = Date.now() + 8000;
+        if (!this.isTerminalScrollV2()) {
+          if (view.keepBottom && !view.manualScroll) view.pinBottomUntil = Date.now() + 8000;
+          else view.pinBottomUntil = 0;
+        }
         view.term.reset();
       }
       view.everConnected = true;
-      if (id === this.activeId) {
+      if (this.isTerminalScrollV2()) {
+        if (id === this.activeId) {
+          this.scheduleV2Fit(view);
+          if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+        }
+      } else if (id === this.activeId && view.keepBottom && !view.manualScroll) {
         this.fitActive();
         view.keepBottom = true;
         view.pinBottomUntil = Date.now() + 8000;
         this.scrollTerminalToBottom(view);
         this.scheduleViewportSettle(view);
       }
+      // FitAddon may have run before the websocket opened, so xterm's
+      // onResize callback could not send the resulting dimensions to the
+      // PTY. Always send the currently fitted size once the socket is ready.
+      if (view.term.cols >= 2 && view.term.rows >= 2) {
+        this.sendResize(view, view.term.cols, view.term.rows);
+      }
       this.flushPromptSync(view);
     };
     ws.onmessage = (e) => {
       if (typeof e.data === "string") { this.handleControl(id, view, JSON.parse(e.data)); return; }
+      // xterm's buffer continues to process output while an inactive tab is
+      // display:none, but its browser viewport has zero height. Remember that
+      // state so activation can synchronize the now-visible scrollbar through
+      // xterm's public scroll API, rather than a DOM scroll listener or PTY
+      // resize/reflow.
+      if (!view.container.classList.contains("visible")) view.hiddenOutputPending = true;
+      if (!view.awaitingSnapshot) this.touchSessionActivity(id);
       if (view.awaitingSnapshot) {
+        const snapshotScrollGeneration = view.manualScrollGeneration;
+        const v2 = this.isTerminalScrollV2();
+        const followSnapshot = v2 ? view.scrollMode === "follow" : view.keepBottom && !view.manualScroll;
         view.awaitingSnapshot = false;
         view.replaying = true;
-        view.keepBottom = true;
-        view.pinBottomUntil = Date.now() + 8000;
-        clearTimeout(view.replayTimer);
-        view.replayTimer = setTimeout(() => { view.replaying = false; }, 2000);
-        view.term.write(new Uint8Array(e.data), () => {
+        if (!v2) {
+          if (followSnapshot) view.pinBottomUntil = Date.now() + 8000;
+          else view.pinBottomUntil = 0;
+        }
+        // The server sends the saved scrollback first, then starts streaming
+        // the live PTY queue. Keep the first live frame out of xterm until
+        // its asynchronous snapshot write has completed. Otherwise a busy
+        // agent can change the scroll-area height mid-replay and leave the
+        // final terminal rows outside the native scrollbar range.
+        this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
           this.refreshTerminal(view);
-          clearTimeout(view.replayTimer);
           view.replaying = false;
-          view.keepBottom = true;
-          view.pinBottomUntil = Date.now() + 5000;
-          this.scheduleViewportSettle(view);
+          if (v2 && view.container.classList.contains("visible")) {
+            view.forceResizeAfterFit = true;
+            this.scheduleV2Fit(view);
+          }
+          const canFollowSnapshot = v2
+            ? followSnapshot && view.scrollMode === "follow"
+            : followSnapshot && snapshotScrollGeneration === view.manualScrollGeneration && view.keepBottom && !view.manualScroll;
+          if (canFollowSnapshot) {
+            if (v2) {
+              view.scrollMode = "follow";
+              this.scheduleV2Fit(view);
+              this.scrollTerminalV2ToBottom(view);
+            } else {
+              view.keepBottom = true;
+              view.pinBottomUntil = Date.now() + 5000;
+              // A terminal that changed while its saved scrollback was being
+              // replayed can have a DOM scrollbar at its apparent maximum with
+              // xterm's final row geometry still stale. Defer one bounded
+              // refit until that initial stream has drained.
+              view.needsViewportRepair = true;
+              this.scheduleViewportSettle(view);
+            }
+          } else {
+            if (!v2) view.pinBottomUntil = 0;
+          }
         });
         return;
       }
-      const followOutput = view.keepBottom || Date.now() < view.pinBottomUntil;
-      view.term.write(new Uint8Array(e.data), () => {
-        if (followOutput) {
+      const followOutput = this.isTerminalScrollV2() ? false : view.keepBottom || Date.now() < view.pinBottomUntil;
+      const outputScrollGeneration = view.manualScrollGeneration;
+      this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
+        if (this.isTerminalScrollV2()) {
+          if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+          return;
+        }
+        if (followOutput && outputScrollGeneration === view.manualScrollGeneration &&
+            view.keepBottom && !view.manualScroll) {
           view.keepBottom = true;
           clearTimeout(view.scrollSettleTimer);
           view.scrollSettleTimer = setTimeout(() => {
@@ -2579,13 +5049,15 @@ class TermdeckApp {
       });
     };
     ws.onclose = () => {
+      view.ws = null;
       if (view.promptQueueMutation) {
         view.promptQueueMutation = false;
         view.promptQueue.forEach((item) => { delete item.mutationPending; });
         this.renderHistoryQueue(view);
         if (id === this.activeId) this.$("status-name").textContent = "queued prompt update disconnected — retry";
       }
-      if (!view.closed) {
+      if (!view.closed && !view.suppressReconnect && id === this.activeId && this.activeFileKey === null &&
+          !this.session(id)?.dormant) {
         clearTimeout(view.reconnectTimer);
         view.reconnectTimer = setTimeout(() => {
           view.reconnectTimer = 0;
@@ -2598,6 +5070,11 @@ class TermdeckApp {
 
   handleTerminalEditingKeys(view, e) {
     if (e.type !== "keydown") return true;
+    if (this.isDesktopTerminalSelectAllEvent(e)) {
+      e.preventDefault();
+      this.selectActiveTerminalText();
+      return false;
+    }
     if (this.tryAppShortcut(e)) return false;
     if (e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
@@ -2640,9 +5117,19 @@ class TermdeckApp {
 
   handleControl(id, view, msg) {
     if (msg.type === "exit") {
+      if (msg.dormant) {
+        view.suppressReconnect = true;
+        if (view.ws) view.ws.close();
+      }
       view.term.write(`\r\n\x1b[2m[termdeck] process exited (${msg.code})\x1b[0m\r\n`);
-      view.pinBottomUntil = Date.now() + 5000;
+      if (this.isTerminalScrollV2()) {
+        if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+      } else {
+        view.pinBottomUntil = Date.now() + 5000;
+      }
     } else if (msg.type === "draft") {
+      const incomingDraft = String(msg.draft || "");
+      if (view.promptDraftSyncPending && incomingDraft !== view.promptDraft) return;
       view.promptDraftSyncPending = false;
       clearTimeout(view.promptDraftSyncTimer);
       view.promptDraftSyncTimer = 0;
@@ -2651,7 +5138,7 @@ class TermdeckApp {
         return;
       }
       if (!view.promptEditing) {
-        view.promptDraft = String(msg.draft || "");
+        view.promptDraft = incomingDraft;
         this.showPromptDraft(view);
       }
       return;
@@ -2688,8 +5175,15 @@ class TermdeckApp {
       }
       return;
     } else if (msg.type === "agent_session") {
-      view.pinBottomUntil = Date.now() + 4000;
-      this.scrollTerminalToBottom(view);
+      // Session discovery is asynchronous and can arrive while the user is
+      // reading older output. It must not turn that event into an implicit
+      // scroll-to-bottom.
+      if (this.isTerminalScrollV2()) {
+        if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+      } else if (!view.manualScroll && view.keepBottom) {
+        view.pinBottomUntil = Date.now() + 4000;
+        this.scrollTerminalToBottom(view);
+      }
     } else if (msg.type === "processing") {
       this.applySessionStatus({ session_id: id, processing: !!msg.processing });
       return;
@@ -2698,6 +5192,7 @@ class TermdeckApp {
   }
 
   sendInput(view, data) {
+    if (data) this.touchSessionActivity(view.sessionId);
     if (view.replaying && QUERY_RESPONSE_RE.test(data)) return;
     if (view.ws && view.ws.readyState === WebSocket.OPEN) {
       view.ws.send(JSON.stringify({ type: "input", data }));
@@ -2765,9 +5260,9 @@ class TermdeckApp {
     input.click();
   }
 
-  sendResize(view, cols, rows) {
+  sendResize(view, cols, rows, force = false) {
     if (view.ws && view.ws.readyState === WebSocket.OPEN &&
-        (view.lastSentCols !== cols || view.lastSentRows !== rows)) {
+        (force || view.lastSentCols !== cols || view.lastSentRows !== rows)) {
       view.lastSentCols = cols;
       view.lastSentRows = rows;
       view.ws.send(JSON.stringify({ type: "resize", cols, rows }));
@@ -2778,6 +5273,13 @@ class TermdeckApp {
     if (this.activeFileKey !== null) return;
     const view = this.views.get(this.activeId);
     if (!view) return;
+    if (this.isTerminalScrollV2()) {
+      view.scrollMode = "follow";
+      this.scrollTerminalV2ToBottom(view);
+      this.scheduleV2Fit(view);
+      view.term.focus();
+      return;
+    }
     view.keepBottom = true;
     view.pinBottomUntil = Date.now() + 5000;
     this.scrollTerminalToBottom(view);
@@ -2797,9 +5299,19 @@ class TermdeckApp {
     if (this.activeFileKey !== null || this.historyOpen || !this.activeId) return;
     const view = this.views.get(this.activeId);
     if (!view || view.closed) return;
-    view.keepBottom = true;
-    view.pinBottomUntil = Date.now() + 8000;
+    // Resync is also the manual escape hatch for terminals whose prompt or
+    // wrapped output was painted against stale dimensions. Treat the button
+    // like a sidebar resize so FitAddon remeasures the visible terminal,
+    // repaints it, and sends the corrected PTY size.
+    if (this.isTerminalScrollV2()) view.scrollMode = "follow";
+    else {
+      view.keepBottom = true;
+      view.pinBottomUntil = Date.now() + 8000;
+    }
     view.term.reset();
+    view.forceResizeAfterFit = true;
+    this.applySettings();
+    this.scheduleTerminalLayoutFit();
     this.$("status-name").textContent = "resyncing terminal…";
     const ws = view.ws;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -2812,6 +5324,7 @@ class TermdeckApp {
   }
 
   terminalAtBottom(view) {
+    if (this.isTerminalScrollV2()) return this.xtermAtBottom(view);
     if (!view || !view.term) return false;
     const buffer = view.term.buffer.active;
     const viewport = view.container.querySelector(".xterm-viewport");
@@ -2825,30 +5338,117 @@ class TermdeckApp {
     return domAtBottom;
   }
 
-  repairTerminalViewport(view) {
-    if (!view || view.closed || view.viewportRepairFrame || !view.container.classList.contains("visible")) return;
-    view.viewportRepairFrame = requestAnimationFrame(() => {
-      view.viewportRepairFrame = 0;
-      if (view.closed || !view.container.classList.contains("visible") || !this.terminalAtBottom(view)) return;
-      // Returning to the native maximum can happen before xterm has rebuilt
-      // its row geometry. Refit/refresh once so the final prompt row remains
-      // reachable even when no new output arrives to trigger a repaint.
+  isTerminalScrollV2() {
+    // Desktop terminals always use xterm's buffer-owned scrolling. The VS Code
+    // integration remains separate and continues to use its native surface.
+    return !this.vscodeMode;
+  }
+
+  xtermAtBottom(view) {
+    if (!view?.term) return false;
+    const buffer = view.term.buffer.active;
+    return buffer.viewportY >= buffer.baseY;
+  }
+
+  scrollTerminalV2ToBottom(view) {
+    if (!view || view.closed) return;
+    view.scrollMode = "follow";
+    view.v2Programmatic = true;
+    view.term.scrollToBottom();
+    queueMicrotask(() => {
+      if (!view.closed) view.v2Programmatic = false;
+    });
+  }
+
+  scheduleV2Fit(view) {
+    if (!view || view.closed || view.v2FitFrame || !view.container.classList.contains("visible")) return;
+    view.v2FitFrame = requestAnimationFrame(() => {
+      view.v2FitFrame = 0;
+      if (view.closed || !view.container.classList.contains("visible")) return;
+      const rect = view.container.getBoundingClientRect();
+      if (rect.width < 40 || rect.height < 40) {
+        if (!view.layoutFitRetryTimer && view.layoutFitRetryCount < 12) {
+          view.layoutFitRetryCount += 1;
+          view.layoutFitRetryTimer = setTimeout(() => {
+            view.layoutFitRetryTimer = 0;
+            if (!view.closed && view.container.classList.contains("visible")) this.scheduleV2Fit(view);
+          }, 60);
+        }
+        return;
+      }
+      view.layoutFitRetryCount = 0;
+      clearTimeout(view.layoutFitRetryTimer);
+      view.layoutFitRetryTimer = 0;
+      // FitAddon is the public xterm sizing mechanism. v2 never writes to
+      // .xterm-viewport or .xterm-scroll-area; xterm owns its scrollbar.
       view.fit.fit();
-      this.refreshTerminal(view);
-      const { cols, rows } = view.term;
-      if (cols >= 2 && rows >= 2) this.sendResize(view, cols, rows);
-      view.term.scrollToBottom();
-      const viewport = view.container.querySelector(".xterm-viewport");
-      if (viewport) viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-      view.wasAtBottom = true;
-      view.keepBottom = true;
+      // A terminal may have been painted while its container was hidden or
+      // at its pre-flex width. Refresh after the settled fit so the canvas
+      // and text colors are repainted together with the final geometry.
+      const forceResize = view.forceResizeAfterFit;
+      if (forceResize) {
+        view.forceResizeAfterFit = false;
+        if (this.forceVisibleTerminalReflow(view)) return;
+      }
+      this.refreshTerminalAppearance(view, forceResize);
+      if (forceResize && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
+      if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+    });
+  }
+
+  scheduleInitialV2Fit(view) {
+    if (!view || view.closed || !view.v2InitialFitPending || view.v2InitialFitFrame ||
+        !view.container.classList.contains("visible")) return;
+    // A new xterm is opened while its container is display:none. Its first
+    // activation can therefore fit against the pre-layout width; settle once
+    // more after the browser has committed the newly-visible terminal area.
+    view.v2InitialFitPending = false;
+    view.v2InitialFitFrame = requestAnimationFrame(() => {
+      view.v2InitialFitFrame = requestAnimationFrame(() => {
+        view.v2InitialFitFrame = 0;
+        if (view.closed || !view.container.classList.contains("visible")) return;
+        this.scheduleV2Fit(view);
+      });
+    });
+  }
+
+  scheduleV2ViewportSync(view) {
+    if (!view || view.closed || view.v2ViewportSyncFrame || !view.hiddenOutputPending ||
+        !view.container.classList.contains("visible")) return;
+    view.v2ViewportSyncFrame = requestAnimationFrame(() => {
+      view.v2ViewportSyncFrame = 0;
+      if (view.closed || !view.hiddenOutputPending || !view.container.classList.contains("visible")) return;
+      view.hiddenOutputPending = false;
+      const buffer = view.term.buffer.active;
+      const target = buffer.viewportY;
+      if (buffer.baseY <= 0) return;
+      // While the element was display:none, xterm advanced its logical
+      // viewport but the DOM scrollbar retained its old geometry. Nudge one
+      // logical line, then restore the exact line. Both calls are public
+      // xterm APIs, preserve a reader's position, and avoid the old fake
+      // resize/direct-scroll repair paths that caused tab-switch jumps.
+      const nudge = target < buffer.baseY ? target + 1 : Math.max(0, target - 1);
+      if (nudge === target) return;
+      view.v2Programmatic = true;
+      view.term.scrollToLine(nudge);
+      view.term.scrollToLine(target);
+      queueMicrotask(() => {
+        if (!view.closed) view.v2Programmatic = false;
+      });
     });
   }
 
   scrollTerminalToBottom(view) {
+    if (this.isTerminalScrollV2()) {
+      this.scrollTerminalV2ToBottom(view);
+      return;
+    }
+    clearTimeout(view.manualScrollReleaseTimer);
+    view.manualScrollReleaseTimer = 0;
     view.manualScroll = false;
     view.wasAtBottom = true;
     view.programmaticScrollUntil = Date.now() + 1000;
+    view.programmaticScrollGeneration = view.manualScrollGeneration;
     view.term.scrollToBottom();
     const viewport = view.container.querySelector(".xterm-viewport");
     if (viewport) {
@@ -2864,19 +5464,129 @@ class TermdeckApp {
     view.term.refresh(0, view.term.rows - 1);
   }
 
+  forceVisibleTerminalReflow(view) {
+    if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
+        !view.container.classList.contains("visible")) return false;
+    const rect = view.container.getBoundingClientRect();
+    if (rect.width < 40 || rect.height < 40) return false;
+    const computed = window.getComputedStyle(view.container);
+    const originalRight = view.container.style.right;
+    const right = Number.parseFloat(computed.right);
+    const cellWidth = Number(view.term._core?._renderService?.dimensions?.css?.cell?.width) || 8;
+    const nudgeRight = (Number.isFinite(right) ? right : 4) + Math.max(Math.ceil(cellWidth * 2), 14);
+    const restoreLine = view.term.buffer.active.viewportY;
+    const follow = view.scrollMode === "follow";
+    view.suppressResizeToServer = true;
+    view.v2Programmatic = true;
+    view.v2ForcedReflowFrame = requestAnimationFrame(() => {
+      view.v2ForcedReflowFrame = 0;
+      if (view.closed || !view.container.classList.contains("visible")) {
+        view.suppressResizeToServer = false;
+        view.v2Programmatic = false;
+        return;
+      }
+      view.container.style.right = `${nudgeRight}px`;
+      view.fit.fit();
+      this.refreshTerminalAppearance(view, true);
+      view.v2ForcedReflowRestoreFrame = requestAnimationFrame(() => {
+        view.v2ForcedReflowRestoreFrame = 0;
+        if (!view.closed) {
+          view.container.style.right = originalRight;
+          if (view.container.classList.contains("visible")) {
+            view.fit.fit();
+            this.refreshTerminalAppearance(view, true);
+            if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
+            if (follow) this.scrollTerminalV2ToBottom(view);
+            else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+          }
+        }
+        view.suppressResizeToServer = false;
+        queueMicrotask(() => {
+          if (!view.closed) view.v2Programmatic = false;
+        });
+      });
+    });
+    return true;
+  }
+
+  queueTerminalWrite(view, data, afterWrite = null) {
+    if (!view || view.closed) return;
+    view.outputQueue.push({ data, afterWrite, generation: view.outputWriteGeneration });
+    this.drainTerminalWrites(view);
+  }
+
+  drainTerminalWrites(view) {
+    if (!view || view.closed || view.outputWriteInFlight) return;
+    const item = view.outputQueue.shift();
+    if (!item) return;
+    view.outputWriteInFlight = true;
+    view.term.write(item.data, () => {
+      // Always release the writer. A reconnect invalidates the old callback's
+      // UI work but must not strand the new connection's queued output.
+      view.outputWriteInFlight = false;
+      if (!view.closed && item.generation === view.outputWriteGeneration && item.afterWrite) {
+        item.afterWrite();
+      }
+      if (!view.closed && item.generation === view.outputWriteGeneration && view.needsViewportRepair &&
+          !view.outputQueue.length && view.container.classList.contains("visible")) {
+        view.needsViewportRepair = false;
+        this.repairTerminalViewport(view);
+      }
+      this.drainTerminalWrites(view);
+    });
+  }
+
+  repairTerminalViewport(view) {
+    // Do this only after an initial replay has drained and only while output
+    // following is active. The older generic viewport scroll listener caused
+    // this same repair to race a user's first wheel gesture after tab switch.
+    if (!view || view.closed || view.manualScroll || !view.keepBottom || view.viewportRepairFrame ||
+        !view.container.classList.contains("visible")) return;
+    const generation = view.manualScrollGeneration;
+    view.viewportRepairFrame = requestAnimationFrame(() => {
+      view.viewportRepairFrame = requestAnimationFrame(() => {
+        view.viewportRepairFrame = 0;
+        if (view.closed || view.manualScroll || generation !== view.manualScrollGeneration ||
+            !view.keepBottom || !view.container.classList.contains("visible") || !this.terminalAtBottom(view)) return;
+        view.fit.fit();
+        this.refreshTerminal(view);
+        const { cols, rows } = view.term;
+        if (cols >= 2 && rows >= 2) this.sendResize(view, cols, rows);
+        this.scrollTerminalToBottom(view);
+      });
+    });
+  }
+
+  refreshTerminalAppearance(view, forceResize = false) {
+    if (!view || !view.term) return;
+    view.term.options.theme = { ...this.termTheme() };
+    if (typeof view.term.clearTextureAtlas === "function") view.term.clearTextureAtlas();
+    if (forceResize && view.term._core?.resize && view.term._core._renderService?.clear) {
+      view.term._core._renderService.clear();
+      view.term._core.resize(view.term.cols, view.term.rows);
+    }
+    this.refreshTerminal(view);
+  }
+
   scheduleViewportSettle(view) {
+    if (this.isTerminalScrollV2()) {
+      if (view?.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+      return;
+    }
     if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
     view.settleFrame = requestAnimationFrame(() => {
       view.settleFrame = requestAnimationFrame(() => {
         view.settleFrame = 0;
-        if (view.keepBottom || Date.now() < view.pinBottomUntil) {
+        if (!view.manualScroll && (view.keepBottom || Date.now() < view.pinBottomUntil)) {
           view.keepBottom = true;
           this.scrollTerminalToBottom(view);
           const atBottom = this.terminalAtBottom(view);
           if (!atBottom || Date.now() < view.pinBottomUntil) {
             clearTimeout(view.scrollSettleTimer);
             view.scrollSettleTimer = setTimeout(() => {
-              if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
+              if (!view.manualScroll && (view.keepBottom || Date.now() < view.pinBottomUntil)) {
+                this.scheduleViewportSettle(view);
+              }
             }, 250);
           }
         }
@@ -2885,9 +5595,17 @@ class TermdeckApp {
   }
 
   fitActive() {
+    if (this.nativeVscodeMode) return;
     if (this.$("terminal-area").classList.contains("hidden")) return;
     const view = this.views.get(this.activeId);
     if (!view || !view.container.classList.contains("visible")) return;
+    if (this.isTerminalScrollV2()) {
+      this.scheduleV2Fit(view);
+      this.scheduleV2ViewportSync(view);
+      return;
+    }
+    const rect = view.container.getBoundingClientRect();
+    if (rect.width < 40 || rect.height < 40) return;
     view.fit.fit();
     this.refreshTerminal(view);
     const { cols, rows } = view.term;
@@ -2898,9 +5616,18 @@ class TermdeckApp {
 
   destroyView(id, view) {
     view.closed = true;
+    clearTimeout(view.manualScrollReleaseTimer);
+    clearTimeout(view.scrollSettleTimer);
+    if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
+    if (view.viewportRepairFrame) cancelAnimationFrame(view.viewportRepairFrame);
+    if (view.v2ViewportSyncFrame) cancelAnimationFrame(view.v2ViewportSyncFrame);
+    if (view.v2FitFrame) cancelAnimationFrame(view.v2FitFrame);
+    if (view.v2InitialFitFrame) cancelAnimationFrame(view.v2InitialFitFrame);
+    if (view.v2ForcedReflowFrame) cancelAnimationFrame(view.v2ForcedReflowFrame);
+    if (view.v2ForcedReflowRestoreFrame) cancelAnimationFrame(view.v2ForcedReflowRestoreFrame);
+    clearTimeout(view.layoutFitRetryTimer);
     if (view.layoutObserver) view.layoutObserver.disconnect();
     if (view.scrollObserver) view.scrollObserver.disconnect();
-    if (view.viewportRepairFrame) cancelAnimationFrame(view.viewportRepairFrame);
     if (view.ws) view.ws.close();
     view.term.dispose();
     view.container.remove();
@@ -2915,10 +5642,32 @@ class TermdeckApp {
       if (incoming.side_split != null && incoming.side_split !== SETTINGS_DEFAULTS.side_split) {
         incoming.side_split_user_set = true;
       }
+      if (incoming.sidebar_text_color == null) {
+        const legacyColor = incoming.sidebar_status_color || incoming.wave_color;
+        if (/^#[0-9a-f]{6}$/i.test(String(legacyColor || ""))) incoming.sidebar_text_color = legacyColor;
+      }
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
     } catch (err) {
       this.settings = { ...SETTINGS_DEFAULTS };
     }
+    const storedFilesPinned = localStorage.getItem("termdeck.files_pinned");
+    if (storedFilesPinned !== null) this.settings.files_pinned = parseModeFlag(storedFilesPinned);
+    const storedSidebarColor = localStorage.getItem("termdeck.sidebar_text_color");
+    const storedLegacyColor = localStorage.getItem("termdeck.sidebar_status_color") ||
+      localStorage.getItem("termdeck.wave_color");
+    if (/^#[0-9a-f]{6}$/i.test(storedSidebarColor || "")) this.settings.sidebar_text_color = storedSidebarColor;
+    else if (/^#[0-9a-f]{6}$/i.test(storedLegacyColor || "") &&
+             storedLegacyColor.toLowerCase() !== "#a5e5f0") this.settings.sidebar_text_color = storedLegacyColor;
+    if (!localStorage.getItem("termdeck.sidebar_text_color") &&
+        String(this.settings.sidebar_text_color || "").toLowerCase() === "#a5e5f0") {
+      this.settings.sidebar_text_color = SETTINGS_DEFAULTS.sidebar_text_color;
+    }
+    if (!/^#[0-9a-f]{6}$/i.test(String(this.settings.sidebar_text_color || ""))) {
+      this.settings.sidebar_text_color = SETTINGS_DEFAULTS.sidebar_text_color;
+    }
+    // V2 is now the only desktop terminal scroll controller. Remove the old
+    // browser-only opt-in so a previous preference cannot revive V1.
+    localStorage.removeItem("termdeck.terminal_scroll_v2");
     const states = this.settings.project_state || {};
     if (!Object.keys(states).length && (this.settings.active_session_id || (this.settings.open_files || []).length)) {
       states.__all__ = { active_session_id: this.settings.active_session_id, open_files: this.settings.open_files };
@@ -2956,11 +5705,18 @@ class TermdeckApp {
   applySettings() {
     const s = this.settings;
     const sidebar = this.$("sidebar");
-    sidebar.style.width = s.sidebar_width + "px";
-    sidebar.style.minWidth = s.sidebar_width + "px";
+    const filesVisible = this.sideView === "project" || this.sideView === "search";
+    const normalWidth = Number(s.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
+    const fileWidth = Math.max(Number(s.files_width) || 0, normalWidth * 2);
+    const activeSidebarWidth = filesVisible && s.files_pinned ? fileWidth : normalWidth;
+    sidebar.style.width = activeSidebarWidth + "px";
+    sidebar.style.minWidth = activeSidebarWidth + "px";
+    this.positionFloatingFilesPanel(fileWidth);
+    this.positionFloatingTerminalSearch();
     document.documentElement.style.setProperty("--sidebar-font-size", s.sidebar_font_size + "px");
     document.documentElement.style.setProperty("--ui-font-size", s.ui_font_size + "px");
     document.documentElement.style.setProperty("--code-font-size", s.code_font_size + "px");
+    document.documentElement.style.setProperty("--sidebar-text-color", s.sidebar_text_color);
     const codeFontSize = Number(s.code_font_size) || SETTINGS_DEFAULTS.code_font_size;
     const configuredDiffFontSize = Number(s.diff_font_size) || SETTINGS_DEFAULTS.diff_font_size;
     const relativeDiffFontSize = configuredDiffFontSize === SETTINGS_DEFAULTS.diff_font_size
@@ -2971,7 +5727,7 @@ class TermdeckApp {
     document.body.classList.toggle("theme-light", this.isLight());
     for (const view of this.views.values()) {
       if (view.term.options.fontSize !== s.terminal_font_size) view.term.options.fontSize = s.terminal_font_size;
-      view.term.options.theme = this.termTheme();
+      this.refreshTerminalAppearance(view);
     }
     if (this.editor) {
       this.editor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.word_wrap ? "on" : "off" });
@@ -3012,18 +5768,15 @@ class TermdeckApp {
         });
         this.editor.addAction({
           id: "termdeck-find-usages", label: "Find Usages in Project", contextMenuGroupId: "navigation",
-          contextMenuOrder: 1.5, keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.F12],
-          run: (ed) => {
-            const word = ed.getModel()?.getWordAtPosition(ed.getPosition());
-            if (!word) return;
-            if (this.sideView !== "search") {
-              this.sideView = "terminals";
-              this.setSideView("search");
-            }
-            this.searchWord = true;
-            this.$("search-word-toggle").classList.add("on");
-            this.runSearch(word.word);
-          },
+          contextMenuOrder: 1.5, keybindings: [monaco.KeyMod.Shift | monaco.KeyCode.F12],
+          run: () => this.showEditorUsages(),
+        });
+        this.editor.onMouseDown((mouseEvent) => {
+          const event = mouseEvent.event;
+          if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || !mouseEvent.target.position) return;
+          event.preventDefault();
+          event.stopPropagation();
+          void this.openEditorSymbolAtPosition(mouseEvent.target.position);
         });
         resolve();
       });
@@ -3031,6 +5784,9 @@ class TermdeckApp {
   }
 
   saveSettings() {
+    if (/^#[0-9a-f]{6}$/i.test(String(this.settings.sidebar_text_color || ""))) {
+      localStorage.setItem("termdeck.sidebar_text_color", this.settings.sidebar_text_color);
+    }
     clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" },
@@ -3047,6 +5803,42 @@ class TermdeckApp {
       const label = document.createElement("span");
       label.className = "settings-label";
       label.textContent = item.label;
+      if (item.type === "color") {
+        const controls = document.createElement("span");
+        controls.className = "settings-controls";
+        const input = document.createElement("input");
+        input.type = "color";
+        input.value = /^#[0-9a-f]{6}$/i.test(String(this.settings[item.key] || ""))
+          ? this.settings[item.key] : SETTINGS_DEFAULTS[item.key];
+        input.title = "Choose the sidebar text color";
+        input.setAttribute("aria-label", item.label);
+        input.oninput = () => {
+          this.settings[item.key] = input.value;
+          localStorage.setItem(`termdeck.${item.key}`, input.value);
+          this.applySettings();
+          this.saveSettings();
+        };
+        const reset = document.createElement("button");
+        reset.type = "button";
+        reset.className = "settings-color-reset";
+        reset.textContent = "↺";
+        reset.title = "Reset to default sidebar text color";
+        reset.setAttribute("aria-label", reset.title);
+        reset.onclick = () => {
+          const defaultColor = SETTINGS_DEFAULTS[item.key];
+          this.settings[item.key] = defaultColor;
+          input.value = defaultColor;
+          localStorage.setItem(`termdeck.${item.key}`, defaultColor);
+          localStorage.removeItem("termdeck.sidebar_status_color");
+          localStorage.removeItem("termdeck.wave_color");
+          this.applySettings();
+          this.saveSettings();
+        };
+        controls.append(input, reset);
+        row.append(label, controls);
+        pop.appendChild(row);
+        continue;
+      }
       const controls = document.createElement("span");
       controls.className = "settings-controls";
       const minus = document.createElement("button");
@@ -3066,12 +5858,25 @@ class TermdeckApp {
       () => { this.settings.theme = this.isLight() ? "dark" : "light"; }));
     pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));
+    pop.appendChild(this.buildToggleRow("Terminal icons", () => (this.settings.show_terminal_icons ? "on" : "off"),
+      () => { this.settings.show_terminal_icons = !this.settings.show_terminal_icons; this.renderList(); }));
     pop.appendChild(this.buildToggleRow("Editor wrap", () => (this.settings.word_wrap ? "on" : "off"),
       () => { this.settings.word_wrap = !this.settings.word_wrap; }));
     pop.appendChild(this.buildToggleRow("Markdown transcript mode", () => (this.settings.history_mode ? "on" : "off"),
       () => { this.setHistoryMode(!this.settings.history_mode); }));
     pop.appendChild(this.buildActionRow("Keyboard shortcuts", "edit", () => { pop.classList.add("hidden"); this.openKeybindings(); }));
     pop.appendChild(this.buildActionRow("Export settings", "download", () => { pop.classList.add("hidden"); this.exportSettings(); }));
+    pop.appendChild(this.buildActionRow("Terminal process report", "view", () => {
+      void this.showTerminalProcessReport();
+    }));
+    pop.appendChild(this.buildActionRow("Reclaim orphan terminals", "clean", () => {
+      pop.classList.add("hidden");
+      void this.reclaimOrphanTerminals();
+    }));
+    pop.appendChild(this.buildActionRow("Kill all running terminals", "kill", () => {
+      pop.classList.add("hidden");
+      void this.killAllRunningTerminals();
+    }));
     this.positionPopover(pop, anchor);
   }
 
@@ -3120,7 +5925,14 @@ class TermdeckApp {
       document.body.classList.add("dragging");
       const move = (ev) => {
         const width = fromRight ? window.innerWidth - ev.clientX : ev.clientX;
-        this.settings[key] = Math.max(minWidth, Math.min(maxWidth, Math.round(width)));
+        const resizingFiles = handleId === "sidebar-resizer" && this.settings.files_pinned &&
+          (this.sideView === "project" || this.sideView === "search");
+        const targetKey = resizingFiles ? "files_width" : key;
+        const targetMin = resizingFiles
+          ? Math.max(minWidth, (Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width) * 2)
+          : minWidth;
+        const targetMax = resizingFiles ? Math.max(maxWidth, Math.floor(window.innerWidth * 0.75)) : maxWidth;
+        this.settings[targetKey] = Math.max(targetMin, Math.min(targetMax, Math.round(width)));
         this.applySettings();
       };
       const up = () => {
@@ -3138,12 +5950,13 @@ class TermdeckApp {
     const s = this.session(this.activeId);
     this.treeRoot = rootOverride || (s ? s.cwd : (this.projectRoot() || "~"));
     const label = this.$("files-root-label");
-    label.textContent = this.treeRoot.replace(/^\/Users\/[^/]+/, "~");
+    label.textContent = this.vscodeMode ? "files" : this.treeRoot.replace(/^\/Users\/[^/]+/, "~");
     label.title = this.treeRoot;
     this.treeDirs.clear();
-    this.expandedDirs.clear();
+    this.expandedDirs = new Set(this.treeSearchFilter?.expandedDirs || []);
     this.recentFiles = [];
     this.recentFilesRoot = null;
+    this.recentFilesFingerprint = "";
     this.recentFilesFetchedAt = 0;
     this.recentFilesExpanded = false;
     const tree = this.$("files-tree");
@@ -3165,10 +5978,11 @@ class TermdeckApp {
     for (const entry of entries) {
       const excluded = entry.is_dir && this.isExcludedName(entry.name);
       if (excluded && this.settings.hide_excluded) continue;
+      const childRel = relPath ? `${relPath}/${entry.name}` : entry.name;
+      if (!this.treeFilterAllows(childRel, entry.is_dir)) continue;
       const row = document.createElement("div");
       row.className = "tree-row " + (entry.is_dir ? "dir" : "file") + (excluded ? " excluded" : "");
       row.tabIndex = 0;
-      const childRel = relPath ? `${relPath}/${entry.name}` : entry.name;
       row.title = `${this.treeRoot}/${childRel}`;
       const name = document.createElement("span");
       name.className = "tree-name";
@@ -3184,6 +5998,7 @@ class TermdeckApp {
         row.dataset.kind = "dir";
         row.onclick = () => this.toggleDir(row, childRel);
         this.appendMtime(row, entry);
+        this.appendGitStatus(row, entry);
         container.appendChild(row);
         if (this.expandedDirs.has(childRel)) this.expandDirRow(row, childRel);
       } else {
@@ -3194,6 +6009,7 @@ class TermdeckApp {
         row.dataset.kind = "file";
         row.onclick = () => this.openFile(this.treeRoot, childRel, null, row);
         this.appendMtime(row, entry);
+        this.appendGitStatus(row, entry);
         container.appendChild(row);
       }
     }
@@ -3204,17 +6020,29 @@ class TermdeckApp {
     const mtimeEl = document.createElement("span");
     mtimeEl.className = "tree-mtime";
     mtimeEl.textContent = this.formatMtime(entry.mtime);
-    mtimeEl.title = new Date(entry.mtime * 1000).toLocaleString();
+    mtimeEl.title = `modified ${this.exactMtime(entry.mtime)}`;
     row.appendChild(mtimeEl);
   }
 
+  appendGitStatus(row, entry) {
+    if (this.settings.show_git_status === false || !entry.git_status) return;
+    const gitStatus = String(entry.git_status).trim().toUpperCase();
+    const statusClass = gitStatus === "?" ? "untracked" : gitStatus.toLowerCase();
+    const labels = { "?": "untracked", "M": "modified", "A": "added", "D": "deleted",
+      "R": "renamed", "C": "copied", "U": "conflicted" };
+    row.classList.add("git-row", `git-row-${statusClass}`);
+    row.title = `${row.title ? `${row.title}\n` : ""}git: ${labels[gitStatus] || gitStatus}`;
+  }
+
   formatMtime(epochSeconds) {
-    const ageSeconds = Date.now() / 1000 - epochSeconds;
-    if (ageSeconds < 3600) return Math.max(1, Math.round(ageSeconds / 60)) + "m";
-    if (ageSeconds < 86400) return Math.round(ageSeconds / 3600) + "h";
-    if (ageSeconds < 604800) return Math.round(ageSeconds / 86400) + "d";
     const date = new Date(epochSeconds * 1000);
-    return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  exactMtime(epochSeconds) {
+    const date = new Date(epochSeconds * 1000);
+    return `${date.toLocaleString()} (${date.toISOString()})`;
   }
 
   async expandDirRow(row, relPath) {
@@ -3324,14 +6152,19 @@ class TermdeckApp {
     this.saveSettings();
   }
 
-  async openFile(root, path, line, treeRow) {
+  async openFile(root, path, line, treeRow, options = {}) {
     const key = `${root}|${path}`;
     if (!this.openFiles.has(key)) {
       this.openFiles.set(key, { root, path, name: path.split("/").pop(), model: null, fullPath: null, truncated: false });
       this.persistOpenFiles();
     }
     this.markTreeSelection(treeRow || null);
-    await this.activateFile(key, line);
+    const returnTo = typeof options.returnTo === "string" ? options.returnTo.trim() : "";
+    await this.activateFile(key, line, { returnTo });
+    const openedFromFilePanel = !!treeRow || !!options.fromFilePanel;
+    if (openedFromFilePanel && !this.settings.files_pinned && entry.model && this.sideView !== "terminals") {
+      this.setSideView("terminals", false);
+    }
   }
 
   positionPopover(pop, anchor) {
@@ -3343,12 +6176,28 @@ class TermdeckApp {
     pop.style.left = Math.min(rect.left, window.innerWidth - pop.offsetWidth - 12) + "px";
   }
 
-  async activateFile(key, line) {
+  async activateFile(key, line, options = {}) {
     const entry = this.openFiles.get(key);
     if (!entry) return;
-    this.hidePathOverflow();
     this.activeFileKey = key;
-    this.pushNav({ kind: "file", key });
+    if (options.history !== false && !this.vscodeMode) {
+      const requestedReturnTo = typeof options.returnTo === "string" ? options.returnTo.trim() : "";
+      const activeSessionId = String(this.activeId || requestedReturnTo || "");
+      const current = this.parseNavState(this.lastNavJson);
+      const fallback = activeSessionId || (current?.kind === "term" ? String(current.id || "") : "");
+      const fallbackFromFile = current?.kind === "file" ? String(current.return_to || "") : "";
+      const returnTo = (this.session(fallback) ? fallback : fallbackFromFile && this.session(fallbackFromFile) ? fallbackFromFile : "");
+      const fromCurrentFile = current?.kind === "file" && String(current.return_to || "") === returnTo;
+      if (returnTo && !fromCurrentFile) {
+        this.pushNav({ kind: "term", id: returnTo });
+      }
+      if (returnTo) {
+        this.pushNav({ kind: "file", key, return_to: returnTo });
+      } else {
+        this.pushNav({ kind: "file", key });
+      }
+    }
+    else if (options.history !== false) this.replaceNav({ kind: "file", key });
     this.applyMainLayout();
     this.renderList();
     this.renderTopbar();
@@ -3410,13 +6259,16 @@ class TermdeckApp {
     if (this.activeFileKey === key) {
       const remaining = [...this.openFiles.keys()];
       if (remaining.length) {
-        this.activateFile(remaining[remaining.length - 1], null);
+        const nextKey = remaining[remaining.length - 1];
+        this.activateFile(nextKey, null, { history: false });
+        this.replaceNav({ kind: "file", key: nextKey });
         return;
       }
       this.activeFileKey = null;
       this.applyMainLayout();
       const view = this.views.get(this.activeId);
       if (view) view.term.focus();
+      this.replaceNav(this.activeId ? { kind: "term", id: this.activeId } : { kind: "init" });
     }
     this.renderList();
     this.renderTopbar();
@@ -3427,44 +6279,170 @@ class TermdeckApp {
     else this.closeActive();
   }
 
+  terminalPathBoundaryContinues(leftText, rightText) {
+    const left = String(leftText || "").replace(/\s+$/, "");
+    const right = String(rightText || "").replace(/^\s+/, "");
+    if (!left || !right) return false;
+    if (!/[\\/._-]$/.test(left)) return false;
+    return /^[\w@%+=.-]+(?:[\\/._-]|:\d)/.test(right);
+  }
+
   providePathLinks(term, sessionId, bufferLineNumber, callback) {
-    const lineObj = term.buffer.active.getLine(bufferLineNumber - 1);
-    if (!lineObj) { callback(undefined); return; }
-    const text = lineObj.translateToString(true);
+    const buffer = term.buffer.active;
+    const targetIndex = bufferLineNumber - 1;
+    if (!buffer.getLine(targetIndex)) { callback(undefined); return; }
+
+    // xterm stores a visually wrapped terminal row as several BufferLines.
+    // Reassemble that logical line before matching so a path split at the
+    // terminal width is still opened with its complete value.
+    let firstIndex = targetIndex;
+    while (firstIndex > 0) {
+      const current = buffer.getLine(firstIndex);
+      const previous = buffer.getLine(firstIndex - 1);
+      if (current?.isWrapped || this.terminalPathBoundaryContinues(
+        previous?.translateToString(true), current?.translateToString(true))) firstIndex -= 1;
+      else break;
+    }
+    const segments = [];
+    let nextIndex = firstIndex;
+    while (nextIndex < buffer.length) {
+      const line = buffer.getLine(nextIndex);
+      if (!line) break;
+      const text = line.translateToString(true);
+      segments.push({ index: nextIndex, text });
+      const nextLine = buffer.getLine(nextIndex + 1);
+      if (!nextLine || (!nextLine.isWrapped && !this.terminalPathBoundaryContinues(
+        text, nextLine.translateToString(true)))) break;
+      nextIndex += 1;
+    }
+    const logicalText = segments.map((segment) => segment.text).join("");
     const links = [];
-    for (const m of text.matchAll(PATH_LINK_RE)) {
-      const raw = m[0];
-      const ext = raw.split(":")[0].split(".").pop().toLowerCase();
-      if (!raw.includes("/") && !KNOWN_EXTS.has(ext)) continue;
-      links.push({
-        range: { start: { x: m.index + 1, y: bufferLineNumber }, end: { x: m.index + raw.length, y: bufferLineNumber } },
-        text: raw,
-        activate: (event, linkText) => this.openFileFromLink(sessionId, linkText),
-      });
+    let logicalOffset = 0;
+    for (const segment of segments) {
+      const segmentStart = logicalOffset;
+      const segmentEnd = segmentStart + segment.text.length;
+      if (segment.index === targetIndex && segment.text.length) {
+        for (const match of logicalText.matchAll(PATH_LINK_RE)) {
+          const raw = match[0];
+          const matchStart = match.index;
+          const matchEnd = matchStart + raw.length;
+          const ext = raw.split(":")[0].split(".").pop().toLowerCase();
+          if (!raw.includes("/") && !KNOWN_EXTS.has(ext)) continue;
+          if (matchStart >= segmentEnd || matchEnd <= segmentStart) continue;
+          const start = Math.max(matchStart, segmentStart) - segmentStart;
+          const end = Math.min(matchEnd, segmentEnd) - segmentStart;
+          if (end <= start) continue;
+          links.push({
+            range: { start: { x: start + 1, y: bufferLineNumber }, end: { x: end, y: bufferLineNumber } },
+            text: raw,
+            // xterm may pass only the visible row fragment as linkText when
+            // this path crosses a wrap. Always open the complete match.
+            activate: () => this.openFileFromLink(sessionId, raw),
+          });
+        }
+      }
+      logicalOffset = segmentEnd;
     }
     callback(links.length ? links : undefined);
   }
 
-  openFileFromLink(sessionId, linkText) {
-    const lineMatch = linkText.match(/:(\d+)$/);
-    const path = lineMatch ? linkText.slice(0, lineMatch.index) : linkText;
-    const line = lineMatch ? parseInt(lineMatch[1], 10) : null;
-    const s = this.session(sessionId);
-    this.openFile(s ? s.cwd : "~", path, line, null);
+  parseVscodeFileLink(linkText) {
+    let value = String(linkText || "").trim();
+    if (!value || /^(?:https?|mailto|data|javascript):/i.test(value)) return null;
+    let line = null;
+    let column = null;
+    let match = value.match(/#L(\d+)(?:-L\d+)?$/i);
+    if (match) {
+      line = Number(match[1]);
+      value = value.slice(0, match.index);
+    } else {
+      match = value.match(/:(\d+)(?::(\d+))?$/);
+      if (match) {
+        line = Number(match[1]);
+        column = match[2] ? Number(match[2]) : null;
+        value = value.slice(0, match.index);
+      }
+    }
+    if (/^file:\/\//i.test(value)) {
+      try { value = decodeURIComponent(new URL(value).pathname); } catch (_error) { return null; }
+    }
+    value = value.replace(/[),.;]+$/, "");
+    const fileName = value.split("/").pop() || "";
+    const extension = fileName.includes(".") ? fileName.split(".").pop().toLowerCase() : "";
+    if (!value || (!value.includes("/") && !KNOWN_EXTS.has(extension))) return null;
+    return { path: value, line, column };
   }
 
-  openModal() {
+  postVscodeFileOpen(path, line, column, cwd) {
+    if (!this.vscodeMode || window.parent === window) return false;
+    window.parent.postMessage({ type: "termdeck-open-file", path, line, column, cwd }, "*");
+    return true;
+  }
+
+  requestVscodeRefresh(hard = false) {
+    if (!this.vscodeMode) return;
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: "termdeck-refresh", hard: !!hard }, "*");
+      return;
+    }
+    location.reload();
+  }
+
+  postVscodeNativeSession(session, visible) {
+    if (!this.nativeVscodeMode || window.parent === window || !session) return;
+    window.parent.postMessage({
+      type: "termdeck-native-session",
+      session: { session_id: session.session_id, title: this.titlePresentation(session).text, cwd: session.cwd },
+      ...(typeof visible === "boolean" ? { visible } : {}),
+    }, "*");
+  }
+
+  postVscodeNativeClose(sessionId) {
+    if (!this.nativeVscodeMode || window.parent === window || !sessionId) return;
+    window.parent.postMessage({ type: "termdeck-native-close", session_id: sessionId }, "*");
+  }
+
+  handleVscodeFileLink(event) {
+    if (!this.vscodeMode) return;
+    const anchor = event.target.closest?.("a");
+    if (!anchor) return;
+    const parsed = this.parseVscodeFileLink(anchor.getAttribute("href"));
+    if (!parsed) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const session = this.session(this.activeId);
+    this.postVscodeFileOpen(parsed.path, parsed.line, parsed.column, session?.cwd || this.projectRoot() || "");
+  }
+
+  openFileFromLink(sessionId, linkText) {
+    const parsed = this.parseVscodeFileLink(linkText);
+    if (!parsed) return;
+    const s = this.session(sessionId);
+    const returnTo = String(sessionId || "").trim();
+    if (this.vscodeMode) {
+      this.postVscodeFileOpen(parsed.path, parsed.line, parsed.column, s ? s.cwd : "~");
+      return;
+    }
+    this.openFile(s ? s.cwd : "~", parsed.path, parsed.line, null, { returnTo });
+  }
+
+  openModal(groupId = null) {
+    this.modalGroupId = !this.vscodeMode && groupId && this.terminalGroups().some((group) => group.id === groupId)
+      ? groupId : null;
     const model = this.settings.last_model || DEFAULT_COMMAND;
     this.$("modal-model").value = MODEL_PERMISSIONS[model] ? model : DEFAULT_COMMAND;
     this.updateModalPermissions();
     this.$("modal-session-title").value = "";
     this.$("modal-session-ref").value = "";
-    this.$("modal-cwd").value = this.projectRoot() || DEFAULT_CWD;
+    this.$("modal-cwd").value = this.resolveVscodeDefaultCwd();
+    this.$("modal-cwd").dataset.projectSeeded = "0";
+    this.populateModalProjects();
     this.$("modal-backdrop").classList.remove("hidden");
     this.$("modal-session-title").focus();
   }
 
   closeModal() {
+    this.modalGroupId = null;
     this.$("modal-backdrop").classList.add("hidden");
   }
 
@@ -3487,17 +6465,36 @@ class TermdeckApp {
 
   async createSession() {
     if (this.$("modal-backdrop").classList.contains("hidden")) return;
+    const targetGroupId = this.modalGroupId;
     const model = this.$("modal-model").value;
     const permission = this.$("modal-permission").value;
     const title = this.$("modal-session-title").value;
     const sessionRef = this.$("modal-session-ref").value;
-    const cwd = this.$("modal-cwd").value;
+    const rawCwd = this.$("modal-cwd").value.trim();
+    const selectedProject = this.projects.find((project) => project.name === this.$("modal-project")?.value);
+    const cwd = selectedProject ? selectedProject.root
+      : (this.vscodeMode ? rawCwd || this.resolveVscodeDefaultCwd() : rawCwd);
+    let project = selectedProject?.name || "";
+    if (!selectedProject && cwd) {
+      const projectResponse = await fetch("/api/projects", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ root: cwd }),
+      });
+      const projectPayload = await projectResponse.json().catch(() => ({}));
+      if (!projectResponse.ok) {
+        alert(projectPayload.detail || "failed to register project folder");
+        return;
+      }
+      project = projectPayload.name || "";
+    }
+    if (!project) project = this.projectForCwd(cwd)?.name || "";
     this.settings.last_model = model;
     this.settings.last_permissions = { ...(this.settings.last_permissions || {}), [model]: permission };
     this.saveSettings();
     const res = await fetch("/api/sessions", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, permission, session_ref: sessionRef, cwd, title }),
+      body: JSON.stringify({ model, permission, session_ref: sessionRef, cwd, title,
+        project }),
     });
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
@@ -3506,14 +6503,27 @@ class TermdeckApp {
     }
     const created = await res.json();
     this.closeModal();
+    if (!this.vscodeMode && created.project && created.project !== (this.projectSlug || "")) {
+      location.href = `/p/${encodeURIComponent(created.project)}`;
+      return;
+    }
+    if (this.nativeVscodeMode) this.postVscodeNativeSession(created, true);
     await this.refresh();
+    if (targetGroupId && this.terminalGroups().some((group) => group.id === targetGroupId)) {
+      const state = this.getProjectState();
+      this.patchProjectState({
+        session_groups: { ...(state.session_groups || {}), [created.session_id]: targetGroupId },
+        terminal_layout: this.terminalLayout().filter((entry) => entry !== `session:${created.session_id}`),
+      });
+      this.renderList();
+    }
     this.activate(created.session_id, { reveal: true });
   }
 
   openKeybindings() {
     const list = this.$("keys-list");
     list.textContent = "";
-    for (const k of KEYBINDINGS) {
+    for (const k of this.keybindingDefinitions()) {
       const row = document.createElement("div");
       row.className = "keys-row";
       const label = document.createElement("span");
@@ -3528,7 +6538,7 @@ class TermdeckApp {
     }
     const ref = this.$("keys-reference");
     ref.textContent = "";
-    for (const r of REFERENCE_KEYS) {
+    for (const r of (this.vscodeMode ? VSCODE_REFERENCE_KEYS : REFERENCE_KEYS)) {
       const row = document.createElement("div");
       row.className = "keys-row builtin";
       const lbl = document.createElement("span");
@@ -3556,15 +6566,17 @@ class TermdeckApp {
       bindEl.classList.remove("capturing");
       if (e.key === "Escape") { bindEl.textContent = this.bindingToDisplay(this.bindingFor(actionId)); return; }
       const binding = this.eventToBinding(e);
-      this.settings.keybindings = { ...(this.settings.keybindings || {}), [actionId]: binding };
+      const key = this.keybindingsStorageKey();
+      this.settings[key] = { ...(this.settings[key] || {}), [actionId]: binding };
       this.saveSettings();
       bindEl.textContent = this.bindingToDisplay(binding);
+      this.updateShortcutTitles();
     };
     document.addEventListener("keydown", handler, true);
   }
 
   resetKeybindings() {
-    this.settings.keybindings = {};
+    this.settings[this.keybindingsStorageKey()] = {};
     this.saveSettings();
     this.openKeybindings();
   }
@@ -3579,6 +6591,78 @@ class TermdeckApp {
     URL.revokeObjectURL(url);
   }
 
+  async killAllRunningTerminals() {
+    const message = "Kill all running terminals, including detached sessions? This stops only terminal processes; " +
+      "session tabs, transcripts, and history are preserved.";
+    const confirmed = window.confirm(message);
+    if (!confirmed) return;
+    try {
+      const response = await fetch("/api/terminals/kill-all", { method: "POST" });
+      if (!response.ok) throw new Error(`kill request failed: ${response.status}`);
+      const result = await response.json();
+      const killed = Number(result.killed || 0);
+      const terminalWord = killed === 1 ? "terminal" : "terminals";
+      this.$("status-name").textContent = `killed ${killed} running ${terminalWord}; history preserved`;
+      await this.refresh();
+    } catch (error) {
+      this.$("status-name").textContent = `unable to kill terminals: ${error.message}`;
+    }
+  }
+
+  async showTerminalProcessReport() {
+    try {
+      const response = await fetch("/api/terminals/processes");
+      if (response.status === 404) {
+        throw new Error("available after the next planned TermDeck server restart");
+      }
+      if (!response.ok) throw new Error(`report request failed: ${response.status}`);
+      const report = await response.json();
+      const summary = report.summary || {};
+      const entries = Array.isArray(report.sockets) ? report.sockets : [];
+      const lines = entries.map((entry) => {
+        const name = entry.known_session ? (entry.title || entry.session_id) : `orphan ${entry.session_id}`;
+        const mode = entry.live ? entry.detached ? "detached" : "attached" : "stale";
+        return `• ${name}: ${mode}, ${(entry.processes || []).length} processes`;
+      });
+      const header = `${summary.live_sockets || 0} live socket${summary.live_sockets === 1 ? "" : "s"} · ` +
+        `${summary.processes || 0} processes · ${summary.node_repl_processes || 0} node_repl · ` +
+        `${summary.zombie_processes || 0} zombies · ${summary.orphan_sockets || 0} orphan sockets`;
+      this.$("status-name").textContent = header;
+      window.alert(["TermDeck terminal process report", "", header, "", ...lines].join("\n"));
+    } catch (error) {
+      this.$("status-name").textContent = `unable to load terminal process report: ${error.message}`;
+    }
+  }
+
+  async reclaimOrphanTerminals() {
+    try {
+      const response = await fetch("/api/terminals/processes");
+      if (response.status === 404) {
+        throw new Error("available after the next planned TermDeck server restart");
+      }
+      if (!response.ok) throw new Error(`report request failed: ${response.status}`);
+      const report = await response.json();
+      const orphans = (report.sockets || []).filter((entry) => !entry.known_session);
+      if (!orphans.length) {
+        this.$("status-name").textContent = "no orphaned TermDeck terminal sockets";
+        return;
+      }
+      const confirmed = window.confirm(`Reclaim ${orphans.length} orphaned TermDeck socket${orphans.length === 1 ? "" : "s"}? ` +
+        "This terminates only processes reachable from those unlisted TermDeck sockets.");
+      if (!confirmed) return;
+      const cleanup = await fetch("/api/terminals/reclaim-orphans", { method: "POST" });
+      if (!cleanup.ok) throw new Error(`cleanup request failed: ${cleanup.status}`);
+      const result = await cleanup.json();
+      const reclaimed = (result.reclaimed || []).length;
+      const failed = (result.failed || []).length;
+      this.$("status-name").textContent = failed
+        ? `reclaimed ${reclaimed} orphan sockets; ${failed} still need attention`
+        : `reclaimed ${reclaimed} orphaned TermDeck sockets`;
+    } catch (error) {
+      this.$("status-name").textContent = `unable to reclaim orphan terminals: ${error.message}`;
+    }
+  }
+
   eventToBinding(e) {
     if (["Meta", "Shift", "Alt", "Control"].includes(e.key)) return "";
     const parts = [];
@@ -3590,18 +6674,25 @@ class TermdeckApp {
     return parts.join("+");
   }
 
+  isDesktopTerminalSelectAllEvent(e) {
+    return !this.vscodeMode && e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey &&
+      (e.code === "KeyA" || String(e.key || "").toLowerCase() === "a") &&
+      this.activeFileKey === null && !this.historyOpen && !!this.views.get(this.activeId);
+  }
+
   bindingFor(actionId) {
-    return (this.settings.keybindings || {})[actionId] || KEYBINDINGS.find((k) => k.id === actionId).def;
+    const definition = this.keybindingDefinitions().find((k) => k.id === actionId);
+    return (this.settings[this.keybindingsStorageKey()] || {})[actionId] || definition?.def || "";
   }
 
   bindingMap() {
     const map = {};
-    for (const k of KEYBINDINGS) map[this.bindingFor(k.id)] = k.id;
+    for (const k of this.keybindingDefinitions()) map[this.bindingFor(k.id)] = k.id;
     return map;
   }
 
   tryAppShortcut(e) {
-    if (e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey) {
+    if (!this.vscodeMode && e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey) {
       const key = e.key.toLowerCase();
       if (key === "e") {
         e.preventDefault();
@@ -3618,7 +6709,7 @@ class TermdeckApp {
       if (e.key === " " || e.key === "Spacebar") {
         e.preventDefault();
         e.stopPropagation();
-        this.openFileBrowserModal();
+        this.cycleView("project");
         return true;
       }
     }
@@ -3634,23 +6725,51 @@ class TermdeckApp {
 
   runAction(actionId) {
     if (actionId === "new-terminal") this.openModal();
+    else if (actionId === "new-group") this.createTerminalGroup();
     else if (actionId === "close-item") this.closeActiveItem();
+    else if (actionId === "fork-terminal") { const s = this.session(this.activeId); if (s) this.forkSession(s); }
+    else if (actionId === "restart-terminal") { if (this.activeId) this.restartSession(this.activeId); }
     else if (actionId === "save-file") { if (this.activeFileKey !== null) this.saveActiveFile(); }
     else if (actionId === "prev-terminal") this.cycleTerminal(-1);
     else if (actionId === "next-terminal") this.cycleTerminal(1);
     else if (actionId === "view-files") this.cycleView("project");
     else if (actionId === "view-search") this.cycleView("search");
+    else if (actionId === "terminal-search") this.toggleTerminalSearch();
     else if (actionId === "view-terminals") this.setSideView("terminals");
     else if (actionId === "toggle-history") this.toggleHistory();
+    else if (actionId === "focus-prompt") this.focusActivePrompt();
+    else if (actionId === "show-usages") this.showEditorUsages();
     else if (actionId === "select-terminal-all") this.selectActiveTerminalText();
+    else if (actionId === "vscode-refresh") this.requestVscodeRefresh(false);
+    else if (actionId === "vscode-reload") this.requestVscodeRefresh(true);
   }
 
   selectActiveTerminalText() {
     if (this.activeFileKey !== null || this.historyOpen) return;
     const view = this.views.get(this.activeId);
     if (!view) return;
-    view.term.selectAll();
-    view.term.focus();
+    const select = () => {
+      if (this.activeFileKey !== null || this.historyOpen || this.views.get(this.activeId) !== view) return;
+      window.getSelection()?.removeAllRanges();
+      view.term.focus();
+      view.term.selectAll();
+    };
+    select();
+    // Some browser/macOS paths apply their page-level select-all after the
+    // key event despite preventDefault(). Re-apply xterm's selection after
+    // that default-action frame.
+    requestAnimationFrame(select);
+  }
+
+  focusActivePrompt() {
+    if (this.activeFileKey !== null) return;
+    if (this.historyOpen) {
+      const prompt = this.$("history-prompt");
+      prompt.focus();
+      prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+      return;
+    }
+    this.views.get(this.activeId)?.term.focus();
   }
 
   bindingToDisplay(binding) {
@@ -3663,7 +6782,10 @@ class TermdeckApp {
     const ids = this.sessions.map((s) => s.session_id);
     const current = ids.indexOf(this.activeId);
     const next = current === -1 ? 0 : (current + delta + ids.length) % ids.length;
-    this.activate(ids[next], { history: false });
+    // Keyboard cycling may move past the visible portion of the sidebar.
+    // Reveal only this newly selected row; ordinary clicks and browser
+    // history navigation should not continually reposition the sidebar.
+    this.activate(ids[next], { history: false, reveal: true });
   }
 
   async forkSession(s) {
@@ -3676,7 +6798,27 @@ class TermdeckApp {
     });
     if (!res.ok) { alert("fork failed"); return; }
     const created = await res.json();
+    if (this.nativeVscodeMode) this.postVscodeNativeSession(created, true);
     await this.refresh();
+    const state = this.getProjectState();
+    const sourceGroupId = state.session_groups?.[s.session_id] || null;
+    const order = this.sessions.map((session) => session.session_id).filter((id) => id !== created.session_id);
+    const sourceIndex = order.indexOf(s.session_id);
+    if (sourceIndex >= 0) {
+      order.splice(sourceIndex + 1, 0, created.session_id);
+      const patch = { session_order: order };
+      if (sourceGroupId) {
+        // A fork created by the backend is initially ungrouped. Inherit the
+        // source group so the group's renderer keeps it beside its parent
+        // instead of appending it to the ungrouped terminal list.
+        patch.session_groups = { ...(state.session_groups || {}), [created.session_id]: sourceGroupId };
+        patch.terminal_layout = this.terminalLayout()
+          .filter((entry) => entry !== `session:${created.session_id}`);
+      }
+      this.patchProjectState(patch);
+      this.sessions = this.applySessionOrder(this.sessions);
+      this.renderList();
+    }
     this.activate(created.session_id, { reveal: true });
     const view = this.views.get(created.session_id);
     if (view) view.pinBottomUntil = Date.now() + 8000;
@@ -3695,8 +6837,25 @@ class TermdeckApp {
     const s = this.session(sessionId);
     if (!s) return;
     if (!confirm(`Close "${this.effectiveTitle(s)}"? This kills the process (it moves to closed history).`)) return;
-    await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
-    this.refresh();
+    const wasActive = this.activeId === sessionId;
+    const closeOrder = this.sessions.map((session) => session.session_id);
+    const closeIndex = closeOrder.indexOf(sessionId);
+    const nextOnClose = closeIndex >= 0 && closeIndex + 1 < closeOrder.length ? closeOrder[closeIndex + 1]
+      : closeIndex > 0 ? closeOrder[closeIndex - 1] : null;
+    const response = await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      this.$("status-name").textContent = detail.detail || "terminal process cleanup did not complete";
+      return;
+    }
+    this.postVscodeNativeClose(sessionId);
+    await this.refresh();
+    if (wasActive && nextOnClose) {
+      const nextSession = this.session(nextOnClose);
+      if (nextSession && this.activeId !== nextSession.session_id) {
+        this.activate(nextSession.session_id, { history: false, reveal: true });
+      }
+    }
   }
 
   closeActive() {
@@ -3713,7 +6872,25 @@ class TermdeckApp {
     this.refresh();
   }
 
+  async moveSessionToProject(session, project) {
+    if (!session || !project || project === session.project) return;
+    const response = await fetch(`/api/sessions/${session.session_id}/project`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      alert(error.detail || "move terminal to project failed");
+      return;
+    }
+    if (this.projectSlug && this.projectSlug !== project) {
+      location.href = `/p/${encodeURIComponent(project)}`;
+      return;
+    }
+    await this.refresh();
+  }
+
   searchRoot() {
+    if (this.vscodeMode && this.vscodeWorkspaceRoot) return this.vscodeWorkspaceRoot;
     const projectRoot = this.projectRoot();
     if (projectRoot) return projectRoot;
     const s = this.session(this.activeId);
@@ -3725,6 +6902,70 @@ class TermdeckApp {
     if (last && JSON.stringify(last) === JSON.stringify(state)) return;
     this.searchHistory.push(state);
     if (this.searchHistory.length > 30) this.searchHistory.shift();
+  }
+
+  showEditorUsages(word = "") {
+    if (this.vscodeMode || !this.editor) return;
+    const model = this.editor.getModel();
+    const position = this.editor.getPosition();
+    const selectedWord = word || model?.getWordAtPosition(position)?.word || "";
+    if (!selectedWord) return;
+    if (this.sideView !== "search") {
+      this.sideView = "terminals";
+      this.setSideView("search");
+    }
+    this.searchWord = true;
+    this.$("search-word-toggle").classList.add("on");
+    void this.runSearch(selectedWord);
+  }
+
+  editorSymbolDefinitionPattern(word, path) {
+    const escaped = String(word).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const identifier = `(?:${escaped})`;
+    const python = `^\\s*(?:async\\s+)?(?:def|class)\\s+${identifier}\\b`;
+    const javascript = `^\\s*(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?(?:function|class)\\s+${identifier}\\b` +
+      `|^\\s*(?:export\\s+)?(?:const|let|var)\\s+${identifier}\\s*=`;
+    const rust = `^\\s*(?:pub\\s+)?(?:async\\s+)?fn\\s+${identifier}\\b`;
+    const go = `^\\s*func(?:\\s+\\([^)]*\\))?\\s+${identifier}\\b`;
+    const extension = String(path || "").split(".").pop().toLowerCase();
+    if (extension === "py") return python;
+    if (["js", "jsx", "ts", "tsx", "mjs", "cjs"].includes(extension)) return javascript;
+    if (extension === "rs") return rust;
+    if (extension === "go") return go;
+    return [python, javascript, rust, go].join("|");
+  }
+
+  async findEditorSymbolDefinition(entry, word) {
+    const glob = this.$("search-glob")?.value.trim() || "";
+    const ignore = [...ALWAYS_EXCLUDED, ...(this.settings.ignored_dirs || [])].join(",");
+    const params = new URLSearchParams({ root: entry.root, q: this.editorSymbolDefinitionPattern(word, entry.path),
+      glob, ignore, word: "false", case_sensitive: "true", regex: "true" });
+    try {
+      const response = await fetch(`/api/files/search?${params}`);
+      if (!response.ok) return null;
+      const hits = await response.json();
+      return hits.sort((a, b) => (Number(a.path !== entry.path) - Number(b.path !== entry.path)) ||
+        (Number(a.line) - Number(b.line)))[0] || null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  async openEditorSymbolAtPosition(position) {
+    if (this.vscodeMode || this.activeFileKey === null) return;
+    const entry = this.openFiles.get(this.activeFileKey);
+    const model = this.editor?.getModel();
+    const word = model?.getWordAtPosition(position);
+    if (!entry || !model || !word) return;
+    const key = this.activeFileKey;
+    const definition = await this.findEditorSymbolDefinition(entry, word.word);
+    if (this.activeFileKey !== key) return;
+    if (!definition) {
+      this.showEditorUsages(word.word);
+      return;
+    }
+    await this.openFile(entry.root, definition.path, definition.line, null);
+    this.editor?.focus();
   }
 
   prevSearch() {
@@ -3748,6 +6989,8 @@ class TermdeckApp {
     const query = this.$("search-query").value.trim();
     const resultsEl = this.$("search-results");
     resultsEl.textContent = "";
+    this.clearFileSearchSelection("content");
+    this.contentSearchTree = null;
     if (!query) { this.setExplorerMode("tree"); return; }
     if (this.sideView !== "search") {
       this.sideView = "terminals";
@@ -3758,7 +7001,9 @@ class TermdeckApp {
       const state = { q: query, glob: this.$("search-glob").value.trim(),
                       word: this.searchWord, case_sensitive: this.searchCase, regex: this.searchRegex };
       this.recordSearch(state);
-      this.pushNav({ kind: "search", ...state });
+      // Search selection is also a fixed sidebar view, so keep it in the
+      // current URL without adding a browser-history step.
+      this.replaceNav({ kind: "search", ...state });
     }
     const summary = document.createElement("div");
     summary.className = "search-summary";
@@ -3784,6 +7029,7 @@ class TermdeckApp {
       byFile.get(hit.path).hits.push(hit);
     }
     const files = [...byFile.values()].sort((a, b) => this.compareSearchFiles(a, b));
+    this.contentSearchTree = { root, paths: new Set(files.map((file) => file.path)), directories: new Set() };
     for (const file of files) {
       const fileRow = document.createElement("div");
       fileRow.className = "search-file group";
@@ -3794,6 +7040,8 @@ class TermdeckApp {
       for (const hit of file.hits) {
         const hitRow = document.createElement("div");
         hitRow.className = "search-hit";
+        hitRow.tabIndex = -1;
+        hitRow.setAttribute("role", "option");
         const lineEl = document.createElement("span");
         lineEl.className = "hit-line";
         lineEl.textContent = hit.line;
@@ -3802,7 +7050,8 @@ class TermdeckApp {
         textEl.textContent = hit.text;
         hitRow.append(lineEl, textEl);
         hitRow.title = `${hit.path}:${hit.line}`;
-        hitRow.onclick = () => this.openFile(root, hit.path, hit.line, null);
+        hitRow.onclick = () => this.openFile(root, hit.path, hit.line, null, { fromFilePanel: true });
+        hitRow.onmouseenter = () => this.selectFileSearchResult("content", hitRow, { reveal: false });
         resultsEl.appendChild(hitRow);
       }
     }
@@ -3826,8 +7075,108 @@ class TermdeckApp {
   debouncedSearch() {
     clearTimeout(this.searchDebounce);
     const query = this.$("search-query").value.trim();
-    if (!query) { this.$("search-results").textContent = ""; return; }
+    if (!query) {
+      this.$("search-results").textContent = "";
+      this.clearFileSearchSelection("content");
+      this.contentSearchTree = null;
+      return;
+    }
     this.searchDebounce = setTimeout(() => this.runSearch(), SEARCH_DEBOUNCE_MS);
+  }
+
+  fileSearchResultRows(mode) {
+    const container = this.$(mode === "name" ? "name-results" : "search-results");
+    const selector = mode === "name" ? ".search-file.clickable" : ".search-hit";
+    return container ? [...container.querySelectorAll(selector)] : [];
+  }
+
+  clearFileSearchSelection(mode) {
+    this.searchSelection[mode] = -1;
+  }
+
+  selectFileSearchResult(mode, row, { reveal = true } = {}) {
+    const rows = this.fileSearchResultRows(mode);
+    const index = rows.indexOf(row);
+    if (index < 0) return false;
+    this.searchSelection[mode] = index;
+    for (const candidate of rows) {
+      const selected = candidate === row;
+      candidate.classList.toggle("keyboard-selected", selected);
+      candidate.setAttribute("aria-selected", String(selected));
+    }
+    if (reveal) row.scrollIntoView({ block: "nearest" });
+    return true;
+  }
+
+  moveFileSearchSelection(mode, delta) {
+    const rows = this.fileSearchResultRows(mode);
+    if (!rows.length) return false;
+    const current = this.searchSelection[mode];
+    const index = current < 0 ? (delta < 0 ? rows.length - 1 : 0) :
+      Math.max(0, Math.min(rows.length - 1, current + delta));
+    return this.selectFileSearchResult(mode, rows[index]);
+  }
+
+  activateFileSearchSelection(mode) {
+    const row = this.fileSearchResultRows(mode)[this.searchSelection[mode]];
+    if (!row) return false;
+    row.click();
+    return true;
+  }
+
+  handleFileSearchNavigation(event, mode) {
+    if (event.metaKey || event.ctrlKey || event.altKey) return false;
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return false;
+    event.preventDefault();
+    this.moveFileSearchSelection(mode, event.key === "ArrowDown" ? 1 : -1);
+    return true;
+  }
+
+  treeFilterForSearch(mode) {
+    const search = mode === "name" ? this.nameSearchTree : this.contentSearchTree;
+    if (!search) return null;
+    const paths = new Set(search.paths || []);
+    const directories = new Set(search.directories || []);
+    const expandedDirs = new Set();
+    const addParents = (path, includeSelf) => {
+      const parts = String(path || "").split("/").filter(Boolean);
+      const count = includeSelf ? parts.length : Math.max(0, parts.length - 1);
+      let rel = "";
+      for (let index = 0; index < count; index += 1) {
+        rel = rel ? `${rel}/${parts[index]}` : parts[index];
+        expandedDirs.add(rel);
+      }
+    };
+    for (const path of paths) addParents(path, directories.has(path));
+    return { root: search.root, paths, directories, expandedDirs };
+  }
+
+  treeFilterAllows(relPath, isDir) {
+    const filter = this.treeSearchFilter;
+    if (!filter) return true;
+    const path = String(relPath || "");
+    const prefix = `${path}/`;
+    const isWithinMatchedDirectory = [...filter.directories].some((directory) => path.startsWith(`${directory}/`));
+    if (!isDir) return filter.paths.has(path) || isWithinMatchedDirectory;
+    return isWithinMatchedDirectory || filter.directories.has(path) ||
+      [...filter.paths].some((candidate) => candidate === path || candidate.startsWith(prefix));
+  }
+
+  async enterFileTreeNavigation(mode) {
+    if (this.vscodeMode) return;
+    const filter = this.treeFilterForSearch(mode);
+    this.treeSearchFilter = filter;
+    this.expandedDirs = new Set(filter?.expandedDirs || []);
+    const expectedRoot = filter?.root || this.searchRoot();
+    if (this.sideView !== "project" && this.sideView !== "search") {
+      this.setSideView(mode === "content" ? "search" : "project", false);
+    }
+    this.setExplorerMode("tree");
+    this.treeReloadPromise = this.reloadTree(expectedRoot);
+    await this.treeReloadPromise;
+    const tree = this.$("files-tree");
+    tree.focus({ preventScroll: true });
+    await this.treeKeyNav("ArrowDown");
   }
 
   async replaceAll() {
@@ -3877,6 +7226,8 @@ class TermdeckApp {
     const query = this.$("search-name").value.trim();
     const resultsEl = this.$("name-results");
     resultsEl.textContent = "";
+    this.clearFileSearchSelection("name");
+    this.nameSearchTree = null;
     if (!query) {
       this.setExplorerMode("tree");
       return;
@@ -3896,19 +7247,46 @@ class TermdeckApp {
     if (!res.ok) return;
     const hits = await res.json();
     if (generation !== this.nameSearchGeneration) return;
+    this.nameSearchTree = {
+      root,
+      paths: new Set(hits.map((hit) => hit.path)),
+      directories: new Set(hits.filter((hit) => hit.is_dir).map((hit) => hit.path)),
+    };
     resultsEl.textContent = "";
     const summary = document.createElement("div");
     summary.className = "search-summary";
-    summary.textContent = `${hits.length} file${hits.length === 1 ? "" : "s"}`;
+    const folderCount = hits.filter((hit) => hit.is_dir).length;
+    summary.textContent = `${hits.length} result${hits.length === 1 ? "" : "s"}${folderCount ? ` · ${folderCount} folder${folderCount === 1 ? "" : "s"}` : ""}`;
     resultsEl.appendChild(summary);
     for (const hit of hits) {
       const row = document.createElement("div");
       row.className = "search-file clickable";
       row.tabIndex = 0;
       row.title = hit.path;
-      row.append(this.fileTypeIconEl(hit.path.split("/").pop(), "file-type-icon"), document.createTextNode(hit.path));
-      row.onclick = () => this.openFile(root, hit.path, null, null);
+      const icon = hit.is_dir ? document.createElement("span") : this.fileTypeIconEl(hit.path.split("/").pop(), "file-type-icon");
+      if (hit.is_dir) {
+        icon.className = "codicon codicon-folder file-type-icon";
+        icon.setAttribute("aria-hidden", "true");
+      }
+      row.append(icon, document.createTextNode(hit.path));
+      row.onclick = () => hit.is_dir ? this.openNameDirectory(root, hit.path) :
+        this.openFile(root, hit.path, null, null, { fromFilePanel: true });
+      row.onmouseenter = () => this.selectFileSearchResult("name", row, { reveal: false });
       resultsEl.appendChild(row);
+    }
+  }
+
+  async openNameDirectory(root, relPath) {
+    if (this.sideView !== "project") this.setSideView("project");
+    if (this.treeRoot !== root) await this.reloadTree(root);
+    this.setExplorerMode("tree");
+    let rel = "";
+    for (const part of relPath.split("/").filter(Boolean)) {
+      rel = rel ? `${rel}/${part}` : part;
+      const row = this.$("files-tree").querySelector(`[data-rel="${CSS.escape(rel)}"]`);
+      if (!row) return;
+      if (rel !== relPath && !row.classList.contains("open")) await this.toggleDir(row, rel);
+      if (rel === relPath) this.markTreeSelection(row);
     }
   }
 

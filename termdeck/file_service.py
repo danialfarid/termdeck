@@ -1,14 +1,57 @@
 import os
+import subprocess
+import threading
+import time
 from pathlib import Path
+from typing import Any
+
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
+from watchdog.observers import Observer
 
 from termdeck.config import TermdeckConfig
 from termdeck.util import TimeUtil
+
+
+class _RecentFilesEventHandler(FileSystemEventHandler):
+    def __init__(self, owner: "ProjectFileService", root: Path) -> None:
+        super().__init__()
+        self._owner = owner
+        self._root = root
+
+    def _notify(self, path: str) -> None:
+        self._owner.invalidate_recent_root(self._root, Path(path))
+
+    def on_any_event(self, event: FileSystemEvent) -> None:
+        self._notify(event.src_path)
+        destination = getattr(event, "dest_path", None)
+        if destination:
+            self._notify(destination)
 
 
 class ProjectFileService:
     """Read-only file listing and reading for the UI file browser and terminal path links. Relative paths
     resolve against a session cwd; absolute and ~ paths resolve directly. Everything is confined to the
     user's home tree and capped in size."""
+
+    _RECENT_CACHE_MAX_AGE_SECONDS = 30.0
+    _GIT_STATUS_CACHE_MAX_AGE_SECONDS = 5.0
+    _RECENT_WATCH_MAX_ROOTS = 12
+
+    def __init__(self) -> None:
+        self._recent_lock = threading.RLock()
+        self._recent_cache: dict[str, tuple[float, list[dict[str, object]]]] = {}
+        self._recent_dirty: set[str] = set()
+        self._recent_watches: dict[str, Any] = {}
+        self._recent_observer: Observer | None = None
+        self._git_status_cache: dict[str, tuple[float, dict[str, str]]] = {}
+
+    def close(self) -> None:
+        with self._recent_lock:
+            observer, self._recent_observer = self._recent_observer, None
+            self._recent_watches.clear()
+        if observer is not None:
+            observer.stop()
+            observer.join(timeout=2)
 
     def resolve_confined(self, root: str, rel_or_abs: str) -> Path:
         base = Path(root).expanduser()
@@ -23,6 +66,7 @@ class ProjectFileService:
         directory = self.resolve_confined(root, rel)
         if not directory.is_dir():
             raise FileNotFoundError(str(directory))
+        git_statuses = self._git_statuses(root)
         children = sorted(directory.iterdir(), key=self._dirs_first_case_insensitive)
         entries: list[dict[str, object]] = []
         for child in children[:TermdeckConfig.FILE_LIST_MAX_ENTRIES]:
@@ -30,7 +74,9 @@ class ProjectFileService:
                 mtime = int(child.stat().st_mtime)
             except (FileNotFoundError, OSError):
                 mtime = 0
-            entries.append({"name": child.name, "is_dir": child.is_dir(), "mtime": mtime})
+            relative = str(child.relative_to(Path(root).expanduser().resolve()))
+            entries.append({"name": child.name, "is_dir": child.is_dir(), "mtime": mtime,
+                            "git_status": self._git_status_for_path(git_statuses, relative, child.is_dir())})
         return entries
 
     def recent_files(self, root: str, rel: str, limit: int) -> list[dict[str, object]]:
@@ -43,6 +89,16 @@ class ProjectFileService:
         if not base.is_dir():
             raise NotADirectoryError(str(base))
         result_limit = max(1, min(int(limit), TermdeckConfig.RECENT_FILES_MAX_ENTRIES))
+        cache_key = str(base)
+        now = time.monotonic()
+        with self._recent_lock:
+            self._ensure_recent_watch(base)
+            cached = self._recent_cache.get(cache_key)
+            if (cached is not None and cache_key not in self._recent_dirty and
+                    now - cached[0] < self._RECENT_CACHE_MAX_AGE_SECONDS):
+                return cached[1][:result_limit]
+
+        git_statuses = self._git_statuses(root)
         candidates: list[tuple[float, str, Path]] = []
         scanned = 0
         for current, dirs, names in os.walk(base, topdown=True, followlinks=False):
@@ -64,13 +120,90 @@ class ProjectFileService:
                 break
         candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
         entries: list[dict[str, object]] = []
-        for mtime, _, path in candidates[:result_limit]:
+        for mtime, _, path in candidates[:TermdeckConfig.RECENT_FILES_MAX_ENTRIES]:
             try:
                 relative = str(path.relative_to(base))
             except (ValueError, OSError):
                 continue
-            entries.append({"name": path.name, "path": relative, "mtime": int(mtime), "is_dir": False})
-        return entries
+            entries.append({"name": path.name, "path": relative, "mtime": int(mtime), "is_dir": False,
+                            "git_status": git_statuses.get(relative, "")})
+        with self._recent_lock:
+            self._recent_cache[cache_key] = (time.monotonic(), entries)
+            self._recent_dirty.discard(cache_key)
+        return entries[:result_limit]
+
+    def _git_statuses(self, root: str) -> dict[str, str]:
+        """Return a bounded, short-lived map of worktree status for one file-browser root."""
+        base = self.resolve_confined(root, "")
+        key = str(base)
+        now = time.monotonic()
+        with self._recent_lock:
+            cached = self._git_status_cache.get(key)
+            if cached is not None and now - cached[0] < self._GIT_STATUS_CACHE_MAX_AGE_SECONDS:
+                return cached[1]
+        statuses: dict[str, str] = {}
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(base), "status", "--short", "--untracked-files=all", "-z"],
+                capture_output=True, timeout=2.0, check=False,
+            )
+            if result.returncode == 0:
+                records = result.stdout.decode("utf-8", errors="replace").split("\0")
+                index = 0
+                while index < len(records):
+                    record = records[index]
+                    index += 1
+                    if len(record) < 4:
+                        continue
+                    code = record[:2]
+                    path = record[3:]
+                    if code and code != "  ":
+                        statuses[path] = "?" if code == "??" else next((char for char in code if char != " "), "M")
+                    if "R" in code or "C" in code:
+                        index += 1  # The old path follows the new path in -z output.
+        except (OSError, subprocess.SubprocessError):
+            statuses = {}
+        with self._recent_lock:
+            self._git_status_cache[key] = (time.monotonic(), statuses)
+        return statuses
+
+    @staticmethod
+    def _git_status_for_path(statuses: dict[str, str], relative: str, is_dir: bool) -> str:
+        if not is_dir:
+            return statuses.get(relative, "")
+        prefix = relative.rstrip("/") + "/"
+        values = {status for path, status in statuses.items() if path.startswith(prefix)}
+        return next((status for status in ("?", "A", "D", "M", "R", "C") if status in values), "")
+
+    def _ensure_recent_watch(self, root: Path) -> None:
+        """Watch a project root lazily; file events invalidate the cached recent list."""
+        key = str(root)
+        if key in self._recent_watches or len(self._recent_watches) >= self._RECENT_WATCH_MAX_ROOTS:
+            return
+        # Watching the whole home directory would be noisy and defeats the
+        # purpose of the cache. Such roots use the safety TTL instead.
+        if root == TermdeckConfig.FILE_ACCESS_ROOT:
+            return
+        if any(root == Path(existing) or root.is_relative_to(Path(existing))
+               for existing in self._recent_watches):
+            return
+        if self._recent_observer is None:
+            self._recent_observer = Observer()
+        observer = self._recent_observer
+        handler = _RecentFilesEventHandler(self, root)
+        self._recent_watches[key] = observer.schedule(handler, str(root), recursive=True)
+        if not observer.is_alive():
+            observer.start()
+
+    def invalidate_recent_root(self, root: Path, changed: Path) -> None:
+        try:
+            relative = changed.relative_to(root)
+        except ValueError:
+            return
+        if any(part in TermdeckConfig.RECENT_FILES_IGNORED_DIRS for part in relative.parts):
+            return
+        with self._recent_lock:
+            self._recent_dirty.add(str(root))
 
     def save_upload(self, filename: str, data: bytes) -> str:
         if len(data) > TermdeckConfig.UPLOAD_MAX_BYTES:
