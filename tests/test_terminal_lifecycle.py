@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from termdeck.models import SessionRecord
+from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeUtil
 from termdeck.server import TermdeckServer
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
@@ -118,3 +119,26 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(killed, 2)
         self.assertEqual(terminate.await_count, 2)
         self.assertFalse(detached.detached_live)
+
+    async def test_sync_repaint_frames_are_not_saved_to_scrollback(self) -> None:
+        manager = TerminalSessionManager()
+        session = ManagedSession(record())
+        manager._append_collapsing_repaints(session, b"before\n")
+        manager._append_collapsing_repaints(
+            session,
+            TermdeckConfig.SYNC_UPDATE_START + b"\rstatus redraw" + TermdeckConfig.SYNC_UPDATE_END + b"\r\n",
+        )
+        manager._append_collapsing_repaints(session, b"after\n")
+
+        self.assertEqual(bytes(session.buffer), b"before\nafter\n")
+
+    async def test_split_sync_repaint_frame_is_not_saved_to_scrollback(self) -> None:
+        manager = TerminalSessionManager()
+        session = ManagedSession(record())
+        manager._append_collapsing_repaints(session, b"before\n" + TermdeckConfig.SYNC_UPDATE_START + b"\rstatus")
+        self.assertEqual(bytes(session.buffer), b"before\n")
+        self.assertTrue(session.scrollback_sync_carry)
+
+        manager._append_collapsing_repaints(session, b" redraw" + TermdeckConfig.SYNC_UPDATE_END + b"\r\nafter\n")
+        self.assertEqual(bytes(session.buffer), b"before\nafter\n")
+        self.assertEqual(session.scrollback_sync_carry, b"")

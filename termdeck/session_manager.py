@@ -53,6 +53,7 @@ class ManagedSession:
         self.agent_rename_task: asyncio.Task | None = None
         self.osc_query_carry = b""
         self.last_repaint_offset: int | None = None
+        self.scrollback_sync_carry = b""
         self.draft_tracker = DraftInputTracker(record.draft)
         self.last_input_monotonic = 0.0
         self.last_activity_at = 0.0
@@ -465,16 +466,46 @@ class TerminalSessionManager:
         return {ms.record.agent_session_id for ms in self._sessions.values()
                 if ms is not exclude and ms.record.agent_session_id is not None}
 
+    def _durable_scrollback_bytes(self, ms: ManagedSession, data: bytes) -> bytes:
+        """Return bytes safe to persist/replay as scrollback.
+
+        Codex/Claude TUI status/composer redraws are wrapped in synchronized-update
+        markers. They are meant for the current screen, not durable terminal
+        history: replaying those cursor-moving frames later can overwrite the
+        previous prompt/answer rows even though the agent transcript is correct.
+        Live clients still receive the raw frame from _handle_output; this only
+        filters TermDeck's saved/replayed/searchable buffer.
+        """
+        if not data and not ms.scrollback_sync_carry:
+            return b""
+        start_marker = TermdeckConfig.SYNC_UPDATE_START
+        end_marker = TermdeckConfig.SYNC_UPDATE_END
+        data = ms.scrollback_sync_carry + data
+        ms.scrollback_sync_carry = b""
+        durable = bytearray()
+        position = 0
+        while position < len(data):
+            start = data.find(start_marker, position)
+            if start < 0:
+                durable.extend(data[position:])
+                break
+            durable.extend(data[position:start])
+            end = data.find(end_marker, start + len(start_marker))
+            if end < 0:
+                ms.scrollback_sync_carry = data[start:]
+                break
+            position = end + len(end_marker)
+            while position < len(data) and data[position] in b"\r\n":
+                position += 1
+        return bytes(durable)
+
     def _append_collapsing_repaints(self, ms: ManagedSession, data: bytes) -> None:
-        """TUI agents repaint their status area ~10x/s inside synchronized-update markers; storing every frame
-        burns the scrollback in minutes and adds nothing (each frame fully redraws the same region). Consecutive
-        whole-frame repaints therefore replace the previous stored frame instead of appending."""
-        is_repaint_frame = data.startswith(TermdeckConfig.SYNC_UPDATE_START) and \
-            data.rstrip(b"\r\n").endswith(TermdeckConfig.SYNC_UPDATE_END)
-        if is_repaint_frame and ms.last_repaint_offset is not None and ms.last_repaint_offset <= len(ms.buffer):
-            del ms.buffer[ms.last_repaint_offset:]
-        ms.last_repaint_offset = len(ms.buffer) if is_repaint_frame else None
-        ms.buffer.extend(data)
+        """Append durable terminal history after dropping screen-local TUI repaint frames."""
+        durable = self._durable_scrollback_bytes(ms, data)
+        if not durable:
+            return
+        ms.last_repaint_offset = None
+        ms.buffer.extend(durable)
         overflow = len(ms.buffer) - TermdeckConfig.SCROLLBACK_BYTES
         if overflow > 0:
             del ms.buffer[:overflow]
