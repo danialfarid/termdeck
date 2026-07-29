@@ -300,8 +300,12 @@ you want. **Reset to defaults** undoes everything.
 | Previous / next terminal | **⌘⌥↑** / **⌘⌥↓** |
 | Toggle Files view | **⌘⇧D** |
 | Toggle Search view | **⌘⇧F** |
+| Search terminal output | **⌘⇧S** |
 | Terminals view | **⌘⇧T** |
+| Switch project | **⌥S** |
 | Switch terminal ⇄ Markdown transcript | **⌘⇧M** |
+| Focus active terminal / editor / Markdown prompt | **⌥F** |
+| Select active terminal / editor / prompt text | **⌥A** |
 | Select all terminal text | **⌘⇧A** |
 
 Fixed bindings:

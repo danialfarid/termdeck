@@ -43,11 +43,13 @@ const DESKTOP_KEYBINDINGS = [
   { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown" },
   { id: "view-files", label: "Toggle Files view", def: "Meta+Shift+d" },
   { id: "view-search", label: "Toggle Search view", def: "Meta+Shift+f" },
-  { id: "terminal-search", label: "Search terminal output", def: "Meta+Shift+q" },
+  { id: "terminal-search", label: "Search terminal output", def: "Meta+Shift+s" },
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t" },
+  { id: "switch-project", label: "Switch project", def: "Alt+s" },
   { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Meta+Shift+m" },
-  { id: "focus-prompt", label: "Focus active terminal / Markdown prompt", def: "Meta+Shift+i" },
+  { id: "focus-prompt", label: "Focus active terminal / editor / Markdown prompt", def: "Alt+f" },
   { id: "show-usages", label: "Show usages of editor symbol", def: "Shift+F12" },
+  { id: "select-active-input", label: "Select active terminal / editor / prompt text", def: "Alt+a" },
   { id: "select-terminal-all", label: "Select all terminal text", def: "Meta+Shift+a" },
 ];
 const VSCODE_KEYBINDINGS = [
@@ -1142,7 +1144,6 @@ class TermdeckApp {
       const projectSelect = this.$("modal-project");
       if (projectSelect && !projectSelect.disabled) projectSelect.value = "";
     });
-    this.$("new-group-btn").onclick = () => this.createTerminalGroup();
     const queryInput = this.$("search-query");
     queryInput.addEventListener("keydown", (e) => {
       if (e.key === "ArrowDown" && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -1242,7 +1243,6 @@ class TermdeckApp {
         this.clearTerminalSearch(true);
       }
     });
-    this.$("new-session-btn").onclick = () => this.openModal();
     this.$("terminal-search-toggle").onclick = () => this.toggleTerminalSearch();
     this.$("terminal-search-submit").onclick = () => {
       clearTimeout(this.terminalSearchTimer);
@@ -2126,7 +2126,27 @@ class TermdeckApp {
         event.stopPropagation();
         this.toggleActivitySort();
       };
-      controls.appendChild(sort);
+      const group = document.createElement("button");
+      group.id = "new-group-btn";
+      group.className = "section-toggle";
+      group.innerHTML = '<span class="codicon codicon-folder-library"></span>';
+      group.title = "New terminal group";
+      group.setAttribute("aria-label", group.title);
+      group.onclick = (event) => {
+        event.stopPropagation();
+        this.createTerminalGroup();
+      };
+      const add = document.createElement("button");
+      add.id = "new-session-btn";
+      add.className = "section-toggle terminal-new-toggle";
+      add.textContent = "+";
+      add.title = `New terminal (${this.bindingToDisplay(this.bindingFor("new-terminal"))})`;
+      add.setAttribute("aria-label", add.title);
+      add.onclick = (event) => {
+        event.stopPropagation();
+        this.openModal();
+      };
+      controls.append(sort, group, add);
       label.appendChild(controls);
     }
     return label;
@@ -3049,6 +3069,11 @@ class TermdeckApp {
     const terminalSearch = this.$("terminal-search-toggle");
     if (terminalSearch) {
       terminalSearch.title = `Search terminal output (${this.bindingToDisplay(this.bindingFor("terminal-search"))})`;
+    }
+    const newSession = this.$("new-session-btn");
+    if (newSession) {
+      newSession.title = `New terminal (${this.bindingToDisplay(this.bindingFor("new-terminal"))})`;
+      newSession.setAttribute("aria-label", newSession.title);
     }
     this.updateTerminalSearchGroupButton();
   }
@@ -6670,7 +6695,9 @@ class TermdeckApp {
     if (e.ctrlKey) parts.push("Ctrl");
     if (e.altKey) parts.push("Alt");
     if (e.shiftKey) parts.push("Shift");
-    parts.push(e.key.length === 1 ? e.key.toLowerCase() : e.key);
+    const key = /^Key[A-Z]$/.test(e.code || "") ? e.code.slice(3).toLowerCase()
+      : e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    parts.push(key);
     return parts.join("+");
   }
 
@@ -6736,9 +6763,11 @@ class TermdeckApp {
     else if (actionId === "view-search") this.cycleView("search");
     else if (actionId === "terminal-search") this.toggleTerminalSearch();
     else if (actionId === "view-terminals") this.setSideView("terminals");
+    else if (actionId === "switch-project") this.openProjectSwitcher();
     else if (actionId === "toggle-history") this.toggleHistory();
     else if (actionId === "focus-prompt") this.focusActivePrompt();
     else if (actionId === "show-usages") this.showEditorUsages();
+    else if (actionId === "select-active-input") this.selectActiveInputText();
     else if (actionId === "select-terminal-all") this.selectActiveTerminalText();
     else if (actionId === "vscode-refresh") this.requestVscodeRefresh(false);
     else if (actionId === "vscode-reload") this.requestVscodeRefresh(true);
@@ -6761,8 +6790,27 @@ class TermdeckApp {
     requestAnimationFrame(select);
   }
 
+  selectActiveInputText() {
+    if (this.activeFileKey !== null) {
+      if (!this.editor) return;
+      this.editor.focus();
+      this.editor.trigger("termdeck", "editor.action.selectAll", null);
+      return;
+    }
+    if (this.historyOpen) {
+      const prompt = this.$("history-prompt");
+      prompt.focus();
+      prompt.select();
+      return;
+    }
+    this.selectActiveTerminalText();
+  }
+
   focusActivePrompt() {
-    if (this.activeFileKey !== null) return;
+    if (this.activeFileKey !== null) {
+      this.editor?.focus();
+      return;
+    }
     if (this.historyOpen) {
       const prompt = this.$("history-prompt");
       prompt.focus();
@@ -6770,6 +6818,18 @@ class TermdeckApp {
       return;
     }
     this.views.get(this.activeId)?.term.focus();
+  }
+
+  openProjectSwitcher() {
+    if (this.vscodeMode) return;
+    const select = this.$("project-select");
+    if (!select || select.disabled || select.classList.contains("hidden")) return;
+    select.focus();
+    if (typeof select.showPicker === "function") {
+      select.showPicker();
+      return;
+    }
+    select.click();
   }
 
   bindingToDisplay(binding) {

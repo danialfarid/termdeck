@@ -33,9 +33,9 @@ button { font-family: inherit; }
 
 #sidebar { position: relative; width: 250px; min-width: 250px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: visible; }
 body:not(.vscode-mode) #sidebar { color: var(--sidebar-text-color); --text: var(--sidebar-text-color); }
-#sidebar-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+#sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 #app-title { font-weight: 700; letter-spacing: 0.1em; font-size: calc(var(--ui-font-size) + 1px); color: var(--accent); text-transform: uppercase; }
-#project-select { appearance: none; -webkit-appearance: none; background: none; color: var(--accent); border: none; font-family: inherit; font-size: calc(var(--sidebar-font-size) + 5px); font-weight: 400; letter-spacing: 0.02em; padding: 2px 0 2px 4px; max-width: 190px; cursor: pointer; outline: none; text-overflow: ellipsis; text-decoration: underline; text-underline-offset: 3px; }
+#project-select { appearance: none; -webkit-appearance: none; flex: 1; min-width: 0; max-width: none; background: none; color: var(--accent); border: none; font-family: inherit; font-size: calc(var(--sidebar-font-size) + 5px); font-weight: 400; letter-spacing: 0.02em; padding: 2px 0 2px 4px; cursor: pointer; outline: none; text-overflow: ellipsis; text-decoration: underline; text-underline-offset: 3px; }
 #project-select:hover { text-decoration: underline; text-underline-offset: 3px; }
 #new-session-btn { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; width: 26px; height: 26px; font-size: 16px; line-height: 1; cursor: pointer; }
 #new-session-btn:hover { border-color: var(--accent); color: var(--accent); }
@@ -223,6 +223,8 @@ body:not(.vscode-mode) .file-item.active .file-item-name { color: var(--sidebar-
 #active-toggle { width: 20px; min-width: 20px; padding: 0; font-size: 12px; }
 #active-toggle .codicon { font-size: 12px; }
 #active-toggle.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
+#new-session-btn.terminal-new-toggle { width: 20px; min-width: 20px; height: 18px; padding: 0; background: none; color: var(--dim); border-color: transparent; font-size: 14px; line-height: 16px; }
+#new-session-btn.terminal-new-toggle:hover { color: var(--text); border-color: var(--border); background: var(--panel2); }
 .vscode-only { display: none !important; }
 body.vscode-mode .vscode-only { display: inline-flex !important; align-items: center; justify-content: center; }
 #sidebar-resizer { width: 6px; flex: none; cursor: col-resize; background: transparent; position: relative; }
