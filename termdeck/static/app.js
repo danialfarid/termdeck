@@ -38,6 +38,10 @@ const CLOSED_SESSIONS_MAX_DISPLAY = 100;
 const ACTIVITY_SORT_BUCKET_MS = 15 * 60 * 1000;
 const TERMINAL_TAIL_REPAIR_LINES = 16;
 const TERMINAL_ACTIVATION_REFLOW_IDLE_MS = 1200;
+// Large saved scrollback arrives in one WebSocket frame.  Let xterm paint
+// between bounded parser writes so selecting a long-running terminal does not
+// leave the active canvas blank until the entire replay has been consumed.
+const TERMINAL_WRITE_CHUNK_BYTES = 24 * 1024;
 const DESKTOP_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Meta+b" },
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
@@ -6364,7 +6368,22 @@ class TermdeckApp {
 
   queueTerminalWrite(view, data, afterWrite = null) {
     if (!view || view.closed) return;
-    view.outputQueue.push({ data, afterWrite, generation: view.outputWriteGeneration });
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    if (!bytes.byteLength) {
+      view.outputQueue.push({ data: bytes, afterWrite, generation: view.outputWriteGeneration });
+      this.drainTerminalWrites(view);
+      return;
+    }
+    for (let offset = 0; offset < bytes.byteLength; offset += TERMINAL_WRITE_CHUNK_BYTES) {
+      const end = Math.min(bytes.byteLength, offset + TERMINAL_WRITE_CHUNK_BYTES);
+      view.outputQueue.push({
+        data: bytes.slice(offset, end),
+        // The snapshot completion callback is meaningful only once every
+        // ordered piece has reached xterm's buffer.
+        afterWrite: end === bytes.byteLength ? afterWrite : null,
+        generation: view.outputWriteGeneration,
+      });
+    }
     this.drainTerminalWrites(view);
   }
 
@@ -6385,7 +6404,12 @@ class TermdeckApp {
         view.needsViewportRepair = false;
         this.repairTerminalViewport(view);
       }
-      if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleTerminalTailRepair(view);
+      // During snapshot replay the tail is still changing on every chunk;
+      // checking it there races the parser and can repaint an incomplete
+      // screen. The final snapshot callback schedules the settled layout.
+      if (!view.closed && item.generation === view.outputWriteGeneration && !view.replaying) {
+        this.scheduleTerminalTailRepair(view);
+      }
       this.drainTerminalWrites(view);
     });
   }
