@@ -297,7 +297,7 @@ you want. **Reset to defaults** undoes everything.
 | New terminal | **⌘B** |
 | Close active terminal / file | **⌘⇧⌫** |
 | Save open file | **⌘S** |
-| Previous / next terminal | **⌥↑** / **⌥↓** |
+| Previous / next terminal | **⌘⌥↑** / **⌘⌥↓** |
 | Toggle Files view | **⌘⇧D** |
 | Toggle Search view | **⌘⇧F** |
 | Search terminal output | **⌘⇧S** |

@@ -33,14 +33,16 @@ const TERMINAL_SEARCH_DEBOUNCE_MS = 250;
 const SESSION_GROUP_HOVER_DELAY_MS = 700;
 const CLOSED_SESSIONS_INITIAL_DISPLAY = 50;
 const CLOSED_SESSIONS_MAX_DISPLAY = 100;
+const ACTIVITY_SORT_BUCKET_MS = 15 * 60 * 1000;
+const TERMINAL_TAIL_REPAIR_LINES = 16;
 const DESKTOP_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Meta+b" },
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
   { id: "fork-terminal", label: "Fork active terminal", def: "Meta+Shift+b" },
   { id: "restart-terminal", label: "Restart active terminal", def: "Meta+Alt+r" },
   { id: "save-file", label: "Save open file", def: "Meta+s" },
-  { id: "prev-terminal", label: "Previous terminal", def: "Alt+ArrowUp" },
-  { id: "next-terminal", label: "Next terminal", def: "Alt+ArrowDown" },
+  { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp" },
+  { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown" },
   { id: "view-files", label: "Toggle Files view", def: "Meta+Shift+d" },
   { id: "view-search", label: "Toggle Search view", def: "Meta+Shift+f" },
   { id: "terminal-search", label: "Search terminal output", def: "Meta+Shift+s" },
@@ -2118,6 +2120,7 @@ class TermdeckApp {
       const sort = document.createElement("button");
       sort.id = "active-toggle";
       sort.className = "section-toggle terminals-sort-toggle";
+      sort.classList.toggle("on", this.activitySort);
       sort.innerHTML = '<span class="codicon codicon-sort-precedence"></span>';
       sort.setAttribute("aria-pressed", String(this.activitySort));
       sort.title = this.activitySort ? "Show grouped terminals" : "Sort terminals by recent activity";
@@ -2190,12 +2193,23 @@ class TermdeckApp {
     return Math.max(known, serverActivityMs, processingSince, created);
   }
 
+  sessionActivitySortBucket(session) {
+    const activity = this.sessionActivityTime(session);
+    return activity > 0 ? Math.floor(activity / ACTIVITY_SORT_BUCKET_MS) : 0;
+  }
+
+  compareRecentActivityForSort(a, b) {
+    return this.sessionActivitySortBucket(b) - this.sessionActivitySortBucket(a);
+  }
+
   touchSessionActivity(sessionId, timestamp = Date.now()) {
     if (!sessionId) return;
     const previous = Number(this.sessionActivityAt.get(sessionId) || 0);
     if (timestamp <= previous) return;
+    const previousBucket = previous > 0 ? Math.floor(previous / ACTIVITY_SORT_BUCKET_MS) : 0;
+    const nextBucket = Math.floor(timestamp / ACTIVITY_SORT_BUCKET_MS);
     this.sessionActivityAt.set(sessionId, timestamp);
-    if (this.activitySort && !this.activitySortRenderTimer) {
+    if (this.activitySort && previousBucket !== nextBucket && !this.activitySortRenderTimer) {
       this.activitySortRenderTimer = window.setTimeout(() => {
         this.activitySortRenderTimer = 0;
         this.renderList();
@@ -2679,7 +2693,7 @@ class TermdeckApp {
     const groupsById = new Map(groups.map((group) => [group.id, group]));
     const sessionGroups = state.session_groups || {};
     const visibleSessions = this.activitySort
-      ? [...this.sessions].sort((a, b) => this.sessionActivityTime(b) - this.sessionActivityTime(a))
+      ? [...this.sessions].sort((a, b) => this.compareRecentActivityForSort(a, b))
       : this.sessions;
     const sessionsById = new Map(visibleSessions.map((session) => [session.session_id, session]));
     const grouped = new Map(groups.map((group) => [group.id, []]));
@@ -2691,12 +2705,12 @@ class TermdeckApp {
     const layout = this.terminalLayout();
     if (this.activitySort) {
       for (const members of grouped.values()) {
-        members.sort((a, b) => this.sessionActivityTime(b) - this.sessionActivityTime(a));
+        members.sort((a, b) => this.compareRecentActivityForSort(a, b));
       }
       const entryActivity = (entry) => {
         const [kind, id] = entry.split(":", 2);
-        if (kind !== "group") return this.sessionActivityTime(sessionsById.get(id));
-        return Math.max(0, ...(grouped.get(id) || []).map((session) => this.sessionActivityTime(session)));
+        if (kind !== "group") return this.sessionActivitySortBucket(sessionsById.get(id));
+        return Math.max(0, ...(grouped.get(id) || []).map((session) => this.sessionActivitySortBucket(session)));
       };
       layout.sort((a, b) => entryActivity(b) - entryActivity(a));
     }
@@ -4778,7 +4792,7 @@ class TermdeckApp {
                    wasAtBottom: true, scrollMode: "follow", v2Programmatic: false, v2FitFrame: 0,
                    v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
                    forceResizeAfterFit: true, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
-                   suppressResizeToServer: false,
+                   suppressResizeToServer: false, tailRepairFrame: 0, tailRepairSignature: "",
                    lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
@@ -5489,6 +5503,59 @@ class TermdeckApp {
     view.term.refresh(0, view.term.rows - 1);
   }
 
+  normalizeTerminalTailLine(line) {
+    return String(line || "").replace(/\u00a0/g, " ").replace(/\s+$/g, "");
+  }
+
+  terminalBufferVisibleTailLines(view, count = TERMINAL_TAIL_REPAIR_LINES) {
+    const buffer = view?.term?.buffer?.active;
+    if (!buffer || typeof buffer.getLine !== "function") return [];
+    const rows = Math.max(1, Number(view.term.rows || 1));
+    const viewportY = Math.max(0, Number(buffer.viewportY || 0));
+    const start = Math.max(0, viewportY + rows - count);
+    const end = viewportY + rows;
+    const lines = [];
+    for (let index = start; index < end; index++) {
+      const line = buffer.getLine(index);
+      lines.push(this.normalizeTerminalTailLine(line ? line.translateToString(true) : ""));
+    }
+    return lines;
+  }
+
+  terminalRenderedTailLines(view, count = TERMINAL_TAIL_REPAIR_LINES) {
+    const rows = [...(view?.container?.querySelectorAll(".xterm-rows > div") || [])];
+    return rows.slice(-count).map((row) => this.normalizeTerminalTailLine(row.textContent || ""));
+  }
+
+  terminalTailRenderMismatch(view) {
+    const expected = this.terminalBufferVisibleTailLines(view);
+    const rendered = this.terminalRenderedTailLines(view);
+    if (!expected.length || expected.length !== rendered.length) return false;
+    let compared = 0;
+    for (let index = 0; index < expected.length; index++) {
+      const expectedLine = expected[index];
+      if (!expectedLine.trim()) continue;
+      compared += 1;
+      if (expectedLine !== rendered[index]) return true;
+    }
+    view.tailRepairSignature = expected.join("\n");
+    return compared > 0 && !rendered.some((line) => line.trim());
+  }
+
+  scheduleTerminalTailRepair(view) {
+    if (!view || view.closed || view.tailRepairFrame || !view.container.classList.contains("visible")) return;
+    if (!this.isTerminalScrollV2() || view.scrollMode !== "follow") return;
+    view.tailRepairFrame = requestAnimationFrame(() => {
+      view.tailRepairFrame = requestAnimationFrame(() => {
+        view.tailRepairFrame = 0;
+        if (view.closed || !view.container.classList.contains("visible") || view.scrollMode !== "follow") return;
+        if (!this.terminalTailRenderMismatch(view)) return;
+        this.refreshTerminalAppearance(view, true);
+        if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+      });
+    });
+  }
+
   forceVisibleTerminalReflow(view) {
     if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
         !view.container.classList.contains("visible")) return false;
@@ -5557,6 +5624,7 @@ class TermdeckApp {
         view.needsViewportRepair = false;
         this.repairTerminalViewport(view);
       }
+      if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleTerminalTailRepair(view);
       this.drainTerminalWrites(view);
     });
   }
@@ -5586,9 +5654,11 @@ class TermdeckApp {
     if (!view || !view.term) return;
     view.term.options.theme = { ...this.termTheme() };
     if (typeof view.term.clearTextureAtlas === "function") view.term.clearTextureAtlas();
-    if (forceResize && view.term._core?.resize && view.term._core._renderService?.clear) {
-      view.term._core._renderService.clear();
-      view.term._core.resize(view.term.cols, view.term.rows);
+    const renderService = view.term._core?._renderService;
+    if (forceResize && renderService) {
+      if (typeof renderService.clear === "function") renderService.clear();
+      if (typeof renderService.handleResize === "function") renderService.handleResize(view.term.cols, view.term.rows);
+      else if (view.term._core?.resize) view.term._core.resize(view.term.cols, view.term.rows);
     }
     this.refreshTerminal(view);
   }
@@ -5650,6 +5720,7 @@ class TermdeckApp {
     if (view.v2InitialFitFrame) cancelAnimationFrame(view.v2InitialFitFrame);
     if (view.v2ForcedReflowFrame) cancelAnimationFrame(view.v2ForcedReflowFrame);
     if (view.v2ForcedReflowRestoreFrame) cancelAnimationFrame(view.v2ForcedReflowRestoreFrame);
+    if (view.tailRepairFrame) cancelAnimationFrame(view.tailRepairFrame);
     clearTimeout(view.layoutFitRetryTimer);
     if (view.layoutObserver) view.layoutObserver.disconnect();
     if (view.scrollObserver) view.scrollObserver.disconnect();
