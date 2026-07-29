@@ -4570,6 +4570,15 @@ class TermdeckApp {
     }
   }
 
+  collapseHistoryThinkingEvent(event) {
+    if (!event?.matches?.(".history-event.thinking")) return;
+    event.open = false;
+    const summary = event.querySelector("summary");
+    requestAnimationFrame(() => {
+      if (summary) summary.scrollIntoView({ block: "nearest" });
+    });
+  }
+
   renderHistoryTurns(turns, options = {}) {
     const body = options.target || this.$("history-body");
     const append = options.append === true;
@@ -4610,6 +4619,20 @@ class TermdeckApp {
             result.textContent = item.text || "";
             results.append(label, result);
           }
+          const footer = document.createElement("div");
+          footer.className = "history-thinking-footer";
+          const collapse = document.createElement("button");
+          collapse.type = "button";
+          collapse.className = "history-thinking-collapse";
+          collapse.title = "Collapse this thinking block";
+          collapse.innerHTML = '<span class="codicon codicon-collapse-all"></span><span>Collapse thinking</span>';
+          collapse.onclick = (eventClick) => {
+            eventClick.preventDefault();
+            eventClick.stopPropagation();
+            this.collapseHistoryThinkingEvent(event);
+          };
+          footer.appendChild(collapse);
+          results.appendChild(footer);
           event.append(summary, results);
         } else if (Array.isArray(turn.plan) && turn.plan.length) {
           const list = document.createElement("ul");
