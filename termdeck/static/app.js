@@ -4876,13 +4876,14 @@ class TermdeckApp {
                    replaying: false, pasting: false, suppressReconnect: false, cliTitle: null, pinBottomUntil: 0,
                    programmaticScrollUntil: 0, programmaticScrollGeneration: 0, scrollSettleTimer: 0,
                    reconnectTimer: 0, settleFrame: 0, viewportRepairFrame: 0, needsViewportRepair: false,
-                   outputQueue: [], outputWriteInFlight: false, outputWriteGeneration: 0,
+                   resizeRepairTimer: 0, outputQueue: [], outputWriteInFlight: false, outputWriteGeneration: 0,
                    layoutObserver: null, scrollObserver: null, layoutFitRetryTimer: 0, layoutFitRetryCount: 0,
                    keepBottom: true, manualScroll: false, manualScrollGeneration: 0, manualScrollReleaseTimer: 0,
                    wasAtBottom: true, scrollMode: "follow", v2Programmatic: false, v2FitFrame: 0,
                    v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
                    forceResizeAfterFit: true, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
-                   suppressResizeToServer: false, tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
+                   suppressResizeToServer: false, resyncResizeRepairPending: false,
+                   tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
                    lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
@@ -5135,6 +5136,10 @@ class TermdeckApp {
           if (v2 && view.container.classList.contains("visible")) {
             view.forceResizeAfterFit = true;
             this.scheduleV2Fit(view);
+          }
+          if (view.resyncResizeRepairPending && view.container.classList.contains("visible")) {
+            view.resyncResizeRepairPending = false;
+            this.scheduleTerminalResizeRepair(view);
           }
           const canFollowSnapshot = v2
             ? followSnapshot && view.scrollMode === "follow"
@@ -5429,6 +5434,19 @@ class TermdeckApp {
     else this.scrollActiveToBottom();
   }
 
+  scheduleTerminalResizeRepair(view) {
+    if (!view || view.closed || !view.container.classList.contains("visible")) return;
+    view.forceResizeAfterFit = true;
+    this.scheduleTerminalLayoutFit();
+    clearTimeout(view.resizeRepairTimer);
+    view.resizeRepairTimer = setTimeout(() => {
+      view.resizeRepairTimer = 0;
+      if (view.closed || !view.container.classList.contains("visible") || view.sessionId !== this.activeId) return;
+      view.forceResizeAfterFit = true;
+      this.scheduleTerminalLayoutFit();
+    }, 420);
+  }
+
   resyncActiveTerminal() {
     if (this.activeFileKey !== null || this.historyOpen || !this.activeId) return;
     const view = this.views.get(this.activeId);
@@ -5443,9 +5461,9 @@ class TermdeckApp {
       view.pinBottomUntil = Date.now() + 8000;
     }
     view.term.reset();
-    view.forceResizeAfterFit = true;
+    view.resyncResizeRepairPending = true;
     this.applySettings();
-    this.scheduleTerminalLayoutFit();
+    this.scheduleTerminalResizeRepair(view);
     this.$("status-name").textContent = "resyncing terminal…";
     const ws = view.ws;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -5901,6 +5919,7 @@ class TermdeckApp {
     view.closed = true;
     clearTimeout(view.manualScrollReleaseTimer);
     clearTimeout(view.scrollSettleTimer);
+    clearTimeout(view.resizeRepairTimer);
     if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
     if (view.viewportRepairFrame) cancelAnimationFrame(view.viewportRepairFrame);
     if (view.v2ViewportSyncFrame) cancelAnimationFrame(view.v2ViewportSyncFrame);
