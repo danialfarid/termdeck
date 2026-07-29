@@ -4099,10 +4099,13 @@ class TermdeckApp {
       }
       if (view) {
         this.syncPromptToTerminal(view);
-        if (!view.ws) this.connect(this.activeId, view);
         if (this.isTerminalScrollV2()) {
+          this.fitVisibleTerminalNow(view, { sendResize: true, forceRepaint: true });
+          if (!view.ws) this.connect(this.activeId, view);
           this.scheduleV2Fit(view);
           this.scheduleInitialV2Fit(view);
+        } else {
+          if (!view.ws) this.connect(this.activeId, view);
         }
         if (this.nativeVscodeMode) this.postVscodeNativeSession(this.session(this.activeId), true);
         else view.term.focus();
@@ -5382,34 +5385,38 @@ class TermdeckApp {
     }
     if (view) {
       this.refreshTerminalAppearance(view);
-      if (!view.ws) this.connect(id, view);
       if (this.isTerminalScrollV2()) {
         if (previousId !== id && (!view.everConnected || view.awaitingSnapshot || view.replaying)) {
           view.scrollMode = "follow";
         }
+        this.fitVisibleTerminalNow(view, { sendResize: true, forceRepaint: true });
+        if (!view.ws) this.connect(id, view);
         this.scheduleV2Fit(view);
         this.scheduleInitialV2Fit(view);
-        if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+        if (view.scrollMode === "follow" && !view.awaitingSnapshot && !view.replaying) this.scrollTerminalV2ToBottom(view);
         this.scheduleTerminalActivationRepair(view, {
           forceReflow: this.shouldForceTerminalActivationReflow(view, switchedViews),
         });
-      } else if (previousId !== id) {
-        const needsInitialFollow = !view.everConnected || view.awaitingSnapshot || view.replaying;
-        if (needsInitialFollow || view.keepBottom) {
-          // A new/replaying terminal needs a few frames to settle. An
-          // already-connected terminal is only settled when it was already at
-          // the bottom; manually scrolled tabs must retain their position.
-          view.keepBottom = true;
-          const settleWindow = needsInitialFollow ? 5000 : 750;
-          view.pinBottomUntil = Date.now() + settleWindow;
-          this.scrollTerminalToBottom(view);
-        } else {
-          view.pinBottomUntil = 0;
-        }
-      } else if (view.keepBottom) {
-        view.pinBottomUntil = Date.now() + 3000;
+      } else {
+        if (!view.ws) this.connect(id, view);
       }
       if (!this.isTerminalScrollV2()) {
+        if (previousId !== id) {
+          const needsInitialFollow = !view.everConnected || view.awaitingSnapshot || view.replaying;
+          if (needsInitialFollow || view.keepBottom) {
+            // A new/replaying terminal needs a few frames to settle. An
+            // already-connected terminal is only settled when it was already at
+            // the bottom; manually scrolled tabs must retain their position.
+            view.keepBottom = true;
+            const settleWindow = needsInitialFollow ? 5000 : 750;
+            view.pinBottomUntil = Date.now() + settleWindow;
+            this.scrollTerminalToBottom(view);
+          } else {
+            view.pinBottomUntil = 0;
+          }
+        } else if (view.keepBottom) {
+          view.pinBottomUntil = Date.now() + 3000;
+        }
         this.scheduleViewportSettle(view);
         if (view.needsViewportRepair && !view.outputQueue.length && !view.manualScroll && view.keepBottom) {
           view.needsViewportRepair = false;
@@ -5454,7 +5461,7 @@ class TermdeckApp {
                    v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
                    forceResizeAfterFit: true, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
                    suppressResizeToServer: false, resyncResizeRepairPending: false,
-                   hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
+                   hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0, snapshotWatchdogTimer: 0,
                    tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
                    lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
@@ -5648,6 +5655,17 @@ class TermdeckApp {
     view.outputQueue = [];
     view.lastSentCols = null;
     view.lastSentRows = null;
+    clearTimeout(view.snapshotWatchdogTimer);
+    view.snapshotWatchdogTimer = setTimeout(() => {
+      view.snapshotWatchdogTimer = 0;
+      if (view.closed || !view.awaitingSnapshot || id !== this.activeId || this.activeFileKey !== null ||
+          this.historyOpen || view.ws !== ws) return;
+      try {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
+      } catch (error) {
+        console.warn("terminal snapshot watchdog close failed", error);
+      }
+    }, 2500);
     ws.onopen = () => {
       if (view.everConnected) {
         view.replaying = true;
@@ -5660,8 +5678,9 @@ class TermdeckApp {
       view.everConnected = true;
       if (this.isTerminalScrollV2()) {
         if (id === this.activeId) {
+          this.fitVisibleTerminalNow(view, { sendResize: true });
           this.scheduleV2Fit(view);
-          if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+          if (view.scrollMode === "follow" && !view.awaitingSnapshot && !view.replaying) this.scrollTerminalV2ToBottom(view);
         }
       } else if (id === this.activeId && view.keepBottom && !view.manualScroll) {
         this.fitActive();
@@ -5688,6 +5707,11 @@ class TermdeckApp {
       if (!view.container.classList.contains("visible")) view.hiddenOutputPending = true;
       if (!view.awaitingSnapshot) this.touchSessionActivity(id);
       if (view.awaitingSnapshot) {
+        clearTimeout(view.snapshotWatchdogTimer);
+        view.snapshotWatchdogTimer = 0;
+        if (this.isTerminalScrollV2() && view.container.classList.contains("visible")) {
+          this.fitVisibleTerminalNow(view, { sendResize: true });
+        }
         const snapshotScrollGeneration = view.manualScrollGeneration;
         const v2 = this.isTerminalScrollV2();
         const followSnapshot = v2 ? view.scrollMode === "follow" : view.keepBottom && !view.manualScroll;
@@ -5764,6 +5788,9 @@ class TermdeckApp {
       });
     };
     ws.onclose = () => {
+      if (view.ws !== ws) return;
+      clearTimeout(view.snapshotWatchdogTimer);
+      view.snapshotWatchdogTimer = 0;
       view.ws = null;
       if (view.promptQueueMutation) {
         view.promptQueueMutation = false;
@@ -5771,7 +5798,7 @@ class TermdeckApp {
         this.renderHistoryQueue(view);
         if (id === this.activeId) this.$("status-name").textContent = "queued prompt update disconnected — retry";
       }
-      if (!view.closed && !view.suppressReconnect && id === this.activeId && this.activeFileKey === null &&
+      if (!view.closed && view.ws === null && !view.suppressReconnect && id === this.activeId && this.activeFileKey === null &&
           !this.session(id)?.dormant) {
         clearTimeout(view.reconnectTimer);
         view.reconnectTimer = setTimeout(() => {
@@ -6091,6 +6118,25 @@ class TermdeckApp {
     queueMicrotask(() => {
       if (!view.closed) view.v2Programmatic = false;
     });
+  }
+
+  fitVisibleTerminalNow(view, options = {}) {
+    if (!view || view.closed || !view.container.classList.contains("visible")) return false;
+    const rect = view.container.getBoundingClientRect();
+    if (rect.width < 40 || rect.height < 40) return false;
+    view.layoutFitRetryCount = 0;
+    clearTimeout(view.layoutFitRetryTimer);
+    view.layoutFitRetryTimer = 0;
+    if (view.v2FitFrame) {
+      cancelAnimationFrame(view.v2FitFrame);
+      view.v2FitFrame = 0;
+    }
+    view.fit.fit();
+    this.refreshTerminalAppearance(view, !!options.forceRepaint);
+    if (options.sendResize && view.term.cols >= 2 && view.term.rows >= 2) {
+      this.sendResize(view, view.term.cols, view.term.rows, !!options.forceResize);
+    }
+    return true;
   }
 
   scheduleV2Fit(view) {
@@ -6556,6 +6602,7 @@ class TermdeckApp {
     clearTimeout(view.manualScrollReleaseTimer);
     clearTimeout(view.scrollSettleTimer);
     clearTimeout(view.resizeRepairTimer);
+    clearTimeout(view.snapshotWatchdogTimer);
     if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
     if (view.viewportRepairFrame) cancelAnimationFrame(view.viewportRepairFrame);
     if (view.v2ViewportSyncFrame) cancelAnimationFrame(view.v2ViewportSyncFrame);
