@@ -5391,7 +5391,11 @@ class TermdeckApp {
   ensureView(id) {
     if (this.views.has(id)) return this.views.get(id);
     const container = document.createElement("div");
-    container.className = "term-container";
+    // ensureView is only called by activate(). xterm measures synchronously
+    // in open(), so give a newly selected tab a real box before open() rather
+    // than creating its renderer under display:none and waiting for a later
+    // browser refresh or sidebar resize to repair it.
+    container.className = "term-container visible";
     this.$("terminal-area").appendChild(container);
     const term = new Terminal({
       fontSize: this.settings.terminal_font_size, fontFamily: '"SF Mono", Menlo, monospace', letterSpacing: -0.2, theme: this.termTheme(),
