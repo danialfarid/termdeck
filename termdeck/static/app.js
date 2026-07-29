@@ -11,6 +11,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
   show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_text: "",
+  notebook_notes: [], notebook_active_note_id: "",
   files_pinned: false, sidebar_text_color: "#d5dbe5", vscode_keybindings: {} };
 const MODEL_PERMISSIONS = {
   codex: [
@@ -259,6 +260,8 @@ class TermdeckApp {
     this.statHistory = [];
     this.editor = null;
     this.notebookMounted = false;
+    this.notebookSearchIndex = 0;
+    this.notebookTitleTimer = 0;
     this.nativeSessionIds = new Set();
     this.sessionModelById = new Map();
     this.selectedTreeRow = null;
@@ -4876,16 +4879,50 @@ class TermdeckApp {
     const host = this.$("notebook-editor-host");
     const select = this.$("notebook-editor-select");
     if (!toggle || !panel || !host || !select) return;
+    this.normalizeNotebookNotes();
     toggle.onclick = () => this.toggleNotebook();
+    this.$("notebook-new").onclick = () => { void this.createNotebookNote(); };
+    this.$("notebook-find").onclick = () => this.openNotebookFind();
+    this.$("notebook-find-close").onclick = () => this.closeNotebookFind(true);
+    this.$("notebook-find-prev").onclick = () => this.stepNotebookSearch(-1);
+    this.$("notebook-find-next").onclick = () => this.stepNotebookSearch(1);
+    this.$("notebook-replace-toggle").onclick = () => this.toggleNotebookReplace();
+    this.$("notebook-replace-one").onclick = () => { void this.replaceNotebookSearchMatch(false); };
+    this.$("notebook-replace-all").onclick = () => { void this.replaceNotebookSearchMatch(true); };
+    this.$("notebook-find-query").addEventListener("input", () => this.updateNotebookSearchState(true));
+    this.$("notebook-find-query").addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { event.preventDefault(); this.closeNotebookFind(true); return; }
+      if (event.key === "Enter") { event.preventDefault(); this.stepNotebookSearch(event.shiftKey ? -1 : 1); }
+    });
+    this.$("notebook-replace-query").addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { event.preventDefault(); this.closeNotebookFind(true); return; }
+      if (event.key === "Enter") { event.preventDefault(); void this.replaceNotebookSearchMatch(event.metaKey); }
+    });
+    host.addEventListener("input", () => {
+      clearTimeout(this.notebookTitleTimer);
+      this.notebookTitleTimer = setTimeout(() => {
+        const markdown = window.PlannerEditor?.getMarkdown();
+        if (markdown !== null && markdown !== undefined) this.setActiveNotebookMarkdown(markdown, false);
+      }, 160);
+    });
+    window.addEventListener("keydown", (event) => {
+      if (!this.settings.notebook_open || !event.target.closest?.("#notebook-panel") ||
+          !event.metaKey || event.ctrlKey || event.shiftKey || event.key.toLowerCase() !== "f") return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      this.openNotebookFind(event.altKey);
+    }, true);
     this.$("notebook-close").onclick = () => {
-      if (window.PlannerEditor) void window.PlannerEditor.flush();
       this.setNotebookOpen(false);
     };
     panel.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
-      if (window.PlannerEditor) void window.PlannerEditor.flush();
+      if (!this.$("notebook-find-bar").classList.contains("hidden")) {
+        this.closeNotebookFind(true);
+        return;
+      }
       this.setNotebookOpen(false);
     });
     if (window.PlannerEditor) {
@@ -4897,14 +4934,80 @@ class TermdeckApp {
       const fallback = document.createElement("textarea");
       fallback.className = "notes-area";
       fallback.placeholder = "Quick notes… Markdown supported.";
-      fallback.value = this.settings.notebook_text || "";
-      fallback.addEventListener("input", () => {
-        this.settings.notebook_text = fallback.value;
-        this.saveSettings();
-      });
+      fallback.value = this.activeNotebookNote().text;
+      fallback.addEventListener("input", () => this.setActiveNotebookMarkdown(fallback.value));
       host.appendChild(fallback);
     }
     this.renderNotebook();
+  }
+
+  createNotebookNoteId() {
+    return `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  normalizeNotebookNotes() {
+    const source = Array.isArray(this.settings.notebook_notes) ? this.settings.notebook_notes : [];
+    const seen = new Set();
+    const notes = [];
+    for (const raw of source) {
+      const noteId = String(raw?.note_id || raw?.id || "").trim();
+      if (!noteId || seen.has(noteId)) continue;
+      seen.add(noteId);
+      notes.push({ note_id: noteId, text: String(raw?.text || "") });
+    }
+    if (!notes.length) notes.push({ note_id: this.createNotebookNoteId(), text: String(this.settings.notebook_text || "") });
+    const activeNoteId = notes.some((note) => note.note_id === this.settings.notebook_active_note_id)
+      ? this.settings.notebook_active_note_id : notes[0].note_id;
+    const active = notes.find((note) => note.note_id === activeNoteId) || notes[0];
+    const changed = JSON.stringify(source) !== JSON.stringify(notes) || this.settings.notebook_active_note_id !== activeNoteId ||
+      this.settings.notebook_text !== active.text;
+    this.settings.notebook_notes = notes;
+    this.settings.notebook_active_note_id = activeNoteId;
+    this.settings.notebook_text = active.text;
+    return changed;
+  }
+
+  activeNotebookNote() {
+    this.normalizeNotebookNotes();
+    return this.settings.notebook_notes.find((note) => note.note_id === this.settings.notebook_active_note_id) ||
+      this.settings.notebook_notes[0];
+  }
+
+  notebookTabTitle(note) {
+    const source = String(note?.text || "").replace(/!\[[^\]]*\]\([^)]*\)|\[([^\]]+)\]\([^)]*\)/g, "$1")
+      .replace(/[`*_~>#]/g, " ").replace(/\s+/g, " ").trim();
+    const words = source.split(" ").filter(Boolean).slice(0, 6);
+    return words.length ? words.join(" ") : "Untitled note";
+  }
+
+  renderNotebookTabs() {
+    const tabs = this.$("notebook-tabs");
+    if (!tabs) return;
+    this.normalizeNotebookNotes();
+    tabs.textContent = "";
+    for (const note of this.settings.notebook_notes) {
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "notebook-tab" + (note.note_id === this.settings.notebook_active_note_id ? " active" : "");
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", String(note.note_id === this.settings.notebook_active_note_id));
+      tab.title = this.notebookTabTitle(note);
+      tab.textContent = this.notebookTabTitle(note);
+      tab.onclick = () => { void this.selectNotebookNote(note.note_id); };
+      tabs.appendChild(tab);
+      if (note.note_id === this.settings.notebook_active_note_id) requestAnimationFrame(() => tab.scrollIntoView({ block: "nearest", inline: "nearest" }));
+    }
+  }
+
+  setActiveNotebookMarkdown(markdown, save = true) {
+    const note = this.activeNotebookNote();
+    if (!note) return;
+    const text = String(markdown || "");
+    const changed = note.text !== text;
+    note.text = text;
+    this.settings.notebook_text = text;
+    if (changed) this.renderNotebookTabs();
+    if (save) this.saveSettings();
   }
 
   renderNotebookEditorSelect() {
@@ -4922,9 +5025,7 @@ class TermdeckApp {
 
   async changeNotebookEditor(key) {
     if (!window.PlannerEditor) return;
-    await window.PlannerEditor.flush();
-    const current = window.PlannerEditor.getMarkdown();
-    if (current !== null) this.settings.notebook_text = current;
+    await this.flushNotebook();
     window.PlannerEditor.setEditor(key);
     window.PlannerEditor.closeNow();
     this.notebookMounted = false;
@@ -4939,11 +5040,8 @@ class TermdeckApp {
     if (!host) return;
     host.textContent = "";
     try {
-      await window.PlannerEditor.open(host, this.settings.notebook_text || "", {
-        onSave: (markdown) => {
-          this.settings.notebook_text = markdown;
-          this.saveSettings();
-        },
+      await window.PlannerEditor.open(host, this.activeNotebookNote().text, {
+        onSave: (markdown) => this.setActiveNotebookMarkdown(markdown),
       });
       this.notebookMounted = true;
     } catch (error) {
@@ -4953,16 +5051,136 @@ class TermdeckApp {
   }
 
   flushNotebook() {
-    if (!window.PlannerEditor || !window.PlannerEditor.isOpen()) return;
+    if (!window.PlannerEditor || !window.PlannerEditor.isOpen()) return Promise.resolve();
     const markdown = window.PlannerEditor.getMarkdown();
-    if (markdown !== null) this.settings.notebook_text = markdown;
-    void window.PlannerEditor.flush();
+    if (markdown !== null) this.setActiveNotebookMarkdown(markdown);
+    return window.PlannerEditor.flush();
+  }
+
+  async selectNotebookNote(noteId) {
+    this.normalizeNotebookNotes();
+    if (!this.settings.notebook_notes.some((note) => note.note_id === noteId) || noteId === this.settings.notebook_active_note_id) {
+      this.focusNotebookEditor();
+      return;
+    }
+    await this.flushNotebook();
+    if (window.PlannerEditor) window.PlannerEditor.closeNow();
+    this.notebookMounted = false;
+    this.settings.notebook_active_note_id = noteId;
+    this.settings.notebook_text = this.activeNotebookNote().text;
+    this.notebookSearchIndex = 0;
+    this.renderNotebook();
+    this.saveSettings();
+    await this.mountNotebookEditor();
+    this.focusNotebookEditor();
+  }
+
+  async createNotebookNote() {
+    await this.flushNotebook();
+    const note = { note_id: this.createNotebookNoteId(), text: "" };
+    this.settings.notebook_notes.push(note);
+    if (window.PlannerEditor) window.PlannerEditor.closeNow();
+    this.notebookMounted = false;
+    this.settings.notebook_active_note_id = note.note_id;
+    this.settings.notebook_text = note.text;
+    this.notebookSearchIndex = 0;
+    this.renderNotebook();
+    this.saveSettings();
+    await this.mountNotebookEditor();
+    this.focusNotebookEditor();
+  }
+
+  notebookSearchMatches() {
+    const query = this.$("notebook-find-query")?.value || "";
+    const note = this.activeNotebookNote();
+    const current = window.PlannerEditor?.getMarkdown();
+    const text = current === null || current === undefined ? note.text : String(current);
+    if (note.text !== text) note.text = text;
+    if (!query) return [];
+    const matches = [];
+    const source = text.toLocaleLowerCase();
+    const needle = query.toLocaleLowerCase();
+    for (let start = source.indexOf(needle); start >= 0; start = source.indexOf(needle, start + needle.length)) {
+      matches.push({ start, end: start + needle.length });
+    }
+    return matches;
+  }
+
+  updateNotebookSearchState(reset = false) {
+    const matches = this.notebookSearchMatches();
+    if (reset) this.notebookSearchIndex = 0;
+    if (!matches.length) this.notebookSearchIndex = 0;
+    else this.notebookSearchIndex = Math.max(0, Math.min(this.notebookSearchIndex, matches.length - 1));
+    const count = this.$("notebook-find-count");
+    if (count) count.textContent = matches.length ? `${this.notebookSearchIndex + 1} / ${matches.length}` :
+      (this.$("notebook-find-query").value ? "0 / 0" : "");
+    return matches;
+  }
+
+  openNotebookFind(showReplace = false) {
+    const bar = this.$("notebook-find-bar");
+    const replace = this.$("notebook-replace-row");
+    const toggle = this.$("notebook-replace-toggle");
+    bar.classList.remove("hidden");
+    if (showReplace) replace.classList.remove("hidden");
+    toggle.classList.toggle("on", !replace.classList.contains("hidden"));
+    this.updateNotebookSearchState();
+    const input = this.$("notebook-find-query");
+    input.focus();
+    input.select();
+  }
+
+  closeNotebookFind(focusEditor = false) {
+    this.$("notebook-find-bar").classList.add("hidden");
+    this.$("notebook-replace-row").classList.add("hidden");
+    this.$("notebook-replace-toggle").classList.remove("on");
+    if (focusEditor) this.focusNotebookEditor();
+  }
+
+  toggleNotebookReplace() {
+    const bar = this.$("notebook-find-bar");
+    const replace = this.$("notebook-replace-row");
+    if (bar.classList.contains("hidden")) {
+      this.openNotebookFind(true);
+      return;
+    }
+    replace.classList.toggle("hidden");
+    this.$("notebook-replace-toggle").classList.toggle("on", !replace.classList.contains("hidden"));
+    if (!replace.classList.contains("hidden")) this.$("notebook-replace-query").focus();
+  }
+
+  stepNotebookSearch(direction) {
+    const matches = this.updateNotebookSearchState();
+    if (!matches.length) return;
+    this.notebookSearchIndex = (this.notebookSearchIndex + direction + matches.length) % matches.length;
+    this.updateNotebookSearchState();
+  }
+
+  async replaceNotebookSearchMatch(all) {
+    const matches = this.updateNotebookSearchState();
+    if (!matches.length) return;
+    const note = this.activeNotebookNote();
+    const current = window.PlannerEditor?.getMarkdown();
+    const text = current === null || current === undefined ? note.text : String(current);
+    const replacement = this.$("notebook-replace-query").value;
+    const selected = all ? matches : [matches[this.notebookSearchIndex]];
+    let nextText = text;
+    for (const match of [...selected].reverse()) {
+      nextText = nextText.slice(0, match.start) + replacement + nextText.slice(match.end);
+    }
+    await this.flushNotebook();
+    this.setActiveNotebookMarkdown(nextText);
+    if (window.PlannerEditor) window.PlannerEditor.closeNow();
+    this.notebookMounted = false;
+    await this.mountNotebookEditor();
+    this.updateNotebookSearchState();
   }
 
   renderNotebook() {
     const panel = this.$("notebook-panel");
     const toggle = this.$("notebook-toggle");
     if (!panel || !toggle) return;
+    this.renderNotebookTabs();
     panel.classList.toggle("hidden", !this.settings.notebook_open);
     toggle.classList.toggle("on", !!this.settings.notebook_open);
     if (this.settings.notebook_open && !this.notebookMounted && window.PlannerEditor) {
@@ -4971,7 +5189,10 @@ class TermdeckApp {
   }
 
   setNotebookOpen(open, options = {}) {
-    if (!open) this.flushNotebook();
+    if (!open) {
+      void this.flushNotebook();
+      this.closeNotebookFind(false);
+    }
     this.settings.notebook_open = !!open;
     this.renderNotebook();
     this.saveSettings();
@@ -6266,6 +6487,7 @@ class TermdeckApp {
     if (!/^#[0-9a-f]{6}$/i.test(String(this.settings.sidebar_text_color || ""))) {
       this.settings.sidebar_text_color = SETTINGS_DEFAULTS.sidebar_text_color;
     }
+    if (this.normalizeNotebookNotes()) this.saveSettings();
     // V2 is now the only desktop terminal scroll controller. Remove the old
     // browser-only opt-in so a previous preference cannot revive V1.
     localStorage.removeItem("termdeck.terminal_scroll_v2");
@@ -6369,6 +6591,7 @@ class TermdeckApp {
         });
         this.editor.addAction({
           id: "termdeck-replace", label: "Replace in File (⌥⌘F)", contextMenuGroupId: "navigation", contextMenuOrder: 1.2,
+          keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyF],
           run: (ed) => ed.getAction("editor.action.startFindReplaceAction").run(),
         });
         this.editor.addAction({

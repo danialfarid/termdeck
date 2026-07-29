@@ -140,14 +140,31 @@
 </button>
 <div id="notebook-panel" class="hidden">
   <div id="notebook-head">
-    <span id="notebook-title"><span class="codicon codicon-notebook"></span> Notes</span>
+    <div id="notebook-tabs" role="tablist" aria-label="Quick notes"></div>
     <span id="notebook-actions">
+      <button id="notebook-new" title="New note" aria-label="New note"><span class="codicon codicon-add"></span></button>
+      <button id="notebook-find" title="Find in note (⌘F)" aria-label="Find in note"><span class="codicon codicon-search"></span></button>
       <select id="notebook-editor-select" title="Notebook editor"></select>
       <button id="notebook-close" title="Close notebook" aria-label="Close notebook"><span class="codicon codicon-close"></span></button>
     </span>
   </div>
+  <div id="notebook-find-bar" class="hidden">
+    <div class="notebook-find-row">
+      <input id="notebook-find-query" placeholder="Find in note" spellcheck="false">
+      <span id="notebook-find-count"></span>
+      <button id="notebook-find-prev" title="Previous match"><span class="codicon codicon-chevron-up"></span></button>
+      <button id="notebook-find-next" title="Next match"><span class="codicon codicon-chevron-down"></span></button>
+      <button id="notebook-replace-toggle" title="Show replace (⌥⌘F)"><span class="codicon codicon-replace"></span></button>
+      <button id="notebook-find-close" title="Close find"><span class="codicon codicon-close"></span></button>
+    </div>
+    <div id="notebook-replace-row" class="hidden">
+      <input id="notebook-replace-query" placeholder="Replace with" spellcheck="false">
+      <button id="notebook-replace-one" title="Replace current match">Replace</button>
+      <button id="notebook-replace-all" title="Replace all matches">All</button>
+    </div>
+  </div>
   <div id="notebook-editor-host" class="tui-wrap"></div>
-  <div id="notebook-help">Markdown notes autosave · ⌥N toggles · Esc closes</div>
+  <div id="notebook-help">Markdown notes autosave · ⌥N toggles · ⌘F find · ⌥⌘F replace</div>
 </div>
 <div id="history-search-backdrop" class="hidden">
   <div id="history-search-modal">

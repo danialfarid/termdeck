@@ -598,12 +598,15 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
   flex: none;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   padding: 8px 9px 7px 11px;
   border-bottom: 1px solid var(--border);
 }
-#notebook-title { display: inline-flex; align-items: center; gap: 7px; color: var(--accent); font-size: calc(var(--ui-font-size) + 1px); font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; }
+#notebook-tabs { min-width: 0; flex: 1; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+#notebook-tabs::-webkit-scrollbar { display: none; }
+.notebook-tab { min-width: 0; max-width: 180px; height: 25px; padding: 0 9px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--dim); cursor: pointer; font: calc(var(--ui-font-size) + 1px)/1 Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notebook-tab:hover { background: var(--panel); color: var(--text); }
+.notebook-tab.active { border-color: var(--active-border); background: var(--active-bg); color: var(--text); }
 #notebook-actions { display: inline-flex; align-items: center; gap: 5px; }
 #notebook-actions button {
   width: 24px;
@@ -627,6 +630,16 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
   outline: none;
 }
 #notebook-editor-select:focus { border-color: var(--accent); }
+#notebook-find-bar { flex: none; padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--panel); }
+#notebook-find-bar.hidden, #notebook-replace-row.hidden { display: none; }
+.notebook-find-row, #notebook-replace-row { display: flex; align-items: center; gap: 5px; }
+#notebook-find-bar input { min-width: 0; flex: 1; height: 25px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 6px; outline: none; background: var(--bg); color: var(--text); padding: 0 7px; font: var(--code-font-size)/1 Menlo, monospace; }
+#notebook-find-bar input:focus { border-color: var(--accent); }
+#notebook-find-count { flex: none; min-width: 42px; color: var(--dim); text-align: right; font: calc(var(--ui-font-size) - 1px)/1 Menlo, monospace; white-space: nowrap; }
+#notebook-find-bar button { flex: none; width: auto; min-width: 25px; height: 25px; padding: 0 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--dim); cursor: pointer; font: calc(var(--ui-font-size) - 1px)/1 Menlo, monospace; }
+#notebook-find-bar button:hover, #notebook-find-bar button.on { color: var(--accent); border-color: var(--accent); }
+#notebook-replace-row { margin-top: 5px; }
+#notebook-replace-row input { min-width: 0; flex: 1; }
 #notebook-editor-host.tui-wrap {
   flex: 1;
   min-height: 0;

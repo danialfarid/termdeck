@@ -134,6 +134,11 @@ class ProjectUiState(BaseModel):
     terminal_layout: list[str] = []
 
 
+class NotebookNote(BaseModel):
+    note_id: str
+    text: str = ""
+
+
 class UiSettings(BaseModel):
     sidebar_width: int = 250
     files_width: int = 380
@@ -166,6 +171,8 @@ class UiSettings(BaseModel):
     notebook_open: bool = False
     notebook_preview: bool = False
     notebook_text: str = ""
+    notebook_notes: list[NotebookNote] = []
+    notebook_active_note_id: str = ""
     files_pinned: bool = False
     sidebar_text_color: str = "#d5dbe5"
     side_full: bool = False
