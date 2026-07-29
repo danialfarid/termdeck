@@ -245,6 +245,8 @@ class TerminalSessionManager:
             ms.exit_code = TermdeckConfig.EXIT_CODE_SPAWN_FAILED
             self._handle_output(ms, TermdeckConfig.SPAWN_ERROR_TEMPLATE.format(error=spawn_error).encode())
             return
+        if reattach:
+            asyncio.create_task(self._redraw_reattached_terminal(ms, ms.proc))
         if kind is not AgentKind.NONE:
             ms.detect_kind = kind
             ms.detect_baseline = baseline
@@ -295,6 +297,24 @@ class TerminalSessionManager:
             handle.seek(max(0, size - TermdeckConfig.SCROLLBACK_BYTES))
             tail = handle.read()
         path.write_bytes(tail)
+
+    async def _redraw_reattached_terminal(self, ms: ManagedSession, proc: PtyProcess) -> None:
+        """Force a redraw after attaching a new bridge to an existing dtach session.
+
+        dtach keeps the terminal process alive, but it does not replay the old
+        screen to a newly-created TermDeck server bridge. Full-screen TUIs such
+        as Codex redraw on SIGWINCH; briefly nudging the pty width avoids an
+        empty browser pane while waiting for the next organic output frame.
+        """
+        await asyncio.sleep(0.2)
+        if ms.proc is not proc or not proc.alive:
+            return
+        cols, rows = max(2, ms.cols), max(2, ms.rows)
+        nudged_cols = cols - 1 if cols > 20 else cols + 1
+        proc.resize(nudged_cols, rows)
+        await asyncio.sleep(0.08)
+        if ms.proc is proc and proc.alive:
+            proc.resize(cols, rows)
 
     def _schedule_detection(self, ms: ManagedSession, delay: float) -> None:
         if ms.detect_kind is AgentKind.NONE:
