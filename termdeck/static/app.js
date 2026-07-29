@@ -49,6 +49,7 @@ const DESKTOP_KEYBINDINGS = [
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t" },
   { id: "switch-project", label: "Switch project", def: "Alt+s" },
   { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Alt+g" },
+  { id: "scroll-bottom", label: "Scroll terminal / transcript to bottom", def: "Meta+Shift+ArrowDown" },
   { id: "focus-prompt", label: "Focus active terminal / editor / Markdown prompt", def: "Alt+f" },
   { id: "show-usages", label: "Show usages of editor symbol", def: "Shift+F12" },
   { id: "select-active-input", label: "Select active terminal / editor / prompt text", def: "Alt+a" },
@@ -3084,6 +3085,13 @@ class TermdeckApp {
     if (terminalSearch) {
       terminalSearch.title = `Search terminal output (${this.bindingToDisplay(this.bindingFor("terminal-search"))})`;
     }
+    const scrollBottomAction = this.bindingToDisplay(this.bindingFor("scroll-bottom"));
+    for (const id of ["scroll-bottom-btn", "vscode-scroll-bottom-btn"]) {
+      const scrollButton = this.$(id);
+      if (scrollButton) scrollButton.title = `Scroll terminal to bottom (${scrollBottomAction})`;
+    }
+    const historyScrollButton = this.$("history-scroll-bottom");
+    if (historyScrollButton) historyScrollButton.title = `Scroll transcript to bottom (${scrollBottomAction})`;
     const newSession = this.$("new-session-btn");
     if (newSession) {
       newSession.title = `New terminal (${this.bindingToDisplay(this.bindingFor("new-terminal"))})`;
@@ -5334,6 +5342,11 @@ class TermdeckApp {
     this.$("history-prompt")?.focus();
   }
 
+  scrollActiveSurfaceToBottom() {
+    if (this.historyOpen) this.scrollHistoryToBottom();
+    else this.scrollActiveToBottom();
+  }
+
   resyncActiveTerminal() {
     if (this.activeFileKey !== null || this.historyOpen || !this.activeId) return;
     const view = this.views.get(this.activeId);
@@ -6836,6 +6849,7 @@ class TermdeckApp {
     else if (actionId === "view-terminals") this.setSideView("terminals");
     else if (actionId === "switch-project") this.openProjectSwitcher();
     else if (actionId === "toggle-history") this.toggleHistory();
+    else if (actionId === "scroll-bottom") this.scrollActiveSurfaceToBottom();
     else if (actionId === "focus-prompt") this.focusActivePrompt();
     else if (actionId === "show-usages") this.showEditorUsages();
     else if (actionId === "select-active-input") this.selectActiveInputText();

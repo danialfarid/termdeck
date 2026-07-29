@@ -304,6 +304,7 @@ you want. **Reset to defaults** undoes everything.
 | Terminals view | **⌘⇧T** |
 | Switch project | **⌥S** |
 | Switch terminal ⇄ Markdown transcript | **⌥G** |
+| Scroll terminal / transcript to bottom | **⌘⇧↓** |
 | Focus active terminal / editor / Markdown prompt | **⌥F** |
 | Select active terminal / editor / prompt text | **⌥A** |
 | Select all terminal text | **⌘⇧A** |
