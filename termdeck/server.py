@@ -139,6 +139,7 @@ class UiSettings(BaseModel):
     files_width: int = 380
     sidebar_font_size: int = 13
     terminal_font_size: int = 13
+    ui_font_size: int = 11
     viewer_font_size: int = 12
     code_font_size: int = 12
     diff_font_size: int = 13
@@ -156,6 +157,7 @@ class UiSettings(BaseModel):
     word_wrap: bool = False
     search_glob: str = "!*.json, !*.csv"
     keybindings: dict[str, str] = {}
+    vscode_keybindings: dict[str, str] = {}
     last_command: str = "codex"
     last_model: str = "codex"
     last_permissions: dict[str, str] = {}

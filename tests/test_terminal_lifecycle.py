@@ -73,6 +73,11 @@ class UiSettingsTest(unittest.TestCase):
         self.assertTrue(payload["notebook_preview"])
         self.assertEqual(payload["notebook_text"], "# Notes\n\n- item")
 
+    def test_client_customization_fields_round_trip_through_settings_model(self) -> None:
+        payload = UiSettings(ui_font_size=15, vscode_keybindings={"toggle-notebook": "Ctrl+Alt+n"}).model_dump()
+        self.assertEqual(payload["ui_font_size"], 15)
+        self.assertEqual(payload["vscode_keybindings"], {"toggle-notebook": "Ctrl+Alt+n"})
+
 
 class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
     async def test_startup_marks_live_socket_as_detached_not_dormant(self) -> None:
