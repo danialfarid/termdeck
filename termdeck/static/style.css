@@ -577,9 +577,9 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
   position: fixed;
   right: 14px;
   top: 50px;
+  bottom: 14px;
   z-index: 25;
-  width: min(420px, calc(100vw - 32px));
-  height: min(520px, calc(100vh - 86px));
+  width: min(var(--notebook-panel-width, 560px), calc(100vw - 32px));
   display: flex;
   flex-direction: column;
   background: rgba(18, 22, 28, 0.96);
@@ -611,6 +611,11 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
   cursor: pointer;
 }
 #notebook-actions button:hover, #notebook-actions button.on { color: var(--accent); border-color: var(--accent); }
+#notebook-editor-host {
+  flex: 1;
+  min-height: 0;
+  background: var(--term-bg);
+}
 #notebook-text {
   flex: 1;
   min-height: 0;
@@ -622,7 +627,7 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
   padding: 12px;
   font: var(--code-font-size)/1.45 Menlo, monospace;
 }
-#notebook-text.hidden { display: none; }
+#notebook-editor-host.hidden, #notebook-text.hidden { display: none; }
 #notebook-preview {
   flex: 1;
   min-height: 0;
