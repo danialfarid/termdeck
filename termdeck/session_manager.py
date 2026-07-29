@@ -510,13 +510,35 @@ class TerminalSessionManager:
             position = end + len(end_marker)
             while position < len(data) and data[position] in b"\r\n":
                 position += 1
-        return bytes(durable)
+        return self._strip_agent_replay_controls(ms, bytes(durable))
 
-    def _append_collapsing_repaints(self, ms: ManagedSession, data: bytes) -> None:
+    def _strip_agent_replay_controls(self, ms: ManagedSession, data: bytes) -> bytes:
+        """Drop cursor-moving controls from agent scrollback/browser replay.
+
+        Codex/Claude can emit screen-local cursor movement outside synchronized
+        update markers. Those controls are useful for an in-place TUI, but in a
+        persistent scrollback renderer they can overwrite already-read rows.
+        Keep SGR color/style codes; strip cursor movement, erases, OSC titles,
+        charset shifts, and single-byte cursor controls only for agent sessions.
+        """
+        if ms.record.agent_kind not in (AgentKind.CODEX.value, AgentKind.CLAUDE.value) or not data:
+            return data
+
+        data = re.sub(rb"\x1b\][^\x07]*(?:\x07|\x1b\\)", b"", data)
+
+        def replace_csi(match: re.Match[bytes]) -> bytes:
+            sequence = match.group(0)
+            return sequence if sequence.endswith(b"m") else b""
+
+        data = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", replace_csi, data)
+        data = re.sub(rb"\x1b[()][0-2A-Za-z]", b"", data)
+        return re.sub(rb"\x1b[78DEHM]", b"", data)
+
+    def _append_collapsing_repaints(self, ms: ManagedSession, data: bytes) -> bytes:
         """Append durable terminal history after dropping screen-local TUI repaint frames."""
         durable = self._durable_scrollback_bytes(ms, data)
         if not durable:
-            return
+            return b""
         ms.last_repaint_offset = None
         ms.buffer.extend(durable)
         overflow = len(ms.buffer) - TermdeckConfig.SCROLLBACK_BYTES
@@ -524,6 +546,7 @@ class TerminalSessionManager:
             del ms.buffer[:overflow]
             if ms.last_repaint_offset is not None:
                 ms.last_repaint_offset = max(0, ms.last_repaint_offset - overflow)
+        return durable
 
     def _answer_and_strip_color_queries(self, ms: ManagedSession, data: bytes) -> bytes:
         data = ms.osc_query_carry + data
@@ -548,7 +571,7 @@ class TerminalSessionManager:
         if not data:
             return
         ms.last_activity_at = time.time()
-        self._append_collapsing_repaints(ms, data)
+        durable = self._append_collapsing_repaints(ms, data)
         previous_title = ms.cli_title
         previous_processing = self._processing_state(ms)
         cli_title, ms.title_carry = OscTitleParser.extract_latest_title(ms.title_carry, data)
@@ -567,8 +590,9 @@ class TerminalSessionManager:
             title_renamed = self._reconcile_codex_rename(ms, previous_title)
             if title_renamed:
                 self._broadcast_status(ms)
-        for queue in list(ms.client_queues):
-            queue.put_nowait(data)
+        if durable:
+            for queue in list(ms.client_queues):
+                queue.put_nowait(durable)
         self._broadcast_activity_if_due(ms)
 
     def _reconcile_codex_rename(self, ms: ManagedSession, previous_title: str | None) -> bool:

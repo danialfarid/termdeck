@@ -175,6 +175,48 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bytes(session.buffer), b"before\nafter\n")
         self.assertEqual(session.scrollback_sync_carry, b"")
 
+    async def test_sync_repaint_frames_are_not_sent_to_browser_clients(self) -> None:
+        manager = TerminalSessionManager()
+        session = ManagedSession(record())
+        queue: asyncio.Queue = asyncio.Queue()
+        session.client_queues.add(queue)
+
+        manager._handle_output(
+            session,
+            b"before\n" + TermdeckConfig.SYNC_UPDATE_START + b"\rstatus redraw" +
+            TermdeckConfig.SYNC_UPDATE_END + b"\r\nafter\n",
+        )
+
+        self.assertEqual(await queue.get(), b"before\nafter\n")
+        self.assertTrue(queue.empty())
+        self.assertEqual(bytes(session.buffer), b"before\nafter\n")
+
+    async def test_agent_cursor_repaint_controls_are_not_sent_to_browser_clients(self) -> None:
+        manager = TerminalSessionManager()
+        saved = record()
+        saved.agent_kind = AgentKind.CODEX.value
+        session = ManagedSession(saved)
+        queue: asyncio.Queue = asyncio.Queue()
+        session.client_queues.add(queue)
+
+        manager._handle_output(session, b"answer\n\x1b[2Arewritten\x1b[0m\n\x1b]2;title\x07")
+
+        self.assertEqual(await queue.get(), b"answer\nrewritten\x1b[0m\n")
+        self.assertTrue(queue.empty())
+        self.assertEqual(bytes(session.buffer), b"answer\nrewritten\x1b[0m\n")
+
+    async def test_shell_cursor_controls_stay_raw_for_terminal_programs(self) -> None:
+        manager = TerminalSessionManager()
+        session = ManagedSession(record())
+        queue: asyncio.Queue = asyncio.Queue()
+        session.client_queues.add(queue)
+        raw = b"progress\r\x1b[2Kdone\n"
+
+        manager._handle_output(session, raw)
+
+        self.assertEqual(await queue.get(), raw)
+        self.assertEqual(bytes(session.buffer), raw)
+
     async def test_rename_codex_session_sends_codex_rename_command(self) -> None:
         manager = TerminalSessionManager()
         saved = record()
