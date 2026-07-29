@@ -4744,6 +4744,7 @@ class TermdeckApp {
         this.scheduleV2Fit(view);
         this.scheduleInitialV2Fit(view);
         if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+        this.scheduleTerminalActivationRepair(view);
       } else if (previousId !== id) {
         const needsInitialFollow = !view.everConnected || view.awaitingSnapshot || view.replaying;
         if (needsInitialFollow || view.keepBottom) {
@@ -4800,7 +4801,7 @@ class TermdeckApp {
                    wasAtBottom: true, scrollMode: "follow", v2Programmatic: false, v2FitFrame: 0,
                    v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
                    forceResizeAfterFit: true, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
-                   suppressResizeToServer: false, tailRepairFrame: 0, tailRepairSignature: "",
+                   suppressResizeToServer: false, tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
                    lastSentCols: null, lastSentRows: null,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
@@ -5540,6 +5541,75 @@ class TermdeckApp {
     return rows.slice(-count).map((row) => this.normalizeTerminalTailLine(row.textContent || ""));
   }
 
+  parseCssColor(value) {
+    const color = String(value || "").trim().toLowerCase();
+    let match = color.match(/^#([0-9a-f]{3})$/i);
+    if (match) {
+      return match[1].split("").map((part) => Number.parseInt(part + part, 16)).concat(1);
+    }
+    match = color.match(/^#([0-9a-f]{6})$/i);
+    if (match) {
+      return [
+        Number.parseInt(match[1].slice(0, 2), 16),
+        Number.parseInt(match[1].slice(2, 4), 16),
+        Number.parseInt(match[1].slice(4, 6), 16),
+        1,
+      ];
+    }
+    match = color.match(/^rgba?\(([^)]+)\)$/i);
+    if (!match) return null;
+    const parts = match[1].split(",").map((part) => Number.parseFloat(part.trim()));
+    if (parts.length < 3 || parts.slice(0, 3).some((part) => !Number.isFinite(part))) return null;
+    return [parts[0], parts[1], parts[2], Number.isFinite(parts[3]) ? parts[3] : 1];
+  }
+
+  colorDistance(left, right) {
+    if (!left || !right) return Number.POSITIVE_INFINITY;
+    const dr = left[0] - right[0];
+    const dg = left[1] - right[1];
+    const db = left[2] - right[2];
+    return Math.sqrt((dr * dr) + (dg * dg) + (db * db));
+  }
+
+  terminalRenderedTailLooksInvisible(view, expected, rendered) {
+    const rows = [...(view?.container?.querySelectorAll(".xterm-rows > div") || [])].slice(-expected.length);
+    if (!rows.length || !expected.some((line) => line.trim())) return false;
+    const screen = view.container.querySelector(".xterm-screen") || view.container;
+    const computedBackground = this.parseCssColor(window.getComputedStyle(screen).backgroundColor);
+    const themeBackground = this.parseCssColor(this.termTheme().background);
+    const background = computedBackground && computedBackground[3] > 0 ? computedBackground : themeBackground;
+    let compared = 0;
+    let invisible = 0;
+    let visible = 0;
+    for (let index = 0; index < expected.length; index++) {
+      if (!expected[index].trim()) continue;
+      compared += 1;
+      const row = rows[index];
+      const renderedLine = rendered[index] || "";
+      if (!row || !renderedLine.trim()) {
+        invisible += 1;
+        continue;
+      }
+      const spans = [...row.querySelectorAll("span")];
+      const sample = spans.find((span) => String(span.textContent || "").trim()) || row;
+      const style = window.getComputedStyle(sample);
+      const opacity = Number.parseFloat(style.opacity);
+      if (style.visibility === "hidden" || style.display === "none" || opacity === 0) {
+        invisible += 1;
+        continue;
+      }
+      const foreground = this.parseCssColor(style.color);
+      if (foreground && foreground[3] === 0) {
+        invisible += 1;
+      } else if (foreground && background && this.colorDistance(foreground, background) < 32) {
+        invisible += 1;
+      } else {
+        visible += 1;
+      }
+    }
+    return compared > 0 && invisible > 0 && visible === 0;
+  }
+
   terminalTailRenderMismatch(view) {
     const expected = this.terminalBufferVisibleTailLines(view);
     const rendered = this.terminalRenderedTailLines(view);
@@ -5552,7 +5622,19 @@ class TermdeckApp {
       if (expectedLine !== rendered[index]) return true;
     }
     view.tailRepairSignature = expected.join("\n");
-    return compared > 0 && !rendered.some((line) => line.trim());
+    return (compared > 0 && !rendered.some((line) => line.trim())) ||
+      this.terminalRenderedTailLooksInvisible(view, expected, rendered);
+  }
+
+  repairTerminalRenderIfStale(view) {
+    if (!view || view.closed || !view.container.classList.contains("visible")) return false;
+    if (!this.terminalTailRenderMismatch(view)) return false;
+    const restoreLine = view.term.buffer.active.viewportY;
+    const follow = view.scrollMode === "follow";
+    this.refreshTerminalAppearance(view, true);
+    if (follow) this.scrollTerminalV2ToBottom(view);
+    else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+    return true;
   }
 
   scheduleTerminalTailRepair(view) {
@@ -5562,9 +5644,21 @@ class TermdeckApp {
       view.tailRepairFrame = requestAnimationFrame(() => {
         view.tailRepairFrame = 0;
         if (view.closed || !view.container.classList.contains("visible") || view.scrollMode !== "follow") return;
-        if (!this.terminalTailRenderMismatch(view)) return;
-        this.refreshTerminalAppearance(view, true);
-        if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+        this.repairTerminalRenderIfStale(view);
+      });
+    });
+  }
+
+  scheduleTerminalActivationRepair(view) {
+    if (!view || view.closed || view.activationRepairFrame || !view.container.classList.contains("visible")) return;
+    if (!this.isTerminalScrollV2()) return;
+    const generation = view.outputWriteGeneration;
+    view.activationRepairFrame = requestAnimationFrame(() => {
+      view.activationRepairFrame = requestAnimationFrame(() => {
+        view.activationRepairFrame = 0;
+        if (view.closed || !view.container.classList.contains("visible")) return;
+        if (view.outputWriteInFlight && generation !== view.outputWriteGeneration) return;
+        this.repairTerminalRenderIfStale(view);
       });
     });
   }
@@ -5734,6 +5828,7 @@ class TermdeckApp {
     if (view.v2ForcedReflowFrame) cancelAnimationFrame(view.v2ForcedReflowFrame);
     if (view.v2ForcedReflowRestoreFrame) cancelAnimationFrame(view.v2ForcedReflowRestoreFrame);
     if (view.tailRepairFrame) cancelAnimationFrame(view.tailRepairFrame);
+    if (view.activationRepairFrame) cancelAnimationFrame(view.activationRepairFrame);
     clearTimeout(view.layoutFitRetryTimer);
     if (view.layoutObserver) view.layoutObserver.disconnect();
     if (view.scrollObserver) view.scrollObserver.disconnect();
