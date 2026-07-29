@@ -10,7 +10,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
-  show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_preview: false, notebook_text: "",
+  show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_text: "",
   files_pinned: false, sidebar_text_color: "#d5dbe5", vscode_keybindings: {} };
 const MODEL_PERMISSIONS = {
   codex: [
@@ -258,9 +258,7 @@ class TermdeckApp {
     this.unreadSessions = new Set();
     this.statHistory = [];
     this.editor = null;
-    this.notebookEditor = null;
-    this.notebookModel = null;
-    this.notebookDecorations = [];
+    this.notebookMounted = false;
     this.nativeSessionIds = new Set();
     this.sessionModelById = new Map();
     this.selectedTreeRow = null;
@@ -1495,7 +1493,6 @@ class TermdeckApp {
     const scheduleLayoutFit = () => {
       this.positionFloatingFilesPanel();
       this.positionFloatingTerminalSearch();
-      this.notebookEditor?.layout();
       this.scheduleTerminalLayoutFit();
     };
     new ResizeObserver(scheduleLayoutFit).observe(this.$("terminal-area"));
@@ -4876,123 +4873,105 @@ class TermdeckApp {
   initNotebook() {
     const toggle = this.$("notebook-toggle");
     const panel = this.$("notebook-panel");
-    const text = this.$("notebook-text");
     const host = this.$("notebook-editor-host");
-    const preview = this.$("notebook-preview");
-    const previewToggle = this.$("notebook-preview-toggle");
-    if (!toggle || !panel || !text || !host || !preview || !previewToggle) return;
-    text.value = this.settings.notebook_text || "";
+    const select = this.$("notebook-editor-select");
+    if (!toggle || !panel || !host || !select) return;
     toggle.onclick = () => this.toggleNotebook();
-    this.$("notebook-close").onclick = () => this.setNotebookOpen(false);
-    previewToggle.onclick = () => {
-      this.settings.notebook_preview = !this.settings.notebook_preview;
-      this.renderNotebook();
-      this.saveSettings();
-      requestAnimationFrame(() => this.focusNotebookEditor());
-    };
-    text.addEventListener("input", () => {
-      this.settings.notebook_text = text.value;
-      this.renderNotebookPreview();
-      this.saveSettings();
-    });
-    text.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
+    this.$("notebook-close").onclick = () => {
+      if (window.PlannerEditor) void window.PlannerEditor.flush();
       this.setNotebookOpen(false);
-    });
+    };
     panel.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
+      if (window.PlannerEditor) void window.PlannerEditor.flush();
       this.setNotebookOpen(false);
     });
-    if (this.monacoReady) {
-      this.monacoReady.then(() => this.initNotebookEditor()).catch(() => {});
+    if (window.PlannerEditor) {
+      this.renderNotebookEditorSelect();
+      select.onchange = () => this.changeNotebookEditor(select.value);
+      void this.mountNotebookEditor();
     } else {
-      host.classList.add("hidden");
-      text.classList.remove("hidden");
+      host.textContent = "";
+      const fallback = document.createElement("textarea");
+      fallback.className = "notes-area";
+      fallback.placeholder = "Quick notes… Markdown supported.";
+      fallback.value = this.settings.notebook_text || "";
+      fallback.addEventListener("input", () => {
+        this.settings.notebook_text = fallback.value;
+        this.saveSettings();
+      });
+      host.appendChild(fallback);
     }
     this.renderNotebook();
   }
 
-  initNotebookEditor() {
-    if (this.notebookEditor || typeof monaco === "undefined") return;
-    const host = this.$("notebook-editor-host");
-    const text = this.$("notebook-text");
-    if (!host || !text) return;
-    const uri = monaco.Uri.parse("inmemory://termdeck/quick-notes.md");
-    this.notebookModel = monaco.editor.getModel(uri) ||
-      monaco.editor.createModel(this.settings.notebook_text || "", "markdown", uri);
-    this.notebookEditor = monaco.editor.create(host, {
-      model: this.notebookModel,
-      readOnly: false,
-      theme: this.isLight() ? "termdeck-light" : "termdeck-dark",
-      automaticLayout: true,
-      minimap: { enabled: false },
-      scrollBeyondLastLine: false,
-      fontSize: this.settings.code_font_size,
-      lineNumbers: "off",
-      lineDecorationsWidth: 8,
-      lineNumbersMinChars: 0,
-      renderLineHighlight: "all",
-      folding: true,
-      wordWrap: "on",
-      fixedOverflowWidgets: true,
-      padding: { top: 12, bottom: 12 },
-    });
-    this.notebookEditor.addCommand(monaco.KeyCode.Escape, () => this.setNotebookOpen(false));
-    this.notebookEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-      this.settings.notebook_text = this.notebookModel.getValue();
-      this.renderNotebookPreview();
-      this.saveSettings();
-      this.$("status-name").textContent = "notes saved";
-    });
-    this.notebookModel.onDidChangeContent(() => {
-      const value = this.notebookModel.getValue();
-      this.settings.notebook_text = value;
-      if (text.value !== value) text.value = value;
-      this.renderNotebookPreview();
-      this.saveSettings();
-    });
-    this.renderNotebook();
+  renderNotebookEditorSelect() {
+    const select = this.$("notebook-editor-select");
+    if (!select || !window.PlannerEditor) return;
+    select.textContent = "";
+    for (const key of window.PlannerEditor.EDITORS) {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = window.PlannerEditor.LABELS[key] || key;
+      option.selected = window.PlannerEditor.getEditor() === key;
+      select.appendChild(option);
+    }
   }
 
-  renderNotebookPreview() {
-    const preview = this.$("notebook-preview");
-    if (!preview) return;
-    const text = this.settings.notebook_text || "";
-    preview.innerHTML = text.trim() ? this.renderMarkdown(text) : "<p><em>No notes yet.</em></p>";
+  async changeNotebookEditor(key) {
+    if (!window.PlannerEditor) return;
+    await window.PlannerEditor.flush();
+    const current = window.PlannerEditor.getMarkdown();
+    if (current !== null) this.settings.notebook_text = current;
+    window.PlannerEditor.setEditor(key);
+    window.PlannerEditor.closeNow();
+    this.notebookMounted = false;
+    await this.mountNotebookEditor();
+    this.renderNotebookEditorSelect();
+    this.focusNotebookEditor();
+  }
+
+  async mountNotebookEditor() {
+    if (this.notebookMounted || !window.PlannerEditor) return;
+    const host = this.$("notebook-editor-host");
+    if (!host) return;
+    host.textContent = "";
+    try {
+      await window.PlannerEditor.open(host, this.settings.notebook_text || "", {
+        onSave: (markdown) => {
+          this.settings.notebook_text = markdown;
+          this.saveSettings();
+        },
+      });
+      this.notebookMounted = true;
+    } catch (error) {
+      this.notebookMounted = false;
+      this.$("status-name").textContent = `notebook editor failed: ${error.message || error}`;
+    }
+  }
+
+  flushNotebook() {
+    if (!window.PlannerEditor || !window.PlannerEditor.isOpen()) return;
+    const markdown = window.PlannerEditor.getMarkdown();
+    if (markdown !== null) this.settings.notebook_text = markdown;
+    void window.PlannerEditor.flush();
   }
 
   renderNotebook() {
     const panel = this.$("notebook-panel");
     const toggle = this.$("notebook-toggle");
-    const body = this.$("notebook-body");
-    const text = this.$("notebook-text");
-    const host = this.$("notebook-editor-host");
-    const preview = this.$("notebook-preview");
-    const previewToggle = this.$("notebook-preview-toggle");
-    if (!panel || !toggle || !body || !text || !host || !preview || !previewToggle) return;
+    if (!panel || !toggle) return;
     panel.classList.toggle("hidden", !this.settings.notebook_open);
     toggle.classList.toggle("on", !!this.settings.notebook_open);
-    previewToggle.classList.toggle("on", !!this.settings.notebook_preview);
-    body.classList.toggle("previewing", !!this.settings.notebook_preview);
-    const useMonaco = !!this.notebookEditor;
-    host.classList.toggle("hidden", !useMonaco);
-    text.classList.toggle("hidden", useMonaco);
-    preview.classList.toggle("hidden", !this.settings.notebook_preview);
-    if (this.notebookModel && this.notebookModel.getValue() !== (this.settings.notebook_text || "")) {
-      this.notebookModel.setValue(this.settings.notebook_text || "");
+    if (this.settings.notebook_open && !this.notebookMounted && window.PlannerEditor) {
+      void this.mountNotebookEditor();
     }
-    if (!useMonaco && document.activeElement !== text && text.value !== (this.settings.notebook_text || "")) {
-      text.value = this.settings.notebook_text || "";
-    }
-    this.renderNotebookPreview();
-    if (this.settings.notebook_open) requestAnimationFrame(() => this.notebookEditor?.layout());
   }
 
   setNotebookOpen(open, options = {}) {
+    if (!open) this.flushNotebook();
     this.settings.notebook_open = !!open;
     this.renderNotebook();
     this.saveSettings();
@@ -5006,18 +4985,14 @@ class TermdeckApp {
   }
 
   focusNotebookEditor() {
-    if (this.notebookEditor && this.notebookModel) {
-      const line = this.notebookModel.getLineCount();
-      const column = this.notebookModel.getLineMaxColumn(line);
-      this.notebookEditor.focus();
-      this.notebookEditor.setPosition({ lineNumber: line, column });
-      this.notebookEditor.revealPositionInCenterIfOutsideViewport({ lineNumber: line, column });
-      this.notebookEditor.layout();
+    const host = this.$("notebook-editor-host");
+    if (!host) return;
+    const target = host.querySelector(".ProseMirror, .milkdown .ProseMirror, .toastui-editor-contents, .CodeMirror textarea, textarea");
+    if (target) {
+      target.focus();
       return;
     }
-    const text = this.$("notebook-text");
-    text?.focus();
-    text?.setSelectionRange(text.value.length, text.value.length);
+    host.focus();
   }
 
   activate(id, options = {}) {
@@ -6335,7 +6310,9 @@ class TermdeckApp {
     const normalWidth = Number(s.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
     const fileWidth = Math.max(Number(s.files_width) || 0, normalWidth * 2);
     const activeSidebarWidth = filesVisible && s.files_pinned ? fileWidth : normalWidth;
-    const notebookWidth = Math.min(Math.max(fileWidth * 1.6, 760), Math.max(320, window.innerWidth - 32));
+    const sidebarLeft = sidebar.getBoundingClientRect().left || 0;
+    const sidebarRight = sidebarLeft + activeSidebarWidth;
+    const notebookWidth = Math.max(320, window.innerWidth - sidebarRight - 64 - 14);
     sidebar.style.width = activeSidebarWidth + "px";
     sidebar.style.minWidth = activeSidebarWidth + "px";
     document.documentElement.style.setProperty("--notebook-panel-width", `${notebookWidth}px`);
@@ -6360,10 +6337,6 @@ class TermdeckApp {
     if (this.editor) {
       this.editor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.word_wrap ? "on" : "off" });
       monaco.editor.setTheme(this.isLight() ? "termdeck-light" : "termdeck-dark");
-    }
-    if (this.notebookEditor) {
-      this.notebookEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: "on" });
-      this.notebookEditor.layout();
     }
     this.$("stat-text").classList.toggle("hidden", !s.show_stats);
     this.$("stat-spark").classList.toggle("hidden", !s.show_stats);

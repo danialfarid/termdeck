@@ -615,43 +615,72 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
   cursor: pointer;
 }
 #notebook-actions button:hover, #notebook-actions button.on { color: var(--accent); border-color: var(--accent); }
-#notebook-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  align-items: stretch;
-  background: var(--term-bg);
-}
-#notebook-body.previewing #notebook-editor-host { flex-basis: 55%; border-right: 1px solid var(--border); }
-#notebook-body.previewing #notebook-preview { flex-basis: 45%; }
-#notebook-editor-host {
-  flex: 1;
-  min-height: 0;
-  background: var(--term-bg);
-}
-#notebook-text {
-  flex: 1;
-  min-height: 0;
-  resize: none;
-  border: 0;
+#notebook-editor-select {
+  max-width: 105px;
+  height: 24px;
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0 6px;
+  font: calc(var(--ui-font-size) - 1px)/1 Menlo, monospace;
   outline: none;
-  background: var(--term-bg);
-  color: var(--text);
-  padding: 12px;
-  font: var(--code-font-size)/1.45 Menlo, monospace;
 }
-#notebook-editor-host.hidden, #notebook-text.hidden { display: none; }
-#notebook-preview {
+#notebook-editor-select:focus { border-color: var(--accent); }
+#notebook-editor-host.tui-wrap {
   flex: 1;
   min-height: 0;
+  height: auto;
   overflow: auto;
-  padding: 12px 14px;
+  background: var(--term-bg);
+  border: 0;
+  border-radius: 0;
+}
+#notebook-editor-host.tui-fallback { padding: 0; }
+#notebook-editor-host .notes-area { width: 100%; height: 100%; min-height: 100%; resize: none; border: 0; outline: none; background: var(--term-bg); color: var(--text); padding: 12px; font: var(--code-font-size)/1.45 "SF Mono", Menlo, monospace; }
+#notebook-editor-host .tui-host { min-height: 100%; height: 100%; }
+#notebook-editor-host .milkdown {
+  --crepe-color-background: var(--term-bg);
+  --crepe-color-on-background: var(--text);
+  --crepe-color-surface: var(--panel2);
+  --crepe-color-surface-low: var(--panel);
+  --crepe-color-on-surface: var(--text);
+  --crepe-color-on-surface-variant: var(--dim);
+  --crepe-color-outline: var(--border);
+  --crepe-color-primary: var(--accent);
+  --crepe-color-secondary: var(--active-bg);
+  --crepe-color-inline-code: var(--accent);
+  --crepe-color-selected: var(--active-bg);
+  --crepe-color-hover: var(--panel);
+  --crepe-font-default: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --crepe-font-title: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --crepe-font-code: "SF Mono", Menlo, monospace;
+  min-height: 100%;
   background: var(--term-bg);
   color: var(--text);
-  font-size: calc(var(--ui-font-size) + 2px);
-  line-height: 1.45;
 }
-#notebook-preview.hidden { display: none; }
+#notebook-editor-host .milkdown .ProseMirror { min-height: calc(100vh - 126px); padding: 12px 16px; outline: none; color: var(--text); font-size: var(--code-font-size); }
+#notebook-editor-host .milkdown .ProseMirror code,
+#notebook-editor-host .milkdown code.inline-code { font-family: "SF Mono", Menlo, monospace; font-size: 0.9em; background: var(--panel); color: var(--accent); padding: 1px 5px; border-radius: 4px; }
+#notebook-editor-host .milkdown .ProseMirror pre { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+#notebook-editor-host .milkdown a { color: var(--accent); }
+#notebook-editor-host.tui-wrap .tui-host.tiptap-host { min-height: 100%; padding: 12px 16px; }
+#notebook-editor-host .tiptap-host .ProseMirror { min-height: calc(100vh - 126px); outline: none; color: var(--text); font-size: var(--code-font-size); }
+#notebook-editor-host .tiptap-host .ProseMirror code { font-family: "SF Mono", Menlo, monospace; background: var(--panel); color: var(--accent); padding: 1px 5px; border-radius: 4px; }
+#notebook-editor-host .tiptap-host .ProseMirror pre { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+#notebook-editor-host .tiptap-host .ProseMirror a { color: var(--accent); }
+#notebook-editor-host .tt-menu { display: flex; gap: 2px; padding: 4px; background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5); }
+#notebook-editor-host .tt-btn { min-width: 28px; height: 28px; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 1px solid transparent; border-radius: 6px; color: var(--dim); font: 13px/1 inherit; cursor: pointer; }
+#notebook-editor-host .tt-btn:hover { background: var(--active-bg); color: var(--text); }
+#notebook-editor-host .tt-btn.is-active { background: var(--active-bg); border-color: var(--accent); color: var(--text); }
+#notebook-editor-host .tui-host .EasyMDEContainer { background: var(--term-bg); height: 100%; }
+#notebook-editor-host .tui-host .EasyMDEContainer .CodeMirror { background: var(--term-bg); color: var(--text); border: none; min-height: calc(100vh - 126px); font-size: var(--code-font-size); }
+#notebook-editor-host .tui-host .EasyMDEContainer .CodeMirror-cursor { border-color: var(--text); }
+#notebook-editor-host .tui-host .EasyMDEContainer .editor-toolbar { background: var(--panel2); border-color: var(--border); opacity: 1; }
+#notebook-editor-host .tui-host .EasyMDEContainer .editor-toolbar button { color: var(--dim) !important; }
+#notebook-editor-host .tui-host .EasyMDEContainer .editor-toolbar button:hover { background: var(--active-bg); border-color: var(--accent); }
+#notebook-editor-host .toastui-editor-defaultUI,
+#notebook-editor-host .toastui-editor-dark { height: 100%; }
 #notebook-help {
   flex: none;
   padding: 5px 10px;

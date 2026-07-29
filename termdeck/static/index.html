@@ -142,15 +142,11 @@
   <div id="notebook-head">
     <span id="notebook-title"><span class="codicon codicon-notebook"></span> Notes</span>
     <span id="notebook-actions">
-      <button id="notebook-preview-toggle" title="Preview Markdown" aria-label="Preview Markdown"><span class="codicon codicon-markdown"></span></button>
+      <select id="notebook-editor-select" title="Notebook editor"></select>
       <button id="notebook-close" title="Close notebook" aria-label="Close notebook"><span class="codicon codicon-close"></span></button>
     </span>
   </div>
-  <div id="notebook-body">
-    <div id="notebook-editor-host"></div>
-    <textarea id="notebook-text" class="hidden" spellcheck="false" placeholder="Quick notes… Markdown supported."></textarea>
-    <div id="notebook-preview" class="markdown hidden"></div>
-  </div>
+  <div id="notebook-editor-host" class="tui-wrap"></div>
   <div id="notebook-help">Markdown notes autosave · ⌥N toggles · Esc closes</div>
 </div>
 <div id="history-search-backdrop" class="hidden">
@@ -190,6 +186,8 @@
 <script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/monaco/vs/loader.js"></script>
+<script src="/static/editor/loaders.js"></script>
+<script src="/static/editor/editor.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
