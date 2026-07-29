@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from termdeck.models import AgentKind, SessionRecord
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeUtil
-from termdeck.server import TermdeckServer
+from termdeck.server import TermdeckServer, UiSettings
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
 
 
@@ -64,6 +64,14 @@ class PlacementNameTest(unittest.TestCase):
         self.assertEqual(server.settings_store.payload["project_state"]["stock"]["terminal_layout"], [
             "session:termde-id", "session:new-id", "session:other-id",
         ])
+
+
+class UiSettingsTest(unittest.TestCase):
+    def test_notebook_fields_round_trip_through_settings_model(self) -> None:
+        payload = UiSettings(notebook_open=True, notebook_preview=True, notebook_text="# Notes\n\n- item").model_dump()
+        self.assertTrue(payload["notebook_open"])
+        self.assertTrue(payload["notebook_preview"])
+        self.assertEqual(payload["notebook_text"], "# Notes\n\n- item")
 
 
 class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):

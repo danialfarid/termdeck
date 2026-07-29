@@ -135,6 +135,21 @@
     <canvas id="stat-spark" width="48" height="20"></canvas>
   </div>
 </div>
+<button id="notebook-toggle" title="Quick notebook (&#8984;&#8679;N)" aria-label="Quick notebook">
+  <span class="codicon codicon-notebook"></span>
+</button>
+<div id="notebook-panel" class="hidden">
+  <div id="notebook-head">
+    <span id="notebook-title"><span class="codicon codicon-notebook"></span> Notes</span>
+    <span id="notebook-actions">
+      <button id="notebook-preview-toggle" title="Preview Markdown" aria-label="Preview Markdown"><span class="codicon codicon-markdown"></span></button>
+      <button id="notebook-close" title="Close notebook" aria-label="Close notebook"><span class="codicon codicon-close"></span></button>
+    </span>
+  </div>
+  <textarea id="notebook-text" spellcheck="false" placeholder="Quick notes… Markdown supported."></textarea>
+  <div id="notebook-preview" class="markdown hidden"></div>
+  <div id="notebook-help">Markdown notes autosave · ⌘⇧N toggles · Esc closes</div>
+</div>
 <div id="history-search-backdrop" class="hidden">
   <div id="history-search-modal">
     <div id="history-search-head">

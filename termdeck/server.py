@@ -161,6 +161,9 @@ class UiSettings(BaseModel):
     last_permissions: dict[str, str] = {}
     show_terminal_icons: bool = False
     history_mode: bool = False
+    notebook_open: bool = False
+    notebook_preview: bool = False
+    notebook_text: str = ""
     files_pinned: bool = False
     sidebar_text_color: str = "#d5dbe5"
     side_full: bool = False

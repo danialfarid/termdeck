@@ -10,7 +10,8 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
-  show_terminal_icons: false, history_mode: false, files_pinned: false, sidebar_text_color: "#d5dbe5", vscode_keybindings: {} };
+  show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_preview: false, notebook_text: "",
+  files_pinned: false, sidebar_text_color: "#d5dbe5", vscode_keybindings: {} };
 const MODEL_PERMISSIONS = {
   codex: [
     { value: "default", label: "Default (Codex config)" },
@@ -55,6 +56,7 @@ const DESKTOP_KEYBINDINGS = [
   { id: "terminal-search", label: "Search terminal output", def: "Meta+Shift+s" },
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t" },
   { id: "switch-project", label: "Switch project", def: "Alt+s" },
+  { id: "toggle-notebook", label: "Quick notebook", def: "Meta+Shift+n" },
   { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Alt+g" },
   { id: "scroll-bottom", label: "Scroll terminal / transcript to bottom", def: "Meta+Shift+ArrowDown" },
   { id: "focus-prompt", label: "Focus active terminal / editor / Markdown prompt", def: "Alt+f" },
@@ -69,6 +71,7 @@ const VSCODE_KEYBINDINGS = [
   { id: "restart-terminal", label: "Restart active terminal", def: "Ctrl+Alt+Shift+r" },
   { id: "prev-terminal", label: "Previous terminal", def: "Ctrl+Alt+ArrowUp" },
   { id: "next-terminal", label: "Next terminal", def: "Ctrl+Alt+ArrowDown" },
+  { id: "toggle-notebook", label: "Quick notebook", def: "Ctrl+Alt+n" },
   { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Ctrl+Alt+m" },
   { id: "select-terminal-all", label: "Select all terminal text", def: "Ctrl+Alt+Shift+a" },
   { id: "vscode-refresh", label: "Refresh TermDeck", def: "Ctrl+r" },
@@ -1177,6 +1180,7 @@ class TermdeckApp {
        { label: "UI font", key: "ui_font_size" }, { label: "Code font", key: "code_font_size" },
        { label: "Diff font", key: "diff_font_size" }, { label: "Tree/search font", key: "tree_font_size" },
        { label: "Sidebar text color", key: "sidebar_text_color", type: "color" }]);
+    this.initNotebook();
     for (const view of ["terminals", "project", "search"]) {
       this.$("view-" + view).onclick = () => this.setSideView(view);
     }
@@ -3223,6 +3227,10 @@ class TermdeckApp {
     if (terminalSearch) {
       terminalSearch.title = `Search terminal output (${this.bindingToDisplay(this.bindingFor("terminal-search"))})`;
     }
+    const notebookToggle = this.$("notebook-toggle");
+    if (notebookToggle) {
+      notebookToggle.title = `Quick notebook (${this.bindingToDisplay(this.bindingFor("toggle-notebook"))})`;
+    }
     const scrollBottomAction = this.bindingToDisplay(this.bindingFor("scroll-bottom"));
     for (const id of ["scroll-bottom-btn", "vscode-scroll-bottom-btn"]) {
       const scrollButton = this.$(id);
@@ -4836,6 +4844,84 @@ class TermdeckApp {
     const escaped = document.createElement("div");
     escaped.textContent = text;
     return escaped.innerHTML;
+  }
+
+  initNotebook() {
+    const toggle = this.$("notebook-toggle");
+    const panel = this.$("notebook-panel");
+    const text = this.$("notebook-text");
+    const preview = this.$("notebook-preview");
+    const previewToggle = this.$("notebook-preview-toggle");
+    if (!toggle || !panel || !text || !preview || !previewToggle) return;
+    text.value = this.settings.notebook_text || "";
+    toggle.onclick = () => this.toggleNotebook();
+    this.$("notebook-close").onclick = () => this.setNotebookOpen(false);
+    previewToggle.onclick = () => {
+      this.settings.notebook_preview = !this.settings.notebook_preview;
+      this.renderNotebook();
+      this.saveSettings();
+      if (!this.settings.notebook_preview) requestAnimationFrame(() => text.focus());
+    };
+    text.addEventListener("input", () => {
+      this.settings.notebook_text = text.value;
+      this.renderNotebookPreview();
+      this.saveSettings();
+    });
+    text.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.setNotebookOpen(false);
+    });
+    panel.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.setNotebookOpen(false);
+    });
+    this.renderNotebook();
+  }
+
+  renderNotebookPreview() {
+    const preview = this.$("notebook-preview");
+    if (!preview) return;
+    const text = this.settings.notebook_text || "";
+    preview.innerHTML = text.trim() ? this.renderMarkdown(text) : "<p><em>No notes yet.</em></p>";
+  }
+
+  renderNotebook() {
+    const panel = this.$("notebook-panel");
+    const toggle = this.$("notebook-toggle");
+    const text = this.$("notebook-text");
+    const preview = this.$("notebook-preview");
+    const previewToggle = this.$("notebook-preview-toggle");
+    if (!panel || !toggle || !text || !preview || !previewToggle) return;
+    panel.classList.toggle("hidden", !this.settings.notebook_open);
+    toggle.classList.toggle("on", !!this.settings.notebook_open);
+    previewToggle.classList.toggle("on", !!this.settings.notebook_preview);
+    text.classList.toggle("hidden", !!this.settings.notebook_preview);
+    preview.classList.toggle("hidden", !this.settings.notebook_preview);
+    if (document.activeElement !== text && text.value !== (this.settings.notebook_text || "")) {
+      text.value = this.settings.notebook_text || "";
+    }
+    this.renderNotebookPreview();
+  }
+
+  setNotebookOpen(open, options = {}) {
+    this.settings.notebook_open = !!open;
+    this.renderNotebook();
+    this.saveSettings();
+    if (this.settings.notebook_open && options.focus !== false && !this.settings.notebook_preview) {
+      requestAnimationFrame(() => {
+        const text = this.$("notebook-text");
+        text?.focus();
+        text?.setSelectionRange(text.value.length, text.value.length);
+      });
+    }
+  }
+
+  toggleNotebook() {
+    this.setNotebookOpen(!this.settings.notebook_open, { focus: true });
   }
 
   activate(id, options = {}) {
@@ -7242,6 +7328,7 @@ class TermdeckApp {
     else if (actionId === "terminal-search") this.toggleTerminalSearch();
     else if (actionId === "view-terminals") this.setSideView("terminals");
     else if (actionId === "switch-project") this.openProjectSwitcher();
+    else if (actionId === "toggle-notebook") this.toggleNotebook();
     else if (actionId === "toggle-history") this.toggleHistory();
     else if (actionId === "scroll-bottom") this.scrollActiveSurfaceToBottom();
     else if (actionId === "focus-prompt") this.focusActivePrompt();
