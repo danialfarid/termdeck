@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from termdeck.file_service import ProjectFileService
 from termdeck.models import AgentKind, SessionRecord
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeUtil
@@ -70,17 +71,30 @@ class UiSettingsTest(unittest.TestCase):
     def test_notebook_fields_round_trip_through_settings_model(self) -> None:
         payload = UiSettings(notebook_open=True, notebook_preview=True, notebook_text="# Notes\n\n- item",
                              notebook_notes=[NotebookNote(note_id="note-1", text="# Notes\n\n- item")],
-                             notebook_active_note_id="note-1").model_dump()
+                             notebook_active_note_id="note-1", notebook_notes_initialized=True).model_dump()
         self.assertTrue(payload["notebook_open"])
         self.assertTrue(payload["notebook_preview"])
         self.assertEqual(payload["notebook_text"], "# Notes\n\n- item")
         self.assertEqual(payload["notebook_notes"], [{"note_id": "note-1", "text": "# Notes\n\n- item"}])
         self.assertEqual(payload["notebook_active_note_id"], "note-1")
+        self.assertTrue(payload["notebook_notes_initialized"])
 
     def test_client_customization_fields_round_trip_through_settings_model(self) -> None:
         payload = UiSettings(ui_font_size=15, vscode_keybindings={"toggle-notebook": "Ctrl+Alt+n"}).model_dump()
         self.assertEqual(payload["ui_font_size"], 15)
         self.assertEqual(payload["vscode_keybindings"], {"toggle-notebook": "Ctrl+Alt+n"})
+
+
+class NotebookTrashTest(unittest.TestCase):
+    def test_notebook_note_moves_to_trash_as_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(TermdeckConfig, "DATA_DIR", root / "data"), \
+                 patch.object(TermdeckConfig, "TRASH_DIR", root / "trash"):
+                target = Path(ProjectFileService().move_notebook_note_to_trash("Planning / note", "# Keep this"))
+            self.assertTrue(target.is_file())
+            self.assertEqual(target.parent, root / "trash")
+            self.assertEqual(target.read_text(), "# Keep this")
 
 
 class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):

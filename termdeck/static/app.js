@@ -11,7 +11,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
   show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_text: "",
-  notebook_notes: [], notebook_active_note_id: "",
+  notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
   files_pinned: false, sidebar_text_color: "#d5dbe5", vscode_keybindings: {} };
 const MODEL_PERMISSIONS = {
   codex: [
@@ -1310,6 +1310,10 @@ class TermdeckApp {
           !searchBar.contains(e.target) && !searchToggle?.contains(e.target)) {
         this.clearTerminalSearch(true);
       }
+      const notebookPanel = this.$("notebook-panel");
+      const notebookToggle = this.$("notebook-toggle");
+      if (this.settings.notebook_open && notebookPanel && !notebookPanel.contains(e.target) &&
+          !notebookToggle?.contains(e.target)) this.setNotebookOpen(false, { focus: false });
     });
     this.$("terminal-search-toggle").onclick = () => this.toggleTerminalSearch();
     this.$("terminal-search-submit").onclick = () => {
@@ -4877,8 +4881,7 @@ class TermdeckApp {
     const toggle = this.$("notebook-toggle");
     const panel = this.$("notebook-panel");
     const host = this.$("notebook-editor-host");
-    const select = this.$("notebook-editor-select");
-    if (!toggle || !panel || !host || !select) return;
+    if (!toggle || !panel || !host) return;
     this.normalizeNotebookNotes();
     toggle.onclick = () => this.toggleNotebook();
     this.$("notebook-new").onclick = () => { void this.createNotebookNote(); };
@@ -4926,15 +4929,13 @@ class TermdeckApp {
       this.setNotebookOpen(false);
     });
     if (window.PlannerEditor) {
-      this.renderNotebookEditorSelect();
-      select.onchange = () => this.changeNotebookEditor(select.value);
       void this.mountNotebookEditor();
     } else {
       host.textContent = "";
       const fallback = document.createElement("textarea");
       fallback.className = "notes-area";
       fallback.placeholder = "Quick notes… Markdown supported.";
-      fallback.value = this.activeNotebookNote().text;
+      fallback.value = this.activeNotebookNote()?.text || "";
       fallback.addEventListener("input", () => this.setActiveNotebookMarkdown(fallback.value));
       host.appendChild(fallback);
     }
@@ -4946,7 +4947,8 @@ class TermdeckApp {
   }
 
   normalizeNotebookNotes() {
-    const source = Array.isArray(this.settings.notebook_notes) ? this.settings.notebook_notes : [];
+    const sourcePresent = Array.isArray(this.settings.notebook_notes);
+    const source = sourcePresent ? this.settings.notebook_notes : [];
     const seen = new Set();
     const notes = [];
     for (const raw of source) {
@@ -4955,22 +4957,24 @@ class TermdeckApp {
       seen.add(noteId);
       notes.push({ note_id: noteId, text: String(raw?.text || "") });
     }
-    if (!notes.length) notes.push({ note_id: this.createNotebookNoteId(), text: String(this.settings.notebook_text || "") });
+    if (!notes.length && !this.settings.notebook_notes_initialized) {
+      notes.push({ note_id: this.createNotebookNoteId(), text: String(this.settings.notebook_text || "") });
+    }
     const activeNoteId = notes.some((note) => note.note_id === this.settings.notebook_active_note_id)
-      ? this.settings.notebook_active_note_id : notes[0].note_id;
-    const active = notes.find((note) => note.note_id === activeNoteId) || notes[0];
+      ? this.settings.notebook_active_note_id : notes[0]?.note_id || "";
+    const active = notes.find((note) => note.note_id === activeNoteId) || null;
     const changed = JSON.stringify(source) !== JSON.stringify(notes) || this.settings.notebook_active_note_id !== activeNoteId ||
-      this.settings.notebook_text !== active.text;
+      this.settings.notebook_text !== (active?.text || "") || !sourcePresent || !this.settings.notebook_notes_initialized;
     this.settings.notebook_notes = notes;
     this.settings.notebook_active_note_id = activeNoteId;
-    this.settings.notebook_text = active.text;
+    this.settings.notebook_text = active?.text || "";
+    this.settings.notebook_notes_initialized = true;
     return changed;
   }
 
   activeNotebookNote() {
     this.normalizeNotebookNotes();
-    return this.settings.notebook_notes.find((note) => note.note_id === this.settings.notebook_active_note_id) ||
-      this.settings.notebook_notes[0];
+    return this.settings.notebook_notes.find((note) => note.note_id === this.settings.notebook_active_note_id) || null;
   }
 
   notebookTabTitle(note) {
@@ -4986,14 +4990,27 @@ class TermdeckApp {
     this.normalizeNotebookNotes();
     tabs.textContent = "";
     for (const note of this.settings.notebook_notes) {
-      const tab = document.createElement("button");
-      tab.type = "button";
+      const tab = document.createElement("div");
       tab.className = "notebook-tab" + (note.note_id === this.settings.notebook_active_note_id ? " active" : "");
       tab.setAttribute("role", "tab");
       tab.setAttribute("aria-selected", String(note.note_id === this.settings.notebook_active_note_id));
-      tab.title = this.notebookTabTitle(note);
-      tab.textContent = this.notebookTabTitle(note);
-      tab.onclick = () => { void this.selectNotebookNote(note.note_id); };
+      const label = document.createElement("button");
+      label.type = "button";
+      label.className = "notebook-tab-label";
+      label.title = this.notebookTabTitle(note);
+      label.textContent = this.notebookTabTitle(note);
+      label.onclick = () => { void this.selectNotebookNote(note.note_id); };
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "notebook-tab-close codicon codicon-close";
+      close.title = `Move ${this.notebookTabTitle(note)} to Trash`;
+      close.setAttribute("aria-label", close.title);
+      close.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void this.closeNotebookNote(note.note_id);
+      };
+      tab.append(label, close);
       tabs.appendChild(tab);
       if (note.note_id === this.settings.notebook_active_note_id) requestAnimationFrame(() => tab.scrollIntoView({ block: "nearest", inline: "nearest" }));
     }
@@ -5010,37 +5027,15 @@ class TermdeckApp {
     if (save) this.saveSettings();
   }
 
-  renderNotebookEditorSelect() {
-    const select = this.$("notebook-editor-select");
-    if (!select || !window.PlannerEditor) return;
-    select.textContent = "";
-    for (const key of window.PlannerEditor.EDITORS) {
-      const option = document.createElement("option");
-      option.value = key;
-      option.textContent = window.PlannerEditor.LABELS[key] || key;
-      option.selected = window.PlannerEditor.getEditor() === key;
-      select.appendChild(option);
-    }
-  }
-
-  async changeNotebookEditor(key) {
-    if (!window.PlannerEditor) return;
-    await this.flushNotebook();
-    window.PlannerEditor.setEditor(key);
-    window.PlannerEditor.closeNow();
-    this.notebookMounted = false;
-    await this.mountNotebookEditor();
-    this.renderNotebookEditorSelect();
-    this.focusNotebookEditor();
-  }
-
   async mountNotebookEditor() {
     if (this.notebookMounted || !window.PlannerEditor) return;
     const host = this.$("notebook-editor-host");
     if (!host) return;
+    const note = this.activeNotebookNote();
     host.textContent = "";
+    if (!note) return;
     try {
-      await window.PlannerEditor.open(host, this.activeNotebookNote().text, {
+      await window.PlannerEditor.open(host, note.text, {
         onSave: (markdown) => this.setActiveNotebookMarkdown(markdown),
       });
       this.notebookMounted = true;
@@ -5067,12 +5062,48 @@ class TermdeckApp {
     if (window.PlannerEditor) window.PlannerEditor.closeNow();
     this.notebookMounted = false;
     this.settings.notebook_active_note_id = noteId;
-    this.settings.notebook_text = this.activeNotebookNote().text;
+    this.settings.notebook_text = this.activeNotebookNote()?.text || "";
     this.notebookSearchIndex = 0;
     this.renderNotebook();
     this.saveSettings();
     await this.mountNotebookEditor();
     this.focusNotebookEditor();
+  }
+
+  async closeNotebookNote(noteId) {
+    this.normalizeNotebookNotes();
+    const index = this.settings.notebook_notes.findIndex((note) => note.note_id === noteId);
+    if (index < 0) return;
+    const wasActive = noteId === this.settings.notebook_active_note_id;
+    if (wasActive) await this.flushNotebook();
+    const note = this.settings.notebook_notes[index];
+    const title = this.notebookTabTitle(note);
+    if (!confirm(`Move "${title}" to the macOS Trash?`)) return;
+    const response = await fetch("/api/notebook/trash", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, content: note.text }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      alert(error.detail || "could not move note to Trash");
+      return;
+    }
+    const notes = this.settings.notebook_notes.filter((note) => note.note_id !== noteId);
+    const next = wasActive ? notes[Math.min(index, notes.length - 1)] || null : this.activeNotebookNote();
+    if (wasActive) {
+      if (window.PlannerEditor) window.PlannerEditor.closeNow();
+      this.notebookMounted = false;
+    }
+    this.settings.notebook_notes = notes;
+    this.settings.notebook_active_note_id = next?.note_id || "";
+    this.settings.notebook_text = next?.text || "";
+    this.settings.notebook_notes_initialized = true;
+    this.notebookSearchIndex = 0;
+    this.renderNotebook();
+    this.saveSettings();
+    if (next && wasActive) {
+      await this.mountNotebookEditor();
+      this.focusNotebookEditor();
+    }
   }
 
   async createNotebookNote() {
@@ -5093,6 +5124,7 @@ class TermdeckApp {
   notebookSearchMatches() {
     const query = this.$("notebook-find-query")?.value || "";
     const note = this.activeNotebookNote();
+    if (!note) return [];
     const current = window.PlannerEditor?.getMarkdown();
     const text = current === null || current === undefined ? note.text : String(current);
     if (note.text !== text) note.text = text;
@@ -5160,6 +5192,7 @@ class TermdeckApp {
     const matches = this.updateNotebookSearchState();
     if (!matches.length) return;
     const note = this.activeNotebookNote();
+    if (!note) return;
     const current = window.PlannerEditor?.getMarkdown();
     const text = current === null || current === undefined ? note.text : String(current);
     const replacement = this.$("notebook-replace-query").value;
@@ -5183,7 +5216,7 @@ class TermdeckApp {
     this.renderNotebookTabs();
     panel.classList.toggle("hidden", !this.settings.notebook_open);
     toggle.classList.toggle("on", !!this.settings.notebook_open);
-    if (this.settings.notebook_open && !this.notebookMounted && window.PlannerEditor) {
+    if (this.settings.notebook_open && this.activeNotebookNote() && !this.notebookMounted && window.PlannerEditor) {
       void this.mountNotebookEditor();
     }
   }
@@ -5208,7 +5241,7 @@ class TermdeckApp {
   focusNotebookEditor() {
     const host = this.$("notebook-editor-host");
     if (!host) return;
-    const target = host.querySelector(".ProseMirror, .milkdown .ProseMirror, .toastui-editor-contents, .CodeMirror textarea, textarea");
+    const target = host.querySelector(".milkdown .ProseMirror, textarea");
     if (target) {
       target.focus();
       return;

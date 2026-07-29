@@ -6,16 +6,16 @@
 
 (function () {
   const { MOUNTS } = window.EditorLoaders;
-  const EDITORS = ["milkdown", "tiptap", "toast", "easymde"];
-  const LABELS = { milkdown: "Milkdown", tiptap: "TipTap", toast: "Toast UI", easymde: "EasyMDE" };
+  const EDITORS = ["milkdown"];
+  const LABELS = { milkdown: "Milkdown" };
   const AUTOSAVE_MS = 5000;
   const LS = "termdeckNotebookEditor";
 
-  let chosen = localStorage.getItem(LS) || "milkdown";
+  let chosen = "milkdown";
   let active = null; // { host, getMd, onSave, lastSaved, timer, bu }
 
   function getEditor() { return chosen; }
-  function setEditor(key) { if (EDITORS.includes(key)) { chosen = key; localStorage.setItem(LS, key); } }
+  function setEditor(key) { if (key === "milkdown") { chosen = key; localStorage.setItem(LS, key); } }
   function isOpen() { return !!active; }
   function getMarkdown() { return active ? active.getMd() : null; }
   function isDirty() { return !!(active && active.getMd() !== active.lastSaved); }

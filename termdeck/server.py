@@ -119,6 +119,11 @@ class ReplaceRequest(BaseModel):
     replacement: str = ""
 
 
+class NotebookTrashRequest(BaseModel):
+    title: str
+    content: str
+
+
 class ProjectUiState(BaseModel):
     active_session_id: str = ""
     open_files: list[dict[str, str]] = []
@@ -173,6 +178,7 @@ class UiSettings(BaseModel):
     notebook_text: str = ""
     notebook_notes: list[NotebookNote] = []
     notebook_active_note_id: str = ""
+    notebook_notes_initialized: bool = False
     files_pinned: bool = False
     sidebar_text_color: str = "#d5dbe5"
     side_full: bool = False
@@ -245,6 +251,7 @@ class TermdeckServer:
         app.delete(TermdeckConfig.API_CLOSED_ITEM_ROUTE, response_model=None)(self._purge_closed)
         app.get(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._get_settings)
         app.put(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._put_settings)
+        app.post(TermdeckConfig.API_NOTEBOOK_TRASH_ROUTE, response_model=None)(self._trash_notebook_note)
         app.get(TermdeckConfig.API_FILE_LIST_ROUTE, response_model=None)(self._list_files)
         app.get(TermdeckConfig.API_FILE_RECENT_ROUTE, response_model=None)(self._recent_files)
         app.get(TermdeckConfig.API_FILE_READ_ROUTE, response_model=None)(self._read_file)
@@ -283,6 +290,12 @@ class TermdeckServer:
         payload = settings.model_dump()
         self.settings_store.save(payload)
         return payload
+
+    async def _trash_notebook_note(self, request: NotebookTrashRequest) -> dict[str, str]:
+        try:
+            return {"trashed_to": self.files.move_notebook_note_to_trash(request.title, request.content)}
+        except (OSError, PermissionError) as trash_error:
+            raise HTTPException(status_code=500, detail=f"could not move note to Trash: {trash_error}") from trash_error
 
     async def _list_files(self, root: str, path: str = "") -> list[dict[str, object]]:
         try:

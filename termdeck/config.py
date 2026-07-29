@@ -51,6 +51,7 @@ class TermdeckConfig:
     API_HISTORY_SEARCH_ROUTE = "/api/history-search"
     API_HISTORY_CONTEXT_ROUTE = "/api/history-context"
     API_SETTINGS_ROUTE = "/api/settings"
+    API_NOTEBOOK_TRASH_ROUTE = "/api/notebook/trash"
     API_CLOSED_ROUTE = "/api/closed"
     API_CLOSED_ITEM_ROUTE = "/api/closed/{session_id}"
     API_CLOSED_REOPEN_ROUTE = "/api/closed/{session_id}/reopen"

@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import threading
 import time
@@ -262,6 +263,18 @@ class ProjectFileService:
         if target.exists():
             stamp = TimeUtil.now_est_naive().strftime("%Y%m%d-%H%M%S")
             target = TermdeckConfig.TRASH_DIR / f"{source.name}-{stamp}"
+        source.rename(target)
+        return str(target)
+
+    def move_notebook_note_to_trash(self, title: str, content: str) -> str:
+        safe_title = re.sub(r"[^A-Za-z0-9._ -]+", "_", title).strip(" .")[:96] or "Untitled note"
+        stamp = TimeUtil.now_est_naive().strftime("%Y%m%d-%H%M%S-%f")
+        staging_dir = TermdeckConfig.DATA_DIR / "notebook-trash-staging"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        source = staging_dir / f"TermDeck note - {safe_title} {stamp}.md"
+        source.write_text(content)
+        TermdeckConfig.TRASH_DIR.mkdir(parents=True, exist_ok=True)
+        target = TermdeckConfig.TRASH_DIR / source.name
         source.rename(target)
         return str(target)
 

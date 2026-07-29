@@ -361,5 +361,5 @@
     },
   };
 
-  window.EditorLoaders = { loadCss, MOUNTS };
+  window.EditorLoaders = { loadCss, MOUNTS: { milkdown: MOUNTS.milkdown } };
 })();
