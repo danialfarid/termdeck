@@ -580,7 +580,7 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
 #notebook-panel {
   position: fixed;
   right: 14px;
-  top: 50px;
+  top: 12px;
   bottom: 14px;
   z-index: 25;
   width: min(var(--notebook-panel-width, 760px), calc(100vw - 32px));
@@ -618,6 +618,7 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
   cursor: pointer;
 }
 #notebook-actions button:hover, #notebook-actions button.on { color: var(--accent); border-color: var(--accent); }
+#notebook-close { position: fixed; top: 12px; right: 14px; z-index: 26; }
 #notebook-editor-select {
   max-width: 105px;
   height: 24px;
