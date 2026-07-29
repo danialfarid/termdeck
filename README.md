@@ -297,13 +297,13 @@ you want. **Reset to defaults** undoes everything.
 | New terminal | **⌘B** |
 | Close active terminal / file | **⌘⇧⌫** |
 | Save open file | **⌘S** |
-| Previous / next terminal | **⌘⌥↑** / **⌘⌥↓** |
+| Previous / next terminal | **⌥↑** / **⌥↓** |
 | Toggle Files view | **⌘⇧D** |
 | Toggle Search view | **⌘⇧F** |
 | Search terminal output | **⌘⇧S** |
 | Terminals view | **⌘⇧T** |
 | Switch project | **⌥S** |
-| Switch terminal ⇄ Markdown transcript | **⌘⇧M** |
+| Switch terminal ⇄ Markdown transcript | **⌥G** |
 | Focus active terminal / editor / Markdown prompt | **⌥F** |
 | Select active terminal / editor / prompt text | **⌥A** |
 | Select all terminal text | **⌘⇧A** |
