@@ -182,6 +182,7 @@ class TermdeckApp {
     this.sessions = [];
     this.closedSessions = [];
     this.views = new Map();
+    this.terminalScrollPositions = new Map();
     this.openFiles = new Map();
     this.activeId = null;
     this.activeFileKey = null;
@@ -4084,9 +4085,25 @@ class TermdeckApp {
       if (cached) this.applyHistoryTurns(sessionId, cached, { preserveScroll: false });
       this.connectHistoryStream(sessionId, { fresh: true });
     } else {
-      const view = this.views.get(this.activeId);
+      // The terminal surface has just returned from display:none. Recreate
+      // only its browser renderer before showing it; the persistent PTY and
+      // saved scrollback remain untouched.
+      if (this.isTerminalScrollV2() && this.activeId) {
+        this.disposeDesktopTerminalRenderers();
+      }
+      const view = this.activeId ? this.ensureView(this.activeId) : null;
+      const savedScroll = this.terminalScrollPositions.get(this.activeId);
+      if (view && savedScroll && !savedScroll.follow) {
+        view.scrollMode = "preserve";
+        view.restoreScrollLine = savedScroll.line;
+      }
       if (view) {
         this.syncPromptToTerminal(view);
+        if (!view.ws) this.connect(this.activeId, view);
+        if (this.isTerminalScrollV2()) {
+          this.scheduleV2Fit(view);
+          this.scheduleInitialV2Fit(view);
+        }
         if (this.nativeVscodeMode) this.postVscodeNativeSession(this.session(this.activeId), true);
         else view.term.focus();
       }
@@ -5255,6 +5272,7 @@ class TermdeckApp {
 
   activate(id, options = {}) {
     const previousId = this.activeId;
+    const returningFromHiddenSurface = this.activeFileKey !== null || this.historyOpen;
     let unreadChanged = false;
     if (previousId && previousId !== id) {
       unreadChanged = this.unreadSessions.delete(previousId) || unreadChanged;
@@ -5296,8 +5314,24 @@ class TermdeckApp {
     if (s && this.treeRoot !== null && this.treeRoot !== s.cwd && !this.$("files-section").classList.contains("hidden")) {
       this.reloadTree();
     }
+    // xterm's renderer is unreliable after a desktop terminal has been
+    // display:none. Keep the PTY persistent, but make each desktop tab switch
+    // a fresh client renderer backed by the server's saved scrollback. This
+    // mirrors a full-page refresh without terminating the terminal process.
+    const needsFreshDesktopRenderer = this.isTerminalScrollV2() &&
+      (previousId !== id || returningFromHiddenSurface);
+    // A file/Markdown surface may still have the terminal parent hidden at
+    // this point. Reveal that parent before xterm.open() performs its first
+    // synchronous size measurement.
+    if (needsFreshDesktopRenderer && !this.historyOpen) this.applyMainLayout();
+    if (needsFreshDesktopRenderer) this.disposeDesktopTerminalRenderers();
     const view = this.ensureView(id);
-    if (previousView && previousView !== view) {
+    const savedScroll = this.terminalScrollPositions.get(id);
+    if (savedScroll && !savedScroll.follow) {
+      view.scrollMode = "preserve";
+      view.restoreScrollLine = savedScroll.line;
+    }
+    if (previousView && !previousView.closed && previousView !== view) {
       if (this.isTerminalScrollV2()) {
         // v2 deliberately trusts xterm's own buffer state instead of the
         // browser's private viewport scroll position.
@@ -5312,7 +5346,7 @@ class TermdeckApp {
         if (!previousView.keepBottom) previousView.pinBottomUntil = 0;
       }
     }
-    const switchedViews = previousView !== view;
+    const switchedViews = previousView !== view || needsFreshDesktopRenderer;
     const activatedAt = Date.now();
     for (const [viewId, v] of this.views) {
       const visible = viewId === id;
@@ -5416,7 +5450,7 @@ class TermdeckApp {
                    resizeRepairTimer: 0, outputQueue: [], outputWriteInFlight: false, outputWriteGeneration: 0,
                    layoutObserver: null, scrollObserver: null, layoutFitRetryTimer: 0, layoutFitRetryCount: 0,
                    keepBottom: true, manualScroll: false, manualScrollGeneration: 0, manualScrollReleaseTimer: 0,
-                   wasAtBottom: true, scrollMode: "follow", v2Programmatic: false, v2FitFrame: 0,
+                   wasAtBottom: true, scrollMode: "follow", restoreScrollLine: null, v2Programmatic: false, v2FitFrame: 0,
                    v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
                    forceResizeAfterFit: true, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
                    suppressResizeToServer: false, resyncResizeRepairPending: false,
@@ -5674,6 +5708,15 @@ class TermdeckApp {
           if (v2 && view.container.classList.contains("visible")) {
             view.forceResizeAfterFit = true;
             this.scheduleV2Fit(view);
+          }
+          if (v2 && Number.isFinite(view.restoreScrollLine)) {
+            const restoreLine = Math.min(view.restoreScrollLine, view.term.buffer.active.baseY);
+            view.restoreScrollLine = null;
+            view.v2Programmatic = true;
+            view.term.scrollToLine(restoreLine);
+            queueMicrotask(() => {
+              if (!view.closed) view.v2Programmatic = false;
+            });
           }
           if (view.resyncResizeRepairPending && view.container.classList.contains("visible")) {
             view.resyncResizeRepairPending = false;
@@ -6492,6 +6535,20 @@ class TermdeckApp {
     if (cols < 2 || rows < 2) return;
     this.sendResize(view, cols, rows);
     if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
+  }
+
+  disposeDesktopTerminalRenderers() {
+    if (!this.isTerminalScrollV2()) return;
+    for (const [id, view] of [...this.views]) {
+      const buffer = view.term?.buffer?.active;
+      if (buffer) {
+        this.terminalScrollPositions.set(id, {
+          follow: view.scrollMode === "follow",
+          line: Number(buffer.viewportY || 0),
+        });
+      }
+      this.destroyView(id, view);
+    }
   }
 
   destroyView(id, view) {
