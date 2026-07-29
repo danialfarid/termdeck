@@ -5351,6 +5351,10 @@ class TermdeckApp {
         }
         this.scheduleV2Fit(view);
         this.scheduleInitialV2Fit(view);
+        // The selected terminal has just changed opacity/layout state.  Paint
+        // it once that state is committed instead of hoping the next browser
+        // refresh or sidebar drag supplies xterm's first real repaint.
+        this.scheduleTerminalVisiblePaint(view);
         if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
         this.scheduleTerminalActivationRepair(view, {
           forceReflow: this.shouldForceTerminalActivationReflow(view, switchedViews),
@@ -5391,7 +5395,10 @@ class TermdeckApp {
   ensureView(id) {
     if (this.views.has(id)) return this.views.get(id);
     const container = document.createElement("div");
-    container.className = "term-container";
+    // xterm measures during open().  Make an active terminal visible before
+    // opening it so its first measurement cannot be a zero-sized hidden tab.
+    const initiallyVisible = id === this.activeId && this.activeFileKey === null && !this.historyOpen;
+    container.className = initiallyVisible ? "term-container visible" : "term-container";
     this.$("terminal-area").appendChild(container);
     const term = new Terminal({
       fontSize: this.settings.terminal_font_size, fontFamily: '"SF Mono", Menlo, monospace', letterSpacing: -0.2, theme: this.termTheme(),
@@ -5410,8 +5417,9 @@ class TermdeckApp {
                    keepBottom: true, manualScroll: false, manualScrollGeneration: 0, manualScrollReleaseTimer: 0,
                    wasAtBottom: true, scrollMode: "follow", v2Programmatic: false, v2FitFrame: 0,
                    v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
-                   forceResizeAfterFit: true, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
-                   suppressResizeToServer: false, resyncResizeRepairPending: false,
+                   forceResizeAfterFit: true,
+                   visiblePaintFrame: 0, visiblePaintTimer: 0,
+                   resyncResizeRepairPending: false,
                    hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
                    tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
                    lastSentCols: null, lastSentRows: null,
@@ -5523,7 +5531,7 @@ class TermdeckApp {
       return this.handleTerminalEditingKeys(view, e);
     });
     term.onData((data) => this.sendTrackedInput(view, data));
-    term.onResize(({ cols, rows }) => { if (!view.suppressResizeToServer) this.sendResize(view, cols, rows); });
+    term.onResize(({ cols, rows }) => this.sendResize(view, cols, rows));
     term.onScroll(() => {
       if (!view.container.classList.contains("visible")) return;
       if (this.isTerminalScrollV2()) {
@@ -5666,6 +5674,9 @@ class TermdeckApp {
           if (v2 && view.container.classList.contains("visible")) {
             view.forceResizeAfterFit = true;
             this.scheduleV2Fit(view);
+            // The initial scrollback has now reached xterm's buffer.  Paint
+            // after that write, not merely when the tab was first selected.
+            this.scheduleTerminalVisiblePaint(view);
           }
           if (view.resyncResizeRepairPending && view.container.classList.contains("visible")) {
             view.resyncResizeRepairPending = false;
@@ -6068,10 +6079,7 @@ class TermdeckApp {
       // at its pre-flex width. Refresh after the settled fit so the canvas
       // and text colors are repainted together with the final geometry.
       const forceResize = view.forceResizeAfterFit;
-      if (forceResize) {
-        view.forceResizeAfterFit = false;
-        if (this.forceVisibleTerminalReflow(view)) return;
-      }
+      view.forceResizeAfterFit = false;
       this.refreshTerminalAppearance(view, forceResize);
       if (forceResize && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
       if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
@@ -6313,49 +6321,46 @@ class TermdeckApp {
     });
   }
 
-  forceVisibleTerminalReflow(view) {
-    if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
-        !view.container.classList.contains("visible")) return false;
-    const rect = view.container.getBoundingClientRect();
-    if (rect.width < 40 || rect.height < 40) return false;
-    const computed = window.getComputedStyle(view.container);
-    const originalRight = view.container.style.right;
-    const right = Number.parseFloat(computed.right);
-    const cellWidth = Number(view.term._core?._renderService?.dimensions?.css?.cell?.width) || 8;
-    const nudgeRight = (Number.isFinite(right) ? right : 4) + Math.max(Math.ceil(cellWidth * 2), 14);
-    const restoreLine = view.term.buffer.active.viewportY;
-    const follow = view.scrollMode === "follow";
-    view.suppressResizeToServer = true;
-    view.v2Programmatic = true;
-    view.v2ForcedReflowFrame = requestAnimationFrame(() => {
-      view.v2ForcedReflowFrame = 0;
-      if (view.closed || !view.container.classList.contains("visible")) {
-        view.suppressResizeToServer = false;
-        view.v2Programmatic = false;
-        return;
-      }
-      view.container.style.right = `${nudgeRight}px`;
+  scheduleTerminalVisiblePaint(view) {
+    if (!view || view.closed || !this.isTerminalScrollV2() ||
+        !view.container.classList.contains("visible")) return;
+    if (view.visiblePaintFrame) cancelAnimationFrame(view.visiblePaintFrame);
+    clearTimeout(view.visiblePaintTimer);
+    const repaint = () => {
+      if (view.closed || view.sessionId !== this.activeId ||
+          !view.container.classList.contains("visible")) return;
+      const rect = view.container.getBoundingClientRect();
+      if (rect.width < 40 || rect.height < 40) return;
+      const restoreLine = view.term.buffer.active.viewportY;
+      const follow = view.scrollMode === "follow";
+      // This is deliberately paint-only: no fake width nudge or rows-1
+      // resize.  The container now remains measurable while inactive, so a
+      // stable fit plus renderer clear is enough to reveal the first frame.
+      view.v2Programmatic = true;
       view.fit.fit();
       this.refreshTerminalAppearance(view, true);
-      view.v2ForcedReflowRestoreFrame = requestAnimationFrame(() => {
-        view.v2ForcedReflowRestoreFrame = 0;
-        if (!view.closed) {
-          view.container.style.right = originalRight;
-          if (view.container.classList.contains("visible")) {
-            view.fit.fit();
-            this.refreshTerminalAppearance(view, true);
-            if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
-            if (follow) this.scrollTerminalV2ToBottom(view);
-            else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
-          }
-        }
-        view.suppressResizeToServer = false;
-        queueMicrotask(() => {
-          if (!view.closed) view.v2Programmatic = false;
-        });
+      if (view.term.cols >= 2 && view.term.rows >= 2) {
+        this.sendResize(view, view.term.cols, view.term.rows);
+      }
+      if (follow) this.scrollTerminalV2ToBottom(view);
+      else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+      queueMicrotask(() => {
+        if (!view.closed) view.v2Programmatic = false;
+      });
+    };
+    // First paint after the visibility class reaches layout, then once after
+    // the initial WebSocket snapshot/font work has settled.  Both are bounded
+    // to the selected terminal and preserve its xterm-owned scroll position.
+    view.visiblePaintFrame = requestAnimationFrame(() => {
+      view.visiblePaintFrame = requestAnimationFrame(() => {
+        view.visiblePaintFrame = 0;
+        repaint();
       });
     });
-    return true;
+    view.visiblePaintTimer = setTimeout(() => {
+      view.visiblePaintTimer = 0;
+      repaint();
+    }, 180);
   }
 
   queueTerminalWrite(view, data, afterWrite = null) {
@@ -6476,11 +6481,11 @@ class TermdeckApp {
     if (view.v2ViewportSyncFrame) cancelAnimationFrame(view.v2ViewportSyncFrame);
     if (view.v2FitFrame) cancelAnimationFrame(view.v2FitFrame);
     if (view.v2InitialFitFrame) cancelAnimationFrame(view.v2InitialFitFrame);
-    if (view.v2ForcedReflowFrame) cancelAnimationFrame(view.v2ForcedReflowFrame);
-    if (view.v2ForcedReflowRestoreFrame) cancelAnimationFrame(view.v2ForcedReflowRestoreFrame);
+    if (view.visiblePaintFrame) cancelAnimationFrame(view.visiblePaintFrame);
     if (view.tailRepairFrame) cancelAnimationFrame(view.tailRepairFrame);
     if (view.activationRepairFrame) cancelAnimationFrame(view.activationRepairFrame);
     clearTimeout(view.layoutFitRetryTimer);
+    clearTimeout(view.visiblePaintTimer);
     if (view.layoutObserver) view.layoutObserver.disconnect();
     if (view.scrollObserver) view.scrollObserver.disconnect();
     if (view.ws) view.ws.close();

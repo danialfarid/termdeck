@@ -455,8 +455,26 @@ body:not(.vscode-mode) #terminal-actions { display: none; }
 #terminal-actions #vscode-history-btn { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); opacity: 1; box-shadow: 0 0 0 1px var(--active-border); }
 #terminal-actions #vscode-history-btn:hover { color: var(--text); border-color: var(--accent); background: var(--panel2); }
 #terminal-actions .codicon { font-size: 13px; }
-.term-container { position: absolute; inset: 8px 4px 24px 10px; display: none; overflow: hidden; }
-.term-container.visible { display: block; }
+.term-container {
+  /*
+   * Never remove an xterm from layout while its PTY is attached.  xterm can
+   * receive its initial snapshot (or live output) before a tab is selected;
+   * display:none gives it a zero-sized canvas in that window.  Chromium then
+   * occasionally keeps the stale black canvas until a real sidebar resize.
+   *
+   * Keep every terminal measurable and simply hide non-selected surfaces.
+   * This is intentionally opacity-based rather than visibility:hidden so the
+   * renderer can finish its normal paint work before the tab is revealed.
+   */
+  position: absolute;
+  inset: 8px 4px 24px 10px;
+  display: block;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+.term-container.visible { opacity: 1; pointer-events: auto; z-index: 1; }
 .term-container .xterm { height: 100%; min-height: 0; }
 .term-container .xterm .xterm-viewport { background-color: var(--term-bg); }
 body.vscode-native-mode .term-container { display: none !important; }
