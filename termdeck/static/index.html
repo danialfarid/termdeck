@@ -146,9 +146,11 @@
       <button id="notebook-close" title="Close notebook" aria-label="Close notebook"><span class="codicon codicon-close"></span></button>
     </span>
   </div>
-  <div id="notebook-editor-host"></div>
-  <textarea id="notebook-text" class="hidden" spellcheck="false" placeholder="Quick notes… Markdown supported."></textarea>
-  <div id="notebook-preview" class="markdown hidden"></div>
+  <div id="notebook-body">
+    <div id="notebook-editor-host"></div>
+    <textarea id="notebook-text" class="hidden" spellcheck="false" placeholder="Quick notes… Markdown supported."></textarea>
+    <div id="notebook-preview" class="markdown hidden"></div>
+  </div>
   <div id="notebook-help">Markdown notes autosave · ⌥N toggles · Esc closes</div>
 </div>
 <div id="history-search-backdrop" class="hidden">

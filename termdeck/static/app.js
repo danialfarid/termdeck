@@ -4888,7 +4888,7 @@ class TermdeckApp {
       this.settings.notebook_preview = !this.settings.notebook_preview;
       this.renderNotebook();
       this.saveSettings();
-      if (!this.settings.notebook_preview) requestAnimationFrame(() => this.focusNotebookEditor());
+      requestAnimationFrame(() => this.focusNotebookEditor());
     };
     text.addEventListener("input", () => {
       this.settings.notebook_text = text.value;
@@ -4911,7 +4911,7 @@ class TermdeckApp {
       this.monacoReady.then(() => this.initNotebookEditor()).catch(() => {});
     } else {
       host.classList.add("hidden");
-      text.classList.toggle("hidden", !!this.settings.notebook_preview);
+      text.classList.remove("hidden");
     }
     this.renderNotebook();
   }
@@ -4968,17 +4968,19 @@ class TermdeckApp {
   renderNotebook() {
     const panel = this.$("notebook-panel");
     const toggle = this.$("notebook-toggle");
+    const body = this.$("notebook-body");
     const text = this.$("notebook-text");
     const host = this.$("notebook-editor-host");
     const preview = this.$("notebook-preview");
     const previewToggle = this.$("notebook-preview-toggle");
-    if (!panel || !toggle || !text || !host || !preview || !previewToggle) return;
+    if (!panel || !toggle || !body || !text || !host || !preview || !previewToggle) return;
     panel.classList.toggle("hidden", !this.settings.notebook_open);
     toggle.classList.toggle("on", !!this.settings.notebook_open);
     previewToggle.classList.toggle("on", !!this.settings.notebook_preview);
+    body.classList.toggle("previewing", !!this.settings.notebook_preview);
     const useMonaco = !!this.notebookEditor;
-    host.classList.toggle("hidden", !useMonaco || !!this.settings.notebook_preview);
-    text.classList.toggle("hidden", useMonaco || !!this.settings.notebook_preview);
+    host.classList.toggle("hidden", !useMonaco);
+    text.classList.toggle("hidden", useMonaco);
     preview.classList.toggle("hidden", !this.settings.notebook_preview);
     if (this.notebookModel && this.notebookModel.getValue() !== (this.settings.notebook_text || "")) {
       this.notebookModel.setValue(this.settings.notebook_text || "");
@@ -4994,7 +4996,7 @@ class TermdeckApp {
     this.settings.notebook_open = !!open;
     this.renderNotebook();
     this.saveSettings();
-    if (this.settings.notebook_open && options.focus !== false && !this.settings.notebook_preview) {
+    if (this.settings.notebook_open && options.focus !== false) {
       requestAnimationFrame(() => this.focusNotebookEditor());
     }
   }
@@ -6333,7 +6335,7 @@ class TermdeckApp {
     const normalWidth = Number(s.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
     const fileWidth = Math.max(Number(s.files_width) || 0, normalWidth * 2);
     const activeSidebarWidth = filesVisible && s.files_pinned ? fileWidth : normalWidth;
-    const notebookWidth = Math.min(Math.max(fileWidth, 520), Math.max(320, window.innerWidth - 32));
+    const notebookWidth = Math.min(Math.max(fileWidth * 1.6, 760), Math.max(320, window.innerWidth - 32));
     sidebar.style.width = activeSidebarWidth + "px";
     sidebar.style.minWidth = activeSidebarWidth + "px";
     document.documentElement.style.setProperty("--notebook-panel-width", `${notebookWidth}px`);
