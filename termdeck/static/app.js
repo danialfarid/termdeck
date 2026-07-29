@@ -40,6 +40,11 @@ const DESKTOP_KEYBINDINGS = [
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
   { id: "fork-terminal", label: "Fork active terminal", def: "Meta+Shift+b" },
   { id: "restart-terminal", label: "Restart active terminal", def: "Meta+Alt+r" },
+  { id: "rename-terminal", label: "Rename active terminal", def: "Alt+r" },
+  { id: "copy-session-id", label: "Copy active session id", def: "Alt+i" },
+  { id: "mark-terminal-unread", label: "Mark active terminal as unread", def: "Alt+u" },
+  { id: "create-terminal-group-from-active", label: "Create group from active terminal", def: "Alt+Shift+g" },
+  { id: "move-active-to-top", label: "Move active terminal / group to top", def: "Alt+t" },
   { id: "save-file", label: "Save open file", def: "Meta+s" },
   { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp" },
   { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown" },
@@ -3167,15 +3172,16 @@ class TermdeckApp {
     this.addContextItem(menu, this.shortcutLabel("Fork into a new terminal", "fork-terminal"), () => this.forkSession(session), "repo-forked");
     this.addContextItem(menu, this.shortcutLabel("Restart terminal", "restart-terminal"), () => this.restartSession(session.session_id), "refresh");
     this.addContextItem(menu, this.shortcutLabel("Close terminal", "close-item"), () => this.closeSession(session.session_id), "close");
-    this.addContextItem(menu, "Rename terminal", () => this.renameSession(session), "edit");
-    this.addContextItem(menu, "Copy session id", () => this.copyTextToClipboard(session.session_id, "session id copied"), "copy");
-    const unread = this.unreadSessions.has(session.session_id);
-    this.addContextItem(menu, unread ? "Mark as read" : "Mark as unread",
-      () => this.setSessionUnread(session.session_id, !unread), unread ? "eye" : "eye-closed");
-    this.addContextItem(menu, "Create group from this terminal", () => this.createTerminalGroupFromSession(session.session_id), "folder-library");
+    this.addContextItem(menu, this.shortcutLabel("Rename terminal", "rename-terminal"), () => this.renameSession(session), "edit");
+    this.addContextItem(menu, this.shortcutLabel("Copy session id", "copy-session-id"),
+      () => this.copyTextToClipboard(session.session_id, "session id copied"), "copy");
+    this.addContextItem(menu, this.shortcutLabel("Mark as unread", "mark-terminal-unread"),
+      () => this.setSessionUnread(session.session_id, true), "eye-closed");
+    this.addContextItem(menu, this.shortcutLabel("Create group from this terminal", "create-terminal-group-from-active"),
+      () => this.createTerminalGroupFromSession(session.session_id), "folder-library");
     const moveEntries = [
       {
-        label: assignedGroupId ? "Top of group" : "Top of terminals",
+        label: this.shortcutLabel(assignedGroupId ? "Top of group" : "Top of terminals", "move-active-to-top"),
         handler: () => this.moveTerminalLayoutToTop(assignedGroupId ? `group:${assignedGroupId}` : `session:${session.session_id}`),
         icon: "arrow-up",
       },
@@ -7010,6 +7016,22 @@ class TermdeckApp {
     else if (actionId === "close-item") this.closeActiveItem();
     else if (actionId === "fork-terminal") { const s = this.session(this.activeId); if (s) this.forkSession(s); }
     else if (actionId === "restart-terminal") { if (this.activeId) this.restartSession(this.activeId); }
+    else if (actionId === "rename-terminal") { const s = this.session(this.activeId); if (s) this.renameSession(s); }
+    else if (actionId === "copy-session-id") {
+      if (this.activeId) this.copyTextToClipboard(this.activeId, "session id copied");
+    }
+    else if (actionId === "mark-terminal-unread") {
+      if (this.activeId) this.setSessionUnread(this.activeId, true);
+    }
+    else if (actionId === "create-terminal-group-from-active") {
+      if (this.activeId) this.createTerminalGroupFromSession(this.activeId);
+    }
+    else if (actionId === "move-active-to-top") {
+      if (this.activeId) {
+        const assignedGroupId = this.getProjectState().session_groups?.[this.activeId] || "";
+        this.moveTerminalLayoutToTop(assignedGroupId ? `group:${assignedGroupId}` : `session:${this.activeId}`);
+      }
+    }
     else if (actionId === "save-file") { if (this.activeFileKey !== null) this.saveActiveFile(); }
     else if (actionId === "prev-terminal") this.cycleTerminal(-1);
     else if (actionId === "next-terminal") this.cycleTerminal(1);
