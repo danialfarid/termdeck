@@ -129,9 +129,10 @@ class TerminalSessionManager:
             ms = ManagedSession(record)
             self._sessions[record.session_id] = ms
             ms.lazy_start_pending = True
-            saved = self._scrollback_path(record.session_id)
+            saved = TermdeckConfig.SCROLLBACK_DIR / f"{record.session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
             if saved.exists():
                 ms.buffer.extend(saved.read_bytes()[-TermdeckConfig.SCROLLBACK_BYTES:])
+                saved.unlink()
             self._recover_title_from_buffer(ms)
         # Do not launch old terminals merely because the web server came up.
         # Reconcile their dtach sockets instead: live sockets remain running
@@ -245,8 +246,6 @@ class TerminalSessionManager:
             ms.exit_code = TermdeckConfig.EXIT_CODE_SPAWN_FAILED
             self._handle_output(ms, TermdeckConfig.SPAWN_ERROR_TEMPLATE.format(error=spawn_error).encode())
             return
-        if reattach:
-            asyncio.create_task(self._redraw_reattached_terminal(ms, ms.proc))
         if kind is not AgentKind.NONE:
             ms.detect_kind = kind
             ms.detect_baseline = baseline
@@ -271,50 +270,6 @@ class TerminalSessionManager:
         except (subprocess.SubprocessError, OSError):
             return False
         return bool(result.stdout.strip())
-
-    @staticmethod
-    def _scrollback_path(session_id: str) -> Path:
-        return TermdeckConfig.SCROLLBACK_DIR / f"{session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
-
-    def _persist_scrollback(self, ms: ManagedSession) -> None:
-        TermdeckConfig.SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
-        self._scrollback_path(ms.record.session_id).write_bytes(bytes(ms.buffer)[-TermdeckConfig.SCROLLBACK_BYTES:])
-
-    def _append_scrollback_file(self, ms: ManagedSession, durable: bytes) -> None:
-        if not durable:
-            return
-        TermdeckConfig.SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
-        path = self._scrollback_path(ms.record.session_id)
-        with path.open("ab") as handle:
-            handle.write(durable)
-        try:
-            size = path.stat().st_size
-        except OSError:
-            return
-        if size <= TermdeckConfig.SCROLLBACK_BYTES:
-            return
-        with path.open("rb") as handle:
-            handle.seek(max(0, size - TermdeckConfig.SCROLLBACK_BYTES))
-            tail = handle.read()
-        path.write_bytes(tail)
-
-    async def _redraw_reattached_terminal(self, ms: ManagedSession, proc: PtyProcess) -> None:
-        """Force a redraw after attaching a new bridge to an existing dtach session.
-
-        dtach keeps the terminal process alive, but it does not replay the old
-        screen to a newly-created TermDeck server bridge. Full-screen TUIs such
-        as Codex redraw on SIGWINCH; briefly nudging the pty width avoids an
-        empty browser pane while waiting for the next organic output frame.
-        """
-        await asyncio.sleep(0.2)
-        if ms.proc is not proc or not proc.alive:
-            return
-        cols, rows = max(2, ms.cols), max(2, ms.rows)
-        nudged_cols = cols - 1 if cols > 20 else cols + 1
-        proc.resize(nudged_cols, rows)
-        await asyncio.sleep(0.08)
-        if ms.proc is proc and proc.alive:
-            proc.resize(cols, rows)
 
     def _schedule_detection(self, ms: ManagedSession, delay: float) -> None:
         if ms.detect_kind is AgentKind.NONE:
@@ -555,35 +510,13 @@ class TerminalSessionManager:
             position = end + len(end_marker)
             while position < len(data) and data[position] in b"\r\n":
                 position += 1
-        return self._strip_agent_replay_controls(ms, bytes(durable))
+        return bytes(durable)
 
-    def _strip_agent_replay_controls(self, ms: ManagedSession, data: bytes) -> bytes:
-        """Drop cursor-moving controls from agent scrollback/browser replay.
-
-        Codex/Claude can emit screen-local cursor movement outside synchronized
-        update markers. Those controls are useful for an in-place TUI, but in a
-        persistent scrollback renderer they can overwrite already-read rows.
-        Keep SGR color/style codes; strip cursor movement, erases, OSC titles,
-        charset shifts, and single-byte cursor controls only for agent sessions.
-        """
-        if ms.record.agent_kind not in (AgentKind.CODEX.value, AgentKind.CLAUDE.value) or not data:
-            return data
-
-        data = re.sub(rb"\x1b\][^\x07]*(?:\x07|\x1b\\)", b"", data)
-
-        def replace_csi(match: re.Match[bytes]) -> bytes:
-            sequence = match.group(0)
-            return sequence if sequence.endswith(b"m") else b""
-
-        data = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", replace_csi, data)
-        data = re.sub(rb"\x1b[()][0-2A-Za-z]", b"", data)
-        return re.sub(rb"\x1b[78DEHM]", b"", data)
-
-    def _append_collapsing_repaints(self, ms: ManagedSession, data: bytes) -> bytes:
+    def _append_collapsing_repaints(self, ms: ManagedSession, data: bytes) -> None:
         """Append durable terminal history after dropping screen-local TUI repaint frames."""
         durable = self._durable_scrollback_bytes(ms, data)
         if not durable:
-            return b""
+            return
         ms.last_repaint_offset = None
         ms.buffer.extend(durable)
         overflow = len(ms.buffer) - TermdeckConfig.SCROLLBACK_BYTES
@@ -591,8 +524,6 @@ class TerminalSessionManager:
             del ms.buffer[:overflow]
             if ms.last_repaint_offset is not None:
                 ms.last_repaint_offset = max(0, ms.last_repaint_offset - overflow)
-        self._append_scrollback_file(ms, durable)
-        return durable
 
     def _answer_and_strip_color_queries(self, ms: ManagedSession, data: bytes) -> bytes:
         data = ms.osc_query_carry + data
@@ -1198,7 +1129,8 @@ class TerminalSessionManager:
         TermdeckConfig.SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
         for ms in self._sessions.values():
             if ms.buffer:
-                self._persist_scrollback(ms)
+                target = TermdeckConfig.SCROLLBACK_DIR / f"{ms.record.session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
+                target.write_bytes(bytes(ms.buffer))
 
     def list_sessions(self, project: str | None) -> list[dict[str, object]]:
         return [self.session_summary(ms) for ms in self._sessions.values()

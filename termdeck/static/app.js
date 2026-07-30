@@ -38,10 +38,6 @@ const CLOSED_SESSIONS_MAX_DISPLAY = 100;
 const ACTIVITY_SORT_BUCKET_MS = 15 * 60 * 1000;
 const TERMINAL_TAIL_REPAIR_LINES = 16;
 const TERMINAL_ACTIVATION_REFLOW_IDLE_MS = 1200;
-// Large saved scrollback arrives in one WebSocket frame.  Let xterm paint
-// between bounded parser writes so selecting a long-running terminal does not
-// leave the active canvas blank until the entire replay has been consumed.
-const TERMINAL_WRITE_CHUNK_BYTES = 24 * 1024;
 const DESKTOP_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Meta+b" },
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
@@ -5356,6 +5352,9 @@ class TermdeckApp {
         this.scheduleV2Fit(view);
         this.scheduleInitialV2Fit(view);
         if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+        this.scheduleTerminalActivationRepair(view, {
+          forceReflow: this.shouldForceTerminalActivationReflow(view, switchedViews),
+        });
       } else if (previousId !== id) {
         const needsInitialFollow = !view.everConnected || view.awaitingSnapshot || view.replaying;
         if (needsInitialFollow || view.keepBottom) {
@@ -5392,11 +5391,7 @@ class TermdeckApp {
   ensureView(id) {
     if (this.views.has(id)) return this.views.get(id);
     const container = document.createElement("div");
-    // ensureView is only called by activate(). xterm measures synchronously
-    // in open(), so give a newly selected tab a real box before open() rather
-    // than creating its renderer under display:none and waiting for a later
-    // browser refresh or sidebar resize to repair it.
-    container.className = "term-container visible";
+    container.className = "term-container";
     this.$("terminal-area").appendChild(container);
     const term = new Terminal({
       fontSize: this.settings.terminal_font_size, fontFamily: '"SF Mono", Menlo, monospace', letterSpacing: -0.2, theme: this.termTheme(),
@@ -6069,12 +6064,14 @@ class TermdeckApp {
       // FitAddon is the public xterm sizing mechanism. v2 never writes to
       // .xterm-viewport or .xterm-scroll-area; xterm owns its scrollbar.
       view.fit.fit();
-      // Keep activation repair boring: fit the visible xterm, refresh its
-      // current rows, and send the final PTY size. The previous forced
-      // right-edge nudge/private renderer reset could leave the canvas layer
-      // blank after tab/project switches.
+      // A terminal may have been painted while its container was hidden or
+      // at its pre-flex width. Refresh after the settled fit so the canvas
+      // and text colors are repainted together with the final geometry.
       const forceResize = view.forceResizeAfterFit;
-      if (forceResize) view.forceResizeAfterFit = false;
+      if (forceResize) {
+        view.forceResizeAfterFit = false;
+        if (this.forceVisibleTerminalReflow(view)) return;
+      }
       this.refreshTerminalAppearance(view, forceResize);
       if (forceResize && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
       if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
@@ -6363,22 +6360,7 @@ class TermdeckApp {
 
   queueTerminalWrite(view, data, afterWrite = null) {
     if (!view || view.closed) return;
-    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    if (!bytes.byteLength) {
-      view.outputQueue.push({ data: bytes, afterWrite, generation: view.outputWriteGeneration });
-      this.drainTerminalWrites(view);
-      return;
-    }
-    for (let offset = 0; offset < bytes.byteLength; offset += TERMINAL_WRITE_CHUNK_BYTES) {
-      const end = Math.min(bytes.byteLength, offset + TERMINAL_WRITE_CHUNK_BYTES);
-      view.outputQueue.push({
-        data: bytes.slice(offset, end),
-        // The snapshot completion callback is meaningful only once every
-        // ordered piece has reached xterm's buffer.
-        afterWrite: end === bytes.byteLength ? afterWrite : null,
-        generation: view.outputWriteGeneration,
-      });
-    }
+    view.outputQueue.push({ data, afterWrite, generation: view.outputWriteGeneration });
     this.drainTerminalWrites(view);
   }
 
@@ -6399,6 +6381,7 @@ class TermdeckApp {
         view.needsViewportRepair = false;
         this.repairTerminalViewport(view);
       }
+      if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleTerminalTailRepair(view);
       this.drainTerminalWrites(view);
     });
   }
@@ -6428,6 +6411,12 @@ class TermdeckApp {
     if (!view || !view.term) return;
     view.term.options.theme = { ...this.termTheme() };
     if (typeof view.term.clearTextureAtlas === "function") view.term.clearTextureAtlas();
+    const renderService = view.term._core?._renderService;
+    if (forceResize && renderService) {
+      if (typeof renderService.clear === "function") renderService.clear();
+      if (typeof renderService.handleResize === "function") renderService.handleResize(view.term.cols, view.term.rows);
+      else if (view.term._core?.resize) view.term._core.resize(view.term.cols, view.term.rows);
+    }
     this.refreshTerminal(view);
   }
 
