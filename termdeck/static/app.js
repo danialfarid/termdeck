@@ -47,6 +47,7 @@ const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
 // it. Spreading them out keeps the same retry-safety property (still self-corrects a resize the server
 // silently dropped) while cutting how often two land close enough together to overlap a single redraw.
 const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [150, 800, 2000];
+const TERMINAL_DEBUG_SNAPSHOT_LIMIT = 50;
 const DESKTOP_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Meta+b" },
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
@@ -5999,7 +6000,7 @@ class TermdeckApp {
       buf: this.terminalBufferVisibleTailLines(view, 15),
       dom: this.terminalRenderedTailLines(view, 15),
     });
-    if (view.debugSnapshots.length > 5) view.debugSnapshots.shift();
+    if (view.debugSnapshots.length > TERMINAL_DEBUG_SNAPSHOT_LIMIT) view.debugSnapshots.shift();
   }
 
   // TEMPORARY diagnostic overlay for the Claude-only composer-wrap-on-refocus bug: shows the active
@@ -6012,7 +6013,7 @@ class TermdeckApp {
     const box = document.createElement("div");
     box.id = "td-debug-size-overlay";
     Object.assign(box.style, {
-      position: "fixed", bottom: "4px", left: "4px", zIndex: 99999, color: "#0f0",
+      position: "fixed", top: "4px", right: "4px", zIndex: 99999, color: "#0f0",
       background: "rgba(0,0,0,0.9)", padding: "4px 8px", borderRadius: "4px", cursor: "text",
       userSelect: "text", WebkitUserSelect: "text", maxWidth: "44vw", maxHeight: "70vh", overflow: "auto",
     });
