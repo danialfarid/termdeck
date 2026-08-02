@@ -6555,46 +6555,33 @@ class TermdeckApp {
   }
 
   forceVisibleTerminalReflow(view) {
-    if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
-        !view.container.classList.contains("visible")) return false;
+    if (!view || view.closed || view.v2ForcedReflowFrame || !view.container.classList.contains("visible")) return false;
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return false;
-    const clientNudge = true;
-    const computed = clientNudge ? window.getComputedStyle(view.container) : null;
-    const originalRight = clientNudge ? view.container.style.right : "";
-    const right = clientNudge ? Number.parseFloat(computed.right) : 0;
-    const cellWidth = clientNudge ? Number(view.term._core?._renderService?.dimensions?.css?.cell?.width) || 8 : 0;
-    const nudgeRight = clientNudge ? (Number.isFinite(right) ? right : 4) + Math.max(Math.ceil(cellWidth * 2), 14) : 0;
     const restoreLine = view.term.buffer.active.viewportY;
     const follow = view.scrollMode === "follow";
-    view.suppressResizeToServer = true;
     view.v2Programmatic = true;
     view.v2ForcedReflowFrame = requestAnimationFrame(() => {
       view.v2ForcedReflowFrame = 0;
       if (view.closed || !view.container.classList.contains("visible")) {
-        view.suppressResizeToServer = false;
         view.v2Programmatic = false;
         return;
       }
-      if (clientNudge) view.container.style.right = `${nudgeRight}px`;
-      view.fit.fit();
+      // A pure repaint, deliberately WITHOUT ever touching cols/rows. This used to nudge the
+      // container's CSS width to force a real xterm resize down and back up, suppressed from
+      // reaching the server so the CLI never saw it. But xterm's resize-driven reflow can
+      // PERMANENTLY mis-rewrap already-wrapped rows (box-drawing characters especially) even for a
+      // resize that only ever happens client-side -- confirmed via a live debug capture showing a
+      // 104->102->104 xterm-only bounce (never sent to the server: suppressResizeToServer was true
+      // throughout) leave a horizontal composer rule permanently split across two rows afterward.
+      // refreshTerminalAppearance(view, true) already clears and re-runs the render service against
+      // the CURRENT (unchanged) cols/rows -- a full glyph repaint with no call into resize()/reflow(),
+      // so there is nothing for xterm to fail to perfectly undo.
       this.refreshTerminalAppearance(view, true);
-      view.v2ForcedReflowRestoreFrame = requestAnimationFrame(() => {
-        view.v2ForcedReflowRestoreFrame = 0;
-        if (!view.closed) {
-          if (clientNudge) view.container.style.right = originalRight;
-          if (view.container.classList.contains("visible")) {
-            view.fit.fit();
-            this.refreshTerminalAppearance(view, true);
-            if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
-            if (follow) this.scrollTerminalV2ToBottom(view);
-            else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
-          }
-        }
-        view.suppressResizeToServer = false;
-        queueMicrotask(() => {
-          if (!view.closed) view.v2Programmatic = false;
-        });
+      if (follow) this.scrollTerminalV2ToBottom(view);
+      else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+      queueMicrotask(() => {
+        if (!view.closed) view.v2Programmatic = false;
       });
     });
     return true;
