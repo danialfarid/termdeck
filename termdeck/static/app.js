@@ -5456,7 +5456,7 @@ class TermdeckApp {
                    suppressResizeToServer: false, resyncResizeRepairPending: false,
                    hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
                    tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
-                   lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [],
+                   lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [], codexReflowFollowupTimer: 0,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
@@ -5720,8 +5720,14 @@ class TermdeckApp {
           if (v2 && view.container.classList.contains("visible")) {
             view.forceResizeAfterFit = true;
             this.scheduleV2Fit(view);
-          }
-          if (view.resyncResizeRepairPending && view.container.classList.contains("visible")) {
+          } else if (view.resyncResizeRepairPending && view.container.classList.contains("visible")) {
+            // Legacy (non-V2) scroll mode has no equivalent post-snapshot repaint trigger above, so it
+            // still needs resync's own scheduled repair. V2 mode does NOT reach here (the branch above
+            // already re-triggers forceVisibleTerminalReflow at exactly this moment, the same path a
+            // plain page refresh goes through) -- calling both raced them: the older, timer-based
+            // scheduleTerminalResizeRepair could fire the codex nudge before this reconnect had actually
+            // delivered any content, nudging an empty buffer and leaving a tab that was showing content
+            // black. See resyncActiveTerminal.
             view.resyncResizeRepairPending = false;
             this.scheduleTerminalResizeRepair(view);
           }
@@ -6103,15 +6109,23 @@ class TermdeckApp {
     // wrapped output was painted against stale dimensions. Treat the button
     // like a sidebar resize so FitAddon remeasures the visible terminal,
     // repaints it, and sends the corrected PTY size.
-    if (this.isTerminalScrollV2()) view.scrollMode = "follow";
+    const v2 = this.isTerminalScrollV2();
+    if (v2) view.scrollMode = "follow";
     else {
       view.keepBottom = true;
       view.pinBottomUntil = Date.now() + 8000;
     }
     view.term.reset();
-    view.resyncResizeRepairPending = true;
+    // V2 mode gets its repaint trigger for free once the forced reconnect below actually delivers a
+    // snapshot (connect()'s post-replay callback), the same path a plain page refresh goes through --
+    // scheduling it again here, before that reconnect has even started, used to race it and could nudge
+    // an empty buffer instead of the real one. Legacy mode has no equivalent hook, so it still needs
+    // this scheduled directly.
+    if (!v2) {
+      view.resyncResizeRepairPending = true;
+      this.scheduleTerminalResizeRepair(view);
+    }
     this.applySettings();
-    this.scheduleTerminalResizeRepair(view);
     this.$("status-name").textContent = "resyncing terminal…";
     const ws = view.ws;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -6498,7 +6512,27 @@ class TermdeckApp {
   forceVisibleTerminalReflow(view) {
     if (localStorage.getItem("td-debug-reflow-mode") === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     const kind = this.session(view.sessionId)?.agent_kind;
-    return kind === "codex" ? this.forceVisibleTerminalReflowViaResizeNudge(view, 2) : this.forceVisibleTerminalReflowViaClear(view);
+    if (kind !== "codex") return this.forceVisibleTerminalReflowViaClear(view);
+    const result = this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
+    this.scheduleCodexReflowFollowup(view);
+    return result;
+  }
+
+  // Codex still sometimes shows only its last few scrollback lines after a fresh connect (~10-20% of
+  // tries, reported) -- likely a timing race, not necessarily missing data: this nudge fires as soon as
+  // the client's snapshot replay completes, which can be BEFORE the SERVER's own repair
+  // (_force_screen_repaint in session_manager.py, ~0.35-0.43s delayed, gated on <256 bytes of other
+  // output having arrived) has actually finished getting codex to redraw its full screen. A single
+  // bounded follow-up well after that server-side window should have closed gives it a second chance,
+  // without turning this into a standing poll -- deliberately does not reschedule itself again.
+  scheduleCodexReflowFollowup(view) {
+    if (!view || view.closed) return;
+    clearTimeout(view.codexReflowFollowupTimer);
+    view.codexReflowFollowupTimer = setTimeout(() => {
+      view.codexReflowFollowupTimer = 0;
+      if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
+      this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
+    }, 1500);
   }
 
   forceVisibleTerminalReflowViaClear(view) {
@@ -6698,6 +6732,7 @@ class TermdeckApp {
     clearTimeout(view.manualScrollReleaseTimer);
     clearTimeout(view.scrollSettleTimer);
     clearTimeout(view.resizeRepairTimer);
+    clearTimeout(view.codexReflowFollowupTimer);
     if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
     if (view.viewportRepairFrame) cancelAnimationFrame(view.viewportRepairFrame);
     if (view.v2ViewportSyncFrame) cancelAnimationFrame(view.v2ViewportSyncFrame);
