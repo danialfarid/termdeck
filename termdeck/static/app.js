@@ -5565,7 +5565,10 @@ class TermdeckApp {
       return this.handleTerminalEditingKeys(view, e);
     });
     term.onData((data) => this.sendTrackedInput(view, data));
-    term.onResize(({ cols, rows }) => { if (!view.suppressResizeToServer) this.sendResize(view, cols, rows); });
+    term.onResize(({ cols, rows }) => {
+      this.captureDebugSnapshot(view, `term.onResize ${cols}x${rows}${view.suppressResizeToServer ? " (suppressed)" : ""}`);
+      if (!view.suppressResizeToServer) this.sendResize(view, cols, rows);
+    });
     term.onScroll(() => {
       if (!view.container.classList.contains("visible")) return;
       if (this.isTerminalScrollV2()) {
@@ -5996,7 +5999,7 @@ class TermdeckApp {
     if (!view || view.closed) return;
     view.debugSnapshots = view.debugSnapshots || [];
     view.debugSnapshots.push({
-      trigger, ts: Date.now(),
+      trigger, ts: Date.now(), cols: view.term.cols, rows: view.term.rows,
       buf: this.terminalBufferVisibleTailLines(view, 15),
       dom: this.terminalRenderedTailLines(view, 15),
     });
@@ -6097,15 +6100,18 @@ class TermdeckApp {
       const parts = [`--- last ${snapshots.length} snapshots (buf=xterm buffer, dom=painted rows) ---`];
       snapshots.forEach((snap, i) => {
         const bufDomMismatch = snap.buf.join("\n") !== snap.dom.join("\n");
-        parts.push(`#${i} +${snap.ts - (snapshots[0]?.ts || snap.ts)}ms trigger=${snap.trigger}` +
+        const prev = i > 0 ? snapshots[i - 1] : null;
+        const colsChanged = prev && (prev.cols !== snap.cols || prev.rows !== snap.rows);
+        parts.push(`#${i} +${snap.ts - (snapshots[0]?.ts || snap.ts)}ms trigger=${snap.trigger} cols/rows=${snap.cols}x${snap.rows}` +
+                   (colsChanged ? ` *** was ${prev.cols}x${prev.rows} ***` : "") +
                    (bufDomMismatch ? "  *** buf!=dom (repaint bug) ***" : "  buf==dom"));
         if (bufDomMismatch) {
           parts.push(" buf-vs-dom diff:");
           parts.push(diffLines(snap.buf, snap.dom));
         }
-        if (i > 0) {
+        if (prev) {
           parts.push(` buf vs snapshot #${i - 1}:`);
-          parts.push(diffLines(snapshots[i - 1].buf, snap.buf));
+          parts.push(diffLines(prev.buf, snap.buf));
         }
       });
       diff.textContent = parts.join("\n");
