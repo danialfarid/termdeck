@@ -54,7 +54,14 @@ class ManagedSession:
         self.osc_query_carry = b""
         self.last_repaint_offset: int | None = None
         self.scrollback_sync_carry = b""
-        self.screen_lives_only_in_stripped_sync_frames = False
+        # Codex/Claude paint their screen inside synchronized-update frames that _durable_scrollback_bytes
+        # strips, so their durable buffer never holds a full screen — true from the first byte, not just
+        # once this process has watched a strip happen. A session that has sat idle since the last server
+        # restart (buffer non-empty, but nothing new witnessed yet) would otherwise never get a repaint on
+        # attach in attach_client, and would stay stuck on stale content until unrelated new output flips
+        # this flag by coincidence.
+        self.screen_lives_only_in_stripped_sync_frames = record.agent_kind in (AgentKind.CODEX.value,
+                                                                                AgentKind.CLAUDE.value)
         self.screen_repaint_task: asyncio.Task | None = None
         self.draft_tracker = DraftInputTracker(record.draft)
         self.last_input_monotonic = 0.0
