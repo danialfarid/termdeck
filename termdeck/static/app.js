@@ -41,7 +41,12 @@ const TERMINAL_ACTIVATION_REFLOW_IDLE_MS = 1200;
 const OPEN_FILES_MAX_ENTRIES = 80;
 const TERMINAL_V2_FIT_RETRY_LIMIT = 32;
 const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
-const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [80, 250, 600, 1200, 2200];
+// Three checks, well spread out, not five packed inside the first 600ms: each forced resize is a real
+// SIGWINCH even when nothing actually changed (see scheduleActiveTerminalSettleWatchdog), and a tight
+// burst of those landing while an agent CLI is mid-redraw of a multi-line composer can visibly corrupt
+// it. Spreading them out keeps the same retry-safety property (still self-corrects a resize the server
+// silently dropped) while cutting how often two land close enough together to overlap a single redraw.
+const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [150, 800, 2000];
 const DESKTOP_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Meta+b" },
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
