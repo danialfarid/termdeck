@@ -6588,6 +6588,12 @@ class TermdeckApp {
   // TEMPORARY A/B dispatcher for the Claude composer-wrap fix -- see the debug overlay's mode select.
   // Collapse back to whichever single implementation wins once confirmed safe for both claude and codex.
   forceVisibleTerminalReflow(view) {
+    // ~20% of codex "auto" attempts reportedly still leave only the last few lines visible with the
+    // rest of history gone -- if xterm's OWN buffer already lacks that content (not just failing to
+    // paint it), no client-side repaint trick can fix it; that would point back at the server-side
+    // scrollback replay instead. Tag the moment this runs so the debug overlay's next snapshot can be
+    // compared against it.
+    this.captureDebugSnapshot(view, "forceVisibleTerminalReflow:start");
     if (this.debugReflowMode === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     if (this.debugReflowMode === "auto") {
       // Neither implementation alone satisfies both CLIs: clear-only leaves codex's stale paint stuck,
