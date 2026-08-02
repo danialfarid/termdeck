@@ -6033,16 +6033,24 @@ class TermdeckApp {
     // collapsible body) so it can be flipped without needing the overlay expanded. Lets a regression
     // suspected to be a side effect of dropping the nudge -- e.g. a black codex tab that the old nudge
     // happened to also repaint -- be tested against the original behavior without another deploy cycle.
-    const nudgeLabel = document.createElement("label");
-    Object.assign(nudgeLabel.style, { display: "flex", alignItems: "center", gap: "3px", cursor: "pointer" });
-    const nudgeCheckbox = document.createElement("input");
-    nudgeCheckbox.type = "checkbox";
-    nudgeCheckbox.checked = false;
-    nudgeCheckbox.addEventListener("change", () => {
-      this.debugUseResizeNudgeReflow = nudgeCheckbox.checked;
-      console.log("[td-debug] forceVisibleTerminalReflow mode:", this.debugUseResizeNudgeReflow ? "resize-nudge (old)" : "clear-only (new)");
+    const modeSelect = document.createElement("select");
+    Object.assign(modeSelect.style, { font: "10px monospace" });
+    [
+      ["clear", "clear-only (new, fixes claude, codex black)"],
+      ["nudge", "resize-nudge (old, fixes codex, claude wraps)"],
+      ["growNudge", "grow-nudge (test: widen then restore)"],
+    ].forEach(([value, label]) => {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = label;
+      modeSelect.appendChild(opt);
     });
-    nudgeLabel.append(nudgeCheckbox, document.createTextNode("old resize-nudge"));
+    this.debugReflowMode = "clear";
+    modeSelect.value = this.debugReflowMode;
+    modeSelect.addEventListener("change", () => {
+      this.debugReflowMode = modeSelect.value;
+      console.log("[td-debug] forceVisibleTerminalReflow mode:", this.debugReflowMode);
+    });
     const toggle = document.createElement("span");
     let collapsed = false;
     const body = document.createElement("div");
@@ -6051,7 +6059,7 @@ class TermdeckApp {
       toggle.textContent = collapsed ? "▸ expand" : "▾ collapse";
     };
     toggle.addEventListener("click", () => { collapsed = !collapsed; applyCollapsed(); });
-    header.append(title, nudgeLabel, toggle);
+    header.append(title, modeSelect, toggle);
     header.addEventListener("click", (e) => { if (e.target === header || e.target === title) { collapsed = !collapsed; applyCollapsed(); } });
     const stats = document.createElement("div");
     Object.assign(stats.style, { font: "11px/1.4 ui-monospace, monospace", whiteSpace: "pre" });
@@ -6570,12 +6578,12 @@ class TermdeckApp {
     });
   }
 
-  // TEMPORARY A/B dispatcher for the Claude composer-wrap fix -- see the debug overlay's "old
-  // resize-nudge" checkbox. Collapse back to just the clear-only body once confirmed safe for codex too.
+  // TEMPORARY A/B dispatcher for the Claude composer-wrap fix -- see the debug overlay's mode select.
+  // Collapse back to whichever single implementation wins once confirmed safe for both claude and codex.
   forceVisibleTerminalReflow(view) {
-    return this.debugUseResizeNudgeReflow
-      ? this.forceVisibleTerminalReflowViaResizeNudge(view)
-      : this.forceVisibleTerminalReflowViaClear(view);
+    if (this.debugReflowMode === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view);
+    if (this.debugReflowMode === "growNudge") return this.forceVisibleTerminalReflowViaGrowNudge(view);
+    return this.forceVisibleTerminalReflowViaClear(view);
   }
 
   forceVisibleTerminalReflowViaClear(view) {
@@ -6623,6 +6631,60 @@ class TermdeckApp {
     const right = Number.parseFloat(computed.right);
     const cellWidth = Number(view.term._core?._renderService?.dimensions?.css?.cell?.width) || 8;
     const nudgeRight = (Number.isFinite(right) ? right : 4) + Math.max(Math.ceil(cellWidth * 2), 14);
+    const restoreLine = view.term.buffer.active.viewportY;
+    const follow = view.scrollMode === "follow";
+    view.suppressResizeToServer = true;
+    view.v2Programmatic = true;
+    view.v2ForcedReflowFrame = requestAnimationFrame(() => {
+      view.v2ForcedReflowFrame = 0;
+      if (view.closed || !view.container.classList.contains("visible")) {
+        view.suppressResizeToServer = false;
+        view.v2Programmatic = false;
+        return;
+      }
+      view.container.style.right = `${nudgeRight}px`;
+      view.fit.fit();
+      this.refreshTerminalAppearance(view, true);
+      view.v2ForcedReflowRestoreFrame = requestAnimationFrame(() => {
+        view.v2ForcedReflowRestoreFrame = 0;
+        if (!view.closed) {
+          view.container.style.right = originalRight;
+          if (view.container.classList.contains("visible")) {
+            view.fit.fit();
+            this.refreshTerminalAppearance(view, true);
+            if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
+            if (follow) this.scrollTerminalV2ToBottom(view);
+            else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+          }
+        }
+        view.suppressResizeToServer = false;
+        queueMicrotask(() => {
+          if (!view.closed) view.v2Programmatic = false;
+        });
+      });
+    });
+    return true;
+  }
+
+  // TEST candidate: nudge WIDER first (right inset decreases) instead of narrower, then restore. The
+  // theory behind ...ViaResizeNudge's codex fix, if real, must come from an actual term.resize() call
+  // (xterm's core resize() and FitAddon.fit() both no-op when cols/rows are unchanged -- there is no way
+  // to force xterm's real reflow pipeline to run without an actual size change at some point). Shrinking
+  // first forces already-fitting content to WRAP, then relies on xterm correctly UN-wrapping it back on
+  // restore -- and that un-wrap step is exactly what corrupted Claude's composer. Growing first can only
+  // ever leave already-fitting content alone (nothing needs to wrap into a wider terminal); the shrink
+  // back down to the ORIGINAL size then computes wrapping the normal way, the same as if the terminal had
+  // simply started at that size, not as a reconstruction of a previous wrap state.
+  forceVisibleTerminalReflowViaGrowNudge(view) {
+    if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
+        !view.container.classList.contains("visible")) return false;
+    const rect = view.container.getBoundingClientRect();
+    if (rect.width < 40 || rect.height < 40) return false;
+    const computed = window.getComputedStyle(view.container);
+    const originalRight = view.container.style.right;
+    const right = Number.parseFloat(computed.right);
+    const cellWidth = Number(view.term._core?._renderService?.dimensions?.css?.cell?.width) || 8;
+    const nudgeRight = Math.max(0, (Number.isFinite(right) ? right : 4) - Math.max(Math.ceil(cellWidth * 2), 14));
     const restoreLine = view.term.buffer.active.viewportY;
     const follow = view.scrollMode === "follow";
     view.suppressResizeToServer = true;
