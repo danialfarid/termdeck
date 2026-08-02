@@ -6035,9 +6035,11 @@ class TermdeckApp {
     // happened to also repaint -- be tested against the original behavior without another deploy cycle.
     const modeSelect = document.createElement("select");
     Object.assign(modeSelect.style, { font: "10px monospace" });
+    const REFLOW_MODES = ["clear", "nudge", "nudge1"];
     [
       ["clear", "clear-only (new, fixes claude, codex black)"],
-      ["nudge", "resize-nudge (old, fixes codex, claude wraps)"],
+      ["nudge", "resize-nudge 2col (old, fixes codex, claude wraps)"],
+      ["nudge1", "resize-nudge 1col (test)"],
     ].forEach(([value, label]) => {
       const opt = document.createElement("option");
       opt.value = value;
@@ -6049,7 +6051,7 @@ class TermdeckApp {
     // chance to touch the dropdown otherwise) rather than only refocus/tab-switch behavior.
     const REFLOW_MODE_STORAGE_KEY = "td-debug-reflow-mode";
     const storedMode = localStorage.getItem(REFLOW_MODE_STORAGE_KEY);
-    this.debugReflowMode = ["clear", "nudge"].includes(storedMode) ? storedMode : "clear";
+    this.debugReflowMode = REFLOW_MODES.includes(storedMode) ? storedMode : "clear";
     modeSelect.value = this.debugReflowMode;
     modeSelect.addEventListener("change", () => {
       this.debugReflowMode = modeSelect.value;
@@ -6586,7 +6588,8 @@ class TermdeckApp {
   // TEMPORARY A/B dispatcher for the Claude composer-wrap fix -- see the debug overlay's mode select.
   // Collapse back to whichever single implementation wins once confirmed safe for both claude and codex.
   forceVisibleTerminalReflow(view) {
-    if (this.debugReflowMode === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view);
+    if (this.debugReflowMode === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
+    if (this.debugReflowMode === "nudge1") return this.forceVisibleTerminalReflowViaResizeNudge(view, 1);
     return this.forceVisibleTerminalReflowViaClear(view);
   }
 
@@ -6625,7 +6628,10 @@ class TermdeckApp {
 
   // Original implementation, kept only for the A/B toggle: nudges the container narrower by ~2 cols
   // via CSS then restores, forcing a real (client-only, never sent to the server) xterm resize cycle.
-  forceVisibleTerminalReflowViaResizeNudge(view) {
+  // nudgeCols: how many columns narrower to go before restoring. The original value (2) is exactly
+  // wide enough to catch a composer's horizontal rule right at its wrap boundary; testing whether 1
+  // column is still enough to unstick a stale codex paint without landing on that boundary.
+  forceVisibleTerminalReflowViaResizeNudge(view, nudgeCols = 2) {
     if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
         !view.container.classList.contains("visible")) return false;
     const rect = view.container.getBoundingClientRect();
@@ -6634,7 +6640,7 @@ class TermdeckApp {
     const originalRight = view.container.style.right;
     const right = Number.parseFloat(computed.right);
     const cellWidth = Number(view.term._core?._renderService?.dimensions?.css?.cell?.width) || 8;
-    const nudgeRight = (Number.isFinite(right) ? right : 4) + Math.max(Math.ceil(cellWidth * 2), 14);
+    const nudgeRight = (Number.isFinite(right) ? right : 4) + Math.max(Math.ceil(cellWidth * nudgeCols), 7 * nudgeCols);
     const restoreLine = view.term.buffer.active.viewportY;
     const follow = view.scrollMode === "follow";
     view.suppressResizeToServer = true;
