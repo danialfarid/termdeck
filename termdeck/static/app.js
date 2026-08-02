@@ -5983,40 +5983,85 @@ class TermdeckApp {
       view.ws.send(JSON.stringify({ type: "resize", cols, rows }));
       view.debugLastResizeSentAtMs = Date.now();
       view.debugResizeSendCount = (view.debugResizeSendCount || 0) + 1;
+      this.captureDebugSnapshot(view, "resize");
     }
   }
 
+  // Keeps the last DEBUG_SNAPSHOT_LIMIT {trigger, ts, buf, dom} entries per view. buf is xterm's own
+  // logical buffer tail (what SHOULD be on screen); dom is the actually-painted rows. If they ever
+  // disagree, that is a termdeck repaint bug; if buf itself changes content across snapshots with cols
+  // unchanged, the CLI genuinely redrew differently -- the two rule each other in or out.
+  captureDebugSnapshot(view, trigger) {
+    if (!view || view.closed) return;
+    view.debugSnapshots = view.debugSnapshots || [];
+    view.debugSnapshots.push({
+      trigger, ts: Date.now(),
+      buf: this.terminalBufferVisibleTailLines(view, 15),
+      dom: this.terminalRenderedTailLines(view, 15),
+    });
+    if (view.debugSnapshots.length > 5) view.debugSnapshots.shift();
+  }
+
   // TEMPORARY diagnostic overlay for the Claude-only composer-wrap-on-refocus bug: shows the active
-  // terminal's live cols/rows against what was last actually sent to the server, so a real cmd+tab
-  // app-switch-and-back can be watched for whether the terminal genuinely resizes (this file's own
-  // doing) versus the composer corrupting with an unchanged size (points elsewhere, e.g. focus-report
-  // escape sequences xterm sends natively on textarea blur/focus, independent of any resize at all).
+  // terminal's live cols/rows against what was last actually sent to the server (already ruled out --
+  // neither ever changes), plus a rolling history of buffer-vs-rendered-DOM snapshots taken on every
+  // resize send and around window blur/focus, diffed against the previous snapshot, to see whether the
+  // CLI's own output content changes across a refocus or whether termdeck just fails to paint it.
   // Safe to delete once the bug is root-caused; purely additive, touches no resize/repaint logic.
   installTerminalSizeDebugOverlay() {
     const box = document.createElement("div");
     box.id = "td-debug-size-overlay";
     Object.assign(box.style, {
-      position: "fixed", bottom: "4px", left: "4px", zIndex: 99999,
-      font: "11px/1.4 ui-monospace, monospace", color: "#0f0", background: "rgba(0,0,0,0.85)",
-      padding: "4px 8px", borderRadius: "4px", whiteSpace: "pre", cursor: "text",
-      userSelect: "text", WebkitUserSelect: "text", maxWidth: "40vw", overflow: "auto",
+      position: "fixed", bottom: "4px", left: "4px", zIndex: 99999, color: "#0f0",
+      background: "rgba(0,0,0,0.9)", padding: "4px 8px", borderRadius: "4px", cursor: "text",
+      userSelect: "text", WebkitUserSelect: "text", maxWidth: "44vw", maxHeight: "70vh", overflow: "auto",
     });
+    const stats = document.createElement("div");
+    Object.assign(stats.style, { font: "11px/1.4 ui-monospace, monospace", whiteSpace: "pre" });
+    const diff = document.createElement("div");
+    Object.assign(diff.style, { font: "9.5px/1.3 ui-monospace, monospace", whiteSpace: "pre", marginTop: "4px", color: "#8f8" });
+    box.append(stats, diff);
     document.body.appendChild(box);
+    const captureActive = (trigger) => {
+      const view = this.views.get(this.activeId);
+      if (view) this.captureDebugSnapshot(view, trigger);
+    };
     let blurredAtMs = 0;
-    window.addEventListener("blur", () => { blurredAtMs = Date.now(); console.log("[td-debug] window blur", blurredAtMs); });
-    window.addEventListener("focus", () => console.log("[td-debug] window focus", Date.now(), "wasBlurredForMs", Date.now() - blurredAtMs));
-    // Overwriting textContent every tick would blow away a selection mid-drag or after release, right
-    // when the point is to select it and compare. Skip the refresh while the selection lives in the box.
+    window.addEventListener("blur", () => {
+      blurredAtMs = Date.now();
+      console.log("[td-debug] window blur", blurredAtMs);
+      captureActive("blur");
+      setTimeout(() => captureActive("blur+300ms"), 300);
+    });
+    window.addEventListener("focus", () => {
+      console.log("[td-debug] window focus", Date.now(), "wasBlurredForMs", Date.now() - blurredAtMs);
+      captureActive("focus");
+      setTimeout(() => captureActive("focus+300ms"), 300);
+      setTimeout(() => captureActive("focus+1000ms"), 1000);
+    });
+    const diffLines = (before, after) => {
+      const count = Math.max(before.length, after.length);
+      const out = [];
+      for (let i = 0; i < count; i++) {
+        if ((before[i] || "") !== (after[i] || "")) {
+          out.push(`  L${i}: ${JSON.stringify(before[i] || "")}`);
+          out.push(`     -> ${JSON.stringify(after[i] || "")}`);
+        }
+      }
+      return out.length ? out.join("\n") : "  (no change)";
+    };
+    // Overwriting text every tick would blow away a selection mid-drag or after release, right when
+    // the point is to select it and compare. Skip the refresh while the selection lives in the box.
     const render = () => {
       const selection = window.getSelection();
       if (selection && !selection.isCollapsed && box.contains(selection.anchorNode)) return;
       const view = this.views.get(this.activeId);
-      if (!view || view.closed) { box.textContent = "td-debug: no active terminal"; return; }
+      if (!view || view.closed) { stats.textContent = "td-debug: no active terminal"; diff.textContent = ""; return; }
       const rect = view.container.getBoundingClientRect();
       const helper = view.container.querySelector(".xterm-helper-textarea");
       const now = Date.now();
       const sinceResize = view.debugLastResizeSentAtMs ? now - view.debugLastResizeSentAtMs : null;
-      box.textContent = [
+      stats.textContent = [
         `capturedAt=${new Date(now).toLocaleTimeString()}.${String(now % 1000).padStart(3, "0")}`,
         `session=${view.sessionId}`,
         `term.cols/rows=${view.term.cols}x${view.term.rows}`,
@@ -6028,6 +6073,22 @@ class TermdeckApp {
         `documentHidden=${document.hidden}`,
         `documentHasFocus=${document.hasFocus()}`,
       ].join("\n");
+      const snapshots = view.debugSnapshots || [];
+      const parts = [`--- last ${snapshots.length} snapshots (buf=xterm buffer, dom=painted rows) ---`];
+      snapshots.forEach((snap, i) => {
+        const bufDomMismatch = snap.buf.join("\n") !== snap.dom.join("\n");
+        parts.push(`#${i} +${snap.ts - (snapshots[0]?.ts || snap.ts)}ms trigger=${snap.trigger}` +
+                   (bufDomMismatch ? "  *** buf!=dom (repaint bug) ***" : "  buf==dom"));
+        if (bufDomMismatch) {
+          parts.push(" buf-vs-dom diff:");
+          parts.push(diffLines(snap.buf, snap.dom));
+        }
+        if (i > 0) {
+          parts.push(` buf vs snapshot #${i - 1}:`);
+          parts.push(diffLines(snapshots[i - 1].buf, snap.buf));
+        }
+      });
+      diff.textContent = parts.join("\n");
     };
     setInterval(render, 500);
     render();
