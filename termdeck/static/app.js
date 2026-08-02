@@ -6027,6 +6027,22 @@ class TermdeckApp {
     });
     const title = document.createElement("span");
     title.textContent = "td-debug";
+    // A/B switch between the new resize-free repaint (forceVisibleTerminalReflowViaClear) and the
+    // original CSS-width-nudge repaint (forceVisibleTerminalReflowViaResizeNudge) that caused the
+    // Claude composer wrap. Global, not per-view, and lives in the always-visible header (not the
+    // collapsible body) so it can be flipped without needing the overlay expanded. Lets a regression
+    // suspected to be a side effect of dropping the nudge -- e.g. a black codex tab that the old nudge
+    // happened to also repaint -- be tested against the original behavior without another deploy cycle.
+    const nudgeLabel = document.createElement("label");
+    Object.assign(nudgeLabel.style, { display: "flex", alignItems: "center", gap: "3px", cursor: "pointer" });
+    const nudgeCheckbox = document.createElement("input");
+    nudgeCheckbox.type = "checkbox";
+    nudgeCheckbox.checked = false;
+    nudgeCheckbox.addEventListener("change", () => {
+      this.debugUseResizeNudgeReflow = nudgeCheckbox.checked;
+      console.log("[td-debug] forceVisibleTerminalReflow mode:", this.debugUseResizeNudgeReflow ? "resize-nudge (old)" : "clear-only (new)");
+    });
+    nudgeLabel.append(nudgeCheckbox, document.createTextNode("old resize-nudge"));
     const toggle = document.createElement("span");
     let collapsed = false;
     const body = document.createElement("div");
@@ -6035,7 +6051,7 @@ class TermdeckApp {
       toggle.textContent = collapsed ? "▸ expand" : "▾ collapse";
     };
     toggle.addEventListener("click", () => { collapsed = !collapsed; applyCollapsed(); });
-    header.append(title, toggle);
+    header.append(title, nudgeLabel, toggle);
     header.addEventListener("click", (e) => { if (e.target === header || e.target === title) { collapsed = !collapsed; applyCollapsed(); } });
     const stats = document.createElement("div");
     Object.assign(stats.style, { font: "11px/1.4 ui-monospace, monospace", whiteSpace: "pre" });
@@ -6554,7 +6570,15 @@ class TermdeckApp {
     });
   }
 
+  // TEMPORARY A/B dispatcher for the Claude composer-wrap fix -- see the debug overlay's "old
+  // resize-nudge" checkbox. Collapse back to just the clear-only body once confirmed safe for codex too.
   forceVisibleTerminalReflow(view) {
+    return this.debugUseResizeNudgeReflow
+      ? this.forceVisibleTerminalReflowViaResizeNudge(view)
+      : this.forceVisibleTerminalReflowViaClear(view);
+  }
+
+  forceVisibleTerminalReflowViaClear(view) {
     if (!view || view.closed || view.v2ForcedReflowFrame || !view.container.classList.contains("visible")) return false;
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return false;
@@ -6567,21 +6591,68 @@ class TermdeckApp {
         view.v2Programmatic = false;
         return;
       }
-      // A pure repaint, deliberately WITHOUT ever touching cols/rows. This used to nudge the
-      // container's CSS width to force a real xterm resize down and back up, suppressed from
-      // reaching the server so the CLI never saw it. But xterm's resize-driven reflow can
-      // PERMANENTLY mis-rewrap already-wrapped rows (box-drawing characters especially) even for a
-      // resize that only ever happens client-side -- confirmed via a live debug capture showing a
-      // 104->102->104 xterm-only bounce (never sent to the server: suppressResizeToServer was true
-      // throughout) leave a horizontal composer rule permanently split across two rows afterward.
-      // refreshTerminalAppearance(view, true) already clears and re-runs the render service against
-      // the CURRENT (unchanged) cols/rows -- a full glyph repaint with no call into resize()/reflow(),
-      // so there is nothing for xterm to fail to perfectly undo.
+      // A pure repaint, deliberately WITHOUT ever touching cols/rows. The alternative (see
+      // ...ViaResizeNudge below) nudges the container's CSS width to force a real xterm resize down
+      // and back up, suppressed from reaching the server so the CLI never saw it. But xterm's
+      // resize-driven reflow can PERMANENTLY mis-rewrap already-wrapped rows (box-drawing characters
+      // especially) even for a resize that only ever happens client-side -- confirmed via a live debug
+      // capture showing a 104->102->104 xterm-only bounce (never sent to the server:
+      // suppressResizeToServer was true throughout) leave a horizontal composer rule permanently split
+      // across two rows afterward. refreshTerminalAppearance(view, true) already clears and re-runs the
+      // render service against the CURRENT (unchanged) cols/rows -- a full glyph repaint with no call
+      // into resize()/reflow(), so there is nothing for xterm to fail to perfectly undo.
       this.refreshTerminalAppearance(view, true);
       if (follow) this.scrollTerminalV2ToBottom(view);
       else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
       queueMicrotask(() => {
         if (!view.closed) view.v2Programmatic = false;
+      });
+    });
+    return true;
+  }
+
+  // Original implementation, kept only for the A/B toggle: nudges the container narrower by ~2 cols
+  // via CSS then restores, forcing a real (client-only, never sent to the server) xterm resize cycle.
+  forceVisibleTerminalReflowViaResizeNudge(view) {
+    if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
+        !view.container.classList.contains("visible")) return false;
+    const rect = view.container.getBoundingClientRect();
+    if (rect.width < 40 || rect.height < 40) return false;
+    const computed = window.getComputedStyle(view.container);
+    const originalRight = view.container.style.right;
+    const right = Number.parseFloat(computed.right);
+    const cellWidth = Number(view.term._core?._renderService?.dimensions?.css?.cell?.width) || 8;
+    const nudgeRight = (Number.isFinite(right) ? right : 4) + Math.max(Math.ceil(cellWidth * 2), 14);
+    const restoreLine = view.term.buffer.active.viewportY;
+    const follow = view.scrollMode === "follow";
+    view.suppressResizeToServer = true;
+    view.v2Programmatic = true;
+    view.v2ForcedReflowFrame = requestAnimationFrame(() => {
+      view.v2ForcedReflowFrame = 0;
+      if (view.closed || !view.container.classList.contains("visible")) {
+        view.suppressResizeToServer = false;
+        view.v2Programmatic = false;
+        return;
+      }
+      view.container.style.right = `${nudgeRight}px`;
+      view.fit.fit();
+      this.refreshTerminalAppearance(view, true);
+      view.v2ForcedReflowRestoreFrame = requestAnimationFrame(() => {
+        view.v2ForcedReflowRestoreFrame = 0;
+        if (!view.closed) {
+          view.container.style.right = originalRight;
+          if (view.container.classList.contains("visible")) {
+            view.fit.fit();
+            this.refreshTerminalAppearance(view, true);
+            if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
+            if (follow) this.scrollTerminalV2ToBottom(view);
+            else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+          }
+        }
+        view.suppressResizeToServer = false;
+        queueMicrotask(() => {
+          if (!view.closed) view.v2Programmatic = false;
+        });
       });
     });
     return true;
