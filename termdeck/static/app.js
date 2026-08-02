@@ -6525,12 +6525,20 @@ class TermdeckApp {
   // output having arrived) has actually finished getting codex to redraw its full screen. A single
   // bounded follow-up well after that server-side window should have closed gives it a second chance,
   // without turning this into a standing poll -- deliberately does not reschedule itself again.
+  //
+  // Only fires when terminalTailRenderMismatch(view) says the currently-rendered DOM actually disagrees
+  // with xterm's own buffer -- i.e. there is something a repaint could fix. If they already agree, a
+  // resize-nudge is powerless to improve things (its whole mechanism is "force xterm to fully repaint
+  // its EXISTING buffer", not "fetch more data"): either both already show the full correct content
+  // (retrying would just be a visible flicker for nothing) or the buffer genuinely still lacks the
+  // content (a client-side repaint cannot manufacture data that hasn't arrived). Either way, skip it.
   scheduleCodexReflowFollowup(view) {
     if (!view || view.closed) return;
     clearTimeout(view.codexReflowFollowupTimer);
     view.codexReflowFollowupTimer = setTimeout(() => {
       view.codexReflowFollowupTimer = 0;
       if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
+      if (!this.terminalTailRenderMismatch(view)) return;
       this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     }, 1500);
   }
