@@ -6017,11 +6017,30 @@ class TermdeckApp {
       background: "rgba(0,0,0,0.9)", padding: "4px 8px", borderRadius: "4px", cursor: "text",
       userSelect: "text", WebkitUserSelect: "text", maxWidth: "44vw", maxHeight: "70vh", overflow: "auto",
     });
+    const header = document.createElement("div");
+    Object.assign(header.style, {
+      font: "11px/1.4 ui-monospace, monospace", cursor: "pointer", userSelect: "none",
+      WebkitUserSelect: "none", display: "flex", justifyContent: "space-between", gap: "8px",
+    });
+    const title = document.createElement("span");
+    title.textContent = "td-debug";
+    const toggle = document.createElement("span");
+    let collapsed = false;
+    const body = document.createElement("div");
+    const applyCollapsed = () => {
+      body.style.display = collapsed ? "none" : "";
+      toggle.textContent = collapsed ? "▸ expand" : "▾ collapse";
+    };
+    toggle.addEventListener("click", () => { collapsed = !collapsed; applyCollapsed(); });
+    header.append(title, toggle);
+    header.addEventListener("click", (e) => { if (e.target === header || e.target === title) { collapsed = !collapsed; applyCollapsed(); } });
     const stats = document.createElement("div");
     Object.assign(stats.style, { font: "11px/1.4 ui-monospace, monospace", whiteSpace: "pre" });
     const diff = document.createElement("div");
     Object.assign(diff.style, { font: "9.5px/1.3 ui-monospace, monospace", whiteSpace: "pre", marginTop: "4px", color: "#8f8" });
-    box.append(stats, diff);
+    body.append(stats, diff);
+    box.append(header, body);
+    applyCollapsed();
     document.body.appendChild(box);
     const captureActive = (trigger) => {
       const view = this.views.get(this.activeId);
