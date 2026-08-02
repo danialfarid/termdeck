@@ -5,12 +5,12 @@ const vscode = require("vscode");
 
 const RECONNECT_MS = 1500;
 const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
-const PATH_LINK_RE = /(?:~\/|\.{1,2}\/|\/)?[\w@%+=.-]+(?:\/[\w@%+=.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+){0,2}/g;
+const PATH_LINK_RE = /(?:~\/|\.{1,2}\/|\/)?[\w@%+=.-]+(?:\s*[\\/]\s*[\w@%+=.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+){0,2}/g;
 const KNOWN_EXTS = new Set(["py", "md", "json", "js", "ts", "tsx", "css", "html", "sh", "zsh", "txt", "yaml", "yml",
   "toml", "csv", "log", "plist", "sql", "xml", "ini", "cfg", "lock", "ipynb", "rs", "go", "c", "h", "cpp", "hpp", "java"]);
 
 function parseFileLink(linkText) {
-  let value = String(linkText || "").trim().replace(/[),.;]+$/, "");
+  let value = String(linkText || "").trim().replace(/\s+/g, "").replace(/[),.;]+$/, "");
   let line = null;
   let column = null;
   const match = value.match(/:(\d+)(?::(\d+))?$/);

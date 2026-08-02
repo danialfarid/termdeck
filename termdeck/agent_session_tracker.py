@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import json
 import re
 from datetime import timedelta
@@ -27,10 +28,16 @@ class AgentSessionTracker:
     _CLAUDE_SIDECHAIN_MARKER = b'"isSidechain":true'
     _SUBAGENT_SNIFF_BYTES = 2048
     _SUBAGENT_TAIL_BYTES = 256 * 1024
+    _CODEX_ACTIVITY_TAIL_BYTES = 4 * 1024 * 1024
+    _CLAUDE_INTERRUPT_TEXT_PREFIX = "[Request interrupted by user"
+    _CLI_TITLE_CACHE_SIZE = 120
+    _SUBAGENT_FILE_CACHE_SIZE = 2000
 
     def __init__(self) -> None:
         self._subagent_file_cache: dict[Path, bool] = {}
         self._codex_thread_names: dict[str, str] = {}
+        self._codex_session_title_cache: collections.OrderedDict[str, str] = collections.OrderedDict()
+        self._claude_session_title_cache: collections.OrderedDict[tuple[str, str], str] = collections.OrderedDict()
         self._codex_index_mtime_ns: int | None = None
 
     def codex_thread_name(self, session_id: str | None) -> str | None:
@@ -61,8 +68,17 @@ class AgentSessionTracker:
 
     def codex_session_title(self, session_id: str | None) -> str | None:
         """Return the saved Codex thread name, with a rollout-derived fallback for older sessions."""
+        if not session_id:
+            return None
+        cached = self._codex_session_title_cache.get(session_id)
+        if cached is not None:
+            self._codex_session_title_cache.move_to_end(session_id)
+            return cached
         title = self.codex_thread_name(session_id)
-        if title or not session_id:
+        if title:
+            self._codex_session_title_cache[session_id] = title
+            while len(self._codex_session_title_cache) > self._CLI_TITLE_CACHE_SIZE:
+                self._codex_session_title_cache.popitem(last=False)
             return title
         needle = f"-{session_id}.jsonl"
         try:
@@ -73,41 +89,93 @@ class AgentSessionTracker:
             return None
         first_prompt = None
         try:
-            for line in path.open(errors="replace"):
-                try:
-                    payload = json.loads(line).get("payload", {})
-                except json.JSONDecodeError:
-                    continue
-                if payload.get("type") == "thread_name_updated" and str(payload.get("thread_name", "")).strip():
-                    return str(payload["thread_name"]).strip()
-                if first_prompt is None and payload.get("type") == "user_message":
-                    first_prompt = str(payload.get("message", "")).strip()
+            with path.open(errors="replace") as handle:
+                for line in handle:
+                    try:
+                        payload = json.loads(line).get("payload", {})
+                    except json.JSONDecodeError:
+                        continue
+                    if payload.get("type") == "thread_name_updated" and str(payload.get("thread_name", "")).strip():
+                        title = str(payload["thread_name"]).strip()
+                        self._codex_session_title_cache[session_id] = title
+                        return title
+                    if first_prompt is None and payload.get("type") == "user_message":
+                        first_prompt = str(payload.get("message", "")).strip()
         except OSError:
             return None
         if not first_prompt:
             return None
         markdown_match = re.search(r"(?:^|[/\s])([A-Za-z0-9][A-Za-z0-9_.-]*\.md)\b", first_prompt)
         if markdown_match:
-            return Path(markdown_match.group(1)).stem
+            title = Path(markdown_match.group(1)).stem
+            self._codex_session_title_cache[session_id] = title
+            while len(self._codex_session_title_cache) > self._CLI_TITLE_CACHE_SIZE:
+                self._codex_session_title_cache.popitem(last=False)
+            return title
         compact = re.sub(r"\s+", " ", first_prompt)
-        return compact[:56].rstrip() + ("…" if len(compact) > 56 else "")
+        title = compact[:56].rstrip() + ("…" if len(compact) > 56 else "")
+        self._codex_session_title_cache[session_id] = title
+        while len(self._codex_session_title_cache) > self._CLI_TITLE_CACHE_SIZE:
+            self._codex_session_title_cache.popitem(last=False)
+        return title
+
+    def codex_session_is_active(self, session_id: str | None) -> bool:
+        if not session_id:
+            return False
+        try:
+            path = next(TermdeckConfig.CODEX_SESSIONS_DIR.rglob(f"rollout-*{session_id}.jsonl"), None)
+        except OSError:
+            return False
+        if path is None:
+            return False
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                handle.seek(max(0, handle.tell() - self._CODEX_ACTIVITY_TAIL_BYTES))
+                lines = handle.read().decode(errors="replace").splitlines()
+        except OSError:
+            return False
+        state: bool | None = None
+        for line in lines:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("type") != "event_msg":
+                continue
+            event_type = (payload.get("payload") or {}).get("type")
+            if event_type == "task_started":
+                state = True
+            elif event_type in {"task_complete", "turn_aborted"}:
+                state = False
+        return bool(state)
 
     def claude_session_title(self, cwd: Path, session_id: str | None) -> str | None:
         """Read Claude's durable aiTitle when the terminal has not emitted its OSC title yet."""
         if not session_id:
             return None
+        cache_key = (str(cwd), session_id)
+        cached = self._claude_session_title_cache.get(cache_key)
+        if cached is not None:
+            self._claude_session_title_cache.move_to_end(cache_key)
+            return cached
         path = self.claude_project_dir(cwd) / f"{session_id}.jsonl"
         title = None
         try:
-            for line in path.open(errors="replace"):
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if payload.get("type") == "ai-title" and str(payload.get("aiTitle", "")).strip():
-                    title = str(payload["aiTitle"]).strip()
+            with path.open(errors="replace") as handle:
+                for line in handle:
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if payload.get("type") == "ai-title" and str(payload.get("aiTitle", "")).strip():
+                        title = str(payload["aiTitle"]).strip()
         except OSError:
             return None
+        if title is not None:
+            self._claude_session_title_cache[cache_key] = title
+            while len(self._claude_session_title_cache) > self._CLI_TITLE_CACHE_SIZE:
+                self._claude_session_title_cache.popitem(last=False)
         return title
 
     def codex_session_id_for_reference(self, reference: str) -> str | None:
@@ -144,7 +212,7 @@ class AgentSessionTracker:
             return False
         is_subagent = marker in head
         self._subagent_file_cache[path] = is_subagent
-        if len(self._subagent_file_cache) > 2000:
+        if len(self._subagent_file_cache) > self._SUBAGENT_FILE_CACHE_SIZE:
             self._subagent_file_cache.clear()
         return is_subagent
 
@@ -187,6 +255,21 @@ class AgentSessionTracker:
         return max(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else None
 
     @staticmethod
+    def _claude_user_event_is_interruption(message: dict) -> bool:
+        """Whether a trailing user event is Claude's own ESC record rather than a submitted prompt.
+
+        Claude appends "[Request interrupted by user]" as a user-role event when work is cancelled, so a
+        newest-event-is-user test would otherwise read a stopped session as permanently working.
+        """
+        content = message.get("content")
+        if isinstance(content, str):
+            texts = [content]
+        else:
+            texts = [part.get("text") or "" for part in content or [] if isinstance(part, dict)]
+        prefix = AgentSessionTracker._CLAUDE_INTERRUPT_TEXT_PREFIX
+        return any(text.strip().startswith(prefix) for text in texts)
+
+    @staticmethod
     def _claude_subagent_is_active(path: Path) -> bool:
         """Infer active work from the last meaningful Claude subagent event."""
         try:
@@ -205,7 +288,10 @@ class AgentSessionTracker:
                 continue
             message = event.get("message") or {}
             if event.get("type") == "user":
-                return True
+                # Claude injects system reminders as isMeta user events; they say nothing about progress.
+                if event.get("isMeta"):
+                    continue
+                return not AgentSessionTracker._claude_user_event_is_interruption(message)
             if event.get("type") != "assistant" or message.get("type") != "message":
                 continue
             content = message.get("content") or []

@@ -1,9 +1,11 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.file_service import ProjectFileService
 from termdeck.models import AgentKind, SessionRecord
 from termdeck.config import TermdeckConfig
@@ -97,6 +99,147 @@ class NotebookTrashTest(unittest.TestCase):
             self.assertEqual(target.read_text(), "# Keep this")
 
 
+class SessionSizePersistenceTest(unittest.TestCase):
+    def test_record_written_before_sizes_existed_falls_back_to_the_initial_size(self) -> None:
+        payload = record().to_dict()
+        del payload["cols"], payload["rows"]
+
+        restored = SessionRecord.from_dict(payload)
+
+        self.assertEqual((restored.cols, restored.rows), (TermdeckConfig.INITIAL_COLS, TermdeckConfig.INITIAL_ROWS))
+
+    def test_size_survives_a_persist_reload_roundtrip(self) -> None:
+        saved = record()
+        saved.cols, saved.rows = 162, 61
+
+        restored = SessionRecord.from_dict(saved.to_dict())
+
+        self.assertEqual((restored.cols, restored.rows), (162, 61))
+
+    def test_reattached_session_starts_at_the_persisted_size(self) -> None:
+        saved = record()
+        saved.cols, saved.rows = 162, 61
+
+        self.assertEqual((ManagedSession(saved).cols, ManagedSession(saved).rows), (162, 61))
+
+    def test_resizing_persists_the_new_size_onto_the_record(self) -> None:
+        manager = TerminalSessionManager()
+        session = ManagedSession(record())
+        manager._sessions[session.record.session_id] = session
+        persists: list[int] = []
+        manager._persist = lambda: persists.append(1)  # type: ignore[method-assign]
+
+        manager.resize(session.record.session_id, 162, 61)
+        manager.resize(session.record.session_id, 162, 61)
+
+        self.assertEqual((session.record.cols, session.record.rows), (162, 61))
+        self.assertEqual(len(persists), 1)
+
+
+class CliTitlePersistenceTest(unittest.TestCase):
+    def _manager_with_session(self) -> tuple[TerminalSessionManager, ManagedSession, list[int]]:
+        manager = TerminalSessionManager()
+        session = ManagedSession(record())
+        manager._sessions[session.record.session_id] = session
+        persists: list[int] = []
+        manager._persist = lambda: persists.append(1)  # type: ignore[method-assign]
+        return manager, session, persists
+
+    def test_agent_title_is_stored_without_its_spinner_marker(self) -> None:
+        manager, session, persists = self._manager_with_session()
+        session.cli_title = "⠧ intraday-fed"
+
+        manager._remember_cli_title(session)
+
+        self.assertEqual(session.record.cli_title, "intraday-fed")
+        self.assertEqual(len(persists), 1)
+
+    def test_spinner_frames_do_not_rewrite_the_stored_title(self) -> None:
+        manager, session, persists = self._manager_with_session()
+        for marker in ("⠧", "⠏", "⠹"):
+            session.cli_title = f"{marker} intraday-fed"
+            manager._remember_cli_title(session)
+
+        self.assertEqual(session.record.cli_title, "intraday-fed")
+        self.assertEqual(len(persists), 1)
+
+    def test_stored_title_names_the_terminal_before_anyone_attaches(self) -> None:
+        saved = record()
+        saved.cli_title = "intraday-fed"
+
+        self.assertEqual(ManagedSession(saved).cli_title, "intraday-fed")
+
+    def test_restored_title_does_not_report_the_session_as_processing(self) -> None:
+        saved = record()
+        saved.cli_title = "intraday-fed"
+
+        self.assertFalse(ManagedSession(saved).processing)
+
+
+class CodexSessionActivityTest(unittest.TestCase):
+    def test_task_state_is_read_without_starting_the_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "rollout-2026-08-02T00-00-00-019f9a3e-1915-7bd3-8183-cce1db8a1e20.jsonl"
+            path.write_text("\n".join([
+                json.dumps({"type": "event_msg", "payload": {"type": "task_started"}}),
+                json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}),
+            ]))
+            with patch.object(TermdeckConfig, "CODEX_SESSIONS_DIR", root):
+                self.assertTrue(AgentSessionTracker().codex_session_is_active("019f9a3e-1915-7bd3-8183-cce1db8a1e20"))
+                path.write_text("\n".join([
+                    json.dumps({"type": "event_msg", "payload": {"type": "task_started"}}),
+                    json.dumps({"type": "event_msg", "payload": {"type": "task_complete"}}),
+                ]))
+                self.assertFalse(AgentSessionTracker().codex_session_is_active("019f9a3e-1915-7bd3-8183-cce1db8a1e20"))
+
+
+class ClaudeSessionActivityTest(unittest.TestCase):
+    def _transcript(self, directory: str, *events: dict) -> Path:
+        path = Path(directory) / "session.jsonl"
+        path.write_text("\n".join(json.dumps(event) for event in events))
+        return path
+
+    def _user_text(self, text: str) -> dict:
+        return {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+
+    def _assistant(self, *parts: dict) -> dict:
+        return {"type": "assistant", "message": {"type": "message", "role": "assistant", "content": list(parts)}}
+
+    def test_escape_interruption_ends_the_processing_spinner(self) -> None:
+        for marker in ("[Request interrupted by user]", "[Request interrupted by user for tool use]"):
+            with tempfile.TemporaryDirectory() as directory:
+                path = self._transcript(directory, self._assistant({"type": "tool_use", "name": "Bash"}),
+                                        self._user_text(marker))
+                self.assertFalse(AgentSessionTracker().claude_session_is_active(path), marker)
+
+    def test_submitted_prompt_still_reads_as_working(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._transcript(directory, self._assistant({"type": "text", "text": "done"}),
+                                    self._user_text("please keep going"))
+            self.assertTrue(AgentSessionTracker().claude_session_is_active(path))
+
+    def test_tool_result_still_reads_as_working(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._transcript(directory, self._assistant({"type": "tool_use", "name": "Bash"}),
+                                    {"type": "user", "message": {"role": "user", "content": [
+                                        {"type": "tool_result", "tool_use_id": "x", "content": "ok"}]}})
+            self.assertTrue(AgentSessionTracker().claude_session_is_active(path))
+
+    def test_injected_system_reminder_does_not_keep_the_spinner_running(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            reminder = self._user_text("<system-reminder>The user named this session</system-reminder>")
+            reminder["isMeta"] = True
+            path = self._transcript(directory, self._assistant({"type": "text", "text": "all done"}), reminder)
+            self.assertFalse(AgentSessionTracker().claude_session_is_active(path))
+
+    def test_finished_answer_reads_as_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._transcript(directory, self._user_text("hello"),
+                                    self._assistant({"type": "text", "text": "all done"}))
+            self.assertFalse(AgentSessionTracker().claude_session_is_active(path))
+
+
 class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
     async def test_startup_marks_live_socket_as_detached_not_dormant(self) -> None:
         manager = TerminalSessionManager()
@@ -163,6 +306,75 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         manager._append_collapsing_repaints(session, b"after\n")
 
         self.assertEqual(bytes(session.buffer), b"before\nafter\n")
+        self.assertTrue(session.screen_lives_only_in_stripped_sync_frames)
+
+    async def test_plain_output_leaves_screen_reconstructable_from_scrollback(self) -> None:
+        manager = TerminalSessionManager()
+        session = ManagedSession(record())
+        manager._append_collapsing_repaints(session, b"plain shell output\n")
+
+        self.assertFalse(session.screen_lives_only_in_stripped_sync_frames)
+
+    async def test_attaching_client_nudges_pty_width_so_a_tui_repaints_its_stripped_screen(self) -> None:
+        manager, session, proc = self._session_whose_screen_was_stripped()
+
+        with patch.object(TermdeckConfig, "SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS", 0), \
+             patch.object(TermdeckConfig, "SCREEN_REPAINT_NUDGE_HOLD_SECONDS", 0):
+            manager.attach_client(session.record.session_id)
+            await session.screen_repaint_task
+
+        self.assertEqual(proc.resizes, [(119, 32), (120, 32)])
+
+    async def test_attaching_client_skips_nudge_when_the_screen_already_repainted(self) -> None:
+        manager, session, proc = self._session_whose_screen_was_stripped()
+
+        with patch.object(TermdeckConfig, "SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS", 0), \
+             patch.object(TermdeckConfig, "SCREEN_REPAINT_NUDGE_HOLD_SECONDS", 0):
+            manager.attach_client(session.record.session_id)
+            session.last_activity_at += 1
+            await session.screen_repaint_task
+
+        self.assertEqual(proc.resizes, [])
+
+    async def test_attaching_client_does_not_nudge_a_shell_whose_scrollback_replays_the_screen(self) -> None:
+        manager, session, proc = self._session_whose_screen_was_stripped()
+        session.screen_lives_only_in_stripped_sync_frames = False
+        session.buffer.extend(b"prompt$ ls\nfile.txt\n")
+
+        manager.attach_client(session.record.session_id)
+
+        self.assertIsNone(session.screen_repaint_task)
+        self.assertEqual(proc.resizes, [])
+
+    async def test_attaching_client_nudges_when_the_server_has_no_scrollback_to_replay(self) -> None:
+        manager, session, proc = self._session_whose_screen_was_stripped()
+        session.screen_lives_only_in_stripped_sync_frames = False
+
+        with patch.object(TermdeckConfig, "SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS", 0), \
+             patch.object(TermdeckConfig, "SCREEN_REPAINT_NUDGE_HOLD_SECONDS", 0):
+            manager.attach_client(session.record.session_id)
+            await session.screen_repaint_task
+
+        self.assertEqual(proc.resizes, [(119, 32), (120, 32)])
+
+    def _session_whose_screen_was_stripped(self):
+        class FakeProc:
+            alive = True
+
+            def __init__(self) -> None:
+                self.resizes: list[tuple[int, int]] = []
+
+            def resize(self, cols: int, rows: int) -> None:
+                self.resizes.append((cols, rows))
+
+        manager = TerminalSessionManager()
+        session = ManagedSession(record())
+        proc = FakeProc()
+        session.proc = proc
+        session.cols, session.rows = 120, 32
+        session.screen_lives_only_in_stripped_sync_frames = True
+        manager._sessions[session.record.session_id] = session
+        return manager, session, proc
 
     async def test_split_sync_repaint_frame_is_not_saved_to_scrollback(self) -> None:
         manager = TerminalSessionManager()

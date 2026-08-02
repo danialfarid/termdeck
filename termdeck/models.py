@@ -1,6 +1,8 @@
 from dataclasses import asdict, dataclass
 from enum import Enum
 
+from termdeck.config import TermdeckConfig
+
 
 class AgentKind(str, Enum):
     CLAUDE = "claude"
@@ -10,7 +12,19 @@ class AgentKind(str, Enum):
 
 @dataclass
 class SessionRecord:
-    """Persisted description of one terminal: what command it runs, where, and which agent CLI session it owns."""
+    """Persisted description of one terminal: what command it runs, where, and which agent CLI session it owns.
+
+    cols/rows carry the terminal's last known size so a reattached pty keeps it. Without that the pty is
+    rebuilt at the INITIAL_* default and every full-screen TUI reflows twice on first open, once at a size
+    that does not match the pane.
+
+    cli_title is the agent's own title with any spinner marker already stripped, kept so the sidebar can
+    name a terminal before anyone attaches to it — it is otherwise only recoverable from scrollback, which
+    is empty for agents whose screen lives in stripped synchronized-update frames.
+
+    These three are the only fields that may be absent from a record written before they existed, hence the
+    defaults on read.
+    """
 
     session_id: str
     title: str
@@ -22,19 +36,25 @@ class SessionRecord:
     created_at_est: str
     draft: str
     project: str
+    cols: int = TermdeckConfig.INITIAL_COLS
+    rows: int = TermdeckConfig.INITIAL_ROWS
+    cli_title: str | None = None
 
-    def to_dict(self) -> dict[str, str | bool | None]:
+    def to_dict(self) -> dict[str, str | bool | int | None]:
         return asdict(self)
 
     @staticmethod
-    def from_dict(payload: dict[str, str | bool | None]) -> "SessionRecord":
+    def from_dict(payload: dict[str, str | bool | int | None]) -> "SessionRecord":
         agent_session_id = payload["agent_session_id"]
         return SessionRecord(session_id=str(payload["session_id"]), title=str(payload["title"]),
                              title_user_set=bool(payload["title_user_set"]), command=str(payload["command"]),
                              cwd=str(payload["cwd"]), agent_kind=str(payload["agent_kind"]),
                              agent_session_id=str(agent_session_id) if agent_session_id is not None else None,
                              created_at_est=str(payload["created_at_est"]), draft=str(payload["draft"] or ""),
-                             project=str(payload["project"]))
+                             project=str(payload["project"]),
+                             cols=int(payload.get("cols") or TermdeckConfig.INITIAL_COLS),
+                             rows=int(payload.get("rows") or TermdeckConfig.INITIAL_ROWS),
+                             cli_title=str(payload["cli_title"]) if payload.get("cli_title") else None)
 
 
 class WsMessageFields:

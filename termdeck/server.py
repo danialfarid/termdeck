@@ -201,6 +201,7 @@ class TermdeckServer:
         self.manager.attach_transcript_service(self.transcripts)
         self.manager.attach_history_index(self.history_index)
         self.transcripts.add_file_change_listener(self.history_index.notify_file_changed)
+        self.transcripts.add_file_change_listener(self.manager.notify_agent_transcript_changed)
         self.settings_store = UiSettingsStore(TermdeckConfig.SETTINGS_FILE)
 
     @asynccontextmanager
@@ -777,7 +778,8 @@ class TermdeckServer:
             await websocket.close(code=TermdeckConfig.WS_CODE_UNKNOWN_SESSION)
             return
         await websocket.accept()
-        scrollback, queue = self.manager.attach_client(session_id)
+        screen_repaint = websocket.query_params.get("screen_repaint", "1").lower() not in {"0", "false", "no", "off"}
+        scrollback, queue = self.manager.attach_client(session_id, screen_repaint)
         try:
             await websocket.send_bytes(scrollback)
             await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.DRAFT,

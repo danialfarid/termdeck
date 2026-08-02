@@ -40,9 +40,9 @@ class ManagedSession:
         self.detect_task: asyncio.Task | None = None
         self.detect_kind: AgentKind = AgentKind.NONE
         self.detect_baseline: set[Path] = set()
-        self.cols = TermdeckConfig.INITIAL_COLS
-        self.rows = TermdeckConfig.INITIAL_ROWS
-        self.cli_title: str | None = None
+        self.cols = record.cols
+        self.rows = record.rows
+        self.cli_title: str | None = record.cli_title
         self.title_updated_monotonic = 0.0
         self.title_carry = b""
         self.title_recovered_from_buffer = False
@@ -54,6 +54,8 @@ class ManagedSession:
         self.osc_query_carry = b""
         self.last_repaint_offset: int | None = None
         self.scrollback_sync_carry = b""
+        self.screen_lives_only_in_stripped_sync_frames = False
+        self.screen_repaint_task: asyncio.Task | None = None
         self.draft_tracker = DraftInputTracker(record.draft)
         self.last_input_monotonic = 0.0
         self.last_activity_at = 0.0
@@ -61,6 +63,7 @@ class ManagedSession:
         self.claude_subagent_states: dict[Path, bool] = {}
         self.claude_subagents_active = False
         self.claude_main_active = False
+        self.codex_transcript_active = False
         self.processing_started_at: float | None = None
 
     @property
@@ -133,12 +136,20 @@ class TerminalSessionManager:
             if saved.exists():
                 ms.buffer.extend(saved.read_bytes()[-TermdeckConfig.SCROLLBACK_BYTES:])
                 saved.unlink()
-            self._recover_title_from_buffer(ms)
         # Do not launch old terminals merely because the web server came up.
         # Reconcile their dtach sockets instead: live sockets remain running
         # and are attached lazily when opened; dead sockets are safe to clear.
         for ms in self._sessions.values():
             await self._reconcile_session_socket(ms)
+            self._refresh_persisted_agent_activity(ms)
+
+    def _refresh_persisted_agent_activity(self, ms: ManagedSession) -> None:
+        if not ms.detached_live or not ms.record.agent_session_id:
+            return
+        if ms.record.agent_kind == AgentKind.CODEX.value:
+            ms.codex_transcript_active = self._tracker.codex_session_is_active(ms.record.agent_session_id)
+        elif ms.record.agent_kind == AgentKind.CLAUDE.value:
+            self._initialize_claude_subagent_state(ms)
 
     def create_session(self, command: str, cwd: str, title: str, project: str = "",
                        agent_rename: str | None = None) -> ManagedSession:
@@ -257,8 +268,40 @@ class TerminalSessionManager:
             if kind is AgentKind.CLAUDE and ms.record.agent_session_id:
                 self._initialize_claude_subagent_state(ms)
             self._schedule_detection(ms, TermdeckConfig.AGENT_DETECT_INITIAL_DELAY_SECONDS)
+        if reattach:
+            self._schedule_screen_repaint(ms, TermdeckConfig.SCREEN_REPAINT_REATTACH_DELAY_SECONDS)
         if resume and not reattach and ms.record.draft:
             asyncio.create_task(self._replay_draft_into_respawn(ms, ms.proc))
+
+    def _schedule_screen_repaint(self, ms: ManagedSession, delay: float) -> None:
+        if ms.proc is None or not ms.proc.alive:
+            return
+        if ms.screen_repaint_task is not None and not ms.screen_repaint_task.done():
+            return
+        ms.screen_repaint_task = asyncio.create_task(
+            self._force_screen_repaint(ms, ms.proc, delay, ms.last_activity_at))
+
+    async def _force_screen_repaint(self, ms: ManagedSession, proc: PtyProcess, delay: float,
+                                    activity_before_delay: float) -> None:
+        """Make a full-screen TUI redraw itself by briefly changing the pty width.
+
+        The replayed scrollback cannot reconstruct a Codex/Claude screen: those TUIs paint inside
+        synchronized-update frames, which _durable_scrollback_bytes strips, so a freshly attached client
+        would otherwise stare at an empty pane until the agent happens to emit new output. A pty only
+        raises SIGWINCH when the size actually changes, so re-sending the current size is not enough.
+        Output arriving during the delay means the screen already repainted (usually because the newly
+        attached client fitted to a different size), and the nudge is skipped to avoid a second reflow.
+        The restore reads the size again after the nudge, letting a client resize that landed meanwhile win.
+        """
+        await asyncio.sleep(delay)
+        if ms.proc is not proc or not proc.alive or ms.last_activity_at > activity_before_delay:
+            return
+        cols, rows = max(2, ms.cols), max(2, ms.rows)
+        nudge = cols - 1 if cols > TermdeckConfig.SCREEN_REPAINT_NUDGE_MIN_COLS else cols + 1
+        proc.resize(nudge, rows)
+        await asyncio.sleep(TermdeckConfig.SCREEN_REPAINT_NUDGE_HOLD_SECONDS)
+        if ms.proc is proc and proc.alive:
+            proc.resize(max(2, ms.cols), max(2, ms.rows))
 
     @staticmethod
     def _dtach_socket_live(socket: Path) -> bool:
@@ -317,6 +360,8 @@ class TerminalSessionManager:
                 ms.pending_agent_rename = None
                 ms.agent_rename_task = asyncio.create_task(self._rename_forked_codex(ms, rename))
             self._persist()
+            if kind is AgentKind.CODEX:
+                ms.codex_transcript_active = self._tracker.codex_session_is_active(found)
             self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.AGENT_SESSION,
                                          WsMessageFields.AGENT_SESSION_ID: found})
             self._broadcast_status(ms)
@@ -362,7 +407,23 @@ class TerminalSessionManager:
         ms.claude_subagents_active = any(states.values())
 
     def _processing_state(self, ms: ManagedSession) -> bool:
-        return ms.processing or ms.claude_main_active or ms.claude_subagents_active
+        return ms.processing or ms.codex_transcript_active or ms.claude_main_active or ms.claude_subagents_active
+
+    def notify_agent_transcript_changed(self, path: Path) -> None:
+        if self._background_loop is not None:
+            self._background_loop.call_soon_threadsafe(self._refresh_agent_transcript_activity, path)
+
+    def _refresh_agent_transcript_activity(self, path: Path) -> None:
+        for ms in self._sessions.values():
+            if not ms.running or ms.record.agent_kind != AgentKind.CODEX.value or not ms.record.agent_session_id:
+                continue
+            if not path.name.endswith(f"-{ms.record.agent_session_id}.jsonl"):
+                continue
+            previous = self._processing_state(ms)
+            ms.codex_transcript_active = self._tracker.codex_session_is_active(ms.record.agent_session_id)
+            current = self._processing_state(ms)
+            if current != previous:
+                self._broadcast_status(ms)
 
     def _sync_processing_started(self, ms: ManagedSession, processing: bool | None = None) -> bool:
         current = self._processing_state(ms) if processing is None else processing
@@ -377,6 +438,14 @@ class TerminalSessionManager:
             ms.processing_started_at = None
         return current
 
+    def _remember_cli_title(self, ms: ManagedSession) -> None:
+        """Persist the spinner-free agent title so the sidebar can name this terminal without attaching."""
+        display_title = self._display_title(ms.cli_title)
+        if not display_title or display_title == ms.record.cli_title:
+            return
+        ms.record.cli_title = display_title
+        self._persist()
+
     @staticmethod
     def _display_title(value: str | None) -> str | None:
         if value and ("\u2800" <= value[0] <= "\u28ff" or value[0] == "✳"):
@@ -384,7 +453,6 @@ class TerminalSessionManager:
         return value
 
     def _status_payload(self, ms: ManagedSession) -> dict[str, object]:
-        self._recover_title_from_buffer(ms)
         processing = self._sync_processing_started(ms)
         return {
             WsMessageFields.TYPE: WsMessageFields.SESSION_STATUS,
@@ -503,6 +571,7 @@ class TerminalSessionManager:
                 durable.extend(data[position:])
                 break
             durable.extend(data[position:start])
+            ms.screen_lives_only_in_stripped_sync_frames = True
             end = data.find(end_marker, start + len(start_marker))
             if end < 0:
                 ms.scrollback_sync_carry = data[start:]
@@ -561,6 +630,7 @@ class TerminalSessionManager:
             if ms.record.agent_kind == AgentKind.CLAUDE.value and ms.record.agent_session_id is None:
                 self._schedule_detection(ms, 0.1)
             current_processing = self._processing_state(ms)
+            self._remember_cli_title(ms)
             if title_renamed or self._display_title(ms.cli_title) != self._display_title(previous_title) or current_processing != previous_processing:
                 self._broadcast_status(ms)
         else:
@@ -614,6 +684,7 @@ class TerminalSessionManager:
             ms.cli_title = self._tracker.codex_session_title(ms.record.agent_session_id)
         if ms.cli_title is None and ms.record.agent_kind == AgentKind.CLAUDE:
             ms.cli_title = self._tracker.claude_session_title(Path(ms.record.cwd), ms.record.agent_session_id)
+        self._remember_cli_title(ms)
 
     def _handle_exit(self, ms: ManagedSession, proc: PtyProcess, exit_code: int) -> None:
         if ms.proc is not proc:
@@ -688,13 +759,16 @@ class TerminalSessionManager:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         return "".join(character for character in text if character in "\n\t" or ord(character) >= 0x20)
 
-    def attach_client(self, session_id: str) -> tuple[bytes, asyncio.Queue]:
+    def attach_client(self, session_id: str, screen_repaint: bool = True) -> tuple[bytes, asyncio.Queue]:
         ms = self._sessions[session_id]
+        self._recover_title_from_buffer(ms)
         if ms.lazy_start_pending:
             self._spawn(ms, resume=True)
             self._broadcast_status(ms)
         queue: asyncio.Queue = asyncio.Queue()
         ms.client_queues.add(queue)
+        if screen_repaint and (ms.screen_lives_only_in_stripped_sync_frames or not ms.buffer):
+            self._schedule_screen_repaint(ms, TermdeckConfig.SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS)
         return bytes(ms.buffer), queue
 
     def detach_client(self, session_id: str, queue: asyncio.Queue) -> None:
@@ -754,6 +828,10 @@ class TerminalSessionManager:
         """Paste a Markdown prompt, then send Enter or Tab after the agent TUI has consumed it."""
         await self._wait_for_prompt_ready(self._sessions[session_id])
         normalized = str(text or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
+        ms = self._sessions[session_id]
+        if ms.record.agent_kind == AgentKind.CODEX.value and not queue:
+            ms.codex_transcript_active = True
+            self._broadcast_status(ms)
         payload = "\x15"
         if normalized:
             if bracketed:
@@ -764,7 +842,6 @@ class TerminalSessionManager:
         await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
         self.write_input(session_id, "\t" if queue else "\r")
         if queue:
-            ms = self._sessions[session_id]
             ms.record.draft = ""
             ms.draft_tracker = DraftInputTracker("")
             self._schedule_draft_persist()
@@ -880,9 +957,13 @@ class TerminalSessionManager:
 
     def resize(self, session_id: str, cols: int, rows: int) -> None:
         ms = self._sessions[session_id]
+        size_changed = (ms.record.cols, ms.record.rows) != (cols, rows)
         ms.cols, ms.rows = cols, rows
         if ms.proc is not None:
             ms.proc.resize(cols, rows)
+        if size_changed:
+            ms.record.cols, ms.record.rows = cols, rows
+            self._persist()
 
     async def restart_session(self, session_id: str) -> None:
         ms = self._sessions[session_id]
@@ -1137,7 +1218,6 @@ class TerminalSessionManager:
                 if project is None or ms.record.project == project]
 
     def session_summary(self, ms: ManagedSession) -> dict[str, object]:
-        self._recover_title_from_buffer(ms)
         processing = self._sync_processing_started(ms)
         summary: dict[str, object] = dict(ms.record.to_dict())
         summary[ApiFields.RUNNING] = ms.running

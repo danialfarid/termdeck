@@ -2,6 +2,7 @@ import asyncio
 import datetime as dt
 import json
 import re
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -32,6 +33,7 @@ class _TranscriptState:
     revision: int = 0
     update_log: list[dict[str, object]] = field(default_factory=list)
     last_user_at: float | None = None
+    last_access: float = 0.0
 
 
 class _TranscriptFileHandler(FileSystemEventHandler):
@@ -80,6 +82,7 @@ class TranscriptService:
     HISTORY_PAGE_INITIAL_BYTES = 512 * 1024
     HISTORY_PAGE_MAX_BYTES = 8 * 1024 * 1024
     STATE_RELOAD_MAX_BYTES = 64 * 1024 * 1024
+    _TRANSCRIPT_CACHE_MAX_SESSIONS = 80
     MODEL_NAME_RE = re.compile(r"\b(gpt-[a-z0-9.+-]+(?:-[a-z0-9.+-]+)*(?:\s+x(?:high|medium|low|standard|mini|turbo))?)\b", re.IGNORECASE)
     GENERIC_MODELS = {"codex", "claude", "none", "shell", "bash", "zsh", "sh"}
 
@@ -148,7 +151,9 @@ class TranscriptService:
         state = self._states.get(path)
         if state is not None:
             self._refresh_state(state)
+        self._touch_state(path)
         self._subscribers.setdefault(path, set()).add(queue)
+        self._prune_state_cache()
         return path, state.turns if state else [], state.revision if state else 0, queue
 
     def prime_subscription(self, agent_kind: str, path: Path | None) -> int:
@@ -169,6 +174,8 @@ class TranscriptService:
             self._reload_state(state, max_bytes=self.HISTORY_PAGE_MAX_BYTES)
         else:
             self._refresh_state(state)
+        self._touch_state(path)
+        self._prune_state_cache()
         return state.revision
 
     def updates_since(self, path: Path | None, revision: int) -> list[dict[str, object]] | None:
@@ -196,6 +203,7 @@ class TranscriptService:
         subscribers.discard(queue)
         if not subscribers:
             self._subscribers.pop(path, None)
+            self._prune_state_cache()
 
     def source_path(self, agent_kind: str, cwd: str, agent_session_id: str | None) -> Path | None:
         if not agent_session_id:
@@ -218,7 +226,11 @@ class TranscriptService:
 
     def transcript_for(self, agent_kind: str, cwd: str, agent_session_id: str | None) -> list[dict[str, object]]:
         path = self.source_path(agent_kind, cwd, agent_session_id)
-        return self._transcript_for_path(AgentKind(agent_kind), path) if path else []
+        result = self._transcript_for_path(AgentKind(agent_kind), path) if path else []
+        if path is not None:
+            self._touch_state(path)
+            self._prune_state_cache()
+        return result
 
     def history_page(self, agent_kind: str, cwd: str, agent_session_id: str | None,
                     before: int | None = None, limit: int = HISTORY_PAGE_TURNS) -> dict[str, object]:
@@ -233,6 +245,8 @@ class TranscriptService:
         if path is None:
             return {"turns": [], "before": None, "has_more": False}
         kind = AgentKind(agent_kind)
+        self._touch_state(path)
+        self._prune_state_cache()
         try:
             size = path.stat().st_size
         except (FileNotFoundError, OSError):
@@ -310,7 +324,27 @@ class TranscriptService:
             self._reload_state(state)
         else:
             self._refresh_state(state)
+        self._touch_state(path)
+        self._prune_state_cache()
         return state.turns
+
+    def _touch_state(self, path: Path) -> None:
+        if path not in self._states:
+            return
+        state = self._states[path]
+        self._states[path] = self._states.pop(path)
+        state.last_access = time.time()
+
+    def _prune_state_cache(self) -> None:
+        if len(self._states) <= self._TRANSCRIPT_CACHE_MAX_SESSIONS:
+            return
+        paths = list(self._states.keys())
+        for path in paths:
+            if len(self._states) <= self._TRANSCRIPT_CACHE_MAX_SESSIONS:
+                break
+            if path in self._subscribers:
+                continue
+            self._states.pop(path)
 
     def _on_file_change_from_thread(self, path: Path) -> None:
         for listener in self._file_change_listeners:

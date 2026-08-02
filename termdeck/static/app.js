@@ -38,6 +38,10 @@ const CLOSED_SESSIONS_MAX_DISPLAY = 100;
 const ACTIVITY_SORT_BUCKET_MS = 15 * 60 * 1000;
 const TERMINAL_TAIL_REPAIR_LINES = 16;
 const TERMINAL_ACTIVATION_REFLOW_IDLE_MS = 1200;
+const OPEN_FILES_MAX_ENTRIES = 80;
+const TERMINAL_V2_FIT_RETRY_LIMIT = 32;
+const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
+const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [80, 250, 600, 1200, 2200];
 const DESKTOP_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Meta+b" },
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
@@ -1433,6 +1437,13 @@ class TermdeckApp {
       e.stopImmediatePropagation();
       this.selectActiveTerminalText();
     }, true);
+    // Every per-element dragleave/drop/dragend only runs when the drag ends on that same element, so a
+    // drag released anywhere else — empty sidebar, outside the window, Escape — strands its indicator.
+    // Bubble phase, never capture: the drop handlers read .drop-after off the target to decide placement,
+    // so this has to run after them.
+    for (const endEvent of ["dragend", "drop"]) {
+      document.addEventListener(endEvent, () => this.clearDragLandingIndicator(true));
+    }
     // Cmd+B is a browser bookmark/sidebar shortcut on macOS. Capture the
     // configured TermDeck bindings before the browser gets a chance to act.
     window.addEventListener("keydown", (e) => {
@@ -1505,6 +1516,25 @@ class TermdeckApp {
     new ResizeObserver(scheduleLayoutFit).observe(this.$("terminal-area"));
     new ResizeObserver(scheduleLayoutFit).observe(this.$("main"));
     window.addEventListener("resize", scheduleLayoutFit);
+    // Every fit/repaint pass in this file runs off requestAnimationFrame or setTimeout, both of
+    // which browsers throttle or fully suspend for a backgrounded tab or unfocused window. A
+    // repair scheduled while hidden does not fail — it just never runs, or runs late against
+    // stale state, until something un-suspends the page. visibilitychange/focus/pageshow fire
+    // promptly even from a suspended state (unlike rAF/setTimeout), so they are the one place
+    // that can reliably kick the active terminal back into a known-good state on return. This is
+    // also the likely reason a manual resize "always" fixes a stuck terminal: resizing requires
+    // focusing the window first, which is the trigger this file otherwise never listens for.
+    const revalidateActiveTerminalOnReturn = () => {
+      if (document.hidden) return;
+      const view = this.views.get(this.activeId);
+      if (!view || view.closed) return;
+      view.forceResizeAfterFit = true;
+      this.scheduleTerminalActivationRepair(view, { forceReflow: true });
+      this.scheduleActiveTerminalSettleWatchdog(view);
+    };
+    document.addEventListener("visibilitychange", revalidateActiveTerminalOnReturn);
+    window.addEventListener("focus", revalidateActiveTerminalOnReturn);
+    window.addEventListener("pageshow", revalidateActiveTerminalOnReturn);
     this.refresh().finally(() => this.connectStatusStream());
     setInterval(() => this.refresh(), SESSION_LIST_REFRESH_MS);
   }
@@ -2151,12 +2181,13 @@ class TermdeckApp {
   }
 
   clearDragLandingIndicator(clearSource = false) {
-    const list = this.$("session-list");
-    if (!list) return;
     this.clearDragGroupingTimer();
-    list.querySelectorAll(".drop-before, .drop-after, .drop-group, .group-drop-target")
-      .forEach((row) => row.classList.remove("drop-before", "drop-after", "drop-group", "group-drop-target"));
-    if (clearSource) list.querySelectorAll(".dragging-tab")
+    // Scoped to the document, not the session list: group labels, the file tree and the terminal's
+    // drop-to-attach overlay all raise indicators that outlive a drag ending outside their own element.
+    const landingClasses = ["drop-before", "drop-after", "drop-group", "group-drop-target", "drag-over"];
+    document.querySelectorAll(landingClasses.map((name) => `.${name}`).join(", "))
+      .forEach((row) => row.classList.remove(...landingClasses));
+    if (clearSource) document.querySelectorAll(".dragging-tab")
       .forEach((row) => row.classList.remove("dragging-tab"));
   }
 
@@ -5309,6 +5340,7 @@ class TermdeckApp {
       }
     }
     const switchedViews = previousView !== view;
+    if (switchedViews && previousView) this.clearActiveTerminalSettleWatchdog(previousView);
     const activatedAt = Date.now();
     for (const [viewId, v] of this.views) {
       const visible = viewId === id;
@@ -5349,12 +5381,14 @@ class TermdeckApp {
         if (previousId !== id && (!view.everConnected || view.awaitingSnapshot || view.replaying)) {
           view.scrollMode = "follow";
         }
-        this.scheduleV2Fit(view);
+        const forceFit = previousId !== id || this.shouldForceTerminalActivationReflow(view, switchedViews);
+        this.scheduleV2Fit(view, { force: forceFit });
         this.scheduleInitialV2Fit(view);
         if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
         this.scheduleTerminalActivationRepair(view, {
           forceReflow: this.shouldForceTerminalActivationReflow(view, switchedViews),
         });
+        this.scheduleActiveTerminalSettleWatchdog(view);
       } else if (previousId !== id) {
         const needsInitialFollow = !view.everConnected || view.awaitingSnapshot || view.replaying;
         if (needsInitialFollow || view.keepBottom) {
@@ -5406,7 +5440,8 @@ class TermdeckApp {
                    programmaticScrollUntil: 0, programmaticScrollGeneration: 0, scrollSettleTimer: 0,
                    reconnectTimer: 0, settleFrame: 0, viewportRepairFrame: 0, needsViewportRepair: false,
                    resizeRepairTimer: 0, outputQueue: [], outputWriteInFlight: false, outputWriteGeneration: 0,
-                   layoutObserver: null, scrollObserver: null, layoutFitRetryTimer: 0, layoutFitRetryCount: 0,
+                   layoutObserver: null, scrollObserver: null, visibilityObserver: null,
+                   layoutFitRetryTimer: 0, layoutFitRetryCount: 0,
                    keepBottom: true, manualScroll: false, manualScrollGeneration: 0, manualScrollReleaseTimer: 0,
                    wasAtBottom: true, scrollMode: "follow", v2Programmatic: false, v2FitFrame: 0,
                    v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
@@ -5414,7 +5449,7 @@ class TermdeckApp {
                    suppressResizeToServer: false, resyncResizeRepairPending: false,
                    hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
                    tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
-                   lastSentCols: null, lastSentRows: null,
+                   lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [],
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
@@ -5589,6 +5624,16 @@ class TermdeckApp {
       if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
     });
     view.layoutObserver.observe(container);
+    // xterm suspends its renderer while the container is display:none and resumes from its own
+    // IntersectionObserver, so every refresh issued between activation and that resume is dropped.
+    // Output written while hidden therefore sits in the buffer unpainted until some later redraw.
+    // Repainting from a second observer on the same element covers it in either callback order:
+    // after xterm resumes this paints directly, before it the refresh is folded into xterm's resume.
+    view.visibilityObserver = new IntersectionObserver((entries) => {
+      if (!entries[entries.length - 1].isIntersecting || view.closed) return;
+      this.refreshTerminal(view);
+    }, { threshold: 0 });
+    view.visibilityObserver.observe(container);
     this.views.set(id, view);
     return view;
   }
@@ -5597,7 +5642,7 @@ class TermdeckApp {
     if (view.closed) return;
     view.suppressReconnect = false;
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws/${id}`);
+    const ws = new WebSocket(`${proto}://${location.host}/ws/${id}?screen_repaint=1`);
     ws.binaryType = "arraybuffer";
     view.awaitingSnapshot = true;
     view.replaying = false;
@@ -6042,19 +6087,27 @@ class TermdeckApp {
     });
   }
 
-  scheduleV2Fit(view) {
-    if (!view || view.closed || view.v2FitFrame || !view.container.classList.contains("visible")) return;
+  scheduleV2Fit(view, options = {}) {
+    const forceResize = !!options.force;
+    if (!view || view.closed || !view.container.classList.contains("visible")) return;
+    if (view.v2FitFrame && forceResize) {
+      cancelAnimationFrame(view.v2FitFrame);
+      view.v2FitFrame = 0;
+    }
+    if (view.v2FitFrame) return;
     view.v2FitFrame = requestAnimationFrame(() => {
       view.v2FitFrame = 0;
       if (view.closed || !view.container.classList.contains("visible")) return;
       const rect = view.container.getBoundingClientRect();
       if (rect.width < 40 || rect.height < 40) {
-        if (!view.layoutFitRetryTimer && view.layoutFitRetryCount < 12) {
+        const retryLimit = forceResize ? TERMINAL_V2_FIT_RETRY_LIMIT : 12;
+        const retryDelay = forceResize ? TERMINAL_V2_FIT_RETRY_DELAY_MS : 60;
+        if (!view.layoutFitRetryTimer && view.layoutFitRetryCount < retryLimit) {
           view.layoutFitRetryCount += 1;
           view.layoutFitRetryTimer = setTimeout(() => {
             view.layoutFitRetryTimer = 0;
-            if (!view.closed && view.container.classList.contains("visible")) this.scheduleV2Fit(view);
-          }, 60);
+            if (!view.closed && view.container.classList.contains("visible")) this.scheduleV2Fit(view, options);
+          }, retryDelay);
         }
         return;
       }
@@ -6067,13 +6120,15 @@ class TermdeckApp {
       // A terminal may have been painted while its container was hidden or
       // at its pre-flex width. Refresh after the settled fit so the canvas
       // and text colors are repainted together with the final geometry.
-      const forceResize = view.forceResizeAfterFit;
-      if (forceResize) {
+      const forceResizeThisFrame = forceResize || view.forceResizeAfterFit;
+      if (forceResizeThisFrame) {
         view.forceResizeAfterFit = false;
         if (this.forceVisibleTerminalReflow(view)) return;
+      } else {
+        view.forceResizeAfterFit = false;
       }
-      this.refreshTerminalAppearance(view, forceResize);
-      if (forceResize && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
+      this.refreshTerminalAppearance(view, forceResizeThisFrame);
+      if (forceResizeThisFrame && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
       if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
     });
   }
@@ -6260,6 +6315,21 @@ class TermdeckApp {
     if (!this.terminalTailRenderMismatch(view)) return false;
     const restoreLine = view.term.buffer.active.viewportY;
     const follow = view.scrollMode === "follow";
+    // A stale-looking render is not always a paint problem: the terminal's own cols/rows can be wrong for
+    // its actual container width (a sibling's DOM change, a still-settling flex pass) without ever having
+    // gone through a resize event. fit() re-measures the container and calls term.resize() when that
+    // differs, which repaints AND corrects wrapping in one pass. Re-check the mismatch afterward — a pure
+    // paint glitch (fit is a no-op) still needs the appearance refresh below.
+    const beforeCols = view.term.cols, beforeRows = view.term.rows;
+    view.fit.fit();
+    if (view.term.cols !== beforeCols || view.term.rows !== beforeRows) {
+      if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
+      if (!this.terminalTailRenderMismatch(view)) {
+        if (follow) this.scrollTerminalV2ToBottom(view);
+        else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+        return true;
+      }
+    }
     this.refreshTerminalAppearance(view, true);
     if (follow) this.scrollTerminalV2ToBottom(view);
     else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
@@ -6275,6 +6345,35 @@ class TermdeckApp {
     if (!switchedViews) return false;
     const hiddenFor = view.hiddenAt ? now - view.hiddenAt : Number.POSITIVE_INFINITY;
     return hiddenFor >= TERMINAL_ACTIVATION_REFLOW_IDLE_MS;
+  }
+
+  // Re-measures and force-resends a terminal's size at several points after it becomes active,
+  // bypassing sendResize's own dedup each time. Layout can still be settling well past the existing
+  // single-shot activation fit (fonts, a sidebar mid-resize, a flex pass waiting on another panel),
+  // and there is otherwise no retry for a resize the server silently dropped or a program never fully
+  // redrew for. This is the same "keep re-measuring and re-sending until it's right" behavior a manual
+  // drag-resize gets for free from a live ResizeObserver stream — just scoped to the active terminal
+  // and self-terminating instead of a standing timer.
+  scheduleActiveTerminalSettleWatchdog(view) {
+    this.clearActiveTerminalSettleWatchdog(view);
+    if (!view || view.closed || !this.isTerminalScrollV2()) return;
+    for (const delay of TERMINAL_ACTIVE_SETTLE_DELAYS_MS) {
+      view.settleWatchdogTimers.push(setTimeout(() => {
+        if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
+        const beforeCols = view.term.cols, beforeRows = view.term.rows;
+        view.fit.fit();
+        if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
+        if (view.term.cols !== beforeCols || view.term.rows !== beforeRows || this.terminalTailRenderMismatch(view)) {
+          this.repairTerminalRenderIfStale(view);
+        }
+      }, delay));
+    }
+  }
+
+  clearActiveTerminalSettleWatchdog(view) {
+    if (!view) return;
+    for (const timer of view.settleWatchdogTimers) clearTimeout(timer);
+    view.settleWatchdogTimers = [];
   }
 
   scheduleTerminalTailRepair(view) {
@@ -6318,11 +6417,12 @@ class TermdeckApp {
         !view.container.classList.contains("visible")) return false;
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return false;
-    const computed = window.getComputedStyle(view.container);
-    const originalRight = view.container.style.right;
-    const right = Number.parseFloat(computed.right);
-    const cellWidth = Number(view.term._core?._renderService?.dimensions?.css?.cell?.width) || 8;
-    const nudgeRight = (Number.isFinite(right) ? right : 4) + Math.max(Math.ceil(cellWidth * 2), 14);
+    const clientNudge = true;
+    const computed = clientNudge ? window.getComputedStyle(view.container) : null;
+    const originalRight = clientNudge ? view.container.style.right : "";
+    const right = clientNudge ? Number.parseFloat(computed.right) : 0;
+    const cellWidth = clientNudge ? Number(view.term._core?._renderService?.dimensions?.css?.cell?.width) || 8 : 0;
+    const nudgeRight = clientNudge ? (Number.isFinite(right) ? right : 4) + Math.max(Math.ceil(cellWidth * 2), 14) : 0;
     const restoreLine = view.term.buffer.active.viewportY;
     const follow = view.scrollMode === "follow";
     view.suppressResizeToServer = true;
@@ -6334,13 +6434,13 @@ class TermdeckApp {
         view.v2Programmatic = false;
         return;
       }
-      view.container.style.right = `${nudgeRight}px`;
+      if (clientNudge) view.container.style.right = `${nudgeRight}px`;
       view.fit.fit();
       this.refreshTerminalAppearance(view, true);
       view.v2ForcedReflowRestoreFrame = requestAnimationFrame(() => {
         view.v2ForcedReflowRestoreFrame = 0;
         if (!view.closed) {
-          view.container.style.right = originalRight;
+          if (clientNudge) view.container.style.right = originalRight;
           if (view.container.classList.contains("visible")) {
             view.fit.fit();
             this.refreshTerminalAppearance(view, true);
@@ -6468,6 +6568,7 @@ class TermdeckApp {
 
   destroyView(id, view) {
     view.closed = true;
+    this.clearActiveTerminalSettleWatchdog(view);
     clearTimeout(view.manualScrollReleaseTimer);
     clearTimeout(view.scrollSettleTimer);
     clearTimeout(view.resizeRepairTimer);
@@ -6483,6 +6584,7 @@ class TermdeckApp {
     clearTimeout(view.layoutFitRetryTimer);
     if (view.layoutObserver) view.layoutObserver.disconnect();
     if (view.scrollObserver) view.scrollObserver.disconnect();
+    if (view.visibilityObserver) view.visibilityObserver.disconnect();
     if (view.ws) view.ws.close();
     view.term.dispose();
     view.container.remove();
@@ -6537,12 +6639,41 @@ class TermdeckApp {
     const states = this.settings.project_state || {};
     const lists = this.projectSlug ? [this.getProjectState().open_files || []]
       : Object.values(states).map((state) => state.open_files || []);
-    for (const f of lists.flat()) {
+    const files = lists.flat().slice(-OPEN_FILES_MAX_ENTRIES);
+    for (const f of files) {
       if (f && f.root && f.path) {
         this.openFiles.set(`${f.root}|${f.path}`,
           { root: f.root, path: f.path, name: f.path.split("/").pop(), model: null, fullPath: null, truncated: false });
       }
     }
+  }
+
+  enforceOpenFilesLimit() {
+    if (this.openFiles.size <= OPEN_FILES_MAX_ENTRIES) return;
+    const candidates = [...this.openFiles.keys()];
+    for (const key of candidates) {
+      if (this.openFiles.size <= OPEN_FILES_MAX_ENTRIES) break;
+      if (key === this.activeFileKey) continue;
+      const entry = this.openFiles.get(key);
+      if (!entry || entry.dirty) continue;
+      this.closeOpenFileEntry(key, entry);
+    }
+    if (this.openFiles.size <= OPEN_FILES_MAX_ENTRIES) return;
+    for (const key of [...this.openFiles.keys()]) {
+      if (this.openFiles.size <= OPEN_FILES_MAX_ENTRIES) break;
+      if (key === this.activeFileKey) continue;
+      const entry = this.openFiles.get(key);
+      if (!entry) continue;
+      this.closeOpenFileEntry(key, entry);
+    }
+  }
+
+  closeOpenFileEntry(key, entry) {
+    if (entry.model) {
+      entry.model.dispose();
+      entry.model = null;
+    }
+    this.openFiles.delete(key);
   }
 
   owningProjectKey(root) {
@@ -7017,8 +7148,13 @@ class TermdeckApp {
     const key = `${root}|${path}`;
     if (!this.openFiles.has(key)) {
       this.openFiles.set(key, { root, path, name: path.split("/").pop(), model: null, fullPath: null, truncated: false });
-      this.persistOpenFiles();
+    } else {
+      const entry = this.openFiles.get(key);
+      this.openFiles.delete(key);
+      this.openFiles.set(key, entry);
     }
+    this.enforceOpenFilesLimit();
+    this.persistOpenFiles();
     this.markTreeSelection(treeRow || null);
     const returnTo = typeof options.returnTo === "string" ? options.returnTo.trim() : "";
     await this.activateFile(key, line, { returnTo });
@@ -7144,8 +7280,14 @@ class TermdeckApp {
     const left = String(leftText || "").replace(/\s+$/, "");
     const right = String(rightText || "").replace(/^\s+/, "");
     if (!left || !right) return false;
-    if (!/[\\/._-]$/.test(left)) return false;
-    return /^[\w@%+=.-]+(?:[\\/._-]|:\d)/.test(right);
+    // A hard column wrap can land the path separator on either side of the break: "trainer/" then
+    // "prep.py", but just as often "zscripts" then "/probe.py", or a base name then its own ".py".
+    // Only the first shape was recognized before, so a directory name ending a wrapped row (with
+    // no trailing slash) silently dropped its own prefix when the file link was opened.
+    if (/[\\/._-]$/.test(left) && /^[\w@%+=.-]+(?:[\\/._-]|:\d)/.test(right)) return true;
+    if (/[\w@%+=-]$/.test(left) && /^[\\/][\w@%+=.-]*\.[A-Za-z]/.test(right)) return true;
+    if (/[\w@%+=-]$/.test(left) && /^\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+){0,2}\b/.test(right)) return true;
+    return false;
   }
 
   providePathLinks(term, sessionId, bufferLineNumber, callback) {
@@ -7153,9 +7295,6 @@ class TermdeckApp {
     const targetIndex = bufferLineNumber - 1;
     if (!buffer.getLine(targetIndex)) { callback(undefined); return; }
 
-    // xterm stores a visually wrapped terminal row as several BufferLines.
-    // Reassemble that logical line before matching so a path split at the
-    // terminal width is still opened with its complete value.
     let firstIndex = targetIndex;
     while (firstIndex > 0) {
       const current = buffer.getLine(firstIndex);
@@ -7166,11 +7305,13 @@ class TermdeckApp {
     }
     const segments = [];
     let nextIndex = firstIndex;
+    let logicalOffset = 0;
     while (nextIndex < buffer.length) {
       const line = buffer.getLine(nextIndex);
       if (!line) break;
       const text = line.translateToString(true);
-      segments.push({ index: nextIndex, text });
+      segments.push({ index: nextIndex, text, logicalStart: logicalOffset });
+      logicalOffset += text.length;
       const nextLine = buffer.getLine(nextIndex + 1);
       if (!nextLine || (!nextLine.isWrapped && !this.terminalPathBoundaryContinues(
         text, nextLine.translateToString(true)))) break;
@@ -7178,9 +7319,8 @@ class TermdeckApp {
     }
     const logicalText = segments.map((segment) => segment.text).join("");
     const links = [];
-    let logicalOffset = 0;
     for (const segment of segments) {
-      const segmentStart = logicalOffset;
+      const segmentStart = segment.logicalStart;
       const segmentEnd = segmentStart + segment.text.length;
       if (segment.index === targetIndex && segment.text.length) {
         for (const match of logicalText.matchAll(PATH_LINK_RE)) {
@@ -7196,19 +7336,56 @@ class TermdeckApp {
           links.push({
             range: { start: { x: start + 1, y: bufferLineNumber }, end: { x: end, y: bufferLineNumber } },
             text: raw,
-            // xterm may pass only the visible row fragment as linkText when
-            // this path crosses a wrap. Always open the complete match.
             activate: () => this.openFileFromLink(sessionId, raw),
           });
         }
       }
-      logicalOffset = segmentEnd;
+    }
+    if (!links.length) {
+      const collapsedChars = [];
+      const logicalCharStarts = [];
+      for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
+        const segment = segments[segmentIndex];
+        const previousText = segmentIndex > 0 ? segments[segmentIndex - 1].text : "";
+        const rightText = String(segment.text || "");
+        const trimStart = this.terminalPathBoundaryContinues(previousText, rightText) ? (rightText.match(/^\s*/)?.[0]?.length ?? 0) : 0;
+        for (let charIndex = trimStart; charIndex < segment.text.length; charIndex += 1) {
+          collapsedChars.push(segment.text[charIndex]);
+          logicalCharStarts.push(segment.logicalStart + charIndex);
+        }
+      }
+      const collapsedText = collapsedChars.join("");
+      for (const segment of segments) {
+        const segmentStart = segment.logicalStart;
+        const segmentEnd = segmentStart + segment.text.length;
+        if (segment.index === targetIndex && segment.text.length) {
+          for (const match of collapsedText.matchAll(PATH_LINK_RE)) {
+            const raw = match[0];
+            const matchStart = match.index;
+            const matchEnd = matchStart + raw.length;
+            const logicalMatchStart = logicalCharStarts[matchStart];
+            if (typeof logicalMatchStart !== "number") continue;
+            const logicalMatchEnd = logicalCharStarts[matchEnd] ?? logicalText.length;
+            const ext = raw.split(":")[0].split(".").pop().toLowerCase();
+            if (!raw.includes("/") && !KNOWN_EXTS.has(ext)) continue;
+            if (logicalMatchStart >= segmentEnd || logicalMatchEnd <= segmentStart) continue;
+            const start = Math.max(logicalMatchStart, segmentStart) - segmentStart;
+            const end = Math.min(logicalMatchEnd, segmentEnd) - segmentStart;
+            if (end <= start) continue;
+            links.push({
+              range: { start: { x: start + 1, y: bufferLineNumber }, end: { x: end, y: bufferLineNumber } },
+              text: raw,
+              activate: (_event, linkText) => this.openFileFromLink(sessionId, linkText || raw),
+            });
+          }
+        }
+      }
     }
     callback(links.length ? links : undefined);
   }
 
   parseVscodeFileLink(linkText) {
-    let value = String(linkText || "").trim();
+    let value = String(linkText || "").trim().replace(/\s+/g, "");
     if (!value || /^(?:https?|mailto|data|javascript):/i.test(value)) return null;
     let line = null;
     let column = null;
@@ -7352,6 +7529,9 @@ class TermdeckApp {
     this.settings.last_model = model;
     this.settings.last_permissions = { ...(this.settings.last_permissions || {}), [model]: permission };
     this.saveSettings();
+    // Land the new terminal directly below the one in focus rather than at the end of the sidebar.
+    // An explicitly chosen group already dictates placement, so it wins.
+    const anchorSessionId = !targetGroupId && this.activeId && this.session(this.activeId) ? this.activeId : null;
     const res = await fetch("/api/sessions", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, permission, session_ref: sessionRef, cwd, title,
@@ -7377,6 +7557,8 @@ class TermdeckApp {
         terminal_layout: this.terminalLayout().filter((entry) => entry !== `session:${created.session_id}`),
       });
       this.renderList();
+    } else if (anchorSessionId && this.session(anchorSessionId) && this.session(created.session_id)) {
+      this.repositionSelectedSessions([created.session_id], anchorSessionId, true);
     }
     this.activate(created.session_id, { reveal: true });
   }
