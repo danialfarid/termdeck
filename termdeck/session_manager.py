@@ -54,18 +54,17 @@ class ManagedSession:
         self.osc_query_carry = b""
         self.last_repaint_offset: int | None = None
         self.scrollback_sync_carry = b""
-        # Codex/Claude paint their screen inside synchronized-update frames that _durable_scrollback_bytes
-        # strips, so their durable buffer never holds a full screen — true from the first byte, not just
-        # once this process has watched a strip happen. A session that has sat idle since the last server
-        # restart (buffer non-empty, but nothing new witnessed yet) would otherwise never get a repaint on
-        # attach in attach_client, and would stay stuck on stale content until unrelated new output flips
-        # this flag by coincidence.
-        self.screen_lives_only_in_stripped_sync_frames = record.agent_kind in (AgentKind.CODEX.value,
-                                                                                AgentKind.CLAUDE.value)
+        self.screen_lives_only_in_stripped_sync_frames = False
+        # Whether attach_client has already treated a cold (no-strip-witnessed-yet) claude/codex attach as
+        # needing a repaint. Scoped to a single occurrence per process lifetime so a burst of simultaneous
+        # reconnects across every open tab at once (e.g. right after a server restart) doesn't also mean a
+        # simultaneous pty resize nudge for every single one of them on every future reattach.
+        self.cold_attach_repaint_done = False
         self.screen_repaint_task: asyncio.Task | None = None
         self.draft_tracker = DraftInputTracker(record.draft)
         self.last_input_monotonic = 0.0
         self.last_activity_at = 0.0
+        self.total_output_bytes = 0
         self.last_activity_broadcast_monotonic = 0.0
         self.claude_subagent_states: dict[Path, bool] = {}
         self.claude_subagents_active = False
@@ -286,22 +285,28 @@ class TerminalSessionManager:
         if ms.screen_repaint_task is not None and not ms.screen_repaint_task.done():
             return
         ms.screen_repaint_task = asyncio.create_task(
-            self._force_screen_repaint(ms, ms.proc, delay, ms.last_activity_at))
+            self._force_screen_repaint(ms, ms.proc, delay, ms.total_output_bytes))
 
     async def _force_screen_repaint(self, ms: ManagedSession, proc: PtyProcess, delay: float,
-                                    activity_before_delay: float) -> None:
+                                    output_bytes_before_delay: int) -> None:
         """Make a full-screen TUI redraw itself by briefly changing the pty width.
 
         The replayed scrollback cannot reconstruct a Codex/Claude screen: those TUIs paint inside
         synchronized-update frames, which _durable_scrollback_bytes strips, so a freshly attached client
         would otherwise stare at an empty pane until the agent happens to emit new output. A pty only
         raises SIGWINCH when the size actually changes, so re-sending the current size is not enough.
-        Output arriving during the delay means the screen already repainted (usually because the newly
-        attached client fitted to a different size), and the nudge is skipped to avoid a second reflow.
+        A real repaint arriving during the delay means the screen already repainted (usually because the
+        newly attached client fitted to a different size) and the nudge is skipped to avoid a second
+        reflow — but that has to be judged by VOLUME, not merely by any byte having arrived: a dtach
+        reattach alone can emit a handful of bytes (its own inert winch ping, a spinner tick) that never
+        actually redrew the composer/status screen, and bailing out on those left sessions idle since the
+        last restart permanently stuck on stale scrollback. A genuine full-screen redraw is at minimum a
+        few hundred bytes of cursor-position and styling escapes, so require that much before trusting it.
         The restore reads the size again after the nudge, letting a client resize that landed meanwhile win.
         """
         await asyncio.sleep(delay)
-        if ms.proc is not proc or not proc.alive or ms.last_activity_at > activity_before_delay:
+        new_bytes = ms.total_output_bytes - output_bytes_before_delay
+        if ms.proc is not proc or not proc.alive or new_bytes >= TermdeckConfig.SCREEN_REPAINT_SKIP_MIN_BYTES:
             return
         cols, rows = max(2, ms.cols), max(2, ms.rows)
         nudge = cols - 1 if cols > TermdeckConfig.SCREEN_REPAINT_NUDGE_MIN_COLS else cols + 1
@@ -624,6 +629,7 @@ class TerminalSessionManager:
         if not data:
             return
         ms.last_activity_at = time.time()
+        ms.total_output_bytes += len(data)
         self._append_collapsing_repaints(ms, data)
         previous_title = ms.cli_title
         previous_processing = self._processing_state(ms)
@@ -774,7 +780,17 @@ class TerminalSessionManager:
             self._broadcast_status(ms)
         queue: asyncio.Queue = asyncio.Queue()
         ms.client_queues.add(queue)
-        if screen_repaint and (ms.screen_lives_only_in_stripped_sync_frames or not ms.buffer):
+        needs_repaint = ms.screen_lives_only_in_stripped_sync_frames or not ms.buffer
+        # A claude/codex session that has not produced output since the last server restart never gets a
+        # chance to set screen_lives_only_in_stripped_sync_frames live, even though its durable buffer has
+        # always been missing the actual screen (inherent to how these TUIs paint, not something that needs
+        # to be witnessed). Cover exactly that first-attach-since-restart case, once, without turning every
+        # later reattach of every agent session into an unconditional pty resize.
+        if not needs_repaint and not ms.cold_attach_repaint_done and \
+                ms.record.agent_kind in (AgentKind.CODEX.value, AgentKind.CLAUDE.value):
+            needs_repaint = True
+        ms.cold_attach_repaint_done = True
+        if screen_repaint and needs_repaint:
             self._schedule_screen_repaint(ms, TermdeckConfig.SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS)
         return bytes(ms.buffer), queue
 
