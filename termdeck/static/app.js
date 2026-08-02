@@ -1540,6 +1540,7 @@ class TermdeckApp {
     document.addEventListener("visibilitychange", revalidateActiveTerminalOnReturn);
     window.addEventListener("focus", revalidateActiveTerminalOnReturn);
     window.addEventListener("pageshow", revalidateActiveTerminalOnReturn);
+    this.installTerminalSizeDebugOverlay();
     this.refresh().finally(() => this.connectStatusStream());
     setInterval(() => this.refresh(), SESSION_LIST_REFRESH_MS);
   }
@@ -5980,7 +5981,50 @@ class TermdeckApp {
       view.lastSentCols = cols;
       view.lastSentRows = rows;
       view.ws.send(JSON.stringify({ type: "resize", cols, rows }));
+      view.debugLastResizeSentAtMs = Date.now();
+      view.debugResizeSendCount = (view.debugResizeSendCount || 0) + 1;
     }
+  }
+
+  // TEMPORARY diagnostic overlay for the Claude-only composer-wrap-on-refocus bug: shows the active
+  // terminal's live cols/rows against what was last actually sent to the server, so a real cmd+tab
+  // app-switch-and-back can be watched for whether the terminal genuinely resizes (this file's own
+  // doing) versus the composer corrupting with an unchanged size (points elsewhere, e.g. focus-report
+  // escape sequences xterm sends natively on textarea blur/focus, independent of any resize at all).
+  // Safe to delete once the bug is root-caused; purely additive, touches no resize/repaint logic.
+  installTerminalSizeDebugOverlay() {
+    const box = document.createElement("div");
+    box.id = "td-debug-size-overlay";
+    Object.assign(box.style, {
+      position: "fixed", bottom: "4px", left: "4px", zIndex: 99999,
+      font: "11px/1.4 ui-monospace, monospace", color: "#0f0", background: "rgba(0,0,0,0.75)",
+      padding: "4px 8px", borderRadius: "4px", whiteSpace: "pre", pointerEvents: "none",
+    });
+    document.body.appendChild(box);
+    let blurredAtMs = 0;
+    window.addEventListener("blur", () => { blurredAtMs = Date.now(); console.log("[td-debug] window blur", blurredAtMs); });
+    window.addEventListener("focus", () => console.log("[td-debug] window focus", Date.now(), "wasBlurredForMs", Date.now() - blurredAtMs));
+    const render = () => {
+      const view = this.views.get(this.activeId);
+      if (!view || view.closed) { box.textContent = "td-debug: no active terminal"; return; }
+      const rect = view.container.getBoundingClientRect();
+      const helper = view.container.querySelector(".xterm-helper-textarea");
+      const now = Date.now();
+      const sinceResize = view.debugLastResizeSentAtMs ? now - view.debugLastResizeSentAtMs : null;
+      box.textContent = [
+        `session=${view.sessionId}`,
+        `term.cols/rows=${view.term.cols}x${view.term.rows}`,
+        `lastSent=${view.lastSentCols}x${view.lastSentRows}`,
+        `resizeSendCount=${view.debugResizeSendCount || 0}`,
+        `lastResizeSentAgoMs=${sinceResize === null ? "n/a" : sinceResize}`,
+        `containerRectPx=${Math.round(rect.width)}x${Math.round(rect.height)}`,
+        `helperTextareaFocused=${helper ? document.activeElement === helper : "n/a"}`,
+        `documentHidden=${document.hidden}`,
+        `documentHasFocus=${document.hasFocus()}`,
+      ].join("\n");
+    };
+    setInterval(render, 500);
+    render();
   }
 
   scrollActiveToBottom() {
