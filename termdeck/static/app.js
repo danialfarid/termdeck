@@ -6006,12 +6006,22 @@ class TermdeckApp {
     if (view.debugSnapshots.length > TERMINAL_DEBUG_SNAPSHOT_LIMIT) view.debugSnapshots.shift();
   }
 
-  // TEMPORARY diagnostic overlay for the Claude-only composer-wrap-on-refocus bug: shows the active
-  // terminal's live cols/rows against what was last actually sent to the server (already ruled out --
-  // neither ever changes), plus a rolling history of buffer-vs-rendered-DOM snapshots taken on every
-  // resize send and around window blur/focus, diffed against the previous snapshot, to see whether the
-  // CLI's own output content changes across a refocus or whether termdeck just fails to paint it.
-  // Safe to delete once the bug is root-caused; purely additive, touches no resize/repaint logic.
+  // Terminal-rendering diagnostic panel: live cols/rows vs what was last sent to the server, plus a
+  // rolling history of buffer-vs-rendered-DOM snapshots (taken on every resize send, around window
+  // blur/focus, and at the start of forceVisibleTerminalReflow) diffed against the previous snapshot --
+  // built to see whether a CLI's own output content changes across a refocus or termdeck just fails to
+  // paint what it already has.
+  //
+  // GENERAL-PURPOSE, now dormant by design (2026-08-02, after the Claude-composer-wrap-on-refocus /
+  // codex-black-tab investigation this was built for landed on forceVisibleTerminalReflow's "auto"
+  // mode as the fix). Kept installed rather than deleted because rebuilding this scaffolding (snapshot
+  // capture wired into resize/blur/focus, buffer-vs-DOM diffing, a selectable/collapsible corner panel)
+  // is real effort worth not repeating for the next terminal-rendering bug. Starts COLLAPSED and does
+  // NOT poll on a timer -- capture hooks keep running in the background (cheap: bounded 50-entry ring
+  // buffer per view) so there is always some recent history, but the panel only renders when expanded,
+  // so it costs nothing while nobody is looking. To use it for a NEW investigation: expand the panel
+  // (header click or the collapse toggle), watch console for [td-debug] blur/focus logs, and call
+  // this.captureDebugSnapshot(view, "some-label") from wherever the new suspect code path runs.
   installTerminalSizeDebugOverlay() {
     const box = document.createElement("div");
     box.id = "td-debug-size-overlay";
@@ -6027,19 +6037,17 @@ class TermdeckApp {
     });
     const title = document.createElement("span");
     title.textContent = "td-debug";
-    // A/B switch between the new resize-free repaint (forceVisibleTerminalReflowViaClear) and the
-    // original CSS-width-nudge repaint (forceVisibleTerminalReflowViaResizeNudge) that caused the
-    // Claude composer wrap. Global, not per-view, and lives in the always-visible header (not the
-    // collapsible body) so it can be flipped without needing the overlay expanded. Lets a regression
-    // suspected to be a side effect of dropping the nudge -- e.g. a black codex tab that the old nudge
-    // happened to also repaint -- be tested against the original behavior without another deploy cycle.
+    // "auto" (branch by agent_kind: codex gets the resize-nudge, everyone else gets the resize-free
+    // clear) is the shipped default and fixed both the Claude wrap and the codex black-tab cases.
+    // "nudge (old)" is kept selectable as the ORIGINAL pre-investigation behavior (nudge for every
+    // session, unconditionally) purely as a side-by-side comparison if this regresses again later --
+    // not because it is a good option on its own; it reintroduces the Claude wrap.
     const modeSelect = document.createElement("select");
     Object.assign(modeSelect.style, { font: "10px monospace" });
-    const REFLOW_MODES = ["auto", "clear", "nudge"];
+    const REFLOW_MODES = ["auto", "nudge"];
     [
-      ["auto", "auto (test: codex=nudge, else=clear)"],
-      ["clear", "clear-only (fixes claude, codex black)"],
-      ["nudge", "resize-nudge 2col (fixes codex, claude wraps)"],
+      ["auto", "auto (default: codex=nudge, else=clear)"],
+      ["nudge", "nudge-everyone (old, side comparison only)"],
     ].forEach(([value, label]) => {
       const opt = document.createElement("option");
       opt.value = value;
@@ -6059,15 +6067,19 @@ class TermdeckApp {
       console.log("[td-debug] forceVisibleTerminalReflow mode:", this.debugReflowMode);
     });
     const toggle = document.createElement("span");
-    let collapsed = false;
+    // Starts collapsed: this panel is dormant scaffolding, not an active investigation right now.
+    let collapsed = true;
     const body = document.createElement("div");
     const applyCollapsed = () => {
       body.style.display = collapsed ? "none" : "";
       toggle.textContent = collapsed ? "▸ expand" : "▾ collapse";
     };
-    toggle.addEventListener("click", () => { collapsed = !collapsed; applyCollapsed(); });
+    // render() is declared further down in this same synchronous call, so it is already initialized
+    // by the time either handler can actually fire (both only run later, on a real click).
+    const expandAndRender = () => { collapsed = !collapsed; applyCollapsed(); if (!collapsed) render(); };
+    toggle.addEventListener("click", expandAndRender);
     header.append(title, modeSelect, toggle);
-    header.addEventListener("click", (e) => { if (e.target === header || e.target === title) { collapsed = !collapsed; applyCollapsed(); } });
+    header.addEventListener("click", (e) => { if (e.target === header || e.target === title) expandAndRender(); });
     const stats = document.createElement("div");
     Object.assign(stats.style, { font: "11px/1.4 ui-monospace, monospace", whiteSpace: "pre" });
     const diff = document.createElement("div");
@@ -6147,8 +6159,10 @@ class TermdeckApp {
       });
       diff.textContent = parts.join("\n");
     };
-    setInterval(render, 500);
-    render();
+    // No polling interval: render() only runs when the panel is expanded (expandAndRender above), so
+    // this costs nothing while collapsed. Capture hooks (blur/focus/onResize/reflow-start) still run
+    // unconditionally in the background -- cheap, bounded to 50 entries per view -- so there is always
+    // some recent history the moment this gets expanded for a future investigation.
   }
 
   scrollActiveToBottom() {
@@ -6585,22 +6599,17 @@ class TermdeckApp {
     });
   }
 
-  // TEMPORARY A/B dispatcher for the Claude composer-wrap fix -- see the debug overlay's mode select.
-  // Collapse back to whichever single implementation wins once confirmed safe for both claude and codex.
+  // Dispatches by this.debugReflowMode ("auto" by default, "nudge" selectable in the debug overlay
+  // purely as a side comparison -- see installTerminalSizeDebugOverlay). Neither underlying
+  // implementation alone satisfies both CLIs: the resize-free clear leaves codex's stale paint stuck,
+  // any resize-nudge magnitude/direction tried corrupts Claude's composer wrap (root cause: xterm's
+  // resize-driven buffer reflow can permanently mis-rewrap an already-wrapped row when cols is nudged
+  // even briefly and client-side-only). They need opposite treatment, so "auto" branches by the
+  // session's actual agent_kind instead of hunting for one universal value.
   forceVisibleTerminalReflow(view) {
-    // ~20% of codex "auto" attempts reportedly still leave only the last few lines visible with the
-    // rest of history gone -- if xterm's OWN buffer already lacks that content (not just failing to
-    // paint it), no client-side repaint trick can fix it; that would point back at the server-side
-    // scrollback replay instead. Tag the moment this runs so the debug overlay's next snapshot can be
-    // compared against it.
     this.captureDebugSnapshot(view, "forceVisibleTerminalReflow:start");
     if (this.debugReflowMode === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     if (this.debugReflowMode === "auto") {
-      // Neither implementation alone satisfies both CLIs: clear-only leaves codex's stale paint stuck,
-      // any resize-nudge magnitude/direction tried so far corrupts Claude's composer wrap. They need
-      // opposite treatment, so give each CLI what it actually needs instead of hunting for one universal
-      // fix -- codex gets the (only) nudge confirmed to unstick it, everything else (claude, plain
-      // shells) gets the resize-free repaint.
       const kind = this.session(view.sessionId)?.agent_kind;
       return kind === "codex" ? this.forceVisibleTerminalReflowViaResizeNudge(view, 2) : this.forceVisibleTerminalReflowViaClear(view);
     }
