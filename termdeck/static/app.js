@@ -5997,14 +5997,19 @@ class TermdeckApp {
     box.id = "td-debug-size-overlay";
     Object.assign(box.style, {
       position: "fixed", bottom: "4px", left: "4px", zIndex: 99999,
-      font: "11px/1.4 ui-monospace, monospace", color: "#0f0", background: "rgba(0,0,0,0.75)",
-      padding: "4px 8px", borderRadius: "4px", whiteSpace: "pre", pointerEvents: "none",
+      font: "11px/1.4 ui-monospace, monospace", color: "#0f0", background: "rgba(0,0,0,0.85)",
+      padding: "4px 8px", borderRadius: "4px", whiteSpace: "pre", cursor: "text",
+      userSelect: "text", WebkitUserSelect: "text", maxWidth: "40vw", overflow: "auto",
     });
     document.body.appendChild(box);
     let blurredAtMs = 0;
     window.addEventListener("blur", () => { blurredAtMs = Date.now(); console.log("[td-debug] window blur", blurredAtMs); });
     window.addEventListener("focus", () => console.log("[td-debug] window focus", Date.now(), "wasBlurredForMs", Date.now() - blurredAtMs));
+    // Overwriting textContent every tick would blow away a selection mid-drag or after release, right
+    // when the point is to select it and compare. Skip the refresh while the selection lives in the box.
     const render = () => {
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed && box.contains(selection.anchorNode)) return;
       const view = this.views.get(this.activeId);
       if (!view || view.closed) { box.textContent = "td-debug: no active terminal"; return; }
       const rect = view.container.getBoundingClientRect();
@@ -6012,6 +6017,7 @@ class TermdeckApp {
       const now = Date.now();
       const sinceResize = view.debugLastResizeSentAtMs ? now - view.debugLastResizeSentAtMs : null;
       box.textContent = [
+        `capturedAt=${new Date(now).toLocaleTimeString()}.${String(now % 1000).padStart(3, "0")}`,
         `session=${view.sessionId}`,
         `term.cols/rows=${view.term.cols}x${view.term.rows}`,
         `lastSent=${view.lastSentCols}x${view.lastSentRows}`,
