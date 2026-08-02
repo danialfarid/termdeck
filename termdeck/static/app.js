@@ -5566,7 +5566,6 @@ class TermdeckApp {
     });
     term.onData((data) => this.sendTrackedInput(view, data));
     term.onResize(({ cols, rows }) => {
-      this.captureDebugSnapshot(view, `term.onResize ${cols}x${rows}${view.suppressResizeToServer ? " (suppressed)" : ""}`);
       if (!view.suppressResizeToServer) this.sendResize(view, cols, rows);
     });
     term.onScroll(() => {
@@ -5985,16 +5984,14 @@ class TermdeckApp {
       view.lastSentCols = cols;
       view.lastSentRows = rows;
       view.ws.send(JSON.stringify({ type: "resize", cols, rows }));
-      view.debugLastResizeSentAtMs = Date.now();
-      view.debugResizeSendCount = (view.debugResizeSendCount || 0) + 1;
-      this.captureDebugSnapshot(view, "resize");
     }
   }
 
-  // Keeps the last DEBUG_SNAPSHOT_LIMIT {trigger, ts, buf, dom} entries per view. buf is xterm's own
-  // logical buffer tail (what SHOULD be on screen); dom is the actually-painted rows. If they ever
-  // disagree, that is a termdeck repaint bug; if buf itself changes content across snapshots with cols
-  // unchanged, the CLI genuinely redrew differently -- the two rule each other in or out.
+  // Reusable diagnostic utility, not called from anywhere by default -- wire it into a new suspect code
+  // path when needed. Keeps the last DEBUG_SNAPSHOT_LIMIT {trigger, ts, buf, dom} entries per view. buf
+  // is xterm's own logical buffer tail (what SHOULD be on screen); dom is the actually-painted rows. If
+  // they ever disagree, that is a termdeck repaint bug; if buf itself changes content across snapshots
+  // with cols unchanged, the CLI genuinely redrew differently -- the two rule each other in or out.
   captureDebugSnapshot(view, trigger) {
     if (!view || view.closed) return;
     view.debugSnapshots = view.debugSnapshots || [];
@@ -6006,27 +6003,23 @@ class TermdeckApp {
     if (view.debugSnapshots.length > TERMINAL_DEBUG_SNAPSHOT_LIMIT) view.debugSnapshots.shift();
   }
 
-  // Terminal-rendering diagnostic panel: live cols/rows vs what was last sent to the server, plus a
-  // rolling history of buffer-vs-rendered-DOM snapshots (taken on every resize send, around window
-  // blur/focus, and at the start of forceVisibleTerminalReflow) diffed against the previous snapshot --
-  // built to see whether a CLI's own output content changes across a refocus or termdeck just fails to
-  // paint what it already has.
-  //
-  // GENERAL-PURPOSE, now dormant by design (2026-08-02, after the Claude-composer-wrap-on-refocus /
-  // codex-black-tab investigation this was built for landed on forceVisibleTerminalReflow's "auto"
-  // mode as the fix). Kept installed rather than deleted because rebuilding this scaffolding (snapshot
-  // capture wired into resize/blur/focus, buffer-vs-DOM diffing, a selectable/collapsible corner panel)
-  // is real effort worth not repeating for the next terminal-rendering bug. Starts COLLAPSED and does
-  // NOT poll on a timer -- capture hooks keep running in the background (cheap: bounded 50-entry ring
-  // buffer per view) so there is always some recent history, but the panel only renders when expanded,
-  // so it costs nothing while nobody is looking. To use it for a NEW investigation: expand the panel
-  // (header click or the collapse toggle), watch console for [td-debug] blur/focus logs, and call
-  // this.captureDebugSnapshot(view, "some-label") from wherever the new suspect code path runs.
+  // Empty, INVISIBLE facade for a terminal-rendering diagnostic panel -- not wired to anything. Built
+  // during the 2026-08-02 Claude-composer-wrap-on-refocus / codex-black-tab investigation (root cause
+  // and fix documented on forceVisibleTerminalReflow); once that investigation was live this
+  // accumulated visible blur/focus/resize logging and buffer-vs-DOM snapshot diffs, which is exactly
+  // the noise this bare version intentionally does NOT produce. Kept only as reusable scaffolding for
+  // whichever future terminal-rendering bug needs it, so that structure doesn't have to be rebuilt from
+  // scratch. To reactivate: box.style.display = "block" (via this.debugOverlay.box from the console or
+  // new code), write into this.debugOverlay.stats/.diff, and wire this.captureDebugSnapshot(view,
+  // "label") into whatever new code path is under suspicion -- see this file's git history around
+  // 2026-08-02 for the previous full implementation (blur/focus hooks, cols/rows tracking, a
+  // buffer-vs-rendered-DOM differ, a mode-select A/B switch) as a reference to copy from, not to revive
+  // verbatim -- the earlier version leaked constant chatter into the panel, this rebuild should not.
   installTerminalSizeDebugOverlay() {
     const box = document.createElement("div");
     box.id = "td-debug-size-overlay";
     Object.assign(box.style, {
-      position: "fixed", top: "4px", right: "4px", zIndex: 99999, color: "#0f0",
+      position: "fixed", top: "4px", right: "4px", zIndex: 99999, display: "none", color: "#0f0",
       background: "rgba(0,0,0,0.9)", padding: "4px 8px", borderRadius: "4px", cursor: "text",
       userSelect: "text", WebkitUserSelect: "text", maxWidth: "44vw", maxHeight: "70vh", overflow: "auto",
     });
@@ -6037,49 +6030,16 @@ class TermdeckApp {
     });
     const title = document.createElement("span");
     title.textContent = "td-debug";
-    // "auto" (branch by agent_kind: codex gets the resize-nudge, everyone else gets the resize-free
-    // clear) is the shipped default and fixed both the Claude wrap and the codex black-tab cases.
-    // "nudge (old)" is kept selectable as the ORIGINAL pre-investigation behavior (nudge for every
-    // session, unconditionally) purely as a side-by-side comparison if this regresses again later --
-    // not because it is a good option on its own; it reintroduces the Claude wrap.
-    const modeSelect = document.createElement("select");
-    Object.assign(modeSelect.style, { font: "10px monospace" });
-    const REFLOW_MODES = ["auto", "nudge"];
-    [
-      ["auto", "auto (default: codex=nudge, else=clear)"],
-      ["nudge", "nudge-everyone (old, side comparison only)"],
-    ].forEach(([value, label]) => {
-      const opt = document.createElement("option");
-      opt.value = value;
-      opt.textContent = label;
-      modeSelect.appendChild(opt);
-    });
-    // Persisted so the choice survives a full page reload -- needed to test "first load" behavior
-    // (shouldForceTerminalActivationReflow's !lastActivationReflowAt branch fires before there's any
-    // chance to touch the dropdown otherwise) rather than only refocus/tab-switch behavior.
-    const REFLOW_MODE_STORAGE_KEY = "td-debug-reflow-mode";
-    const storedMode = localStorage.getItem(REFLOW_MODE_STORAGE_KEY);
-    this.debugReflowMode = REFLOW_MODES.includes(storedMode) ? storedMode : "auto";
-    modeSelect.value = this.debugReflowMode;
-    modeSelect.addEventListener("change", () => {
-      this.debugReflowMode = modeSelect.value;
-      localStorage.setItem(REFLOW_MODE_STORAGE_KEY, this.debugReflowMode);
-      console.log("[td-debug] forceVisibleTerminalReflow mode:", this.debugReflowMode);
-    });
     const toggle = document.createElement("span");
-    // Starts collapsed: this panel is dormant scaffolding, not an active investigation right now.
     let collapsed = true;
     const body = document.createElement("div");
     const applyCollapsed = () => {
       body.style.display = collapsed ? "none" : "";
       toggle.textContent = collapsed ? "▸ expand" : "▾ collapse";
     };
-    // render() is declared further down in this same synchronous call, so it is already initialized
-    // by the time either handler can actually fire (both only run later, on a real click).
-    const expandAndRender = () => { collapsed = !collapsed; applyCollapsed(); if (!collapsed) render(); };
-    toggle.addEventListener("click", expandAndRender);
-    header.append(title, modeSelect, toggle);
-    header.addEventListener("click", (e) => { if (e.target === header || e.target === title) expandAndRender(); });
+    toggle.addEventListener("click", () => { collapsed = !collapsed; applyCollapsed(); });
+    header.append(title, toggle);
+    header.addEventListener("click", (e) => { if (e.target === header || e.target === title) { collapsed = !collapsed; applyCollapsed(); } });
     const stats = document.createElement("div");
     Object.assign(stats.style, { font: "11px/1.4 ui-monospace, monospace", whiteSpace: "pre" });
     const diff = document.createElement("div");
@@ -6088,81 +6048,7 @@ class TermdeckApp {
     box.append(header, body);
     applyCollapsed();
     document.body.appendChild(box);
-    const captureActive = (trigger) => {
-      const view = this.views.get(this.activeId);
-      if (view) this.captureDebugSnapshot(view, trigger);
-    };
-    let blurredAtMs = 0;
-    window.addEventListener("blur", () => {
-      blurredAtMs = Date.now();
-      console.log("[td-debug] window blur", blurredAtMs);
-      captureActive("blur");
-      setTimeout(() => captureActive("blur+300ms"), 300);
-    });
-    window.addEventListener("focus", () => {
-      console.log("[td-debug] window focus", Date.now(), "wasBlurredForMs", Date.now() - blurredAtMs);
-      captureActive("focus");
-      setTimeout(() => captureActive("focus+300ms"), 300);
-      setTimeout(() => captureActive("focus+1000ms"), 1000);
-    });
-    const diffLines = (before, after) => {
-      const count = Math.max(before.length, after.length);
-      const out = [];
-      for (let i = 0; i < count; i++) {
-        if ((before[i] || "") !== (after[i] || "")) {
-          out.push(`  L${i}: ${JSON.stringify(before[i] || "")}`);
-          out.push(`     -> ${JSON.stringify(after[i] || "")}`);
-        }
-      }
-      return out.length ? out.join("\n") : "  (no change)";
-    };
-    // Overwriting text every tick would blow away a selection mid-drag or after release, right when
-    // the point is to select it and compare. Skip the refresh while the selection lives in the box.
-    const render = () => {
-      const selection = window.getSelection();
-      if (selection && !selection.isCollapsed && box.contains(selection.anchorNode)) return;
-      const view = this.views.get(this.activeId);
-      if (!view || view.closed) { stats.textContent = "td-debug: no active terminal"; diff.textContent = ""; return; }
-      const rect = view.container.getBoundingClientRect();
-      const helper = view.container.querySelector(".xterm-helper-textarea");
-      const now = Date.now();
-      const sinceResize = view.debugLastResizeSentAtMs ? now - view.debugLastResizeSentAtMs : null;
-      stats.textContent = [
-        `capturedAt=${new Date(now).toLocaleTimeString()}.${String(now % 1000).padStart(3, "0")}`,
-        `session=${view.sessionId}`,
-        `term.cols/rows=${view.term.cols}x${view.term.rows}`,
-        `lastSent=${view.lastSentCols}x${view.lastSentRows}`,
-        `resizeSendCount=${view.debugResizeSendCount || 0}`,
-        `lastResizeSentAgoMs=${sinceResize === null ? "n/a" : sinceResize}`,
-        `containerRectPx=${Math.round(rect.width)}x${Math.round(rect.height)}`,
-        `helperTextareaFocused=${helper ? document.activeElement === helper : "n/a"}`,
-        `documentHidden=${document.hidden}`,
-        `documentHasFocus=${document.hasFocus()}`,
-      ].join("\n");
-      const snapshots = view.debugSnapshots || [];
-      const parts = [`--- last ${snapshots.length} snapshots (buf=xterm buffer, dom=painted rows) ---`];
-      snapshots.forEach((snap, i) => {
-        const bufDomMismatch = snap.buf.join("\n") !== snap.dom.join("\n");
-        const prev = i > 0 ? snapshots[i - 1] : null;
-        const colsChanged = prev && (prev.cols !== snap.cols || prev.rows !== snap.rows);
-        parts.push(`#${i} +${snap.ts - (snapshots[0]?.ts || snap.ts)}ms trigger=${snap.trigger} cols/rows=${snap.cols}x${snap.rows}` +
-                   (colsChanged ? ` *** was ${prev.cols}x${prev.rows} ***` : "") +
-                   (bufDomMismatch ? "  *** buf!=dom (repaint bug) ***" : "  buf==dom"));
-        if (bufDomMismatch) {
-          parts.push(" buf-vs-dom diff:");
-          parts.push(diffLines(snap.buf, snap.dom));
-        }
-        if (prev) {
-          parts.push(` buf vs snapshot #${i - 1}:`);
-          parts.push(diffLines(prev.buf, snap.buf));
-        }
-      });
-      diff.textContent = parts.join("\n");
-    };
-    // No polling interval: render() only runs when the panel is expanded (expandAndRender above), so
-    // this costs nothing while collapsed. Capture hooks (blur/focus/onResize/reflow-start) still run
-    // unconditionally in the background -- cheap, bounded to 50 entries per view -- so there is always
-    // some recent history the moment this gets expanded for a future investigation.
+    this.debugOverlay = { box, stats, diff };
   }
 
   scrollActiveToBottom() {
@@ -6599,21 +6485,20 @@ class TermdeckApp {
     });
   }
 
-  // Dispatches by this.debugReflowMode ("auto" by default, "nudge" selectable in the debug overlay
-  // purely as a side comparison -- see installTerminalSizeDebugOverlay). Neither underlying
-  // implementation alone satisfies both CLIs: the resize-free clear leaves codex's stale paint stuck,
-  // any resize-nudge magnitude/direction tried corrupts Claude's composer wrap (root cause: xterm's
-  // resize-driven buffer reflow can permanently mis-rewrap an already-wrapped row when cols is nudged
-  // even briefly and client-side-only). They need opposite treatment, so "auto" branches by the
-  // session's actual agent_kind instead of hunting for one universal value.
+  // Neither underlying implementation alone satisfies both CLIs: the resize-free clear leaves codex's
+  // stale paint stuck, any resize-nudge magnitude/direction tried corrupts Claude's composer wrap (root
+  // cause: xterm's resize-driven buffer reflow can permanently mis-rewrap an already-wrapped row when
+  // cols is nudged even briefly and client-side-only, confirmed live). They need opposite treatment, so
+  // branch by the session's actual agent_kind instead of hunting for one universal value.
+  //
+  // localStorage["td-debug-reflow-mode"]="nudge" forces the pre-fix nudge-everyone behavior for every
+  // session regardless of kind -- a manual escape hatch kept ONLY for a side-by-side comparison if this
+  // regresses again later, not a real option (it reintroduces the Claude wrap on its own). No UI for it;
+  // set/clear it from the browser console.
   forceVisibleTerminalReflow(view) {
-    this.captureDebugSnapshot(view, "forceVisibleTerminalReflow:start");
-    if (this.debugReflowMode === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
-    if (this.debugReflowMode === "auto") {
-      const kind = this.session(view.sessionId)?.agent_kind;
-      return kind === "codex" ? this.forceVisibleTerminalReflowViaResizeNudge(view, 2) : this.forceVisibleTerminalReflowViaClear(view);
-    }
-    return this.forceVisibleTerminalReflowViaClear(view);
+    if (localStorage.getItem("td-debug-reflow-mode") === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
+    const kind = this.session(view.sessionId)?.agent_kind;
+    return kind === "codex" ? this.forceVisibleTerminalReflowViaResizeNudge(view, 2) : this.forceVisibleTerminalReflowViaClear(view);
   }
 
   forceVisibleTerminalReflowViaClear(view) {
