@@ -6035,11 +6035,11 @@ class TermdeckApp {
     // happened to also repaint -- be tested against the original behavior without another deploy cycle.
     const modeSelect = document.createElement("select");
     Object.assign(modeSelect.style, { font: "10px monospace" });
-    const REFLOW_MODES = ["clear", "nudge", "nudge1"];
+    const REFLOW_MODES = ["auto", "clear", "nudge"];
     [
-      ["clear", "clear-only (new, fixes claude, codex black)"],
-      ["nudge", "resize-nudge 2col (old, fixes codex, claude wraps)"],
-      ["nudge1", "resize-nudge 1col (test)"],
+      ["auto", "auto (test: codex=nudge, else=clear)"],
+      ["clear", "clear-only (fixes claude, codex black)"],
+      ["nudge", "resize-nudge 2col (fixes codex, claude wraps)"],
     ].forEach(([value, label]) => {
       const opt = document.createElement("option");
       opt.value = value;
@@ -6051,7 +6051,7 @@ class TermdeckApp {
     // chance to touch the dropdown otherwise) rather than only refocus/tab-switch behavior.
     const REFLOW_MODE_STORAGE_KEY = "td-debug-reflow-mode";
     const storedMode = localStorage.getItem(REFLOW_MODE_STORAGE_KEY);
-    this.debugReflowMode = REFLOW_MODES.includes(storedMode) ? storedMode : "clear";
+    this.debugReflowMode = REFLOW_MODES.includes(storedMode) ? storedMode : "auto";
     modeSelect.value = this.debugReflowMode;
     modeSelect.addEventListener("change", () => {
       this.debugReflowMode = modeSelect.value;
@@ -6589,7 +6589,15 @@ class TermdeckApp {
   // Collapse back to whichever single implementation wins once confirmed safe for both claude and codex.
   forceVisibleTerminalReflow(view) {
     if (this.debugReflowMode === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
-    if (this.debugReflowMode === "nudge1") return this.forceVisibleTerminalReflowViaResizeNudge(view, 1);
+    if (this.debugReflowMode === "auto") {
+      // Neither implementation alone satisfies both CLIs: clear-only leaves codex's stale paint stuck,
+      // any resize-nudge magnitude/direction tried so far corrupts Claude's composer wrap. They need
+      // opposite treatment, so give each CLI what it actually needs instead of hunting for one universal
+      // fix -- codex gets the (only) nudge confirmed to unstick it, everything else (claude, plain
+      // shells) gets the resize-free repaint.
+      const kind = this.session(view.sessionId)?.agent_kind;
+      return kind === "codex" ? this.forceVisibleTerminalReflowViaResizeNudge(view, 2) : this.forceVisibleTerminalReflowViaClear(view);
+    }
     return this.forceVisibleTerminalReflowViaClear(view);
   }
 
