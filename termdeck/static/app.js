@@ -10,7 +10,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
-  show_terminal_icons: false, compact_terminal_icons: false, history_mode: false, notebook_open: false, notebook_left: -1, notebook_text: "",
+  show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_left: -1, notebook_text: "",
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
   files_pinned: false, sidebar_text_color: "#d5dbe5", vscode_keybindings: {} };
 const MODEL_PERMISSIONS = {
@@ -1859,7 +1859,7 @@ class TermdeckApp {
   }
 
   usesTextTerminalStatus() {
-    return !this.vscodeMode && (!this.settings.show_terminal_icons || !!this.settings.compact_terminal_icons);
+    return !this.vscodeMode && !this.settings.show_terminal_icons;
   }
 
   updateUnreadIndicator(id) {
@@ -2672,7 +2672,6 @@ class TermdeckApp {
     icon.classList.toggle("claude-terminal-icon", s.agent_kind === "claude");
     icon.classList.toggle("codex-terminal-icon", s.agent_kind === "codex");
     icon.classList.toggle("on", !!this.settings.show_terminal_icons);
-    icon.classList.toggle("compact-terminal-icon", !this.vscodeMode && !!this.settings.compact_terminal_icons);
     return icon;
   }
 
@@ -2767,12 +2766,10 @@ class TermdeckApp {
     this.setSessionTitleText(title, presentation.text, useTextStatusIndicator && presentation.spinning);
     this.sessionTitleEls.set(s.session_id, title);
     const typeIcon = this.terminalTypeIcon(s);
-    const showHoverBrandIndicator = !this.vscodeMode && this.settings.show_terminal_icons && !!this.settings.compact_terminal_icons;
-    const showDesktopBrandIndicator = !this.vscodeMode && this.settings.show_terminal_icons && !showHoverBrandIndicator;
-    item.classList.toggle("compact-terminal-icons", showHoverBrandIndicator);
-    const iconStatusActive = (showDesktopBrandIndicator || showHoverBrandIndicator) &&
+    const showDesktopBrandIndicator = !this.vscodeMode && this.settings.show_terminal_icons;
+    const iconStatusActive = showDesktopBrandIndicator &&
       (presentation.spinning || this.unreadSessions.has(s.session_id));
-    const iconStatusExited = (showDesktopBrandIndicator || showHoverBrandIndicator) && !s.running && !s.dormant;
+    const iconStatusExited = showDesktopBrandIndicator && !s.running && !s.dormant;
     typeIcon.classList.toggle("terminal-status-active", iconStatusActive);
     typeIcon.classList.toggle("terminal-status-exited", !iconStatusActive && iconStatusExited);
     const close = document.createElement("button");
@@ -5789,6 +5786,7 @@ class TermdeckApp {
     };
     ws.onmessage = (e) => {
       if (typeof e.data === "string") { this.handleControl(id, view, JSON.parse(e.data)); return; }
+      console.log("[td-trace] ws data", id, Date.now(), "bytes", e.data.byteLength, "awaitingSnapshot", view.awaitingSnapshot);
       // xterm's buffer continues to process output while an inactive tab is
       // display:none, but its browser viewport has zero height. Remember that
       // state so activation can synchronize the now-visible scrollbar through
@@ -5814,6 +5812,7 @@ class TermdeckApp {
         this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
           this.refreshTerminal(view);
           view.replaying = false;
+          console.log("[td-trace] snapshot write done", id, Date.now());
           if (v2 && view.container.classList.contains("visible")) {
             view.forceResizeAfterFit = true;
             this.scheduleV2Fit(view);
@@ -6736,12 +6735,23 @@ class TermdeckApp {
     // caps how long the terminal can ever stay invisible for, regardless of system load.
     const hideStartedAt = Date.now();
     view.container.style.visibility = "hidden";
-    const revealDeadline = setTimeout(() => { view.container.style.visibility = ""; }, minHideMs + 250);
+    console.log("[td-trace] hide start", view.sessionId, hideStartedAt, "minHideMs", minHideMs);
+    const revealDeadline = setTimeout(() => {
+      view.container.style.visibility = "";
+      console.log("[td-trace] reveal (deadline timeout)", view.sessionId, Date.now(), "elapsedMs", Date.now() - hideStartedAt);
+    }, minHideMs + 250);
     const revealContainer = () => {
       const remaining = minHideMs - (Date.now() - hideStartedAt);
       clearTimeout(revealDeadline);
-      if (remaining > 0) setTimeout(() => { view.container.style.visibility = ""; }, remaining);
-      else view.container.style.visibility = "";
+      if (remaining > 0) {
+        setTimeout(() => {
+          view.container.style.visibility = "";
+          console.log("[td-trace] reveal (delayed)", view.sessionId, Date.now(), "elapsedMs", Date.now() - hideStartedAt);
+        }, remaining);
+      } else {
+        view.container.style.visibility = "";
+        console.log("[td-trace] reveal (immediate)", view.sessionId, Date.now(), "elapsedMs", Date.now() - hideStartedAt);
+      }
     };
     view.v2ForcedReflowFrame = requestAnimationFrame(() => {
       view.v2ForcedReflowFrame = 0;
@@ -7176,12 +7186,6 @@ class TermdeckApp {
       () => { this.settings.show_stats = !this.settings.show_stats; }));
     pop.appendChild(this.buildToggleRow("Terminal icons", () => (this.settings.show_terminal_icons ? "on" : "off"),
       () => { this.settings.show_terminal_icons = !this.settings.show_terminal_icons; this.renderList(); }));
-    pop.appendChild(this.buildToggleRow("Hover brand icons", () => (this.settings.compact_terminal_icons ? "on" : "off"),
-      () => {
-        this.settings.compact_terminal_icons = !this.settings.compact_terminal_icons;
-        if (this.settings.compact_terminal_icons) this.settings.show_terminal_icons = true;
-        this.renderList();
-      }));
     pop.appendChild(this.buildToggleRow("Editor wrap", () => (this.settings.word_wrap ? "on" : "off"),
       () => { this.settings.word_wrap = !this.settings.word_wrap; }));
     pop.appendChild(this.buildToggleRow("Markdown transcript mode", () => (this.settings.history_mode ? "on" : "off"),
