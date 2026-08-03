@@ -4590,7 +4590,19 @@ class TermdeckApp {
       } else if (ch === "\x17") {
         view.promptDraft = view.promptDraft.replace(/\s+$/, "").replace(/\S+$/, "");
       } else if (ch >= " ") {
-        view.promptDraft += ch;
+        // Append the whole run of plain characters at once, not one at a time: this used to be
+        // promptDraft += ch per character, which is an O(n^2) blowup for a large pasted string (each
+        // += copies the entire accumulated draft again) -- long enough to freeze the tab for several
+        // seconds on a big multiline paste, reported as "hangs" and "not editable".
+        let end = i + 1;
+        while (end < stream.length) {
+          const next = stream[end];
+          if (next < " " || next === "\x7f") break;
+          end += 1;
+        }
+        view.promptDraft += stream.slice(i, end);
+        i = end;
+        continue;
       }
       i += 1;
     }
