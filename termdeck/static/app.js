@@ -5611,14 +5611,30 @@ class TermdeckApp {
         if (previousId !== id && !view.everConnected) {
           view.scrollMode = "follow";
         }
-        const forceFit = previousId !== id || this.shouldForceTerminalActivationReflow(view, switchedViews);
-        this.scheduleV2Fit(view, { force: forceFit });
-        this.scheduleInitialV2Fit(view);
-        if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
-        this.scheduleTerminalActivationRepair(view, {
-          forceReflow: this.shouldForceTerminalActivationReflow(view, switchedViews),
-        });
-        this.scheduleActiveTerminalSettleWatchdog(view);
+        // A tab the user explicitly scrolled up on (scrollMode "preserve") was, by definition, already
+        // rendering correctly before they left it -- you cannot scroll up on a black/broken pane. Every
+        // fit/reflow/repair call below exists to fix a FRESH connect or reconnect that might be showing
+        // stale/incomplete content; none of that applies here, and ground-truth testing found that these
+        // calls can themselves corrupt the scroll position on a tab that never needed fixing (the exact
+        // "switching between half-scrolled tabs jumps to the top" bug, still unresolved after several
+        // attempts at making each individual call scroll-position-safe). Skip the whole pipeline for this
+        // case and let the CSS visibility toggle alone reveal whatever is already sitting in the DOM,
+        // untouched -- the original "views stay alive" design intent before any of that machinery existed.
+        // A genuine container-size change while backgrounded is still caught independently by
+        // view.layoutObserver's own ResizeObserver, which runs regardless of activation.
+        const needsFreshConnectHandling = previousId !== id && (!view.everConnected || view.awaitingSnapshot || view.replaying);
+        if (view.scrollMode === "preserve" && !needsFreshConnectHandling) {
+          // Nothing to do: no fit, no reflow, no repair, no watchdog.
+        } else {
+          const forceFit = previousId !== id || this.shouldForceTerminalActivationReflow(view, switchedViews);
+          this.scheduleV2Fit(view, { force: forceFit });
+          this.scheduleInitialV2Fit(view);
+          if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+          this.scheduleTerminalActivationRepair(view, {
+            forceReflow: this.shouldForceTerminalActivationReflow(view, switchedViews),
+          });
+          this.scheduleActiveTerminalSettleWatchdog(view);
+        }
       } else if (previousId !== id) {
         const needsInitialFollow = !view.everConnected || view.awaitingSnapshot || view.replaying;
         if (needsInitialFollow || view.keepBottom) {
