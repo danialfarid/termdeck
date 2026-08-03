@@ -5541,6 +5541,12 @@ class TermdeckApp {
         // v2 deliberately trusts xterm's own buffer state instead of the
         // browser's private viewport scroll position.
         previousView.scrollMode = this.xtermAtBottom(previousView) ? "follow" : "preserve";
+        // Captured as an OFFSET, not the absolute viewportY: if this tab's background websocket has
+        // closed by the time we come back to it, reactivating it resets and replays the whole buffer
+        // from scratch (see ws.onopen's view.term.reset()), making an absolute row index meaningless
+        // against the freshly rebuilt buffer. "N rows above the latest line" survives that rebuild.
+        previousView.preserveRowsFromBottom =
+          previousView.term.buffer.active.baseY - previousView.term.buffer.active.viewportY;
       } else {
         // xterm's buffer viewport can still report the old bottom row while
         // the browser scrollbar has already moved. Carry the native position
@@ -5590,7 +5596,19 @@ class TermdeckApp {
       this.refreshTerminalAppearance(view);
       if (!view.ws) this.connect(id, view);
       if (this.isTerminalScrollV2()) {
-        if (previousId !== id && (!view.everConnected || view.awaitingSnapshot || view.replaying)) {
+        // Only a genuinely first-ever connection should default to follow mode. A background tab's
+        // websocket can close on its own (ws.onclose only auto-reconnects the ACTIVE tab, by design,
+        // to avoid reconnecting every backgrounded session) and then reconnect right here via
+        // `!view.ws` above the moment it's reactivated -- that reconnect ALSO sets
+        // awaitingSnapshot/replaying, so including them in this condition overwrote a correctly
+        // recorded "preserve" (the user had scrolled up before leaving this tab) back to "follow" on
+        // every such reconnect. everConnected alone distinguishes the two: it starts false only for a
+        // view that has never connected at all, and stays true across every later reconnect. Ground-
+        // truth confirmed: a reconnected view's buffer resets and replays from scratch (baseY drops
+        // then regrows), and this forced "follow" combined with that replay is what made switching
+        // back to an already-scrolled-up tab land near the top once the buffer regrew past wherever
+        // the early, still-small-buffer scrollToBottom had landed.
+        if (previousId !== id && !view.everConnected) {
           view.scrollMode = "follow";
         }
         const forceFit = previousId !== id || this.shouldForceTerminalActivationReflow(view, switchedViews);
@@ -5659,7 +5677,7 @@ class TermdeckApp {
                    hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
                    tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
                    lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [], codexReflowFollowupTimers: [],
-                   codexReflowEverAttempted: false,
+                   codexReflowEverAttempted: false, preserveRowsFromBottom: 0, reconnectReset: false,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
@@ -5864,6 +5882,10 @@ class TermdeckApp {
     view.lastSentCols = null;
     view.lastSentRows = null;
     ws.onopen = () => {
+      // Recorded per-connect (not just per-view) so the snapshot handler below can tell whether THIS
+      // specific replay followed a buffer reset -- everConnected itself is true for every reconnect
+      // from here on, so it cannot answer that by the time onmessage runs.
+      view.reconnectReset = view.everConnected;
       if (view.everConnected) {
         view.replaying = true;
         if (!this.isTerminalScrollV2()) {
@@ -5952,8 +5974,18 @@ class TermdeckApp {
               view.needsViewportRepair = true;
               this.scheduleViewportSettle(view);
             }
-          } else {
-            if (!v2) view.pinBottomUntil = 0;
+          } else if (v2 && view.reconnectReset) {
+            // A reconnect's replay rebuilt the buffer from scratch (view.term.reset() in ws.onopen),
+            // so the pre-reset absolute viewportY this tab had is meaningless now -- restore using the
+            // rows-from-bottom offset captured before that reset instead. Without this, xterm's own
+            // write()-time auto-follow (a freshly reset buffer starts "at the bottom" trivially, so it
+            // naturally tracks the incoming replay) lands the view at the bottom of the FULL replayed
+            // content regardless of where the user actually was, which showed up as a scrolled-up tab
+            // jumping toward the top once the buffer regrew past the small early size where an
+            // earlier bug (now fixed) had frozen the viewport.
+            this.scrollTerminalV2ToLine(view, Math.max(0, view.term.buffer.active.baseY - (view.preserveRowsFromBottom || 0)));
+          } else if (!v2) {
+            view.pinBottomUntil = 0;
           }
         });
         return;
@@ -6376,6 +6408,21 @@ class TermdeckApp {
     });
   }
 
+  // Restoring a "preserve" position needs the same v2Programmatic guard scrollTerminalV2ToBottom
+  // already uses: term.onScroll re-derives scrollMode from wherever the terminal ends up on every
+  // scroll it sees, including one this function itself triggers -- without the guard, that immediate
+  // self-triggered onScroll can flip scrollMode right back to "follow"/"preserve" based on the
+  // now-current position, one write-callback race away from stomping the caller's intended value
+  // before this function's own caller gets a chance to set it explicitly afterward.
+  scrollTerminalV2ToLine(view, line) {
+    if (!view || view.closed) return;
+    view.v2Programmatic = true;
+    view.term.scrollToLine(line);
+    queueMicrotask(() => {
+      if (!view.closed) view.v2Programmatic = false;
+    });
+  }
+
   scheduleV2Fit(view, options = {}) {
     const forceResize = !!options.force;
     if (!view || view.closed || !view.container.classList.contains("visible")) return;
@@ -6403,9 +6450,23 @@ class TermdeckApp {
       view.layoutFitRetryCount = 0;
       clearTimeout(view.layoutFitRetryTimer);
       view.layoutFitRetryTimer = 0;
+      // Captured as an offset (not the absolute viewportY) and BEFORE fit() below, since this is the
+      // earliest point in the whole activation chain where a cols/rows change (and therefore a full
+      // buffer reflow) can happen -- every downstream repair function (repairTerminalRenderIfStale,
+      // forceVisibleTerminalReflow*) captures ITS OWN restore point only after this has already run,
+      // so if fit() corrupts the position here, they just faithfully preserve the already-corrupted
+      // value instead of the user's actual intended position. Ground-truth testing (window.__td)
+      // confirmed this is where "switching between half-scrolled tabs jumps to the top" traces back
+      // to: FitAddon.fit() calling term.resize() with different cols does not preserve viewportY on
+      // its own, it can land at 0.
+      const beforeCols = view.term.cols, beforeRows = view.term.rows;
+      const rowsFromBottom = view.term.buffer.active.baseY - view.term.buffer.active.viewportY;
       // FitAddon is the public xterm sizing mechanism. v2 never writes to
       // .xterm-viewport or .xterm-scroll-area; xterm owns its scrollbar.
       view.fit.fit();
+      if (view.scrollMode !== "follow" && (view.term.cols !== beforeCols || view.term.rows !== beforeRows)) {
+        this.scrollTerminalV2ToLine(view, Math.max(0, view.term.buffer.active.baseY - rowsFromBottom));
+      }
       // A terminal may have been painted while its container was hidden or
       // at its pre-flex width. Refresh after the settled fit so the canvas
       // and text colors are repainted together with the final geometry.
@@ -6610,6 +6671,15 @@ class TermdeckApp {
     if (!view || view.closed || !view.container.classList.contains("visible")) return false;
     if (!this.terminalTailRenderMismatch(view)) return false;
     const restoreLine = view.term.buffer.active.viewportY;
+    // Captured as an OFFSET, not the absolute index above: a cols change reflows the whole buffer
+    // (every wrapped line can re-wrap into a different number of rows), so restoreLine can point at
+    // entirely different content once that happens. An earlier attempt just skipped restoring
+    // anything in that case, assuming xterm's own resize()/reflow keeps the viewport sensibly
+    // positioned on its own -- ground-truth testing (window.__td) showed that assumption was wrong,
+    // reflow can leave viewportY at 0 outright. "N rows above the latest line" survives a reflow the
+    // same way it survives a reconnect-driven buffer reset (see the leaving-view capture in
+    // activate() and the reconnect restore in connect()'s ws.onmessage).
+    const restoreRowsFromBottom = view.term.buffer.active.baseY - restoreLine;
     const follow = view.scrollMode === "follow";
     // A stale-looking render is not always a paint problem: the terminal's own cols/rows can be wrong for
     // its actual container width (a sibling's DOM change, a still-settling flex pass) without ever having
@@ -6621,20 +6691,14 @@ class TermdeckApp {
     if (view.term.cols !== beforeCols || view.term.rows !== beforeRows) {
       if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
       if (!this.terminalTailRenderMismatch(view)) {
-        // restoreLine is a row INDEX captured before the resize above -- a cols change reflows the
-        // whole buffer (every wrapped line can re-wrap into a different number of rows), so that index
-        // can point at entirely different content afterward, sometimes landing near row 0. Reported:
-        // switching between half-scrolled tabs randomly jumps to the top. Only restore it when cols
-        // did NOT actually change (the pure-paint branch below, where the index is still valid);
-        // when a reflow did happen, trust xterm's own resize()/reflow to have kept the viewport
-        // sensibly positioned rather than overriding it with a now-stale index.
         if (follow) this.scrollTerminalV2ToBottom(view);
+        else this.scrollTerminalV2ToLine(view, Math.max(0, view.term.buffer.active.baseY - restoreRowsFromBottom));
         return true;
       }
     }
     this.refreshTerminalAppearance(view, true);
     if (follow) this.scrollTerminalV2ToBottom(view);
-    else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+    else this.scrollTerminalV2ToLine(view, Math.min(restoreLine, view.term.buffer.active.baseY));
     return true;
   }
 
