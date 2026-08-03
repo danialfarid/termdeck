@@ -5546,6 +5546,7 @@ class TermdeckApp {
                    hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
                    tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
                    lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [], codexReflowFollowupTimers: [],
+                   codexReflowEverAttempted: false,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
@@ -6630,9 +6631,18 @@ class TermdeckApp {
     // re-trigger (switching back to a tab that was already displaying fine) is pure risk with no upside
     // if nothing is actually wrong. "guarded" skips those later re-triggers unless
     // terminalTailRenderMismatch actually finds something to fix.
+    //
+    // NOTE: this must NOT read view.lastActivationReflowAt -- that gets stamped by the CALLER
+    // (scheduleTerminalActivationRepair) right before this function even runs, as a "don't re-trigger
+    // too soon" scheduling marker, not a "this view has successfully reflowed" signal. Reading it here
+    // made "guarded" treat every single call as a repeat (even a brand-new view's very first one),
+    // permanently falling into the mismatch-gated branch and going black on every refresh when that
+    // check didn't fire reliably on a still-populating fresh view -- confirmed live, reverted. Track a
+    // dedicated flag instead, set only by this function itself, after the fact.
     const guarded = localStorage.getItem("td-debug-codex-mode") === "guarded";
-    const isFirstEverReflow = !view.lastActivationReflowAt;
+    const isFirstEverReflow = !view.codexReflowEverAttempted;
     if (guarded && !isFirstEverReflow && !this.terminalTailRenderMismatch(view)) return false;
+    view.codexReflowEverAttempted = true;
     const result = this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     this.scheduleCodexReflowFollowup(view);
     return result;
