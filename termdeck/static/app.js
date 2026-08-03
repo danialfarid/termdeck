@@ -208,6 +208,7 @@ class TermdeckApp {
     this.historyStreamFresh = false;
     this.historyRevisions = new Map();
     this.historyPendingPrompts = new Map();
+    this.historyPendingPromptSequence = 0;
     this.historyFingerprint = "";
     this.historyTurns = [];
     this.historyLoaded = false;
@@ -4380,9 +4381,15 @@ class TermdeckApp {
     const merged = turns.slice();
     const remaining = [];
     for (const item of pending) {
-      const seen = merged.filter((turn) => turn.role === "user" && turn.text === item.text).length;
-      if (seen > item.beforeCount) continue;
-      merged.push({ role: "user", text: item.text });
+      const pendingId = item.pending_id || `${Date.now()}-${this.historyPendingPromptSequence++}`;
+      item.pending_id = pendingId;
+      const authoritativeCount = merged.filter((turn) => turn.role === "user" && turn.text === item.text && !turn.pending_id).length;
+      const optimisticIndex = merged.findIndex((turn) => turn.pending_id === pendingId);
+      if (authoritativeCount > item.beforeCount) {
+        if (optimisticIndex >= 0) merged.splice(optimisticIndex, 1);
+        continue;
+      }
+      if (optimisticIndex < 0) merged.push({ role: "user", text: item.text, pending_id: pendingId });
       remaining.push(item);
     }
     if (remaining.length) this.historyPendingPrompts.set(sessionId, remaining);
@@ -4418,9 +4425,10 @@ class TermdeckApp {
       // authoritative transcript update reconcile this optimistic row.
       const turns = this.historyTurnsBySession.get(sessionId) || this.historyTurns;
       const pending = this.historyPendingPrompts.get(sessionId) || [];
-      const beforeCount = turns.filter((turn) => turn.role === "user" && turn.text === text).length -
-        pending.filter((item) => item.text === text).length;
-      pending.push({ text, beforeCount });
+      const authoritativeCount = turns.filter((turn) => turn.role === "user" && turn.text === text && !turn.pending_id).length;
+      const beforeCount = authoritativeCount + pending.filter((item) => item.text === text).length;
+      const pendingId = `${Date.now()}-${this.historyPendingPromptSequence++}`;
+      pending.push({ text, beforeCount, pending_id: pendingId });
       this.historyPendingPrompts.set(sessionId, pending);
       const live = this.historyLiveTurnsBySession.get(sessionId) || turns;
       const optimisticLive = this.mergePendingHistoryPrompts(sessionId, live);
@@ -4478,7 +4486,7 @@ class TermdeckApp {
     if (!entries.length) {
       const empty = document.createElement("div");
       empty.className = "history-prompt-history-empty";
-      empty.textContent = "No prompts sent from Markdown mode yet.";
+      empty.textContent = "No prompts sent yet.";
       items.appendChild(empty);
       return;
     }
@@ -4594,6 +4602,9 @@ class TermdeckApp {
   }
 
   sendTrackedInput(view, data) {
+    const session = this.session(view.sessionId);
+    const submittedText = (data === "\r" || data === "\n") && session && session.agent_kind !== "none"
+      ? view.promptDraft.trim() : "";
     const queueText = data === "\t" && this.session(view.sessionId)?.agent_kind === "codex" && view.promptDraft.trim()
       ? view.promptDraft
       : "";
@@ -4613,6 +4624,7 @@ class TermdeckApp {
       }, 3000);
     }
     this.sendInput(view, data);
+    if (submittedText && view.ws && view.ws.readyState === WebSocket.OPEN) this.recordPromptHistory(view.sessionId, submittedText);
     if (view.promptDraft !== previousDraft) this.sendPromptDraftSync(view, view.promptDraft);
     if (queueText) {
       // Codex has accepted this composer into its queue. Keep the two editors
@@ -4622,6 +4634,7 @@ class TermdeckApp {
       view.promptEditing = false;
       view.pendingTerminalDraft = null;
       view.pendingDraftSync = null;
+      if (view.ws && view.ws.readyState === WebSocket.OPEN) this.recordPromptHistory(view.sessionId, queueText);
       view.promptQueue.push({
         text: queueText,
         userCount: this.historyTurns.filter((turn) => turn.role === "user").length,
@@ -5528,6 +5541,8 @@ class TermdeckApp {
         // v2 deliberately trusts xterm's own buffer state instead of the
         // browser's private viewport scroll position.
         previousView.scrollMode = this.xtermAtBottom(previousView) ? "follow" : "preserve";
+        console.log("[td-trace] leaving view, scrollMode set to", previousView.scrollMode, previousView.sessionId,
+                    "viewportY", previousView.term.buffer.active.viewportY, "baseY", previousView.term.buffer.active.baseY);
       } else {
         // xterm's buffer viewport can still report the old bottom row while
         // the browser scrollbar has already moved. Carry the native position
@@ -5578,9 +5593,16 @@ class TermdeckApp {
       if (!view.ws) this.connect(id, view);
       if (this.isTerminalScrollV2()) {
         if (previousId !== id && (!view.everConnected || view.awaitingSnapshot || view.replaying)) {
+          console.log("[td-trace] activating view, FORCING scrollMode=follow", view.sessionId, Date.now(),
+                      "everConnected", view.everConnected, "awaitingSnapshot", view.awaitingSnapshot, "replaying", view.replaying);
           view.scrollMode = "follow";
+        } else {
+          console.log("[td-trace] activating view, scrollMode stays", view.scrollMode, view.sessionId, Date.now());
         }
         const forceFit = previousId !== id || this.shouldForceTerminalActivationReflow(view, switchedViews);
+        console.log("[td-trace] activate forceFit", forceFit, view.sessionId, "shouldForceReflow",
+                    this.shouldForceTerminalActivationReflow(view, switchedViews), "lastActivationReflowAt",
+                    view.lastActivationReflowAt, "hiddenAt", view.hiddenAt);
         this.scheduleV2Fit(view, { force: forceFit });
         this.scheduleInitialV2Fit(view);
         if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
@@ -6355,6 +6377,7 @@ class TermdeckApp {
 
   scrollTerminalV2ToBottom(view) {
     if (!view || view.closed) return;
+    console.trace("[td-trace] scrollTerminalV2ToBottom called", view.sessionId, Date.now());
     view.scrollMode = "follow";
     view.v2Programmatic = true;
     view.term.scrollToBottom();
@@ -6621,7 +6644,11 @@ class TermdeckApp {
     }
     this.refreshTerminalAppearance(view, true);
     if (follow) this.scrollTerminalV2ToBottom(view);
-    else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+    else {
+      console.log("[td-trace] repairTerminalRenderIfStale restore (no cols change)", view.sessionId,
+                  "restoreLine", restoreLine, "baseY", view.term.buffer.active.baseY);
+      view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+    }
     return true;
   }
 
@@ -6784,7 +6811,11 @@ class TermdeckApp {
       // into resize()/reflow(), so there is nothing for xterm to fail to perfectly undo.
       this.refreshTerminalAppearance(view, true);
       if (follow) this.scrollTerminalV2ToBottom(view);
-      else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+      else {
+        console.log("[td-trace] forceVisibleTerminalReflowViaClear restore", view.sessionId,
+                    "restoreLine", restoreLine, "baseY", view.term.buffer.active.baseY);
+        view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+      }
       queueMicrotask(() => {
         if (!view.closed) view.v2Programmatic = false;
       });
@@ -6863,7 +6894,11 @@ class TermdeckApp {
             this.refreshTerminalAppearance(view, true);
             if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
             if (follow) this.scrollTerminalV2ToBottom(view);
-            else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+            else {
+              console.log("[td-trace] forceVisibleTerminalReflowViaResizeNudge restore", view.sessionId,
+                          "restoreLine", restoreLine, "baseY", view.term.buffer.active.baseY);
+              view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
+            }
           }
           revealContainer();
         }

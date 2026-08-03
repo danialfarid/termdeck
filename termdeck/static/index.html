@@ -103,12 +103,17 @@
       <div id="history-prompt-wrap">
         <textarea id="history-prompt" rows="1" placeholder="Continue this session…" spellcheck="false"></textarea>
         <span id="history-model" class="hidden"></span>
-        <div id="history-prompt-help">Enter submit · Tab queue (model) · ↑↓ edit queued · Shift+Enter newline · Esc interrupt</div>
+      <div id="history-prompt-help">Enter submit · Tab queue (model) · ↑↓ edit queued · Shift+Enter newline · Esc interrupt</div>
       </div>
       <div id="history-composer-actions">
+        <button id="history-prompt-history-btn" title="Recent prompts" aria-label="Recent prompts" aria-expanded="false"><span class="codicon codicon-history"></span></button>
         <button id="history-send" title="Send prompt" aria-label="Send prompt"><span class="codicon codicon-send"></span></button>
         <button id="history-attach" title="Upload file/image into prompt" aria-label="Upload file/image into prompt"><span class="codicon codicon-cloud-upload"></span></button>
       </div>
+    </div>
+    <div id="history-prompt-history" class="hidden" role="dialog" aria-label="Recent prompts">
+      <div id="history-prompt-history-head">Recent prompts</div>
+      <div id="history-prompt-history-items"></div>
     </div>
   </div>
     <div id="terminal-area">

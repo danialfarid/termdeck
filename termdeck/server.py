@@ -173,6 +173,7 @@ class UiSettings(BaseModel):
     last_permissions: dict[str, str] = {}
     show_terminal_icons: bool = False
     history_mode: bool = False
+    prompt_history: dict[str, list[str]] = {}
     notebook_open: bool = False
     notebook_left: int = -1
     notebook_preview: bool = False
