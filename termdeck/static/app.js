@@ -5541,8 +5541,6 @@ class TermdeckApp {
         // v2 deliberately trusts xterm's own buffer state instead of the
         // browser's private viewport scroll position.
         previousView.scrollMode = this.xtermAtBottom(previousView) ? "follow" : "preserve";
-        console.log("[td-trace] leaving view, scrollMode set to", previousView.scrollMode, previousView.sessionId,
-                    "viewportY", previousView.term.buffer.active.viewportY, "baseY", previousView.term.buffer.active.baseY);
       } else {
         // xterm's buffer viewport can still report the old bottom row while
         // the browser scrollbar has already moved. Carry the native position
@@ -5593,16 +5591,9 @@ class TermdeckApp {
       if (!view.ws) this.connect(id, view);
       if (this.isTerminalScrollV2()) {
         if (previousId !== id && (!view.everConnected || view.awaitingSnapshot || view.replaying)) {
-          console.log("[td-trace] activating view, FORCING scrollMode=follow", view.sessionId, Date.now(),
-                      "everConnected", view.everConnected, "awaitingSnapshot", view.awaitingSnapshot, "replaying", view.replaying);
           view.scrollMode = "follow";
-        } else {
-          console.log("[td-trace] activating view, scrollMode stays", view.scrollMode, view.sessionId, Date.now());
         }
         const forceFit = previousId !== id || this.shouldForceTerminalActivationReflow(view, switchedViews);
-        console.log("[td-trace] activate forceFit", forceFit, view.sessionId, "shouldForceReflow",
-                    this.shouldForceTerminalActivationReflow(view, switchedViews), "lastActivationReflowAt",
-                    view.lastActivationReflowAt, "hiddenAt", view.hiddenAt);
         this.scheduleV2Fit(view, { force: forceFit });
         this.scheduleInitialV2Fit(view);
         if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
@@ -6377,7 +6368,6 @@ class TermdeckApp {
 
   scrollTerminalV2ToBottom(view) {
     if (!view || view.closed) return;
-    console.trace("[td-trace] scrollTerminalV2ToBottom called", view.sessionId, Date.now());
     view.scrollMode = "follow";
     view.v2Programmatic = true;
     view.term.scrollToBottom();
@@ -6644,11 +6634,7 @@ class TermdeckApp {
     }
     this.refreshTerminalAppearance(view, true);
     if (follow) this.scrollTerminalV2ToBottom(view);
-    else {
-      console.log("[td-trace] repairTerminalRenderIfStale restore (no cols change)", view.sessionId,
-                  "restoreLine", restoreLine, "baseY", view.term.buffer.active.baseY);
-      view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
-    }
+    else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
     return true;
   }
 
@@ -6811,11 +6797,7 @@ class TermdeckApp {
       // into resize()/reflow(), so there is nothing for xterm to fail to perfectly undo.
       this.refreshTerminalAppearance(view, true);
       if (follow) this.scrollTerminalV2ToBottom(view);
-      else {
-        console.log("[td-trace] forceVisibleTerminalReflowViaClear restore", view.sessionId,
-                    "restoreLine", restoreLine, "baseY", view.term.buffer.active.baseY);
-        view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
-      }
+      else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
       queueMicrotask(() => {
         if (!view.closed) view.v2Programmatic = false;
       });
@@ -6894,11 +6876,7 @@ class TermdeckApp {
             this.refreshTerminalAppearance(view, true);
             if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
             if (follow) this.scrollTerminalV2ToBottom(view);
-            else {
-              console.log("[td-trace] forceVisibleTerminalReflowViaResizeNudge restore", view.sessionId,
-                          "restoreLine", restoreLine, "baseY", view.term.buffer.active.baseY);
-              view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
-            }
+            else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
           }
           revealContainer();
         }
