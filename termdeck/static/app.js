@@ -288,6 +288,7 @@ class TermdeckApp {
     this.statusWs = null;
     this.statusWsReconnectTimer = 0;
     this.layoutFitSettleTimer = 0;
+    this.activeEditorFocusTimer = 0;
     this.projects = [];
     const projectMatch = location.pathname.match(/^\/p\/([^/]+)/);
     this.projectSlug = projectMatch ? decodeURIComponent(projectMatch[1])
@@ -4131,6 +4132,17 @@ class TermdeckApp {
     }
   }
 
+  scheduleActiveEditorFocus(sessionId) {
+    clearTimeout(this.activeEditorFocusTimer);
+    this.activeEditorFocusTimer = window.setTimeout(this.runScheduledActiveEditorFocus.bind(this, sessionId), 80);
+  }
+
+  runScheduledActiveEditorFocus(sessionId) {
+    this.activeEditorFocusTimer = 0;
+    if (sessionId !== this.activeId) return;
+    this.focusActiveEditor();
+  }
+
   closeHistory() {
     this.setHistoryMode(false);
   }
@@ -5516,10 +5528,7 @@ class TermdeckApp {
     this.renderList();
     this.renderTopbar();
     if (options.reveal) this.keepActiveSessionVisible();
-    requestAnimationFrame(() => {
-      if (id !== this.activeId) return;
-      this.focusActiveEditor();
-    });
+    this.scheduleActiveEditorFocus(id);
   }
 
   ensureView(id) {
@@ -6502,6 +6511,7 @@ class TermdeckApp {
   repairTerminalRenderIfStale(view) {
     if (!view || view.closed || !view.container.classList.contains("visible")) return false;
     if (!this.terminalTailRenderMismatch(view)) return false;
+    console.log("[td-trace] repairTerminalRenderIfStale: mismatch found, repairing (VISIBLE, no hide)", view.sessionId, Date.now());
     const restoreLine = view.term.buffer.active.viewportY;
     const follow = view.scrollMode === "follow";
     // A stale-looking render is not always a paint problem: the terminal's own cols/rows can be wrong for
@@ -6551,8 +6561,11 @@ class TermdeckApp {
         if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
         const beforeCols = view.term.cols, beforeRows = view.term.rows;
         view.fit.fit();
+        const colsChanged = view.term.cols !== beforeCols || view.term.rows !== beforeRows;
         if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
-        if (view.term.cols !== beforeCols || view.term.rows !== beforeRows || this.terminalTailRenderMismatch(view)) {
+        console.log("[td-trace] settleWatchdog tick", view.sessionId, Date.now(), "delay", delay,
+                    "colsChanged", colsChanged, `${beforeCols}x${beforeRows}->${view.term.cols}x${view.term.rows}`);
+        if (colsChanged || this.terminalTailRenderMismatch(view)) {
           this.repairTerminalRenderIfStale(view);
         }
       }, delay));
