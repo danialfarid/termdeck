@@ -3,14 +3,16 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from watchdog.events import DirModifiedEvent, FileModifiedEvent, FileMovedEvent
 
 from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.file_service import ProjectFileService
 from termdeck.models import AgentKind, SessionRecord
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeUtil
-from termdeck.server import NotebookNote, TermdeckServer, UiSettings
+from termdeck.server import NotebookNote, RenameSessionRequest, TermdeckServer, UiSettings
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
 
 
@@ -67,6 +69,46 @@ class PlacementNameTest(unittest.TestCase):
         self.assertEqual(server.settings_store.payload["project_state"]["stock"]["terminal_layout"], [
             "session:termde-id", "session:new-id", "session:other-id",
         ])
+
+    def test_fork_endpoint_persists_placement_after_source_session(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.has_session.return_value = True
+        forked = MagicMock()
+        forked.record.project = "stock"
+        forked.record.session_id = "fork-id"
+        server.manager.fork_session.return_value = forked
+        server.manager.session_summary.return_value = {"session_id": "fork-id"}
+        with patch.object(server, "_place_session_after", return_value={"position": "after"}) as place:
+            result = asyncio.run(server._fork_session("termde-id", RenameSessionRequest(title="termde fork")))
+        place.assert_called_once_with("stock", "fork-id", "session:termde-id")
+        self.assertEqual(result["placement"], {"position": "after"})
+
+
+class FileTreeEventTest(unittest.TestCase):
+    def test_file_modification_refreshes_only_its_containing_directory(self) -> None:
+        service = ProjectFileService()
+        root = Path("/Users/dan/workspace/stock")
+        event = FileModifiedEvent(str(root / "trainer" / "model.py"))
+        self.assertEqual(service._file_tree_event_directories(root, event), {"trainer"})
+
+    def test_directory_modification_refreshes_that_directory(self) -> None:
+        service = ProjectFileService()
+        root = Path("/Users/dan/workspace/stock")
+        event = DirModifiedEvent(str(root / "trainer"))
+        self.assertEqual(service._file_tree_event_directories(root, event), {"trainer"})
+
+    def test_move_refreshes_both_containing_directories(self) -> None:
+        service = ProjectFileService()
+        root = Path("/Users/dan/workspace/stock")
+        event = FileMovedEvent(str(root / "trainer" / "old.py"), str(root / "models" / "new.py"))
+        self.assertEqual(service._file_tree_event_directories(root, event), {"trainer", "models"})
+
+    def test_ignored_virtual_environment_change_is_not_forwarded(self) -> None:
+        service = ProjectFileService()
+        root = Path("/Users/dan/workspace/stock")
+        event = FileModifiedEvent(str(root / ".venv" / "lib" / "package.py"))
+        self.assertEqual(service._file_tree_event_directories(root, event), set())
 
 
 class UiSettingsTest(unittest.TestCase):

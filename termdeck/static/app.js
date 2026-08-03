@@ -10,7 +10,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
-  show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_text: "",
+  show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_left: -1, notebook_text: "",
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
   files_pinned: false, sidebar_text_color: "#d5dbe5", vscode_keybindings: {} };
 const MODEL_PERMISSIONS = {
@@ -118,8 +118,9 @@ const ALWAYS_EXCLUDED = [".git", "node_modules", "__pycache__", ".venv", "_"];
 const STATS_POLL_MS = 5000;
 const STAT_HISTORY_MAX = 48;
 const FONT_MIN = 8, FONT_MAX = 32;
-const TREE_POLL_MS = 4000;
 const RECENT_FILES_REFRESH_MS = 5000;
+const FILE_TREE_WS_ROUTE = "/ws/files";
+const FILE_TREE_CHANGED = "file_tree_changed";
 const QUERY_RESPONSE_RE = /^\x1b\[[?>]?[\d;]*[Rc]$/;
 const PATH_LINK_RE = /(?:~\/|\.{1,2}\/|\/)?[\w@%+=.-]+(?:\/[\w@%+=.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+){0,2}/g;
 const KNOWN_EXTS = new Set(["py", "md", "json", "js", "ts", "tsx", "css", "html", "sh", "zsh", "txt", "yaml", "yml",
@@ -220,6 +221,12 @@ class TermdeckApp {
     this.treeReloadPromise = null;
     this.expandedDirs = new Set();
     this.treePollBusy = false;
+    this.treeWs = null;
+    this.treeWsRoot = "";
+    this.treeWsReconnectTimer = 0;
+    this.treeEventRefreshTimer = 0;
+    this.treeChangedDirectories = new Set();
+    this.treeChangedEntries = new Map();
     this.recentFiles = [];
     this.recentFilesRoot = null;
     this.recentFilesFingerprint = "";
@@ -272,6 +279,7 @@ class TermdeckApp {
     this.notebookMounted = false;
     this.notebookSearchIndex = 0;
     this.notebookTitleTimer = 0;
+    this.notebookResizePointerId = null;
     this.nativeSessionIds = new Set();
     this.sessionModelById = new Map();
     this.selectedTreeRow = null;
@@ -1274,6 +1282,7 @@ class TermdeckApp {
       this.rerenderTree();
     };
     const gitBtn = this.$("git-status-toggle");
+    gitBtn.title = "Git colors: blue modified · green added/untracked · cyan copied · purple renamed · red deleted · orange conflict";
     gitBtn.classList.toggle("on", this.settings.show_git_status !== false);
     gitBtn.onclick = () => {
       this.settings.show_git_status = this.settings.show_git_status === false;
@@ -1301,7 +1310,6 @@ class TermdeckApp {
     this.initResizer("sidebar-resizer", "sidebar_width", false, 236, 520);
     this.initSideSplit();
     if (!this.vscodeMode) {
-      setInterval(() => this.pollTree(), TREE_POLL_MS);
       setInterval(() => this.refreshRecentFiles(), RECENT_FILES_REFRESH_MS);
     }
     setInterval(() => this.pollStats(), STATS_POLL_MS);
@@ -2937,9 +2945,13 @@ class TermdeckApp {
       const expectedRoot = session ? session.cwd : (this.projectRoot() || "~");
       if (this.treeRoot !== expectedRoot || !this.treeDirs.has("")) {
         this.treeReloadPromise = this.reloadTree(expectedRoot);
+      } else {
+        this.connectFileTreeWatch(expectedRoot);
+        void this.refreshTreeDirectories();
       }
     }
     if (!filesVisible) {
+      this.disconnectFileTreeWatch();
       this.scheduleTerminalFitAfterSidebarChange();
       return;
     }
@@ -3155,6 +3167,31 @@ class TermdeckApp {
   rerenderTree() {
     const root = this.treeDirs.get("");
     if (root) this.renderDirInto(root.container, "", JSON.parse(root.cache));
+  }
+
+  captureTreeScrollPosition() {
+    const tree = this.$("files-tree");
+    const treeRect = tree.getBoundingClientRect();
+    const anchor = [...tree.querySelectorAll(".tree-row")].find((row) => row.getBoundingClientRect().bottom > treeRect.top);
+    return {
+      top: tree.scrollTop,
+      anchorRel: anchor?.dataset.rel || "",
+      anchorOffset: anchor ? anchor.getBoundingClientRect().top - treeRect.top : 0,
+    };
+  }
+
+  restoreTreeScrollPosition(snapshot) {
+    if (!snapshot) return;
+    const tree = this.$("files-tree");
+    let target = snapshot.top;
+    if (snapshot.anchorRel) {
+      const anchor = tree.querySelector(`[data-rel="${CSS.escape(snapshot.anchorRel)}"]`);
+      if (anchor) {
+        const treeRect = tree.getBoundingClientRect();
+        target = tree.scrollTop + anchor.getBoundingClientRect().top - treeRect.top - snapshot.anchorOffset;
+      }
+    }
+    tree.scrollTop = Math.max(0, Math.min(target, Math.max(0, tree.scrollHeight - tree.clientHeight)));
   }
 
   addContextItem(menu, label, handler, icon = "") {
@@ -3472,7 +3509,7 @@ class TermdeckApp {
     }
     this.selectedTreeRow = null;
     this.renderList();
-    this.pollTree();
+    void this.refreshTreeDirectories();
   }
 
   async revealActiveFile() {
@@ -4956,6 +4993,11 @@ class TermdeckApp {
     this.$("notebook-close").onclick = () => {
       this.setNotebookOpen(false);
     };
+    const notebookResizer = this.$("notebook-resizer");
+    notebookResizer.onpointerdown = this.startNotebookResize.bind(this);
+    notebookResizer.onpointermove = this.resizeNotebookFromPointer.bind(this);
+    notebookResizer.onpointerup = this.finishNotebookResize.bind(this);
+    notebookResizer.onpointercancel = this.finishNotebookResize.bind(this);
     panel.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -5252,20 +5294,67 @@ class TermdeckApp {
     const toggle = this.$("notebook-toggle");
     if (!panel || !toggle) return;
     this.renderNotebookTabs();
-    panel.classList.toggle("hidden", !this.settings.notebook_open);
+    if (this.settings.notebook_open) {
+      clearTimeout(this.notebookCloseTimer);
+      this.notebookCloseTimer = null;
+      panel.classList.remove("hidden", "notebook-closing");
+    } else if (!panel.classList.contains("notebook-closing")) {
+      panel.classList.add("hidden");
+    }
     toggle.classList.toggle("on", !!this.settings.notebook_open);
     if (this.settings.notebook_open && this.activeNotebookNote() && !this.notebookMounted && window.PlannerEditor) {
       void this.mountNotebookEditor();
     }
   }
 
+  finishNotebookClose() {
+    this.notebookCloseTimer = null;
+    if (this.settings.notebook_open) return;
+    const panel = this.$("notebook-panel");
+    if (!panel) return;
+    panel.classList.add("hidden");
+    panel.classList.remove("notebook-closing");
+  }
+
+  startNotebookResize(event) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    this.notebookResizePointerId = event.pointerId;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    document.body.classList.add("dragging-notebook");
+  }
+
+  resizeNotebookFromPointer(event) {
+    if (event.pointerId !== this.notebookResizePointerId) return;
+    const minimumLeft = 0;
+    const maximumLeft = Math.max(minimumLeft, window.innerWidth - 334);
+    this.settings.notebook_left = Math.max(minimumLeft, Math.min(maximumLeft, Math.round(event.clientX)));
+    document.documentElement.style.setProperty("--notebook-panel-left", `${this.settings.notebook_left}px`);
+  }
+
+  finishNotebookResize(event) {
+    if (event.pointerId !== this.notebookResizePointerId) return;
+    this.notebookResizePointerId = null;
+    document.body.classList.remove("dragging-notebook");
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    this.saveSettings();
+  }
+
   setNotebookOpen(open, options = {}) {
-    if (!open) {
+    const shouldOpen = !!open;
+    if (!shouldOpen) {
       void this.flushNotebook();
       this.closeNotebookFind(false);
     }
-    this.settings.notebook_open = !!open;
+    const panel = this.$("notebook-panel");
+    const animateClose = !shouldOpen && panel && !panel.classList.contains("hidden") &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    clearTimeout(this.notebookCloseTimer);
+    this.notebookCloseTimer = null;
+    if (animateClose) panel.classList.add("notebook-closing");
+    this.settings.notebook_open = shouldOpen;
     this.renderNotebook();
+    if (animateClose) this.notebookCloseTimer = window.setTimeout(this.finishNotebookClose.bind(this), 180);
     this.saveSettings();
     if (this.settings.notebook_open && options.focus !== false) {
       requestAnimationFrame(() => this.focusNotebookEditor());
@@ -6867,10 +6956,15 @@ class TermdeckApp {
     const activeSidebarWidth = filesVisible && s.files_pinned ? fileWidth : normalWidth;
     const sidebarLeft = sidebar.getBoundingClientRect().left || 0;
     const sidebarRight = sidebarLeft + activeSidebarWidth;
-    const notebookWidth = Math.max(320, window.innerWidth - sidebarRight - 64 - 14);
+    const maximumNotebookLeft = Math.max(0, window.innerWidth - 334);
+    const defaultNotebookLeft = Math.min(Math.round(sidebarRight + 8), maximumNotebookLeft);
+    const configuredNotebookLeft = Number(s.notebook_left);
+    const notebookLeft = configuredNotebookLeft >= 0
+      ? Math.max(0, Math.min(maximumNotebookLeft, configuredNotebookLeft))
+      : defaultNotebookLeft;
     sidebar.style.width = activeSidebarWidth + "px";
     sidebar.style.minWidth = activeSidebarWidth + "px";
-    document.documentElement.style.setProperty("--notebook-panel-width", `${notebookWidth}px`);
+    document.documentElement.style.setProperty("--notebook-panel-left", `${notebookLeft}px`);
     this.positionFloatingFilesPanel(fileWidth);
     this.positionFloatingTerminalSearch();
     document.documentElement.style.setProperty("--sidebar-font-size", s.sidebar_font_size + "px");
@@ -7110,6 +7204,7 @@ class TermdeckApp {
   async reloadTree(rootOverride) {
     const s = this.session(this.activeId);
     this.treeRoot = rootOverride || (s ? s.cwd : (this.projectRoot() || "~"));
+    this.connectFileTreeWatch(this.treeRoot);
     const label = this.$("files-root-label");
     label.textContent = this.vscodeMode ? "files" : this.treeRoot.replace(/^\/Users\/[^/]+/, "~");
     label.title = this.treeRoot;
@@ -7161,7 +7256,7 @@ class TermdeckApp {
         this.appendMtime(row, entry);
         this.appendGitStatus(row, entry);
         container.appendChild(row);
-        if (this.expandedDirs.has(childRel)) this.expandDirRow(row, childRel);
+        if (this.expandedDirs.has(childRel)) await this.expandDirRow(row, childRel);
       } else {
         const spacer = document.createElement("span");
         spacer.className = "tree-file-spacer";
@@ -7235,20 +7330,154 @@ class TermdeckApp {
     await this.expandDirRow(row, relPath);
   }
 
-  async pollTree() {
-    if (this.treePollBusy || this.treeRoot === null || this.$("files-section").classList.contains("hidden")) return;
+  connectFileTreeWatch(root) {
+    if (this.vscodeMode || !root) return;
+    if (this.treeWs && this.treeWsRoot === root &&
+        (this.treeWs.readyState === WebSocket.CONNECTING || this.treeWs.readyState === WebSocket.OPEN)) return;
+    this.disconnectFileTreeWatch();
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(`${protocol}//${location.host}${FILE_TREE_WS_ROUTE}?root=${encodeURIComponent(root)}`);
+    this.treeWs = socket;
+    this.treeWsRoot = root;
+    socket.onmessage = (event) => {
+      if (this.treeWs !== socket) return;
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch (error) {
+        if (error instanceof SyntaxError) return;
+        throw error;
+      }
+      if (message.type === FILE_TREE_CHANGED) this.queueFileTreeRefresh(message.changes);
+    };
+    socket.onclose = () => {
+      if (this.treeWs !== socket) return;
+      this.treeWs = null;
+      this.treeWsRoot = "";
+      if (this.sideView !== "project" && this.sideView !== "search") return;
+      clearTimeout(this.treeWsReconnectTimer);
+      this.treeWsReconnectTimer = setTimeout(() => {
+        this.treeWsReconnectTimer = 0;
+        if (this.sideView === "project" || this.sideView === "search") this.connectFileTreeWatch(this.treeRoot);
+      }, 5000);
+    };
+  }
+
+  disconnectFileTreeWatch() {
+    clearTimeout(this.treeWsReconnectTimer);
+    this.treeWsReconnectTimer = 0;
+    clearTimeout(this.treeEventRefreshTimer);
+    this.treeEventRefreshTimer = 0;
+    this.treeChangedDirectories.clear();
+    this.treeChangedEntries.clear();
+    const socket = this.treeWs;
+    this.treeWs = null;
+    this.treeWsRoot = "";
+    if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+  }
+
+  queueFileTreeRefresh(changes) {
+    if (!Array.isArray(changes)) return;
+    for (const change of changes) {
+      if (!change || typeof change.path !== "string") continue;
+      const operation = String(change.operation || "");
+      const parent = typeof change.parent === "string" ? change.parent : "";
+      if (operation === "modified" && !change.is_directory) this.treeChangedEntries.set(change.path, change);
+      else {
+        this.treeChangedDirectories.add(parent);
+        if (change.is_directory && operation === "deleted") {
+          this.expandedDirs.delete(change.path);
+          this.dropTreeDirsUnder(change.path);
+        }
+      }
+    }
+    clearTimeout(this.treeEventRefreshTimer);
+    this.treeEventRefreshTimer = setTimeout(() => {
+      this.treeEventRefreshTimer = 0;
+      void this.refreshChangedFileTreeEvents();
+    }, 120);
+  }
+
+  async refreshChangedFileTreeEvents() {
+    if (this.treePollBusy) {
+      clearTimeout(this.treeEventRefreshTimer);
+      this.treeEventRefreshTimer = setTimeout(() => {
+        this.treeEventRefreshTimer = 0;
+        void this.refreshChangedFileTreeEvents();
+      }, 120);
+      return;
+    }
+    const directories = [...this.treeChangedDirectories];
+    const entries = [...this.treeChangedEntries.values()];
+    this.treeChangedDirectories.clear();
+    this.treeChangedEntries.clear();
+    const openDirectories = directories.filter((directory) => this.treeDirs.has(directory));
+    if (openDirectories.length) await this.refreshTreeDirectories(openDirectories);
+    const openEntryChanges = entries.filter((change) => !openDirectories.includes(change.parent) && this.treeRowForPath(change.path));
+    if (openEntryChanges.length) await this.refreshChangedFileTreeEntries(openEntryChanges);
     this.refreshRecentFiles();
+  }
+
+  treeRowForPath(relPath) {
+    return [...this.$("files-tree").querySelectorAll(".tree-row")].find((row) => row.dataset.rel === relPath) || null;
+  }
+
+  async refreshChangedFileTreeEntries(changes) {
+    if (this.settings.show_mtime === false && this.settings.show_git_status === false) return;
+    const entriesByParent = new Map();
+    for (const change of changes) {
+      if (!entriesByParent.has(change.parent)) entriesByParent.set(change.parent, await this.fetchDirEntries(change.parent));
+    }
+    for (const change of changes) {
+      const entries = entriesByParent.get(change.parent);
+      if (!entries) continue;
+      const name = change.path.slice(change.parent ? change.parent.length + 1 : 0);
+      const entry = entries.find((candidate) => candidate.name === name);
+      const row = this.treeRowForPath(change.path);
+      if (!row) continue;
+      if (!entry) {
+        this.treeChangedDirectories.add(change.parent);
+        continue;
+      }
+      this.updateTreeRowMetadata(row, entry);
+    }
+    const missingParents = [...this.treeChangedDirectories].filter((directory) => this.treeDirs.has(directory));
+    this.treeChangedDirectories.clear();
+    if (missingParents.length) await this.refreshTreeDirectories(missingParents);
+  }
+
+  updateTreeRowMetadata(row, entry) {
+    row.querySelector(".tree-mtime")?.remove();
+    for (const className of [...row.classList]) {
+      if (className === "git-row" || className.startsWith("git-row-")) row.classList.remove(className);
+    }
+    row.title = `${this.treeRoot}/${row.dataset.rel}`;
+    this.appendMtime(row, entry);
+    this.appendGitStatus(row, entry);
+  }
+
+  async refreshTreeDirectories(directoryPaths = null) {
+    if (this.treePollBusy || this.treeRoot === null || this.$("files-section").classList.contains("hidden")) return;
     this.treePollBusy = true;
+    const scrollPosition = this.captureTreeScrollPosition();
+    let changed = false;
+    const paths = directoryPaths === null ? [...this.treeDirs.keys()] : [...new Set(directoryPaths)];
     try {
-      for (const [relPath, info] of [...this.treeDirs]) {
-        if (this.treeDirs.get(relPath) !== info) continue;
+      for (const relPath of paths) {
+        const info = this.treeDirs.get(relPath);
+        if (!info || this.treeDirs.get(relPath) !== info) continue;
         const entries = await this.fetchDirEntries(relPath);
         if (entries === null || JSON.stringify(entries) === info.cache) continue;
         this.selectedTreeRow = null;
+        changed = true;
         await this.renderDirInto(info.container, relPath, entries);
       }
     } finally {
       this.treePollBusy = false;
+      if (changed) {
+        this.restoreTreeScrollPosition(scrollPosition);
+        requestAnimationFrame(() => this.restoreTreeScrollPosition(scrollPosition));
+      }
     }
   }
 
@@ -8107,26 +8336,28 @@ class TermdeckApp {
     if (!res.ok) { alert("fork failed"); return; }
     const created = await res.json();
     if (this.nativeVscodeMode) this.postVscodeNativeSession(created, true);
-    await this.refresh();
     const state = this.getProjectState();
     const sourceGroupId = state.session_groups?.[s.session_id] || null;
-    const order = this.sessions.map((session) => session.session_id).filter((id) => id !== created.session_id);
+    const order = this.sessions.map((session) => session.session_id);
     const sourceIndex = order.indexOf(s.session_id);
     if (sourceIndex >= 0) {
       order.splice(sourceIndex + 1, 0, created.session_id);
       const patch = { session_order: order };
       if (sourceGroupId) {
-        // A fork created by the backend is initially ungrouped. Inherit the
-        // source group so the group's renderer keeps it beside its parent
-        // instead of appending it to the ungrouped terminal list.
         patch.session_groups = { ...(state.session_groups || {}), [created.session_id]: sourceGroupId };
         patch.terminal_layout = this.terminalLayout()
           .filter((entry) => entry !== `session:${created.session_id}`);
+      } else {
+        const sourceToken = `session:${s.session_id}`;
+        const createdToken = `session:${created.session_id}`;
+        const layout = this.terminalLayout().filter((entry) => entry !== createdToken);
+        const layoutSourceIndex = layout.indexOf(sourceToken);
+        layout.splice(layoutSourceIndex < 0 ? layout.length : layoutSourceIndex + 1, 0, createdToken);
+        patch.terminal_layout = layout;
       }
       this.patchProjectState(patch);
-      this.sessions = this.applySessionOrder(this.sessions);
-      this.renderList();
     }
+    await this.refresh();
     this.activate(created.session_id, { reveal: true });
     const view = this.views.get(created.session_id);
     if (view) view.pinBottomUntil = Date.now() + 8000;

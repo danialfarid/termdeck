@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import subprocess
@@ -10,6 +11,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from termdeck.config import TermdeckConfig
+from termdeck.models import WsMessageFields
 from termdeck.util import TimeUtil
 
 
@@ -19,14 +21,18 @@ class _RecentFilesEventHandler(FileSystemEventHandler):
         self._owner = owner
         self._root = root
 
-    def _notify(self, path: str) -> None:
-        self._owner.invalidate_recent_root(self._root, Path(path))
+    def on_any_event(self, event: FileSystemEvent) -> None:
+        self._owner.notify_project_files_changed(self._root, event)
+
+
+class _FileTreeEventHandler(FileSystemEventHandler):
+    def __init__(self, owner: "ProjectFileService", root: Path) -> None:
+        super().__init__()
+        self._owner = owner
+        self._root = root
 
     def on_any_event(self, event: FileSystemEvent) -> None:
-        self._notify(event.src_path)
-        destination = getattr(event, "dest_path", None)
-        if destination:
-            self._notify(destination)
+        self._owner.notify_project_files_changed(self._root, event)
 
 
 class ProjectFileService:
@@ -37,6 +43,9 @@ class ProjectFileService:
     _RECENT_CACHE_MAX_AGE_SECONDS = 30.0
     _GIT_STATUS_CACHE_MAX_AGE_SECONDS = 5.0
     _RECENT_WATCH_MAX_ROOTS = 12
+    _TREE_WATCH_MAX_ROOTS = 4
+    _TREE_EVENT_DEBOUNCE_SECONDS = 0.15
+    _TREE_CHANGE_EVENT_TYPES = frozenset({"created", "deleted", "modified", "moved"})
 
     def __init__(self) -> None:
         self._recent_lock = threading.RLock()
@@ -45,11 +54,24 @@ class ProjectFileService:
         self._recent_watches: dict[str, Any] = {}
         self._recent_observer: Observer | None = None
         self._git_status_cache: dict[str, tuple[float, dict[str, str]]] = {}
+        self._tree_watches: dict[str, Any] = {}
+        self._tree_subscribers: dict[str, set[asyncio.Queue[dict[str, object]]]] = {}
+        self._tree_event_loop: asyncio.AbstractEventLoop | None = None
+        self._tree_pending: dict[str, dict[str, dict[str, object]]] = {}
+        self._tree_flush_tasks: dict[str, asyncio.Task[None]] = {}
 
     def close(self) -> None:
         with self._recent_lock:
             observer, self._recent_observer = self._recent_observer, None
             self._recent_watches.clear()
+            self._tree_watches.clear()
+            self._tree_subscribers.clear()
+            self._tree_event_loop = None
+            self._tree_pending.clear()
+            tree_tasks = tuple(self._tree_flush_tasks.values())
+            self._tree_flush_tasks.clear()
+        for task in tree_tasks:
+            task.cancel()
         if observer is not None:
             observer.stop()
             observer.join(timeout=2)
@@ -179,7 +201,13 @@ class ProjectFileService:
     def _ensure_recent_watch(self, root: Path) -> None:
         """Watch a project root lazily; file events invalidate the cached recent list."""
         key = str(root)
-        if key in self._recent_watches or len(self._recent_watches) >= self._RECENT_WATCH_MAX_ROOTS:
+        if key in self._recent_watches:
+            return
+        tree_watch = self._tree_watches.pop(key, None)
+        if tree_watch is not None:
+            self._recent_watches[key] = tree_watch
+            return
+        if len(self._recent_watches) >= self._RECENT_WATCH_MAX_ROOTS:
             return
         # Watching the whole home directory would be noisy and defeats the
         # purpose of the cache. Such roots use the safety TTL instead.
@@ -205,6 +233,116 @@ class ProjectFileService:
             return
         with self._recent_lock:
             self._recent_dirty.add(str(root))
+
+    def notify_project_files_changed(self, root: Path, event: FileSystemEvent) -> None:
+        if event.event_type not in self._TREE_CHANGE_EVENT_TYPES:
+            return
+        self.invalidate_recent_root(root, Path(event.src_path))
+        destination = getattr(event, "dest_path", None)
+        if destination:
+            self.invalidate_recent_root(root, Path(destination))
+        self.notify_file_tree_changed(root, event)
+
+    def subscribe_file_tree(self, root: str, event_loop: asyncio.AbstractEventLoop) -> tuple[str, asyncio.Queue[dict[str, object]]]:
+        base = self.resolve_confined(root, "")
+        if not base.is_dir():
+            raise NotADirectoryError(str(base))
+        key = str(base)
+        queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+        with self._recent_lock:
+            self._tree_event_loop = event_loop
+            self._tree_subscribers.setdefault(key, set()).add(queue)
+            self._ensure_tree_watch(base)
+        return key, queue
+
+    def unsubscribe_file_tree(self, root: str, queue: asyncio.Queue[dict[str, object]]) -> None:
+        with self._recent_lock:
+            subscribers = self._tree_subscribers.get(root)
+            if subscribers is None:
+                return
+            subscribers.discard(queue)
+            if subscribers:
+                return
+            self._tree_subscribers.pop(root, None)
+            watch = self._tree_watches.pop(root, None)
+            observer = self._recent_observer
+            if watch is not None and observer is not None:
+                observer.unschedule(watch)
+
+    def notify_file_tree_changed(self, root: Path, event: FileSystemEvent) -> None:
+        changes = self._file_tree_event_changes(root, event)
+        if not changes:
+            return
+        key = str(root)
+        with self._recent_lock:
+            self._git_status_cache.pop(key, None)
+            self._recent_dirty.add(key)
+            event_loop = self._tree_event_loop
+            subscribed = bool(self._tree_subscribers.get(key))
+        if event_loop is None or event_loop.is_closed() or not subscribed:
+            return
+        event_loop.call_soon_threadsafe(self._queue_file_tree_change, key, changes)
+
+    def _queue_file_tree_change(self, root: str, changes: list[dict[str, object]]) -> None:
+        pending = self._tree_pending.setdefault(root, {})
+        for change in changes:
+            pending[str(change[WsMessageFields.PATH])] = change
+        if root not in self._tree_flush_tasks:
+            self._tree_flush_tasks[root] = asyncio.create_task(self._flush_file_tree_changes(root))
+
+    async def _flush_file_tree_changes(self, root: str) -> None:
+        try:
+            await asyncio.sleep(self._TREE_EVENT_DEBOUNCE_SECONDS)
+            with self._recent_lock:
+                changes = sorted(self._tree_pending.pop(root, {}).values(), key=lambda change: str(change[WsMessageFields.PATH]))
+                subscribers = tuple(self._tree_subscribers.get(root, ()))
+            if not changes:
+                return
+            message = {WsMessageFields.TYPE: WsMessageFields.FILE_TREE_CHANGED,
+                       WsMessageFields.CHANGES: changes}
+            for queue in subscribers:
+                queue.put_nowait(message)
+        finally:
+            self._tree_flush_tasks.pop(root, None)
+            if self._tree_pending.get(root):
+                self._tree_flush_tasks[root] = asyncio.create_task(self._flush_file_tree_changes(root))
+
+    def _ensure_tree_watch(self, root: Path) -> None:
+        key = str(root)
+        if key in self._recent_watches or key in self._tree_watches or len(self._tree_watches) >= self._TREE_WATCH_MAX_ROOTS:
+            return
+        if root == TermdeckConfig.FILE_ACCESS_ROOT:
+            return
+        if self._recent_observer is None:
+            self._recent_observer = Observer()
+        observer = self._recent_observer
+        handler = _FileTreeEventHandler(self, root)
+        self._tree_watches[key] = observer.schedule(handler, str(root), recursive=True)
+        if not observer.is_alive():
+            observer.start()
+
+    def _file_tree_event_changes(self, root: Path, event: FileSystemEvent) -> list[dict[str, object]]:
+        if event.event_type not in self._TREE_CHANGE_EVENT_TYPES:
+            return []
+        paths = [(Path(event.src_path), "deleted" if event.event_type == "moved" else event.event_type)]
+        destination = getattr(event, "dest_path", None)
+        if destination:
+            paths.append((Path(destination), "created"))
+        changes: list[dict[str, object]] = []
+        for path, operation in paths:
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                continue
+            if any(part in TermdeckConfig.RECENT_FILES_IGNORED_DIRS for part in relative.parts):
+                continue
+            if not relative.parts or (event.is_directory and operation == "modified"):
+                continue
+            relative_path = "/".join(relative.parts)
+            parent = "/".join(relative.parent.parts)
+            changes.append({WsMessageFields.PATH: relative_path, WsMessageFields.PARENT: parent,
+                            WsMessageFields.OPERATION: operation, WsMessageFields.IS_DIRECTORY: event.is_directory})
+        return changes
 
     def save_upload(self, filename: str, data: bytes) -> str:
         if len(data) > TermdeckConfig.UPLOAD_MAX_BYTES:

@@ -174,6 +174,7 @@ class UiSettings(BaseModel):
     show_terminal_icons: bool = False
     history_mode: bool = False
     notebook_open: bool = False
+    notebook_left: int = -1
     notebook_preview: bool = False
     notebook_text: str = ""
     notebook_notes: list[NotebookNote] = []
@@ -266,6 +267,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_FILE_DELETE_ROUTE, response_model=None)(self._delete_file)
         app.get(TermdeckConfig.API_STATS_ROUTE, response_model=None)(self._resource_stats)
         app.websocket(TermdeckConfig.STATUS_WS_ROUTE)(self._ws_status)
+        app.websocket(TermdeckConfig.FILE_TREE_WS_ROUTE)(self._ws_file_tree)
         app.websocket(TermdeckConfig.TRANSCRIPT_WS_ROUTE)(self._ws_transcript)
         app.websocket(TermdeckConfig.WS_ROUTE)(self._ws_terminal)
         return app
@@ -739,7 +741,11 @@ class TermdeckServer:
     async def _fork_session(self, session_id: str, request: RenameSessionRequest) -> dict[str, object]:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
-        return self.manager.session_summary(self.manager.fork_session(session_id, request.title))
+        forked = self.manager.fork_session(session_id, request.title)
+        result = self.manager.session_summary(forked)
+        result["placement"] = self._place_session_after(
+            forked.record.project, forked.record.session_id, f"session:{session_id}")
+        return result
 
     async def _rename_session(self, session_id: str, request: RenameSessionRequest) -> dict[str, object]:
         if not self.manager.has_session(session_id):
@@ -808,6 +814,26 @@ class TermdeckServer:
             return
         finally:
             self.manager.detach_status_client(queue)
+
+    async def _ws_file_tree(self, websocket: WebSocket) -> None:
+        root = websocket.query_params.get("root", "")
+        try:
+            canonical_root, queue = self.files.subscribe_file_tree(root, asyncio.get_running_loop())
+        except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError) as tree_error:
+            await websocket.close(code=1008, reason=str(tree_error))
+            return
+        await websocket.accept()
+        try:
+            while True:
+                try:
+                    message = await asyncio.wait_for(queue.get(), timeout=TermdeckConfig.FILE_TREE_WS_HEARTBEAT_SECONDS)
+                except TimeoutError:
+                    message = {WsMessageFields.TYPE: WsMessageFields.FILE_TREE_PING}
+                await websocket.send_text(json.dumps(message))
+        except WebSocketDisconnect:
+            return
+        finally:
+            self.files.unsubscribe_file_tree(canonical_root, queue)
 
     async def _ws_transcript(self, websocket: WebSocket, session_id: str) -> None:
         if not self.manager.has_session(session_id):

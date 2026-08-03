@@ -102,6 +102,13 @@ class WsMessageFields:
     TURNS = "turns"
     TRANSCRIPT_SUBSCRIBE = "transcript_subscribe"
     TRANSCRIPT_READY = "transcript_ready"
+    FILE_TREE_CHANGED = "file_tree_changed"
+    FILE_TREE_PING = "file_tree_ping"
+    CHANGES = "changes"
+    PATH = "path"
+    PARENT = "parent"
+    OPERATION = "operation"
+    IS_DIRECTORY = "is_directory"
 
 
 class ApiFields:

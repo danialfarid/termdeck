@@ -88,6 +88,8 @@ class TermdeckConfig:
     })
     WS_ROUTE = "/ws/{session_id}"
     STATUS_WS_ROUTE = "/ws/status"
+    FILE_TREE_WS_ROUTE = "/ws/files"
+    FILE_TREE_WS_HEARTBEAT_SECONDS = 15.0
     TRANSCRIPT_WS_ROUTE = "/ws/transcript/{session_id}"
     WS_CODE_UNKNOWN_SESSION = 4404
     DEFAULT_CWD = PlatformPaths.env_directory(PlatformPaths.ENV_DEFAULT_CWD, Path.home())
