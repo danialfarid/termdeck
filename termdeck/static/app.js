@@ -5545,7 +5545,7 @@ class TermdeckApp {
                    suppressResizeToServer: false, resyncResizeRepairPending: false,
                    hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
                    tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
-                   lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [], codexReflowFollowupTimer: 0,
+                   lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [], codexReflowFollowupTimers: [],
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
@@ -6098,23 +6098,20 @@ class TermdeckApp {
     if (view.debugSnapshots.length > TERMINAL_DEBUG_SNAPSHOT_LIMIT) view.debugSnapshots.shift();
   }
 
-  // Empty, INVISIBLE facade for a terminal-rendering diagnostic panel -- not wired to anything. Built
-  // during the 2026-08-02 Claude-composer-wrap-on-refocus / codex-black-tab investigation (root cause
-  // and fix documented on forceVisibleTerminalReflow); once that investigation was live this
-  // accumulated visible blur/focus/resize logging and buffer-vs-DOM snapshot diffs, which is exactly
-  // the noise this bare version intentionally does NOT produce. Kept only as reusable scaffolding for
-  // whichever future terminal-rendering bug needs it, so that structure doesn't have to be rebuilt from
-  // scratch. To reactivate: box.style.display = "block" (via this.debugOverlay.box from the console or
-  // new code), write into this.debugOverlay.stats/.diff, and wire this.captureDebugSnapshot(view,
-  // "label") into whatever new code path is under suspicion -- see this file's git history around
-  // 2026-08-02 for the previous full implementation (blur/focus hooks, cols/rows tracking, a
-  // buffer-vs-rendered-DOM differ, a mode-select A/B switch) as a reference to copy from, not to revive
-  // verbatim -- the earlier version leaked constant chatter into the panel, this rebuild should not.
+  // Small top-right corner panel: a header with a live A/B switch (see codexModeSelect below) plus a
+  // collapsed, empty body kept as reusable scaffolding for a future terminal-rendering investigation.
+  // Deliberately NOT wired to any automatic capture/logging -- an earlier version of this panel
+  // accumulated visible blur/focus/resize chatter once its original investigation was fixed, which was
+  // reported as noise and stripped back out; the body (this.debugOverlay.stats/.diff) stays empty until
+  // something explicitly writes into it. To reactivate for a NEW investigation: write into
+  // this.debugOverlay.stats/.diff and wire this.captureDebugSnapshot(view, "label") into whatever new
+  // code path is under suspicion -- see this file's git history around 2026-08-02 for a fuller
+  // buffer-vs-rendered-DOM differ to copy from, not to revive verbatim.
   installTerminalSizeDebugOverlay() {
     const box = document.createElement("div");
     box.id = "td-debug-size-overlay";
     Object.assign(box.style, {
-      position: "fixed", top: "4px", right: "4px", zIndex: 99999, display: "none", color: "#0f0",
+      position: "fixed", top: "4px", right: "4px", zIndex: 99999, color: "#0f0",
       background: "rgba(0,0,0,0.9)", padding: "4px 8px", borderRadius: "4px", cursor: "text",
       userSelect: "text", WebkitUserSelect: "text", maxWidth: "44vw", maxHeight: "70vh", overflow: "auto",
     });
@@ -6125,6 +6122,29 @@ class TermdeckApp {
     });
     const title = document.createElement("span");
     title.textContent = "td-debug";
+    // Visible A/B switch for the codex-nudge candidate under test (2026-08-02 follow-up: reported
+    // occasional wrap corruption on codex too, plus persistent black-tab-on-refresh needing 2-3 hard
+    // refreshes). "current" = shipped default (unconditional nudge on every reflow trigger, single
+    // 1.5s-later follow-up). "guarded" = only nudge unconditionally on a view's first-ever reflow;
+    // later re-triggers (e.g. switching back to an already-fine tab) require an actual
+    // terminalTailRenderMismatch first, and the follow-up retries at 1.5s/3.5s/6s instead of once. See
+    // forceVisibleTerminalReflow/scheduleCodexReflowFollowup. Persisted so it survives a reload.
+    const codexModeSelect = document.createElement("select");
+    Object.assign(codexModeSelect.style, { font: "10px monospace" });
+    const CODEX_MODE_STORAGE_KEY = "td-debug-codex-mode";
+    [["current", "codex: current (unconditional nudge)"], ["guarded", "codex: guarded (candidate)"]]
+      .forEach(([value, label]) => {
+        const opt = document.createElement("option");
+        opt.value = value;
+        opt.textContent = label;
+        codexModeSelect.appendChild(opt);
+      });
+    const storedCodexMode = localStorage.getItem(CODEX_MODE_STORAGE_KEY);
+    codexModeSelect.value = storedCodexMode === "guarded" ? "guarded" : "current";
+    codexModeSelect.addEventListener("change", () => {
+      localStorage.setItem(CODEX_MODE_STORAGE_KEY, codexModeSelect.value);
+      console.log("[td-debug] codex reflow mode:", codexModeSelect.value);
+    });
     const toggle = document.createElement("span");
     let collapsed = true;
     const body = document.createElement("div");
@@ -6133,7 +6153,7 @@ class TermdeckApp {
       toggle.textContent = collapsed ? "▸ expand" : "▾ collapse";
     };
     toggle.addEventListener("click", () => { collapsed = !collapsed; applyCollapsed(); });
-    header.append(title, toggle);
+    header.append(title, codexModeSelect, toggle);
     header.addEventListener("click", (e) => { if (e.target === header || e.target === title) { collapsed = !collapsed; applyCollapsed(); } });
     const stats = document.createElement("div");
     Object.assign(stats.style, { font: "11px/1.4 ui-monospace, monospace", whiteSpace: "pre" });
@@ -6602,34 +6622,47 @@ class TermdeckApp {
     if (localStorage.getItem("td-debug-reflow-mode") === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     const kind = this.session(view.sessionId)?.agent_kind;
     if (kind !== "codex") return this.forceVisibleTerminalReflowViaClear(view);
+    // "guarded" (candidate, toggle in the debug panel) vs "current" (shipped default): reported that
+    // some running codex tabs occasionally show the SAME wrap corruption Claude had (self-heals once
+    // new output prints) -- meaning the nudge isn't perfectly safe for codex either, just less often.
+    // The unconditional nudge is only actually NEEDED the first time a view ever reflows (a fresh
+    // connect / a tab idle since restart, where the buffer may genuinely be missing its screen); a LATER
+    // re-trigger (switching back to a tab that was already displaying fine) is pure risk with no upside
+    // if nothing is actually wrong. "guarded" skips those later re-triggers unless
+    // terminalTailRenderMismatch actually finds something to fix.
+    const guarded = localStorage.getItem("td-debug-codex-mode") === "guarded";
+    const isFirstEverReflow = !view.lastActivationReflowAt;
+    if (guarded && !isFirstEverReflow && !this.terminalTailRenderMismatch(view)) return false;
     const result = this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     this.scheduleCodexReflowFollowup(view);
     return result;
   }
 
   // Codex still sometimes shows only its last few scrollback lines after a fresh connect (~10-20% of
-  // tries, reported) -- likely a timing race, not necessarily missing data: this nudge fires as soon as
-  // the client's snapshot replay completes, which can be BEFORE the SERVER's own repair
-  // (_force_screen_repaint in session_manager.py, ~0.35-0.43s delayed, gated on <256 bytes of other
-  // output having arrived) has actually finished getting codex to redraw its full screen. A single
-  // bounded follow-up well after that server-side window should have closed gives it a second chance,
-  // without turning this into a standing poll -- deliberately does not reschedule itself again.
+  // tries, reported, persisting across 2-3 hard refreshes in some cases) -- likely a timing race, not
+  // necessarily missing data: this nudge fires as soon as the client's snapshot replay completes, which
+  // can be BEFORE the SERVER's own repair (_force_screen_repaint in session_manager.py, ~0.35-0.43s
+  // delayed, gated on <256 bytes of other output having arrived) has actually finished getting codex to
+  // redraw its full screen. "guarded" mode retries at several delays (matching how
+  // scheduleActiveTerminalSettleWatchdog already retries elsewhere in this file) instead of just once,
+  // to test whether the persistent cases just need more patience; "current" keeps the single retry.
   //
-  // Only fires when terminalTailRenderMismatch(view) says the currently-rendered DOM actually disagrees
-  // with xterm's own buffer -- i.e. there is something a repaint could fix. If they already agree, a
-  // resize-nudge is powerless to improve things (its whole mechanism is "force xterm to fully repaint
-  // its EXISTING buffer", not "fetch more data"): either both already show the full correct content
-  // (retrying would just be a visible flicker for nothing) or the buffer genuinely still lacks the
-  // content (a client-side repaint cannot manufacture data that hasn't arrived). Either way, skip it.
+  // Every attempt is gated on terminalTailRenderMismatch(view) -- the rendered DOM actually disagreeing
+  // with xterm's own buffer, i.e. something a repaint could fix. If they already agree, a resize-nudge
+  // is powerless to improve things (its whole mechanism is "force xterm to fully repaint its EXISTING
+  // buffer", not "fetch more data"): either both already show the full correct content (retrying would
+  // just be a visible flicker for nothing) or the buffer genuinely still lacks the content (a
+  // client-side repaint cannot manufacture data that hasn't arrived). Either way, skip that attempt.
   scheduleCodexReflowFollowup(view) {
     if (!view || view.closed) return;
-    clearTimeout(view.codexReflowFollowupTimer);
-    view.codexReflowFollowupTimer = setTimeout(() => {
-      view.codexReflowFollowupTimer = 0;
+    for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
+    const guarded = localStorage.getItem("td-debug-codex-mode") === "guarded";
+    const delays = guarded ? [1500, 3500, 6000] : [1500];
+    view.codexReflowFollowupTimers = delays.map((delay) => setTimeout(() => {
       if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
       if (!this.terminalTailRenderMismatch(view)) return;
       this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
-    }, 1500);
+    }, delay));
   }
 
   forceVisibleTerminalReflowViaClear(view) {
@@ -6829,7 +6862,7 @@ class TermdeckApp {
     clearTimeout(view.manualScrollReleaseTimer);
     clearTimeout(view.scrollSettleTimer);
     clearTimeout(view.resizeRepairTimer);
-    clearTimeout(view.codexReflowFollowupTimer);
+    for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
     if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
     if (view.viewportRepairFrame) cancelAnimationFrame(view.viewportRepairFrame);
     if (view.v2ViewportSyncFrame) cancelAnimationFrame(view.v2ViewportSyncFrame);
