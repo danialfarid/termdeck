@@ -10,7 +10,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
-  show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_left: -1, notebook_text: "",
+  show_terminal_icons: false, compact_terminal_icons: false, history_mode: false, notebook_open: false, notebook_left: -1, notebook_text: "",
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
   files_pinned: false, sidebar_text_color: "#d5dbe5", vscode_keybindings: {} };
 const MODEL_PERMISSIONS = {
@@ -2668,6 +2668,7 @@ class TermdeckApp {
     icon.classList.toggle("claude-terminal-icon", s.agent_kind === "claude");
     icon.classList.toggle("codex-terminal-icon", s.agent_kind === "codex");
     icon.classList.toggle("on", !!this.settings.show_terminal_icons);
+    icon.classList.toggle("compact-terminal-icon", !this.vscodeMode && !!this.settings.compact_terminal_icons);
     return icon;
   }
 
@@ -2763,6 +2764,7 @@ class TermdeckApp {
     this.sessionTitleEls.set(s.session_id, title);
     const typeIcon = this.terminalTypeIcon(s);
     const showDesktopBrandIndicator = !this.vscodeMode && this.settings.show_terminal_icons;
+    item.classList.toggle("compact-terminal-icons", showDesktopBrandIndicator && !!this.settings.compact_terminal_icons);
     const iconStatusActive = showDesktopBrandIndicator &&
       (presentation.spinning || this.unreadSessions.has(s.session_id));
     const iconStatusExited = showDesktopBrandIndicator && !s.running && !s.dormant;
@@ -6727,9 +6729,17 @@ class TermdeckApp {
     const follow = view.scrollMode === "follow";
     view.suppressResizeToServer = true;
     view.v2Programmatic = true;
+    // The shrink/grow cycle below visibly re-wraps every on-screen line narrower and then back to
+    // normal -- reported as an "everything jumps/repaints" flicker. Hide the container for the
+    // duration (visibility, not display: it must keep its layout box so fit()/getBoundingClientRect()
+    // still measure real geometry, and IntersectionObserver-based renderer suspension only reacts to
+    // display:none, not visibility) so only the FINAL, correctly-sized result is ever actually seen.
+    view.container.style.visibility = "hidden";
+    const revealContainer = () => { view.container.style.visibility = ""; };
     view.v2ForcedReflowFrame = requestAnimationFrame(() => {
       view.v2ForcedReflowFrame = 0;
       if (view.closed || !view.container.classList.contains("visible")) {
+        revealContainer();
         view.suppressResizeToServer = false;
         view.v2Programmatic = false;
         return;
@@ -6748,6 +6758,7 @@ class TermdeckApp {
             if (follow) this.scrollTerminalV2ToBottom(view);
             else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
           }
+          revealContainer();
         }
         view.suppressResizeToServer = false;
         queueMicrotask(() => {
@@ -7158,6 +7169,12 @@ class TermdeckApp {
       () => { this.settings.show_stats = !this.settings.show_stats; }));
     pop.appendChild(this.buildToggleRow("Terminal icons", () => (this.settings.show_terminal_icons ? "on" : "off"),
       () => { this.settings.show_terminal_icons = !this.settings.show_terminal_icons; this.renderList(); }));
+    pop.appendChild(this.buildToggleRow("Compact throbbing icons", () => (this.settings.compact_terminal_icons ? "on" : "off"),
+      () => {
+        this.settings.compact_terminal_icons = !this.settings.compact_terminal_icons;
+        if (this.settings.compact_terminal_icons) this.settings.show_terminal_icons = true;
+        this.renderList();
+      }));
     pop.appendChild(this.buildToggleRow("Editor wrap", () => (this.settings.word_wrap ? "on" : "off"),
       () => { this.settings.word_wrap = !this.settings.word_wrap; }));
     pop.appendChild(this.buildToggleRow("Markdown transcript mode", () => (this.settings.history_mode ? "on" : "off"),
