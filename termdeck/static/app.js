@@ -1814,7 +1814,7 @@ class TermdeckApp {
     const spinning = !session.dormant && session.processing === true;
     const titleEl = this.sessionTitleEls.get(session.session_id);
     if (titleEl) this.setSessionTitleText(titleEl, presentation.text,
-      !this.vscodeMode && !this.settings.show_terminal_icons && presentation.spinning);
+      this.usesTextTerminalStatus() && presentation.spinning);
     this.postVscodeNativeSession(session, session.session_id === this.activeId ? !this.historyOpen : undefined);
     this.updateProcessingState(session.session_id, spinning);
     // The initial session list is rendered before the status websocket sends
@@ -1848,7 +1848,7 @@ class TermdeckApp {
   updateSessionTextStatus(id, spinning = !!this.processingStates.get(id)) {
     const title = this.sessionTitleEls.get(id);
     if (!title) return;
-    const textOnly = !this.vscodeMode && !this.settings.show_terminal_icons;
+    const textOnly = this.usesTextTerminalStatus();
     const working = textOnly && !!spinning;
     title.classList.toggle("session-title-working", working);
     title.classList.toggle("session-title-unread", textOnly && !working && this.unreadSessions.has(id));
@@ -1856,6 +1856,10 @@ class TermdeckApp {
 
   setSessionTitleText(title, text) {
     title.textContent = text;
+  }
+
+  usesTextTerminalStatus() {
+    return !this.vscodeMode && (!this.settings.show_terminal_icons || !!this.settings.compact_terminal_icons);
   }
 
   updateUnreadIndicator(id) {
@@ -1972,7 +1976,7 @@ class TermdeckApp {
       const presentation = this.titlePresentation(s);
       const title = this.sessionTitleEls.get(s.session_id);
       if (title) this.setSessionTitleText(title, presentation.text,
-        !this.vscodeMode && !this.settings.show_terminal_icons && presentation.spinning);
+        this.usesTextTerminalStatus() && presentation.spinning);
       const dot = this.sessionStatusEls.get(s.session_id);
       if (dot) {
         dot.className = "status-dot" + (s.running ? "" : s.dormant ? " dormant" : " exited") +
@@ -2726,7 +2730,7 @@ class TermdeckApp {
       item.title += `\n${searchMatch.count} terminal match${searchMatch.count === 1 ? "" : "es"}${snippets ? `\n${snippets}` : ""}`;
     }
     const presentation = this.titlePresentation(s);
-    const useTextStatusIndicator = !this.vscodeMode && !this.settings.show_terminal_icons;
+    const useTextStatusIndicator = this.usesTextTerminalStatus();
     if (useTextStatusIndicator) item.classList.add("terminal-icons-hidden");
     const dot = document.createElement("span");
     dot.className = "status-dot" + (s.running ? "" : s.dormant ? " dormant" : " exited") +
@@ -2763,11 +2767,12 @@ class TermdeckApp {
     this.setSessionTitleText(title, presentation.text, useTextStatusIndicator && presentation.spinning);
     this.sessionTitleEls.set(s.session_id, title);
     const typeIcon = this.terminalTypeIcon(s);
-    const showDesktopBrandIndicator = !this.vscodeMode && this.settings.show_terminal_icons;
-    item.classList.toggle("compact-terminal-icons", showDesktopBrandIndicator && !!this.settings.compact_terminal_icons);
-    const iconStatusActive = showDesktopBrandIndicator &&
+    const showHoverBrandIndicator = !this.vscodeMode && this.settings.show_terminal_icons && !!this.settings.compact_terminal_icons;
+    const showDesktopBrandIndicator = !this.vscodeMode && this.settings.show_terminal_icons && !showHoverBrandIndicator;
+    item.classList.toggle("compact-terminal-icons", showHoverBrandIndicator);
+    const iconStatusActive = (showDesktopBrandIndicator || showHoverBrandIndicator) &&
       (presentation.spinning || this.unreadSessions.has(s.session_id));
-    const iconStatusExited = showDesktopBrandIndicator && !s.running && !s.dormant;
+    const iconStatusExited = (showDesktopBrandIndicator || showHoverBrandIndicator) && !s.running && !s.dormant;
     typeIcon.classList.toggle("terminal-status-active", iconStatusActive);
     typeIcon.classList.toggle("terminal-status-exited", !iconStatusActive && iconStatusExited);
     const close = document.createElement("button");
@@ -2792,7 +2797,7 @@ class TermdeckApp {
     const groupBox = document.createElement("div");
     // Without brand icons, retain a little breathing room between grouped
     // rows and the group border instead of pinning their status mark to it.
-    groupBox.className = "terminal-group" + (!this.vscodeMode && !this.settings.show_terminal_icons
+    groupBox.className = "terminal-group" + (this.usesTextTerminalStatus()
       ? " terminal-icons-hidden" : "");
     groupBox.dataset.groupId = group.id;
     const unreadCount = members.filter((session) => this.unreadSessions.has(session.session_id)).length;
@@ -6101,20 +6106,22 @@ class TermdeckApp {
     if (view.debugSnapshots.length > TERMINAL_DEBUG_SNAPSHOT_LIMIT) view.debugSnapshots.shift();
   }
 
-  // Small top-right corner panel: a header with a live A/B switch (see codexModeSelect below) plus a
-  // collapsed, empty body kept as reusable scaffolding for a future terminal-rendering investigation.
-  // Deliberately NOT wired to any automatic capture/logging -- an earlier version of this panel
-  // accumulated visible blur/focus/resize chatter once its original investigation was fixed, which was
-  // reported as noise and stripped back out; the body (this.debugOverlay.stats/.diff) stays empty until
-  // something explicitly writes into it. To reactivate for a NEW investigation: write into
-  // this.debugOverlay.stats/.diff and wire this.captureDebugSnapshot(view, "label") into whatever new
-  // code path is under suspicion -- see this file's git history around 2026-08-02 for a fuller
-  // buffer-vs-rendered-DOM differ to copy from, not to revive verbatim.
+  // Small top-right corner panel, INVISIBLE by default: a header (collapse toggle) plus a collapsed,
+  // empty body kept as reusable scaffolding for a future terminal-rendering investigation. Deliberately
+  // NOT wired to any automatic capture/logging -- an earlier version accumulated visible blur/focus/
+  // resize chatter once its original investigation was fixed (reported as noise, stripped back out),
+  // and a later "guarded" A/B toggle here showed no observable difference from the shipped default in
+  // practice (also removed, see forceVisibleTerminalReflow). The body (this.debugOverlay.stats/.diff)
+  // stays empty until something explicitly writes into it. To reactivate for a NEW investigation: set
+  // box.style.display = "block", write into this.debugOverlay.stats/.diff, and wire
+  // this.captureDebugSnapshot(view, "label") into whatever new code path is under suspicion -- see this
+  // file's git history around 2026-08-02 for a fuller buffer-vs-rendered-DOM differ and an A/B select
+  // to copy the pattern from, not to revive verbatim.
   installTerminalSizeDebugOverlay() {
     const box = document.createElement("div");
     box.id = "td-debug-size-overlay";
     Object.assign(box.style, {
-      position: "fixed", top: "4px", right: "4px", zIndex: 99999, color: "#0f0",
+      position: "fixed", top: "4px", right: "4px", zIndex: 99999, display: "none", color: "#0f0",
       background: "rgba(0,0,0,0.9)", padding: "4px 8px", borderRadius: "4px", cursor: "text",
       userSelect: "text", WebkitUserSelect: "text", maxWidth: "44vw", maxHeight: "70vh", overflow: "auto",
     });
@@ -6125,29 +6132,6 @@ class TermdeckApp {
     });
     const title = document.createElement("span");
     title.textContent = "td-debug";
-    // Visible A/B switch for the codex-nudge candidate under test (2026-08-02 follow-up: reported
-    // occasional wrap corruption on codex too, plus persistent black-tab-on-refresh needing 2-3 hard
-    // refreshes). "current" = shipped default (unconditional nudge on every reflow trigger, single
-    // 1.5s-later follow-up). "guarded" = only nudge unconditionally on a view's first-ever reflow;
-    // later re-triggers (e.g. switching back to an already-fine tab) require an actual
-    // terminalTailRenderMismatch first, and the follow-up retries at 1.5s/3.5s/6s instead of once. See
-    // forceVisibleTerminalReflow/scheduleCodexReflowFollowup. Persisted so it survives a reload.
-    const codexModeSelect = document.createElement("select");
-    Object.assign(codexModeSelect.style, { font: "10px monospace" });
-    const CODEX_MODE_STORAGE_KEY = "td-debug-codex-mode";
-    [["current", "codex: current (unconditional nudge)"], ["guarded", "codex: guarded (candidate)"]]
-      .forEach(([value, label]) => {
-        const opt = document.createElement("option");
-        opt.value = value;
-        opt.textContent = label;
-        codexModeSelect.appendChild(opt);
-      });
-    const storedCodexMode = localStorage.getItem(CODEX_MODE_STORAGE_KEY);
-    codexModeSelect.value = storedCodexMode === "guarded" ? "guarded" : "current";
-    codexModeSelect.addEventListener("change", () => {
-      localStorage.setItem(CODEX_MODE_STORAGE_KEY, codexModeSelect.value);
-      console.log("[td-debug] codex reflow mode:", codexModeSelect.value);
-    });
     const toggle = document.createElement("span");
     let collapsed = true;
     const body = document.createElement("div");
@@ -6156,7 +6140,7 @@ class TermdeckApp {
       toggle.textContent = collapsed ? "▸ expand" : "▾ collapse";
     };
     toggle.addEventListener("click", () => { collapsed = !collapsed; applyCollapsed(); });
-    header.append(title, codexModeSelect, toggle);
+    header.append(title, toggle);
     header.addEventListener("click", (e) => { if (e.target === header || e.target === title) { collapsed = !collapsed; applyCollapsed(); } });
     const stats = document.createElement("div");
     Object.assign(stats.style, { font: "11px/1.4 ui-monospace, monospace", whiteSpace: "pre" });
@@ -6632,27 +6616,20 @@ class TermdeckApp {
     if (localStorage.getItem("td-debug-reflow-mode") === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     const kind = this.session(view.sessionId)?.agent_kind;
     if (kind !== "codex") return this.forceVisibleTerminalReflowViaClear(view);
-    // "guarded" (candidate, toggle in the debug panel) vs "current" (shipped default): reported that
-    // some running codex tabs occasionally show the SAME wrap corruption Claude had (self-heals once
-    // new output prints) -- meaning the nudge isn't perfectly safe for codex either, just less often.
-    // The unconditional nudge is only actually NEEDED the first time a view ever reflows (a fresh
-    // connect / a tab idle since restart, where the buffer may genuinely be missing its screen); a LATER
-    // re-trigger (switching back to a tab that was already displaying fine) is pure risk with no upside
-    // if nothing is actually wrong. "guarded" skips those later re-triggers unless
-    // terminalTailRenderMismatch actually finds something to fix.
-    //
-    // NOTE: this must NOT read view.lastActivationReflowAt -- that gets stamped by the CALLER
-    // (scheduleTerminalActivationRepair) right before this function even runs, as a "don't re-trigger
-    // too soon" scheduling marker, not a "this view has successfully reflowed" signal. Reading it here
-    // made "guarded" treat every single call as a repeat (even a brand-new view's very first one),
-    // permanently falling into the mismatch-gated branch and going black on every refresh when that
-    // check didn't fire reliably on a still-populating fresh view -- confirmed live, reverted. Track a
-    // dedicated flag instead, set only by this function itself, after the fact.
-    const guarded = localStorage.getItem("td-debug-codex-mode") === "guarded";
+    // A "guarded" candidate (skip the nudge on repeat re-triggers unless terminalTailRenderMismatch
+    // actually finds something) was tried here to reduce the odd, self-healing wrap corruption reported
+    // on some running codex tabs, but showed no observed difference from unconditional nudging in
+    // practice and added a toggle nobody could tell apart -- removed. Always nudge; isFirstEverReflow
+    // is kept only to decide how long to hide the container below, not whether to nudge at all.
     const isFirstEverReflow = !view.codexReflowEverAttempted;
-    if (guarded && !isFirstEverReflow && !this.terminalTailRenderMismatch(view)) return false;
     view.codexReflowEverAttempted = true;
-    const result = this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
+    // Only a session's first-ever reflow can still have the SERVER's own screen repair
+    // (session_manager.py _force_screen_repaint, scheduled once per session per server run) yet to
+    // land -- it arrives ~0.28-0.43s later as ordinary output, a second genuine full-screen redraw from
+    // the real CLI process that this function's own hide (above) never covers. Stay hidden long enough
+    // to also mask that, so only one final, settled paint is ever visible; later re-triggers have no
+    // such pending server-side repair to wait out, so keep their hide brief.
+    const result = this.forceVisibleTerminalReflowViaResizeNudge(view, 2, isFirstEverReflow ? 600 : 0);
     this.scheduleCodexReflowFollowup(view);
     return result;
   }
@@ -6660,11 +6637,11 @@ class TermdeckApp {
   // Codex still sometimes shows only its last few scrollback lines after a fresh connect (~10-20% of
   // tries, reported, persisting across 2-3 hard refreshes in some cases) -- likely a timing race, not
   // necessarily missing data: this nudge fires as soon as the client's snapshot replay completes, which
-  // can be BEFORE the SERVER's own repair (_force_screen_repaint in session_manager.py, ~0.35-0.43s
-  // delayed, gated on <256 bytes of other output having arrived) has actually finished getting codex to
-  // redraw its full screen. "guarded" mode retries at several delays (matching how
-  // scheduleActiveTerminalSettleWatchdog already retries elsewhere in this file) instead of just once,
-  // to test whether the persistent cases just need more patience; "current" keeps the single retry.
+  // can be BEFORE the SERVER's own repair (_force_screen_repaint in session_manager.py, ~0.28-0.43s
+  // delayed) has actually finished getting codex to redraw its full screen -- now unconditional
+  // server-side (see session_manager.py), but still not instant. Retries at several delays (matching
+  // how scheduleActiveTerminalSettleWatchdog already retries elsewhere in this file) instead of just
+  // once, to give that server-side window more chances to be caught.
   //
   // Every attempt is gated on terminalTailRenderMismatch(view) -- the rendered DOM actually disagreeing
   // with xterm's own buffer, i.e. something a repaint could fix. If they already agree, a resize-nudge
@@ -6675,9 +6652,7 @@ class TermdeckApp {
   scheduleCodexReflowFollowup(view) {
     if (!view || view.closed) return;
     for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
-    const guarded = localStorage.getItem("td-debug-codex-mode") === "guarded";
-    const delays = guarded ? [1500, 3500, 6000] : [1500];
-    view.codexReflowFollowupTimers = delays.map((delay) => setTimeout(() => {
+    view.codexReflowFollowupTimers = [1500, 3500, 6000].map((delay) => setTimeout(() => {
       if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
       if (!this.terminalTailRenderMismatch(view)) return;
       this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
@@ -6722,7 +6697,17 @@ class TermdeckApp {
   // nudgeCols: how many columns narrower to go before restoring. The original value (2) is exactly
   // wide enough to catch a composer's horizontal rule right at its wrap boundary; testing whether 1
   // column is still enough to unstick a stale codex paint without landing on that boundary.
-  forceVisibleTerminalReflowViaResizeNudge(view, nudgeCols = 2) {
+  //
+  // minHideMs: keeps the container hidden for at least this long, even though this function's OWN
+  // shrink/grow cycle finishes in about a frame. Reported: opening/refreshing shows content, then
+  // visibly repaints a second time shortly after with identical-looking content -- almost certainly the
+  // SERVER's own screen repair (session_manager.py _force_screen_repaint, ~0.28-0.43s delayed, now
+  // unconditional) landing as a second, genuine full-screen redraw from the real CLI process. That
+  // arrives as ordinary output (queueTerminalWrite), not through this function at all, so it was never
+  // covered by the hide above. On a session's first-ever reflow (forceVisibleTerminalReflow passes a
+  // longer minHideMs there), stay hidden long enough to cover that server-side window too, so only the
+  // one, final, settled paint is ever visible.
+  forceVisibleTerminalReflowViaResizeNudge(view, nudgeCols = 2, minHideMs = 0) {
     if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
         !view.container.classList.contains("visible")) return false;
     const rect = view.container.getBoundingClientRect();
@@ -6749,9 +6734,15 @@ class TermdeckApp {
     // user watching it happen, and was reported as exactly that right after this hide was added. A
     // bounded setTimeout safety net (not tied to rAF, so it fires even if rAF itself is what's stalled)
     // caps how long the terminal can ever stay invisible for, regardless of system load.
+    const hideStartedAt = Date.now();
     view.container.style.visibility = "hidden";
-    const revealDeadline = setTimeout(() => { view.container.style.visibility = ""; }, 250);
-    const revealContainer = () => { clearTimeout(revealDeadline); view.container.style.visibility = ""; };
+    const revealDeadline = setTimeout(() => { view.container.style.visibility = ""; }, minHideMs + 250);
+    const revealContainer = () => {
+      const remaining = minHideMs - (Date.now() - hideStartedAt);
+      clearTimeout(revealDeadline);
+      if (remaining > 0) setTimeout(() => { view.container.style.visibility = ""; }, remaining);
+      else view.container.style.visibility = "";
+    };
     view.v2ForcedReflowFrame = requestAnimationFrame(() => {
       view.v2ForcedReflowFrame = 0;
       if (view.closed || !view.container.classList.contains("visible")) {
@@ -7185,7 +7176,7 @@ class TermdeckApp {
       () => { this.settings.show_stats = !this.settings.show_stats; }));
     pop.appendChild(this.buildToggleRow("Terminal icons", () => (this.settings.show_terminal_icons ? "on" : "off"),
       () => { this.settings.show_terminal_icons = !this.settings.show_terminal_icons; this.renderList(); }));
-    pop.appendChild(this.buildToggleRow("Compact throbbing icons", () => (this.settings.compact_terminal_icons ? "on" : "off"),
+    pop.appendChild(this.buildToggleRow("Hover brand icons", () => (this.settings.compact_terminal_icons ? "on" : "off"),
       () => {
         this.settings.compact_terminal_icons = !this.settings.compact_terminal_icons;
         if (this.settings.compact_terminal_icons) this.settings.show_terminal_icons = true;
