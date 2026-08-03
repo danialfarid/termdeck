@@ -10,7 +10,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
-  show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_left: -1, notebook_text: "",
+  show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {},
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
   files_pinned: false, sidebar_text_color: "#d5dbe5", vscode_keybindings: {} };
 const MODEL_PERMISSIONS = {
@@ -1329,6 +1329,10 @@ class TermdeckApp {
           !searchBar.contains(e.target) && !searchToggle?.contains(e.target)) {
         this.clearTerminalSearch(true);
       }
+      const promptHistory = this.$("history-prompt-history");
+      const promptHistoryButton = this.$("history-prompt-history-btn");
+      if (promptHistory && !promptHistory.classList.contains("hidden") &&
+          !promptHistory.contains(e.target) && !promptHistoryButton?.contains(e.target)) this.closePromptHistory();
       const notebookPanel = this.$("notebook-panel");
       const notebookToggle = this.$("notebook-toggle");
       if (this.settings.notebook_open && notebookPanel && !notebookPanel.contains(e.target) &&
@@ -1373,6 +1377,7 @@ class TermdeckApp {
     }
     this.$("history-attach").onclick = () => this.attachToHistory();
     this.$("history-send").onclick = () => this.sendHistoryPrompt();
+    this.$("history-prompt-history-btn").onclick = () => this.togglePromptHistory();
     this.$("history-prompt").addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -4153,6 +4158,7 @@ class TermdeckApp {
   }
 
   setHistoryMode(enabled) {
+    if (!enabled) this.closePromptHistory();
     this.settings.history_mode = !!enabled;
     this.saveSettings();
     this.stopHistoryRefresh();
@@ -4435,6 +4441,7 @@ class TermdeckApp {
       console.warn("unable to send Markdown prompt", error);
       return;
     }
+    this.recordPromptHistory(sessionId, text);
     // Clear the local draft immediately so switching views cannot reinsert the
     // prompt while the PTY consumes the synchronized text and Enter.
     view.promptDraft = "";
@@ -4448,6 +4455,73 @@ class TermdeckApp {
     view.keepBottom = true;
     view.pinBottomUntil = Date.now() + 5000;
     this.$("status-name").textContent = queue ? "prompt queued" : "prompt sent";
+  }
+
+  recordPromptHistory(sessionId, text) {
+    const prompt = String(text || "").trim();
+    if (!prompt) return;
+    const history = this.settings.prompt_history && typeof this.settings.prompt_history === "object"
+      ? this.settings.prompt_history : {};
+    const previous = Array.isArray(history[sessionId]) ? history[sessionId] : [];
+    const next = [prompt, ...previous.filter((item) => item !== prompt)].slice(0, 50);
+    this.settings.prompt_history = { ...history, [sessionId]: next };
+    this.saveSettings();
+    if (!this.$("history-prompt-history").classList.contains("hidden")) this.renderPromptHistory();
+  }
+
+  renderPromptHistory() {
+    const items = this.$("history-prompt-history-items");
+    if (!items) return;
+    items.textContent = "";
+    const entries = Array.isArray(this.settings.prompt_history?.[this.activeId])
+      ? this.settings.prompt_history[this.activeId] : [];
+    if (!entries.length) {
+      const empty = document.createElement("div");
+      empty.className = "history-prompt-history-empty";
+      empty.textContent = "No prompts sent from Markdown mode yet.";
+      items.appendChild(empty);
+      return;
+    }
+    for (const text of entries) {
+      const entry = document.createElement("button");
+      entry.type = "button";
+      entry.className = "history-prompt-history-item";
+      entry.textContent = text;
+      entry.title = text;
+      entry.onclick = () => this.restorePromptHistoryEntry(text);
+      items.appendChild(entry);
+    }
+  }
+
+  togglePromptHistory() {
+    const panel = this.$("history-prompt-history");
+    const button = this.$("history-prompt-history-btn");
+    if (!panel || !button || !this.historyOpen || this.activeFileKey !== null) return;
+    const opening = panel.classList.contains("hidden");
+    if (opening) this.renderPromptHistory();
+    panel.classList.toggle("hidden", !opening);
+    button.classList.toggle("on", opening);
+    button.setAttribute("aria-expanded", String(opening));
+  }
+
+  closePromptHistory() {
+    const panel = this.$("history-prompt-history");
+    const button = this.$("history-prompt-history-btn");
+    if (!panel || !button) return;
+    panel.classList.add("hidden");
+    button.classList.remove("on");
+    button.setAttribute("aria-expanded", "false");
+  }
+
+  restorePromptHistoryEntry(text) {
+    const view = this.views.get(this.activeId);
+    const prompt = this.$("history-prompt");
+    if (!view || !prompt || !this.historyOpen || this.activeFileKey !== null) return;
+    prompt.value = text;
+    prompt.dispatchEvent(new Event("input", { bubbles: true }));
+    this.closePromptHistory();
+    prompt.focus();
+    prompt.setSelectionRange(prompt.value.length, prompt.value.length);
   }
 
   resizeHistoryPrompt() {
@@ -5405,6 +5479,7 @@ class TermdeckApp {
   }
 
   activate(id, options = {}) {
+    this.closePromptHistory();
     const previousId = this.activeId;
     let unreadChanged = false;
     if (previousId && previousId !== id) {
@@ -6533,8 +6608,14 @@ class TermdeckApp {
     if (view.term.cols !== beforeCols || view.term.rows !== beforeRows) {
       if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
       if (!this.terminalTailRenderMismatch(view)) {
+        // restoreLine is a row INDEX captured before the resize above -- a cols change reflows the
+        // whole buffer (every wrapped line can re-wrap into a different number of rows), so that index
+        // can point at entirely different content afterward, sometimes landing near row 0. Reported:
+        // switching between half-scrolled tabs randomly jumps to the top. Only restore it when cols
+        // did NOT actually change (the pure-paint branch below, where the index is still valid);
+        // when a reflow did happen, trust xterm's own resize()/reflow to have kept the viewport
+        // sensibly positioned rather than overriding it with a now-stale index.
         if (follow) this.scrollTerminalV2ToBottom(view);
-        else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
         return true;
       }
     }
@@ -7654,6 +7735,7 @@ class TermdeckApp {
   async activateFile(key, line, options = {}) {
     const entry = this.openFiles.get(key);
     if (!entry) return;
+    this.closePromptHistory();
     this.activeFileKey = key;
     if (options.history !== false && !this.vscodeMode) {
       const requestedReturnTo = typeof options.returnTo === "string" ? options.returnTo.trim() : "";
