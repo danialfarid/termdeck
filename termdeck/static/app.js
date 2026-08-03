@@ -5795,7 +5795,6 @@ class TermdeckApp {
     };
     ws.onmessage = (e) => {
       if (typeof e.data === "string") { this.handleControl(id, view, JSON.parse(e.data)); return; }
-      console.log("[td-trace] ws data", id, Date.now(), "bytes", e.data.byteLength, "awaitingSnapshot", view.awaitingSnapshot);
       // xterm's buffer continues to process output while an inactive tab is
       // display:none, but its browser viewport has zero height. Remember that
       // state so activation can synchronize the now-visible scrollbar through
@@ -5821,7 +5820,6 @@ class TermdeckApp {
         this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
           this.refreshTerminal(view);
           view.replaying = false;
-          console.log("[td-trace] snapshot write done", id, Date.now());
           if (v2 && view.container.classList.contains("visible")) {
             view.forceResizeAfterFit = true;
             this.scheduleV2Fit(view);
@@ -6511,7 +6509,6 @@ class TermdeckApp {
   repairTerminalRenderIfStale(view) {
     if (!view || view.closed || !view.container.classList.contains("visible")) return false;
     if (!this.terminalTailRenderMismatch(view)) return false;
-    console.log("[td-trace] repairTerminalRenderIfStale: mismatch found, repairing (VISIBLE, no hide)", view.sessionId, Date.now());
     const restoreLine = view.term.buffer.active.viewportY;
     const follow = view.scrollMode === "follow";
     // A stale-looking render is not always a paint problem: the terminal's own cols/rows can be wrong for
@@ -6563,8 +6560,6 @@ class TermdeckApp {
         view.fit.fit();
         const colsChanged = view.term.cols !== beforeCols || view.term.rows !== beforeRows;
         if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
-        console.log("[td-trace] settleWatchdog tick", view.sessionId, Date.now(), "delay", delay,
-                    "colsChanged", colsChanged, `${beforeCols}x${beforeRows}->${view.term.cols}x${view.term.rows}`);
         if (colsChanged || this.terminalTailRenderMismatch(view)) {
           this.repairTerminalRenderIfStale(view);
         }
@@ -6748,23 +6743,12 @@ class TermdeckApp {
     // caps how long the terminal can ever stay invisible for, regardless of system load.
     const hideStartedAt = Date.now();
     view.container.style.visibility = "hidden";
-    console.log("[td-trace] hide start", view.sessionId, hideStartedAt, "minHideMs", minHideMs);
-    const revealDeadline = setTimeout(() => {
-      view.container.style.visibility = "";
-      console.log("[td-trace] reveal (deadline timeout)", view.sessionId, Date.now(), "elapsedMs", Date.now() - hideStartedAt);
-    }, minHideMs + 250);
+    const revealDeadline = setTimeout(() => { view.container.style.visibility = ""; }, minHideMs + 250);
     const revealContainer = () => {
       const remaining = minHideMs - (Date.now() - hideStartedAt);
       clearTimeout(revealDeadline);
-      if (remaining > 0) {
-        setTimeout(() => {
-          view.container.style.visibility = "";
-          console.log("[td-trace] reveal (delayed)", view.sessionId, Date.now(), "elapsedMs", Date.now() - hideStartedAt);
-        }, remaining);
-      } else {
-        view.container.style.visibility = "";
-        console.log("[td-trace] reveal (immediate)", view.sessionId, Date.now(), "elapsedMs", Date.now() - hideStartedAt);
-      }
+      if (remaining > 0) setTimeout(() => { view.container.style.visibility = ""; }, remaining);
+      else view.container.style.visibility = "";
     };
     view.v2ForcedReflowFrame = requestAnimationFrame(() => {
       view.v2ForcedReflowFrame = 0;
