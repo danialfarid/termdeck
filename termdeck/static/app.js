@@ -4143,6 +4143,19 @@ class TermdeckApp {
     this.activeEditorFocusTimer = window.setTimeout(this.runScheduledActiveEditorFocus.bind(this, sessionId), 80);
   }
 
+  // Called after a view's container is revealed from a visibility:hidden reflow hide (see
+  // forceVisibleTerminalReflowViaResizeNudge) that may have swallowed an earlier focus() attempt.
+  // Only reclaims focus if nothing else meaningful has since claimed it -- a user who clicked into the
+  // search box, an editor, or a modal while the terminal was hidden must not have that focus stolen
+  // back out from under them.
+  reclaimTerminalFocusIfIdle(view) {
+    if (!view || view.closed || this.activeId !== view.sessionId || this.activeFileKey !== null ||
+        this.historyOpen || this.nativeVscodeMode) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && !view.container.contains(active)) return;
+    view.term.focus();
+  }
+
   runScheduledActiveEditorFocus(sessionId) {
     this.activeEditorFocusTimer = 0;
     if (sessionId !== this.activeId) return;
@@ -6929,12 +6942,22 @@ class TermdeckApp {
     // caps how long the terminal can ever stay invisible for, regardless of system load.
     const hideStartedAt = Date.now();
     view.container.style.visibility = "hidden";
-    const revealDeadline = setTimeout(() => { view.container.style.visibility = ""; }, minHideMs + 250);
+    // A visibility:hidden container cannot hold focus -- if scheduleActiveEditorFocus's
+    // view.term.focus() call (fired 80ms after activate(), see runScheduledActiveEditorFocus) lands
+    // while this hide is still in effect, the browser silently drops it (a hidden element is not a
+    // focusable area) and activeElement falls back to <body>. Nothing else ever re-requests focus once
+    // this reveals, so the terminal is left unfocusable until the user clicks it a second time -- this
+    // is what made a fresh/slow-loading codex tab need an extra click to type into, since only codex
+    // goes through this hide/reveal cycle and a slow tab is exactly the case where the 80ms focus
+    // attempt is most likely to race the hide window. Reclaim focus once actually revealed instead of
+    // just restoring visibility.
+    const restoreVisibility = () => { view.container.style.visibility = ""; this.reclaimTerminalFocusIfIdle(view); };
+    const revealDeadline = setTimeout(restoreVisibility, minHideMs + 250);
     const revealContainer = () => {
       const remaining = minHideMs - (Date.now() - hideStartedAt);
       clearTimeout(revealDeadline);
-      if (remaining > 0) setTimeout(() => { view.container.style.visibility = ""; }, remaining);
-      else view.container.style.visibility = "";
+      if (remaining > 0) setTimeout(restoreVisibility, remaining);
+      else restoreVisibility();
     };
     view.v2ForcedReflowFrame = requestAnimationFrame(() => {
       view.v2ForcedReflowFrame = 0;
