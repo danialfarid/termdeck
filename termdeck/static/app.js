@@ -6494,6 +6494,13 @@ class TermdeckApp {
   }
 
   terminalTailRenderMismatch(view) {
+    // forceVisibleTerminalReflowViaResizeNudge deliberately hides the container (visibility:hidden)
+    // for the brief window of its own shrink/grow cycle. Without this guard, a concurrently-running
+    // check (e.g. scheduleActiveTerminalSettleWatchdog's own periodic timers) could see that
+    // self-inflicted, intentional invisibility via terminalRenderedTailLooksInvisible and misread it as
+    // a genuine paint bug, triggering an unnecessary SECOND repair on top of the nudge already in
+    // flight -- worse under CPU load, where the nudge's own hide window runs longer.
+    if (view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame) return false;
     const expected = this.terminalBufferVisibleTailLines(view);
     const rendered = this.terminalRenderedTailLines(view);
     if (!expected.length || expected.length !== rendered.length) return false;
@@ -6734,8 +6741,17 @@ class TermdeckApp {
     // duration (visibility, not display: it must keep its layout box so fit()/getBoundingClientRect()
     // still measure real geometry, and IntersectionObserver-based renderer suspension only reacts to
     // display:none, not visibility) so only the FINAL, correctly-sized result is ever actually seen.
+    //
+    // The hide is synchronous but the reveal depends on two requestAnimationFrame calls completing --
+    // under CPU load, rAFs can stall arbitrarily, which would leave the terminal invisible for however
+    // long that stall lasts and then have it "pop back" to its already-correct content once the reveal
+    // finally runs. That is indistinguishable from "it cleared everything and caught back up" to a
+    // user watching it happen, and was reported as exactly that right after this hide was added. A
+    // bounded setTimeout safety net (not tied to rAF, so it fires even if rAF itself is what's stalled)
+    // caps how long the terminal can ever stay invisible for, regardless of system load.
     view.container.style.visibility = "hidden";
-    const revealContainer = () => { view.container.style.visibility = ""; };
+    const revealDeadline = setTimeout(() => { view.container.style.visibility = ""; }, 250);
+    const revealContainer = () => { clearTimeout(revealDeadline); view.container.style.visibility = ""; };
     view.v2ForcedReflowFrame = requestAnimationFrame(() => {
       view.v2ForcedReflowFrame = 0;
       if (view.closed || !view.container.classList.contains("visible")) {
