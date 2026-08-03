@@ -64,7 +64,6 @@ class ManagedSession:
         self.draft_tracker = DraftInputTracker(record.draft)
         self.last_input_monotonic = 0.0
         self.last_activity_at = 0.0
-        self.total_output_bytes = 0
         self.last_activity_broadcast_monotonic = 0.0
         self.claude_subagent_states: dict[Path, bool] = {}
         self.claude_subagents_active = False
@@ -284,29 +283,30 @@ class TerminalSessionManager:
             return
         if ms.screen_repaint_task is not None and not ms.screen_repaint_task.done():
             return
-        ms.screen_repaint_task = asyncio.create_task(
-            self._force_screen_repaint(ms, ms.proc, delay, ms.total_output_bytes))
+        ms.screen_repaint_task = asyncio.create_task(self._force_screen_repaint(ms, ms.proc, delay))
 
-    async def _force_screen_repaint(self, ms: ManagedSession, proc: PtyProcess, delay: float,
-                                    output_bytes_before_delay: int) -> None:
+    async def _force_screen_repaint(self, ms: ManagedSession, proc: PtyProcess, delay: float) -> None:
         """Make a full-screen TUI redraw itself by briefly changing the pty width.
 
         The replayed scrollback cannot reconstruct a Codex/Claude screen: those TUIs paint inside
         synchronized-update frames, which _durable_scrollback_bytes strips, so a freshly attached client
         would otherwise stare at an empty pane until the agent happens to emit new output. A pty only
         raises SIGWINCH when the size actually changes, so re-sending the current size is not enough.
-        A real repaint arriving during the delay means the screen already repainted (usually because the
-        newly attached client fitted to a different size) and the nudge is skipped to avoid a second
-        reflow — but that has to be judged by VOLUME, not merely by any byte having arrived: a dtach
-        reattach alone can emit a handful of bytes (its own inert winch ping, a spinner tick) that never
-        actually redrew the composer/status screen, and bailing out on those left sessions idle since the
-        last restart permanently stuck on stale scrollback. A genuine full-screen redraw is at minimum a
-        few hundred bytes of cursor-position and styling escapes, so require that much before trusting it.
+
+        Deliberately unconditional on output volume: an earlier version bailed out if >= 256 bytes of
+        anything arrived during the delay, reasoning that meant the screen already repainted on its own.
+        That volume threshold cannot distinguish a genuine full-screen redraw from an actively-running
+        session's own incidental chatter (status-area/spinner repaints alone run roughly 9KB/s) --
+        trivially exceeding 256 bytes within this delay for any BUSY session, which bailed out almost
+        every time specifically for the "running" tabs this was supposed to fix, while working fine for
+        genuinely idle ones. A redundant nudge here is cheap: the CLI redraws itself in response to a
+        real SIGWINCH exactly like it would for any legitimate resize, unlike the client-side equivalent
+        (forceVisibleTerminalReflowViaResizeNudge in app.js) whose risk comes from xterm's OWN
+        buffer-reflow logic, not from anything server-side.
         The restore reads the size again after the nudge, letting a client resize that landed meanwhile win.
         """
         await asyncio.sleep(delay)
-        new_bytes = ms.total_output_bytes - output_bytes_before_delay
-        if ms.proc is not proc or not proc.alive or new_bytes >= TermdeckConfig.SCREEN_REPAINT_SKIP_MIN_BYTES:
+        if ms.proc is not proc or not proc.alive:
             return
         cols, rows = max(2, ms.cols), max(2, ms.rows)
         nudge = cols - 1 if cols > TermdeckConfig.SCREEN_REPAINT_NUDGE_MIN_COLS else cols + 1
@@ -629,7 +629,6 @@ class TerminalSessionManager:
         if not data:
             return
         ms.last_activity_at = time.time()
-        ms.total_output_bytes += len(data)
         self._append_collapsing_repaints(ms, data)
         previous_title = ms.cli_title
         previous_processing = self._processing_state(ms)
