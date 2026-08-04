@@ -10,7 +10,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
-  show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {},
+  show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
   files_pinned: false, sidebar_text_color: "#d5dbe5", vscode_keybindings: {} };
 const MODEL_PERMISSIONS = {
@@ -48,6 +48,10 @@ const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
 // silently dropped) while cutting how often two land close enough together to overlap a single redraw.
 const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [150, 800, 2000];
 const TERMINAL_DEBUG_SNAPSHOT_LIMIT = 50;
+const SELECTION_SEARCH_MAX_CHARS = 1000;
+// Files viewer, file search, and terminal search share one files-section panel and one shortcut
+// (cycle-side-panel); repeated presses walk this order and wrap back to the start.
+const FILES_SIDE_PANEL_TABS = ["project", "search", "terminal-search"];
 const DESKTOP_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Meta+b" },
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
@@ -62,12 +66,14 @@ const DESKTOP_KEYBINDINGS = [
   { id: "save-file", label: "Save open file", def: "Meta+s" },
   { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp" },
   { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown" },
-  { id: "view-files", label: "Toggle Files view", def: "Meta+Shift+d" },
-  { id: "view-search", label: "Toggle Search view", def: "Meta+Shift+f" },
-  { id: "terminal-search", label: "Search terminal output", def: "Meta+Shift+s" },
+  { id: "cycle-side-panel", label: "Files / Search / Terminal search (press again for next tab)", def: "Meta+Shift+f" },
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t" },
   { id: "switch-project", label: "Switch project", def: "Alt+s" },
   { id: "toggle-notebook", label: "Quick notebook", def: "Alt+n" },
+  { id: "selection-copy", label: "Copy selected terminal / Markdown text", def: "Meta+c" },
+  { id: "selection-note-new", label: "Create note from selected text", def: "Meta+Alt+n" },
+  { id: "selection-note-append", label: "Append selected text to note", def: "Meta+Alt+Shift+n" },
+  { id: "selection-copy-history", label: "Open copied text history", def: "Meta+Shift+v" },
   { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Alt+g" },
   { id: "scroll-bottom", label: "Scroll terminal / transcript to bottom", def: "Meta+Shift+ArrowDown" },
   { id: "focus-prompt", label: "Focus active terminal / editor / Markdown prompt", def: "Alt+f" },
@@ -281,6 +287,8 @@ class TermdeckApp {
     this.notebookSearchIndex = 0;
     this.notebookTitleTimer = 0;
     this.notebookResizePointerId = null;
+    this.selectionActionState = null;
+    this.selectionActionUpdateFrame = 0;
     this.nativeSessionIds = new Set();
     this.sessionModelById = new Map();
     this.selectedTreeRow = null;
@@ -321,7 +329,7 @@ class TermdeckApp {
     document.body.classList.toggle("vscode-native-mode", this.nativeVscodeMode);
     document.body.classList.toggle("vscode-editor-mode", this.vscodeEditorMode);
     if (!this.vscodeMode) return;
-    const forceHidden = ["active-toggle", "terminal-search-toggle", "terminal-search-bar",
+    const forceHidden = ["active-toggle", "terminal-search-toggle",
       "view-project", "view-search", "files-section", "side-split", "project-select", "project-select-label"];
     for (const id of forceHidden) {
       const el = this.$(id);
@@ -1205,8 +1213,13 @@ class TermdeckApp {
        { label: "Diff font", key: "diff_font_size" }, { label: "Tree/search font", key: "tree_font_size" },
        { label: "Sidebar text color", key: "sidebar_text_color", type: "color" }]);
     this.initNotebook();
+    this.initSelectionActions();
     for (const view of ["terminals", "project", "search"]) {
-      this.$("view-" + view).onclick = () => this.setSideView(view);
+      this.$("view-" + view).onclick = () => {
+        if (view === "search" && this.searchContentFromSelection()) return;
+        if (view === "project" && this.searchFileFromSelection()) return;
+        this.setSideView(view);
+      };
     }
     const replaceToggle = this.$("replace-toggle");
     replaceToggle.onclick = () => {
@@ -1324,22 +1337,20 @@ class TermdeckApp {
           if (id === "context-menu") this.contextMenuTarget = null;
         }
       }
-      const searchBar = this.$("terminal-search-bar");
-      const searchToggle = this.$("terminal-search-toggle");
-      if (searchBar && !searchBar.classList.contains("hidden") &&
-          !searchBar.contains(e.target) && !searchToggle?.contains(e.target)) {
-        this.clearTerminalSearch(true);
-      }
       const promptHistory = this.$("history-prompt-history");
       const promptHistoryButton = this.$("history-prompt-history-btn");
       if (promptHistory && !promptHistory.classList.contains("hidden") &&
           !promptHistory.contains(e.target) && !promptHistoryButton?.contains(e.target)) this.closePromptHistory();
+      const selectionActions = this.$("selection-actions");
+      if (selectionActions && !selectionActions.classList.contains("hidden") && !selectionActions.contains(e.target)) {
+        this.hideSelectionActions();
+      }
       const notebookPanel = this.$("notebook-panel");
       const notebookToggle = this.$("notebook-toggle");
       if (this.settings.notebook_open && notebookPanel && !notebookPanel.contains(e.target) &&
           !notebookToggle?.contains(e.target)) this.setNotebookOpen(false, { focus: false });
     });
-    this.$("terminal-search-toggle").onclick = () => this.toggleTerminalSearch();
+    this.$("terminal-search-toggle").onclick = () => this.setSideView("terminal-search");
     this.$("terminal-search-submit").onclick = () => {
       clearTimeout(this.terminalSearchTimer);
       this.runTerminalSearch();
@@ -1351,7 +1362,7 @@ class TermdeckApp {
     };
     this.$("terminal-search-input").addEventListener("keydown", (event) => {
       if (event.key === "Enter") { event.preventDefault(); clearTimeout(this.terminalSearchTimer); this.runTerminalSearch(); }
-      if (event.key === "Escape") { event.preventDefault(); this.clearTerminalSearch(true); }
+      if (event.key === "Escape") { event.preventDefault(); this.clearTerminalSearch(); }
     });
     this.$("history-search-close").onclick = () => this.closeHistorySearchContext();
     this.$("history-search-open").onclick = () => this.openHistorySearchSession();
@@ -1531,7 +1542,6 @@ class TermdeckApp {
     history.replaceState(startupNav, "", location.pathname + location.search);
     const scheduleLayoutFit = () => {
       this.positionFloatingFilesPanel();
-      this.positionFloatingTerminalSearch();
       this.scheduleTerminalLayoutFit();
     };
     new ResizeObserver(scheduleLayoutFit).observe(this.$("terminal-area"));
@@ -2374,18 +2384,6 @@ class TermdeckApp {
     this.renderList();
   }
 
-  toggleTerminalSearch() {
-    const bar = this.$("terminal-search-bar");
-    const opening = bar.classList.contains("hidden");
-    bar.classList.toggle("hidden", !opening);
-    bar.classList.toggle("expanded", opening && !this.vscodeMode);
-    this.$("terminal-search-toggle").classList.toggle("on", opening);
-    this.updateTerminalSearchGroupButton();
-    this.positionFloatingTerminalSearch();
-    if (opening) this.$("terminal-search-input").focus();
-    else this.clearTerminalSearch(true);
-  }
-
   updateTerminalSearchGroupButton() {
     const button = this.$("terminal-search-group-toggle");
     if (!button) return;
@@ -2396,7 +2394,7 @@ class TermdeckApp {
       : "Group similar matched text";
   }
 
-  clearTerminalSearch(closeBar = false) {
+  clearTerminalSearch() {
     clearTimeout(this.terminalSearchTimer);
     if (this.terminalSearchAbort) this.terminalSearchAbort.abort();
     this.terminalSearchAbort = null;
@@ -2405,12 +2403,6 @@ class TermdeckApp {
     this.$("terminal-search-results").textContent = "";
     this.historySearchResults = [];
     this.terminalSearchMatches.clear();
-    this.$("terminal-search-toggle").classList.toggle("on", !closeBar);
-    if (closeBar) {
-      this.$("terminal-search-bar").classList.add("hidden");
-      this.$("terminal-search-bar").classList.remove("expanded");
-    }
-    this.positionFloatingTerminalSearch();
     this.renderList();
   }
 
@@ -2418,7 +2410,7 @@ class TermdeckApp {
     const input = this.$("terminal-search-input");
     const query = input.value.trim();
     if (!query) {
-      this.clearTerminalSearch(false);
+      this.clearTerminalSearch();
       return;
     }
     if (this.terminalSearchAbort) this.terminalSearchAbort.abort();
@@ -2931,11 +2923,11 @@ class TermdeckApp {
   }
 
   setSideView(view, allowToggle = true, allowFloating = true) {
-    if (this.vscodeMode && (view === "project" || view === "search")) return;
+    if (this.vscodeMode && view !== "terminals") return;
     const nextView = allowToggle && this.sideView === view && view !== "terminals" ? "terminals" : view;
     this.sideView = nextView;
     view = this.sideView;
-    const filesVisible = view === "project" || view === "search";
+    const filesVisible = FILES_SIDE_PANEL_TABS.includes(view);
     const filesPinned = filesVisible && !!this.settings.files_pinned;
     this.settings.side_full = filesVisible;
     if (filesPinned) {
@@ -2944,14 +2936,16 @@ class TermdeckApp {
     }
     this.$("files-section").classList.toggle("hidden", !filesVisible);
     this.$("files-section").classList.toggle("with-search", view === "search");
+    this.$("files-section").classList.toggle("with-terminal-search", view === "terminal-search");
     this.$("files-section").classList.toggle("floating", filesVisible && !filesPinned);
     for (const name of ["terminals", "project", "search"]) {
       this.$("view-" + name).classList.toggle("on", name === view);
     }
+    this.$("terminal-search-toggle").classList.toggle("on", view === "terminal-search");
     this.$("side-split").classList.toggle("hidden", view === "terminals" || filesVisible);
     this.applySettings();
     this.applySideLayout();
-    if (filesVisible) {
+    if (view === "project" || view === "search") {
       const session = this.session(this.activeId);
       const expectedRoot = session ? session.cwd : (this.projectRoot() || "~");
       if (this.treeRoot !== expectedRoot || !this.treeDirs.has("")) {
@@ -2960,16 +2954,23 @@ class TermdeckApp {
         this.connectFileTreeWatch(expectedRoot);
         void this.refreshTreeDirectories();
       }
+    } else {
+      this.disconnectFileTreeWatch();
     }
     if (!filesVisible) {
-      this.disconnectFileTreeWatch();
       this.scheduleTerminalFitAfterSidebarChange();
       return;
     }
-    if (view === "search") this.$("search-query").focus();
-    if (view === "search" && this.$("search-query").value.trim()) this.runSearch(null, true);
-    else if (view === "project") this.setExplorerMode("tree");
-    else this.setExplorerMode("content");
+    if (view === "project") {
+      this.setExplorerMode("tree");
+    } else if (view === "search") {
+      this.$("search-query").focus();
+      if (this.$("search-query").value.trim()) this.runSearch(null, true);
+      else this.setExplorerMode("content");
+    } else if (view === "terminal-search") {
+      this.updateTerminalSearchGroupButton();
+      this.$("terminal-search-input").focus();
+    }
     this.scheduleTerminalFitAfterSidebarChange();
   }
 
@@ -3013,7 +3014,7 @@ class TermdeckApp {
       const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
       this.settings.files_width = Math.max(Number(this.settings.files_width) || 0, normalWidth * 2);
     }
-    const filesVisible = this.sideView === "project" || this.sideView === "search";
+    const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
     this.$("files-section").classList.toggle("floating", filesVisible && !this.settings.files_pinned);
     this.updateFilesPinButton();
     this.applySettings();
@@ -3022,7 +3023,7 @@ class TermdeckApp {
   }
 
   dismissUnpinnedFilesPanel() {
-    if (this.settings.files_pinned || (this.sideView !== "project" && this.sideView !== "search")) return;
+    if (this.settings.files_pinned || !FILES_SIDE_PANEL_TABS.includes(this.sideView)) return;
     this.setSideView("terminals", false);
   }
 
@@ -3043,37 +3044,13 @@ class TermdeckApp {
     const sidebar = this.$("sidebar");
     const header = this.$("sidebar-header");
     const footer = this.$("sidebar-footer");
-    const terminalSearch = this.$("terminal-search-bar");
-    const searchOffset = terminalSearch && !terminalSearch.classList.contains("hidden") ? terminalSearch.offsetHeight : 0;
     const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
     const requestedWidth = Number(fileWidth) || Math.max(Number(this.settings.files_width) || 0, normalWidth * 2);
     const availableWidth = Math.max(normalWidth, window.innerWidth - sidebar.getBoundingClientRect().left - 20);
-    section.style.top = `${(header?.offsetHeight || 0) + searchOffset}px`;
+    section.style.top = `${header?.offsetHeight || 0}px`;
     section.style.bottom = `${footer?.offsetHeight || 0}px`;
     section.style.width = `${Math.min(requestedWidth, availableWidth)}px`;
     document.documentElement.style.setProperty("--files-panel-width", `${Math.min(requestedWidth, availableWidth)}px`);
-  }
-
-  positionFloatingTerminalSearch() {
-    const bar = this.$("terminal-search-bar");
-    if (!bar || !bar.classList.contains("expanded") || bar.classList.contains("hidden")) {
-      if (bar) {
-        bar.style.top = "";
-        bar.style.width = "";
-        bar.style.maxHeight = "";
-      }
-      return;
-    }
-    const sidebar = this.$("sidebar");
-    const header = this.$("sidebar-header");
-    const footer = this.$("sidebar-footer");
-    const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
-    const requestedWidth = Math.max(Number(this.settings.files_width) || 0, normalWidth * 2);
-    const availableWidth = Math.max(normalWidth, window.innerWidth - sidebar.getBoundingClientRect().left - 20);
-    const top = header?.offsetHeight || 0;
-    bar.style.top = `${top}px`;
-    bar.style.width = `${Math.min(requestedWidth, availableWidth)}px`;
-    bar.style.maxHeight = `calc(100vh - ${top + (footer?.offsetHeight || 0) + 8}px)`;
   }
 
   scheduleTerminalLayoutFit() {
@@ -3105,15 +3082,29 @@ class TermdeckApp {
   }
 
   cycleView(view) {
-    if (this.vscodeMode && (view === "project" || view === "search")) return;
+    if (this.vscodeMode && view !== "terminals") return;
     this.setSideView(view);
     if (this.sideView !== view) return;
     if (view === "project") this.focusFileNameSearch();
     else if (view === "search") this.focusFileContentSearch();
+    else if (view === "terminal-search") this.$("terminal-search-input").focus();
+  }
+
+  // Shared keyboard shortcut (cycle-side-panel) for the 3 files-section tabs: opens to the first tab
+  // when the panel is closed, otherwise always advances to the next tab -- unlike cycleView (used by the
+  // individual footer buttons), it never toggles the panel closed on a repeat press.
+  cycleFilesSidePanel() {
+    if (this.vscodeMode) return;
+    const currentIndex = FILES_SIDE_PANEL_TABS.indexOf(this.sideView);
+    const nextView = FILES_SIDE_PANEL_TABS[(currentIndex + 1) % FILES_SIDE_PANEL_TABS.length];
+    this.setSideView(nextView, false);
+    if (nextView === "project") this.focusFileNameSearch();
+    else if (nextView === "search") this.focusFileContentSearch();
+    else this.$("terminal-search-input").focus();
   }
 
   applySideLayout() {
-    const sectionId = (this.sideView === "project" || this.sideView === "search") ? "files-section" : null;
+    const sectionId = FILES_SIDE_PANEL_TABS.includes(this.sideView) ? "files-section" : null;
     const full = !!this.settings.side_full && !!sectionId;
     this.$("session-list").classList.toggle("collapsed", full);
     if (!sectionId) return;
@@ -3317,9 +3308,12 @@ class TermdeckApp {
     if (refreshButton && this.vscodeMode) {
       refreshButton.title = `Refresh TermDeck (${this.bindingToDisplay(this.bindingFor("vscode-refresh"))})`;
     }
-    const terminalSearch = this.$("terminal-search-toggle");
-    if (terminalSearch) {
-      terminalSearch.title = `Search terminal output (${this.bindingToDisplay(this.bindingFor("terminal-search"))})`;
+    const sidePanelAction = this.bindingToDisplay(this.bindingFor("cycle-side-panel"));
+    const sidePanelTitles = [["view-project", "Files"], ["view-search", "Search & replace"],
+      ["terminal-search-toggle", "Search terminal output"]];
+    for (const [id, label] of sidePanelTitles) {
+      const button = this.$(id);
+      if (button) button.title = `${label} (${sidePanelAction} cycles tabs)`;
     }
     const notebookToggle = this.$("notebook-toggle");
     if (notebookToggle) {
@@ -3336,6 +3330,12 @@ class TermdeckApp {
     if (newSession) {
       newSession.title = `New terminal (${this.bindingToDisplay(this.bindingFor("new-terminal"))})`;
       newSession.setAttribute("aria-label", newSession.title);
+    }
+    const selectionButtons = [["selection-copy", "Copy selection"], ["selection-note-new", "Add selection as a new note"],
+      ["selection-note-append", "Append selection to note"]];
+    for (const [id, label] of selectionButtons) {
+      const button = this.$(id);
+      if (button) button.title = `${label} (${this.bindingToDisplay(this.bindingFor(id))})`;
     }
     this.updateTerminalSearchGroupButton();
   }
@@ -4172,6 +4172,7 @@ class TermdeckApp {
   }
 
   setHistoryMode(enabled) {
+    this.hideSelectionActions(true);
     if (!enabled) this.closePromptHistory();
     this.settings.history_mode = !!enabled;
     this.saveSettings();
@@ -5150,6 +5151,358 @@ class TermdeckApp {
     this.renderNotebook();
   }
 
+  initSelectionActions() {
+    const actions = this.$("selection-actions");
+    if (!actions) return;
+    this.$("selection-copy").onclick = () => this.copySelectionToClipboard();
+    this.$("selection-note-new").onclick = () => { void this.createNotebookNoteFromSelection(); };
+    this.$("selection-note-append").onclick = () => { void this.appendSelectionToNotebook(); };
+    this.$("selection-search-content").onclick = () => this.searchContentFromSelection();
+    this.$("selection-search-file").onclick = () => this.searchFileFromSelection();
+    actions.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    actions.addEventListener("click", (event) => event.stopPropagation());
+    document.addEventListener("selectionchange", () => this.scheduleSelectionActions());
+    document.addEventListener("mouseup", () => this.scheduleSelectionActions());
+    document.addEventListener("copy", () => this.recordDocumentSelectionCopy());
+    window.addEventListener("resize", () => this.scheduleSelectionActions());
+    window.addEventListener("scroll", () => this.scheduleSelectionActions(), true);
+  }
+
+  scheduleSelectionActions() {
+    if (this.selectionActionUpdateFrame) return;
+    this.selectionActionUpdateFrame = requestAnimationFrame(() => {
+      this.selectionActionUpdateFrame = 0;
+      this.updateSelectionActions();
+    });
+  }
+
+  updateSelectionActions() {
+    const actions = this.$("selection-actions");
+    const historyPanel = this.$("selection-copy-history-panel");
+    const historyPanelOpen = !!actions?.classList.contains("history-picker") && !!historyPanel && !historyPanel.classList.contains("hidden");
+    const state = this.readSelectionActionState();
+    if (!state) {
+      if (historyPanelOpen) {
+        this.positionSelectionCopyHistoryPanel(this.selectionActionAnchorRect());
+        return;
+      }
+      this.hideSelectionActions();
+      return;
+    }
+    this.selectionActionState = state;
+    if (!actions) return;
+    if (!historyPanelOpen) actions.classList.remove("history-picker");
+    actions.classList.remove("hidden");
+    this.positionSelectionActions(state.rect);
+    if (historyPanelOpen) this.positionSelectionCopyHistoryPanel(state.rect);
+  }
+
+  positionSelectionActions(rect) {
+    const actions = this.$("selection-actions");
+    if (!actions) return;
+    const width = actions.offsetWidth || 150;
+    const height = actions.offsetHeight || 30;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const leftOfSelection = rect.left - width - 8;
+    const rightOfSelection = rect.right + 8;
+    const left = leftOfSelection >= 8 ? leftOfSelection : rightOfSelection + width <= viewportWidth - 8
+      ? rightOfSelection : Math.max(8, Math.min(viewportWidth - width - 8, rect.right - width));
+    const selectionHeight = Math.max(0, rect.bottom - rect.top);
+    const centeredTop = rect.top + (selectionHeight - height) / 2;
+    const top = Math.max(8, Math.min(viewportHeight - height - 8, centeredTop));
+    actions.style.left = `${left}px`;
+    actions.style.top = `${top}px`;
+  }
+
+  readSelectionActionState() {
+    if (this.activeFileKey !== null) return null;
+    if (this.historyOpen) {
+      const selection = window.getSelection();
+      const body = this.$("history-body");
+      if (!this.selectionWithinContainer(selection, body)) return null;
+      const text = this.normalizeSelectionText(selection.toString());
+      const rect = this.selectionRangeRect(selection);
+      return text && rect ? { kind: "history", text, rect } : null;
+    }
+    const view = this.views.get(this.activeId);
+    if (!view || !view.container.classList.contains("visible") || !view.term.hasSelection()) return null;
+    const text = this.normalizeSelectionText(view.term.getSelection());
+    const rect = this.terminalSelectionRect(view);
+    return text && rect ? { kind: "terminal", sessionId: view.sessionId, text, rect } : null;
+  }
+
+  selectionWithinContainer(selection, container) {
+    if (!selection || selection.isCollapsed || !selection.rangeCount || !container) return false;
+    const anchor = selection.anchorNode?.nodeType === Node.ELEMENT_NODE ? selection.anchorNode : selection.anchorNode?.parentElement;
+    const focus = selection.focusNode?.nodeType === Node.ELEMENT_NODE ? selection.focusNode : selection.focusNode?.parentElement;
+    return !!anchor && !!focus && container.contains(anchor) && container.contains(focus);
+  }
+
+  normalizeSelectionText(text) {
+    return String(text || "").replace(/\r/g, "").trim();
+  }
+
+  selectionRangeRect(selection) {
+    if (!selection || !selection.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    const rects = [...range.getClientRects()].filter((rect) => rect.width || rect.height);
+    return rects[rects.length - 1] || range.getBoundingClientRect();
+  }
+
+  terminalSelectionRect(view) {
+    const rects = [...view.container.querySelectorAll(".xterm-selection, .xterm-selection > div")]
+      .map((element) => element.getBoundingClientRect()).filter((rect) => rect.width || rect.height)
+      .sort((left, right) => left.bottom - right.bottom);
+    if (rects.length) return rects[rects.length - 1];
+    const container = view.container.getBoundingClientRect();
+    return { left: container.left + container.width / 2 - 1, right: container.left + container.width / 2 + 1,
+      top: container.bottom - 28, bottom: container.bottom - 8 };
+  }
+
+  hideSelectionActions(clearSelection = false) {
+    const state = this.selectionActionState;
+    this.selectionActionState = null;
+    const actions = this.$("selection-actions");
+    if (actions) actions.classList.add("hidden");
+    if (actions) actions.classList.remove("history-picker");
+    const historyPanel = this.$("selection-copy-history-panel");
+    if (historyPanel) historyPanel.classList.add("hidden");
+    if (!clearSelection) return;
+    if (state?.kind === "terminal") this.views.get(state.sessionId)?.term.clearSelection();
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) selection.removeAllRanges();
+  }
+
+  recordDocumentSelectionCopy() {
+    const state = this.readSelectionActionState();
+    if (state) this.recordSelectionCopyHistory(state.text);
+  }
+
+  recordSelectionCopyHistory(text) {
+    const copied = this.normalizeSelectionText(text);
+    if (!copied) return;
+    const previous = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
+    this.settings.selection_copy_history = [copied, ...previous.filter((item) => item !== copied)].slice(0, 50);
+    this.saveSettings();
+    const panel = this.$("selection-copy-history-panel");
+    if (panel && !panel.classList.contains("hidden")) this.renderSelectionCopyHistory();
+    if (this.settings.notebook_open) this.renderNotebookRecentCopies();
+  }
+
+  renderSelectionCopyHistory() {
+    const panel = this.$("selection-copy-history-panel");
+    if (!panel) return;
+    panel.textContent = "";
+    const history = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
+    if (!history.length) {
+      const empty = document.createElement("div");
+      empty.className = "selection-copy-history-empty";
+      empty.textContent = "No copied selections yet.";
+      panel.appendChild(empty);
+      return;
+    }
+    for (const text of history) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "selection-copy-history-item";
+      item.setAttribute("role", "menuitem");
+      item.title = "Paste into follow-up prompt";
+      item.textContent = text;
+      item.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.pasteSelectionCopyHistory(text);
+      };
+      panel.appendChild(item);
+    }
+  }
+
+  toggleSelectionCopyHistory() {
+    const panel = this.$("selection-copy-history-panel");
+    if (!panel) return;
+    const opening = panel.classList.contains("hidden");
+    if (opening) {
+      if (!this.selectionActionState) this.showSelectionCopyHistoryPicker();
+      this.renderSelectionCopyHistory();
+    }
+    panel.classList.toggle("hidden", !opening);
+    if (opening) this.positionSelectionCopyHistoryPanel(this.selectionActionAnchorRect());
+    if (!opening && !this.selectionActionState) this.hideSelectionActions();
+  }
+
+  showSelectionCopyHistoryPicker() {
+    const actions = this.$("selection-actions");
+    if (!actions) return;
+    const state = this.selectionActionState || this.readSelectionActionState();
+    if (state) this.selectionActionState = state;
+    actions.classList.add("history-picker");
+    actions.classList.remove("hidden");
+    const rect = state?.rect || this.selectionActionAnchorRect();
+    this.positionSelectionActions(rect);
+  }
+
+  selectionActionAnchorRect() {
+    if (this.selectionActionState?.rect) return this.selectionActionState.rect;
+    const prompt = this.historyOpen ? this.$("history-prompt") : null;
+    const view = this.views.get(this.activeId);
+    const source = prompt || (view && view.container.classList.contains("visible") ? view.container : null);
+    const sourceRect = source?.getBoundingClientRect();
+    return sourceRect || { left: window.innerWidth / 2, right: window.innerWidth / 2, top: window.innerHeight / 2,
+      bottom: window.innerHeight / 2 };
+  }
+
+  positionSelectionCopyHistoryPanel(rect) {
+    const panel = this.$("selection-copy-history-panel");
+    if (!panel || panel.classList.contains("hidden")) return;
+    const width = panel.offsetWidth || Math.min(480, window.innerWidth - 16);
+    const height = panel.offsetHeight || 100;
+    const left = Math.max(8, Math.min(window.innerWidth - width - 8, rect.right - width));
+    const above = rect.top - height - 8;
+    const top = above >= 8 ? above : Math.min(window.innerHeight - height - 8, rect.bottom + 8);
+    panel.style.left = `${left}px`;
+    panel.style.top = `${Math.max(8, top)}px`;
+  }
+
+  copySelectionToClipboard() {
+    const state = this.selectionActionState;
+    if (!state) return;
+    const text = state.text;
+    this.recordSelectionCopyHistory(text);
+    void this.copyTextToClipboard(text, "selection copied");
+    this.hideSelectionActions();
+  }
+
+  fileNameSearchQueryFromSelection(text) {
+    const normalized = String(text || "").replace(/\r/g, "").replace(/\s*\/\s*/g, "/").trim();
+    if (!normalized) return "";
+    const candidates = normalized.match(/(?:[A-Za-z0-9_.~-]+\/)*[A-Za-z0-9_.~-]+(?:\.[A-Za-z0-9_-]+)?(?::\d+(?::\d+)?)?/g) || [];
+    const fileCandidate = candidates.filter((candidate) => candidate.includes("/") || candidate.includes(".")).sort((left, right) => right.length - left.length)[0];
+    const fallback = normalized.split(/\s+/).pop() || "";
+    return (fileCandidate || fallback).replace(/:\d+(?::\d+)?$/, "").replace(/^[([{<]+|[)\]}>.,;]+$/g, "");
+  }
+
+  selectedTextSearchQuery() {
+    const state = this.selectionActionState || this.readSelectionActionState();
+    if (!state) return "";
+    this.selectionActionState = state;
+    const query = this.normalizeSelectionText(state.text);
+    if (!query) return "";
+    if (query.length > SELECTION_SEARCH_MAX_CHARS) {
+      this.$("status-name").textContent = `selection is too long for search (${SELECTION_SEARCH_MAX_CHARS} characters maximum)`;
+      return "";
+    }
+    return query;
+  }
+
+  searchContentFromSelection() {
+    const query = this.selectedTextSearchQuery();
+    if (!query) return false;
+    this.hideSelectionActions();
+    const input = this.$("search-query");
+    if (this.sideView !== "search") {
+      input.value = "";
+      this.setSideView("search", false);
+    }
+    input.value = query;
+    void this.runSearch(query);
+    return true;
+  }
+
+  searchFileFromSelection() {
+    const selectedText = this.selectedTextSearchQuery();
+    if (!selectedText) return false;
+    const query = this.fileNameSearchQueryFromSelection(selectedText);
+    if (!query) return false;
+    this.hideSelectionActions();
+    const input = this.$("search-name");
+    if (this.sideView !== "project") {
+      input.value = "";
+      this.setSideView("project", false);
+    }
+    input.value = query;
+    void this.runNameSearch();
+    return true;
+  }
+
+  appendTextToHistoryPrompt(text) {
+    const value = this.normalizeSelectionText(text);
+    if (!value) return;
+    if (!this.historyOpen) this.setHistoryMode(true);
+    const view = this.views.get(this.activeId);
+    const prompt = this.$("history-prompt");
+    if (!view || !prompt || !this.historyOpen) return;
+    const current = String(prompt.value || view.promptDraft || "").trimEnd();
+    view.promptDraft = current ? `${current}\n\n${value}\n\n` : `${value}\n\n`;
+    view.promptEditing = true;
+    view.promptEditVersion += 1;
+    this.showPromptDraft(view);
+    this.syncPromptToTerminal(view, { writeToTerminal: false });
+    prompt.focus();
+    prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+  }
+
+  pasteSelectionCopyHistory(text) {
+    this.hideSelectionActions(true);
+    this.appendTextToHistoryPrompt(text);
+    this.$("status-name").textContent = "copied selection pasted";
+  }
+
+  async prepareNotebookSelectionEdit() {
+    await this.flushNotebook();
+    if (window.PlannerEditor?.isOpen()) window.PlannerEditor.closeNow();
+    this.notebookMounted = false;
+    this.normalizeNotebookNotes();
+  }
+
+  openNotebookAfterSelectionEdit(status) {
+    const fallback = this.$("notebook-editor-host")?.querySelector(".notes-area");
+    if (fallback) fallback.value = this.activeNotebookNote()?.text || "";
+    this.settings.notebook_open = true;
+    this.renderNotebook();
+    this.saveSettings();
+    requestAnimationFrame(() => this.focusNotebookEditor());
+    this.$("status-name").textContent = status;
+  }
+
+  async createNotebookNoteFromSelection() {
+    const state = this.selectionActionState;
+    if (!state) return;
+    const text = state.text;
+    this.hideSelectionActions(true);
+    await this.prepareNotebookSelectionEdit();
+    const note = { note_id: this.createNotebookNoteId(), text: `${text}\n` };
+    this.settings.notebook_notes.push(note);
+    this.settings.notebook_active_note_id = note.note_id;
+    this.settings.notebook_notes_initialized = true;
+    this.settings.notebook_text = note.text;
+    this.openNotebookAfterSelectionEdit("selection added as new note");
+  }
+
+  async appendSelectionToNotebook() {
+    const state = this.selectionActionState;
+    if (!state) return;
+    const text = state.text;
+    this.hideSelectionActions(true);
+    await this.prepareNotebookSelectionEdit();
+    let note = this.activeNotebookNote();
+    if (!note) {
+      note = { note_id: this.createNotebookNoteId(), text: "" };
+      this.settings.notebook_notes.push(note);
+      this.settings.notebook_active_note_id = note.note_id;
+      this.settings.notebook_notes_initialized = true;
+    }
+    const current = String(note.text || "").trimEnd();
+    note.text = current ? `${current}\n\n${text}\n` : `${text}\n`;
+    this.settings.notebook_text = note.text;
+    const fallback = this.$("notebook-editor-host")?.querySelector(".notes-area");
+    if (fallback) fallback.value = note.text;
+    this.openNotebookAfterSelectionEdit("selection appended to note");
+  }
+
   createNotebookNoteId() {
     return `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   }
@@ -5221,6 +5574,33 @@ class TermdeckApp {
       tab.append(label, close);
       tabs.appendChild(tab);
       if (note.note_id === this.settings.notebook_active_note_id) requestAnimationFrame(() => tab.scrollIntoView({ block: "nearest", inline: "nearest" }));
+    }
+  }
+
+  renderNotebookRecentCopies() {
+    const items = this.$("notebook-recent-copies-items");
+    const count = this.$("notebook-recent-copies-count");
+    if (!items || !count) return;
+    const history = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
+    count.textContent = history.length ? String(history.length) : "";
+    items.textContent = "";
+    if (!history.length) {
+      const empty = document.createElement("div");
+      empty.className = "notebook-recent-copies-empty";
+      empty.textContent = "Nothing copied yet.";
+      items.appendChild(empty);
+      return;
+    }
+    for (const text of history) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "notebook-recent-copy-item";
+      item.title = "Copy this text for pasting";
+      item.textContent = text;
+      item.onclick = () => {
+        void this.copyTextToClipboard(text, "copied from history");
+      };
+      items.appendChild(item);
     }
   }
 
@@ -5422,6 +5802,7 @@ class TermdeckApp {
     const toggle = this.$("notebook-toggle");
     if (!panel || !toggle) return;
     this.renderNotebookTabs();
+    this.renderNotebookRecentCopies();
     if (this.settings.notebook_open) {
       clearTimeout(this.notebookCloseTimer);
       this.notebookCloseTimer = null;
@@ -5506,6 +5887,7 @@ class TermdeckApp {
 
   activate(id, options = {}) {
     this.closePromptHistory();
+    this.hideSelectionActions(true);
     const previousId = this.activeId;
     let unreadChanged = false;
     if (previousId && previousId !== id) {
@@ -6078,15 +6460,18 @@ class TermdeckApp {
     }
     if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "c" && view.term.hasSelection()) {
       e.preventDefault();
-      navigator.clipboard.writeText(view.term.getSelection());
-      view.term.clearSelection();
+      const text = view.term.getSelection();
+      this.recordSelectionCopyHistory(text);
+      void this.copyTextToClipboard(text);
       return false;
     }
     if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       const key = e.key.toLowerCase();
       if (key === "c" && view.term.hasSelection()) {
         e.preventDefault();
-        navigator.clipboard.writeText(view.term.getSelection());
+        const text = view.term.getSelection();
+        this.recordSelectionCopyHistory(text);
+        void this.copyTextToClipboard(text);
         return false;
       }
       if (key === "v") return true;
@@ -7227,14 +7612,14 @@ class TermdeckApp {
   applySettings() {
     const s = this.settings;
     const sidebar = this.$("sidebar");
-    const filesVisible = this.sideView === "project" || this.sideView === "search";
+    const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
     const normalWidth = Number(s.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
     const fileWidth = Math.max(Number(s.files_width) || 0, normalWidth * 2);
     const activeSidebarWidth = filesVisible && s.files_pinned ? fileWidth : normalWidth;
     const sidebarLeft = sidebar.getBoundingClientRect().left || 0;
     const sidebarRight = sidebarLeft + activeSidebarWidth;
     const maximumNotebookLeft = Math.max(0, window.innerWidth - 334);
-    const defaultNotebookLeft = Math.min(Math.round(sidebarRight + 8), maximumNotebookLeft);
+    const defaultNotebookLeft = Math.min(Math.round(sidebarRight + 32), maximumNotebookLeft);
     const configuredNotebookLeft = Number(s.notebook_left);
     const notebookLeft = configuredNotebookLeft >= 0
       ? Math.max(0, Math.min(maximumNotebookLeft, configuredNotebookLeft))
@@ -7243,7 +7628,6 @@ class TermdeckApp {
     sidebar.style.minWidth = activeSidebarWidth + "px";
     document.documentElement.style.setProperty("--notebook-panel-left", `${notebookLeft}px`);
     this.positionFloatingFilesPanel(fileWidth);
-    this.positionFloatingTerminalSearch();
     document.documentElement.style.setProperty("--sidebar-font-size", s.sidebar_font_size + "px");
     document.documentElement.style.setProperty("--ui-font-size", s.ui_font_size + "px");
     document.documentElement.style.setProperty("--code-font-size", s.code_font_size + "px");
@@ -7458,7 +7842,7 @@ class TermdeckApp {
       const move = (ev) => {
         const width = fromRight ? window.innerWidth - ev.clientX : ev.clientX;
         const resizingFiles = handleId === "sidebar-resizer" && this.settings.files_pinned &&
-          (this.sideView === "project" || this.sideView === "search");
+          FILES_SIDE_PANEL_TABS.includes(this.sideView);
         const targetKey = resizingFiles ? "files_width" : key;
         const targetMin = resizingFiles
           ? Math.max(minWidth, (Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width) * 2)
@@ -8438,6 +8822,8 @@ class TermdeckApp {
     if (!binding) return false;
     const actionId = this.bindingMap()[binding];
     if (!actionId) return false;
+    if (["selection-copy", "selection-note-new", "selection-note-append"].includes(actionId) &&
+        !this.readSelectionActionState()) return false;
     e.preventDefault();
     e.stopPropagation();
     this.runAction(actionId);
@@ -8512,12 +8898,14 @@ class TermdeckApp {
     else if (actionId === "save-file") { if (this.activeFileKey !== null) this.saveActiveFile(); }
     else if (actionId === "prev-terminal") this.cycleTerminal(-1);
     else if (actionId === "next-terminal") this.cycleTerminal(1);
-    else if (actionId === "view-files") this.cycleView("project");
-    else if (actionId === "view-search") this.cycleView("search");
-    else if (actionId === "terminal-search") this.toggleTerminalSearch();
+    else if (actionId === "cycle-side-panel") this.cycleFilesSidePanel();
     else if (actionId === "view-terminals") this.setSideView("terminals");
     else if (actionId === "switch-project") this.openProjectSwitcher();
     else if (actionId === "toggle-notebook") this.toggleNotebook();
+    else if (actionId === "selection-copy") this.copySelectionToClipboard();
+    else if (actionId === "selection-note-new") void this.createNotebookNoteFromSelection();
+    else if (actionId === "selection-note-append") void this.appendSelectionToNotebook();
+    else if (actionId === "selection-copy-history") this.toggleSelectionCopyHistory();
     else if (actionId === "toggle-history") this.toggleHistory();
     else if (actionId === "scroll-bottom") this.scrollActiveSurfaceToBottom();
     else if (actionId === "focus-prompt") this.focusActivePrompt();

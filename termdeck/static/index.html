@@ -17,53 +17,57 @@
       <button id="vscode-refresh-btn" class="vscode-only" title="Refresh TermDeck (Ctrl+R)" aria-label="Refresh TermDeck"><span class="codicon codicon-refresh"></span></button>
     </span>
   </div>
-  <div id="terminal-search-bar" class="hidden">
-    <div id="terminal-search-description">Search terminal conversations (prompts and responses)</div>
-    <div id="terminal-search-input-row">
-      <input id="terminal-search-input" placeholder="search conversations" spellcheck="false">
-      <button id="terminal-search-submit" title="Search terminal conversations" aria-label="Search terminal conversations"><span class="codicon codicon-search"></span></button>
-      <button id="terminal-search-group-toggle" title="Group similar matched text" aria-label="Group similar matched text" aria-pressed="false"><span class="codicon codicon-list-tree"></span></button>
-    </div>
-    <div id="terminal-search-summary" aria-live="polite"></div>
-    <div id="terminal-search-results"></div>
-  </div>
   <div id="session-list" class="side-view"></div>
   <div id="side-split" class="hidden"></div>
   <div id="files-section" class="side-view hidden">
-    <div id="files-header-row">
-      <span class="side-section-label" id="files-root-label">files</span>
-      <button id="reveal-toggle" title="Reveal active file in tree"><span class="codicon codicon-target"></span></button>
-      <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
-      <button id="git-status-toggle" title="Show Git status"><span class="codicon codicon-source-control"></span></button>
-      <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-eye-closed"></span></button>
+    <div id="files-section-header">
       <button id="files-pin-toggle" title="Keep this panel open after opening a file" aria-label="Pin file panel" aria-pressed="false"><span class="codicon codicon-pin"></span></button>
       <button id="minimize-toggle" class="far-right" title="Minimize panel"><span class="codicon codicon-chrome-minimize"></span></button>
     </div>
-    <input id="search-name" placeholder="find file by name (fuzzy)" spellcheck="false">
-    <div id="search-controls">
-      <div id="search-bar">
-        <button id="search-back" title="Previous search"><span class="codicon codicon-arrow-left"></span></button>
-        <input id="search-query" placeholder="search in files (&#8984;&#8679;F)" spellcheck="false">
-        <button id="search-case-toggle" title="Match case">Aa</button>
-        <button id="search-word-toggle" title="Whole word">ab|</button>
-        <button id="search-regex-toggle" title="Regular expression">.*</button>
-        <button id="replace-toggle" title="Replace"><span class="codicon codicon-replace-all"></span></button>
+    <div id="files-explorer-panel">
+      <div id="files-header-row">
+        <span class="side-section-label" id="files-root-label">files</span>
+        <button id="reveal-toggle" title="Reveal active file in tree"><span class="codicon codicon-target"></span></button>
+        <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
+        <button id="git-status-toggle" title="Show Git status"><span class="codicon codicon-source-control"></span></button>
+        <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-eye-closed"></span></button>
       </div>
-      <input id="search-glob" placeholder="filter (rg globs): !*.json, *.py, trainer/**" spellcheck="false">
-      <div id="replace-bar" class="hidden">
-        <input id="replace-with" placeholder="replace with&hellip;" spellcheck="false">
-        <button id="replace-all-btn" title="Replace all matches in project">Replace</button>
+      <input id="search-name" placeholder="find file by name (fuzzy)" spellcheck="false">
+      <div id="search-controls">
+        <div id="search-bar">
+          <button id="search-back" title="Previous search"><span class="codicon codicon-arrow-left"></span></button>
+          <input id="search-query" placeholder="search in files (&#8984;&#8679;F)" spellcheck="false">
+          <button id="search-case-toggle" title="Match case">Aa</button>
+          <button id="search-word-toggle" title="Whole word">ab|</button>
+          <button id="search-regex-toggle" title="Regular expression">.*</button>
+          <button id="replace-toggle" title="Replace"><span class="codicon codicon-replace-all"></span></button>
+        </div>
+        <input id="search-glob" placeholder="filter (rg globs): !*.json, *.py, trainer/**" spellcheck="false">
+        <div id="replace-bar" class="hidden">
+          <input id="replace-with" placeholder="replace with&hellip;" spellcheck="false">
+          <button id="replace-all-btn" title="Replace all matches in project">Replace</button>
+        </div>
       </div>
+      <div id="files-tree" tabindex="0" aria-label="Project file tree"></div>
+      <div id="search-results" class="hidden"></div>
+      <div id="name-results" class="hidden"></div>
     </div>
-    <div id="files-tree" tabindex="0" aria-label="Project file tree"></div>
-    <div id="search-results" class="hidden"></div>
-    <div id="name-results" class="hidden"></div>
+    <div id="terminal-search-bar">
+      <div id="terminal-search-description">Search terminal conversations (prompts and responses)</div>
+      <div id="terminal-search-input-row">
+        <input id="terminal-search-input" placeholder="search conversations" spellcheck="false">
+        <button id="terminal-search-submit" title="Search terminal conversations" aria-label="Search terminal conversations"><span class="codicon codicon-search"></span></button>
+        <button id="terminal-search-group-toggle" title="Group similar matched text" aria-label="Group similar matched text" aria-pressed="false"><span class="codicon codicon-list-tree"></span></button>
+      </div>
+      <div id="terminal-search-summary" aria-live="polite"></div>
+      <div id="terminal-search-results"></div>
+    </div>
   </div>
   <div id="sidebar-footer">
     <button id="view-terminals" title="Terminals (&#8984;&#8679;T)"><span class="codicon codicon-terminal"></span></button>
-    <button id="view-project" title="Files (&#8984;&#8679;D)"><span class="codicon codicon-files"></span></button>
-    <button id="view-search" title="Search &amp; replace (&#8984;&#8679;F)"><span class="codicon codicon-search"></span></button>
-    <button id="terminal-search-toggle" title="Search all terminal output"><span class="codicon codicon-terminal"></span></button>
+    <button id="view-project" title="Files (&#8984;&#8679;F cycles tabs)"><span class="codicon codicon-files"></span></button>
+    <button id="view-search" title="Search &amp; replace (&#8984;&#8679;F cycles tabs)"><span class="codicon codicon-search"></span></button>
+    <button id="terminal-search-toggle" title="Search all terminal output (&#8984;&#8679;F cycles tabs)"><span class="codicon codicon-terminal"></span></button>
     <span class="footer-spacer"></span>
     <button id="keys-btn" title="Keyboard shortcuts"><span class="codicon codicon-keyboard"></span></button>
     <button id="settings-gear" title="Settings"><span class="codicon codicon-settings-gear"></span></button>
@@ -153,6 +157,10 @@
       <button id="notebook-close" title="Close notebook" aria-label="Close notebook"><span class="codicon codicon-close"></span></button>
     </span>
   </div>
+  <div id="notebook-recent-copies">
+    <div id="notebook-recent-copies-head"><span>Recent copied text</span><span id="notebook-recent-copies-count"></span></div>
+    <div id="notebook-recent-copies-items"></div>
+  </div>
   <div id="notebook-find-bar" class="hidden">
     <div class="notebook-find-row">
       <input id="notebook-find-query" placeholder="Find in note" spellcheck="false">
@@ -170,6 +178,14 @@
   </div>
   <div id="notebook-editor-host" class="tui-wrap"></div>
   <div id="notebook-help">Markdown notes autosave · ⌥N toggles · ⌘F find · ⌥⌘F replace</div>
+</div>
+<div id="selection-actions" class="hidden" role="toolbar" aria-label="Selection actions">
+  <button id="selection-copy" type="button" title="Copy selection" aria-label="Copy selection"><span class="codicon codicon-copy" aria-hidden="true"></span></button>
+  <button id="selection-note-new" type="button" title="Create a new note from the selection" aria-label="Create a new note from the selection"><span class="codicon codicon-note" aria-hidden="true"></span></button>
+  <button id="selection-note-append" type="button" title="Append selection to the active note" aria-label="Append selection to the active note"><span class="codicon codicon-comment-add" aria-hidden="true"></span></button>
+  <button id="selection-search-content" type="button" title="Search within files using the selection" aria-label="Search within files using the selection"><span class="codicon codicon-search" aria-hidden="true"></span></button>
+  <button id="selection-search-file" type="button" title="Find a file matching the selection" aria-label="Find a file matching the selection"><span class="codicon codicon-symbol-file" aria-hidden="true"></span></button>
+  <div id="selection-copy-history-panel" class="hidden" role="menu" aria-label="Copy history"></div>
 </div>
 <div id="history-search-backdrop" class="hidden">
   <div id="history-search-modal">
