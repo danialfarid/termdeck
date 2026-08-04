@@ -174,6 +174,7 @@ class UiSettings(BaseModel):
     show_terminal_icons: bool = False
     history_mode: bool = False
     prompt_history: dict[str, list[str]] = {}
+    selection_copy_history: list[str] = []
     notebook_open: bool = False
     notebook_left: int = -1
     notebook_preview: bool = False
