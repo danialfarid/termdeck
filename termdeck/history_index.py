@@ -58,8 +58,9 @@ class HistorySearchIndex:
             with self._connect(0.5) as database:
                 rows = database.execute(
                     "SELECT d.source_path, d.agent_kind, d.agent_session_id, d.cwd, d.title, d.line_no, d.line_end, "
-                    "d.byte_start, d.byte_end "
+                    "d.byte_start, d.byte_end, s.mtime_ns "
                     f"FROM {fts_table} f JOIN history_documents d ON d.rowid = f.rowid "
+                    "JOIN history_sources s ON s.source_path = d.source_path "
                     f"WHERE {fts_table} MATCH ? LIMIT ?",
                     (expression, self._MAX_RESULTS),
                 ).fetchall()
@@ -88,7 +89,7 @@ class HistorySearchIndex:
                 if "locked" not in str(search_error).lower():
                     raise
         chunk_cache: dict[tuple[str, int, int], list[dict[str, object]]] = {}
-        for source_path, agent_kind, session_id, cwd, title, line_no, _line_end, byte_start, byte_end in rows:
+        for source_path, agent_kind, session_id, cwd, title, line_no, _line_end, byte_start, byte_end, mtime_ns in rows:
             source = Path(source_path)
             parent_session_id = self._parent_session_id_for_source(source)
             parent_source = self._parent_source_path(source)
@@ -97,7 +98,7 @@ class HistorySearchIndex:
                 "agent_session_id": session_id, "cwd": cwd, "title": title, "count": 0, "matches": [],
                 "is_subagent": parent_session_id is not None,
                 "parent_agent_session_id": parent_session_id, "parent_title": parent_title,
-                "parent_cwd": parent_cwd})
+                "parent_cwd": parent_cwd, "mtime_ns": int(mtime_ns)})
             result["count"] = int(result["count"]) + 1
             result_matches = result["matches"]
             if isinstance(result_matches, list) and len(result_matches) < 6:
@@ -111,7 +112,7 @@ class HistorySearchIndex:
                     if any(existing.get("line_no") == match.get("line_no") for existing in result_matches):
                         continue
                     result_matches.append(match)
-        return sorted(grouped.values(), key=lambda item: (-int(item["count"]), str(item["title"])))
+        return sorted(grouped.values(), key=lambda item: (-int(item["mtime_ns"]), -int(item["count"]), str(item["title"])))
 
     @staticmethod
     def _parent_session_id_for_source(path: Path) -> str | None:

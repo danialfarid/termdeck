@@ -759,7 +759,9 @@ class TerminalSessionManager:
             if not match_count:
                 continue
             results.append({"session_id": ms.record.session_id, "title": ms.record.title,
-                            "agent_kind": ms.record.agent_kind, "count": match_count, "snippets": snippets})
+                            "agent_kind": ms.record.agent_kind, "count": match_count, "snippets": snippets,
+                            "last_activity_at": ms.last_activity_at})
+        results.sort(key=lambda result: -float(result["last_activity_at"]))
         return results
 
     @staticmethod
