@@ -52,7 +52,7 @@ function sessionTitle(session) {
 
 function sessionIconPath(extensionUri, session, unread) {
   const kind = String(session?.agent_kind || "none");
-  const iconKind = kind === "codex" ? "codex" : kind === "claude" ? "claude" : "shell";
+  const iconKind = kind === "codex" ? "codex" : kind === "claude" ? "claude" : kind === "agy" ? "shell" : "shell";
   const state = session?.processing ? "working" : unread ? "unread" : "idle";
   return vscode.Uri.joinPath(extensionUri, "media", "icons", `${iconKind}-${state}.svg`);
 }
@@ -230,6 +230,8 @@ class NativeTermDeckClient {
     this.serverUrl = "";
     this.project = "";
     this.snapshot = emptySnapshot();
+    this.closedSessions = [];
+    this.closedSessionsProject = "";
     this.refreshTimer = undefined;
     this.refreshInProgress = false;
     this.started = false;
@@ -420,6 +422,60 @@ class NativeTermDeckClient {
     if (this.singleTabMode() && this.editorPanel) this.sendEditorState();
   }
 
+  async closedSessionsForProject() {
+    const query = this.project ? `?project=${encodeURIComponent(this.project)}` : "";
+    const key = this.project || "__all__";
+    if (this.closedSessionsProject === key) return this.closedSessions;
+    const closed = await requestJson(`${this.serverUrl}/api/closed${query}`);
+    this.closedSessions = Array.isArray(closed) ? closed : [];
+    this.closedSessionsProject = key;
+    return this.closedSessions;
+  }
+
+  async sessionReferenceSuggestions() {
+    const projectSessions = [...(this.snapshot.sessions || []), ...(await this.closedSessionsForProject())];
+    const seen = new Set();
+    const suggestions = [];
+    const add = (value, label) => {
+      const key = String(value || "").trim().toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      suggestions.push({ label, value: String(value) });
+    };
+    for (const session of projectSessions) {
+      if (!session) continue;
+      add(session.session_id, `Session id: ${session.session_id}`);
+      if (session.title) add(session.title, `Title: ${session.title}`);
+      if (session.cli_title) add(session.cli_title, `Agent title: ${session.cli_title}`);
+    }
+    return suggestions.sort((left, right) => {
+      const leftValue = String(left.value).toLowerCase();
+      const rightValue = String(right.value).toLowerCase();
+      return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
+    });
+  }
+
+  async resolveSessionNameAndReference(model, rawValue) {
+    const modelValue = String(model || "").trim().toLowerCase();
+    const value = String(rawValue || "").trim();
+    if (!value || modelValue === "none" || modelValue === "agy") return { title: value, session_ref: "" };
+    const needle = value.toLowerCase();
+    const sessions = [...this.snapshot.sessions, ...(await this.closedSessionsForProject())];
+    const matches = [];
+    for (const session of sessions) {
+      if (!session) continue;
+      const sessionId = String(session.session_id || "").trim();
+      const title = String(session.title || "").trim();
+      const cliTitle = String(session.cli_title || "").trim();
+      if (sessionId && sessionId.toLowerCase() === needle) matches.push(sessionId);
+      if (title && title.toLowerCase() === needle) matches.push(sessionId);
+      if (cliTitle && cliTitle.toLowerCase() === needle) matches.push(sessionId);
+    }
+    const unique = [...new Set(matches)];
+    if (unique.length === 1 && unique[0]) return { title: "", session_ref: unique[0] };
+    return { title: value, session_ref: "" };
+  }
+
   stateUrl() {
     const query = this.project ? `?project=${encodeURIComponent(this.project)}` : "";
     return `${this.serverUrl}/api/terminal-layout${query}`;
@@ -572,40 +628,30 @@ class NativeTermDeckClient {
     const model = await vscode.window.showQuickPick([
       { label: "Codex", description: "Start a Codex terminal", value: "codex" },
       { label: "Claude", description: "Start a Claude terminal", value: "claude" },
+      { label: "AGY", description: "Start an AGY terminal", value: "agy" },
       { label: "Shell", description: "Start a regular shell terminal", value: "none" },
     ], { placeHolder: "Choose the terminal type" });
     if (!model) return;
     const permission = model.value === "none" ? "" : await this.pickPermission(model.value);
     if (model.value !== "none" && !permission) return;
-    const projects = await requestJson(`${this.serverUrl}/api/projects`);
-    const folderChoices = projects.map((project) => ({
-      label: `$(folder) ${project.name}`,
-      description: project.root,
-      project,
-    }));
-    folderChoices.push({
-      label: "$(folder-opened) Choose another folder…",
-      description: "Enter a directory path",
-      project: null,
+    const rootUri = await vscode.window.showOpenDialog({
+      canSelectFolders: true,
+      canSelectFiles: false,
+      canSelectMany: false,
+      defaultUri: this.getWorkspaceRoot() ? vscode.Uri.file(this.getWorkspaceRoot()) : undefined,
+      openLabel: "Use this folder",
+      title: "Select TermDeck project folder",
     });
-    const folderChoice = await vscode.window.showQuickPick(folderChoices, {
-      placeHolder: "Choose the project folder",
-      matchOnDescription: true,
-    });
-    if (!folderChoice) return;
-    let cwd = folderChoice.project?.root || "";
-    let project = folderChoice.project?.name || "";
+    if (!rootUri?.length) return;
+    const cwd = rootUri[0].fsPath;
+    const project = path.basename(cwd);
     if (!cwd) {
-      cwd = await vscode.window.showInputBox({ prompt: "Working directory", value: this.getWorkspaceRoot() });
-      if (cwd === undefined) return;
+      vscode.window.showErrorMessage("TermDeck: failed to select a project folder");
+      return;
     }
-    const title = await vscode.window.showInputBox({ prompt: "Terminal title (optional)" });
-    if (title === undefined) return;
-    let sessionRef = "";
-    if (model.value !== "none") {
-      sessionRef = await vscode.window.showInputBox({ prompt: "Resume session ID or saved name (optional)" });
-      if (sessionRef === undefined) return;
-    }
+    const titleInput = await this.pickTerminalName();
+    if (titleInput === undefined) return;
+    const { title, session_ref: sessionRef } = await this.resolveSessionNameAndReference(model.value, titleInput);
     try {
       const session = await requestJson(`${this.serverUrl}/api/sessions`, {
         method: "POST", body: { cwd, title, model: model.value, permission, session_ref: sessionRef, project },
@@ -617,13 +663,36 @@ class NativeTermDeckClient {
   }
 
   async pickPermission(model) {
-    const options = model === "claude"
+    const options = model === "agy"
+      ? [{ label: "Default", value: "default" }, { label: "Full access", value: "full-access" }]
+      : model === "claude"
       ? [{ label: "Default", value: "default" }, { label: "Accept edits", value: "accept-edits" },
         { label: "Auto", value: "auto" }, { label: "Full access", value: "full-access" }]
       : [{ label: "Default", value: "default" }, { label: "Read-only", value: "read-only" },
         { label: "Workspace write", value: "workspace-write" }, { label: "Full access", value: "full-access" }];
     const choice = await vscode.window.showQuickPick(options, { placeHolder: `Choose ${model} permissions` });
     return choice?.value || "";
+  }
+
+  async pickTerminalName() {
+    const suggestions = await this.sessionReferenceSuggestions();
+    if (!suggestions.length) {
+      return vscode.window.showInputBox({
+        prompt: "Session name / Resume existing session (optional)",
+        placeHolder: "Leave empty to auto-name. Use existing session id/name to resume",
+      });
+    }
+    const options = suggestions.map((item) => ({ label: item.label, description: item.value, value: item.value }));
+    const selected = await vscode.window.showQuickPick([
+      { label: "Enter a custom session name", description: "Create a new terminal title", value: "" },
+      ...options,
+    ], { placeHolder: "Choose an existing session name/id or create a new one", matchOnDescription: true });
+    if (!selected) return;
+    if (selected.value) return selected.value;
+    return vscode.window.showInputBox({
+      prompt: "Session name / Resume existing session (optional)",
+      placeHolder: "Leave empty to auto-name. Use existing session id/name to resume",
+    });
   }
 
   async newGroup() {

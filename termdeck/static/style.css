@@ -33,9 +33,9 @@ button { font-family: inherit; }
 
 #sidebar { position: relative; width: 250px; min-width: 250px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: visible; }
 body:not(.vscode-mode) #sidebar { color: var(--sidebar-text-color); --text: var(--sidebar-text-color); }
-#sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+#sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 10px 4px; border-bottom: 1px solid var(--border); }
 #app-title { font-weight: 700; letter-spacing: 0.1em; font-size: calc(var(--ui-font-size) + 1px); color: var(--accent); text-transform: uppercase; }
-#project-select { appearance: none; -webkit-appearance: none; flex: 1; min-width: 0; max-width: none; background: none; color: var(--accent); border: none; font-family: inherit; font-size: calc(var(--sidebar-font-size) + 5px); font-weight: 400; letter-spacing: 0.02em; padding: 2px 0 2px 4px; cursor: pointer; outline: none; text-overflow: ellipsis; text-decoration: underline; text-underline-offset: 3px; }
+#project-select { appearance: none; -webkit-appearance: none; flex: 1; min-width: 0; max-width: none; background: none; color: var(--accent); border: none; font-family: inherit; font-size: calc(var(--sidebar-font-size) + 5px); font-weight: 400; letter-spacing: 0.02em; line-height: 1.2; padding: 1px 0 1px 4px; cursor: pointer; outline: none; text-overflow: ellipsis; text-decoration: none; }
 #project-select:hover { text-decoration: underline; text-underline-offset: 3px; }
 #new-session-btn { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; width: 26px; height: 26px; font-size: 16px; line-height: 1; cursor: pointer; }
 #new-session-btn:hover { border-color: var(--accent); color: var(--accent); }
@@ -114,6 +114,7 @@ body:not(.vscode-mode) .session-item.active .session-title { color: var(--sideba
 .terminal-type-icon img { display: block; width: 12px; height: 12px; border-radius: 50%; object-fit: cover; }
 .codex-terminal-icon { color: #bfc2cc; opacity: 0.85; }
 .claude-terminal-icon { opacity: 0.85; }
+.agy-terminal-icon { opacity: 0.85; }
 .terminal-type-icon.terminal-status-active { color: var(--accent); opacity: 1; }
 .terminal-type-icon.terminal-status-exited { color: var(--red); opacity: 1; }
 .terminal-type-icon .codicon { font-size: 11px; }
@@ -430,7 +431,15 @@ body:not(.vscode-mode) .terminal-group-count { color: var(--sidebar-text-color);
 .terminal-group > .session-item { border-radius: 0; margin-bottom: 0; }
 .terminal-group > .session-item + .session-item { border-top: 1px solid rgba(127, 140, 160, 0.12); }
 #files-section { flex: none; height: 55%; border-top: none; }
-#files-section.floating { position: absolute; left: 0; z-index: 20; width: var(--files-panel-width, 500px); height: auto !important; min-height: 0; flex: none !important; background: var(--panel); border: 1px solid var(--border); border-left: 0; border-radius: 0 8px 8px 0; box-shadow: 10px 0 24px rgba(0, 0, 0, 0.28); }
+#files-section.floating { position: absolute; left: 0; z-index: 20; width: var(--files-panel-width, 500px); height: auto !important; min-height: 0; flex: none !important; background: var(--panel); border: 1px solid var(--border); border-left: 0; border-radius: 0 8px 8px 0; box-shadow: 10px 0 24px rgba(0, 0, 0, 0.28); padding-bottom: 0; }
+#files-section-tabs { display: flex; gap: 3px; padding: 5px 4px 4px; border-bottom: 1px solid var(--border); }
+#files-section-header { display: flex; align-items: center; gap: 4px; padding: 2px 4px 2px; border-bottom: 1px solid var(--border); margin-bottom: 2px; flex: none; }
+.files-section-tab { flex: 1; height: 22px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--dim); cursor: pointer; font-size: 11px; padding: 0 6px; }
+.files-section-tab:hover { color: var(--text); border-color: var(--border); background: var(--active-bg); }
+.files-section-tab.on { color: var(--text); border-color: var(--active-border); background: var(--active-bg); }
+.files-section-tab .codicon { font-size: 12px; }
+.files-section-tab .files-tab-label { white-space: nowrap; }
+#files-section-header .far-right { margin-left: auto; }
 #side-split { height: 6px; flex: none; cursor: row-resize; position: relative; }
 #side-split.hidden { display: none; }
 #side-split::after { content: ""; position: absolute; top: 2px; left: 8px; right: 8px; height: 2px; background: var(--border); border-radius: 2px; }
@@ -492,7 +501,6 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
 .tree-type-icon { width: calc(var(--tree-font-size) + 3px); height: calc(var(--tree-font-size) + 3px); flex: none; }
 #files-tree { flex: 1; overflow: auto; overflow-anchor: none; font-size: var(--tree-font-size); }
 #files-header-row { display: flex; align-items: center; gap: 4px; padding-right: 4px; flex: none; }
-#files-section-header { display: flex; align-items: center; gap: 4px; padding: 4px 4px 6px 0; border-bottom: 1px solid var(--border); margin-bottom: 4px; flex: none; }
 #session-list.collapsed { display: none; }
 #files-header-row .side-section-label { flex: 1; min-width: 0; }
 #files-header-row button, #files-section-header button, #search-bar button, #search-filters button, #search-header-row button { background: none; border: 1px solid var(--border); color: var(--dim); border-radius: 5px; height: 20px; min-width: 20px; cursor: pointer; font-size: 9.5px; font-family: Menlo, monospace; padding: 0 3px; flex: none; }
@@ -799,7 +807,8 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
 #modal input:focus, #modal select:focus { border-color: var(--accent); }
 #modal label.hidden { display: none; }
 #modal-project-picker { display: flex; align-items: center; gap: 5px; }
-#modal-project-picker select { flex: 1; min-width: 0; }
+#modal-project-picker select,
+#modal-project-picker input { flex: 1; min-width: 0; }
 #modal-project-add-btn { flex: none; width: 31px; height: 31px; padding: 0; border: 1px solid var(--border); border-radius: 7px; background: var(--panel2); color: var(--dim); cursor: pointer; }
 #modal-project-add-btn:hover { color: var(--accent); border-color: var(--accent); }
 #modal-project-add-btn:disabled { opacity: 0.55; cursor: wait; }

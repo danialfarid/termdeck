@@ -62,6 +62,7 @@ class ManagedSession:
         self.cold_attach_repaint_done = False
         self.screen_repaint_task: asyncio.Task | None = None
         self.draft_tracker = DraftInputTracker(record.draft)
+        self.detect_attempts = 0
         self.last_input_monotonic = 0.0
         self.last_activity_at = 0.0
         self.last_activity_broadcast_monotonic = 0.0
@@ -69,6 +70,8 @@ class ManagedSession:
         self.claude_subagents_active = False
         self.claude_main_active = False
         self.codex_transcript_active = False
+        self.agy_transcript_active = False
+        self.agy_transcript_active_until = 0.0
         self.processing_started_at: float | None = None
 
     @property
@@ -147,6 +150,11 @@ class TerminalSessionManager:
         for ms in self._sessions.values():
             await self._reconcile_session_socket(ms)
             self._refresh_persisted_agent_activity(ms)
+            if ms.detached_live and ms.record.agent_kind == AgentKind.AGY.value and not ms.record.agent_session_id:
+                kind = AgentKind(ms.record.agent_kind)
+                ms.detect_kind = kind
+                ms.detect_baseline = self._tracker.snapshot_session_files(kind, Path(ms.record.cwd))
+                self._schedule_detection(ms, TermdeckConfig.AGENT_DETECT_INITIAL_DELAY_SECONDS)
 
     def _refresh_persisted_agent_activity(self, ms: ManagedSession) -> None:
         if not ms.detached_live or not ms.record.agent_session_id:
@@ -155,6 +163,10 @@ class TerminalSessionManager:
             ms.codex_transcript_active = self._tracker.codex_session_is_active(ms.record.agent_session_id)
         elif ms.record.agent_kind == AgentKind.CLAUDE.value:
             self._initialize_claude_subagent_state(ms)
+        elif ms.record.agent_kind == AgentKind.AGY.value:
+            ms.agy_transcript_active = self._tracker.agy_session_is_active(ms.record.agent_session_id)
+            if ms.agy_transcript_active:
+                ms.agy_transcript_active_until = time.monotonic() + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
 
     def create_session(self, command: str, cwd: str, title: str, project: str = "",
                        agent_rename: str | None = None) -> ManagedSession:
@@ -166,9 +178,29 @@ class TerminalSessionManager:
                             project=project)
 
     def command_for_new_session(self, model: str, permission: str, session_ref: str) -> str:
-        selected_model = model.strip().lower() or AgentKind.CODEX.value
+        raw_model = model.strip().strip("\"'").lower()
+        normalized = {
+            "agd": AgentKind.AGY.value,
+            "agy-cli": AgentKind.AGY.value,
+            "agycli": AgentKind.AGY.value,
+            "gemini": AgentKind.AGY.value,
+            "antigravity": AgentKind.AGY.value,
+            "antigravity-cli": AgentKind.AGY.value,
+            "antigravitycli": AgentKind.AGY.value,
+        }.get(raw_model, raw_model)
+        selected_model = normalized or AgentKind.CODEX.value
         selected_permission = permission.strip().lower() or "default"
         reference = session_ref.strip()
+        if selected_model == AgentKind.AGY.value:
+            permission_flags = {
+                "default": (),
+                "full-access": ("--dangerously-skip-permissions",),
+            }
+            if selected_permission not in permission_flags:
+                raise ValueError(f"unknown agy permission: {permission}")
+            if reference:
+                raise ValueError("agy terminal currently supports new sessions only")
+            return shlex.join(["agy", *permission_flags[selected_permission]])
         if selected_model == AgentKind.NONE.value:
             if reference:
                 raise ValueError("a shell terminal cannot resume an agent session")
@@ -203,6 +235,74 @@ class TerminalSessionManager:
                 parts.extend(("--resume", reference))
             return shlex.join(parts)
         raise ValueError(f"unknown model: {model}")
+
+    @staticmethod
+    def _command_parts(command: str) -> list[str]:
+        try:
+            return shlex.split(command)
+        except ValueError:
+            return command.split()
+
+    @staticmethod
+    def _permission_flags(kind: AgentKind, permission: str) -> tuple[str, ...] | None:
+        requested = permission.strip().lower() or "default"
+        if kind is AgentKind.CLAUDE:
+            options = {
+                "default": (),
+                "accept-edits": ("--permission-mode", "acceptEdits"),
+                "auto": ("--permission-mode", "auto"),
+                "full-access": ("--dangerously-skip-permissions",),
+            }
+        elif kind is AgentKind.CODEX:
+            options = {
+                "default": (),
+                "read-only": ("--sandbox", "read-only"),
+                "workspace-write": ("--sandbox", "workspace-write"),
+                "full-access": ("--dangerously-bypass-approvals-and-sandbox",),
+            }
+        elif kind is AgentKind.AGY:
+            options = {
+                "default": (),
+                "full-access": ("--dangerously-skip-permissions",),
+            }
+        else:
+            return () if requested == "default" else None
+        return options.get(requested)
+
+    def _set_restart_permission(self, record: SessionRecord, permission: str) -> None:
+        kind = AgentKind(record.agent_kind)
+        if kind is AgentKind.NONE:
+            return
+        normalized_permission = permission.strip().lower() or "default"
+        flags = self._permission_flags(kind, normalized_permission)
+        if flags is None:
+            raise ValueError(f"unknown {record.agent_kind} permission: {permission}")
+        permissions = list(flags)
+        parts = self._command_parts(record.command)
+        if not parts:
+            return
+        command_index = next((index for index, token in enumerate(parts) if Path(token).name == kind.value), None)
+        if command_index is None:
+            return
+        preamble = parts[:command_index + 1]
+        tail = parts[command_index + 1:]
+        filtered = []
+        skip_next = False
+        for index, token in enumerate(tail):
+            if skip_next:
+                skip_next = False
+                continue
+            if token == "--permission-mode":
+                skip_next = True
+                continue
+            if token in {"--dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox"}:
+                continue
+            if token == "--sandbox" and index + 1 < len(tail) and tail[index + 1] in {"read-only", "workspace-write"}:
+                skip_next = True
+                continue
+            filtered.append(token)
+        updated = preamble + list(permissions) + filtered
+        record.command = shlex.join(updated)
 
     def _create(self, clean_command: str, cwd_path: Path, title: str, initial_command: str | None,
                 agent_rename: str | None = None, project: str | None = None) -> ManagedSession:
@@ -331,14 +431,15 @@ class TerminalSessionManager:
             return
         if ms.detect_task is not None and not ms.detect_task.done():
             ms.detect_task.cancel()
+        ms.detect_attempts = 0
         ms.detect_task = asyncio.create_task(self._detect_after(ms, delay))
 
     async def _detect_after(self, ms: ManagedSession, delay: float) -> None:
         await asyncio.sleep(delay)
-        proc = ms.proc
-        if proc is None or not proc.alive:
+        if not ms.running:
             return
         kind = ms.detect_kind
+        ms.detect_attempts += 1
         socket = self._dtach_socket(ms.record.session_id)
         found = await self._tracker.session_id_from_open_files(kind, socket)
         if found is None and kind is AgentKind.CLAUDE:
@@ -346,17 +447,15 @@ class TerminalSessionManager:
             if candidate not in self._claimed_agent_ids(ms):
                 found = candidate
         recent_input = (time.monotonic() - ms.last_input_monotonic) < TermdeckConfig.AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS
+        claim_allowed = found is None and (kind is AgentKind.AGY or recent_input or bool(ms.pending_agent_rename))
         dir_found = self._tracker.absorb_and_find_new_session_file(
-            kind, Path(ms.record.cwd), ms.detect_baseline, self._claimed_agent_ids(ms),
-            # A newly-created named API/fork terminal has an explicit rename
-            # pending, so a rollout file created after its spawn is a safe
-            # attribution even before the first user prompt is sent.
-            claim_allowed=found is None and (recent_input or bool(ms.pending_agent_rename)),
-        )
+            kind, Path(ms.record.cwd), ms.detect_baseline, self._claimed_agent_ids(ms), claim_allowed=claim_allowed)
         if found is None:
             found = dir_found
         if found is None:
-            if ms.pending_agent_rename and time.monotonic() < ms.pending_agent_rename_deadline:
+            if kind is AgentKind.AGY and ms.detect_attempts < 20:
+                ms.detect_task = asyncio.create_task(self._detect_after(ms, 1.0))
+            elif ms.pending_agent_rename and time.monotonic() < ms.pending_agent_rename_deadline:
                 ms.detect_task = asyncio.create_task(self._detect_after(ms, 1.0))
             return
         if found is not None and found != ms.record.agent_session_id:
@@ -367,6 +466,8 @@ class TerminalSessionManager:
                     ms.cli_title = self._tracker.claude_session_title(Path(ms.record.cwd), found)
             elif kind is AgentKind.CODEX and ms.cli_title is None:
                 ms.cli_title = self._tracker.codex_session_title(found)
+            elif kind is AgentKind.AGY:
+                ms.agy_transcript_active = self._tracker.agy_session_is_active(found)
             if kind is AgentKind.CODEX and ms.pending_agent_rename:
                 rename = ms.pending_agent_rename
                 ms.pending_agent_rename = None
@@ -374,6 +475,8 @@ class TerminalSessionManager:
             self._persist()
             if kind is AgentKind.CODEX:
                 ms.codex_transcript_active = self._tracker.codex_session_is_active(found)
+            elif kind is AgentKind.AGY:
+                ms.agy_transcript_active = self._tracker.agy_session_is_active(found)
             self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.AGENT_SESSION,
                                          WsMessageFields.AGENT_SESSION_ID: found})
             self._broadcast_status(ms)
@@ -419,7 +522,28 @@ class TerminalSessionManager:
         ms.claude_subagents_active = any(states.values())
 
     def _processing_state(self, ms: ManagedSession) -> bool:
-        return ms.processing or ms.codex_transcript_active or ms.claude_main_active or ms.claude_subagents_active
+        return ms.processing or ms.codex_transcript_active or ms.agy_transcript_active or ms.claude_main_active or ms.claude_subagents_active
+
+    def _refresh_agy_transcript_activity(self, ms: ManagedSession, active: bool, observed_at: float | None = None) -> None:
+        now = time.monotonic() if observed_at is None else observed_at
+        if active:
+            ms.agy_transcript_active = True
+            ms.agy_transcript_active_until = now + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
+            return
+        if ms.agy_transcript_active and now < ms.agy_transcript_active_until:
+            ms.agy_transcript_active_until = now + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
+            return
+        ms.agy_transcript_active = False
+        ms.agy_transcript_active_until = 0.0
+
+    def _expire_agy_transcript_activity(self, ms: ManagedSession, observed_at: float | None = None) -> None:
+        if ms.record.agent_kind != AgentKind.AGY.value or not ms.agy_transcript_active:
+            return
+        now = time.monotonic() if observed_at is None else observed_at
+        if now < ms.agy_transcript_active_until:
+            return
+        ms.agy_transcript_active = False
+        ms.agy_transcript_active_until = 0.0
 
     def notify_agent_transcript_changed(self, path: Path) -> None:
         if self._background_loop is not None:
@@ -427,12 +551,23 @@ class TerminalSessionManager:
 
     def _refresh_agent_transcript_activity(self, path: Path) -> None:
         for ms in self._sessions.values():
-            if not ms.running or ms.record.agent_kind != AgentKind.CODEX.value or not ms.record.agent_session_id:
+            if not ms.running or not ms.record.agent_session_id:
                 continue
-            if not path.name.endswith(f"-{ms.record.agent_session_id}.jsonl"):
+            if ms.record.agent_kind == AgentKind.CODEX.value:
+                if not path.name.endswith(f"-{ms.record.agent_session_id}.jsonl"):
+                    continue
+                active = self._tracker.codex_session_is_active(ms.record.agent_session_id)
+            elif ms.record.agent_kind == AgentKind.AGY.value:
+                if self._tracker._agy_session_id_from_path(path) != ms.record.agent_session_id:
+                    continue
+                active = self._tracker._agy_session_is_active(path)
+            else:
                 continue
             previous = self._processing_state(ms)
-            ms.codex_transcript_active = self._tracker.codex_session_is_active(ms.record.agent_session_id)
+            if ms.record.agent_kind == AgentKind.CODEX.value:
+                ms.codex_transcript_active = active
+            else:
+                self._refresh_agy_transcript_activity(ms, active, time.monotonic())
             current = self._processing_state(ms)
             if current != previous:
                 self._broadcast_status(ms)
@@ -465,6 +600,7 @@ class TerminalSessionManager:
         return value
 
     def _status_payload(self, ms: ManagedSession) -> dict[str, object]:
+        self._expire_agy_transcript_activity(ms)
         processing = self._sync_processing_started(ms)
         return {
             WsMessageFields.TYPE: WsMessageFields.SESSION_STATUS,
@@ -814,10 +950,15 @@ class TerminalSessionManager:
                 if candidate:
                     ms.pending_codex_rename = candidate
                     ms.pending_codex_rename_deadline = time.monotonic() + 30.0
+        if ms.record.agent_kind == AgentKind.AGY.value and ("\r" in text or "\n" in text):
+            ms.agy_transcript_active = True
+            ms.agy_transcript_active_until = time.monotonic() + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
         if ms.proc is not None:
             ms.proc.write(text.encode())
         ms.last_input_monotonic = time.monotonic()
         ms.last_activity_at = time.time()
+        if ms.record.agent_kind == AgentKind.AGY.value and ("\r" in text or "\n" in text):
+            self._broadcast_status(ms)
         self._broadcast_activity_if_due(ms)
         if ms.detect_kind is not AgentKind.NONE:
             self._schedule_detection(ms, TermdeckConfig.AGENT_DETECT_INPUT_DEBOUNCE_SECONDS)
@@ -989,10 +1130,13 @@ class TerminalSessionManager:
             ms.record.cols, ms.record.rows = cols, rows
             self._persist()
 
-    async def restart_session(self, session_id: str) -> None:
+    async def restart_session(self, session_id: str, permission: str = "") -> None:
         ms = self._sessions[session_id]
         if ms.detect_task is not None:
             ms.detect_task.cancel()
+        if permission:
+            self._set_restart_permission(ms.record, permission)
+            self._persist()
         if not await self._terminate_proc(ms):
             raise RuntimeError(f"could not stop dtach session before restart: {session_id}")
         self._spawn(ms, resume=True)

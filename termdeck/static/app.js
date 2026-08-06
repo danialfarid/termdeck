@@ -9,7 +9,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ui_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: false, side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv", keybindings: {},
-  last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", none: "default" },
+  last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
   show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
   files_pinned: false, sidebar_text_color: "#d5dbe5", vscode_keybindings: {} };
@@ -24,6 +24,10 @@ const MODEL_PERMISSIONS = {
     { value: "default", label: "Default (Claude config)" },
     { value: "accept-edits", label: "Accept edits" },
     { value: "auto", label: "Auto" },
+    { value: "full-access", label: "Full access" },
+  ],
+  agy: [
+    { value: "default", label: "Default" },
     { value: "full-access", label: "Full access" },
   ],
   none: [{ value: "default", label: "Shell permissions" }],
@@ -49,8 +53,7 @@ const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
 const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [150, 800, 2000];
 const TERMINAL_DEBUG_SNAPSHOT_LIMIT = 50;
 const SELECTION_SEARCH_MAX_CHARS = 1000;
-// Files viewer, file search, and terminal search share one files-section panel and one shortcut
-// (cycle-side-panel); repeated presses walk this order and wrap back to the start.
+// Files viewer, file search, and terminal search share one files-section panel and one shortcut.
 const FILES_SIDE_PANEL_TABS = ["project", "search", "terminal-search"];
 const DESKTOP_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Meta+b" },
@@ -66,7 +69,7 @@ const DESKTOP_KEYBINDINGS = [
   { id: "save-file", label: "Save open file", def: "Meta+s" },
   { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp" },
   { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown" },
-  { id: "cycle-side-panel", label: "Files / Search / Terminal search (press again for next tab)", def: "Meta+Shift+f" },
+  { id: "cycle-side-panel", label: "Files / Search / Terminal search (4th press closes)", def: "Meta+Shift+f" },
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t" },
   { id: "switch-project", label: "Switch project", def: "Alt+s" },
   { id: "toggle-notebook", label: "Quick notebook", def: "Alt+n" },
@@ -1186,10 +1189,11 @@ class TermdeckApp {
         alert("native folder selection returned no project");
         return;
       }
-      await this.loadProjects();
-      this.populateModalProjects();
-      this.$("modal-project").value = project.name;
-      this.syncModalProjectCwd();
+      const cwdInput = this.$("modal-cwd");
+      if (cwdInput) {
+        cwdInput.value = project.root || "";
+        cwdInput.dataset.projectSeeded = "1";
+      }
     } catch (error) {
       alert(error.message || "failed to choose project folder");
     } finally {
@@ -1221,6 +1225,16 @@ class TermdeckApp {
         this.setSideView(view);
       };
     }
+    for (const [view, id] of [["project", "files-tab-project"], ["search", "files-tab-search"],
+      ["terminal-search", "files-tab-terminal-search"]]) {
+      const button = this.$(id);
+      if (!button) continue;
+      button.onclick = () => {
+        if (view === "search" && this.searchContentFromSelection()) return;
+        if (view === "project" && this.searchFileFromSelection()) return;
+        this.setSideView(view, false);
+      };
+    }
     const replaceToggle = this.$("replace-toggle");
     replaceToggle.onclick = () => {
       const bar = this.$("replace-bar");
@@ -1230,17 +1244,8 @@ class TermdeckApp {
     this.$("view-terminals").classList.add("on");
     this.$("vscode-refresh-btn").onclick = () => this.requestVscodeRefresh(false);
     this.$("modal-project-add-btn").onclick = () => this.chooseProjectFolder();
-    this.$("modal-project").onchange = () => {
-      if (!this.$("modal-project").value) {
-        this.chooseProjectFolder();
-        return;
-      }
-      this.syncModalProjectCwd();
-    };
     this.$("modal-cwd").addEventListener("input", () => {
       this.$("modal-cwd").dataset.projectSeeded = "0";
-      const projectSelect = this.$("modal-project");
-      if (projectSelect && !projectSelect.disabled) projectSelect.value = "";
     });
     const queryInput = this.$("search-query");
     queryInput.addEventListener("keydown", (e) => {
@@ -1293,15 +1298,6 @@ class TermdeckApp {
     mtimeBtn.onclick = () => {
       this.settings.show_mtime = !this.settings.show_mtime;
       mtimeBtn.classList.toggle("on", this.settings.show_mtime);
-      this.saveSettings();
-      this.rerenderTree();
-    };
-    const gitBtn = this.$("git-status-toggle");
-    gitBtn.title = "Git colors: blue modified · green added/untracked · cyan copied · purple renamed · red deleted · orange conflict";
-    gitBtn.classList.toggle("on", this.settings.show_git_status !== false);
-    gitBtn.onclick = () => {
-      this.settings.show_git_status = this.settings.show_git_status === false;
-      gitBtn.classList.toggle("on", this.settings.show_git_status);
       this.saveSettings();
       this.rerenderTree();
     };
@@ -2667,9 +2663,10 @@ class TermdeckApp {
     } else {
       icon.innerHTML = '<span class="codicon codicon-terminal"></span>';
     }
-    icon.title = s.agent_kind === "claude" ? "Claude" : s.agent_kind === "codex" ? "Codex" : "Shell terminal";
+    icon.title = s.agent_kind === "claude" ? "Claude" : s.agent_kind === "codex" ? "Codex" : s.agent_kind === "agy" ? "AGY" : "Shell terminal";
     icon.classList.toggle("claude-terminal-icon", s.agent_kind === "claude");
     icon.classList.toggle("codex-terminal-icon", s.agent_kind === "codex");
+    icon.classList.toggle("agy-terminal-icon", s.agent_kind === "agy");
     icon.classList.toggle("on", !!this.settings.show_terminal_icons);
     return icon;
   }
@@ -2938,10 +2935,16 @@ class TermdeckApp {
     this.$("files-section").classList.toggle("with-search", view === "search");
     this.$("files-section").classList.toggle("with-terminal-search", view === "terminal-search");
     this.$("files-section").classList.toggle("floating", filesVisible && !filesPinned);
-    for (const name of ["terminals", "project", "search"]) {
-      this.$("view-" + name).classList.toggle("on", name === view);
+    for (const [name, id] of [["terminals", "view-terminals"], ["project", "view-project"], ["search", "view-search"]]) {
+      const button = this.$(id);
+      if (button) button.classList.toggle("on", name === view);
     }
     this.$("terminal-search-toggle").classList.toggle("on", view === "terminal-search");
+    for (const name of ["project", "search", "terminal-search"]) {
+      const id = `files-tab-${name}`;
+      const button = this.$(id);
+      if (button) button.classList.toggle("on", name === view);
+    }
     this.$("side-split").classList.toggle("hidden", view === "terminals" || filesVisible);
     this.applySettings();
     this.applySideLayout();
@@ -3043,12 +3046,12 @@ class TermdeckApp {
     }
     const sidebar = this.$("sidebar");
     const header = this.$("sidebar-header");
-    const footer = this.$("sidebar-footer");
     const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
     const requestedWidth = Number(fileWidth) || Math.max(Number(this.settings.files_width) || 0, normalWidth * 2);
     const availableWidth = Math.max(normalWidth, window.innerWidth - sidebar.getBoundingClientRect().left - 20);
-    section.style.top = `${header?.offsetHeight || 0}px`;
-    section.style.bottom = `${footer?.offsetHeight || 0}px`;
+    const filesPinned = !!this.settings.files_pinned;
+    section.style.top = filesPinned ? `${header?.offsetHeight || 0}px` : "0px";
+    section.style.bottom = "0px";
     section.style.width = `${Math.min(requestedWidth, availableWidth)}px`;
     document.documentElement.style.setProperty("--files-panel-width", `${Math.min(requestedWidth, availableWidth)}px`);
   }
@@ -3090,17 +3093,15 @@ class TermdeckApp {
     else if (view === "terminal-search") this.$("terminal-search-input").focus();
   }
 
-  // Shared keyboard shortcut (cycle-side-panel) for the 3 files-section tabs: opens to the first tab
-  // when the panel is closed, otherwise always advances to the next tab -- unlike cycleView (used by the
-  // individual footer buttons), it never toggles the panel closed on a repeat press.
   cycleFilesSidePanel() {
     if (this.vscodeMode) return;
     const currentIndex = FILES_SIDE_PANEL_TABS.indexOf(this.sideView);
-    const nextView = FILES_SIDE_PANEL_TABS[(currentIndex + 1) % FILES_SIDE_PANEL_TABS.length];
+    const nextIndex = currentIndex < 0 ? 0 : currentIndex + 1;
+    const nextView = nextIndex >= FILES_SIDE_PANEL_TABS.length ? "terminals" : FILES_SIDE_PANEL_TABS[nextIndex];
     this.setSideView(nextView, false);
     if (nextView === "project") this.focusFileNameSearch();
     else if (nextView === "search") this.focusFileContentSearch();
-    else this.$("terminal-search-input").focus();
+    else if (nextView === "terminal-search") this.$("terminal-search-input").focus();
   }
 
   applySideLayout() {
@@ -3310,7 +3311,9 @@ class TermdeckApp {
     }
     const sidePanelAction = this.bindingToDisplay(this.bindingFor("cycle-side-panel"));
     const sidePanelTitles = [["view-project", "Files"], ["view-search", "Search & replace"],
-      ["terminal-search-toggle", "Search terminal output"]];
+      ["terminal-search-toggle", "Search terminal output"],
+      ["files-tab-project", "Files"], ["files-tab-search", "Search & replace"],
+      ["files-tab-terminal-search", "Search terminal output"]];
     for (const [id, label] of sidePanelTitles) {
       const button = this.$(id);
       if (button) button.title = `${label} (${sidePanelAction} cycles tabs)`;
@@ -3355,6 +3358,14 @@ class TermdeckApp {
         () => this.forkSession(session), "repo-forked");
       this.addContextItem(menu, this.shortcutLabel("Restart terminal", "restart-terminal"),
         () => this.restartSession(session.session_id), "refresh");
+      const permissions = MODEL_PERMISSIONS[session.agent_kind || "none"] || MODEL_PERMISSIONS.none;
+      if (permissions.length > 1) {
+        this.addContextSubmenu(menu, "Restart with permission", permissions.map((entry) => ({
+          label: entry.label,
+          handler: () => this.restartSession(session.session_id, entry.value),
+          icon: "refresh",
+        })), "refresh");
+      }
       this.addContextItem(menu, this.shortcutLabel("Close terminal", "close-item"),
         () => this.closeSession(session.session_id), "close");
       this.addContextItem(menu, this.shortcutLabel("Rename terminal", "rename-terminal"),
@@ -3784,9 +3795,11 @@ class TermdeckApp {
     const sessionTitle = String(session?.title || "").toLowerCase();
     if (sessionTitle.includes("codex")) return "codex";
     if (sessionTitle.includes("claude")) return "claude";
+    if (sessionTitle.includes("agy")) return "agy";
     const sessionCliTitle = String(session?.cli_title || "").toLowerCase();
     if (sessionCliTitle.includes("codex")) return "codex";
     if (sessionCliTitle.includes("claude")) return "claude";
+    if (sessionCliTitle.includes("agy")) return "agy";
     if (String(session?.command || "").toLowerCase().includes("zsh") ||
         String(session?.command || "").toLowerCase().includes("bash") ||
         String(session?.command || "").toLowerCase().includes("sh")) return "none";
@@ -3799,7 +3812,8 @@ class TermdeckApp {
     if (!text) return "";
     const modelFromFlag = this.historyModelFromCommandFlags(text);
     if (modelFromFlag) return modelFromFlag;
-    return this.historyModelFromValue(text);
+    const commandModel = this.normalizeModelKind(text);
+    return commandModel || this.historyModelFromValue(text);
   }
 
   historyModelFromCommandFlags(text) {
@@ -3844,6 +3858,7 @@ class TermdeckApp {
     if (!text) return "";
     if (text.includes("codex")) return "codex";
     if (text.includes("claude")) return "claude";
+    if (text.includes("agy")) return "agy";
     if (text.includes("none") || /\b(shell|zsh|bash)\b/.test(text)) return "none";
     return "";
   }
@@ -3889,7 +3904,7 @@ class TermdeckApp {
   historyModelIsGeneric(raw) {
     const text = this.normalizeModelText(raw).toLowerCase();
     return text === "codex" || text === "claude" || text === "none" || text === "shell"
-      || text === "bash" || text === "zsh" || text === "sh";
+      || text === "agy" || text === "bash" || text === "zsh" || text === "sh";
   }
 
   historyModelDisplay(session, turns = []) {
@@ -3901,7 +3916,7 @@ class TermdeckApp {
   historyModelLabel(session, turns = []) {
     const model = this.historyModel(session, turns);
     if (this.historyModelIsGeneric(model)) {
-      const label = model === "codex" ? "Codex" : model === "claude" ? "Claude" : "Shell";
+      const label = model === "codex" ? "Codex" : model === "claude" ? "Claude" : model === "agy" ? "AGY" : "Shell";
       return label;
     }
     const label = this.historyModelModelLabel(model);
@@ -5056,7 +5071,7 @@ class TermdeckApp {
         empty.className = "history-empty";
         empty.textContent = s && s.agent_kind !== "none"
           ? "no transcript found yet (send a message first, or the session id isn't resolved)"
-          : "transcript history is only available for claude/codex terminals";
+          : "transcript history is only available for claude/codex/agy terminals";
         body.appendChild(empty);
       } else {
         this.renderHistoryTurns(turns, { preserveExpanded: preserveScroll });
@@ -7524,6 +7539,7 @@ class TermdeckApp {
         if (/^#[0-9a-f]{6}$/i.test(String(legacyColor || ""))) incoming.sidebar_text_color = legacyColor;
       }
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
+      this.settings.show_git_status = true;
     } catch (err) {
       this.settings = { ...SETTINGS_DEFAULTS };
     }
@@ -7952,9 +7968,23 @@ class TermdeckApp {
   }
 
   formatMtime(epochSeconds) {
+    const now = Date.now();
     const date = new Date(epochSeconds * 1000);
-    const pad = (value) => String(value).padStart(2, "0");
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    const start = Math.max(0, Math.floor((now - date.getTime()) / 1000));
+    let remaining = start;
+    const year = Math.floor(remaining / (3600 * 24 * 365));
+    remaining -= year * 3600 * 24 * 365;
+    const month = Math.floor(remaining / (3600 * 24 * 30));
+    remaining -= month * 3600 * 24 * 30;
+    const day = Math.floor(remaining / (3600 * 24));
+    remaining -= day * 3600 * 24;
+    const hour = Math.floor(remaining / 3600);
+    remaining -= hour * 3600;
+    const minute = Math.floor(remaining / 60);
+    const second = remaining - minute * 60;
+    const items = [[year, "y"], [month, "m"], [day, "d"], [hour, "h"], [minute, "m"], [second, "s"]].filter((item) => item[0] > 0);
+    if (!items.length) return "0s";
+    return items.slice(0, 2).map(([value, suffix]) => `${value}${suffix}`).join(" ");
   }
 
   exactMtime(epochSeconds) {
@@ -8524,17 +8554,79 @@ class TermdeckApp {
     this.openFile(s ? s.cwd : "~", parsed.path, parsed.line, null, { returnTo });
   }
 
+  sessionSuggestionEntries() {
+    const entries = [];
+    const seen = new Set();
+    const addEntry = (value, label) => {
+      const normalized = String(value || "").trim();
+      if (!normalized) return;
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      entries.push({ value: normalized, label });
+    };
+    const sessions = [...this.sessions, ...this.closedSessions];
+    for (const session of sessions) {
+      if (!session) continue;
+      addEntry(session.session_id, session.session_id ? "session id" : "");
+      if (session.title) addEntry(session.title, `title: ${session.title}`);
+      if (session.cli_title) addEntry(session.cli_title, `agent title: ${session.cli_title}`);
+    }
+    return entries;
+  }
+
+  updateModalSessionSuggestions() {
+    const datalist = this.$("modal-session-refs");
+    if (!datalist) return;
+    datalist.textContent = "";
+    const entries = this.sessionSuggestionEntries().sort((left, right) => {
+      const leftLabel = String(left.value).toLowerCase();
+      const rightLabel = String(right.value).toLowerCase();
+      return leftLabel < rightLabel ? -1 : leftLabel > rightLabel ? 1 : 0;
+    });
+    for (const item of entries) {
+      const option = document.createElement("option");
+      option.value = item.value;
+      if (item.label) option.label = item.label;
+      datalist.appendChild(option);
+    }
+  }
+
+  resolveSessionNameAndReference(model, rawValue) {
+    const modelValue = String(model || "").trim().toLowerCase();
+    const value = String(rawValue || "").trim();
+    if (!value || modelValue === "none" || modelValue === "agy") {
+      return { title: value, session_ref: "" };
+    }
+    const needle = value.toLowerCase();
+    const matches = [];
+    for (const session of [...this.sessions, ...this.closedSessions]) {
+      if (!session) continue;
+      const sessionId = String(session.session_id || "").trim();
+      const title = String(session.title || "").trim();
+      const cliTitle = String(session.cli_title || "").trim();
+      if (sessionId && sessionId.toLowerCase() === needle) matches.push(sessionId);
+      if (title && title.toLowerCase() === needle) matches.push(sessionId);
+      if (cliTitle && cliTitle.toLowerCase() === needle) matches.push(sessionId);
+    }
+    const unique = [...new Set(matches)];
+    if (unique.length === 1 && unique[0]) {
+      return { title: "", session_ref: unique[0] };
+    }
+    return { title: value, session_ref: "" };
+  }
+
   openModal(groupId = null) {
     this.modalGroupId = !this.vscodeMode && groupId && this.terminalGroups().some((group) => group.id === groupId)
       ? groupId : null;
     const model = this.settings.last_model || DEFAULT_COMMAND;
     this.$("modal-model").value = MODEL_PERMISSIONS[model] ? model : DEFAULT_COMMAND;
     this.updateModalPermissions();
+    this.updateModalSessionSuggestions();
+    this.$("modal-project-add-btn").classList.toggle("hidden", !!this.vscodeMode);
     this.$("modal-session-title").value = "";
-    this.$("modal-session-ref").value = "";
     this.$("modal-cwd").value = this.resolveVscodeDefaultCwd();
     this.$("modal-cwd").dataset.projectSeeded = "0";
-    this.populateModalProjects();
     this.$("modal-backdrop").classList.remove("hidden");
     this.$("modal-session-title").focus();
   }
@@ -8556,9 +8648,7 @@ class TermdeckApp {
     }
     const remembered = (this.settings.last_permissions || {})[model] || "default";
     permission.value = [...permission.options].some((option) => option.value === remembered) ? remembered : "default";
-    const isShell = model === "none";
-    this.$("modal-permission-field").classList.toggle("hidden", isShell);
-    this.$("modal-session-ref-field").classList.toggle("hidden", isShell);
+    this.$("modal-permission-field").classList.toggle("hidden", model === "none");
   }
 
   async createSession() {
@@ -8566,14 +8656,12 @@ class TermdeckApp {
     const targetGroupId = this.modalGroupId;
     const model = this.$("modal-model").value;
     const permission = this.$("modal-permission").value;
-    const title = this.$("modal-session-title").value;
-    const sessionRef = this.$("modal-session-ref").value;
+    const resolved = this.resolveSessionNameAndReference(model, this.$("modal-session-title").value);
+    const { title, session_ref: sessionRef } = resolved;
     const rawCwd = this.$("modal-cwd").value.trim();
-    const selectedProject = this.projects.find((project) => project.name === this.$("modal-project")?.value);
-    const cwd = selectedProject ? selectedProject.root
-      : (this.vscodeMode ? rawCwd || this.resolveVscodeDefaultCwd() : rawCwd);
-    let project = selectedProject?.name || "";
-    if (!selectedProject && cwd) {
+    const cwd = this.vscodeMode ? rawCwd || this.resolveVscodeDefaultCwd() : rawCwd;
+    let project = "";
+    if (cwd) {
       const projectResponse = await fetch("/api/projects", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ root: cwd }),
@@ -8583,7 +8671,9 @@ class TermdeckApp {
         alert(projectPayload.detail || "failed to register project folder");
         return;
       }
-      project = projectPayload.name || "";
+      if (projectPayload && projectPayload.name) {
+        project = projectPayload.name;
+      }
     }
     if (!project) project = this.projectForCwd(cwd)?.name || "";
     this.settings.last_model = model;
@@ -9029,12 +9119,21 @@ class TermdeckApp {
     if (view) view.pinBottomUntil = Date.now() + 8000;
   }
 
-  async restartSession(sessionId) {
+  async restartSession(sessionId, permission = "") {
     this.activate(sessionId);
     this.$("status-name").textContent = "restarting…";
     const view = this.views.get(sessionId);
     if (view) view.pinBottomUntil = Date.now() + 6000;
-    await fetch(`/api/sessions/${sessionId}/restart`, { method: "POST" });
+    const response = await fetch(`/api/sessions/${sessionId}/restart`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ permission }),
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      this.$("status-name").textContent = detail?.detail || "restart failed";
+      return;
+    }
     this.refresh();
   }
 

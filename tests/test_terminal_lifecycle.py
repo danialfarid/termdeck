@@ -178,6 +178,29 @@ class SessionSizePersistenceTest(unittest.TestCase):
         self.assertEqual(len(persists), 1)
 
 
+class AgentSessionTrackerResumeCommandTest(unittest.TestCase):
+    def test_build_codex_resume_command_keeps_existing_flags(self) -> None:
+        tracker = AgentSessionTracker()
+        command = "codex --sandbox workspace-write resume aa11 --foo"
+        self.assertEqual(tracker.build_resume_command(
+            AgentKind.CODEX, command, "bb22"),
+            "codex --sandbox workspace-write --foo resume bb22")
+
+    def test_build_codex_resume_command_with_path_keeps_flags(self) -> None:
+        tracker = AgentSessionTracker()
+        command = "/usr/bin/codex --dangerously-bypass-approvals-and-sandbox resume aa11"
+        self.assertEqual(tracker.build_resume_command(
+            AgentKind.CODEX, command, "bb22"),
+            "/usr/bin/codex --dangerously-bypass-approvals-and-sandbox resume bb22")
+
+    def test_build_claude_resume_command_strips_old_resume_flag(self) -> None:
+        tracker = AgentSessionTracker()
+        command = "claude --permission-mode auto --resume aa11"
+        self.assertEqual(tracker.build_resume_command(
+            AgentKind.CLAUDE, command, "bb22"),
+            "claude --permission-mode auto --resume bb22")
+
+
 class CliTitlePersistenceTest(unittest.TestCase):
     def _manager_with_session(self) -> tuple[TerminalSessionManager, ManagedSession, list[int]]:
         manager = TerminalSessionManager()
@@ -280,6 +303,55 @@ class ClaudeSessionActivityTest(unittest.TestCase):
             path = self._transcript(directory, self._user_text("hello"),
                                     self._assistant({"type": "text", "text": "all done"}))
             self.assertFalse(AgentSessionTracker().claude_session_is_active(path))
+
+
+class AgySessionActivityTest(unittest.TestCase):
+    def _transcript(self, directory: str, session_id: str, *events: dict) -> Path:
+        log_dir = Path(directory) / session_id / ".system_generated" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / "transcript.jsonl"
+        path.write_text("\n".join(json.dumps(event) for event in events))
+        return path
+
+    def test_user_input_marks_session_as_active(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session_id = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+            self._transcript(directory, session_id,
+                             {"type": "USER_INPUT", "source": "USER_EXPLICIT",
+                              "content": "<USER_REQUEST>run diagnostics</USER_REQUEST>"})
+            with patch.object(TermdeckConfig, "AGY_SESSIONS_DIR", Path(directory)):
+                self.assertTrue(AgentSessionTracker().agy_session_is_active(session_id))
+
+    def test_content_event_without_thinking_marks_session_as_inactive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session_id = "6f1f1f5a-9dfd-4a65-bc2f-9b0b8f5f4d77"
+            self._transcript(directory, session_id,
+                             {"type": "USER_INPUT", "source": "USER_EXPLICIT",
+                              "content": "<USER_REQUEST>run diagnostics</USER_REQUEST>"},
+                             {"type": "AGENT_RESPONSE", "content": "<AGENT_RESPONSE>done</AGENT_RESPONSE>"})
+            with patch.object(TermdeckConfig, "AGY_SESSIONS_DIR", Path(directory)):
+                self.assertFalse(AgentSessionTracker().agy_session_is_active(session_id))
+
+    def test_in_progress_status_marks_session_as_active(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session_id = "e6f1f8b4-8c5d-4bbd-b3f7-21fbd7fdc11f"
+            self._transcript(directory, session_id,
+                             {"type": "PLANNER_RESPONSE", "source": "MODEL", "status": "IN_PROGRESS",
+                              "content": "Thinking about file matches."})
+            with patch.object(TermdeckConfig, "AGY_SESSIONS_DIR", Path(directory)):
+                self.assertTrue(AgentSessionTracker().agy_session_is_active(session_id))
+
+    def test_transcript_full_preferred_for_activity_detection(self) -> None:
+        session_id = "7f8f2a7a-c4c2-4ca3-a4d4-e5f6a7c9d012"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / session_id / ".system_generated" / "logs"
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "transcript.jsonl").write_text("{}\n")
+            (root / "transcript_full.jsonl").write_text(
+                json.dumps({"type": "USER_INPUT", "source": "USER_EXPLICIT", "content": "<USER_REQUEST>run diagnostics</USER_REQUEST>"})
+            )
+            with patch.object(TermdeckConfig, "AGY_SESSIONS_DIR", Path(directory)):
+                self.assertTrue(AgentSessionTracker().agy_session_is_active(session_id))
 
 
 class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):

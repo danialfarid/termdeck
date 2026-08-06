@@ -20,18 +20,20 @@
   <div id="session-list" class="side-view"></div>
   <div id="side-split" class="hidden"></div>
   <div id="files-section" class="side-view hidden">
+    <div id="files-section-tabs">
+      <button id="files-tab-project" class="files-section-tab" title="Open files" aria-label="Files"><span class="codicon codicon-files"></span><span class="files-tab-label">Files</span></button>
+      <button id="files-tab-search" class="files-section-tab" title="Search files" aria-label="Search files"><span class="codicon codicon-search"></span><span class="files-tab-label">Search</span></button>
+      <button id="files-tab-terminal-search" class="files-section-tab" title="Search terminal output" aria-label="Search terminal output"><span class="codicon codicon-terminal"></span><span class="files-tab-label">Terminal search</span></button>
+    </div>
     <div id="files-section-header">
+      <span class="side-section-label" id="files-root-label">files</span>
+      <button id="reveal-toggle" title="Reveal active file in tree"><span class="codicon codicon-target"></span></button>
+      <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
+      <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-filter"></span></button>
       <button id="files-pin-toggle" title="Keep this panel open after opening a file" aria-label="Pin file panel" aria-pressed="false"><span class="codicon codicon-pin"></span></button>
       <button id="minimize-toggle" class="far-right" title="Minimize panel"><span class="codicon codicon-chrome-minimize"></span></button>
     </div>
     <div id="files-explorer-panel">
-      <div id="files-header-row">
-        <span class="side-section-label" id="files-root-label">files</span>
-        <button id="reveal-toggle" title="Reveal active file in tree"><span class="codicon codicon-target"></span></button>
-        <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
-        <button id="git-status-toggle" title="Show Git status"><span class="codicon codicon-source-control"></span></button>
-        <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-eye-closed"></span></button>
-      </div>
       <input id="search-name" placeholder="find file by name (fuzzy)" spellcheck="false">
       <div id="search-controls">
         <div id="search-bar">
@@ -207,13 +209,13 @@
     <label>Model<select id="modal-model">
       <option value="codex">Codex</option>
       <option value="claude">Claude</option>
+      <option value="agy">AGY</option>
       <option value="none">Shell</option>
     </select></label>
     <label id="modal-permission-field">Permission<select id="modal-permission"></select></label>
-    <label id="modal-project-field">Project folder<div id="modal-project-picker"><select id="modal-project"></select><button id="modal-project-add-btn" title="Add project folder" aria-label="Add project folder"><span class="codicon codicon-new-folder"></span></button></div></label>
-    <label>Session name<input id="modal-session-title" placeholder="optional: name this terminal" spellcheck="false"></label>
-    <label id="modal-session-ref-field">Resume existing session<input id="modal-session-ref" placeholder="optional: saved ID or existing name" spellcheck="false"></label>
-    <label>Directory<input id="modal-cwd" placeholder="~/projects/my-app" spellcheck="false"></label>
+    <label>Session name / Resume existing session<input id="modal-session-title" list="modal-session-refs" placeholder="optional: name this terminal or saved ID/name to resume" spellcheck="false"></label>
+    <datalist id="modal-session-refs"></datalist>
+    <label>Directory<div id="modal-project-picker"><input id="modal-cwd" placeholder="~/projects/my-app" spellcheck="false"><button id="modal-project-add-btn" title="Add project folder" aria-label="Add project folder"><span class="codicon codicon-new-folder"></span></button></div></label>
     <div class="modal-actions">
       <button id="modal-cancel">Cancel</button>
       <button id="modal-create">Open</button>

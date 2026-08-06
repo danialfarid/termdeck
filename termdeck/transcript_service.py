@@ -107,7 +107,7 @@ class TranscriptService:
         # Claude's tree is already watched by ClaudeActivityWatcher. Its events
         # are forwarded here by the session manager so macOS FSEvents does not
         # try to register the same recursive watch twice.
-        for root in (TermdeckConfig.CODEX_SESSIONS_DIR,):
+        for root in (TermdeckConfig.CODEX_SESSIONS_DIR, TermdeckConfig.AGY_SESSIONS_DIR):
             if root.is_dir():
                 observer.schedule(handler, str(root), recursive=True)
         observer.start()
@@ -120,6 +120,8 @@ class TranscriptService:
         if KqueueObserver is not None and TermdeckConfig.CODEX_SESSIONS_DIR.is_dir():
             leaf_observer = KqueueObserver()
             leaf_dirs = {path.parent for path in TermdeckConfig.CODEX_SESSIONS_DIR.rglob("*.jsonl")}
+            if TermdeckConfig.AGY_SESSIONS_DIR.is_dir():
+                leaf_dirs.update(path.parent for path in TermdeckConfig.AGY_SESSIONS_DIR.rglob("*.jsonl"))
             for leaf in sorted(leaf_dirs):
                 leaf_observer.schedule(handler, str(leaf), recursive=False)
             if leaf_dirs:
@@ -213,6 +215,11 @@ class TranscriptService:
             return self._find_codex_rollout(agent_session_id)
         if kind is AgentKind.CLAUDE:
             path = self._claude_project_dir(Path(cwd)) / f"{agent_session_id}.jsonl"
+            return path if path.exists() else None
+        if kind is AgentKind.AGY:
+            path = TermdeckConfig.AGY_SESSIONS_DIR / str(agent_session_id) / ".system_generated" / "logs" / "transcript_full.jsonl"
+            if not path.exists():
+                path = TermdeckConfig.AGY_SESSIONS_DIR / str(agent_session_id) / ".system_generated" / "logs" / "transcript.jsonl"
             return path if path.exists() else None
         return None
 
@@ -484,7 +491,13 @@ class TranscriptService:
         state.revision += 1
 
     def _parse_lines(self, kind: AgentKind, lines: Iterable[str]) -> list[dict[str, object]]:
-        return self._parse_codex_lines(lines) if kind is AgentKind.CODEX else self._parse_claude_lines(lines)
+        if kind is AgentKind.CODEX:
+            return self._parse_codex_lines(lines)
+        if kind is AgentKind.CLAUDE:
+            return self._parse_claude_lines(lines)
+        if kind is AgentKind.AGY:
+            return self._parse_agy_lines(lines)
+        return []
 
     def _latest_user_timestamp(self, kind: AgentKind, lines: Iterable[str]) -> float | None:
         latest: float | None = None
@@ -498,6 +511,8 @@ class TranscriptService:
                 is_user = isinstance(body, dict) and body.get("type") == "message" and body.get("role") == "user"
             elif kind is AgentKind.CLAUDE:
                 is_user = payload.get("type") == self.ROLE_USER
+            elif kind is AgentKind.AGY:
+                is_user = (payload.get("type") == "USER_INPUT" or str(payload.get("source") or "") == "USER_EXPLICIT")
             if not is_user:
                 continue
             value = payload.get("timestamp")
@@ -806,6 +821,62 @@ class TranscriptService:
     @staticmethod
     def _tool_call_id(payload: dict[str, object]) -> str:
         return str(payload.get("call_id") or payload.get("id") or "")
+
+    @staticmethod
+    def _agy_wrap_text(text: str) -> str:
+        wrapped = text.strip()
+        if not wrapped.startswith(("<USER_REQUEST>", "<AGENT_RESPONSE>")):
+            return wrapped
+        end = wrapped.find(">", 0)
+        if end < 0:
+            return wrapped
+        return wrapped[end + 1:].strip()
+
+    @staticmethod
+    def _agy_turn_title(event_type: str) -> str:
+        return event_type.replace("_", " ").title()
+
+    def _parse_agy_lines(self, lines: Iterable[str]) -> list[dict[str, object]]:
+        turns: list[dict[str, object]] = []
+        for line in lines:
+            payload = self._loads(line)
+            if payload is None:
+                continue
+            event_type = str(payload.get("type") or "")
+            content = payload.get("content")
+            tool_calls = payload.get("tool_calls")
+            model = self._extract_turn_model(payload)
+            is_user = event_type == "USER_INPUT" or str(payload.get("source", "")) == "USER_EXPLICIT"
+            if is_user and isinstance(content, str):
+                text = self._agy_wrap_text(content)
+                if text:
+                    turns.append(self._turn(self.ROLE_USER, text, model=model))
+                continue
+            if isinstance(tool_calls, list) and tool_calls:
+                for call in tool_calls:
+                    if isinstance(call, dict):
+                        name = str(call.get("name") or "tool")
+                        arguments = call.get("arguments", call.get("input", ""))
+                    else:
+                        name = str(call)
+                        arguments = {}
+                    turns.append(self._tool_event(name, arguments, role="event", model=model))
+                continue
+            thinking = payload.get("thinking")
+            if isinstance(thinking, str) and thinking.strip():
+                turns.append(self._turn("event", self._agy_wrap_text(thinking), "thinking", f"{self._agy_turn_title(event_type)} Thinking",
+                                       model=model))
+            if isinstance(content, str):
+                text = self._agy_wrap_text(content)
+                if not text:
+                    continue
+                if event_type in {"CONVERSATION_HISTORY", "CHECKPOINT", "SYSTEM"}:
+                    turns.append(self._turn("event", text, kind="result", title=self._agy_turn_title(event_type), model=model))
+                else:
+                    turns.append(self._turn(self.ROLE_ASSISTANT, text, model=model))
+            elif thinking:
+                turns.append(self._turn("event", "", kind="result", title=self._agy_turn_title(event_type), model=model))
+        return self._collapse_thinking_events(turns)
 
     def _parse_codex(self, path: Path) -> list[dict[str, object]]:
         return self._collapse_thinking_events(self._parse_codex_lines(path.read_text(errors="replace").splitlines()))

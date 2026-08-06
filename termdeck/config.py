@@ -122,11 +122,13 @@ class TermdeckConfig:
     EXIT_CODE_SPAWN_FAILED = -1
     CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
     CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+    AGY_SESSIONS_DIR = Path.home() / ".gemini" / "antigravity-cli" / "brain"
     JSONL_GLOB = "*.jsonl"
     CODEX_DAY_DIR_LOOKAROUND_DAYS = (-1, 0, 1)
     AGENT_DETECT_INITIAL_DELAY_SECONDS = 3.0
     AGENT_DETECT_INPUT_DEBOUNCE_SECONDS = 2.0
     AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS = 20.0
+    AGY_ACTIVITY_KEEPALIVE_SECONDS = 20.0
     PGREP_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_PGREP_BIN, "pgrep")
     LSOF_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_LSOF_BIN, "lsof")
     SUBPROCESS_TIMEOUT_SECONDS = 10.0

@@ -2,6 +2,7 @@ import asyncio
 import collections
 import json
 import re
+import shlex
 from datetime import timedelta
 from pathlib import Path
 
@@ -28,6 +29,7 @@ class AgentSessionTracker:
     _CLAUDE_SIDECHAIN_MARKER = b'"isSidechain":true'
     _SUBAGENT_SNIFF_BYTES = 2048
     _SUBAGENT_TAIL_BYTES = 256 * 1024
+    _AGY_ACTIVITY_TAIL_BYTES = 256 * 1024
     _CODEX_ACTIVITY_TAIL_BYTES = 4 * 1024 * 1024
     _CLAUDE_INTERRUPT_TEXT_PREFIX = "[Request interrupted by user"
     _CLI_TITLE_CACHE_SIZE = 120
@@ -222,11 +224,37 @@ class AgentSessionTracker:
             return AgentKind.CLAUDE
         if AgentKind.CODEX.value in tokens:
             return AgentKind.CODEX
+        if AgentKind.AGY.value in tokens:
+            return AgentKind.AGY
         return AgentKind.NONE
 
     def claude_project_dir(self, cwd: Path) -> Path:
         munged = "".join(ch if ch.isalnum() else "-" for ch in str(cwd))
         return TermdeckConfig.CLAUDE_PROJECTS_DIR / munged
+
+    @staticmethod
+    def agy_session_dir(session_id: str) -> Path:
+        return TermdeckConfig.AGY_SESSIONS_DIR / session_id
+
+    @staticmethod
+    def agy_session_transcript(session_id: str, prefer_full: bool = True) -> Path | None:
+        directory = TermdeckConfig.AGY_SESSIONS_DIR / session_id / ".system_generated" / "logs"
+        full_transcript = directory / "transcript_full.jsonl"
+        live_transcript = directory / "transcript.jsonl"
+        if prefer_full and full_transcript.is_file():
+            return full_transcript
+        return live_transcript if live_transcript.is_file() else full_transcript if full_transcript.is_file() else None
+
+    @staticmethod
+    def _agy_session_id_from_path(path: Path) -> str | None:
+        try:
+            relative = path.relative_to(TermdeckConfig.AGY_SESSIONS_DIR)
+        except ValueError:
+            return None
+        if not relative.parts:
+            return None
+        session_id = relative.parts[0]
+        return session_id if AgentSessionTracker._UUID_RE.fullmatch(session_id) else None
 
     @staticmethod
     def _title_words(title: str | None) -> set[str]:
@@ -325,6 +353,71 @@ class AgentSessionTracker:
         """Infer whether the latest event in a Claude parent transcript is still working."""
         return self._claude_subagent_is_active(path)
 
+    def agy_session_is_active(self, session_id: str | None) -> bool:
+        if not session_id:
+            return False
+        path = self.agy_session_transcript(session_id, prefer_full=True)
+        if path is None:
+            return False
+        return self._agy_session_is_active(path)
+
+    @staticmethod
+    def _agy_session_is_active(path: Path) -> bool:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return False
+        if not size:
+            return False
+        start = max(0, size - AgentSessionTracker._AGY_ACTIVITY_TAIL_BYTES)
+        try:
+            with path.open("rb") as handle:
+                if start > 0:
+                    handle.seek(start - 1)
+                    previous = handle.read(1)
+                    handle.seek(start)
+                else:
+                    previous = b"\n"
+                raw = handle.read()
+        except OSError:
+            return False
+        if start > 0 and previous not in (b"\n", b"\r"):
+            boundary = raw.find(b"\n")
+            if boundary < 0:
+                return False
+            raw = raw[boundary + 1:]
+        for raw_line in reversed(raw.splitlines()):
+            try:
+                payload = json.loads(raw_line.decode(errors="replace"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            event_type = str(payload.get("type") or "").upper()
+            status = str(payload.get("status") or "").upper()
+            if status in {"DONE", "COMPLETED", "ERROR", "FAILED", "INTERRUPTED", "CANCELLED", "CANCELED", "TIMEOUT", "TIME_EXCEEDED"}:
+                return False
+            if status in {"IN_PROGRESS", "WORKING", "PROCESSING", "RUNNING"}:
+                return True
+            if event_type == "USER_INPUT":
+                return True
+            if str(payload.get("source") or "") == "USER_EXPLICIT":
+                return True
+            thinking = payload.get("thinking")
+            if isinstance(thinking, str) and thinking.strip():
+                return True
+            tool_calls = payload.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                return True
+            content = payload.get("content")
+            if isinstance(content, str) and content.strip():
+                if event_type in {"CONVERSATION_HISTORY", "CHECKPOINT", "SYSTEM", "ASSISTANT_RESPONSE", "RESPONSE"}:
+                    return False
+                if event_type in {"PLANNER_RESPONSE", "VIEW_FILE", "GREP_SEARCH", "RUN_COMMAND", "RUN", "PLAN", "MODEL_RESPONSE"}:
+                    return True
+                return False
+        return False
+
     def claude_session_id_for_title(self, cwd: Path, cli_title: str | None) -> str | None:
         parent = self._claude_parent_for_title(cwd, cli_title)
         return parent.stem if parent else None
@@ -360,6 +453,8 @@ class AgentSessionTracker:
             return match.group(1) if match else None
         if kind is AgentKind.CLAUDE and path.is_relative_to(TermdeckConfig.CLAUDE_PROJECTS_DIR):
             return path.stem if self._UUID_RE.match(path.stem) else None
+        if kind is AgentKind.AGY and path.is_relative_to(TermdeckConfig.AGY_SESSIONS_DIR):
+            return self._agy_session_id_from_path(path)
         return None
 
     @staticmethod
@@ -408,6 +503,15 @@ class AgentSessionTracker:
                     if match:
                         pairs.append((path, match.group(1)))
             return pairs
+        if kind is AgentKind.AGY and TermdeckConfig.AGY_SESSIONS_DIR.is_dir():
+            pairs: list[tuple[Path, str]] = []
+            for entry in TermdeckConfig.AGY_SESSIONS_DIR.iterdir():
+                if not entry.is_dir() or not self._UUID_RE.fullmatch(entry.name):
+                    continue
+                path = self.agy_session_transcript(entry.name, prefer_full=True)
+                if path is not None:
+                    pairs.append((path, entry.name))
+            return pairs
         return []
 
     @staticmethod
@@ -419,10 +523,57 @@ class AgentSessionTracker:
 
     def build_resume_command(self, kind: AgentKind, original_command: str, agent_session_id: str) -> str:
         if kind is AgentKind.CLAUDE:
-            return f"{original_command} {TermdeckConfig.CLAUDE_RESUME_FLAG} {agent_session_id}"
+            parts = self._command_parts(original_command)
+            cleaned = self._strip_resume_flag(parts, TermdeckConfig.CLAUDE_RESUME_FLAG)
+            if not cleaned:
+                return f"claude {TermdeckConfig.CLAUDE_RESUME_FLAG} {agent_session_id}"
+            return f"{shlex.join(cleaned)} {TermdeckConfig.CLAUDE_RESUME_FLAG} {agent_session_id}"
         if kind is AgentKind.CODEX:
-            return TermdeckConfig.CODEX_RESUME_TEMPLATE.format(agent_session_id=agent_session_id)
+            parts = self._command_parts(original_command)
+            if not parts:
+                return TermdeckConfig.CODEX_RESUME_TEMPLATE.format(agent_session_id=agent_session_id)
+            cleaned = self._strip_positional_session_token(parts, "codex", "resume")
+            return f"{shlex.join(cleaned)} resume {agent_session_id}"
         return original_command
+
+    @staticmethod
+    def _command_parts(command: str) -> list[str]:
+        try:
+            return shlex.split(command)
+        except ValueError:
+            return command.split()
+
+    @staticmethod
+    def _strip_resume_flag(parts: list[str], resume_flag: str) -> list[str]:
+        cleaned: list[str] = []
+        skip_next = False
+        for token in parts:
+            if skip_next:
+                skip_next = False
+                continue
+            if token == resume_flag:
+                skip_next = True
+            else:
+                cleaned.append(token)
+        return cleaned
+
+    def _strip_positional_session_token(self, parts: list[str], command: str, subcommand: str) -> list[str]:
+        cleaned: list[str] = []
+        encountered_command = False
+        skip_next = False
+        for token in parts:
+            if skip_next:
+                skip_next = False
+                continue
+            if not encountered_command and Path(token).name == command:
+                encountered_command = True
+                cleaned.append(token)
+                continue
+            if token == subcommand and encountered_command:
+                skip_next = True
+                continue
+            cleaned.append(token)
+        return cleaned
 
     def build_fork_command(self, kind: AgentKind, original_command: str, agent_session_id: str) -> str:
         if kind is AgentKind.CLAUDE:

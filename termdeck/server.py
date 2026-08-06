@@ -79,6 +79,10 @@ class MoveSessionProjectRequest(BaseModel):
     project: str
 
 
+class RestartSessionRequest(BaseModel):
+    permission: str = ""
+
+
 class ProjectStatePatch(BaseModel):
     active_session_id: str | None = None
     open_files: list[dict[str, str]] | None = None
@@ -731,13 +735,18 @@ class TermdeckServer:
         except (FileNotFoundError, OSError, ValueError) as context_error:
             raise HTTPException(status_code=404, detail=str(context_error)) from context_error
 
-    async def _restart_session(self, session_id: str) -> dict[str, object]:
+    async def _restart_session(self, session_id: str, permission: str = "",
+                               request: RestartSessionRequest | None = None) -> dict[str, object]:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
         try:
-            await self.manager.restart_session(session_id)
+            request_permission = request.permission.strip() if request else ""
+            permission = permission.strip() or request_permission
+            await self.manager.restart_session(session_id, permission)
         except RuntimeError as restart_error:
             raise HTTPException(status_code=409, detail=str(restart_error)) from restart_error
+        except ValueError as restart_error:
+            raise HTTPException(status_code=400, detail=str(restart_error)) from restart_error
         return self.manager.session_summary_by_id(session_id)
 
     async def _fork_session(self, session_id: str, request: RenameSessionRequest) -> dict[str, object]:

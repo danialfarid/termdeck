@@ -7,6 +7,7 @@ from termdeck.config import TermdeckConfig
 class AgentKind(str, Enum):
     CLAUDE = "claude"
     CODEX = "codex"
+    AGY = "agy"
     NONE = "none"
 
 
