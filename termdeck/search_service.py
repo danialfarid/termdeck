@@ -64,6 +64,13 @@ class ProjectSearchService:
                    fnmatch.fnmatch(f"{normalized}/", pattern) or
                    any(fnmatch.fnmatch(part, pattern) for part in parts) for pattern in wildcard)
 
+    def _attach_git_statuses(self, root: os.PathLike[str], results: list[dict[str, str | int]]) -> list[dict[str, str | int]]:
+        paths = {str(result["path"]) for result in results}
+        statuses = self._files.git_statuses_for_files(os.fspath(root), paths)
+        for result in results:
+            result["git_status"] = statuses.get(str(result["path"]), "")
+        return results
+
     def _python_search(self, base: os.PathLike[str], query: str, glob: str, ignore: str, word: bool,
                        case_sensitive: bool, regex: bool) -> list[dict[str, str | int]]:
         query_lower = query.lower()
@@ -164,10 +171,10 @@ class ProjectSearchService:
                 if len(results) >= TermdeckConfig.SEARCH_MAX_RESULTS:
                     break
             if proc.returncode not in (None, 0):
-                return self._python_search(base, query, glob, ignore, word, case_sensitive, regex)
-            return results
+                return self._attach_git_statuses(base, self._python_search(base, query, glob, ignore, word, case_sensitive, regex))
+            return self._attach_git_statuses(base, results)
         except FileNotFoundError:
-            return self._python_search(base, query, glob, ignore, word, case_sensitive, regex)
+            return self._attach_git_statuses(base, self._python_search(base, query, glob, ignore, word, case_sensitive, regex))
 
     async def replace_all(self, root: str, query: str, glob: str, ignore: str, word: bool, case_sensitive: bool,
                           regex: bool, replacement: str) -> dict[str, int]:
@@ -211,10 +218,12 @@ class ProjectSearchService:
                 total_replacements += count
         return {"files": files_changed, "replacements": total_replacements}
 
-    async def find_files(self, root: str, query: str, ignore: str) -> list[dict[str, str | bool]]:
+    async def find_files(self, root: str, query: str, ignore: str, glob: str = "", case_sensitive: bool = False) -> list[dict[str, str | bool | int]]:
         base = self._files.resolve_confined(root, "")
         try:
             argv = [TermdeckConfig.RG_BIN, "--files"]
+            for pattern in (token.strip() for token in glob.split(",") if token.strip()):
+                argv.extend(("--glob", pattern))
             for directory in (token.strip() for token in ignore.split(",") if token.strip()):
                 argv.extend(("--glob", f"!**/{directory}/**", "--glob", f"!{directory}/**"))
             proc = await asyncio.create_subprocess_exec(*argv, cwd=str(base), stdout=asyncio.subprocess.PIPE,
@@ -226,12 +235,12 @@ class ProjectSearchService:
                 return []
             lines = stdout.decode(errors="replace").splitlines()
             if proc.returncode not in (None, 0):
-                return self._python_find_files(base, query, ignore)
+                return self._python_find_files(base, query, ignore, glob, case_sensitive)
             stdout_lines = lines
         except asyncio.TimeoutError:
             return []
         except FileNotFoundError:
-            return self._python_find_files(base, query, ignore)
+            return self._python_find_files(base, query, ignore, glob, case_sensitive)
         # `rg --files` intentionally returns files only. Add the parent
         # directories of those files as candidates so a folder name is a real
         # filename-search result too while avoiding a second full filesystem walk.
@@ -246,16 +255,18 @@ class ProjectSearchService:
         scored: list[tuple[int, int, int, int, str, bool]] = []
         for rel, is_dir in candidates:
             basename = rel.rsplit("/", 1)[-1]
-            basename_score = self._fuzzy_span_score(query, basename)
-            path_score = basename_score if basename_score is not None else self._fuzzy_span_score(query, rel)
+            basename_score = self._fuzzy_span_score(query, basename, case_sensitive)
+            path_score = basename_score if basename_score is not None else self._fuzzy_span_score(query, rel, case_sensitive)
             if path_score is None:
                 continue
             scored.append((0 if basename_score is not None else 1, path_score, len(rel), int(not is_dir), rel, is_dir))
         scored.sort()
-        return [{"path": rel, "is_dir": is_dir} for _, _, _, _, rel, is_dir in scored[:TermdeckConfig.FIND_MAX_RESULTS]]
+        results = [self._file_find_result(base, rel, is_dir) for _, _, _, _, rel, is_dir in scored[:TermdeckConfig.FIND_MAX_RESULTS]]
+        return self._attach_git_statuses(base, results)
 
-    def _python_find_files(self, base: os.PathLike[str], query: str, ignore: str) -> list[dict[str, str | bool]]:
+    def _python_find_files(self, base: os.PathLike[str], query: str, ignore: str, glob: str, case_sensitive: bool) -> list[dict[str, str | bool | int]]:
         ignore_exact, ignore_wildcard = self._split_tokens(ignore)
+        include_patterns, exclude_patterns = self._split_glob_tokens(glob)
         candidates: set[tuple[str, bool]] = set()
         base_path = os.fspath(base)
         deadline = time.monotonic() + TermdeckConfig.SEARCH_TIMEOUT_SECONDS
@@ -270,6 +281,8 @@ class ProjectSearchService:
                 rel_directory = directory if not rel_dir else f"{rel_dir}/{directory}"
                 if self._path_is_ignored(rel_directory, ignore_exact, ignore_wildcard):
                     continue
+                if any(self._path_matches_glob(rel_directory, [pattern]) for pattern in exclude_patterns):
+                    continue
                 candidates.add((rel_directory, True))
                 keep_dirs.append(directory)
             dirs[:] = keep_dirs
@@ -277,24 +290,38 @@ class ProjectSearchService:
                 rel_path = name if not rel_dir else f"{rel_dir}/{name}"
                 if self._path_is_ignored(rel_path, ignore_exact, ignore_wildcard):
                     continue
+                if exclude_patterns and self._path_matches_glob(rel_path, exclude_patterns):
+                    continue
+                if include_patterns and not self._path_matches_glob(rel_path, include_patterns):
+                    continue
                 candidates.add((rel_path, False))
         scored: list[tuple[int, int, int, int, str, bool]] = []
         for rel, is_dir in candidates:
             basename = rel.rsplit("/", 1)[-1]
-            basename_score = self._fuzzy_span_score(query, basename)
-            path_score = basename_score if basename_score is not None else self._fuzzy_span_score(query, rel)
+            basename_score = self._fuzzy_span_score(query, basename, case_sensitive)
+            path_score = basename_score if basename_score is not None else self._fuzzy_span_score(query, rel, case_sensitive)
             if path_score is None:
                 continue
             scored.append((0 if basename_score is not None else 1, path_score, len(rel), int(not is_dir), rel, is_dir))
         scored.sort()
-        return [{"path": rel, "is_dir": is_dir} for _, _, _, _, rel, is_dir in scored[:TermdeckConfig.FIND_MAX_RESULTS]]
+        results = [self._file_find_result(base, rel, is_dir) for _, _, _, _, rel, is_dir in scored[:TermdeckConfig.FIND_MAX_RESULTS]]
+        return self._attach_git_statuses(base, results)
 
     @staticmethod
-    def _fuzzy_span_score(query: str, candidate: str) -> int | None:
-        lowered = candidate.lower()
+    def _file_find_result(base: os.PathLike[str], relative_path: str, is_directory: bool) -> dict[str, str | bool | int]:
+        try:
+            modified_time = int(os.stat(os.path.join(os.fspath(base), relative_path)).st_mtime)
+        except OSError:
+            modified_time = 0
+        return {"path": relative_path, "is_dir": is_directory, "mtime": modified_time}
+
+    @staticmethod
+    def _fuzzy_span_score(query: str, candidate: str, case_sensitive: bool = False) -> int | None:
+        lowered = candidate if case_sensitive else candidate.lower()
+        query = query if case_sensitive else query.lower()
         position = -1
         first = -1
-        for ch in query.lower():
+        for ch in query:
             position = lowered.find(ch, position + 1)
             if position == -1:
                 return None

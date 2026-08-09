@@ -7,7 +7,7 @@ import signal
 import struct
 import subprocess
 import termios
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from termdeck.config import TermdeckConfig
@@ -19,7 +19,8 @@ class PtyProcess:
     attached clients, and respawn policy."""
 
     def __init__(self, command: str, cwd: Path, cols: int, rows: int, on_output: Callable[[bytes], None],
-                 on_exit: Callable[["PtyProcess", int], None], dtach_socket: Path | None = None) -> None:
+                 on_exit: Callable[["PtyProcess", int], None], dtach_socket: Path | None = None,
+                 child_environment: Mapping[str, str] | None = None) -> None:
         self._on_output = on_output
         self._on_exit = on_exit
         self._loop = asyncio.get_running_loop()
@@ -32,7 +33,7 @@ class PtyProcess:
             os.set_blocking(master_fd, False)
             self._set_winsize(cols, rows)
             self._proc = subprocess.Popen(self._build_argv(command, dtach_socket), cwd=str(cwd),
-                                          env=self._build_child_env(),
+                                          env=self._build_child_env(child_environment),
                                           preexec_fn=functools.partial(os.login_tty, slave_fd),
                                           pass_fds=(slave_fd,), close_fds=True)
         except (OSError, ValueError):
@@ -65,11 +66,13 @@ class PtyProcess:
         return [TermdeckConfig.DTACH_BIN, "-A", str(dtach_socket), *TermdeckConfig.DTACH_ARGS, *inner]
 
     @staticmethod
-    def _build_child_env() -> dict[str, str]:
+    def _build_child_env(child_environment: Mapping[str, str] | None = None) -> dict[str, str]:
         env = {key: value for key, value in os.environ.items() if not key.startswith(TermdeckConfig.SCRUBBED_ENV_PREFIX)}
         env[TermdeckConfig.TERM_ENV_KEY] = TermdeckConfig.TERM_ENV_VALUE
         env[TermdeckConfig.COLORTERM_ENV_KEY] = TermdeckConfig.COLORTERM_ENV_VALUE
         env.setdefault(TermdeckConfig.LANG_ENV_KEY, TermdeckConfig.LANG_ENV_VALUE)
+        if child_environment:
+            env.update(child_environment)
         return env
 
     def _pump_master_output(self) -> None:

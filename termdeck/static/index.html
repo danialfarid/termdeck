@@ -29,22 +29,29 @@
       <span class="side-section-label" id="files-root-label">files</span>
       <button id="reveal-toggle" title="Reveal active file in tree"><span class="codicon codicon-target"></span></button>
       <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
+      <button id="tree-sort-toggle" title="Sort files alphabetically"><span class="codicon codicon-sort-precedence"></span></button>
       <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-filter"></span></button>
+      <button id="hide-dot-toggle" title="Hide dot folders"><span class="codicon codicon-eye-closed"></span></button>
       <button id="files-pin-toggle" title="Keep this panel open after opening a file" aria-label="Pin file panel" aria-pressed="false"><span class="codicon codicon-pin"></span></button>
       <button id="minimize-toggle" class="far-right" title="Minimize panel"><span class="codicon codicon-chrome-minimize"></span></button>
     </div>
     <div id="files-explorer-panel">
-      <input id="search-name" placeholder="find file by name (fuzzy)" spellcheck="false">
+      <div id="name-search-bar">
+        <input id="search-name" placeholder="find file by name (fuzzy)" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <button id="name-case-toggle" title="Match filename case">Aa</button>
+        <button id="name-search-history-btn" title="Recent searches" aria-label="Recent searches" aria-expanded="false"><span class="codicon codicon-history"></span></button>
+      </div>
       <div id="search-controls">
         <div id="search-bar">
           <button id="search-back" title="Previous search"><span class="codicon codicon-arrow-left"></span></button>
-          <input id="search-query" placeholder="search in files (&#8984;&#8679;F)" spellcheck="false">
+          <input id="search-query" placeholder="search in files (&#8984;&#8679;F)" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
           <button id="search-case-toggle" title="Match case">Aa</button>
           <button id="search-word-toggle" title="Whole word">ab|</button>
           <button id="search-regex-toggle" title="Regular expression">.*</button>
           <button id="replace-toggle" title="Replace"><span class="codicon codicon-replace-all"></span></button>
+          <button id="search-history-btn" title="Recent searches" aria-label="Recent searches" aria-expanded="false"><span class="codicon codicon-history"></span></button>
         </div>
-        <input id="search-glob" placeholder="filter (rg globs): !*.json, *.py, trainer/**" spellcheck="false">
+        <input id="search-glob" placeholder="filter (rg globs): !*.json, *.py, trainer/**" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
         <div id="replace-bar" class="hidden">
           <input id="replace-with" placeholder="replace with&hellip;" spellcheck="false">
           <button id="replace-all-btn" title="Replace all matches in project">Replace</button>
@@ -53,6 +60,10 @@
       <div id="files-tree" tabindex="0" aria-label="Project file tree"></div>
       <div id="search-results" class="hidden"></div>
       <div id="name-results" class="hidden"></div>
+    </div>
+    <div id="search-history-menu" class="hidden" role="menu" aria-label="Recent searches">
+      <div id="search-history-head">Recent searches</div>
+      <div id="search-history-items"></div>
     </div>
     <div id="terminal-search-bar">
       <div id="terminal-search-description">Search terminal conversations (prompts and responses)</div>
@@ -64,6 +75,7 @@
       <div id="terminal-search-summary" aria-live="polite"></div>
       <div id="terminal-search-results"></div>
     </div>
+    <div id="files-section-resizer" aria-label="Resize file/search panel" role="separator" aria-orientation="vertical"></div>
   </div>
   <div id="sidebar-footer">
     <button id="view-terminals" title="Terminals (&#8984;&#8679;T)"><span class="codicon codicon-terminal"></span></button>
@@ -114,6 +126,7 @@
       <div id="history-composer-actions">
         <button id="history-prompt-history-btn" title="Recent prompts" aria-label="Recent prompts" aria-expanded="false"><span class="codicon codicon-history"></span></button>
         <button id="history-send" title="Send prompt" aria-label="Send prompt"><span class="codicon codicon-send"></span></button>
+        <button id="history-reveal-session-btn" title="Select current terminal in sidebar" aria-label="Select current terminal in sidebar"><span class="codicon codicon-target"></span></button>
         <button id="history-attach" title="Upload file/image into prompt" aria-label="Upload file/image into prompt"><span class="codicon codicon-cloud-upload"></span></button>
       </div>
     </div>
@@ -138,14 +151,22 @@
     <button id="history-edits-toggle" class="hidden" title="Collapse all code edits" aria-label="Collapse all code edits">
       <span class="codicon codicon-collapse-all"></span>
     </button>
+    <button id="reveal-session-btn" title="Select current terminal in sidebar" aria-label="Select current terminal in sidebar"><span class="codicon codicon-target"></span></button>
     <button id="attach-btn" title="Attach file/image → inserts its path (also paste or drag-drop onto the terminal)"><span class="codicon codicon-cloud-upload"></span></button>
     <span id="status-name"></span>
+    <span id="terminal-age" class="hidden"></span>
     <span id="history-meta" class="hidden"></span>
     <span class="footer-spacer"></span>
     <span id="stat-text"></span>
     <canvas id="stat-spark" width="48" height="20"></canvas>
   </div>
 </div>
+<button id="file-view-close" class="hidden" title="Return to terminal (Esc)" aria-label="Return to terminal">
+  <span class="codicon codicon-close"></span>
+</button>
+<button id="file-history-toggle" class="hidden" title="File history" aria-label="File history" aria-pressed="false">
+  <span class="codicon codicon-history"></span>
+</button>
 <button id="notebook-toggle" title="Quick notebook (&#8997;N)" aria-label="Quick notebook">
   <span class="codicon codicon-notebook"></span>
 </button>
@@ -178,8 +199,33 @@
       <button id="notebook-replace-all" title="Replace all matches">All</button>
     </div>
   </div>
-  <div id="notebook-editor-host" class="tui-wrap"></div>
-  <div id="notebook-help">Markdown notes autosave · ⌥N toggles · ⌘F find · ⌥⌘F replace</div>
+  <div id="notebook-editor-host"></div>
+  <div id="notebook-help">Plain-text notes autosave · ⌥N toggles · ⌘F find · ⌥⌘F replace</div>
+</div>
+<div id="file-history-panel" class="hidden" role="dialog" aria-label="File history">
+  <div id="file-history-head">
+    <div id="file-history-title">File history</div>
+    <div id="file-history-path"></div>
+    <button id="file-history-git-toggle" title="Show Git history" aria-label="Show Git history" aria-pressed="false"><span class="codicon codicon-git-branch"></span></button>
+    <button id="file-history-close" title="Close file history" aria-label="Close file history"><span class="codicon codicon-close"></span></button>
+  </div>
+  <div id="file-history-sidebar">
+    <div id="file-history-sidebar-title">Versions</div>
+    <div id="file-history-list"></div>
+  </div>
+  <div id="file-history-diff-pane">
+    <div id="file-history-diff-toolbar" class="hidden">
+      <button id="file-history-diff-previous" type="button" title="Previous change" aria-label="Previous change"><span class="codicon codicon-chevron-up"></span></button>
+      <span id="file-history-diff-position"></span>
+      <button id="file-history-diff-next" type="button" title="Next change" aria-label="Next change"><span class="codicon codicon-chevron-down"></span></button>
+      <span id="file-history-diff-spacer"></span>
+      <button id="file-history-diff-undo-block" type="button" title="Undo this whole change block in the current file"><span class="codicon codicon-discard"></span> Undo block</button>
+      <button id="file-history-diff-undo-line" type="button" title="Undo the selected change line in the current file"><span class="codicon codicon-arrow-left"></span> Undo line</button>
+    </div>
+    <div id="file-history-preview-empty">Select a version to preview it.</div>
+    <div id="file-history-editor-host" class="hidden"></div>
+    <div id="file-history-preview" class="hidden"></div>
+  </div>
 </div>
 <div id="selection-actions" class="hidden" role="toolbar" aria-label="Selection actions">
   <button id="selection-copy" type="button" title="Copy selection" aria-label="Copy selection"><span class="codicon codicon-copy" aria-hidden="true"></span></button>
@@ -187,7 +233,7 @@
   <button id="selection-note-append" type="button" title="Append selection to the active note" aria-label="Append selection to the active note"><span class="codicon codicon-comment-add" aria-hidden="true"></span></button>
   <button id="selection-search-content" type="button" title="Search within files using the selection" aria-label="Search within files using the selection"><span class="codicon codicon-search" aria-hidden="true"></span></button>
   <button id="selection-search-file" type="button" title="Find a file matching the selection" aria-label="Find a file matching the selection"><span class="codicon codicon-symbol-file" aria-hidden="true"></span></button>
-  <div id="selection-copy-history-panel" class="hidden" role="menu" aria-label="Copy history"></div>
+  <div id="selection-copy-history-panel" class="hidden" role="dialog" aria-label="Recently copied text"></div>
 </div>
 <div id="history-search-backdrop" class="hidden">
   <div id="history-search-modal">
@@ -226,8 +272,6 @@
 <script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/monaco/vs/loader.js"></script>
-<script src="/static/editor/loaders.js"></script>
-<script src="/static/editor/editor.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

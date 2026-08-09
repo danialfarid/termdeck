@@ -5,7 +5,59 @@ TermDeck exposes a small local HTTP API for agents and scripts. The default serv
 behind your own access control before exposing it to a network.
 
 These endpoints start real persistent TermDeck terminals. A successful prompt response means the prompt was
-written to the terminal and submitted; it does not mean the agent has finished processing it.
+written to the terminal and submitted; it does not mean the agent has finished processing it. Use
+`GET /api/sessions/{session_id}/last_turn` for the minimal status/result poll.
+
+## Start one terminal task (create + run in one call)
+
+`POST /api/terminals/task` creates one terminal, starts it immediately, submits a single prompt, and returns
+the created session summary. Set `origin_session` to have the completed child result sent back to that session.
+
+```sh
+task_json=$(curl -sS -X POST http://127.0.0.1:8530/api/terminals/task \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "reviewer",
+    "cwd": "/Users/dan/workspace/stock",
+    "project": "stock",
+    "model": "codex",
+    "model_name": "gpt-5.6-luna xhigh",
+    "permission": "workspace-write",
+    "prompt": "Please review this terminal state and summarize the top 3 risks.",
+    "output_path": "/tmp/termdeck/reviewer.out",
+    "after": "termde",
+    "origin_session": "termde",
+    "bracketed": true,
+    "queue": false
+  }')
+```
+
+If `project` is omitted and `after` is the unique session/group name in a single project, TermDeck infers that project
+from the anchor before creating the new terminal.
+
+For a minimal result poll, use `GET /api/sessions/{session_id}/last_turn`:
+
+```sh
+session_id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["session_id"])' <<< "$task_json")
+curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/last_turn"
+```
+
+Relative `output_path` values are resolved under `cwd` before writing.
+
+Response:
+
+```json
+{
+  "session_id": "abc123...",
+  "status": "completed",
+  "last_turn": {"role": "assistant", "text": "..."}
+}
+```
+
+`output_path` is where raw terminal bytes are appended. Set a per-project path and include that file in any monitor
+process that needs deterministic logs.
+`model_name` is passed as an explicit `--model` argument to Codex, Claude, or AGY.
+The request is not blocking; it returns after prompt submission. Poll `last_turn` for status and the latest turn.
 
 ## Launch several named terminals
 
@@ -28,6 +80,7 @@ curl -sS -X POST http://127.0.0.1:8530/api/terminals/batch \
     "cwd": "/Users/dan/workspace/stock",
     "project": "stock",
     "model": "codex",
+    "model_name": "gpt-5.6-luna xhigh",
     "permission": "workspace-write",
     "after": "existing session or group name",
     "prompt": "Inspect the current task, make the requested change, and report the result.",
@@ -83,6 +136,7 @@ session_json=$(curl -sS -X POST http://127.0.0.1:8530/api/sessions \
     "cwd": "/Users/dan/workspace/stock",
     "project": "stock",
     "model": "codex",
+    "model_name": "gpt-5.6-luna xhigh",
     "permission": "workspace-write",
     "after": "termde"
   }')

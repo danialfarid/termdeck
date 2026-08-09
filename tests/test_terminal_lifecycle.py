@@ -12,8 +12,10 @@ from termdeck.file_service import ProjectFileService
 from termdeck.models import AgentKind, SessionRecord
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeUtil
-from termdeck.server import NotebookNote, RenameSessionRequest, TermdeckServer, UiSettings
+from termdeck.pty_process import PtyProcess
+from termdeck.server import FollowUpTaskPromptRequest, NotebookNote, ProjectUiState, RenameSessionRequest, RunTerminalTaskRequest, TermdeckServer, UiSettings
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
+from termdeck.transcript_service import TranscriptService
 
 
 def record(session_id: str = "abc123") -> SessionRecord:
@@ -26,6 +28,19 @@ class ProcTreeUtilTest(unittest.TestCase):
     def test_descendants_include_every_process_below_each_socket_holder(self) -> None:
         rows = [(10, 1), (11, 10), (12, 11), (20, 1), (21, 20)]
         self.assertEqual(ProcTreeUtil.descendants(rows, [10, 20]), {10, 11, 12, 20, 21})
+
+
+class PtyEnvironmentTest(unittest.TestCase):
+    def test_session_identity_is_added_to_child_environment(self) -> None:
+        environment = PtyProcess._build_child_env({
+            TermdeckConfig.SESSION_ID_ENV_KEY: "abc123",
+            TermdeckConfig.SESSION_NAME_ENV_KEY: "termde",
+            TermdeckConfig.SESSION_PROJECT_ENV_KEY: "stock",
+        })
+
+        self.assertEqual(environment[TermdeckConfig.SESSION_ID_ENV_KEY], "abc123")
+        self.assertEqual(environment[TermdeckConfig.SESSION_NAME_ENV_KEY], "termde")
+        self.assertEqual(environment[TermdeckConfig.SESSION_PROJECT_ENV_KEY], "stock")
 
 
 class PlacementNameTest(unittest.TestCase):
@@ -83,6 +98,46 @@ class PlacementNameTest(unittest.TestCase):
             result = asyncio.run(server._fork_session("termde-id", RenameSessionRequest(title="termde fork")))
         place.assert_called_once_with("stock", "fork-id", "session:termde-id")
         self.assertEqual(result["placement"], {"position": "after"})
+
+    def test_settings_put_preserves_new_server_session_missing_from_stale_client_layout(self) -> None:
+        class Store:
+            def __init__(self) -> None:
+                self.payload = {
+                    "project_state": {
+                        "stock": {
+                            "terminal_layout": ["session:origin-id", "session:child-id", "session:other-id"],
+                            "session_order": ["origin-id", "child-id", "other-id"],
+                        }
+                    }
+                }
+
+            def load(self) -> dict[str, object]:
+                return self.payload
+
+            def save(self, payload: dict[str, object]) -> None:
+                self.payload = payload
+
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.settings_store = Store()
+        server.manager = MagicMock()
+        server.manager.list_sessions.return_value = [
+            {"session_id": "origin-id", "project": "stock"},
+            {"session_id": "child-id", "project": "stock"},
+            {"session_id": "other-id", "project": "stock"},
+        ]
+        incoming = UiSettings(project_state={
+            "stock": ProjectUiState(terminal_layout=["session:origin-id", "session:other-id"],
+                                     session_order=["origin-id", "other-id"]),
+        })
+
+        asyncio.run(server._put_settings(incoming))
+
+        self.assertEqual(server.settings_store.payload["project_state"]["stock"]["terminal_layout"], [
+            "session:origin-id", "session:child-id", "session:other-id",
+        ])
+        self.assertEqual(server.settings_store.payload["project_state"]["stock"]["session_order"], [
+            "origin-id", "child-id", "other-id",
+        ])
 
 
 class FileTreeEventTest(unittest.TestCase):
@@ -199,6 +254,62 @@ class AgentSessionTrackerResumeCommandTest(unittest.TestCase):
         self.assertEqual(tracker.build_resume_command(
             AgentKind.CLAUDE, command, "bb22"),
             "claude --permission-mode auto --resume bb22")
+
+
+class NewAgentCommandModelTest(unittest.TestCase):
+    def test_codex_model_name_separates_model_from_reasoning_effort(self) -> None:
+        command = TerminalSessionManager().command_for_new_session("codex", "default", "", "gpt-5.6-luna xhigh")
+        self.assertEqual(command, "codex -c 'model_reasoning_effort=\"xhigh\"' --model gpt-5.6-luna")
+
+    def test_model_name_is_forwarded_to_claude(self) -> None:
+        command = TerminalSessionManager().command_for_new_session("claude", "default", "", "opus")
+        self.assertEqual(command, "claude --model opus")
+
+    def test_model_name_is_forwarded_to_agy(self) -> None:
+        command = TerminalSessionManager().command_for_new_session("agy", "default", "", "gemini-2.5-pro")
+        self.assertEqual(command, "agy --model gemini-2.5-pro")
+
+
+class CodexTranscriptParsingTest(unittest.TestCase):
+    def test_current_codex_agent_message_format_is_parsed_without_duplicate_response(self) -> None:
+        service = TranscriptService()
+        lines = [
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}],
+            }}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "item_completed", "item": {"type": "AgentMessage", "phase": "final_answer",
+                "content": [{"type": "Text", "text": "hello"}]},
+            }}),
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "assistant", "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "hello"}],
+            }}),
+        ]
+
+        turns = service._parse_codex_lines(lines)
+
+        self.assertEqual([turn["role"] for turn in turns], ["user", "assistant"])
+        self.assertEqual(turns[-1]["text"], "hello")
+        self.assertTrue(turns[-1]["final"])
+
+    def test_codex_commentary_is_not_marked_as_final_answer(self) -> None:
+        service = TranscriptService()
+        lines = [
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "assistant", "phase": "commentary",
+                "content": [{"type": "output_text", "text": "I’ll inspect the store first."}],
+            }}),
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "assistant", "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "The audit is complete."}],
+            }}),
+        ]
+
+        turns = service._parse_codex_lines(lines)
+
+        self.assertFalse(turns[0]["final"])
+        self.assertTrue(turns[1]["final"])
 
 
 class CliTitlePersistenceTest(unittest.TestCase):
@@ -532,3 +643,284 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
             TermdeckConfig.BRACKETED_PASTE_END,
             b"\r",
         ])
+
+class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
+    async def test_follow_up_prompt_directly_steers_busy_task_session(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.has_session.return_value = True
+        server.manager.session_summary_by_id.return_value = {"processing": True, "session_id": "child-01"}
+        server.manager.ensure_session_running.return_value = None
+        server.manager.submit_prompt = AsyncMock()
+
+        response = await server._follow_up_task_prompt(
+            "child-01", FollowUpTaskPromptRequest(prompt="summarize the result"))
+
+        server.manager.submit_prompt.assert_awaited_once_with("child-01", "summarize the result", True, False)
+        self.assertTrue(response["prompt_submitted"])
+        self.assertFalse(response["queued"])
+
+    async def test_run_terminal_task_forwards_model_name_to_session_builder(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.command_for_new_session.return_value = "codex --model gpt-5.6-luna xhigh"
+        ms = MagicMock()
+        ms.record.session_id = "task-model"
+        ms.record.project = "stock"
+        server.manager.create_session.return_value = ms
+        server.manager.session_summary.side_effect = [
+            {"session_id": "task-model", "project": "stock"},
+            {"session_id": "task-model", "project": "stock", "running": True},
+        ]
+        server.manager.ensure_session_running.return_value = None
+        server.manager.submit_prompt = AsyncMock()
+        request = RunTerminalTaskRequest(command="run checks", model_name="gpt-5.6-luna xhigh")
+        await server._run_terminal_task(request)
+        server.manager.command_for_new_session.assert_called_once_with(
+            "codex",
+            "default",
+            "",
+            "gpt-5.6-luna xhigh",
+        )
+
+    async def test_run_terminal_task_forks_origin_and_places_child_after_it(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.list_sessions.return_value = [{"session_id": "origin-01", "title": "origin"}]
+        server.manager.session_summary_by_id.return_value = {"session_id": "origin-01", "cwd": "/origin", "project": "stock"}
+        child = MagicMock()
+        child.record.session_id = "fork-01"
+        child.record.project = "stock"
+        server.manager.fork_session.return_value = child
+        server.manager.session_summary.side_effect = [
+            {"session_id": "fork-01", "project": "stock"},
+            {"session_id": "fork-01", "project": "stock", "running": True},
+        ]
+        server.manager.ensure_session_running.return_value = None
+        server.manager.submit_prompt = AsyncMock()
+        server._schedule_task_result_delivery = MagicMock()
+
+        with patch.object(server, "_place_session_after", return_value={"position": "after"}) as place:
+            response = await server._run_terminal_task(RunTerminalTaskRequest(
+                prompt="inspect this", title="reviewer", origin_session="origin-01", fork=True,
+                model="claude", model_name="opus", permission="full-access"))
+
+        server.manager.fork_session.assert_called_once_with("origin-01", "reviewer")
+        server.manager.command_for_new_session.assert_not_called()
+        server.manager.create_session.assert_not_called()
+        place.assert_called_once_with("stock", "fork-01", "session:origin-01")
+        server.manager.submit_prompt.assert_awaited_once_with("fork-01", "inspect this", True, False)
+        server._schedule_task_result_delivery.assert_not_called()
+        self.assertEqual(response["placement"], {"position": "after"})
+
+    async def test_run_terminal_task_creates_and_submits_prompt(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.command_for_new_session.return_value = "codex"
+        ms = MagicMock()
+        ms.record.session_id = "task-01"
+        ms.record.project = "stock"
+        server.manager.create_session.return_value = ms
+        server.manager.session_summary.side_effect = [
+            {"session_id": "task-01", "project": "stock"},
+            {"session_id": "task-01", "project": "stock", "running": True},
+        ]
+        server.manager.ensure_session_running.return_value = None
+        server.manager.submit_prompt = AsyncMock()
+
+        request = RunTerminalTaskRequest(command="run checks", output_path="/tmp/task-out.txt")
+        response = await server._run_terminal_task(request)
+
+        server.manager.command_for_new_session.assert_called_once_with("codex", "default", "", "")
+        server.manager.create_session.assert_called_once_with(
+            "codex",
+            "",
+            "",
+            "",
+            output_path="/tmp/task-out.txt",
+            agent_rename=None,
+        )
+        server.manager.ensure_session_running.assert_called_once_with("task-01")
+        server.manager.submit_prompt.assert_awaited_once_with("task-01", "run checks", True, False)
+        self.assertEqual(response["prompt_submitted"], True)
+        self.assertEqual(response["session_id"], "task-01")
+        self.assertNotIn("monitoring_url", response)
+
+    async def test_run_terminal_task_infers_project_from_after_anchor(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.command_for_new_session.return_value = "codex"
+        server.manager.list_sessions.return_value = [{"session_id": "ref-01", "title": "termde fork", "project": "stock", "cli_title": "termde fork"}]
+        ms = MagicMock()
+        ms.record.session_id = "task-02"
+        ms.record.project = ""
+        server.manager.create_session.return_value = ms
+        server.manager.session_summary.side_effect = [
+            {"session_id": "task-02", "project": ""},
+            {"session_id": "task-02", "project": "stock", "running": True},
+        ]
+        server.manager.ensure_session_running.return_value = None
+        server.manager.submit_prompt = AsyncMock()
+
+        class Store:
+            def load(self) -> dict[str, object]:
+                return {"project_state": {}}
+
+        server.settings_store = Store()
+
+        request = RunTerminalTaskRequest(command="run checks", after="termde fork")
+        await server._run_terminal_task(request)
+
+        server.manager.create_session.assert_called_once_with(
+            "codex",
+            "",
+            "",
+            "stock",
+            output_path="",
+            agent_rename=None,
+        )
+
+    async def test_task_status_marks_done_only_when_terminal_has_exited(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.has_session.return_value = True
+        server.manager.session_summary_by_id.return_value = {
+            "running": False, "exit_code": 0, "output_path": "/tmp/task-out.txt"
+        }
+
+        response = await server._task_status("task-02")
+
+        self.assertTrue(response["completed"])
+        self.assertEqual(response["session_id"], "task-02")
+        self.assertEqual(response["output_path"], "/tmp/task-out.txt")
+
+    async def test_task_status_includes_transcript_tail(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.has_session.return_value = True
+        server.manager.session_summary_by_id.return_value = {
+            "running": False, "exit_code": 0, "output_path": "/tmp/task-out.txt"
+        }
+        server.manager.session_history_source.return_value = ("codex", "/tmp", "session-xyz")
+        server.transcripts = MagicMock()
+        server.transcripts.history_page.return_value = {
+            "turns": [{"role": "assistant", "text": "first"}, {"role": "assistant", "text": "second"}],
+            "before": 0,
+            "has_more": False,
+        }
+
+        response = await server._task_status("task-03")
+
+        self.assertTrue(response["completed"])
+        self.assertEqual(response["agent_session_id"], "session-xyz")
+        self.assertEqual(response["latest_turn"], {"role": "assistant", "text": "second"})
+        self.assertEqual(len(response["transcript"]["tail"]), 2)
+
+    async def test_task_result_returns_only_the_last_turn_and_completion_state(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.has_session.return_value = True
+        server.manager.session_summary_by_id.return_value = {"running": False, "exit_code": 0}
+        server.manager.session_history_source.return_value = ("codex", "/tmp", "session-xyz")
+        server.transcripts = MagicMock()
+        server.transcripts.history_page.return_value = {"turns": [
+            {"role": "assistant", "text": "older"},
+            {"role": "user", "text": "latest prompt"},
+            {"role": "assistant", "text": "done"},
+        ]}
+
+        response = await server._task_result("task-04")
+
+        self.assertEqual(response, {"session_id": "task-04", "status": "completed",
+                                     "last_turn": {"role": "assistant", "text": "done"}})
+        server.transcripts.history_page.assert_called_once_with("codex", "/tmp", "session-xyz", None, 1)
+
+    async def test_child_result_is_delivered_to_origin_session_after_processing_finishes(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.has_session.return_value = True
+        server.manager.session_summary_by_id.side_effect = [
+            {"running": True, "processing": True},
+            {"running": True, "processing": False},
+            {"processing": False},
+        ]
+        server.manager.session_history_source.return_value = ("codex", "/tmp", "child-agent")
+        server.manager.submit_prompt = AsyncMock()
+        server.transcripts = MagicMock()
+        server.transcripts.history_page.return_value = {"turns": [{"role": "assistant", "text": "finished", "final": True}]}
+        server._origin_delivery_locks = {}
+
+        await server._deliver_task_result("child-01", "origin-01")
+
+        server.manager.submit_prompt.assert_awaited_once_with(
+            "origin-01", "[TermDeck task child-01 completed]\nfinished", True, False)
+
+    async def test_child_result_uses_latest_assistant_turn_after_user_prompt(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.session_history_source.return_value = ("codex", "/tmp", "child-agent")
+        server.transcripts = MagicMock()
+        server.transcripts.history_page.return_value = {"turns": [
+            {"role": "user", "text": "hi"},
+            {"role": "assistant", "text": "hello"},
+        ]}
+
+        result = await server._read_last_turn("child-01")
+
+        self.assertEqual(result, {"role": "assistant", "text": "hello"})
+
+    async def test_child_result_waits_for_assistant_turn_when_processing_marker_is_already_clear(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.has_session.return_value = True
+        server.manager.session_summary_by_id.side_effect = [
+            {"running": True, "processing": False},
+            {"running": True, "processing": False},
+            {"processing": True},
+        ]
+        server.manager.session_history_source.return_value = ("codex", "/tmp", "child-agent")
+        server.manager.submit_prompt = AsyncMock()
+        server.transcripts = MagicMock()
+        server.transcripts.history_page.side_effect = [
+            {"turns": [{"role": "user", "text": "hi"}]},
+            {"turns": [{"role": "user", "text": "hi"}, {"role": "assistant", "text": "hello", "final": True}]},
+        ]
+        server._origin_delivery_locks = {}
+
+        await server._deliver_task_result("child-01", "origin-01")
+
+        server.manager.submit_prompt.assert_awaited_once_with(
+            "origin-01", "[TermDeck task child-01 completed]\nhello", True, True)
+
+    async def test_origin_defaults_child_cwd_project_and_placement(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.list_sessions.return_value = [{
+            "session_id": "origin-01", "title": "termde", "project": "stock", "cwd": "/origin",
+        }]
+        server.manager.session_summary_by_id.return_value = {
+            "session_id": "origin-01", "project": "stock", "cwd": "/origin",
+        }
+        server.manager.command_for_new_session.return_value = "codex"
+        child = MagicMock()
+        child.record.session_id = "child-01"
+        child.record.project = "stock"
+        server.manager.create_session.return_value = child
+        server.manager.session_summary.side_effect = [{"session_id": "child-01"}, {"session_id": "child-01"}]
+        server.manager.ensure_session_running.return_value = None
+        server.manager.submit_prompt = AsyncMock()
+        server._schedule_task_result_delivery = MagicMock()
+
+        with patch.object(server, "_place_session_after", return_value={"position": "after"}):
+            await server._run_terminal_task(RunTerminalTaskRequest(
+                prompt="hi", title="child", origin_session="termde", write_back=True))
+
+        server.manager.create_session.assert_called_once_with(
+            "codex", "/origin", "child", "stock", output_path="", agent_rename="child")
+        server._schedule_task_result_delivery.assert_called_once_with("child-01", "origin-01")
+
+    async def test_output_path_defaults_to_absolute_for_session_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = TerminalSessionManager()
+            ms = manager.create_session("bash", directory, "task", output_path="logs/task.out")
+            self.assertEqual(ms.record.output_path, str(Path(directory, "logs", "task.out").resolve()))

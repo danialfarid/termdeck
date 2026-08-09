@@ -37,15 +37,17 @@ class SessionRecord:
     created_at_est: str
     draft: str
     project: str
+    output_path: str | None = None
+    last_activity_at: float = 0.0
     cols: int = TermdeckConfig.INITIAL_COLS
     rows: int = TermdeckConfig.INITIAL_ROWS
     cli_title: str | None = None
 
-    def to_dict(self) -> dict[str, str | bool | int | None]:
+    def to_dict(self) -> dict[str, str | bool | int | float | None]:
         return asdict(self)
 
     @staticmethod
-    def from_dict(payload: dict[str, str | bool | int | None]) -> "SessionRecord":
+    def from_dict(payload: dict[str, str | bool | int | float | None]) -> "SessionRecord":
         agent_session_id = payload["agent_session_id"]
         return SessionRecord(session_id=str(payload["session_id"]), title=str(payload["title"]),
                              title_user_set=bool(payload["title_user_set"]), command=str(payload["command"]),
@@ -53,6 +55,8 @@ class SessionRecord:
                              agent_session_id=str(agent_session_id) if agent_session_id is not None else None,
                              created_at_est=str(payload["created_at_est"]), draft=str(payload["draft"] or ""),
                              project=str(payload["project"]),
+                             output_path=str(payload.get("output_path")) if payload.get("output_path") is not None else None,
+                             last_activity_at=float(payload.get("last_activity_at") or 0.0),
                              cols=int(payload.get("cols") or TermdeckConfig.INITIAL_COLS),
                              rows=int(payload.get("rows") or TermdeckConfig.INITIAL_ROWS),
                              cli_title=str(payload["cli_title"]) if payload.get("cli_title") else None)

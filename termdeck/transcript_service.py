@@ -899,11 +899,34 @@ class TranscriptService:
                 current_model = model
             model = current_model
             if entry_type == "event_msg" and body_type == "agent_message":
-                turns.append(self._turn(self.ROLE_ASSISTANT, str(body.get("message", "")), model=model))
-            elif entry_type == "response_item" and body_type == "message" and body.get("role") == "user":
-                text = self._join_text(body.get("content"), ("input_text", "text"))
+                candidate = self._turn(self.ROLE_ASSISTANT, str(body.get("message", "")), model=model)
+                candidate["phase"] = "final_answer"
+                candidate["final"] = True
+                if candidate["text"] and (not turns or turns[-1] != candidate):
+                    turns.append(candidate)
+            elif entry_type == "event_msg" and body_type == "item_completed":
+                item = body.get("item")
+                if isinstance(item, dict) and item.get("type") == "AgentMessage":
+                    text = self._join_text(item.get("content"), ("Text", "text", "output_text"))
+                    candidate = self._turn(self.ROLE_ASSISTANT, text, model=model)
+                    phase = str(item.get("phase", ""))
+                    if phase:
+                        candidate["phase"] = phase
+                        candidate["final"] = phase == "final_answer"
+                    if candidate["text"] and (not turns or turns[-1] != candidate):
+                        turns.append(candidate)
+            elif entry_type == "response_item" and body_type == "message" and body.get("role") in ("user", "assistant"):
+                text_keys = ("input_text", "text") if body.get("role") == "user" else ("output_text", "text")
+                text = self._join_text(body.get("content"), text_keys)
                 if text and not self._is_codex_boilerplate(text):
-                    turns.append(self._turn(self.ROLE_USER, text, model=model))
+                    candidate = self._turn(str(body["role"]), text, model=model)
+                    if body.get("role") == "assistant":
+                        phase = str(body.get("phase", ""))
+                        if phase:
+                            candidate["phase"] = phase
+                            candidate["final"] = phase == "final_answer"
+                    if not turns or turns[-1] != candidate:
+                        turns.append(candidate)
             elif entry_type == "response_item" and body_type in ("custom_tool_call", "function_call"):
                 name = str(body.get("name") or "tool")
                 value = body.get("input") if body_type == "custom_tool_call" else body.get("arguments", "")

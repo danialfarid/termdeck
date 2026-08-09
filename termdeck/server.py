@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import subprocess
+import time
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from termdeck.config import TermdeckConfig
+from termdeck.file_history_service import FileHistoryService
 from termdeck.file_service import ProjectFileService
 from termdeck.history_index import HistorySearchIndex
 from termdeck.models import ApiFields, WsMessageFields
@@ -30,9 +32,29 @@ class CreateSessionRequest(BaseModel):
     title: str = ""
     project: str = ""
     model: str = ""
+    model_name: str = ""
     permission: str = ""
     session_ref: str = ""
     after: str | None = None
+
+
+class RunTerminalTaskRequest(BaseModel):
+    model: str = "codex"
+    permission: str = "default"
+    model_name: str = ""
+    title: str = ""
+    cwd: str = ""
+    project: str = ""
+    prompt: str = ""
+    command: str = ""
+    output_path: str = ""
+    session_ref: str = ""
+    after: str | None = None
+    origin_session: str = ""
+    fork: bool = False
+    write_back: bool = False
+    bracketed: bool = True
+    queue: bool = False
 
 
 class ProjectRegistrationRequest(BaseModel):
@@ -46,12 +68,18 @@ class SubmitPromptRequest(BaseModel):
     queue: bool = False
 
 
+class FollowUpTaskPromptRequest(BaseModel):
+    prompt: str
+    bracketed: bool = True
+
+
 class BatchTerminalSpec(BaseModel):
     name: str
     prompt: str | None = None
     cwd: str | None = None
     project: str | None = None
     model: str | None = None
+    model_name: str | None = None
     permission: str | None = None
     session_ref: str | None = None
     bracketed: bool | None = None
@@ -65,6 +93,7 @@ class BatchTerminalsRequest(BaseModel):
     cwd: str = ""
     project: str = ""
     model: str = "codex"
+    model_name: str = ""
     permission: str = "default"
     bracketed: bool = True
     queue: bool = False
@@ -110,6 +139,12 @@ class FileWriteRequest(BaseModel):
     root: str
     path: str
     content: str
+
+
+class FileHistoryRestoreRequest(BaseModel):
+    root: str
+    path: str
+    version_id: int
 
 
 class ReplaceRequest(BaseModel):
@@ -163,13 +198,15 @@ class UiSettings(BaseModel):
     theme: str = "dark"
     ignored_dirs: list[str] = []
     tree_font_size: int = 12
-    hide_excluded: bool = False
+    hide_excluded: bool = True
+    hide_dot_folders: bool = True
+    file_tree_sort: str = "name"
     show_stats: bool = True
     show_mtime: bool = True
     show_git_status: bool = True
     recent_exclude: str = ""
     word_wrap: bool = False
-    search_glob: str = "!*.json, !*.csv"
+    search_glob: str = "!*.json, !*.csv, !*.log"
     keybindings: dict[str, str] = {}
     vscode_keybindings: dict[str, str] = {}
     last_command: str = "codex"
@@ -201,6 +238,7 @@ class TermdeckServer:
     def __init__(self) -> None:
         self.manager = TerminalSessionManager()
         self.files = ProjectFileService()
+        self.file_history = FileHistoryService(TermdeckConfig.FILE_HISTORY_DATABASE)
         self.search = ProjectSearchService(self.files)
         self.stats = ResourceStatsService()
         self.transcripts = TranscriptService()
@@ -210,6 +248,8 @@ class TermdeckServer:
         self.transcripts.add_file_change_listener(self.history_index.notify_file_changed)
         self.transcripts.add_file_change_listener(self.manager.notify_agent_transcript_changed)
         self.settings_store = UiSettingsStore(TermdeckConfig.SETTINGS_FILE)
+        self._origin_delivery_locks: dict[str, asyncio.Lock] = {}
+        self._task_delivery_jobs: set[asyncio.Task] = set()
 
     @asynccontextmanager
     async def _lifespan(self, _app: FastAPI) -> AsyncGenerator[None]:
@@ -237,11 +277,16 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_PROJECT_FOLDER_PICKER_ROUTE, response_model=None)(self._pick_project_folder)
         app.get(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._list_sessions)
         app.post(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._create_session)
+        app.post(TermdeckConfig.API_TERMINAL_TASK_ROUTE, response_model=None)(self._run_terminal_task)
+        app.post(TermdeckConfig.API_TERMINAL_TASK_PROMPT_ROUTE, response_model=None)(self._follow_up_task_prompt)
         app.post(TermdeckConfig.API_TERMINALS_BATCH_ROUTE, response_model=None)(self._launch_terminal_batch)
         app.post(TermdeckConfig.API_SESSION_RESTART_ROUTE, response_model=None)(self._restart_session)
         app.post(TermdeckConfig.API_SESSION_FORK_ROUTE, response_model=None)(self._fork_session)
         app.post(TermdeckConfig.API_SESSION_RENAME_ROUTE, response_model=None)(self._rename_session)
         app.post(TermdeckConfig.API_SESSION_PROJECT_ROUTE, response_model=None)(self._move_session_to_project)
+        app.get(TermdeckConfig.API_SESSION_TASK_STATUS_ROUTE, response_model=None)(self._task_status)
+        app.get(TermdeckConfig.API_SESSION_TASK_RESULT_ROUTE, response_model=None)(self._task_result)
+        app.get(TermdeckConfig.API_SESSION_LAST_TURN_ROUTE, response_model=None)(self._task_result)
         app.post(TermdeckConfig.API_SESSION_PROMPT_ROUTE, response_model=None)(self._submit_prompt)
         app.post(TermdeckConfig.API_KILL_ALL_TERMINALS_ROUTE, response_model=None)(self._kill_all_terminals)
         app.get(TermdeckConfig.API_TERMINAL_PROCESSES_ROUTE, response_model=None)(self._terminal_process_report)
@@ -265,6 +310,11 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_FILE_READ_ROUTE, response_model=None)(self._read_file)
         app.get(TermdeckConfig.API_FILE_SEARCH_ROUTE, response_model=None)(self._search_files)
         app.get(TermdeckConfig.API_FILE_FIND_ROUTE, response_model=None)(self._find_files)
+        app.post(TermdeckConfig.API_FILE_HISTORY_RESTORE_ROUTE, response_model=None)(self._restore_file_history)
+        app.get(TermdeckConfig.API_FILE_HISTORY_VERSION_ROUTE, response_model=None)(self._file_history_version)
+        app.get(TermdeckConfig.API_FILE_HISTORY_ROUTE, response_model=None)(self._file_history)
+        app.get(TermdeckConfig.API_FILE_GIT_HISTORY_ROUTE, response_model=None)(self._git_file_history)
+        app.get(TermdeckConfig.API_FILE_GIT_HISTORY_VERSION_ROUTE, response_model=None)(self._git_file_history_version)
         app.post(TermdeckConfig.API_UPLOAD_ROUTE, response_model=None)(self._upload_file)
         app.post(TermdeckConfig.API_FILE_WRITE_ROUTE, response_model=None)(self._write_file)
         app.post(TermdeckConfig.API_FILE_REPLACE_ROUTE, response_model=None)(self._replace_in_files)
@@ -296,9 +346,55 @@ class TermdeckServer:
         return UiSettings(**self.settings_store.load()).model_dump()
 
     async def _put_settings(self, settings: UiSettings) -> dict[str, int | str]:
-        payload = settings.model_dump()
+        payload = self._preserve_active_layout_entries(settings.model_dump())
         self.settings_store.save(payload)
         return payload
+
+    def _preserve_active_layout_entries(self, incoming_payload: dict[str, object]) -> dict[str, object]:
+        current_settings = UiSettings(**self.settings_store.load())
+        incoming_settings = UiSettings(**incoming_payload)
+        active_sessions = self.manager.list_sessions(None)
+        active_session_ids_by_project: dict[str, set[str]] = {}
+        for session in active_sessions:
+            project = str(session.get("project", "") or "")
+            active_session_ids_by_project.setdefault(project or "__all__", set()).add(str(session["session_id"]))
+        for project_key, current_state in current_settings.project_state.items():
+            incoming_state = incoming_settings.project_state.get(project_key)
+            if incoming_state is None:
+                incoming_settings.project_state[project_key] = current_state
+                continue
+            incoming_state.open_files = current_state.open_files
+            active_ids = active_session_ids_by_project.get(project_key, set())
+            incoming_state.terminal_layout = self._preserve_missing_ordered_values(
+                current_state.terminal_layout,
+                incoming_state.terminal_layout,
+                {f"session:{session_id}" for session_id in active_ids},
+            )
+            incoming_state.session_order = self._preserve_missing_ordered_values(
+                current_state.session_order,
+                incoming_state.session_order,
+                active_ids,
+            )
+        return incoming_settings.model_dump()
+
+    @staticmethod
+    def _preserve_missing_ordered_values(current_values: list[str], incoming_values: list[str],
+                                         allowed_values: set[str]) -> list[str]:
+        merged_values = list(incoming_values)
+        for value in current_values:
+            if value not in allowed_values or value in merged_values:
+                continue
+            current_index = current_values.index(value)
+            next_values = current_values[current_index + 1:]
+            next_index = next((merged_values.index(candidate) for candidate in next_values if candidate in merged_values), None)
+            if next_index is not None:
+                merged_values.insert(next_index, value)
+                continue
+            previous_values = current_values[:current_index]
+            previous_index = next((len(merged_values) - 1 - merged_values[::-1].index(candidate)
+                                   for candidate in previous_values if candidate in merged_values), None)
+            merged_values.insert(previous_index + 1 if previous_index is not None else len(merged_values), value)
+        return merged_values
 
     async def _trash_notebook_note(self, request: NotebookTrashRequest) -> dict[str, str]:
         try:
@@ -320,7 +416,9 @@ class TermdeckServer:
 
     async def _read_file(self, root: str, path: str) -> dict[str, object]:
         try:
-            return self.files.read_file(root, path)
+            result = self.files.read_file(root, path)
+            self.file_history.observe_file(root, path, str(result["content"]))
+            return result
         except (ValueError, FileNotFoundError, IsADirectoryError, PermissionError) as read_error:
             raise HTTPException(status_code=404, detail=str(read_error)) from read_error
 
@@ -333,9 +431,9 @@ class TermdeckServer:
         except (ValueError, FileNotFoundError, PermissionError) as search_error:
             raise HTTPException(status_code=404, detail=str(search_error)) from search_error
 
-    async def _find_files(self, root: str, q: str, ignore: str = "") -> list[dict[str, str]]:
+    async def _find_files(self, root: str, q: str, glob: str = "", ignore: str = "", case_sensitive: bool = False) -> list[dict[str, str | bool | int]]:
         try:
-            return await self.search.find_files(root, q, ignore)
+            return await self.search.find_files(root, q, ignore, glob, case_sensitive)
         except (ValueError, FileNotFoundError, PermissionError) as find_error:
             raise HTTPException(status_code=404, detail=str(find_error)) from find_error
 
@@ -348,9 +446,82 @@ class TermdeckServer:
 
     async def _write_file(self, request: FileWriteRequest) -> dict[str, int]:
         try:
-            return self.files.write_file(request.root, request.path, request.content)
+            current = self.files.read_file(request.root, request.path)
+            self.file_history.observe_file(request.root, request.path, str(current["content"]))
+            result = self.files.write_file(request.root, request.path, request.content)
+            self.file_history.record_snapshot(request.root, request.path, request.content, "manual")
+            return result
         except (ValueError, FileNotFoundError, PermissionError, OSError) as write_error:
             raise HTTPException(status_code=400, detail=str(write_error)) from write_error
+
+    async def _file_history(self, root: str, path: str) -> list[dict[str, object]]:
+        try:
+            return self.file_history.list_versions(root, path)
+        except (ValueError, OSError) as history_error:
+            raise HTTPException(status_code=400, detail=str(history_error)) from history_error
+
+    async def _file_history_version(self, version_id: int) -> dict[str, object]:
+        version = self.file_history.get_version(version_id)
+        if version is None:
+            raise HTTPException(status_code=404, detail="file history version not found")
+        return version
+
+    async def _git_file_history(self, root: str, path: str, limit: int = 50) -> list[dict[str, str]]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            result = await asyncio.to_thread(self._run_git_history_log, base, path, max(1, min(limit, 100)))
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as history_error:
+            raise HTTPException(status_code=400, detail=str(history_error)) from history_error
+        return result
+
+    @staticmethod
+    def _run_git_history_log(base: Path, path: str, limit: int) -> list[dict[str, str]]:
+        result = subprocess.run(
+            ["git", "-C", str(base), "log", "--follow", "--format=%H%x00%h%x00%an%x00%ad%x00%s",
+             "--date=iso-strict", "-n", str(limit), "--", path],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if result.returncode != 0:
+            raise OSError(result.stderr.strip() or "git history unavailable")
+        commits = []
+        for line in result.stdout.splitlines():
+            fields = line.split("\x00", 4)
+            if len(fields) != 5:
+                continue
+            commits.append({"commit_id": fields[0], "short_id": fields[1], "author": fields[2],
+                            "committed_at": fields[3], "message": fields[4]})
+        return commits
+
+    async def _git_file_history_version(self, commit_id: str, root: str, path: str) -> dict[str, str]:
+        if not re.fullmatch(r"[0-9a-fA-F]{7,64}", commit_id):
+            raise HTTPException(status_code=400, detail="invalid git commit id")
+        try:
+            base = self.files.resolve_confined(root, "")
+            content = await asyncio.to_thread(self._run_git_history_version, base, path, commit_id)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as version_error:
+            raise HTTPException(status_code=404, detail=str(version_error)) from version_error
+        return {"commit_id": commit_id, "root": str(base), "path": path, "content": content}
+
+    @staticmethod
+    def _run_git_history_version(base: Path, path: str, commit_id: str) -> str:
+        result = subprocess.run(["git", "-C", str(base), "show", f"{commit_id}:{path}"],
+                                capture_output=True, timeout=10, check=False)
+        if result.returncode != 0:
+            raise FileNotFoundError(result.stderr.decode(errors="replace").strip() or "git file version unavailable")
+        return result.stdout.decode("utf-8", errors="replace")
+
+    async def _restore_file_history(self, request: FileHistoryRestoreRequest) -> dict[str, object]:
+        try:
+            version = self.file_history.get_version(request.version_id)
+            if version is None or not self.file_history.version_belongs_to_file(request.version_id, request.root, request.path):
+                raise FileNotFoundError(f"file history version not found: {request.version_id}")
+            current = self.files.read_file(request.root, request.path)
+            self.file_history.observe_file(request.root, request.path, str(current["content"]))
+            result = self.files.write_file(request.root, request.path, str(version["content"]))
+            self.file_history.record_snapshot(request.root, request.path, str(version["content"]), "restore")
+            return {**result, "version_id": request.version_id}
+        except (ValueError, FileNotFoundError, PermissionError, OSError) as restore_error:
+            raise HTTPException(status_code=400, detail=str(restore_error)) from restore_error
 
     async def _replace_in_files(self, request: ReplaceRequest) -> dict[str, int]:
         if not request.q.strip():
@@ -569,13 +740,56 @@ class TermdeckServer:
                 names.add(visible.casefold())
         return names
 
+    def _resolve_project_from_after_anchor(self, after: str | None, fallback_project: str) -> str:
+        requested = after.strip() if after else ""
+        if not requested:
+            return fallback_project
+        if requested.startswith("session:"):
+            target_session = requested[8:].strip()
+            if target_session:
+                for session in self.manager.list_sessions(None):
+                    if str(session.get("session_id", "")).strip() == target_session:
+                        return str(session.get("project", fallback_project) or fallback_project)
+            return fallback_project
+        if requested.startswith("group:"):
+            target_group = requested[6:].strip()
+            if target_group:
+                try:
+                    settings = UiSettings(**self.settings_store.load())
+                except ValueError:
+                    return fallback_project
+                for key, state in settings.project_state.items():
+                    for group in state.terminal_groups:
+                        if str(group.get("id", "")).strip() == target_group:
+                            return "" if key == "__all__" else key
+            return fallback_project
+        normalized = requested.casefold()
+        projects = set[str]()
+        for session in self.manager.list_sessions(None):
+            if normalized in self._placement_names(session):
+                projects.add(str(session.get("project", fallback_project) or fallback_project))
+        try:
+            settings = UiSettings(**self.settings_store.load())
+        except ValueError:
+            settings = UiSettings()
+        for key, state in settings.project_state.items():
+            if not str(key) or key == "":
+                continue
+            for group in state.terminal_groups:
+                if normalized == str(group.get("name", "")).strip().casefold():
+                    projects.add("" if key == "__all__" else key)
+        if len(projects) != 1:
+            return fallback_project
+        return projects.pop()
+
     async def _create_session(self, request: CreateSessionRequest) -> dict[str, object]:
         try:
             command = request.command
             if request.model.strip():
-                command = self.manager.command_for_new_session(request.model, request.permission, request.session_ref)
+                command = self.manager.command_for_new_session(request.model, request.permission, request.session_ref, request.model_name)
+            project = self._resolve_project_from_after_anchor(request.after, request.project)
             ms = self.manager.create_session(
-                command, request.cwd, request.title, request.project,
+                command, request.cwd, request.title, project,
                 agent_rename=request.title if not request.session_ref.strip() else None,
             )
         except ValueError as bad_request:
@@ -589,18 +803,197 @@ class TermdeckServer:
                 result["placement_error"] = str(placement_error)
         return result
 
-    async def _submit_prompt(self, session_id: str, request: SubmitPromptRequest) -> dict[str, object]:
+    async def _run_terminal_task(self, request: RunTerminalTaskRequest) -> dict[str, object]:
+        prompt = request.prompt.strip() or request.command.strip()
+        if not prompt:
+            raise HTTPException(status_code=400, detail="prompt is required")
+        try:
+            origin_session_id = self._resolve_origin_session(request.origin_session)
+            if request.fork and not origin_session_id:
+                raise ValueError("fork requires origin_session")
+            placement_after = f"session:{origin_session_id}" if origin_session_id else request.after
+            origin_summary = self.manager.session_summary_by_id(origin_session_id) if origin_session_id else {}
+            if request.fork:
+                ms = self.manager.fork_session(origin_session_id, request.title)
+            else:
+                base_command = self.manager.command_for_new_session(request.model, request.permission, request.session_ref, request.model_name)
+                cwd = request.cwd or str(origin_summary.get("cwd", ""))
+                project = self._resolve_project_from_after_anchor(placement_after, request.project or str(origin_summary.get("project", "")))
+                ms = self.manager.create_session(
+                    base_command,
+                    cwd,
+                    request.title,
+                    project,
+                    output_path=request.output_path,
+                    agent_rename=request.title if request.title.strip() and not request.session_ref.strip() else None,
+                )
+            summary = self.manager.session_summary(ms)
+            self.manager.ensure_session_running(ms.record.session_id)
+            if placement_after and placement_after.strip():
+                try:
+                    summary["placement"] = self._place_session_after(
+                        ms.record.project,
+                        ms.record.session_id,
+                        placement_after,
+                    )
+                except (ValueError, OSError) as placement_error:
+                    summary["placement_error"] = str(placement_error)
+            await self.manager.submit_prompt(ms.record.session_id, prompt, request.bracketed, request.queue)
+            latest = self.manager.session_summary(ms)
+            latest["placement"] = summary.get("placement")
+            latest["placement_error"] = summary.get("placement_error")
+            summary = latest
+            summary["prompt_submitted"] = True
+            summary["queued"] = request.queue
+            if origin_session_id and request.write_back:
+                self._schedule_task_result_delivery(ms.record.session_id, origin_session_id)
+            return summary
+        except ValueError as task_error:
+            raise HTTPException(status_code=400, detail=str(task_error)) from task_error
+
+    def _resolve_origin_session(self, reference: str) -> str | None:
+        requested = reference.strip()
+        if not requested:
+            return None
+        matches = [session for session in self.manager.list_sessions(None)
+                   if str(session.get("session_id", "")) == requested or requested.casefold() in self._placement_names(session)]
+        if not matches:
+            raise ValueError(f"no open originating session found: {reference}")
+        if len(matches) > 1:
+            raise ValueError(f"originating session name is ambiguous: {reference}")
+        return str(matches[0]["session_id"])
+
+    def _schedule_task_result_delivery(self, child_session_id: str, origin_session_id: str) -> None:
+        job = asyncio.create_task(self._deliver_task_result(child_session_id, origin_session_id))
+        self._task_delivery_jobs.add(job)
+        job.add_done_callback(self._forget_task_delivery_job)
+
+    def _forget_task_delivery_job(self, job: asyncio.Task) -> None:
+        self._task_delivery_jobs.discard(job)
+
+    async def _deliver_task_result(self, child_session_id: str, origin_session_id: str) -> None:
+        started_at = time.monotonic()
+        last_turn: dict[str, object] | None = None
+        status = "error"
+        while self.manager.has_session(child_session_id):
+            summary = self.manager.session_summary_by_id(child_session_id)
+            last_turn = await self._read_last_turn_once(child_session_id, final_only=True)
+            if last_turn is not None:
+                status = "error" if summary.get(ApiFields.EXIT_CODE) not in (None, 0) else "completed"
+                break
+            if not summary.get(ApiFields.RUNNING):
+                break
+            if time.monotonic() - started_at >= TermdeckConfig.TASK_RESULT_MAX_WAIT_SECONDS:
+                break
+            await asyncio.sleep(0.5)
+        if not self.manager.has_session(origin_session_id):
+            return
+        if last_turn is None and self.manager.has_session(child_session_id):
+            last_turn = await self._read_last_turn(child_session_id, final_only=True)
+        response_text = self._format_task_result(child_session_id, status, last_turn)
+        delivery_locks = getattr(self, "_origin_delivery_locks", {})
+        lock = delivery_locks.setdefault(origin_session_id, asyncio.Lock())
+        self._origin_delivery_locks = delivery_locks
+        async with lock:
+            origin_summary = self.manager.session_summary_by_id(origin_session_id)
+            await self.manager.submit_prompt(origin_session_id, response_text, True, bool(origin_summary.get("processing")))
+
+    async def _read_last_turn(self, session_id: str, final_only: bool = False) -> dict[str, object] | None:
+        for attempt in range(12):
+            turn = await self._read_last_turn_once(session_id, final_only)
+            if turn is not None:
+                return turn
+            if attempt < 11:
+                await asyncio.sleep(0.25)
+        return None
+
+    async def _read_last_turn_once(self, session_id: str, final_only: bool = False) -> dict[str, object] | None:
+        agent_kind, cwd, agent_session_id = self.manager.session_history_source(session_id)
+        transcript = await asyncio.to_thread(self.transcripts.history_page, agent_kind, cwd, agent_session_id, None, 1)
+        return self._latest_assistant_turn(transcript.get("turns", []), final_only)
+
+    @staticmethod
+    def _latest_assistant_turn(turns: list[dict[str, object]], final_only: bool = False) -> dict[str, object] | None:
+        return next((turn for turn in reversed(turns)
+                     if str(turn.get("role", "")) == "assistant" and (not final_only or bool(turn.get("final")))), None)
+
+    @staticmethod
+    def _format_task_result(session_id: str, status: str, last_turn: dict[str, object] | None) -> str:
+        if last_turn is None:
+            return f"[TermDeck task {session_id} {status}] No agent response was produced."
+        text = str(last_turn.get("text", "")).strip()
+        return f"[TermDeck task {session_id} {status}]\n{text}" if text else f"[TermDeck task {session_id} {status}]\n{json.dumps(last_turn, ensure_ascii=False)}"
+
+    async def _task_status(self, session_id: str) -> dict[str, object]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        summary = self.manager.session_summary_by_id(session_id)
+        agent_kind, cwd, agent_session_id = self.manager.session_history_source(session_id)
+        transcript = await asyncio.to_thread(
+            self.transcripts.history_page,
+            agent_kind,
+            cwd,
+            agent_session_id,
+            None,
+            max(20, min(TranscriptService.HISTORY_PAGE_TURNS, 160)),
+        )
+        turns = transcript.get("turns", [])
+        latest_turn = self._latest_assistant_turn(turns)
+        return {
+            "session_id": session_id,
+            "completed": not bool(summary.get(ApiFields.RUNNING)) and summary.get(ApiFields.EXIT_CODE) is not None,
+            "output_path": summary.get("output_path"),
+            "transcript": {
+                "tail": transcript.get("turns", []),
+                "before": transcript.get("before"),
+                "has_more": transcript.get("has_more", False),
+            },
+            "latest_turn": latest_turn,
+            "agent_session_id": agent_session_id,
+            "monitoring_url": f"/api/sessions/{session_id}/task-result",
+            **summary,
+        }
+
+    async def _task_result(self, session_id: str) -> dict[str, object]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        summary = self.manager.session_summary_by_id(session_id)
+        agent_kind, cwd, agent_session_id = self.manager.session_history_source(session_id)
+        transcript = await asyncio.to_thread(
+            self.transcripts.history_page,
+            agent_kind,
+            cwd,
+            agent_session_id,
+            None,
+            1,
+        )
+        turns = transcript.get("turns", [])
+        running = bool(summary.get(ApiFields.RUNNING))
+        exit_code = summary.get(ApiFields.EXIT_CODE)
+        status = "running" if running else "error" if exit_code is not None and exit_code != 0 else "completed"
+        return {
+            "session_id": session_id,
+            "status": status,
+            "last_turn": self._latest_assistant_turn(turns),
+        }
+
+    async def _submit_prompt(self, session_id: str, request: SubmitPromptRequest,
+                             automatically_queue_when_busy: bool = True) -> dict[str, object]:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
         if not request.text.strip():
             raise HTTPException(status_code=400, detail="prompt text cannot be empty")
         try:
             self.manager.ensure_session_running(session_id)
-            await self.manager.submit_prompt(session_id, request.text, request.bracketed, request.queue)
+            queued = request.queue or (automatically_queue_when_busy and bool(self.manager.session_summary_by_id(session_id).get("processing")))
+            await self.manager.submit_prompt(session_id, request.text, request.bracketed, queued)
         except ValueError as prompt_error:
             raise HTTPException(status_code=409, detail=str(prompt_error)) from prompt_error
-        return {"session": self.manager.session_summary_by_id(session_id), "prompt_submitted": True,
-                "queued": request.queue}
+        return {"session": self.manager.session_summary_by_id(session_id), "prompt_submitted": True, "queued": queued}
+
+    async def _follow_up_task_prompt(self, session_id: str, request: FollowUpTaskPromptRequest) -> dict[str, object]:
+        return await self._submit_prompt(session_id, SubmitPromptRequest(
+            text=request.prompt, bracketed=request.bracketed), automatically_queue_when_busy=False)
 
     async def _launch_terminal_batch(self, request: BatchTerminalsRequest) -> dict[str, object]:
         if not request.terminals:
@@ -623,20 +1016,22 @@ class TermdeckServer:
                 if not prompt.strip():
                     raise ValueError(f"prompt is empty for terminal {name}")
                 model = request.model if item.model is None else item.model
+                model_name = request.model_name if item.model_name is None else item.model_name
                 permission = request.permission if item.permission is None else item.permission
                 cwd = request.cwd if item.cwd is None else item.cwd
                 project = request.project if item.project is None else item.project
                 session_ref = item.session_ref or ""
                 bracketed = request.bracketed if item.bracketed is None else item.bracketed
                 queue = request.queue if item.queue is None else item.queue
-                command = self.manager.command_for_new_session(model, permission, session_ref)
+                placement_after = request.after if item.after is None else item.after
+                project = self._resolve_project_from_after_anchor(placement_after, project)
+                command = self.manager.command_for_new_session(model, permission, session_ref, model_name or "")
                 ms = self.manager.create_session(
                     command, cwd, name, project,
                     agent_rename=name if not session_ref.strip() else None,
                 )
                 result["session"] = self.manager.session_summary(ms)
 
-                placement_after = request.after if item.after is None else item.after
                 if placement_after and placement_after.strip():
                     actual_project = ms.record.project
                     placement_key = (actual_project, placement_after.strip().casefold())

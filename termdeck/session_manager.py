@@ -64,15 +64,19 @@ class ManagedSession:
         self.draft_tracker = DraftInputTracker(record.draft)
         self.detect_attempts = 0
         self.last_input_monotonic = 0.0
-        self.last_activity_at = 0.0
+        self.last_activity_at = record.last_activity_at
         self.last_activity_broadcast_monotonic = 0.0
         self.claude_subagent_states: dict[Path, bool] = {}
         self.claude_subagents_active = False
         self.claude_main_active = False
         self.codex_transcript_active = False
+        self.codex_activity_checked_monotonic = 0.0
+        self.codex_activity_signature: tuple[int | None, int, int] | None = None
         self.agy_transcript_active = False
         self.agy_transcript_active_until = 0.0
         self.processing_started_at: float | None = None
+        self.output_path: Path | None = Path(record.output_path).expanduser() if record.output_path else None
+        self.output_path_locked = False
 
     @property
     def running(self) -> bool:
@@ -96,6 +100,9 @@ class ManagedSession:
 
 
 class TerminalSessionManager:
+    CODEX_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
+    CODEX_ACTIVITY_FALLBACK_CHECK_SECONDS = 1.0
+
     """Creates, respawns, and tears down terminal sessions; broadcasts pty output to attached websocket queues;
     persists session records and resolves claude/codex agent session ids so a server restart can resume them."""
 
@@ -108,6 +115,7 @@ class TerminalSessionManager:
         self._status_queues: set[asyncio.Queue] = set()
         self._draft_persist_task: asyncio.Task | None = None
         self._background_loop: asyncio.AbstractEventLoop | None = None
+        self._agent_activity_refresh_handles: dict[Path, asyncio.TimerHandle] = {}
         self._transcript_service = None
         self._history_index = None
         self._claude_activity_watcher = ClaudeActivityWatcher(
@@ -125,6 +133,9 @@ class TerminalSessionManager:
 
     def stop_background_tasks(self) -> None:
         self._claude_activity_watcher.stop()
+        for handle in self._agent_activity_refresh_handles.values():
+            handle.cancel()
+        self._agent_activity_refresh_handles.clear()
         self._background_loop = None
 
     def _on_claude_file_change_from_thread(self, path: Path) -> None:
@@ -149,18 +160,21 @@ class TerminalSessionManager:
         # and are attached lazily when opened; dead sockets are safe to clear.
         for ms in self._sessions.values():
             await self._reconcile_session_socket(ms)
+            self._refresh_session_activity(ms)
             self._refresh_persisted_agent_activity(ms)
             if ms.detached_live and ms.record.agent_kind == AgentKind.AGY.value and not ms.record.agent_session_id:
                 kind = AgentKind(ms.record.agent_kind)
                 ms.detect_kind = kind
                 ms.detect_baseline = self._tracker.snapshot_session_files(kind, Path(ms.record.cwd))
                 self._schedule_detection(ms, TermdeckConfig.AGENT_DETECT_INITIAL_DELAY_SECONDS)
+        self._persist()
 
     def _refresh_persisted_agent_activity(self, ms: ManagedSession) -> None:
         if not ms.detached_live or not ms.record.agent_session_id:
             return
         if ms.record.agent_kind == AgentKind.CODEX.value:
             ms.codex_transcript_active = self._tracker.codex_session_is_active(ms.record.agent_session_id)
+            ms.codex_activity_signature = self._codex_activity_signature(ms)
         elif ms.record.agent_kind == AgentKind.CLAUDE.value:
             self._initialize_claude_subagent_state(ms)
         elif ms.record.agent_kind == AgentKind.AGY.value:
@@ -168,16 +182,22 @@ class TerminalSessionManager:
             if ms.agy_transcript_active:
                 ms.agy_transcript_active_until = time.monotonic() + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
 
-    def create_session(self, command: str, cwd: str, title: str, project: str = "",
+    def create_session(self, command: str, cwd: str, title: str, project: str = "", output_path: str = "",
                        agent_rename: str | None = None) -> ManagedSession:
         clean_command = command.strip()
         cwd_path = Path(cwd).expanduser() if cwd.strip() else TermdeckConfig.DEFAULT_CWD
         if not cwd_path.is_dir():
             raise ValueError(f"cwd is not a directory: {cwd_path}")
+        cleaned_output_path = output_path.strip() if output_path else ""
+        if cleaned_output_path:
+            expanded_output_path = Path(os.path.expandvars(cleaned_output_path)).expanduser()
+            if not expanded_output_path.is_absolute():
+                expanded_output_path = cwd_path / expanded_output_path
+            cleaned_output_path = str(expanded_output_path.resolve())
         return self._create(clean_command, cwd_path, title, initial_command=None, agent_rename=agent_rename,
-                            project=project)
+                            project=project, output_path=cleaned_output_path)
 
-    def command_for_new_session(self, model: str, permission: str, session_ref: str) -> str:
+    def command_for_new_session(self, model: str, permission: str, session_ref: str, model_name: str = "") -> str:
         raw_model = model.strip().strip("\"'").lower()
         normalized = {
             "agd": AgentKind.AGY.value,
@@ -191,6 +211,7 @@ class TerminalSessionManager:
         selected_model = normalized or AgentKind.CODEX.value
         selected_permission = permission.strip().lower() or "default"
         reference = session_ref.strip()
+        normalized_model_name = model_name.strip()
         if selected_model == AgentKind.AGY.value:
             permission_flags = {
                 "default": (),
@@ -200,10 +221,15 @@ class TerminalSessionManager:
                 raise ValueError(f"unknown agy permission: {permission}")
             if reference:
                 raise ValueError("agy terminal currently supports new sessions only")
-            return shlex.join(["agy", *permission_flags[selected_permission]])
+            parts = ["agy", *permission_flags[selected_permission]]
+            if normalized_model_name:
+                parts.extend(("--model", normalized_model_name))
+            return shlex.join(parts)
         if selected_model == AgentKind.NONE.value:
             if reference:
                 raise ValueError("a shell terminal cannot resume an agent session")
+            if normalized_model_name:
+                raise ValueError("model_name is only supported for codex")
             return ""
         if selected_model == AgentKind.CODEX.value:
             permission_flags = {
@@ -215,6 +241,11 @@ class TerminalSessionManager:
             if selected_permission not in permission_flags:
                 raise ValueError(f"unknown codex permission: {permission}")
             parts = ["codex", *permission_flags[selected_permission]]
+            if normalized_model_name:
+                model_id, reasoning_effort = self._codex_model_parts(normalized_model_name)
+                if reasoning_effort:
+                    parts.extend(("-c", f'model_reasoning_effort="{reasoning_effort}"'))
+                parts.extend(("--model", model_id))
             if reference:
                 resolved_reference = self._tracker.codex_session_id_for_reference(reference)
                 if resolved_reference is None:
@@ -231,10 +262,19 @@ class TerminalSessionManager:
             if selected_permission not in permission_flags:
                 raise ValueError(f"unknown claude permission: {permission}")
             parts = ["claude", *permission_flags[selected_permission]]
+            if normalized_model_name:
+                parts.extend(("--model", normalized_model_name))
             if reference:
                 parts.extend(("--resume", reference))
             return shlex.join(parts)
         raise ValueError(f"unknown model: {model}")
+
+    @classmethod
+    def _codex_model_parts(cls, model_name: str) -> tuple[str, str]:
+        parts = model_name.split()
+        if len(parts) > 1 and parts[-1].lower() in cls.CODEX_REASONING_EFFORTS:
+            return " ".join(parts[:-1]), parts[-1].lower()
+        return model_name, ""
 
     @staticmethod
     def _command_parts(command: str) -> list[str]:
@@ -305,13 +345,14 @@ class TerminalSessionManager:
         record.command = shlex.join(updated)
 
     def _create(self, clean_command: str, cwd_path: Path, title: str, initial_command: str | None,
-                agent_rename: str | None = None, project: str | None = None) -> ManagedSession:
+                agent_rename: str | None = None, project: str | None = None,
+                output_path: str = "") -> ManagedSession:
         kind = self._tracker.detect_agent_kind(clean_command)
         project_name = project.strip() if project and project.strip() else self.registry.ensure_project_for_cwd(cwd_path)
         record = SessionRecord(session_id=uuid.uuid4().hex[:12], title=title.strip() or self._auto_title(clean_command, cwd_path),
                                title_user_set=bool(title.strip()), command=clean_command, cwd=str(cwd_path),
                                agent_kind=kind.value, agent_session_id=None, created_at_est=TimeUtil.now_est_naive_iso(),
-                               draft="", project=project_name)
+                               draft="", project=project_name, output_path=output_path.strip() or None)
         ms = ManagedSession(record)
         if agent_rename and kind is AgentKind.CODEX:
             ms.pending_agent_rename = " ".join(agent_rename.splitlines()).strip()
@@ -349,14 +390,21 @@ class TerminalSessionManager:
         baseline = self._tracker.snapshot_session_files(kind, Path(ms.record.cwd)) if kind is not AgentKind.NONE else set()
         if ms.buffer:
             divider = TermdeckConfig.REATTACH_DIVIDER if reattach else TermdeckConfig.RESPAWN_DIVIDER
-            self._handle_output(ms, ("\r\n" * ms.rows + divider + "\r\n").encode())
+            self._handle_output(ms, ("\r\n" * ms.rows + divider + "\r\n").encode(), mark_activity=False)
         elif not reattach:
-            self._handle_output(ms, TermdeckConfig.SPAWN_BANNER_TEMPLATE.format(command=command or TermdeckConfig.SHELL).encode())
+            self._handle_output(ms, TermdeckConfig.SPAWN_BANNER_TEMPLATE.format(command=command or TermdeckConfig.SHELL).encode(),
+                                mark_activity=False)
         ms.exit_code = None
         try:
             ms.proc = PtyProcess(command, Path(ms.record.cwd), ms.cols, ms.rows,
                                  functools.partial(self._handle_output, ms), functools.partial(self._handle_exit, ms),
-                                 dtach_socket=socket)
+                                 dtach_socket=socket,
+                                 child_environment={
+                                     TermdeckConfig.SESSION_ID_ENV_KEY: ms.record.session_id,
+                                     TermdeckConfig.SESSION_NAME_ENV_KEY: ms.record.title,
+                                     TermdeckConfig.SESSION_PROJECT_ENV_KEY: ms.record.project,
+                                     TermdeckConfig.SESSION_CWD_ENV_KEY: ms.record.cwd,
+                                 })
         except (FileNotFoundError, NotADirectoryError, PermissionError) as spawn_error:
             ms.detached_live = False
             ms.exit_code = TermdeckConfig.EXIT_CODE_SPAWN_FAILED
@@ -475,6 +523,7 @@ class TerminalSessionManager:
             self._persist()
             if kind is AgentKind.CODEX:
                 ms.codex_transcript_active = self._tracker.codex_session_is_active(found)
+                ms.codex_activity_signature = self._codex_activity_signature(ms)
             elif kind is AgentKind.AGY:
                 ms.agy_transcript_active = self._tracker.agy_session_is_active(found)
             self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.AGENT_SESSION,
@@ -522,7 +571,43 @@ class TerminalSessionManager:
         ms.claude_subagents_active = any(states.values())
 
     def _processing_state(self, ms: ManagedSession) -> bool:
+        if ms.record.agent_kind == AgentKind.CODEX.value and ms.record.agent_session_id:
+            return ms.processing or ms.codex_transcript_active
         return ms.processing or ms.codex_transcript_active or ms.agy_transcript_active or ms.claude_main_active or ms.claude_subagents_active
+
+    def _refresh_session_activity(self, ms: ManagedSession) -> None:
+        transcript_activity = self._tracker.session_activity_timestamp(AgentKind(ms.record.agent_kind),
+                                                                        Path(ms.record.cwd), ms.record.agent_session_id)
+        if transcript_activity <= ms.last_activity_at:
+            return
+        ms.last_activity_at = transcript_activity
+        ms.record.last_activity_at = transcript_activity
+
+    def _codex_activity_signature(self, ms: ManagedSession) -> tuple[int | None, int, int] | None:
+        if ms.record.agent_kind != AgentKind.CODEX.value or not ms.record.agent_session_id:
+            return None
+        path = self._tracker.codex_session_path(ms.record.agent_session_id)
+        if path is None:
+            return None
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return getattr(stat, "st_ino", None), stat.st_size, stat.st_mtime_ns
+
+    def _refresh_stale_codex_activity(self, ms: ManagedSession) -> None:
+        if not ms.running or not ms.codex_transcript_active or not ms.record.agent_session_id:
+            return
+        now = time.monotonic()
+        if now - ms.codex_activity_checked_monotonic < self.CODEX_ACTIVITY_FALLBACK_CHECK_SECONDS:
+            return
+        ms.codex_activity_checked_monotonic = now
+        signature = self._codex_activity_signature(ms)
+        if signature is None or signature == ms.codex_activity_signature:
+            return
+        ms.codex_activity_signature = signature
+        ms.codex_transcript_active = self._tracker.codex_session_is_active(ms.record.agent_session_id)
+        self._sync_processing_started(ms)
 
     def _refresh_agy_transcript_activity(self, ms: ManagedSession, active: bool, observed_at: float | None = None) -> None:
         now = time.monotonic() if observed_at is None else observed_at
@@ -547,7 +632,21 @@ class TerminalSessionManager:
 
     def notify_agent_transcript_changed(self, path: Path) -> None:
         if self._background_loop is not None:
-            self._background_loop.call_soon_threadsafe(self._refresh_agent_transcript_activity, path)
+            self._background_loop.call_soon_threadsafe(self._schedule_agent_activity_refresh, path)
+
+    def _schedule_agent_activity_refresh(self, path: Path) -> None:
+        if self._background_loop is None:
+            return
+        previous = self._agent_activity_refresh_handles.pop(path, None)
+        if previous is not None:
+            previous.cancel()
+        self._agent_activity_refresh_handles[path] = self._background_loop.call_later(
+            TermdeckConfig.AGENT_TRANSCRIPT_ACTIVITY_DEBOUNCE_SECONDS,
+            self._run_agent_activity_refresh, path)
+
+    def _run_agent_activity_refresh(self, path: Path) -> None:
+        self._agent_activity_refresh_handles.pop(path, None)
+        self._refresh_agent_transcript_activity(path)
 
     def _refresh_agent_transcript_activity(self, path: Path) -> None:
         for ms in self._sessions.values():
@@ -566,6 +665,7 @@ class TerminalSessionManager:
             previous = self._processing_state(ms)
             if ms.record.agent_kind == AgentKind.CODEX.value:
                 ms.codex_transcript_active = active
+                ms.codex_activity_signature = self._codex_activity_signature(ms)
             else:
                 self._refresh_agy_transcript_activity(ms, active, time.monotonic())
             current = self._processing_state(ms)
@@ -600,6 +700,8 @@ class TerminalSessionManager:
         return value
 
     def _status_payload(self, ms: ManagedSession) -> dict[str, object]:
+        self._refresh_session_activity(ms)
+        self._refresh_stale_codex_activity(ms)
         self._expire_agy_transcript_activity(ms)
         processing = self._sync_processing_started(ms)
         return {
@@ -742,6 +844,18 @@ class TerminalSessionManager:
             if ms.last_repaint_offset is not None:
                 ms.last_repaint_offset = max(0, ms.last_repaint_offset - overflow)
 
+    def _append_output_path(self, ms: ManagedSession, data: bytes) -> None:
+        output_path = ms.output_path
+        if output_path is None:
+            return
+        if ms.output_path_locked:
+            return
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.open("ab").write(data)
+        except OSError:
+            ms.output_path_locked = True
+
     def _answer_and_strip_color_queries(self, ms: ManagedSession, data: bytes) -> bytes:
         data = ms.osc_query_carry + data
         ms.osc_query_carry = b""
@@ -760,12 +874,15 @@ class TerminalSessionManager:
             data = data[:-tail_keep]
         return data
 
-    def _handle_output(self, ms: ManagedSession, data: bytes) -> None:
+    def _handle_output(self, ms: ManagedSession, data: bytes, mark_activity: bool = True) -> None:
         data = self._answer_and_strip_color_queries(ms, data)
         if not data:
             return
-        ms.last_activity_at = time.time()
+        if mark_activity:
+            ms.last_activity_at = time.time()
+            ms.record.last_activity_at = ms.last_activity_at
         self._append_collapsing_repaints(ms, data)
+        self._append_output_path(ms, data)
         previous_title = ms.cli_title
         previous_processing = self._processing_state(ms)
         cli_title, ms.title_carry = OscTitleParser.extract_latest_title(ms.title_carry, data)
@@ -871,33 +988,97 @@ class TerminalSessionManager:
             raise ValueError(f"terminal search query is limited to {TermdeckConfig.TERMINAL_SEARCH_MAX_QUERY} characters")
         flags = 0 if case_sensitive else re.IGNORECASE
         pattern = re.compile(normalized_query if regex else re.escape(normalized_query), flags)
+        terms = [token for token in normalized_query.split() if token]
+        use_multi_term = (not regex) and len(terms) > 1
+        term_patterns: list[re.Pattern[str]] = []
+        best_match_weight = 40
+        partial_match_weight = 12
+        if use_multi_term:
+            term_patterns = [re.compile(re.escape(term), flags) for term in terms]
         results: list[dict[str, object]] = []
         for ms in self._sessions.values():
             searchable = self._searchable_terminal_text(bytes(ms.buffer))
             line_starts = [0]
             line_starts.extend(index + 1 for index, character in enumerate(searchable) if character == "\n")
+            lines = searchable.splitlines()
             match_count = 0
             snippets: list[dict[str, object]] = []
             snippet_lines: set[int] = set()
-            lines = searchable.splitlines()
+            line_scores: dict[int, int] = {}
+            max_line_score = 0
+            if use_multi_term:
+                for line_number, raw_line in enumerate(lines, 1):
+                    if not raw_line.strip():
+                        continue
+                    line_score = 0
+                    term_hits = 0
+                    for term_pattern in term_patterns:
+                        term_matches = term_pattern.findall(raw_line)
+                        if term_matches:
+                            term_hits += 1
+                            match_count += len(term_matches)
+                            line_score += partial_match_weight
+                    if term_hits == len(term_patterns):
+                        line_score += best_match_weight
+                    if line_score:
+                        line_scores[line_number] = max(line_scores.get(line_number, 0), line_score)
+                        if line_score > max_line_score:
+                            max_line_score = line_score
             for match in pattern.finditer(searchable):
-                match_count += 1
                 line_number = bisect.bisect_right(line_starts, match.start())
+                if line_number < 1 or line_number > len(lines):
+                    continue
+                if use_multi_term:
+                    if line_number in snippet_lines:
+                        continue
+                    line_score = line_scores.get(line_number, 0) + best_match_weight
+                    line_scores[line_number] = max(line_score, line_scores.get(line_number, 0))
+                    if line_score > max_line_score:
+                        max_line_score = line_score
                 if line_number in snippet_lines:
                     continue
+                match_count += 1
                 snippet_lines.add(line_number)
                 if len(snippets) >= TermdeckConfig.TERMINAL_SEARCH_MAX_SNIPPETS:
                     continue
-                line = lines[line_number - 1].strip() if line_number <= len(lines) else ""
+                line = lines[line_number - 1].strip()
+                if not line:
+                    continue
                 if len(line) > TermdeckConfig.TERMINAL_SEARCH_SNIPPET_CHARS:
                     line = line[:TermdeckConfig.TERMINAL_SEARCH_SNIPPET_CHARS - 1] + "…"
                 snippets.append({"line": line_number, "text": line})
-            if not match_count:
+            if not match_count and not line_scores:
+                continue
+            if use_multi_term:
+                ordered_lines = sorted(line_scores.items(), key=lambda item: (-item[1], item[0]))
+                snippets = []
+                snippet_lines.clear()
+                for line_number, _ in ordered_lines:
+                    if len(snippets) >= TermdeckConfig.TERMINAL_SEARCH_MAX_SNIPPETS:
+                        break
+                    if line_number > len(lines):
+                        continue
+                    line = lines[line_number - 1].strip()
+                    if not line:
+                        continue
+                    snippet_lines.add(line_number)
+                    snippet_text = line[:TermdeckConfig.TERMINAL_SEARCH_SNIPPET_CHARS - 1] + "…" \
+                        if len(line) > TermdeckConfig.TERMINAL_SEARCH_SNIPPET_CHARS else line
+                    snippets.append({"line": line_number, "text": snippet_text})
+                if not snippets:
+                    continue
+                if match_count == 0:
+                    match_count = len(line_scores)
+            if not snippets:
                 continue
             results.append({"session_id": ms.record.session_id, "title": ms.record.title,
                             "agent_kind": ms.record.agent_kind, "count": match_count, "snippets": snippets,
+                            "relevance": max_line_score + match_count,
                             "last_activity_at": ms.last_activity_at})
-        results.sort(key=lambda result: -float(result["last_activity_at"]))
+        results.sort(key=lambda result: (-int(result.get("relevance", 0)), -float(result["last_activity_at"])))
+        for result in results:
+            if "relevance" in result:
+                result.pop("relevance")
         return results
 
     @staticmethod
@@ -939,17 +1120,24 @@ class TerminalSessionManager:
     def write_input(self, session_id: str, text: str) -> None:
         ms = self._sessions[session_id]
         draft_before_input = ms.draft_tracker.draft
+        codex_prompt_submitted = False
         if ms.record.agent_kind in (AgentKind.CODEX.value, AgentKind.CLAUDE.value) and ("\r" in text or "\n" in text):
             command = draft_before_input.strip()
             if not command:
                 command = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text).splitlines()[0].strip()
             command = command.replace("\x1b[200~", "").replace("\x1b[201~", "").strip()
+            codex_prompt_submitted = ms.record.agent_kind == AgentKind.CODEX.value and text in {"\r", "\n"} and bool(command) and not command.startswith("/")
             if ms.record.agent_kind == AgentKind.CODEX.value and command.lower().startswith("/rename") and \
                     (len(command) == 7 or command[7].isspace()):
                 candidate = command[7:].strip()
                 if candidate:
                     ms.pending_codex_rename = candidate
                     ms.pending_codex_rename_deadline = time.monotonic() + 30.0
+        if codex_prompt_submitted and not ms.codex_transcript_active:
+            ms.codex_transcript_active = True
+            ms.codex_activity_signature = self._codex_activity_signature(ms)
+            ms.codex_activity_checked_monotonic = time.monotonic()
+            self._broadcast_status(ms)
         if ms.record.agent_kind == AgentKind.AGY.value and ("\r" in text or "\n" in text):
             ms.agy_transcript_active = True
             ms.agy_transcript_active_until = time.monotonic() + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
@@ -957,6 +1145,7 @@ class TerminalSessionManager:
             ms.proc.write(text.encode())
         ms.last_input_monotonic = time.monotonic()
         ms.last_activity_at = time.time()
+        ms.record.last_activity_at = ms.last_activity_at
         if ms.record.agent_kind == AgentKind.AGY.value and ("\r" in text or "\n" in text):
             self._broadcast_status(ms)
         self._broadcast_activity_if_due(ms)
@@ -1386,6 +1575,8 @@ class TerminalSessionManager:
                 if project is None or ms.record.project == project]
 
     def session_summary(self, ms: ManagedSession) -> dict[str, object]:
+        self._refresh_session_activity(ms)
+        self._refresh_stale_codex_activity(ms)
         processing = self._sync_processing_started(ms)
         summary: dict[str, object] = dict(ms.record.to_dict())
         summary[ApiFields.RUNNING] = ms.running

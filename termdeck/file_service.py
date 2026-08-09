@@ -190,6 +190,10 @@ class ProjectFileService:
             self._git_status_cache[key] = (time.monotonic(), statuses)
         return statuses
 
+    def git_statuses_for_files(self, root: str, relative_paths: set[str]) -> dict[str, str]:
+        statuses = self._git_statuses(root)
+        return {relative_path: statuses.get(relative_path, "") for relative_path in relative_paths}
+
     @staticmethod
     def _git_status_for_path(statuses: dict[str, str], relative: str, is_dir: bool) -> str:
         if not is_dir:

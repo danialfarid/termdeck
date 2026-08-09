@@ -30,7 +30,7 @@ class AgentSessionTracker:
     _SUBAGENT_SNIFF_BYTES = 2048
     _SUBAGENT_TAIL_BYTES = 256 * 1024
     _AGY_ACTIVITY_TAIL_BYTES = 256 * 1024
-    _CODEX_ACTIVITY_TAIL_BYTES = 4 * 1024 * 1024
+    _CODEX_ACTIVITY_TAIL_BYTES = 8 * 1024 * 1024
     _CLAUDE_INTERRUPT_TEXT_PREFIX = "[Request interrupted by user"
     _CLI_TITLE_CACHE_SIZE = 120
     _SUBAGENT_FILE_CACHE_SIZE = 2000
@@ -124,10 +124,7 @@ class AgentSessionTracker:
     def codex_session_is_active(self, session_id: str | None) -> bool:
         if not session_id:
             return False
-        try:
-            path = next(TermdeckConfig.CODEX_SESSIONS_DIR.rglob(f"rollout-*{session_id}.jsonl"), None)
-        except OSError:
-            return False
+        path = self.codex_session_path(session_id)
         if path is None:
             return False
         try:
@@ -151,6 +148,32 @@ class AgentSessionTracker:
             elif event_type in {"task_complete", "turn_aborted"}:
                 state = False
         return bool(state)
+
+    def codex_session_path(self, session_id: str | None) -> Path | None:
+        if not session_id:
+            return None
+        try:
+            return next(TermdeckConfig.CODEX_SESSIONS_DIR.rglob(f"rollout-*{session_id}.jsonl"), None)
+        except OSError:
+            return None
+
+    def session_activity_timestamp(self, kind: AgentKind, cwd: Path, session_id: str | None) -> float:
+        if not session_id:
+            return 0.0
+        if kind is AgentKind.CODEX:
+            path = self.codex_session_path(session_id)
+        elif kind is AgentKind.CLAUDE:
+            path = self.claude_project_dir(cwd) / f"{session_id}.jsonl"
+        elif kind is AgentKind.AGY:
+            path = self.agy_session_transcript(session_id)
+        else:
+            return 0.0
+        if path is None:
+            return 0.0
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
 
     def claude_session_title(self, cwd: Path, session_id: str | None) -> str | None:
         """Read Claude's durable aiTitle when the terminal has not emitted its OSC title yet."""
