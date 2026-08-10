@@ -30,4 +30,12 @@ curl -sS -X POST http://127.0.0.1:8530/api/terminals/task/CHILD_SESSION_ID/promp
 
 ## Get their latest turn text
 
-`GET /api/sessions/{session_id}/last_turn`
+`GET /api/sessions/{session_id_or_name}/last_turn`
+
+Names must be unique; duplicate names return an error.
+
+## Close an agent
+
+`DELETE /api/sessions/{session_id}`
+
+Stops the terminal and moves it to closed sessions without erasing its history.

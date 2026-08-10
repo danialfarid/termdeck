@@ -213,6 +213,7 @@ class UiSettings(BaseModel):
     last_model: str = "codex"
     last_permissions: dict[str, str] = {}
     show_terminal_icons: bool = False
+    prompt_wrap_guard: bool = False
     history_mode: bool = False
     prompt_history: dict[str, list[str]] = {}
     selection_copy_history: list[str] = []
@@ -852,16 +853,20 @@ class TermdeckServer:
             raise HTTPException(status_code=400, detail=str(task_error)) from task_error
 
     def _resolve_origin_session(self, reference: str) -> str | None:
+        resolved_session_id = self._find_open_session_id_by_reference(reference)
+        if resolved_session_id is None:
+            raise ValueError(f"no open originating session found: {reference}")
+        return resolved_session_id
+
+    def _find_open_session_id_by_reference(self, reference: str) -> str | None:
         requested = reference.strip()
         if not requested:
             return None
         matches = [session for session in self.manager.list_sessions(None)
                    if str(session.get("session_id", "")) == requested or requested.casefold() in self._placement_names(session)]
-        if not matches:
-            raise ValueError(f"no open originating session found: {reference}")
         if len(matches) > 1:
-            raise ValueError(f"originating session name is ambiguous: {reference}")
-        return str(matches[0]["session_id"])
+            raise ValueError(f"session name is ambiguous: {reference}")
+        return str(matches[0]["session_id"]) if matches else None
 
     def _schedule_task_result_delivery(self, child_session_id: str, origin_session_id: str) -> None:
         job = asyncio.create_task(self._deliver_task_result(child_session_id, origin_session_id))
@@ -955,10 +960,16 @@ class TermdeckServer:
         }
 
     async def _task_result(self, session_id: str) -> dict[str, object]:
-        if not self.manager.has_session(session_id):
+        resolved_session_id = session_id if self.manager.has_session(session_id) else None
+        if resolved_session_id is None:
+            try:
+                resolved_session_id = self._find_open_session_id_by_reference(session_id)
+            except ValueError as ambiguous_error:
+                raise HTTPException(status_code=409, detail=str(ambiguous_error)) from ambiguous_error
+        if resolved_session_id is None:
             raise HTTPException(status_code=404, detail=session_id)
-        summary = self.manager.session_summary_by_id(session_id)
-        agent_kind, cwd, agent_session_id = self.manager.session_history_source(session_id)
+        summary = self.manager.session_summary_by_id(resolved_session_id)
+        agent_kind, cwd, agent_session_id = self.manager.session_history_source(resolved_session_id)
         transcript = await asyncio.to_thread(
             self.transcripts.history_page,
             agent_kind,
@@ -972,7 +983,7 @@ class TermdeckServer:
         exit_code = summary.get(ApiFields.EXIT_CODE)
         status = "running" if running else "error" if exit_code is not None and exit_code != 0 else "completed"
         return {
-            "session_id": session_id,
+            "session_id": resolved_session_id,
             "status": status,
             "last_turn": self._latest_assistant_turn(turns),
         }

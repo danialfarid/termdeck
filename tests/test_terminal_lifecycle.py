@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from fastapi import HTTPException
 from watchdog.events import DirModifiedEvent, FileModifiedEvent, FileMovedEvent
 
 from termdeck.agent_session_tracker import AgentSessionTracker
@@ -834,6 +835,36 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response, {"session_id": "task-04", "status": "completed",
                                      "last_turn": {"role": "assistant", "text": "done"}})
         server.transcripts.history_page.assert_called_once_with("codex", "/tmp", "session-xyz", None, 1)
+
+    async def test_task_result_accepts_unique_session_name(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.has_session.return_value = False
+        server.manager.list_sessions.return_value = [{"session_id": "task-05", "title": "reviewer"}]
+        server.manager.session_summary_by_id.return_value = {"running": False, "exit_code": 0}
+        server.manager.session_history_source.return_value = ("codex", "/tmp", "session-xyz")
+        server.transcripts = MagicMock()
+        server.transcripts.history_page.return_value = {"turns": [{"role": "assistant", "text": "done"}]}
+
+        response = await server._task_result("reviewer")
+
+        self.assertEqual(response, {"session_id": "task-05", "status": "completed",
+                                     "last_turn": {"role": "assistant", "text": "done"}})
+        server.manager.session_history_source.assert_called_once_with("task-05")
+
+    async def test_task_result_rejects_duplicate_session_name(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.has_session.return_value = False
+        server.manager.list_sessions.return_value = [
+            {"session_id": "task-06", "title": "reviewer"},
+            {"session_id": "task-07", "title": "reviewer"},
+        ]
+
+        with self.assertRaises(HTTPException) as raised:
+            await server._task_result("reviewer")
+
+        self.assertEqual(raised.exception.status_code, 409)
 
     async def test_child_result_is_delivered_to_origin_session_after_processing_finishes(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)

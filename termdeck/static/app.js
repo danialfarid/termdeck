@@ -12,7 +12,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
   show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
-  files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {} };
+  files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {}, prompt_wrap_guard: false };
 const MODEL_PERMISSIONS = {
   codex: [
     { value: "default", label: "Default (Codex config)" },
@@ -52,14 +52,14 @@ const TERMINAL_ACTIVATION_REFLOW_IDLE_MS = 1200;
 const OPEN_FILES_MAX_ENTRIES = 80;
 const TERMINAL_V2_FIT_RETRY_LIMIT = 32;
 const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
-// Three checks, well spread out, not five packed inside the first 600ms: each forced resize is a real
-// SIGWINCH even when nothing actually changed (see scheduleActiveTerminalSettleWatchdog), and a tight
-// burst of those landing while an agent CLI is mid-redraw of a multi-line composer can visibly corrupt
-// it. Spreading them out keeps the same retry-safety property (still self-corrects a resize the server
-// silently dropped) while cutting how often two land close enough together to overlap a single redraw.
+// Three checks, well spread out, not five packed inside the first 600ms: only a genuine geometry change
+// sends a pty resize, so a tight burst cannot interrupt an agent CLI's multi-line composer redraw.
 const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [150, 800, 2000];
+const PROMPT_WRAP_GUARD_IDLE_MS = 1200;
 const TERMINAL_DEBUG_SNAPSHOT_LIMIT = 50;
 const SELECTION_SEARCH_MAX_CHARS = 1000;
+const TERMINAL_CLAUDE_IDLE_RECONNECT_MS = 5 * 60 * 1000;
+const CODEX_PROMPT_REFLOW_GUARD_MS = 1800;
 // Files viewer, file search, and terminal search share one files-section panel and one shortcut.
 const FILES_SIDE_PANEL_TABS = ["project", "search", "terminal-search"];
 const DESKTOP_KEYBINDINGS = [
@@ -321,6 +321,7 @@ class TermdeckApp {
     this.notebookEditorModels = new Map();
     this.notebookMounted = false;
     this.notebookCopiesOpen = false;
+    this.notebookExpandedCopy = null;
     this.notebookSearchIndex = 0;
     this.notebookTitleTimer = 0;
     this.notebookResizePointerId = null;
@@ -356,6 +357,7 @@ class TermdeckApp {
                           regex: urlParams.get("re") === "1" };
     } else this.initialNav = null;
     this.$ = (id) => document.getElementById(id);
+    this.ensureDesktopTerminalsHeader();
     this.applyVscodeModeLayout();
   }
 
@@ -1618,6 +1620,7 @@ class TermdeckApp {
     this.$("history-prompt").addEventListener("input", () => {
       const view = this.views.get(this.activeId);
       if (!view) return;
+      this.markPromptWrapActivity(view);
       view.promptSubmitEntered = false;
       view.promptSubmitting = false;
       clearTimeout(view.promptSubmitTimer);
@@ -2493,7 +2496,7 @@ class TermdeckApp {
       add.id = "new-session-btn";
       add.className = "section-toggle terminal-new-toggle";
       add.textContent = "+";
-      add.title = `New terminal (${this.bindingToDisplay(this.bindingFor("new-terminal"))})`;
+      add.title = this.shortcutTitle("New terminal", "new-terminal");
       add.setAttribute("aria-label", add.title);
       add.onclick = (event) => {
         event.stopPropagation();
@@ -2503,6 +2506,13 @@ class TermdeckApp {
       label.appendChild(controls);
     }
     return label;
+  }
+
+  ensureDesktopTerminalsHeader(list = this.$("session-list")) {
+    if (this.vscodeMode || !list || list.querySelector("#new-session-btn")) return;
+    const header = this.sectionLabel("terminals");
+    this.attachGroupDropTarget(header, null);
+    list.prepend(header);
   }
 
   collapsibleSectionLabel(text, field, extra = null) {
@@ -3100,7 +3110,7 @@ class TermdeckApp {
     const close = document.createElement("button");
     close.className = "item-close";
     close.textContent = "✕";
-    close.title = "Close terminal (⌘⇧⌫ when active)";
+    close.title = this.shortcutTitle("Close terminal", "close-item");
     close.onclick = (event) => { event.stopPropagation(); this.closeSession(s.session_id); };
     const groupIndicator = document.createElement("span");
     groupIndicator.className = "group-drop-indicator";
@@ -3138,9 +3148,10 @@ class TermdeckApp {
   }
 
   renderList() {
-    this.migrateLegacyPinnedLayout();
     const list = this.$("session-list");
     list.textContent = "";
+    this.ensureDesktopTerminalsHeader(list);
+    this.migrateLegacyPinnedLayout();
     const currentSessionIds = new Set(this.sessions.map((session) => session.session_id));
     this.sidebarSelectedSessionIds = new Set([...this.sidebarSelectedSessionIds]
       .filter((sessionId) => currentSessionIds.has(sessionId)));
@@ -3177,16 +3188,7 @@ class TermdeckApp {
       };
       layout.sort((a, b) => entryActivity(b) - entryActivity(a));
     }
-    let terminalsHeaderShown = false;
-    const ensureTerminalsHeader = () => {
-      if (terminalsHeaderShown) return;
-      const header = this.sectionLabel("terminals");
-      this.attachGroupDropTarget(header, null);
-      list.appendChild(header);
-      terminalsHeaderShown = true;
-    };
     if (this.activitySort) {
-      ensureTerminalsHeader();
       for (const session of visibleSessions) this.renderTerminalItem(session, list);
     } else {
       for (const entry of layout) {
@@ -3195,13 +3197,11 @@ class TermdeckApp {
           const group = groupsById.get(id);
           if (!group) continue;
           const members = grouped.get(id) || [];
-          ensureTerminalsHeader();
           this.renderTerminalGroup(group, members, list);
           continue;
         }
         const session = sessionsById.get(id);
         if (!session || sessionGroups[id]) continue;
-        ensureTerminalsHeader();
         this.renderTerminalItem(session, list);
       }
     }
@@ -3222,7 +3222,7 @@ class TermdeckApp {
           const close = document.createElement("button");
           close.className = "item-close";
           close.textContent = "✕";
-          close.title = "Close file (⌘⇧⌫ when active)";
+          close.title = this.shortcutTitle("Close file", "close-item");
           close.onclick = (e) => { e.stopPropagation(); void this.closeFile(key); };
           item.append(this.fileTypeIconEl(entry.name, "file-type-icon"), name);
           item.appendChild(close);
@@ -3705,6 +3705,11 @@ class TermdeckApp {
     return binding ? `${label}   ${this.bindingToDisplay(binding)}` : label;
   }
 
+  shortcutTitle(label, actionId) {
+    const binding = this.bindingToDisplay(this.bindingFor(actionId));
+    return binding ? `${label} (${binding})` : label;
+  }
+
   keybindingDefinitions() {
     return this.vscodeMode ? VSCODE_KEYBINDINGS : DESKTOP_KEYBINDINGS;
   }
@@ -3747,9 +3752,11 @@ class TermdeckApp {
     if (historyScrollButton) historyScrollButton.title = `Scroll transcript to bottom (${scrollBottomAction})`;
     const newSession = this.$("new-session-btn");
     if (newSession) {
-      newSession.title = `New terminal (${this.bindingToDisplay(this.bindingFor("new-terminal"))})`;
+      newSession.title = this.shortcutTitle("New terminal", "new-terminal");
       newSession.setAttribute("aria-label", newSession.title);
     }
+    const emptyState = this.$("empty-state");
+    if (emptyState) emptyState.textContent = "no terminals — press + to open one";
     const selectionButtons = [["selection-copy", "Copy selection"], ["selection-note-new", "Add selection as a new note"],
       ["selection-note-append", "Append selection to note"]];
     for (const [id, label] of selectionButtons) {
@@ -3893,9 +3900,9 @@ class TermdeckApp {
       this.addContextItem(menu, "Open", () => this.openFile(this.treeRoot, rel, null, row));
       this.markTreeSelection(row);
     }
-    this.addContextItem(menu, "Rename…   ⌃R", () => this.renameTreePath(rel));
-    this.addContextItem(menu, "Move…   ⌃M", () => this.moveTreePath(rel));
-    this.addContextItem(menu, "Delete (to Trash)   ⌘⌫", () => this.deleteTreePath(rel));
+    this.addContextItem(menu, "Rename…", () => this.renameTreePath(rel));
+    this.addContextItem(menu, "Move…", () => this.moveTreePath(rel));
+    this.addContextItem(menu, "Delete (to Trash)", () => this.deleteTreePath(rel));
     this.addContextItem(menu, "Copy path", () => navigator.clipboard.writeText(`${this.treeRoot}/${rel}`));
     menu.classList.remove("hidden");
     menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 10) + "px";
@@ -5397,13 +5404,15 @@ class TermdeckApp {
   sendHistoryPrompt(options = {}) {
     if (!this.historyOpen || this.activeFileKey !== null || !this.activeId) return;
     const prompt = this.$("history-prompt");
-    const text = prompt.value;
+    const rawText = prompt.value;
+    const text = this.settings.prompt_wrap_guard ? rawText.replace(/\r\n/g, "\n").replace(/[\r\n]+$/, "") : rawText;
     if (!text.trim()) return;
     const view = this.views.get(this.activeId);
     if (!view || !view.ws || view.ws.readyState !== WebSocket.OPEN) {
       this.$("status-name").textContent = "terminal is still connecting…";
       return;
     }
+    this.markPromptWrapActivity(view);
     view.promptDraft = text;
     view.promptSubmitting = true;
     view.promptSubmitEntered = false;
@@ -5412,6 +5421,7 @@ class TermdeckApp {
     const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
     const queue = !!options.queue && this.session(this.activeId)?.agent_kind === "codex";
     const sessionId = this.activeId;
+    if (this.session(sessionId)?.agent_kind === "codex") this.deferTerminalReflowAfterPrompt(view);
     if (!queue) {
       this.historyPendingProcessing.set(sessionId, Date.now());
       this.updateHistoryThinkingIndicator();
@@ -5568,6 +5578,7 @@ class TermdeckApp {
   }
 
   writePromptDraftToTerminal(view, text) {
+    this.markPromptWrapActivity(view);
     this.sendInput(view, "\x15");
     if (text) this.sendInput(view, text.includes("\n") ? this.terminalPastePayload(view, text) : text);
   }
@@ -5598,6 +5609,35 @@ class TermdeckApp {
     }, PROMPT_DRAFT_SYNC_PASTE_DELAY_MS);
   }
 
+  markPromptWrapActivity(view) {
+    if (!view || !this.settings.prompt_wrap_guard) return;
+    view.promptWrapGuardUntil = Date.now() + PROMPT_WRAP_GUARD_IDLE_MS;
+    clearTimeout(view.promptWrapGuardTimer);
+    view.promptWrapGuardTimer = setTimeout(() => {
+      view.promptWrapGuardTimer = 0;
+      if (view.closed || view.promptWrapGuardUntil > Date.now() || !view.container.classList.contains("visible")) return;
+      this.scheduleV2Fit(view);
+    }, PROMPT_WRAP_GUARD_IDLE_MS + 20);
+  }
+
+  deferTerminalReflowAfterPrompt(view) {
+    if (!view || this.session(view.sessionId)?.agent_kind !== "codex") return;
+    view.promptSubmissionReflowGuardUntil = Date.now() + CODEX_PROMPT_REFLOW_GUARD_MS;
+    clearTimeout(view.promptSubmissionReflowGuardTimer);
+    view.promptSubmissionReflowGuardTimer = setTimeout(() => {
+      view.promptSubmissionReflowGuardTimer = 0;
+      if (!view.closed && view.container.classList.contains("visible") && this.activeId === view.sessionId) {
+        this.scheduleTerminalTailRepair(view);
+      }
+    }, CODEX_PROMPT_REFLOW_GUARD_MS + 40);
+  }
+
+  shouldDeferPromptWrapFit(view) {
+    if (!view) return false;
+    return (this.settings.prompt_wrap_guard && view.promptWrapGuardUntil > Date.now()) ||
+      view.promptSubmissionReflowGuardUntil > Date.now();
+  }
+
   isPastedTerminalInput(data) {
     const input = String(data || "");
     return input.includes("\x1b[200~") || input.includes("\x1b[201~") || input.length >= 128;
@@ -5621,6 +5661,7 @@ class TermdeckApp {
   }
 
   sendTrackedInput(view, data) {
+    this.markPromptWrapActivity(view);
     const pastedInput = this.isPastedTerminalInput(data);
     const session = this.session(view.sessionId);
     const submittedText = (data === "\r" || data === "\n") && session && session.agent_kind !== "none"
@@ -5645,6 +5686,9 @@ class TermdeckApp {
           view.promptDraftSyncTimer = 0;
         }, 3000);
       }
+    }
+    if ((data === "\r" || data === "\n") && session?.agent_kind === "codex") {
+      this.deferTerminalReflowAfterPrompt(view);
     }
     this.sendInput(view, data);
     if (submittedText && view.ws && view.ws.readyState === WebSocket.OPEN) this.recordPromptHistory(view.sessionId, submittedText);
@@ -6695,7 +6739,7 @@ class TermdeckApp {
     copiedTab.className = "notebook-tab notebook-copies-tab" + (this.notebookCopiesOpen ? " active" : "");
     copiedTab.setAttribute("role", "tab");
     copiedTab.setAttribute("aria-selected", String(this.notebookCopiesOpen));
-    copiedTab.title = "Recently copied text (⌘⇧V)";
+    copiedTab.title = this.shortcutTitle("Recently copied text", "selection-copy-history");
     const copiedIcon = document.createElement("span");
     copiedIcon.className = "codicon codicon-copy notebook-copies-icon";
     const copiedLabel = document.createElement("span");
@@ -6727,10 +6771,33 @@ class TermdeckApp {
     for (const text of history) {
       const row = document.createElement("div");
       row.className = "notebook-recent-copy-row";
+      const expanded = this.notebookExpandedCopy === text;
+      row.classList.toggle("expanded", expanded);
+      row.title = expanded ? "Collapse copied text" : "Expand copied text";
       const content = document.createElement("div");
       content.className = "notebook-recent-copy-text";
       content.textContent = text;
-      content.title = text;
+      content.title = expanded ? "Collapse copied text" : "Expand copied text";
+      content.tabIndex = 0;
+      content.setAttribute("role", "button");
+      content.setAttribute("aria-expanded", String(expanded));
+      const toggleExpanded = () => {
+        this.notebookExpandedCopy = expanded ? null : text;
+        this.renderNotebookRecentCopies();
+      };
+      row.onclick = (event) => {
+        if (event.target.closest("button")) return;
+        toggleExpanded();
+      };
+      content.onclick = (event) => {
+        event.stopPropagation();
+        toggleExpanded();
+      };
+      content.onkeydown = (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        toggleExpanded();
+      };
       const actions = document.createElement("span");
       actions.className = "notebook-recent-copy-actions";
       const copy = document.createElement("button");
@@ -7073,6 +7140,37 @@ class TermdeckApp {
     host.focus();
   }
 
+  shouldReconnectIdleClaudeView(view, session, previousId) {
+    if (!view || !session || session.agent_kind !== "claude" || previousId === session.session_id ||
+        view.closed || view.replaying || view.scrollMode !== "follow" || !view.hiddenAt || !view.ws ||
+        view.ws.readyState !== WebSocket.OPEN) return false;
+    return Date.now() - view.hiddenAt >= TERMINAL_CLAUDE_IDLE_RECONNECT_MS;
+  }
+
+  reconnectIdleClaudeView(view) {
+    if (!view?.ws || view.closed || view.reconnectAfterClose) return;
+    view.reconnectAfterClose = true;
+    view.suppressReconnect = true;
+    view.ws.close(1000, "idle Claude terminal replay");
+  }
+
+  scheduleClaudeInitialReplayRecovery(id, view) {
+    if (!view || view.closed || view.claudeInitialReplayRecoveryAttempted || view.claudeInitialReplayCheckTimer) return;
+    clearTimeout(view.claudeInitialReplayCheckTimer);
+    view.claudeInitialReplayCheckTimer = setTimeout(this.recoverClaudeInitialReplay.bind(this, id, view), 900);
+  }
+
+  recoverClaudeInitialReplay(id, view) {
+    view.claudeInitialReplayCheckTimer = 0;
+    if (view.closed || view.claudeInitialReplayRecoveryAttempted || this.activeId !== id || this.historyOpen ||
+        this.activeFileKey !== null || !view.container.classList.contains("visible") || view.replaying || !view.ws ||
+        view.ws.readyState !== WebSocket.OPEN || this.session(id)?.agent_kind !== "claude") return;
+    const buffer = view.term?.buffer?.active;
+    if (!buffer || buffer.baseY > view.term.rows + 2) return;
+    view.claudeInitialReplayRecoveryAttempted = true;
+    this.reconnectIdleClaudeView(view);
+  }
+
   activate(id, options = {}) {
     this.closePromptHistory();
     this.hideSelectionActions(true);
@@ -7177,7 +7275,8 @@ class TermdeckApp {
     }
     if (view) {
       this.refreshTerminalAppearance(view);
-      if (!view.ws) this.connect(id, view);
+      if (this.shouldReconnectIdleClaudeView(view, s, previousId)) this.reconnectIdleClaudeView(view);
+      else if (!view.ws) this.connect(id, view);
       if (this.isTerminalScrollV2()) {
         // Only a genuinely first-ever connection should default to follow mode. A background tab's
         // websocket can close on its own (ws.onclose only auto-reconnects the ACTIVE tab, by design,
@@ -7279,6 +7378,9 @@ class TermdeckApp {
                    codexReflowEverAttempted: false, preserveRowsFromBottom: 0, reconnectReset: false,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
+                   promptSubmissionReflowGuardUntil: 0, promptSubmissionReflowGuardTimer: 0, promptWrapGuardUntil: 0, promptWrapGuardTimer: 0,
+                   reconnectAfterClose: false, claudeInitialReplayCheckTimer: 0,
+                   claudeInitialReplayRecoveryAttempted: false,
                    promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, promptDraftSyncDebounceTimer: 0,
                    pendingDraftSync: null, pendingTerminalDraft: null,
@@ -7481,9 +7583,6 @@ class TermdeckApp {
     view.lastSentCols = null;
     view.lastSentRows = null;
     ws.onopen = () => {
-      // Recorded per-connect (not just per-view) so the snapshot handler below can tell whether THIS
-      // specific replay followed a buffer reset -- everConnected itself is true for every reconnect
-      // from here on, so it cannot answer that by the time onmessage runs.
       view.reconnectReset = view.everConnected;
       if (view.everConnected) {
         view.replaying = true;
@@ -7491,7 +7590,6 @@ class TermdeckApp {
           if (view.keepBottom && !view.manualScroll) view.pinBottomUntil = Date.now() + 8000;
           else view.pinBottomUntil = 0;
         }
-        view.term.reset();
       }
       view.everConnected = true;
       if (this.isTerminalScrollV2()) {
@@ -7524,6 +7622,7 @@ class TermdeckApp {
       if (!view.container.classList.contains("visible")) view.hiddenOutputPending = true;
       if (!view.awaitingSnapshot) this.touchSessionActivity(id);
       if (view.awaitingSnapshot) {
+        if (view.reconnectReset && e.data.byteLength > 0) view.term.reset();
         const snapshotScrollGeneration = view.manualScrollGeneration;
         const v2 = this.isTerminalScrollV2();
         const followSnapshot = v2 ? view.scrollMode === "follow" : view.keepBottom && !view.manualScroll;
@@ -7541,6 +7640,9 @@ class TermdeckApp {
         this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
           this.refreshTerminal(view);
           view.replaying = false;
+          if (!view.reconnectReset && this.session(id)?.agent_kind === "claude") {
+            this.scheduleClaudeInitialReplayRecovery(id, view);
+          }
           if (v2 && view.container.classList.contains("visible")) {
             view.forceResizeAfterFit = true;
             this.scheduleV2Fit(view);
@@ -7607,12 +7709,20 @@ class TermdeckApp {
       });
     };
     ws.onclose = () => {
+      const reconnectAfterClose = view.reconnectAfterClose;
+      view.reconnectAfterClose = false;
       view.ws = null;
       if (view.promptQueueMutation) {
         view.promptQueueMutation = false;
         view.promptQueue.forEach((item) => { delete item.mutationPending; });
         this.renderHistoryQueue(view);
         if (id === this.activeId) this.$("status-name").textContent = "queued prompt update disconnected — retry";
+      }
+      if (reconnectAfterClose) view.suppressReconnect = false;
+      if (reconnectAfterClose && !view.closed && id === this.activeId && this.activeFileKey === null &&
+          !this.session(id)?.dormant) {
+        this.connect(id, view);
+        return;
       }
       if (!view.closed && !view.suppressReconnect && id === this.activeId && this.activeFileKey === null &&
           !this.session(id)?.dormant) {
@@ -8027,6 +8137,7 @@ class TermdeckApp {
   scheduleV2Fit(view, options = {}) {
     const forceResize = !!options.force;
     if (!view || view.closed || !view.container.classList.contains("visible")) return;
+    if (this.shouldDeferPromptWrapFit(view)) return;
     if (view.v2FitFrame && forceResize) {
       cancelAnimationFrame(view.v2FitFrame);
       view.v2FitFrame = 0;
@@ -8035,6 +8146,7 @@ class TermdeckApp {
     view.v2FitFrame = requestAnimationFrame(() => {
       view.v2FitFrame = 0;
       if (view.closed || !view.container.classList.contains("visible")) return;
+      if (this.shouldDeferPromptWrapFit(view)) return;
       const rect = view.container.getBoundingClientRect();
       if (rect.width < 40 || rect.height < 40) {
         const retryLimit = forceResize ? TERMINAL_V2_FIT_RETRY_LIMIT : 12;
@@ -8270,6 +8382,7 @@ class TermdeckApp {
 
   repairTerminalRenderIfStale(view) {
     if (!view || view.closed || !view.container.classList.contains("visible")) return false;
+    if (this.shouldDeferPromptWrapFit(view)) return false;
     if (!this.terminalTailRenderMismatch(view)) return false;
     const restoreLine = view.term.buffer.active.viewportY;
     // Captured as an OFFSET, not the absolute index above: a cols change reflows the whole buffer
@@ -8327,10 +8440,11 @@ class TermdeckApp {
     for (const delay of TERMINAL_ACTIVE_SETTLE_DELAYS_MS) {
       view.settleWatchdogTimers.push(setTimeout(() => {
         if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
+        if (this.shouldDeferPromptWrapFit(view)) return;
         const beforeCols = view.term.cols, beforeRows = view.term.rows;
         view.fit.fit();
         const colsChanged = view.term.cols !== beforeCols || view.term.rows !== beforeRows;
-        if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
+        if (colsChanged && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows);
         if (colsChanged || this.terminalTailRenderMismatch(view)) {
           this.repairTerminalRenderIfStale(view);
         }
@@ -8439,6 +8553,7 @@ class TermdeckApp {
 
   forceVisibleTerminalReflowViaClear(view) {
     if (!view || view.closed || view.v2ForcedReflowFrame || !view.container.classList.contains("visible")) return false;
+    if (this.shouldDeferPromptWrapFit(view)) return false;
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return false;
     const restoreLine = view.term.buffer.active.viewportY;
@@ -8488,6 +8603,7 @@ class TermdeckApp {
   forceVisibleTerminalReflowViaResizeNudge(view, nudgeCols = 2, minHideMs = 0) {
     if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
         !view.container.classList.contains("visible")) return false;
+    if (this.shouldDeferPromptWrapFit(view)) return false;
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return false;
     const computed = window.getComputedStyle(view.container);
@@ -8678,6 +8794,9 @@ class TermdeckApp {
     clearTimeout(view.manualScrollReleaseTimer);
     clearTimeout(view.scrollSettleTimer);
     clearTimeout(view.resizeRepairTimer);
+    clearTimeout(view.claudeInitialReplayCheckTimer);
+    clearTimeout(view.promptWrapGuardTimer);
+    clearTimeout(view.promptSubmissionReflowGuardTimer);
     clearTimeout(view.promptDraftSyncTimer);
     clearTimeout(view.promptDraftSyncDebounceTimer);
     for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
@@ -9010,6 +9129,8 @@ class TermdeckApp {
       () => { this.settings.show_terminal_age = !this.settings.show_terminal_age; }));
     pop.appendChild(this.buildToggleRow("Editor wrap", () => (this.settings.word_wrap ? "on" : "off"),
       () => { this.settings.word_wrap = !this.settings.word_wrap; }));
+    pop.appendChild(this.buildToggleRow("Prompt wrap fix (test)", () => (this.settings.prompt_wrap_guard ? "on" : "off"),
+      () => { this.settings.prompt_wrap_guard = !this.settings.prompt_wrap_guard; }));
     pop.appendChild(this.buildToggleRow("Markdown transcript mode", () => (this.settings.history_mode ? "on" : "off"),
       () => { this.setHistoryMode(!this.settings.history_mode); }));
     pop.appendChild(this.buildActionRow("Keyboard shortcuts", "edit", () => { pop.classList.add("hidden"); this.openKeybindings(); }));
