@@ -64,6 +64,11 @@ const TERMINAL_RENDER_CHECK_INTERVAL_MS = 3000;
 const TERMINAL_RENDER_CONFIRM_DELAY_MS = 700;
 const TERMINAL_RENDER_REPAIR_COOLDOWN_MS = 10000;
 const TERMINAL_ACTIVATION_REFLOW_IDLE_MS = 1200;
+const TERMINAL_VIEWPORT_RESTORE_IDLE_MS = 260;
+const TERMINAL_VIEWPORT_RESTORE_TIMEOUT_MS = 3000;
+const TERMINAL_VIEWPORT_ANCHOR_ROWS = 12;
+const TERMINAL_VIEWPORT_ANCHOR_MAX_CHARS = 180;
+const TERMINAL_VIEWPORT_ANCHOR_MIN_CHARS = 24;
 const OPEN_FILES_MAX_ENTRIES = 80;
 const TERMINAL_V2_FIT_RETRY_LIMIT = 32;
 const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
@@ -8337,6 +8342,7 @@ class TermdeckApp {
                    activationRepairFrame: 0, tailRepairSignature: "", lastRenderRepairAt: 0,
                    renderedRows: [], renderedViewportY: null, renderedCols: 0, renderedTermRows: 0,
                    renderRepairArmed: true, renderObserver: null,
+                   viewportAnchorRestore: null, viewportAnchorRestoreTimer: 0,
                    lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [], codexReflowFollowupTimers: [],
                    preserveRowsFromBottom: 0, reconnectReset: false,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
@@ -8375,6 +8381,7 @@ class TermdeckApp {
     };
     const markV2Preserve = () => {
       if (!this.isTerminalScrollV2()) return;
+      this.cancelTerminalViewportRestore(view);
       // Wheel/scrollbar intent arrives before xterm publishes onScroll().
       // Preserve immediately so a live output callback in that gap cannot
       // pull the viewport back to the prompt.
@@ -8415,6 +8422,7 @@ class TermdeckApp {
       if (event.detail !== 3 || this.activeId !== id || this.activeFileKey !== null || this.historyOpen) return;
       if (this.session(id)?.agent_kind !== "codex") return;
       if (!view.ws || view.ws.readyState !== WebSocket.OPEN) return;
+      this.beginTerminalViewportRestore(view, this.captureTerminalViewportAnchor(view));
       view.ws.send(JSON.stringify({ type: "repaint" }));
       this.$("status-name").textContent = "requesting Codex repaint…";
     }, true);
@@ -9347,6 +9355,156 @@ class TermdeckApp {
     });
   }
 
+  normalizeTerminalViewportAnchorText(value) {
+    return String(value || "").replace(/\u00a0/g, " ").replace(/\s+/g, "");
+  }
+
+  captureTerminalViewportAnchor(view) {
+    if (!view || view.closed || this.session(view.sessionId)?.agent_kind !== "codex" ||
+        view.scrollMode === "follow" || this.xtermAtBottom(view)) return null;
+    const buffer = view.term.buffer.active;
+    const viewportY = Math.max(0, Number(buffer.viewportY || 0));
+    const visibleRows = Math.min(TERMINAL_VIEWPORT_ANCHOR_ROWS, Math.max(1, Number(view.term.rows || 1)));
+    const normalizedRows = [];
+    for (let offset = 0; offset < visibleRows; offset++) {
+      const line = buffer.getLine(viewportY + offset);
+      normalizedRows.push(this.normalizeTerminalViewportAnchorText(line ? line.translateToString(true) : ""));
+    }
+    const candidates = [];
+    for (let start = 0; start < normalizedRows.length; start++) {
+      let text = "";
+      for (let offset = start; offset < normalizedRows.length && text.length < TERMINAL_VIEWPORT_ANCHOR_MAX_CHARS; offset++) {
+        text += normalizedRows[offset];
+      }
+      text = text.slice(0, TERMINAL_VIEWPORT_ANCHOR_MAX_CHARS);
+      const alphaNumericCount = (text.match(/[A-Za-z0-9]/g) || []).length;
+      if (text.length >= TERMINAL_VIEWPORT_ANCHOR_MIN_CHARS && alphaNumericCount >= 12) {
+        candidates.push({ text, rowOffset: start });
+      }
+    }
+    if (!candidates.length) return null;
+    candidates.sort((left, right) => left.rowOffset - right.rowOffset || right.text.length - left.text.length);
+    return {
+      candidates: candidates.slice(0, 6),
+      rowsFromBottom: Math.max(0, Number(buffer.baseY || 0) - viewportY),
+      redrawSeen: false,
+      escapeMatchLength: 0,
+      deadline: 0,
+    };
+  }
+
+  beginTerminalViewportRestore(view, anchor) {
+    if (!anchor || !view || view.closed) return false;
+    if (!view.viewportAnchorRestore) view.viewportAnchorRestore = anchor;
+    view.viewportAnchorRestore.deadline = Date.now() + TERMINAL_VIEWPORT_RESTORE_TIMEOUT_MS;
+    this.scheduleTerminalViewportRestore(view, TERMINAL_VIEWPORT_RESTORE_IDLE_MS);
+    return true;
+  }
+
+  cancelTerminalViewportRestore(view) {
+    if (!view) return;
+    clearTimeout(view.viewportAnchorRestoreTimer);
+    view.viewportAnchorRestoreTimer = 0;
+    view.viewportAnchorRestore = null;
+  }
+
+  noteTerminalViewportRestoreOutput(view, data) {
+    const anchor = view?.viewportAnchorRestore;
+    if (!anchor || anchor.redrawSeen) return;
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    const eraseScrollback = [0x1b, 0x5b, 0x33, 0x4a];
+    let matched = anchor.escapeMatchLength || 0;
+    for (const byte of bytes) {
+      if (byte === eraseScrollback[matched]) matched += 1;
+      else matched = byte === eraseScrollback[0] ? 1 : 0;
+      if (matched !== eraseScrollback.length) continue;
+      anchor.redrawSeen = true;
+      matched = 0;
+      break;
+    }
+    anchor.escapeMatchLength = matched;
+  }
+
+  terminalViewportAnchorTarget(view, anchor) {
+    const buffer = view.term.buffer.active;
+    let text = "";
+    const rowStarts = [];
+    for (let row = 0; row < buffer.length; row++) {
+      const line = buffer.getLine(row);
+      const normalized = this.normalizeTerminalViewportAnchorText(line ? line.translateToString(true) : "");
+      if (!normalized) continue;
+      rowStarts.push({ offset: text.length, row });
+      text += normalized;
+    }
+    if (!text || !rowStarts.length) return null;
+    let best = null;
+    for (const candidate of anchor.candidates) {
+      let offset = text.indexOf(candidate.text);
+      let matches = 0;
+      while (offset >= 0 && matches < 64) {
+        const row = this.terminalViewportRowForTextOffset(rowStarts, offset);
+        const expectedRowsFromBottom = Math.max(0, anchor.rowsFromBottom - candidate.rowOffset);
+        const score = Math.abs((Number(buffer.baseY || 0) - row) - expectedRowsFromBottom);
+        if (!best || score < best.score || (score === best.score && candidate.text.length > best.length)) {
+          best = { line: Math.max(0, row - candidate.rowOffset), score, length: candidate.text.length };
+        }
+        matches += 1;
+        offset = text.indexOf(candidate.text, offset + 1);
+      }
+    }
+    return best?.line ?? null;
+  }
+
+  terminalViewportRowForTextOffset(rowStarts, offset) {
+    let low = 0, high = rowStarts.length - 1;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (rowStarts[middle].offset <= offset) low = middle;
+      else high = middle - 1;
+    }
+    return rowStarts[low].row;
+  }
+
+  scheduleTerminalViewportRestore(view, delay = TERMINAL_VIEWPORT_RESTORE_IDLE_MS) {
+    const anchor = view?.viewportAnchorRestore;
+    if (!anchor || view.closed) return;
+    clearTimeout(view.viewportAnchorRestoreTimer);
+    const remaining = Math.max(0, anchor.deadline - Date.now());
+    view.viewportAnchorRestoreTimer = setTimeout(() => {
+      view.viewportAnchorRestoreTimer = 0;
+      this.restoreTerminalViewportAnchor(view);
+    }, Math.min(delay, remaining));
+  }
+
+  restoreTerminalViewportAnchor(view) {
+    const anchor = view?.viewportAnchorRestore;
+    if (!anchor || view.closed) return;
+    const expired = Date.now() >= anchor.deadline;
+    if (!anchor.redrawSeen) {
+      if (expired) this.cancelTerminalViewportRestore(view);
+      else this.scheduleTerminalViewportRestore(view);
+      return;
+    }
+    if (!expired && (view.outputWriteInFlight || view.outputQueue.length)) {
+      this.scheduleTerminalViewportRestore(view);
+      return;
+    }
+    const target = this.terminalViewportAnchorTarget(view, anchor);
+    if (target !== null) {
+      view.scrollMode = "preserve";
+      this.scrollTerminalV2ToLine(view, target);
+      this.cancelTerminalViewportRestore(view);
+      return;
+    }
+    if (!expired) {
+      this.scheduleTerminalViewportRestore(view);
+      return;
+    }
+    view.scrollMode = "preserve";
+    this.scrollTerminalV2ToLine(view, Math.max(0, view.term.buffer.active.baseY - anchor.rowsFromBottom));
+    this.cancelTerminalViewportRestore(view);
+  }
+
   scheduleV2Fit(view, options = {}) {
     const forceResize = !!options.force;
     if (!view || view.closed || !view.container.classList.contains("visible")) return;
@@ -9389,8 +9547,11 @@ class TermdeckApp {
       const rowsFromBottom = view.term.buffer.active.baseY - view.term.buffer.active.viewportY;
       // FitAddon is the public xterm sizing mechanism. v2 never writes to
       // .xterm-viewport or .xterm-scroll-area; xterm owns its scrollbar.
+      const viewportAnchor = this.captureTerminalViewportAnchor(view);
       view.fit.fit();
-      if (view.scrollMode !== "follow" && (view.term.cols !== beforeCols || view.term.rows !== beforeRows)) {
+      const terminalSizeChanged = view.term.cols !== beforeCols || view.term.rows !== beforeRows;
+      if (terminalSizeChanged) this.beginTerminalViewportRestore(view, viewportAnchor);
+      if (view.scrollMode !== "follow" && terminalSizeChanged) {
         this.scrollTerminalV2ToLine(view, Math.max(0, view.term.buffer.active.baseY - rowsFromBottom));
       }
       // A terminal may have been painted while its container was hidden or
@@ -9672,8 +9833,10 @@ class TermdeckApp {
     // differs, which repaints AND corrects wrapping in one pass. Re-check the mismatch afterward — a pure
     // paint glitch (fit is a no-op) still needs the appearance refresh below.
     const beforeCols = view.term.cols, beforeRows = view.term.rows;
+    const viewportAnchor = this.captureTerminalViewportAnchor(view);
     view.fit.fit();
     if (view.term.cols !== beforeCols || view.term.rows !== beforeRows) {
+      this.beginTerminalViewportRestore(view, viewportAnchor);
       if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
       if (!this.terminalTailRenderMismatch(view)) {
         if (follow) this.scrollTerminalV2ToBottom(view);
@@ -9729,8 +9892,10 @@ class TermdeckApp {
             this.sidebarResizeInProgress) return;
         if (this.shouldDeferPromptWrapFit(view)) return;
         const beforeCols = view.term.cols, beforeRows = view.term.rows;
+        const viewportAnchor = this.captureTerminalViewportAnchor(view);
         view.fit.fit();
         const colsChanged = view.term.cols !== beforeCols || view.term.rows !== beforeRows;
+        if (colsChanged) this.beginTerminalViewportRestore(view, viewportAnchor);
         if (colsChanged && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows);
         if (colsChanged || this.terminalTailRenderMismatch(view)) {
           this.repairTerminalRenderIfStale(view);
@@ -9938,6 +10103,7 @@ class TermdeckApp {
     const item = view.outputQueue.shift();
     if (!item) return;
     view.outputWriteInFlight = true;
+    this.noteTerminalViewportRestoreOutput(view, item.data);
     view.term.write(item.data, () => {
       // Always release the writer. A reconnect invalidates the old callback's
       // UI work but must not strand the new connection's queued output.
@@ -9953,6 +10119,7 @@ class TermdeckApp {
       if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleClaudeSnapshotSave(view);
       if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleClaudeStatusRowRefresh(view);
       if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleTerminalTailRepair(view);
+      if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleTerminalViewportRestore(view);
       this.drainTerminalWrites(view);
     });
   }
@@ -10068,6 +10235,7 @@ class TermdeckApp {
     clearTimeout(view.promptSubmissionReflowGuardTimer);
     clearTimeout(view.promptDraftSyncTimer);
     clearTimeout(view.promptDraftSyncDebounceTimer);
+    this.cancelTerminalViewportRestore(view);
     for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
     if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
     if (view.viewportRepairFrame) cancelAnimationFrame(view.viewportRepairFrame);
