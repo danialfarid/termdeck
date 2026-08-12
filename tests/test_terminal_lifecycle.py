@@ -5,9 +5,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from fastapi import HTTPException
+from fastapi import HTTPException, WebSocketDisconnect
 from watchdog.events import DirModifiedEvent, FileModifiedEvent, FileMovedEvent
 
+from tests.environment import TEST_DATA_DIRECTORY
 from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.file_service import ProjectFileService
 from termdeck.models import AgentKind, SessionRecord
@@ -467,6 +468,10 @@ class AgySessionActivityTest(unittest.TestCase):
 
 
 class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    def test_unit_test_data_directory_is_not_live_state(self) -> None:
+        self.assertNotEqual(TermdeckConfig.DATA_DIR, Path.home() / ".termdeck")
+        self.assertEqual(TermdeckConfig.DATA_DIR, Path(TEST_DATA_DIRECTORY.name))
+
     async def test_startup_marks_live_socket_as_detached_not_dormant(self) -> None:
         manager = TerminalSessionManager()
         saved = record()
@@ -583,6 +588,16 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(proc.resizes, [(119, 32), (120, 32)])
 
+    async def test_explicit_codex_repaint_nudges_the_live_pty(self) -> None:
+        manager, session, proc = self._session_whose_screen_was_stripped()
+        session.record.agent_kind = AgentKind.CODEX.value
+
+        with patch.object(TermdeckConfig, "SCREEN_REPAINT_NUDGE_HOLD_SECONDS", 0):
+            self.assertTrue(manager.request_screen_repaint(session.record.session_id))
+            await session.screen_repaint_task
+
+        self.assertEqual(proc.resizes, [(119, 32), (120, 32)])
+
     def _session_whose_screen_was_stripped(self):
         class FakeProc:
             alive = True
@@ -646,6 +661,16 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         ])
 
 class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
+    async def test_terminal_websocket_repaint_requests_server_pty_redraw(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        websocket = MagicMock()
+        websocket.receive_text = AsyncMock(side_effect=[json.dumps({"type": "repaint"}), WebSocketDisconnect()])
+
+        await server._pump_client_to_pty(websocket, "codex-session")
+
+        server.manager.request_screen_repaint.assert_called_once_with("codex-session")
+
     async def test_follow_up_prompt_directly_steers_busy_task_session(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)
         server.manager = MagicMock()

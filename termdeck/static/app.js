@@ -8414,8 +8414,10 @@ class TermdeckApp {
     container.addEventListener("click", (event) => {
       if (event.detail !== 3 || this.activeId !== id || this.activeFileKey !== null || this.historyOpen) return;
       if (this.session(id)?.agent_kind !== "codex") return;
-      if (this.forceVisibleTerminalReflow(view)) this.$("status-name").textContent = "terminal repainted";
-    });
+      if (!view.ws || view.ws.readyState !== WebSocket.OPEN) return;
+      view.ws.send(JSON.stringify({ type: "repaint" }));
+      this.$("status-name").textContent = "requesting Codex repaint…";
+    }, true);
     // Capture before xterm's wheel handler so the first wheel after a tab
     // switch cannot be mistaken for an automatic bottom-follow scroll.
     container.addEventListener("wheel", markManualScroll, { passive: true, capture: true });

@@ -72,6 +72,7 @@ class WsMessageFields:
     ROWS = "rows"
     INPUT = "input"
     RESIZE = "resize"
+    REPAINT = "repaint"
     EXIT = "exit"
     CODE = "code"
     AGENT_SESSION = "agent_session"

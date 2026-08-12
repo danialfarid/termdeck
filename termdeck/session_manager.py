@@ -1411,6 +1411,13 @@ class TerminalSessionManager:
             ms.record.cols, ms.record.rows = cols, rows
             self._persist()
 
+    def request_screen_repaint(self, session_id: str) -> bool:
+        ms = self._sessions[session_id]
+        if ms.record.agent_kind != AgentKind.CODEX.value or ms.proc is None or not ms.proc.alive:
+            return False
+        self._schedule_screen_repaint(ms, 0)
+        return ms.screen_repaint_task is not None
+
     async def restart_session(self, session_id: str, permission: str = "") -> None:
         ms = self._sessions[session_id]
         if ms.detect_task is not None:
