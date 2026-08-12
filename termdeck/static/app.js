@@ -387,6 +387,7 @@ class TermdeckApp {
     this.quickOpenGeneration = 0;
     this.conversationOutlineOpen = false;
     this.conversationOutlineSessionId = null;
+    this.conversationOutlineTurnsBySession = new Map();
     this.lastSearchFiles = [];
     this.notebookEditor = null;
     this.notebookEditorModels = new Map();
@@ -4004,6 +4005,11 @@ class TermdeckApp {
     }
     const historyScrollButton = this.$("history-scroll-bottom");
     if (historyScrollButton) historyScrollButton.title = `Scroll transcript to bottom (${scrollBottomAction})`;
+    const conversationOutlineButton = this.$("conversation-outline-toggle");
+    if (conversationOutlineButton) {
+      conversationOutlineButton.title = this.shortcutTitle("Conversation outline", "conversation-outline");
+      conversationOutlineButton.setAttribute("aria-label", conversationOutlineButton.title);
+    }
     const newSession = this.$("new-session-btn");
     if (newSession) {
       newSession.title = this.shortcutTitle("New terminal", "new-terminal");
@@ -6437,7 +6443,6 @@ class TermdeckApp {
     }
     this.historyTurns = turns;
     this.historyTurnsBySession.set(sessionId, turns);
-    if (this.conversationOutlineOpen && this.conversationOutlineSessionId === sessionId) this.renderConversationOutline(turns);
     this.renderHistoryMeta();
     this.updateHistoryEditToggle();
     this.updateActiveThinkingBlock();
@@ -6578,7 +6583,6 @@ class TermdeckApp {
     });
     quickInput.addEventListener("keydown", (event) => this.handleQuickOpenKey(event));
     this.$("file-outline-toggle").onclick = () => this.toggleFileInspector("outline");
-    this.$("file-git-toggle").onclick = () => this.toggleFileInspector("git");
     this.$("file-inspector-close").onclick = () => this.closeFileInspector();
     this.$("file-inspector-refresh").onclick = () => this.refreshFileInspector();
     this.$("file-split-toggle").onclick = () => this.toggleSplitEditor();
@@ -6652,7 +6656,6 @@ class TermdeckApp {
       { title: "New terminal", icon: "add", run: () => this.openModal() },
       { title: "Show Problems", icon: "warning", run: () => this.setProblemsOpen(true) },
       { title: "Show file Outline", icon: "symbol-class", run: () => this.toggleFileInspector("outline", true) },
-      { title: "Show Git changes", icon: "source-control", run: () => this.toggleFileInspector("git", true) },
       { title: "Split active editor", icon: "split-horizontal", run: () => this.toggleSplitEditor(true) },
       { title: "Reveal active file in tree", icon: "target", run: () => void this.revealActiveFile() },
       { title: "Open Markdown transcript", icon: "markdown", run: () => this.setHistoryMode(true) },
@@ -6866,7 +6869,6 @@ class TermdeckApp {
     this.fileInspectorMode = mode;
     this.$("file-inspector").classList.remove("hidden");
     this.$("file-outline-toggle").classList.toggle("on", mode === "outline");
-    this.$("file-git-toggle").classList.toggle("on", mode === "git");
     this.refreshFileInspector();
   }
 
@@ -6874,13 +6876,11 @@ class TermdeckApp {
     this.fileInspectorMode = null;
     this.$("file-inspector").classList.add("hidden");
     this.$("file-outline-toggle").classList.remove("on");
-    this.$("file-git-toggle").classList.remove("on");
     this.editor?.layout();
   }
 
   refreshFileInspector() {
     if (this.fileInspectorMode === "outline") this.renderFileOutline();
-    else if (this.fileInspectorMode === "git") void this.renderGitChanges();
   }
 
   activeFileOutlineSymbols() {
@@ -6943,65 +6943,6 @@ class TermdeckApp {
     this.editor.setPosition({ lineNumber: line, column });
     this.editor.revealLineInCenter(line);
     this.editor.focus();
-  }
-
-  async renderGitChanges() {
-    if (this.fileInspectorMode !== "git") return;
-    this.$("file-inspector-title").textContent = "Git changes";
-    const body = this.$("file-inspector-body");
-    body.textContent = "";
-    const loading = document.createElement("div");
-    loading.className = "file-inspector-empty";
-    loading.textContent = "Loading Git status…";
-    body.appendChild(loading);
-    const root = this.searchRoot();
-    const response = await fetch(`/api/files/git-status?root=${encodeURIComponent(root)}`);
-    if (this.fileInspectorMode !== "git") return;
-    body.textContent = "";
-    if (!response.ok) {
-      loading.textContent = "Git status unavailable.";
-      body.appendChild(loading);
-      return;
-    }
-    const statuses = await response.json();
-    const files = Object.entries(statuses).sort(([left], [right]) => left.localeCompare(right));
-    const groups = [
-      ["Modified", ["M"]], ["Added", ["A"]], ["Untracked", ["?"]], ["Deleted", ["D"]],
-      ["Renamed", ["R", "C"]], ["Other", []],
-    ];
-    const renderedPaths = new Set();
-    for (const [label, acceptedStatuses] of groups) {
-      const groupedFiles = files.filter(([path, status]) => !renderedPaths.has(path) &&
-        (!acceptedStatuses.length || acceptedStatuses.includes(status)));
-      if (!groupedFiles.length) continue;
-      const heading = document.createElement("div");
-      heading.className = "file-inspector-group";
-      heading.textContent = `${label} ${groupedFiles.length}`;
-      body.appendChild(heading);
-      for (const [path, status] of groupedFiles) {
-        renderedPaths.add(path);
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "file-inspector-row";
-        const icon = document.createElement("span");
-        icon.className = `codicon codicon-${status === "A" || status === "?" ? "diff-added" : status === "D" ? "diff-removed" : "diff-modified"}`;
-        const name = document.createElement("span");
-        name.className = "file-inspector-row-name";
-        name.textContent = path;
-        const meta = document.createElement("span");
-        meta.className = "file-inspector-row-meta";
-        meta.textContent = status;
-        row.append(icon, name, meta);
-        row.onclick = () => void this.openFile(root, path, null, null, { pinned: true });
-        body.appendChild(row);
-      }
-    }
-    if (!files.length) {
-      const empty = document.createElement("div");
-      empty.className = "file-inspector-empty";
-      empty.textContent = "Working tree is clean.";
-      body.appendChild(empty);
-    }
   }
 
   toggleSplitEditor(forceOpen = false) {
@@ -7173,7 +7114,7 @@ class TermdeckApp {
     this.conversationOutlineOpen = !!open && this.activeFileKey === null && !!this.activeId;
     this.$("conversation-outline").classList.toggle("hidden", !this.conversationOutlineOpen);
     this.$("conversation-outline-toggle").classList.toggle("on", this.conversationOutlineOpen);
-    if (this.conversationOutlineOpen) void this.loadConversationOutline();
+    if (this.conversationOutlineOpen) void this.loadConversationOutline(true);
     else this.conversationOutlineSessionId = null;
     this.fitActive();
   }
@@ -7182,8 +7123,8 @@ class TermdeckApp {
     const sessionId = this.activeId;
     if (!this.conversationOutlineOpen || !sessionId || this.activeFileKey !== null) return;
     const list = this.$("conversation-outline-list");
-    let turns = !force ? this.historyTurnsBySession.get(sessionId) : null;
-    if (!turns?.length) {
+    let turns = !force ? this.conversationOutlineTurnsBySession.get(sessionId) : null;
+    if (!turns?.length || force) {
       list.textContent = "";
       const loading = document.createElement("div");
       loading.className = "file-inspector-empty";
@@ -7196,7 +7137,7 @@ class TermdeckApp {
       }
       const payload = await response.json();
       turns = Array.isArray(payload.turns) ? payload.turns : [];
-      if (turns.length) this.historyTurnsBySession.set(sessionId, turns);
+      this.conversationOutlineTurnsBySession.set(sessionId, turns);
     }
     this.conversationOutlineSessionId = sessionId;
     this.renderConversationOutline(turns || []);
@@ -7218,7 +7159,7 @@ class TermdeckApp {
       role.className = `conversation-outline-role codicon codicon-${turn.role === "user" ? "account" : "sparkle"}`;
       const label = document.createElement("span");
       label.className = "conversation-outline-label";
-      label.textContent = turn.role === "user" ? "Question" : "Response";
+      label.textContent = turn.role === "user" ? "Prompt" : "Response";
       const text = document.createElement("span");
       text.className = "conversation-outline-text";
       text.textContent = String(turn.text || "").replace(/\s+/g, " ").trim();
@@ -7229,7 +7170,7 @@ class TermdeckApp {
     if (!messages.length) {
       const empty = document.createElement("div");
       empty.className = "file-inspector-empty";
-      empty.textContent = "No user questions or assistant responses yet.";
+      empty.textContent = "No user prompts or assistant responses yet.";
       list.appendChild(empty);
     }
   }
@@ -8470,6 +8411,11 @@ class TermdeckApp {
     view.renderObserver = term.onRender(({ start, end }) => this.recordTerminalRenderedRows(view, start, end));
     this.refreshTerminal(view);
     container.addEventListener("focusin", () => this.scheduleCodexFocusTailRefresh(view));
+    container.addEventListener("click", (event) => {
+      if (event.detail !== 3 || this.activeId !== id || this.activeFileKey !== null || this.historyOpen) return;
+      if (this.session(id)?.agent_kind !== "codex") return;
+      if (this.forceVisibleTerminalReflow(view)) this.$("status-name").textContent = "terminal repainted";
+    });
     // Capture before xterm's wheel handler so the first wheel after a tab
     // switch cannot be mistaken for an automatic bottom-follow scroll.
     container.addEventListener("wheel", markManualScroll, { passive: true, capture: true });
@@ -10193,15 +10139,19 @@ class TermdeckApp {
 
   restoreOpenFiles() {
     const states = this.settings.project_state || {};
-    const lists = this.projectSlug ? [this.getProjectState().open_files || []]
-      : Object.values(states).map((state) => state.open_files || []);
-    const files = lists.flat().slice(-OPEN_FILES_MAX_ENTRIES);
+    const lists = Object.values(states).map((state) => state.open_files || []);
+    const scopedSavedFiles = this.projectSlug ? this.getProjectState().open_files || [] : [];
+    const scopedSavedKeys = new Set(scopedSavedFiles.map((file) => `${file.root}|${file.path}`));
+    const files = lists.flat().filter((file) => file && file.root && file.path &&
+      (!this.projectSlug || this.owningProjectKey(file.root) === this.projectStateKey())).slice(-OPEN_FILES_MAX_ENTRIES);
+    let recoveredMisownedFile = false;
     for (const f of files) {
-      if (f && f.root && f.path) {
-        this.openFiles.set(`${f.root}|${f.path}`,
-          { root: f.root, path: f.path, name: f.path.split("/").pop(), model: null, fullPath: null, truncated: false });
-      }
+      const key = `${f.root}|${f.path}`;
+      this.openFiles.set(key,
+        { root: f.root, path: f.path, name: f.path.split("/").pop(), model: null, fullPath: null, truncated: false });
+      if (this.projectSlug && !scopedSavedKeys.has(key)) recoveredMisownedFile = true;
     }
+    if (recoveredMisownedFile) this.persistOpenFiles();
   }
 
   closeOpenFileEntry(key, entry, recordRecent = true) {
@@ -10234,8 +10184,7 @@ class TermdeckApp {
   }
 
   owningProjectKey(root) {
-    const p = this.projects.find((x) => root === x.root || root.startsWith(x.root + "/"));
-    return p ? p.name : "__all__";
+    return this.projectForCwd(root)?.name || "__all__";
   }
 
   isLight() {
@@ -11038,8 +10987,6 @@ class TermdeckApp {
   async openFile(root, path, line, treeRow, options = {}) {
     const key = `${root}|${path}`;
     if (!this.openFiles.has(key)) {
-      const previewEntry = [...this.openFiles.entries()].find(([, candidate]) => candidate.preview && !candidate.dirty && !candidate.savePromise);
-      if (options.preview && previewEntry) this.closeOpenFileEntry(previewEntry[0], previewEntry[1], false);
       this.openFiles.set(key, { root, path, name: path.split("/").pop(), model: null, fullPath: null,
         truncated: false, preview: !!options.preview && !options.pinned });
     } else {

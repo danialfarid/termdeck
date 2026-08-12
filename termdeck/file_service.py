@@ -128,6 +128,8 @@ class ProjectFileService:
         for current, dirs, names in os.walk(base, topdown=True, followlinks=False):
             dirs[:] = [name for name in dirs if name not in TermdeckConfig.RECENT_FILES_IGNORED_DIRS]
             for name in names:
+                if name in TermdeckConfig.RECENT_FILES_IGNORED_NAMES:
+                    continue
                 if scanned >= TermdeckConfig.RECENT_FILES_MAX_SCAN:
                     break
                 scanned += 1
@@ -239,6 +241,8 @@ class ProjectFileService:
             return
         if any(part in TermdeckConfig.RECENT_FILES_IGNORED_DIRS for part in relative.parts):
             return
+        if relative.name in TermdeckConfig.RECENT_FILES_IGNORED_NAMES:
+            return
         with self._recent_lock:
             self._recent_dirty.add(str(root))
 
@@ -343,6 +347,8 @@ class ProjectFileService:
             except ValueError:
                 continue
             if any(part in TermdeckConfig.RECENT_FILES_IGNORED_DIRS for part in relative.parts):
+                continue
+            if relative.name in TermdeckConfig.RECENT_FILES_IGNORED_NAMES:
                 continue
             if not relative.parts or (event.is_directory and operation == "modified"):
                 continue

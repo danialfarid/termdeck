@@ -109,6 +109,7 @@ class TermdeckConfig:
         ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
         ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", "dist", "build",
     })
+    RECENT_FILES_IGNORED_NAMES = frozenset({".DS_Store"})
     WS_ROUTE = "/ws/{session_id}"
     STATUS_WS_ROUTE = "/ws/status"
     FILE_TREE_WS_ROUTE = "/ws/files"
