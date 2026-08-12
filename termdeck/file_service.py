@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -194,6 +195,9 @@ class ProjectFileService:
         statuses = self._git_statuses(root)
         return {relative_path: statuses.get(relative_path, "") for relative_path in relative_paths}
 
+    def git_statuses(self, root: str) -> dict[str, str]:
+        return dict(self._git_statuses(root))
+
     @staticmethod
     def _git_status_for_path(statuses: dict[str, str], relative: str, is_dir: bool) -> str:
         if not is_dir:
@@ -368,6 +372,37 @@ class ProjectFileService:
             raise ValueError(f"content too large: {len(encoded)} bytes")
         target.write_bytes(encoded)
         return {"size": len(encoded)}
+
+    def create_path(self, root: str, rel: str, directory: bool) -> dict[str, str | bool]:
+        target = self.resolve_confined(root, rel)
+        if target.exists():
+            raise FileExistsError(str(target))
+        if not target.parent.is_dir():
+            raise FileNotFoundError(str(target.parent))
+        if directory:
+            target.mkdir()
+        else:
+            target.touch(exist_ok=False)
+        base = self.resolve_confined(root, "")
+        return {"rel": str(target.relative_to(base)), "directory": directory}
+
+    def duplicate_path(self, root: str, rel: str, destination: str) -> str:
+        source = self.resolve_confined(root, rel)
+        if not source.exists():
+            raise FileNotFoundError(str(source))
+        target = self.resolve_confined(root, destination)
+        if target.is_dir():
+            target = target / source.name
+        if target.exists():
+            raise FileExistsError(str(target))
+        if not target.parent.is_dir():
+            raise FileNotFoundError(str(target.parent))
+        if source.is_dir():
+            shutil.copytree(source, target)
+        else:
+            shutil.copy2(source, target)
+        base = self.resolve_confined(root, "")
+        return str(target.relative_to(base))
 
     def rename_path(self, root: str, rel: str, new_name: str) -> str:
         if not new_name.strip() or "/" in new_name:

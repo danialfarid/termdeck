@@ -72,11 +72,14 @@ class TermdeckConfig:
     API_FILE_SEARCH_ROUTE = "/api/files/search"
     API_FILE_FIND_ROUTE = "/api/files/find"
     API_FILE_WRITE_ROUTE = "/api/files/write"
+    API_FILE_CREATE_ROUTE = "/api/files/create"
+    API_FILE_DUPLICATE_ROUTE = "/api/files/duplicate"
     API_FILE_HISTORY_ROUTE = "/api/files/history"
     API_FILE_HISTORY_VERSION_ROUTE = "/api/files/history/{version_id}"
     API_FILE_HISTORY_RESTORE_ROUTE = "/api/files/history/restore"
     API_FILE_GIT_HISTORY_ROUTE = "/api/files/git-history"
     API_FILE_GIT_HISTORY_VERSION_ROUTE = "/api/files/git-history/{commit_id}"
+    API_FILE_GIT_STATUS_ROUTE = "/api/files/git-status"
     API_FILE_REPLACE_ROUTE = "/api/files/replace"
     REPLACE_MAX_FILES = 200
     FIND_MAX_RESULTS = 200

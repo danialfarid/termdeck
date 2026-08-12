@@ -177,26 +177,31 @@ class ProjectSearchService:
             return self._attach_git_statuses(base, self._python_search(base, query, glob, ignore, word, case_sensitive, regex))
 
     async def replace_all(self, root: str, query: str, glob: str, ignore: str, word: bool, case_sensitive: bool,
-                          regex: bool, replacement: str) -> dict[str, int]:
+                          regex: bool, replacement: str, paths: list[str] | None = None) -> dict[str, int]:
         base = self._files.resolve_confined(root, "")
-        argv = [TermdeckConfig.RG_BIN, "--files-with-matches", "--color", "never", "--max-filesize", "2M",
-                "--case-sensitive" if case_sensitive else "--smart-case"]
-        if not regex:
-            argv.append("--fixed-strings")
-        if word:
-            argv.append("--word-regexp")
-        for pattern in (token.strip() for token in glob.split(",") if token.strip()):
-            argv.extend(("--glob", pattern))
-        for directory in (token.strip() for token in ignore.split(",") if token.strip()):
-            argv.extend(("--glob", f"!**/{directory}/**", "--glob", f"!{directory}/**"))
-        argv.extend(("--", query))
-        proc = await asyncio.create_subprocess_exec(*argv, cwd=str(base), stdout=asyncio.subprocess.PIPE,
-                                                    stderr=asyncio.subprocess.DEVNULL)
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=TermdeckConfig.SEARCH_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            proc.kill()
-            return {"files": 0, "replacements": 0}
+        if paths:
+            relative_paths = [str(self._files.resolve_confined(root, path).relative_to(base))
+                              for path in paths[:TermdeckConfig.REPLACE_MAX_FILES]]
+        else:
+            argv = [TermdeckConfig.RG_BIN, "--files-with-matches", "--color", "never", "--max-filesize", "2M",
+                    "--case-sensitive" if case_sensitive else "--smart-case"]
+            if not regex:
+                argv.append("--fixed-strings")
+            if word:
+                argv.append("--word-regexp")
+            for pattern in (token.strip() for token in glob.split(",") if token.strip()):
+                argv.extend(("--glob", pattern))
+            for directory in (token.strip() for token in ignore.split(",") if token.strip()):
+                argv.extend(("--glob", f"!**/{directory}/**", "--glob", f"!{directory}/**"))
+            argv.extend(("--", query))
+            proc = await asyncio.create_subprocess_exec(*argv, cwd=str(base), stdout=asyncio.subprocess.PIPE,
+                                                        stderr=asyncio.subprocess.DEVNULL)
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=TermdeckConfig.SEARCH_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                proc.kill()
+                return {"files": 0, "replacements": 0}
+            relative_paths = stdout.decode(errors="replace").splitlines()[:TermdeckConfig.REPLACE_MAX_FILES]
         pattern_text = query if regex else re.escape(query)
         if word:
             pattern_text = r"\b(?:" + pattern_text + r")\b"
@@ -205,7 +210,7 @@ class ProjectSearchService:
         substitute = replacement if regex else replacement.replace("\\", r"\\")
         files_changed = 0
         total_replacements = 0
-        for rel in stdout.decode(errors="replace").splitlines()[:TermdeckConfig.REPLACE_MAX_FILES]:
+        for rel in relative_paths:
             path = base / rel
             try:
                 text = path.read_text()

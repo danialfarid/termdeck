@@ -13,7 +13,8 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
   show_terminal_icons: false, history_mode: false, claude_snapshot_experimental: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
-  files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {}, prompt_wrap_guard: false };
+  files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {}, prompt_wrap_guard: false,
+  search_scope: "project", recent_closed_files: [] };
 const MODEL_PERMISSIONS = {
   codex: [
     { value: "default", label: "Default (Codex config)" },
@@ -40,6 +41,7 @@ const SEARCH_HISTORY_RECORD_DELAY_MS = 3000;
 const PROMPT_DRAFT_SYNC_PASTE_DELAY_MS = 250;
 const FILE_AUTOSAVE_DELAY_MS = 500;
 const SESSION_GROUP_HOVER_DELAY_MS = 700;
+const SIDEBAR_DRAG_HOLD_DELAY_MS = 220;
 const CLOSED_SESSIONS_INITIAL_DISPLAY = 50;
 const CLOSED_SESSIONS_MAX_DISPLAY = 100;
 const ACTIVITY_SORT_BUCKET_MS = 15 * 60 * 1000;
@@ -48,7 +50,7 @@ const CLAUDE_SNAPSHOT_DB_NAME = "termdeck.claude-snapshots";
 const CLAUDE_SNAPSHOT_DB_VERSION = 2;
 const CLAUDE_SNAPSHOT_STORE_NAME = "sessions";
 const CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME = "manifest";
-const CLAUDE_SNAPSHOT_FORMAT_VERSION = 2;
+const CLAUDE_SNAPSHOT_FORMAT_VERSION = 3;
 const CLAUDE_SNAPSHOT_IDLE_SAVE_MS = 3000;
 const CLAUDE_SNAPSHOT_MAX_LINES = 4000;
 const CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES = 100 * 1024 * 1024;
@@ -58,6 +60,9 @@ const TERMINAL_AGE_WEEK_MS = 7 * TERMINAL_AGE_DAY_MS;
 const TERMINAL_AGE_INTERMEDIATE_FADE = 0.48;
 const TERMINAL_GROUP_AGE_BRIGHTNESS = [1, 0.9, 0.8];
 const TERMINAL_TAIL_REPAIR_LINES = 16;
+const TERMINAL_RENDER_CHECK_INTERVAL_MS = 3000;
+const TERMINAL_RENDER_CONFIRM_DELAY_MS = 700;
+const TERMINAL_RENDER_REPAIR_COOLDOWN_MS = 10000;
 const TERMINAL_ACTIVATION_REFLOW_IDLE_MS = 1200;
 const OPEN_FILES_MAX_ENTRIES = 80;
 const TERMINAL_V2_FIT_RETRY_LIMIT = 32;
@@ -68,10 +73,32 @@ const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [150, 800, 2000];
 const PROMPT_WRAP_GUARD_IDLE_MS = 1200;
 const TERMINAL_DEBUG_SNAPSHOT_LIMIT = 50;
 const SELECTION_SEARCH_MAX_CHARS = 1000;
+const SELECTION_ACTION_DELAY_MS = 500;
+const MAX_FORK_COUNT = 25;
 const TERMINAL_CLAUDE_IDLE_RECONNECT_MS = 5 * 60 * 1000;
+const CLAUDE_STATUS_ROW_REFRESH_INTERVAL_MS = 500;
 const CODEX_PROMPT_REFLOW_GUARD_MS = 1800;
 // Files viewer, file search, and terminal search share one files-section panel and one shortcut.
 const FILES_SIDE_PANEL_TABS = ["project", "search", "terminal-search"];
+const FILES_SIDE_PANEL_LAST_TAB_KEY = "termdeck.files_panel_last_tab";
+const FILE_TYPE_FILTER_CUSTOM_KEY = "termdeck.file_type_filter_custom";
+const FILE_TYPE_FILTER_GROUPS = [
+  { label: "Python", patterns: ["*.py", "*.pyi"] },
+  { label: "JavaScript / TypeScript", patterns: ["*.js", "*.jsx", "*.ts", "*.tsx", "*.mjs", "*.cjs"] },
+  { label: "Markdown", patterns: ["*.md", "*.mdx"] },
+  { label: "JSON", patterns: ["*.json"] },
+  { label: "YAML / TOML", patterns: ["*.yaml", "*.yml", "*.toml"] },
+  { label: "Shell", patterns: ["*.sh", "*.zsh", "*.bash"] },
+  { label: "C / C++", patterns: ["*.c", "*.h", "*.cc", "*.cpp", "*.hpp"] },
+  { label: "Rust", patterns: ["*.rs"] },
+  { label: "Go", patterns: ["*.go"] },
+  { label: "Java / Kotlin", patterns: ["*.java", "*.kt", "*.kts"] },
+  { label: "Web styles / markup", patterns: ["*.html", "*.css", "*.scss", "*.sass"] },
+  { label: "Plain text", patterns: ["*.txt"] },
+  { label: "Logs", patterns: ["*.log"] },
+  { label: "Notebooks", patterns: ["*.ipynb"] },
+  { label: "Data", patterns: ["*.csv", "*.parquet"] },
+];
 const DESKTOP_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Meta+b" },
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
@@ -86,7 +113,10 @@ const DESKTOP_KEYBINDINGS = [
   { id: "save-file", label: "Save open file", def: "Meta+s" },
   { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp" },
   { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown" },
-  { id: "cycle-side-panel", label: "Files / Search / Terminal search (4th press closes)", def: "Meta+Shift+f" },
+  { id: "cycle-side-panel", label: "Files / Search / Terminal search (4th press closes)", def: "Meta+Shift+s" },
+  { id: "open-files-panel", label: "Open files panel", def: "Meta+Shift+d" },
+  { id: "open-file-search", label: "Open file-content search", def: "Meta+Shift+f" },
+  { id: "open-terminal-search", label: "Open terminal search", def: "Meta+Shift+g" },
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t" },
   { id: "switch-project", label: "Switch project", def: "Alt+s" },
   { id: "toggle-notebook", label: "Quick notebook", def: "Alt+n" },
@@ -100,6 +130,9 @@ const DESKTOP_KEYBINDINGS = [
   { id: "show-usages", label: "Show usages of editor symbol", def: "Shift+F12" },
   { id: "select-active-input", label: "Select active terminal / editor / prompt text", def: "Alt+a" },
   { id: "select-terminal-all", label: "Select all terminal text", def: "Meta+Shift+a" },
+  { id: "quick-open", label: "Quick Open", def: "Alt+p" },
+  { id: "toggle-problems", label: "Problems panel", def: "Alt+Shift+p" },
+  { id: "conversation-outline", label: "Conversation outline", def: "Alt+o" },
 ];
 const VSCODE_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Ctrl+Alt+b" },
@@ -280,10 +313,20 @@ class TermdeckApp {
     this.recentFilesFetchedAt = 0;
     this.recentFilesExpanded = false;
     this.sideView = "terminals";
+    this.filesSidePanelCycleView = null;
+    this.filesSidePanelCycleTransition = false;
+    const savedFilesTab = localStorage.getItem(FILES_SIDE_PANEL_LAST_TAB_KEY);
+    this.lastFilesSidePanelTab = FILES_SIDE_PANEL_TABS.includes(savedFilesTab) ? savedFilesTab : "project";
     this.searchWord = false;
     this.searchCase = false;
     this.searchRegex = false;
     this.nameSearchCase = false;
+    this.fileTypeFilterMode = "include";
+    try {
+      this.fileTypeCustomPatterns = new Set(JSON.parse(localStorage.getItem(FILE_TYPE_FILTER_CUSTOM_KEY) || "[]"));
+    } catch (_error) {
+      this.fileTypeCustomPatterns = new Set();
+    }
     this.searchGeneration = 0;
     this.searchHistory = [];
     this.searchHistorySelection = -1;
@@ -295,6 +338,7 @@ class TermdeckApp {
     this.nameSearchTree = null;
     this.treeSearchFilter = null;
     this.terminalSearchMatches = new Map();
+    this.terminalTitleSearchResults = [];
     this.historySearchResults = [];
     this.historySearchOperations = false;
     this.terminalSearchGroupSimilar = false;
@@ -330,6 +374,20 @@ class TermdeckApp {
     this.unreadSessions = new Set();
     this.statHistory = [];
     this.editor = null;
+    this.secondaryEditor = null;
+    this.secondaryDiffEditor = null;
+    this.secondaryFileKey = null;
+    this.fileInspectorMode = null;
+    this.fileOutlineTimer = 0;
+    this.problemsOpen = false;
+    this.problemsRefreshTimer = 0;
+    this.quickOpenResults = [];
+    this.quickOpenSelection = 0;
+    this.quickOpenTimer = 0;
+    this.quickOpenGeneration = 0;
+    this.conversationOutlineOpen = false;
+    this.conversationOutlineSessionId = null;
+    this.lastSearchFiles = [];
     this.notebookEditor = null;
     this.notebookEditorModels = new Map();
     this.notebookMounted = false;
@@ -342,6 +400,7 @@ class TermdeckApp {
     this.selectionActionState = null;
     this.selectionCopyHistoryIndex = 0;
     this.selectionActionUpdateFrame = 0;
+    this.selectionActionUpdateTimer = 0;
     this.nativeSessionIds = new Set();
     this.sessionModelById = new Map();
     this.selectedTreeRow = null;
@@ -1158,7 +1217,7 @@ class TermdeckApp {
       () => this.markTerminalGroupUnread(group.id), "eye-closed");
     this.addContextItem(menu, this.shortcutLabel("Remove grouping", "create-terminal-group-from-active"),
       () => this.removeTerminalGroup(group.id), "ungroup-by-ref-type");
-    this.addContextItem(menu, this.shortcutLabel("Close all terminals", "close-item"),
+    this.addContextItem(menu, this.shortcutLabel("Close all", "close-item"),
       () => this.closeAllInTerminalGroup(group.id), "close-all");
     this.positionContextMenu(menu, event.clientX, event.clientY);
   }
@@ -1360,11 +1419,20 @@ class TermdeckApp {
     this.$("file-history-diff-undo-line").onclick = () => this.undoFileHistoryDiffLine();
     this.initNotebook();
     this.initSelectionActions();
+    this.initIdeFeatures();
     for (const view of ["terminals", "project", "search"]) {
       this.$("view-" + view).onclick = () => {
+        if (view === "terminals") {
+          this.setSideView(view);
+          return;
+        }
+        if (this.sideView === view) {
+          this.openFilesSidePanelView(view);
+          return;
+        }
         if (view === "search" && this.searchContentFromSelection()) return;
         if (view === "project" && this.searchFileFromSelection()) return;
-        this.setSideView(view);
+        this.openFilesSidePanelView(view);
       };
     }
     for (const [view, id] of [["project", "files-tab-project"], ["search", "files-tab-search"],
@@ -1372,9 +1440,13 @@ class TermdeckApp {
       const button = this.$(id);
       if (!button) continue;
       button.onclick = () => {
+        if (this.sideView === view) {
+          this.openFilesSidePanelView(view);
+          return;
+        }
         if (view === "search" && this.searchContentFromSelection()) return;
         if (view === "project" && this.searchFileFromSelection()) return;
-        this.setSideView(view, false);
+        this.openFilesSidePanelView(view);
       };
     }
     const replaceToggle = this.$("replace-toggle");
@@ -1409,6 +1481,15 @@ class TermdeckApp {
       }
     });
     queryInput.addEventListener("input", () => this.debouncedSearch());
+    const searchScope = this.$("search-scope");
+    searchScope.value = ["project", "folder", "open", "changed"].includes(this.settings.search_scope)
+      ? this.settings.search_scope : "project";
+    searchScope.onchange = () => {
+      this.settings.search_scope = searchScope.value;
+      this.saveSettings();
+      this.$("replace-preview").classList.add("hidden");
+      if (queryInput.value.trim()) void this.runSearch(null, true);
+    };
     const globInput = this.$("search-glob");
     globInput.autocomplete = "off";
     globInput.autocapitalize = "off";
@@ -1417,8 +1498,10 @@ class TermdeckApp {
     globInput.addEventListener("input", () => {
       this.settings.search_glob = globInput.value;
       this.saveSettings();
-      this.debouncedSearch();
+      if (this.sideView === "search" && this.$("search-query").value.trim()) this.debouncedSearch();
+      if (this.sideView === "project" && this.$("search-name").value.trim()) this.debouncedNameSearch();
     });
+    this.$("file-type-filter-button").onclick = (event) => this.toggleFileTypeFilterMenu(event.currentTarget);
     this.$("minimize-toggle").onclick = () => this.setSideView("terminals");
     const wordBtn = this.$("search-word-toggle"), caseBtn = this.$("search-case-toggle"), regexBtn = this.$("search-regex-toggle");
     wordBtn.onclick = () => { this.searchWord = !this.searchWord; wordBtn.classList.toggle("on", this.searchWord); };
@@ -1539,6 +1622,9 @@ class TermdeckApp {
           !searchHistoryMenu.contains(e.target) && !e.target.closest("#search-history-btn, #name-search-history-btn")) {
         this.closeSearchHistory();
       }
+      const fileTypeMenu = this.$("file-type-filter-menu");
+      if (fileTypeMenu && !fileTypeMenu.classList.contains("hidden") && !fileTypeMenu.contains(e.target) &&
+          !e.target.closest("#file-type-filter-button")) this.closeFileTypeFilterMenu();
       const notebookPanel = this.$("notebook-panel");
       const notebookToggle = this.$("notebook-toggle");
       if (this.settings.notebook_open && notebookPanel && !notebookPanel.contains(e.target) &&
@@ -2257,8 +2343,13 @@ class TermdeckApp {
   }
 
   makeDraggable(item, type, key, onReorder) {
+    const delayedDrag = this.prepareDelayedSidebarDrag(item);
     item.draggable = true;
     item.ondragstart = (e) => {
+      if (!delayedDrag.ready()) {
+        e.preventDefault();
+        return;
+      }
       this.dragItem = { type, key };
       this.clearDragGroupingTimer();
       item.classList.add("dragging-tab");
@@ -2316,14 +2407,46 @@ class TermdeckApp {
       this.dragItem = null;
     };
     item.ondragend = () => {
+      delayedDrag.reset();
       this.clearDragLandingIndicator(true);
       this.dragItem = null;
     };
   }
 
+  prepareDelayedSidebarDrag(item) {
+    let ready = false;
+    let timer = 0;
+    const reset = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = 0;
+      ready = false;
+      item.classList.remove("drag-ready");
+    };
+    item.addEventListener("pointerdown", (event) => {
+      reset();
+      if (event.button !== 0 || event.target.closest("button, input, textarea, select")) return;
+      timer = window.setTimeout(() => {
+        timer = 0;
+        ready = true;
+        item.classList.add("drag-ready");
+      }, SIDEBAR_DRAG_HOLD_DELAY_MS);
+    });
+    item.addEventListener("pointerup", reset);
+    item.addEventListener("pointercancel", reset);
+    item.addEventListener("pointerleave", () => {
+      if (!ready) reset();
+    });
+    return { ready: () => ready, reset };
+  }
+
   makeLayoutDraggable(item, token, kind) {
+    const delayedDrag = this.prepareDelayedSidebarDrag(item);
     item.draggable = true;
     item.ondragstart = (event) => {
+      if (!delayedDrag.ready()) {
+        event.preventDefault();
+        return;
+      }
       const sessionId = kind === "session" ? token.slice("session:".length) : null;
       const sessionIds = sessionId ? this.selectedSessionIdsForDrag(sessionId) : [];
       const tokens = kind === "session" ? sessionIds.map((id) => `session:${id}`) : [token];
@@ -2441,6 +2564,7 @@ class TermdeckApp {
       this.dragItem = null;
     };
     item.ondragend = () => {
+      delayedDrag.reset();
       this.clearDragLandingIndicator(true);
       this.dragItem = null;
     };
@@ -2757,6 +2881,7 @@ class TermdeckApp {
     this.$("terminal-search-input").value = "";
     this.$("terminal-search-summary").textContent = "";
     this.$("terminal-search-results").textContent = "";
+    this.terminalTitleSearchResults = [];
     this.historySearchResults = [];
     this.terminalSearchMatches.clear();
     this.renderList();
@@ -2771,6 +2896,12 @@ class TermdeckApp {
     }
     if (this.terminalSearchAbort) this.terminalSearchAbort.abort();
     this.terminalSearchAbort = new AbortController();
+    this.terminalTitleSearchResults = this.matchingTerminalTitleSearchResults(query);
+    this.terminalSearchMatches = new Map(this.terminalTitleSearchResults.map((result) => [result.open_session_id, {
+      count: 1, snippets: [{ line: "name", text: result.title }],
+    }]));
+    this.renderList();
+    this.renderTerminalHistoryResults();
     this.$("terminal-search-summary").textContent = "searching…";
     try {
       const historyParams = new URLSearchParams({ q: query, include_operations: String(this.historySearchOperations) });
@@ -2785,7 +2916,10 @@ class TermdeckApp {
       const liveResults = liveResponse ? await liveResponse.json() : [];
       const historyPayload = await historyResponse.json();
       this.historySearchResults = Array.isArray(historyPayload.results) ? historyPayload.results : [];
-      this.terminalSearchMatches = new Map(liveResults.map((result) => [result.session_id, result]));
+      this.terminalSearchMatches = new Map(this.terminalTitleSearchResults.map((result) => [result.open_session_id, {
+        count: 1, snippets: [{ line: "name", text: result.title }],
+      }]));
+      for (const result of liveResults) this.terminalSearchMatches.set(result.session_id, result);
       for (const result of this.historySearchResults) {
         const openSessionId = result.open_session_id || result.parent_open_session_id;
         if (!openSessionId) continue;
@@ -2793,9 +2927,11 @@ class TermdeckApp {
           count: result.count, snippets: (result.matches || []).map((match) => ({ line: match.line_no, text: match.text })),
         });
       }
-      const terminalCount = new Set([...liveResults.map((result) => result.session_id),
+      const terminalCount = new Set([...this.terminalTitleSearchResults.map((result) => result.open_session_id),
+        ...liveResults.map((result) => result.session_id),
         ...this.historySearchResults.map((result) => result.open_session_id || result.parent_open_session_id).filter(Boolean)]).size;
-      const matchCount = liveResults.reduce((sum, result) => sum + Number(result.count || 0), 0) +
+      const matchCount = this.terminalTitleSearchResults.length +
+        liveResults.reduce((sum, result) => sum + Number(result.count || 0), 0) +
         this.historySearchResults.reduce((sum, result) => sum + Number(result.count || 0), 0);
       const indexing = historyPayload.indexing ? " · indexing history" : "";
       const scope = this.historySearchOperations ? "all output" : "conversation";
@@ -2806,17 +2942,35 @@ class TermdeckApp {
       this.renderTerminalHistoryResults();
     } catch (error) {
       if (error.name === "AbortError") return;
-      this.terminalSearchMatches.clear();
       this.historySearchResults = [];
-      this.$("terminal-search-results").textContent = "";
-      this.$("terminal-search-summary").textContent = error.message || "search failed";
+      this.terminalSearchMatches = new Map(this.terminalTitleSearchResults.map((result) => [result.open_session_id, {
+        count: 1, snippets: [{ line: "name", text: result.title }],
+      }]));
+      const titleCount = this.terminalTitleSearchResults.length;
+      this.$("terminal-search-summary").textContent = titleCount
+        ? `${titleCount} terminal name${titleCount === 1 ? "" : "s"} · conversation search unavailable`
+        : error.message || "search failed";
       this.renderList();
+      this.renderTerminalHistoryResults();
     }
+  }
+
+  matchingTerminalTitleSearchResults(query) {
+    const terms = String(query || "").toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.length) return [];
+    return this.sessions.flatMap((session) => {
+      const title = this.titlePresentation(session).text;
+      const candidates = [title, session.title, session.cli_title, session.agent_session_id]
+        .filter(Boolean).map((value) => String(value).toLocaleLowerCase());
+      if (!terms.every((term) => candidates.some((value) => value.includes(term)))) return [];
+      return [{ terminal_title_match: true, open_session_id: session.session_id, title, status: "open", count: 1 }];
+    });
   }
 
   renderTerminalHistoryResults() {
     const container = this.$("terminal-search-results");
     container.textContent = "";
+    this.renderTerminalTitleSearchResults(container);
     if (this.terminalSearchGroupSimilar) {
       this.renderSimilarTerminalHistoryResults(container);
       return;
@@ -2858,6 +3012,33 @@ class TermdeckApp {
       }
       container.appendChild(groupBox);
     }
+  }
+
+  renderTerminalTitleSearchResults(container) {
+    if (!this.terminalTitleSearchResults.length) return;
+    const section = document.createElement("div");
+    section.className = "terminal-history-title-matches";
+    for (const result of this.terminalTitleSearchResults) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "terminal-history-title-match";
+      const icon = document.createElement("span");
+      icon.className = "codicon codicon-terminal";
+      const title = document.createElement("span");
+      title.className = "terminal-history-title-match-name";
+      title.textContent = result.title;
+      const label = document.createElement("span");
+      label.className = "terminal-history-title-match-label";
+      label.textContent = "name";
+      row.append(icon, title, label);
+      row.title = `Activate ${result.title}`;
+      row.onclick = () => {
+        this.activate(result.open_session_id, { reveal: true });
+        if (!this.settings.files_pinned) this.setSideView("terminals", false);
+      };
+      section.appendChild(row);
+    }
+    container.appendChild(section);
   }
 
   searchResultSessionKey(result) {
@@ -3300,10 +3481,16 @@ class TermdeckApp {
 
   setSideView(view, allowToggle = true, allowFloating = true) {
     if (this.vscodeMode && view !== "terminals") return;
+    if (!this.filesSidePanelCycleTransition) this.filesSidePanelCycleView = null;
     const nextView = allowToggle && this.sideView === view && view !== "terminals" ? "terminals" : view;
     this.sideView = nextView;
     view = this.sideView;
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(view);
+    if (filesVisible) {
+      this.lastFilesSidePanelTab = view;
+      localStorage.setItem(FILES_SIDE_PANEL_LAST_TAB_KEY, view);
+    }
+    if (!filesVisible || view === "terminal-search") this.closeFileTypeFilterMenu();
     const filesPinned = filesVisible && !!this.settings.files_pinned;
     this.settings.side_full = filesVisible;
     if (filesPinned) {
@@ -3509,13 +3696,34 @@ class TermdeckApp {
 
   cycleFilesSidePanel() {
     if (this.vscodeMode) return;
-    const currentIndex = FILES_SIDE_PANEL_TABS.indexOf(this.sideView);
-    const nextIndex = currentIndex < 0 ? 0 : currentIndex + 1;
+    const continuingCycle = this.filesSidePanelCycleView === this.sideView;
+    const currentIndex = continuingCycle ? FILES_SIDE_PANEL_TABS.indexOf(this.sideView) : -1;
+    const nextIndex = currentIndex + 1;
     const nextView = nextIndex >= FILES_SIDE_PANEL_TABS.length ? "terminals" : FILES_SIDE_PANEL_TABS[nextIndex];
-    this.setSideView(nextView, false);
+    this.filesSidePanelCycleTransition = true;
+    try {
+      this.setSideView(nextView, false);
+    } finally {
+      this.filesSidePanelCycleTransition = false;
+    }
+    this.filesSidePanelCycleView = nextView === "terminals" ? null : nextView;
     if (nextView === "project") this.focusFileNameSearch();
     else if (nextView === "search") this.focusFileContentSearch();
     else if (nextView === "terminal-search") this.$("terminal-search-input").focus();
+    else requestAnimationFrame(() => this.focusActiveEditor());
+  }
+
+  openFilesSidePanelView(view) {
+    if (this.vscodeMode || !FILES_SIDE_PANEL_TABS.includes(view)) return;
+    if (this.sideView === view) {
+      this.setSideView("terminals", false);
+      requestAnimationFrame(() => this.focusActiveEditor());
+      return;
+    }
+    this.setSideView(view, false);
+    if (view === "project") this.focusFileNameSearch();
+    else if (view === "search") this.focusFileContentSearch();
+    else this.$("terminal-search-input").focus();
   }
 
   applySideLayout() {
@@ -3774,13 +3982,16 @@ class TermdeckApp {
       refreshButton.title = `Refresh TermDeck (${this.bindingToDisplay(this.bindingFor("vscode-refresh"))})`;
     }
     const sidePanelAction = this.bindingToDisplay(this.bindingFor("cycle-side-panel"));
-    const sidePanelTitles = [["view-project", "Files"], ["view-search", "Search & replace"],
-      ["terminal-search-toggle", "Search terminal output"],
-      ["files-tab-project", "Files"], ["files-tab-search", "Search & replace"],
-      ["files-tab-terminal-search", "Search terminal output"]];
-    for (const [id, label] of sidePanelTitles) {
+    const sidePanelTitles = [["view-project", "Files", "open-files-panel"],
+      ["view-search", "Search & replace", "open-file-search"],
+      ["terminal-search-toggle", "Search terminal names and output", "open-terminal-search"],
+      ["files-tab-project", "Files", "open-files-panel"],
+      ["files-tab-search", "Search & replace", "open-file-search"],
+      ["files-tab-terminal-search", "Search terminal names and output", "open-terminal-search"]];
+    for (const [id, label, actionId] of sidePanelTitles) {
       const button = this.$(id);
-      if (button) button.title = `${label} (${sidePanelAction} cycles tabs)`;
+      const directAction = this.bindingToDisplay(this.bindingFor(actionId));
+      if (button) button.title = `${label} (${directAction}; ${sidePanelAction} cycles tabs)`;
     }
     const notebookToggle = this.$("notebook-toggle");
     if (notebookToggle) {
@@ -3820,11 +4031,9 @@ class TermdeckApp {
     const state = this.getProjectState();
     const assignedGroupId = state.session_groups?.[session.session_id] || "";
     if (!multiple) {
-      this.addContextItem(menu, this.shortcutLabel("Fork into a new terminal", "fork-terminal"),
+      this.addContextItem(menu, this.shortcutLabel("Fork", "fork-terminal"),
         () => this.forkSession(session), "repo-forked");
-      this.addContextItem(menu, "Fork into N terminals…",
-        () => this.forkSessionMultiple(session), "repo-forked");
-      this.addContextItem(menu, this.shortcutLabel("Restart terminal", "restart-terminal"),
+      this.addContextItem(menu, this.shortcutLabel("Restart", "restart-terminal"),
         () => this.restartSession(session.session_id), "refresh");
       const permissions = MODEL_PERMISSIONS[session.agent_kind || "none"] || MODEL_PERMISSIONS.none;
       if (permissions.length > 1) {
@@ -3834,25 +4043,20 @@ class TermdeckApp {
           icon: "refresh",
         })), "refresh");
       }
-      this.addContextItem(menu, this.shortcutLabel("Close terminal", "close-item"),
-        () => this.closeSession(session.session_id), "close");
-      this.addContextItem(menu, this.shortcutLabel("Rename terminal", "rename-terminal"),
+      this.addContextItem(menu, this.shortcutLabel("Rename", "rename-terminal"),
         () => this.renameSession(session), "edit");
       this.addContextItem(menu, this.shortcutLabel("Copy session id", "copy-session-id"),
         () => this.copyTextToClipboard(session.session_id, "session id copied"), "copy");
-    } else {
-      this.addContextItem(menu, this.shortcutLabel(`Close ${sessionIds.length} selected terminals`, "close-item"),
-        () => this.closeSelectedSessions(sessionIds), "close-all");
     }
-    const terminalLabel = multiple ? `${sessionIds.length} terminals` : "terminal";
-    this.addContextItem(menu, multiple ? `Mark ${terminalLabel} as unread`
+    const selectionLabel = multiple ? `${sessionIds.length} selected` : "";
+    this.addContextItem(menu, multiple ? `Mark ${selectionLabel} as unread`
       : this.shortcutLabel("Mark as unread", "mark-terminal-unread"),
     () => this.setSessionsUnread(sessionIds, true), "eye-closed");
-    this.addContextItem(menu, multiple ? `Create group from ${terminalLabel}`
-      : this.shortcutLabel("Create group from this terminal", "create-terminal-group-from-active"),
+    this.addContextItem(menu, multiple ? `Create group from ${selectionLabel}`
+      : this.shortcutLabel("Create group", "create-terminal-group-from-active"),
     () => this.createTerminalGroupFromSessions(sessionIds), "folder-library");
     const moveEntries = multiple ? [] : [{
-      label: this.shortcutLabel(assignedGroupId ? "Top of group" : "Top of terminals", "move-active-to-top"),
+      label: this.shortcutLabel(assignedGroupId ? "Top of group" : "Top", "move-active-to-top"),
       handler: () => this.moveTerminalLayoutToTop(
         assignedGroupId ? `group:${assignedGroupId}` : `session:${session.session_id}`),
       icon: "arrow-up",
@@ -3890,6 +4094,10 @@ class TermdeckApp {
     }
     this.addContextSubmenu(menu, this.shortcutLabel("Move to…", "open-move-menu"), moveEntries, "arrow-swap",
       { open: !!options.openMove });
+    this.addContextItem(menu, multiple ? this.shortcutLabel(`Close ${selectionLabel}`, "close-item")
+      : this.shortcutLabel("Close", "close-item"),
+    () => multiple ? this.closeSelectedSessions(sessionIds) : this.closeSession(session.session_id),
+    multiple ? "close-all" : "close");
     this.positionContextMenu(menu, event.clientX, event.clientY);
   }
 
@@ -3943,10 +4151,15 @@ class TermdeckApp {
       this.addContextItem(menu, "Open", () => this.openFile(this.treeRoot, rel, null, row));
       this.markTreeSelection(row);
     }
+    const parent = isDir ? rel : rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+    this.addContextItem(menu, "New file…", () => this.createTreePath(parent, false), "new-file");
+    this.addContextItem(menu, "New folder…", () => this.createTreePath(parent, true), "new-folder");
     this.addContextItem(menu, "Rename…", () => this.renameTreePath(rel));
+    this.addContextItem(menu, "Duplicate…", () => this.duplicateTreePath(rel), "files");
     this.addContextItem(menu, "Move…", () => this.moveTreePath(rel));
     this.addContextItem(menu, "Delete (to Trash)", () => this.deleteTreePath(rel));
-    this.addContextItem(menu, "Copy path", () => navigator.clipboard.writeText(`${this.treeRoot}/${rel}`));
+    this.addContextItem(menu, "Copy relative path", () => this.copyTextToClipboard(rel, "relative path copied"), "copy");
+    this.addContextItem(menu, "Copy absolute path", () => this.copyTextToClipboard(`${this.treeRoot}/${rel}`, "path copied"), "copy");
     menu.classList.remove("hidden");
     menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 10) + "px";
     menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 10) + "px";
@@ -3972,6 +4185,29 @@ class TermdeckApp {
     if (result === null) return;
     const parent = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
     this.afterFsChange(rel, parent ? `${parent}/${result.new_name}` : result.new_name);
+  }
+
+  async createTreePath(parent, directory) {
+    const suggested = parent ? `${parent}/` : "";
+    const path = prompt(`${directory ? "Folder" : "File"} path relative to ${this.treeRoot}`, suggested);
+    if (!path || path === suggested) return;
+    const result = await this.fsOp("/api/files/create", { path, directory }, "create failed");
+    if (result === null) return;
+    this.selectedTreeRow = null;
+    await this.refreshTreeDirectories();
+    if (!result.directory) void this.openFile(this.treeRoot, result.rel, null, null, { pinned: true });
+  }
+
+  async duplicateTreePath(rel) {
+    const dot = rel.lastIndexOf(".");
+    const slash = rel.lastIndexOf("/");
+    const suggested = dot > slash ? `${rel.slice(0, dot)} copy${rel.slice(dot)}` : `${rel} copy`;
+    const destination = prompt(`Duplicate "${rel}" to`, suggested);
+    if (!destination || destination === rel) return;
+    const result = await this.fsOp("/api/files/duplicate", { path: rel, destination }, "duplicate failed");
+    if (result === null) return;
+    this.selectedTreeRow = null;
+    await this.refreshTreeDirectories();
   }
 
   async moveTreePath(rel) {
@@ -4308,6 +4544,7 @@ class TermdeckApp {
       fileHistoryGitToggle.setAttribute("aria-pressed", String(this.fileHistoryMode === "git"));
     }
     this.renderHistoryMeta();
+    this.renderFileEditorChrome();
   }
 
   fileHistorySourceLabel(source) {
@@ -5013,6 +5250,8 @@ class TermdeckApp {
     this.$("editor-area").classList.toggle("hidden", !fileMode);
     this.$("history-area").classList.toggle("hidden", !historyMode);
     this.$("terminal-area").classList.toggle("hidden", fileMode || historyMode);
+    this.$("conversation-outline").classList.toggle("hidden", fileMode || !this.conversationOutlineOpen);
+    this.$("conversation-outline-toggle").classList.toggle("on", !fileMode && this.conversationOutlineOpen);
     for (const id of ["history-btn", "vscode-history-btn"]) {
       const historyButton = this.$(id);
       if (historyButton) historyButton.classList.toggle("on", historyMode);
@@ -5222,19 +5461,6 @@ class TermdeckApp {
   scheduleActiveEditorFocus(sessionId) {
     clearTimeout(this.activeEditorFocusTimer);
     this.activeEditorFocusTimer = window.setTimeout(this.runScheduledActiveEditorFocus.bind(this, sessionId), 80);
-  }
-
-  // Called after a view's container is revealed from a visibility:hidden reflow hide (see
-  // forceVisibleTerminalReflowViaResizeNudge) that may have swallowed an earlier focus() attempt.
-  // Only reclaims focus if nothing else meaningful has since claimed it -- a user who clicked into the
-  // search box, an editor, or a modal while the terminal was hidden must not have that focus stolen
-  // back out from under them.
-  reclaimTerminalFocusIfIdle(view) {
-    if (!view || view.closed || this.activeId !== view.sessionId || this.activeFileKey !== null ||
-        this.historyOpen || this.nativeVscodeMode) return;
-    const active = document.activeElement;
-    if (active && active !== document.body && !view.container.contains(active)) return;
-    view.term.focus();
   }
 
   runScheduledActiveEditorFocus(sessionId) {
@@ -6033,6 +6259,7 @@ class TermdeckApp {
       }
       const block = document.createElement("div");
       block.className = "turn " + turn.role;
+      block.dataset.outlineKey = this.conversationOutlineTurnKey(turn);
       const text = document.createElement("div");
       text.className = "turn-text markdown";
       text.innerHTML = this.renderMarkdown(turn.text);
@@ -6210,6 +6437,7 @@ class TermdeckApp {
     }
     this.historyTurns = turns;
     this.historyTurnsBySession.set(sessionId, turns);
+    if (this.conversationOutlineOpen && this.conversationOutlineSessionId === sessionId) this.renderConversationOutline(turns);
     this.renderHistoryMeta();
     this.updateHistoryEditToggle();
     this.updateActiveThinkingBlock();
@@ -6337,12 +6565,703 @@ class TermdeckApp {
     window.addEventListener("scroll", () => this.scheduleSelectionActions(), true);
   }
 
-  scheduleSelectionActions() {
-    if (this.selectionActionUpdateFrame) return;
-    this.selectionActionUpdateFrame = requestAnimationFrame(() => {
-      this.selectionActionUpdateFrame = 0;
-      this.updateSelectionActions();
+  initIdeFeatures() {
+    if (this.vscodeMode) return;
+    const quickBackdrop = this.$("quick-open-backdrop");
+    const quickInput = this.$("quick-open-input");
+    quickBackdrop.addEventListener("mousedown", (event) => {
+      if (event.target === quickBackdrop) this.closeQuickOpen();
     });
+    quickInput.addEventListener("input", () => {
+      clearTimeout(this.quickOpenTimer);
+      this.quickOpenTimer = setTimeout(() => void this.renderQuickOpen(quickInput.value), 140);
+    });
+    quickInput.addEventListener("keydown", (event) => this.handleQuickOpenKey(event));
+    this.$("file-outline-toggle").onclick = () => this.toggleFileInspector("outline");
+    this.$("file-git-toggle").onclick = () => this.toggleFileInspector("git");
+    this.$("file-inspector-close").onclick = () => this.closeFileInspector();
+    this.$("file-inspector-refresh").onclick = () => this.refreshFileInspector();
+    this.$("file-split-toggle").onclick = () => this.toggleSplitEditor();
+    this.$("secondary-editor-close").onclick = () => this.closeSplitEditor();
+    this.$("secondary-diff-toggle").onclick = () => this.toggleSecondaryDiff();
+    this.$("secondary-file-select").onchange = (event) => {
+      this.secondaryFileKey = event.target.value || null;
+      void this.renderSecondaryEditor(true);
+    };
+    this.$("file-tabs-more").onclick = (event) => this.openFileTabsMenu(event.currentTarget);
+    this.$("problems-toggle").onclick = () => this.toggleProblemsPanel();
+    this.$("problems-close").onclick = () => this.setProblemsOpen(false);
+    this.$("problems-refresh").onclick = () => this.refreshProblems();
+    this.$("conversation-outline-toggle").onclick = () => this.toggleConversationOutline();
+    this.$("conversation-outline-close").onclick = () => this.setConversationOutlineOpen(false);
+    this.$("conversation-outline-refresh").onclick = () => void this.loadConversationOutline(true);
+  }
+
+  openQuickOpen(initialQuery = "") {
+    if (this.vscodeMode) return;
+    const backdrop = this.$("quick-open-backdrop");
+    const input = this.$("quick-open-input");
+    backdrop.classList.remove("hidden");
+    input.value = initialQuery;
+    this.quickOpenSelection = 0;
+    void this.renderQuickOpen(initialQuery);
+    requestAnimationFrame(() => { input.focus(); input.select(); });
+  }
+
+  closeQuickOpen() {
+    clearTimeout(this.quickOpenTimer);
+    this.$("quick-open-backdrop").classList.add("hidden");
+    requestAnimationFrame(() => this.focusActiveEditor());
+  }
+
+  handleQuickOpenKey(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeQuickOpen();
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!this.quickOpenResults.length) return;
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      this.quickOpenSelection = (this.quickOpenSelection + direction + this.quickOpenResults.length) % this.quickOpenResults.length;
+      this.updateQuickOpenSelection();
+      return;
+    }
+    if (event.key === "Enter" && !event.isComposing) {
+      event.preventDefault();
+      event.stopPropagation();
+      const result = this.quickOpenResults[this.quickOpenSelection];
+      if (!result) return;
+      this.closeQuickOpen();
+      result.run();
+    }
+  }
+
+  quickOpenTextMatches(query, ...values) {
+    const terms = String(query || "").toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.length) return true;
+    const text = values.filter(Boolean).join(" ").toLocaleLowerCase();
+    return terms.every((term) => text.includes(term));
+  }
+
+  quickOpenCommands() {
+    return [
+      { title: "New terminal", icon: "add", run: () => this.openModal() },
+      { title: "Show Problems", icon: "warning", run: () => this.setProblemsOpen(true) },
+      { title: "Show file Outline", icon: "symbol-class", run: () => this.toggleFileInspector("outline", true) },
+      { title: "Show Git changes", icon: "source-control", run: () => this.toggleFileInspector("git", true) },
+      { title: "Split active editor", icon: "split-horizontal", run: () => this.toggleSplitEditor(true) },
+      { title: "Reveal active file in tree", icon: "target", run: () => void this.revealActiveFile() },
+      { title: "Open Markdown transcript", icon: "markdown", run: () => this.setHistoryMode(true) },
+      { title: "Open Quick Notes", icon: "notebook", run: () => this.setNotebookOpen(true) },
+    ];
+  }
+
+  async renderQuickOpen(rawQuery) {
+    const generation = ++this.quickOpenGeneration;
+    const query = String(rawQuery || "").trim();
+    const commandOnly = query.startsWith(">");
+    const symbolOnly = query.startsWith("@");
+    const searchQuery = query.replace(/^[>@]/, "").trim();
+    const results = [];
+    if (!symbolOnly) {
+      for (const command of this.quickOpenCommands()) {
+        if (!this.quickOpenTextMatches(searchQuery, command.title)) continue;
+        results.push({ kind: "Commands", title: command.title, detail: "command", icon: command.icon, run: command.run });
+      }
+    }
+    if (!commandOnly && !symbolOnly) {
+      for (const session of this.sessions) {
+        const title = this.titlePresentation(session).text;
+        if (!this.quickOpenTextMatches(searchQuery, title, session.cwd)) continue;
+        results.push({ kind: "Terminals", title, detail: session.cwd, icon: "terminal", run: () => this.activate(session.session_id, { reveal: true }) });
+      }
+      for (const [key, entry] of this.openFiles) {
+        if (!this.quickOpenTextMatches(searchQuery, entry.name, entry.path)) continue;
+        results.push({ kind: "Open files", title: entry.name, detail: entry.path, icon: "file-code", run: () => void this.activateFile(key, null) });
+      }
+      for (const file of this.settings.recent_closed_files || []) {
+        if (!file?.root || !file?.path || !this.quickOpenTextMatches(searchQuery, file.path)) continue;
+        results.push({ kind: "Recently closed", title: file.path.split("/").pop(), detail: file.path, icon: "history",
+          run: () => void this.openFile(file.root, file.path, null, null, { pinned: true }) });
+      }
+    }
+    if (symbolOnly && this.activeFileKey !== null) {
+      for (const symbol of this.activeFileOutlineSymbols()) {
+        if (!this.quickOpenTextMatches(searchQuery, symbol.name, symbol.kind)) continue;
+        results.push({ kind: "Symbols", title: symbol.name, detail: `${symbol.kind} · line ${symbol.line}`, icon: symbol.icon,
+          run: () => this.revealEditorLine(symbol.line) });
+      }
+    }
+    this.paintQuickOpenResults(results);
+    if (!commandOnly && !symbolOnly && searchQuery) {
+      const root = this.searchRoot();
+      const params = new URLSearchParams({ root, q: searchQuery, glob: this.$("search-glob").value.trim(),
+        ignore: this.searchIgnoreTokens(), case_sensitive: "false" });
+      const response = await fetch(`/api/files/find?${params}`);
+      if (generation !== this.quickOpenGeneration || !response.ok) return;
+      const files = (await response.json()).filter((item) => !item.is_dir).slice(0, 80);
+      const existing = new Set(results.filter((result) => result.kind === "Open files").map((result) => result.detail));
+      for (const file of files) {
+        if (existing.has(file.path)) continue;
+        results.push({ kind: "Files", title: file.path.split("/").pop(), detail: file.path, icon: "file-code",
+          run: () => void this.openFile(root, file.path, null, null, { pinned: true }) });
+      }
+      this.paintQuickOpenResults(results);
+    }
+  }
+
+  paintQuickOpenResults(results) {
+    this.quickOpenResults = results.slice(0, 120);
+    this.quickOpenSelection = Math.min(this.quickOpenSelection, Math.max(0, this.quickOpenResults.length - 1));
+    const container = this.$("quick-open-results");
+    container.textContent = "";
+    let lastKind = "";
+    for (const [index, result] of this.quickOpenResults.entries()) {
+      if (result.kind !== lastKind) {
+        const group = document.createElement("div");
+        group.className = "quick-open-group";
+        group.textContent = result.kind;
+        container.appendChild(group);
+        lastKind = result.kind;
+      }
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = `quick-open-item${index === this.quickOpenSelection ? " selected" : ""}`;
+      row.dataset.index = String(index);
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", String(index === this.quickOpenSelection));
+      const icon = document.createElement("span");
+      icon.className = `codicon codicon-${result.icon}`;
+      const title = document.createElement("span");
+      title.className = "quick-open-item-title";
+      title.textContent = result.title;
+      const detail = document.createElement("span");
+      detail.className = "quick-open-item-detail";
+      detail.textContent = result.detail || "";
+      row.append(icon, title, detail);
+      row.onmouseenter = () => { this.quickOpenSelection = index; this.updateQuickOpenSelection(false); };
+      row.onclick = () => { this.closeQuickOpen(); result.run(); };
+      container.appendChild(row);
+    }
+    if (!this.quickOpenResults.length) {
+      const empty = document.createElement("div");
+      empty.className = "file-inspector-empty";
+      empty.textContent = "No matching files, terminals, symbols, or commands.";
+      container.appendChild(empty);
+    }
+  }
+
+  updateQuickOpenSelection(scroll = true) {
+    for (const row of this.$("quick-open-results").querySelectorAll(".quick-open-item")) {
+      const selected = Number(row.dataset.index) === this.quickOpenSelection;
+      row.classList.toggle("selected", selected);
+      row.setAttribute("aria-selected", String(selected));
+      if (selected && scroll) row.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  renderFileEditorChrome() {
+    if (this.vscodeMode) return;
+    this.renderFileTabs();
+    this.renderFileBreadcrumbs();
+    this.renderSecondaryFileSelect();
+    if (this.fileInspectorMode === "outline") this.renderFileOutline();
+    if (this.problemsOpen) this.scheduleProblemsRefresh();
+  }
+
+  renderFileTabs() {
+    const container = this.$("file-tabs");
+    if (!container) return;
+    container.textContent = "";
+    for (const [key, entry] of this.openFiles) {
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = `file-editor-tab${key === this.activeFileKey ? " active" : ""}${entry.preview ? " preview" : ""}`;
+      tab.title = entry.fullPath || `${entry.root}/${entry.path}`;
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", String(key === this.activeFileKey));
+      const name = document.createElement("span");
+      name.className = "file-editor-tab-name";
+      name.textContent = entry.name;
+      tab.appendChild(name);
+      if (entry.dirty || entry.savePromise) {
+        const dirty = document.createElement("span");
+        dirty.className = "file-editor-tab-dirty";
+        dirty.title = "Unsaved changes";
+        tab.appendChild(dirty);
+      }
+      const pin = document.createElement("span");
+      pin.className = `file-editor-tab-pin codicon codicon-${entry.preview ? "pin" : "pinned"}`;
+      pin.title = entry.preview ? "Pin file" : "Unpin to preview";
+      pin.onclick = (event) => { event.stopPropagation(); this.setFilePreview(key, !entry.preview); };
+      const close = document.createElement("span");
+      close.className = "file-editor-tab-close codicon codicon-close";
+      close.title = "Close file";
+      close.onclick = (event) => { event.stopPropagation(); void this.closeFile(key); };
+      tab.append(pin, close);
+      tab.onclick = () => void this.activateFile(key, null, { history: false });
+      tab.ondblclick = () => this.setFilePreview(key, false);
+      container.appendChild(tab);
+    }
+    requestAnimationFrame(() => container.querySelector(".file-editor-tab.active")?.scrollIntoView({ inline: "nearest" }));
+  }
+
+  setFilePreview(key, preview) {
+    const entry = this.openFiles.get(key);
+    if (!entry) return;
+    entry.preview = !!preview && !entry.dirty;
+    this.persistOpenFiles();
+    this.renderFileEditorChrome();
+  }
+
+  openFileTabsMenu(anchor) {
+    const menu = this.$("context-menu");
+    menu.textContent = "";
+    menu.classList.remove("hidden");
+    if (this.activeFileKey !== null) {
+      this.addContextItem(menu, "Close other files", () => void this.closeOtherFiles(this.activeFileKey), "close-all");
+      this.addContextItem(menu, "Close all files", () => void this.closeFiles([...this.openFiles.keys()]), "close-all");
+    }
+    const recentlyClosed = (this.settings.recent_closed_files || [])[0];
+    this.addContextItem(menu, recentlyClosed ? `Reopen ${recentlyClosed.path.split("/").pop()}` : "No recently closed files",
+      recentlyClosed ? () => void this.openFile(recentlyClosed.root, recentlyClosed.path, null, null, { pinned: true }) : null,
+      "history");
+    const rect = anchor.getBoundingClientRect();
+    this.positionContextMenu(menu, rect.right, rect.bottom + 4);
+  }
+
+  async closeOtherFiles(keepKey) {
+    await this.closeFiles([...this.openFiles.keys()].filter((key) => key !== keepKey));
+  }
+
+  renderFileBreadcrumbs() {
+    const container = this.$("file-breadcrumbs");
+    if (!container) return;
+    container.textContent = "";
+    const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
+    if (!entry) return;
+    const project = this.projectForCwd(entry.root);
+    const parts = entry.path.split("/").filter(Boolean);
+    const labels = [project?.name || entry.root.split("/").filter(Boolean).pop() || entry.root, ...parts];
+    for (const [index, label] of labels.entries()) {
+      const crumb = document.createElement("button");
+      crumb.type = "button";
+      crumb.className = "file-breadcrumb";
+      crumb.textContent = label;
+      if (index < labels.length - 1) crumb.onclick = () => void this.revealActiveFile();
+      container.appendChild(crumb);
+    }
+  }
+
+  toggleFileInspector(mode, forceOpen = false) {
+    if (this.activeFileKey === null) return;
+    if (!forceOpen && this.fileInspectorMode === mode) {
+      this.closeFileInspector();
+      return;
+    }
+    this.fileInspectorMode = mode;
+    this.$("file-inspector").classList.remove("hidden");
+    this.$("file-outline-toggle").classList.toggle("on", mode === "outline");
+    this.$("file-git-toggle").classList.toggle("on", mode === "git");
+    this.refreshFileInspector();
+  }
+
+  closeFileInspector() {
+    this.fileInspectorMode = null;
+    this.$("file-inspector").classList.add("hidden");
+    this.$("file-outline-toggle").classList.remove("on");
+    this.$("file-git-toggle").classList.remove("on");
+    this.editor?.layout();
+  }
+
+  refreshFileInspector() {
+    if (this.fileInspectorMode === "outline") this.renderFileOutline();
+    else if (this.fileInspectorMode === "git") void this.renderGitChanges();
+  }
+
+  activeFileOutlineSymbols() {
+    const model = this.editor?.getModel();
+    if (!model) return [];
+    const symbols = [];
+    const extension = String(this.openFiles.get(this.activeFileKey)?.name || "").split(".").pop().toLocaleLowerCase();
+    for (let line = 1; line <= model.getLineCount(); line += 1) {
+      const text = model.getLineContent(line);
+      let match = null;
+      let kind = "symbol", icon = "symbol-variable";
+      if (["py", "pyi"].includes(extension)) {
+        match = /^\s*(?:async\s+)?(class|def)\s+([A-Za-z_]\w*)/.exec(text);
+        if (match) { kind = match[1] === "class" ? "class" : "function"; icon = match[1] === "class" ? "symbol-class" : "symbol-method"; }
+      } else if (["js", "jsx", "ts", "tsx", "mjs", "cjs", "java", "kt", "go", "rs"].includes(extension)) {
+        match = /^\s*(?:export\s+)?(?:public\s+|private\s+|protected\s+)?(?:async\s+)?(class|interface|function|fn|func|const|let|var)\s+([A-Za-z_$]\w*)/.exec(text);
+        if (match) { kind = match[1]; icon = ["class", "interface"].includes(kind) ? "symbol-class" : ["function", "fn", "func"].includes(kind) ? "symbol-method" : "symbol-variable"; }
+      } else if (["md", "mdx"].includes(extension)) {
+        match = /^(#{1,6})\s+(.+?)\s*$/.exec(text);
+        if (match) { kind = `heading ${match[1].length}`; icon = "symbol-string"; }
+      }
+      if (!match) continue;
+      symbols.push({ name: match[2], kind, icon, line });
+    }
+    return symbols;
+  }
+
+  renderFileOutline() {
+    if (this.fileInspectorMode !== "outline") return;
+    this.$("file-inspector-title").textContent = "Outline";
+    const body = this.$("file-inspector-body");
+    body.textContent = "";
+    const symbols = this.activeFileOutlineSymbols();
+    for (const symbol of symbols) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "file-inspector-row";
+      const icon = document.createElement("span");
+      icon.className = `codicon codicon-${symbol.icon}`;
+      const name = document.createElement("span");
+      name.className = "file-inspector-row-name";
+      name.textContent = symbol.name;
+      const meta = document.createElement("span");
+      meta.className = "file-inspector-row-meta";
+      meta.textContent = symbol.line;
+      row.append(icon, name, meta);
+      row.onclick = () => this.revealEditorLine(symbol.line);
+      body.appendChild(row);
+    }
+    if (!symbols.length) {
+      const empty = document.createElement("div");
+      empty.className = "file-inspector-empty";
+      empty.textContent = "No symbols found in the active file.";
+      body.appendChild(empty);
+    }
+  }
+
+  revealEditorLine(line, column = 1) {
+    if (!this.editor) return;
+    this.editor.setPosition({ lineNumber: line, column });
+    this.editor.revealLineInCenter(line);
+    this.editor.focus();
+  }
+
+  async renderGitChanges() {
+    if (this.fileInspectorMode !== "git") return;
+    this.$("file-inspector-title").textContent = "Git changes";
+    const body = this.$("file-inspector-body");
+    body.textContent = "";
+    const loading = document.createElement("div");
+    loading.className = "file-inspector-empty";
+    loading.textContent = "Loading Git status…";
+    body.appendChild(loading);
+    const root = this.searchRoot();
+    const response = await fetch(`/api/files/git-status?root=${encodeURIComponent(root)}`);
+    if (this.fileInspectorMode !== "git") return;
+    body.textContent = "";
+    if (!response.ok) {
+      loading.textContent = "Git status unavailable.";
+      body.appendChild(loading);
+      return;
+    }
+    const statuses = await response.json();
+    const files = Object.entries(statuses).sort(([left], [right]) => left.localeCompare(right));
+    const groups = [
+      ["Modified", ["M"]], ["Added", ["A"]], ["Untracked", ["?"]], ["Deleted", ["D"]],
+      ["Renamed", ["R", "C"]], ["Other", []],
+    ];
+    const renderedPaths = new Set();
+    for (const [label, acceptedStatuses] of groups) {
+      const groupedFiles = files.filter(([path, status]) => !renderedPaths.has(path) &&
+        (!acceptedStatuses.length || acceptedStatuses.includes(status)));
+      if (!groupedFiles.length) continue;
+      const heading = document.createElement("div");
+      heading.className = "file-inspector-group";
+      heading.textContent = `${label} ${groupedFiles.length}`;
+      body.appendChild(heading);
+      for (const [path, status] of groupedFiles) {
+        renderedPaths.add(path);
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "file-inspector-row";
+        const icon = document.createElement("span");
+        icon.className = `codicon codicon-${status === "A" || status === "?" ? "diff-added" : status === "D" ? "diff-removed" : "diff-modified"}`;
+        const name = document.createElement("span");
+        name.className = "file-inspector-row-name";
+        name.textContent = path;
+        const meta = document.createElement("span");
+        meta.className = "file-inspector-row-meta";
+        meta.textContent = status;
+        row.append(icon, name, meta);
+        row.onclick = () => void this.openFile(root, path, null, null, { pinned: true });
+        body.appendChild(row);
+      }
+    }
+    if (!files.length) {
+      const empty = document.createElement("div");
+      empty.className = "file-inspector-empty";
+      empty.textContent = "Working tree is clean.";
+      body.appendChild(empty);
+    }
+  }
+
+  toggleSplitEditor(forceOpen = false) {
+    if (this.activeFileKey === null || !this.editor) return;
+    if (!forceOpen && !this.$("secondary-editor-pane").classList.contains("hidden")) {
+      this.closeSplitEditor();
+      return;
+    }
+    this.$("editor-area").classList.add("split-open");
+    this.$("secondary-editor-pane").classList.remove("hidden");
+    this.$("file-split-toggle").classList.add("on");
+    if (!this.secondaryFileKey || !this.openFiles.has(this.secondaryFileKey)) {
+      this.secondaryFileKey = [...this.openFiles.keys()].find((key) => key !== this.activeFileKey) || this.activeFileKey;
+    }
+    this.renderSecondaryFileSelect();
+    void this.renderSecondaryEditor(true);
+    this.editor.layout();
+  }
+
+  closeSplitEditor() {
+    this.secondaryEditor?.dispose();
+    this.secondaryDiffEditor?.dispose();
+    this.secondaryEditor = null;
+    this.secondaryDiffEditor = null;
+    this.$("secondary-editor-host").textContent = "";
+    this.$("secondary-editor-pane").classList.add("hidden");
+    this.$("editor-area").classList.remove("split-open");
+    this.$("file-split-toggle").classList.remove("on");
+    this.$("secondary-diff-toggle").classList.remove("on");
+    this.editor?.layout();
+  }
+
+  renderSecondaryFileSelect() {
+    const select = this.$("secondary-file-select");
+    if (!select) return;
+    const previous = this.secondaryFileKey;
+    select.textContent = "";
+    for (const [key, entry] of this.openFiles) {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = entry.path;
+      select.appendChild(option);
+    }
+    if (previous && this.openFiles.has(previous)) select.value = previous;
+  }
+
+  toggleSecondaryDiff() {
+    if (this.$("secondary-editor-pane").classList.contains("hidden")) return;
+    this.$("secondary-diff-toggle").classList.toggle("on");
+    void this.renderSecondaryEditor(true);
+  }
+
+  async renderSecondaryEditor(force = false) {
+    if (!this.editor || this.$("secondary-editor-pane").classList.contains("hidden")) return;
+    const secondaryEntry = this.secondaryFileKey ? this.openFiles.get(this.secondaryFileKey) : null;
+    const activeEntry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
+    if (!secondaryEntry || !activeEntry) return;
+    if (!activeEntry.model) await this.refreshFileModelFromDisk(activeEntry);
+    if (!secondaryEntry.model) await this.refreshFileModelFromDisk(secondaryEntry);
+    if (!secondaryEntry.model || !activeEntry.model || this.$("secondary-editor-pane").classList.contains("hidden")) return;
+    const diff = this.$("secondary-diff-toggle").classList.contains("on");
+    const signature = `${this.activeFileKey}|${this.secondaryFileKey}|${diff}`;
+    if (!force && this.secondaryEditorSignature === signature) return;
+    this.secondaryEditorSignature = signature;
+    this.secondaryEditor?.dispose();
+    this.secondaryDiffEditor?.dispose();
+    this.secondaryEditor = null;
+    this.secondaryDiffEditor = null;
+    const host = this.$("secondary-editor-host");
+    host.textContent = "";
+    const options = { automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
+      fontSize: this.settings.code_font_size, wordWrap: this.settings.word_wrap ? "on" : "off", fixedOverflowWidgets: true };
+    if (diff) {
+      this.secondaryDiffEditor = monaco.editor.createDiffEditor(host, { ...options, readOnly: true, renderSideBySide: false });
+      this.secondaryDiffEditor.setModel({ original: activeEntry.model, modified: secondaryEntry.model });
+    } else {
+      this.secondaryEditor = monaco.editor.create(host, { ...options, readOnly: false, model: secondaryEntry.model });
+    }
+  }
+
+  toggleProblemsPanel() {
+    this.setProblemsOpen(!this.problemsOpen);
+  }
+
+  setProblemsOpen(open) {
+    this.problemsOpen = !!open;
+    this.$("problems-panel").classList.toggle("hidden", !this.problemsOpen);
+    this.$("problems-toggle").classList.toggle("on", this.problemsOpen);
+    if (this.problemsOpen) this.refreshProblems();
+    this.editor?.layout();
+    this.secondaryEditor?.layout();
+    this.secondaryDiffEditor?.layout();
+    this.fitActive();
+  }
+
+  scheduleProblemsRefresh() {
+    if (!this.problemsOpen) return;
+    clearTimeout(this.problemsRefreshTimer);
+    this.problemsRefreshTimer = setTimeout(() => this.refreshProblems(), 180);
+  }
+
+  refreshProblems() {
+    if (!this.problemsOpen || typeof monaco === "undefined") return;
+    const problems = [];
+    for (const marker of monaco.editor.getModelMarkers({})) {
+      const entry = [...this.openFiles.values()].find((candidate) => candidate.model?.uri.toString() === marker.resource.toString());
+      if (!entry) continue;
+      problems.push({ severity: marker.severity >= monaco.MarkerSeverity.Error ? "error" : "warning",
+        message: marker.message, path: entry.path, root: entry.root, line: marker.startLineNumber, column: marker.startColumn });
+    }
+    const view = this.views.get(this.activeId);
+    const session = this.session(this.activeId);
+    if (view && session && this.activeFileKey === null) {
+      const buffer = view.term.buffer.active;
+      const first = Math.max(0, buffer.baseY + buffer.cursorY - 400);
+      const last = Math.min(buffer.length - 1, buffer.baseY + buffer.cursorY);
+      const seen = new Set();
+      for (let index = first; index <= last; index += 1) {
+        const text = buffer.getLine(index)?.translateToString(true) || "";
+        const match = /(?:^|\s)((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z0-9]+):(\d+)(?::(\d+))?.*?\b(error|warning)\b/i.exec(text) ||
+          /\b(error|warning)\b.*?((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z0-9]+):(\d+)(?::(\d+))?/i.exec(text);
+        if (!match) continue;
+        const pathFirst = match[1] && !/^(error|warning)$/i.test(match[1]);
+        const path = pathFirst ? match[1] : match[2];
+        const line = Number(pathFirst ? match[2] : match[3]);
+        const column = Number(pathFirst ? match[3] : match[4]) || 1;
+        const severity = String(pathFirst ? match[4] : match[1]).toLocaleLowerCase();
+        const key = `${path}:${line}:${severity}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        problems.push({ severity, message: text.trim(), path, root: session.cwd, line, column });
+      }
+    }
+    this.renderProblems(problems);
+  }
+
+  renderProblems(problems) {
+    const list = this.$("problems-list");
+    list.textContent = "";
+    this.$("problems-count").textContent = problems.length ? String(problems.length) : "";
+    for (const problem of problems) {
+      const row = document.createElement("div");
+      row.className = `problem-row ${problem.severity}`;
+      const icon = document.createElement("span");
+      icon.className = `codicon codicon-${problem.severity === "error" ? "error" : "warning"}`;
+      const message = document.createElement("span");
+      message.className = "problem-message";
+      message.textContent = problem.message;
+      const location = document.createElement("span");
+      location.className = "problem-location";
+      location.textContent = `${problem.path}:${problem.line}`;
+      row.append(icon, message, location);
+      row.onclick = () => void this.openFile(problem.root, problem.path, problem.line, null, { pinned: true });
+      list.appendChild(row);
+    }
+    if (!problems.length) {
+      const empty = document.createElement("div");
+      empty.className = "file-inspector-empty";
+      empty.textContent = "No Monaco diagnostics or recent terminal errors.";
+      list.appendChild(empty);
+    }
+  }
+
+  toggleConversationOutline() {
+    this.setConversationOutlineOpen(!this.conversationOutlineOpen);
+  }
+
+  setConversationOutlineOpen(open) {
+    this.conversationOutlineOpen = !!open && this.activeFileKey === null && !!this.activeId;
+    this.$("conversation-outline").classList.toggle("hidden", !this.conversationOutlineOpen);
+    this.$("conversation-outline-toggle").classList.toggle("on", this.conversationOutlineOpen);
+    if (this.conversationOutlineOpen) void this.loadConversationOutline();
+    else this.conversationOutlineSessionId = null;
+    this.fitActive();
+  }
+
+  async loadConversationOutline(force = false) {
+    const sessionId = this.activeId;
+    if (!this.conversationOutlineOpen || !sessionId || this.activeFileKey !== null) return;
+    const list = this.$("conversation-outline-list");
+    let turns = !force ? this.historyTurnsBySession.get(sessionId) : null;
+    if (!turns?.length) {
+      list.textContent = "";
+      const loading = document.createElement("div");
+      loading.className = "file-inspector-empty";
+      loading.textContent = "Loading transcript outline…";
+      list.appendChild(loading);
+      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/history-page?limit=160`);
+      if (!response.ok || !this.conversationOutlineOpen || this.activeId !== sessionId) {
+        loading.textContent = "Conversation transcript unavailable.";
+        return;
+      }
+      const payload = await response.json();
+      turns = Array.isArray(payload.turns) ? payload.turns : [];
+      if (turns.length) this.historyTurnsBySession.set(sessionId, turns);
+    }
+    this.conversationOutlineSessionId = sessionId;
+    this.renderConversationOutline(turns || []);
+  }
+
+  conversationOutlineTurnKey(turn) {
+    return `${turn.role || ""}|${turn.kind || ""}|${String(turn.text || "").replace(/\s+/g, " ").trim().slice(0, 220)}`;
+  }
+
+  renderConversationOutline(turns) {
+    const list = this.$("conversation-outline-list");
+    list.textContent = "";
+    const messages = turns.filter((turn) => ["user", "assistant"].includes(turn.role) && String(turn.text || "").trim());
+    for (const turn of messages) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "conversation-outline-item";
+      const role = document.createElement("span");
+      role.className = `conversation-outline-role codicon codicon-${turn.role === "user" ? "account" : "sparkle"}`;
+      const label = document.createElement("span");
+      label.className = "conversation-outline-label";
+      label.textContent = turn.role === "user" ? "Question" : "Response";
+      const text = document.createElement("span");
+      text.className = "conversation-outline-text";
+      text.textContent = String(turn.text || "").replace(/\s+/g, " ").trim();
+      item.append(role, label, text);
+      item.onclick = () => this.openConversationOutlineTurn(turn);
+      list.appendChild(item);
+    }
+    if (!messages.length) {
+      const empty = document.createElement("div");
+      empty.className = "file-inspector-empty";
+      empty.textContent = "No user questions or assistant responses yet.";
+      list.appendChild(empty);
+    }
+  }
+
+  openConversationOutlineTurn(turn) {
+    const key = this.conversationOutlineTurnKey(turn);
+    if (!this.historyOpen) this.setHistoryMode(true);
+    const reveal = (attempt = 0) => {
+      if (!this.historyOpen || attempt > 12) return;
+      const target = [...this.$("history-body").querySelectorAll(".turn")]
+        .find((block) => block.dataset.outlineKey === key);
+      if (target) {
+        target.scrollIntoView({ block: "center", behavior: "smooth" });
+        target.classList.add("outline-target");
+        setTimeout(() => target.classList.remove("outline-target"), 1200);
+        return;
+      }
+      setTimeout(() => reveal(attempt + 1), 100);
+    };
+    requestAnimationFrame(() => reveal());
+  }
+
+  scheduleSelectionActions() {
+    clearTimeout(this.selectionActionUpdateTimer);
+    this.selectionActionUpdateTimer = setTimeout(() => {
+      this.selectionActionUpdateTimer = 0;
+      if (this.selectionActionUpdateFrame) cancelAnimationFrame(this.selectionActionUpdateFrame);
+      this.selectionActionUpdateFrame = requestAnimationFrame(() => {
+        this.selectionActionUpdateFrame = 0;
+        this.updateSelectionActions();
+      });
+    }, SELECTION_ACTION_DELAY_MS);
   }
 
   updateSelectionActions() {
@@ -6392,6 +7311,7 @@ class TermdeckApp {
     const top = Math.max(8, Math.min(viewportHeight - height - 8, centeredTop));
     actions.style.left = `${left}px`;
     actions.style.top = `${top}px`;
+    actions.classList.toggle("selection-submenus-right", left < 160);
   }
 
   readSelectionActionState() {
@@ -6443,6 +7363,8 @@ class TermdeckApp {
     const state = this.selectionActionState;
     this.selectionActionState = null;
     this.selectionCopyHistoryIndex = 0;
+    clearTimeout(this.selectionActionUpdateTimer);
+    this.selectionActionUpdateTimer = 0;
     const actions = this.$("selection-actions");
     if (actions) actions.classList.add("hidden");
     if (actions) actions.classList.remove("history-picker");
@@ -6582,13 +7504,18 @@ class TermdeckApp {
     this.positionSelectionActions(rect);
   }
 
-  copySelectionToClipboard() {
-    const state = this.selectionActionState;
+  copySelectionToClipboard(keepSelectionActions = false) {
+    const state = this.readSelectionActionState() || this.selectionActionState;
     if (!state) return;
     const text = state.text;
     this.recordSelectionCopyHistory(text);
     void this.copyTextToClipboard(text, "selection copied");
-    this.hideSelectionActions();
+    if (keepSelectionActions) {
+      this.selectionActionState = state;
+      this.scheduleSelectionActions();
+    } else {
+      this.hideSelectionActions();
+    }
   }
 
   fileNameSearchQueryFromSelection(text) {
@@ -7434,6 +8361,7 @@ class TermdeckApp {
     }
     this.renderList();
     this.renderTopbar();
+    if (this.conversationOutlineOpen && previousId !== id) void this.loadConversationOutline(true);
     if (options.reveal) this.keepActiveSessionVisible();
     this.scheduleActiveEditorFocus(id);
   }
@@ -7464,9 +8392,12 @@ class TermdeckApp {
                    forceResizeAfterFit: true, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
                    suppressResizeToServer: false, resyncResizeRepairPending: false,
                    hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
-                   tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
+                   tailRepairFrame: 0, tailRepairTimer: 0, tailRepairConfirmTimer: 0,
+                   activationRepairFrame: 0, tailRepairSignature: "", lastRenderRepairAt: 0,
+                   renderedRows: [], renderedViewportY: null, renderedCols: 0, renderedTermRows: 0,
+                   renderRepairArmed: true, renderObserver: null,
                    lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [], codexReflowFollowupTimers: [],
-                   codexReflowEverAttempted: false, preserveRowsFromBottom: 0, reconnectReset: false,
+                   preserveRowsFromBottom: 0, reconnectReset: false,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptSubmissionReflowGuardUntil: 0, promptSubmissionReflowGuardTimer: 0, promptWrapGuardUntil: 0, promptWrapGuardTimer: 0,
@@ -7474,6 +8405,7 @@ class TermdeckApp {
                    claudeInitialReplayRecoveryAttempted: false,
                    claudeSnapshotAddon: null, claudeSnapshotRestoreAttempted: false, claudeSnapshotRestored: false,
                    claudeSnapshotSaveTimer: 0, claudeSnapshotSavePromise: null,
+                   claudeStatusRowRefreshTimer: 0, lastClaudeStatusRowRefreshAt: 0,
                    promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, promptDraftSyncDebounceTimer: 0,
                    pendingDraftSync: null, pendingTerminalDraft: null,
@@ -7534,6 +8466,8 @@ class TermdeckApp {
       clearTimeout(view.scrollSettleTimer);
       view.scrollSettleTimer = 0;
     };
+    view.renderObserver = term.onRender(({ start, end }) => this.recordTerminalRenderedRows(view, start, end));
+    this.refreshTerminal(view);
     // Capture before xterm's wheel handler so the first wheel after a tab
     // switch cannot be mistaken for an automatic bottom-follow scroll.
     container.addEventListener("wheel", markManualScroll, { passive: true, capture: true });
@@ -7586,7 +8520,10 @@ class TermdeckApp {
     term.onScroll(() => {
       if (!view.container.classList.contains("visible")) return;
       if (this.isTerminalScrollV2()) {
-        if (!view.v2Programmatic) view.scrollMode = this.xtermAtBottom(view) ? "follow" : "preserve";
+        if (!view.v2Programmatic) {
+          view.scrollMode = this.xtermAtBottom(view) ? "follow" : "preserve";
+          this.scheduleTerminalTailRepair(view);
+        }
         return;
       }
       // xterm can emit its internal scroll event before the browser updates
@@ -7784,14 +8721,32 @@ class TermdeckApp {
     });
   }
 
+  serializeClaudeSnapshotHistory(view) {
+    const historyEnd = Math.max(0, Number(view.term.buffer.normal.baseY || 0)) - 1;
+    if (historyEnd < 0) return "";
+    const historyStart = Math.max(0, historyEnd - CLAUDE_SNAPSHOT_MAX_LINES + 1);
+    return view.claudeSnapshotAddon.serialize({ range: { start: historyStart, end: historyEnd },
+      excludeAltBuffer: true, excludeModes: true });
+  }
+
   async restoreClaudeSnapshot(view) {
     if (!this.ensureClaudeSnapshotAddon(view)) return false;
     if (view.container.classList.contains("visible")) view.fit.fit();
     try {
       const record = await this.readClaudeSnapshot(view.sessionId);
-      if (!record || record.formatVersion !== CLAUDE_SNAPSHOT_FORMAT_VERSION || typeof record.snapshot !== "string" ||
-          !record.snapshot || record.cols !== view.term.cols) return false;
-      await new Promise((resolve) => view.term.write(record.snapshot, resolve));
+      if (!record || ![2, CLAUDE_SNAPSHOT_FORMAT_VERSION].includes(record.formatVersion) ||
+          typeof record.snapshot !== "string" || !record.snapshot || record.cols !== view.term.cols) return false;
+      let historySnapshot = record.snapshot;
+      if (record.formatVersion === 2) {
+        await new Promise((resolve) => view.term.write(record.snapshot, resolve));
+        historySnapshot = this.serializeClaudeSnapshotHistory(view);
+        view.term.reset();
+        if (!historySnapshot) return false;
+        await this.writeClaudeSnapshot({ sessionId: view.sessionId, formatVersion: CLAUDE_SNAPSHOT_FORMAT_VERSION,
+          cols: view.term.cols, snapshot: historySnapshot, savedAt: Date.now() });
+      }
+      const emptyScreen = `\x1b[0m${"\r\n".repeat(Math.max(1, view.term.rows))}\x1b[2J\x1b[H`;
+      await new Promise((resolve) => view.term.write(historySnapshot + emptyScreen, resolve));
       view.claudeSnapshotRestored = true;
       view.claudeSnapshotRestoredCols = record.cols;
       return true;
@@ -7815,7 +8770,7 @@ class TermdeckApp {
     if (view.claudeSnapshotSavePromise) return view.claudeSnapshotSavePromise;
     let snapshot;
     try {
-      snapshot = view.claudeSnapshotAddon.serialize({ scrollback: CLAUDE_SNAPSHOT_MAX_LINES });
+      snapshot = this.serializeClaudeSnapshotHistory(view);
     } catch (error) {
       view.claudeSnapshotError = error instanceof Error ? error.message : String(error);
       return;
@@ -8234,7 +9189,7 @@ class TermdeckApp {
   }
 
   sendResize(view, cols, rows, force = false) {
-    if (this.sidebarResizeInProgress) return;
+    if (this.sidebarResizeInProgress || view.suppressResizeToServer) return;
     if (view.ws && view.ws.readyState === WebSocket.OPEN &&
         (force || view.lastSentCols !== cols || view.lastSentRows !== rows)) {
       view.lastSentCols = cols;
@@ -8592,9 +9547,34 @@ class TermdeckApp {
     return lines;
   }
 
+  recordTerminalRenderedRows(view, start, end) {
+    const buffer = view?.term?.buffer?.active;
+    if (!buffer || typeof buffer.getLine !== "function") return;
+    const viewportY = Math.max(0, Number(buffer.viewportY || 0));
+    const rows = Math.max(1, Number(view.term.rows || 1));
+    const cols = Math.max(1, Number(view.term.cols || 1));
+    if (view.renderedViewportY !== viewportY || view.renderedCols !== cols || view.renderedTermRows !== rows) {
+      view.renderedRows = new Array(rows).fill(null);
+      view.renderedViewportY = viewportY;
+      view.renderedCols = cols;
+      view.renderedTermRows = rows;
+    }
+    const first = Math.max(0, Number(start || 0));
+    const last = Math.min(rows - 1, Number.isFinite(Number(end)) ? Number(end) : first);
+    for (let row = first; row <= last; row++) {
+      const line = buffer.getLine(viewportY + row);
+      view.renderedRows[row] = this.normalizeTerminalTailLine(line ? line.translateToString(true) : "");
+    }
+  }
+
   terminalRenderedTailLines(view, count = TERMINAL_TAIL_REPAIR_LINES) {
     const rows = [...(view?.container?.querySelectorAll(".xterm-rows > div") || [])];
-    return rows.slice(-count).map((row) => this.normalizeTerminalTailLine(row.textContent || ""));
+    if (rows.length) return rows.slice(-count).map((row) => this.normalizeTerminalTailLine(row.textContent || ""));
+    const buffer = view?.term?.buffer?.active;
+    if (!buffer || view.renderedViewportY !== Math.max(0, Number(buffer.viewportY || 0)) ||
+        view.renderedCols !== view.term.cols || view.renderedTermRows !== view.term.rows) return [];
+    const rendered = view.renderedRows.slice(Math.max(0, view.term.rows - count));
+    return rendered.some((line) => line === null) ? [] : rendered;
   }
 
   parseCssColor(value) {
@@ -8636,7 +9616,6 @@ class TermdeckApp {
     const background = computedBackground && computedBackground[3] > 0 ? computedBackground : themeBackground;
     let compared = 0;
     let invisible = 0;
-    let visible = 0;
     for (let index = 0; index < expected.length; index++) {
       if (!expected[index].trim()) continue;
       compared += 1;
@@ -8646,36 +9625,28 @@ class TermdeckApp {
         invisible += 1;
         continue;
       }
-      const spans = [...row.querySelectorAll("span")];
-      const sample = spans.find((span) => String(span.textContent || "").trim()) || row;
-      const style = window.getComputedStyle(sample);
-      const opacity = Number.parseFloat(style.opacity);
-      if (style.visibility === "hidden" || style.display === "none" || opacity === 0) {
-        invisible += 1;
-        continue;
-      }
-      const foreground = this.parseCssColor(style.color);
-      if (foreground && foreground[3] === 0) {
-        invisible += 1;
-      } else if (foreground && background && this.colorDistance(foreground, background) < 32) {
-        invisible += 1;
-      } else {
-        visible += 1;
-      }
+      const spans = [...row.querySelectorAll("span")].filter((span) => String(span.textContent || "").trim());
+      const samples = spans.length ? spans : [row];
+      const rowVisible = samples.some((sample) => {
+        const style = window.getComputedStyle(sample);
+        const opacity = Number.parseFloat(style.opacity);
+        if (style.visibility === "hidden" || style.display === "none" || opacity === 0) return false;
+        const foreground = this.parseCssColor(style.color);
+        if (!foreground || foreground[3] === 0) return false;
+        const sampleBackground = this.parseCssColor(style.backgroundColor);
+        const effectiveBackground = sampleBackground && sampleBackground[3] > 0 ? sampleBackground : background;
+        return !effectiveBackground || this.colorDistance(foreground, effectiveBackground) >= 12;
+      });
+      if (!rowVisible) invisible += 1;
     }
-    return compared > 0 && invisible > 0 && visible === 0;
+    return compared > 0 && invisible > 0;
   }
 
   terminalTailRenderMismatch(view) {
-    // forceVisibleTerminalReflowViaResizeNudge deliberately hides the container (visibility:hidden)
-    // for the brief window of its own shrink/grow cycle. Without this guard, a concurrently-running
-    // check (e.g. scheduleActiveTerminalSettleWatchdog's own periodic timers) could see that
-    // self-inflicted, intentional invisibility via terminalRenderedTailLooksInvisible and misread it as
-    // a genuine paint bug, triggering an unnecessary SECOND repair on top of the nudge already in
-    // flight -- worse under CPU load, where the nudge's own hide window runs longer.
     if (view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame) return false;
-    const expected = this.terminalBufferVisibleTailLines(view);
-    const rendered = this.terminalRenderedTailLines(view);
+    const visibleRows = Math.max(1, Number(view.term.rows || 1));
+    const expected = this.terminalBufferVisibleTailLines(view, visibleRows);
+    const rendered = this.terminalRenderedTailLines(view, visibleRows);
     if (!expected.length || expected.length !== rendered.length) return false;
     let compared = 0;
     for (let index = 0; index < expected.length; index++) {
@@ -8689,10 +9660,30 @@ class TermdeckApp {
       this.terminalRenderedTailLooksInvisible(view, expected, rendered);
   }
 
+  terminalRenderMismatchSnapshot(view) {
+    if (!this.terminalTailRenderMismatch(view)) return null;
+    const visibleRows = Math.max(1, Number(view.term.rows || 1));
+    return {
+      viewportY: Number(view.term.buffer.active.viewportY || 0), cols: view.term.cols, rows: view.term.rows,
+      expected: this.terminalBufferVisibleTailLines(view, visibleRows).join("\n"),
+      rendered: this.terminalRenderedTailLines(view, visibleRows).join("\n"),
+    };
+  }
+
+  sameTerminalRenderMismatch(left, right) {
+    return !!left && !!right && left.viewportY === right.viewportY && left.cols === right.cols && left.rows === right.rows &&
+      left.expected === right.expected && left.rendered === right.rendered;
+  }
+
   repairTerminalRenderIfStale(view) {
     if (!view || view.closed || !view.container.classList.contains("visible")) return false;
     if (this.shouldDeferPromptWrapFit(view)) return false;
-    if (!this.terminalTailRenderMismatch(view)) return false;
+    if (!this.terminalTailRenderMismatch(view)) {
+      view.renderRepairArmed = true;
+      return false;
+    }
+    if (!view.renderRepairArmed) return false;
+    view.renderRepairArmed = false;
     const restoreLine = view.term.buffer.active.viewportY;
     // Captured as an OFFSET, not the absolute index above: a cols change reflows the whole buffer
     // (every wrapped line can re-wrap into a different number of rows), so restoreLine can point at
@@ -8704,6 +9695,14 @@ class TermdeckApp {
     // activate() and the reconnect restore in connect()'s ws.onmessage).
     const restoreRowsFromBottom = view.term.buffer.active.baseY - restoreLine;
     const follow = view.scrollMode === "follow";
+    const renderService = view.term._core?._renderService;
+    if (renderService?._isPaused && typeof renderService._handleIntersectionChange === "function") {
+      renderService._handleIntersectionChange({ isIntersecting: true, intersectionRatio: 1 });
+      this.refreshTerminal(view);
+      if (follow) this.scrollTerminalV2ToBottom(view);
+      else this.scrollTerminalV2ToLine(view, Math.min(restoreLine, view.term.buffer.active.baseY));
+      return true;
+    }
     // A stale-looking render is not always a paint problem: the terminal's own cols/rows can be wrong for
     // its actual container width (a sibling's DOM change, a still-settling flex pass) without ever having
     // gone through a resize event. fit() re-measures the container and calls term.resize() when that
@@ -8718,6 +9717,21 @@ class TermdeckApp {
         else this.scrollTerminalV2ToLine(view, Math.max(0, view.term.buffer.active.baseY - restoreRowsFromBottom));
         return true;
       }
+    }
+    if (this.session(view.sessionId)?.agent_kind === "codex") {
+      this.refreshTerminalAppearance(view, true);
+      if (follow) this.scrollTerminalV2ToBottom(view);
+      else this.scrollTerminalV2ToLine(view, Math.min(restoreLine, view.term.buffer.active.baseY));
+      if (view.tailRepairFrame) cancelAnimationFrame(view.tailRepairFrame);
+      view.tailRepairFrame = requestAnimationFrame(() => {
+        view.tailRepairFrame = requestAnimationFrame(() => {
+          view.tailRepairFrame = 0;
+          if (view.closed || !view.container.classList.contains("visible")) return;
+          if (this.terminalTailRenderMismatch(view)) this.forceVisibleTerminalReflowViaResizeNudge(view, 1);
+          else view.renderRepairArmed = true;
+        });
+      });
+      return true;
     }
     this.refreshTerminalAppearance(view, true);
     if (follow) this.scrollTerminalV2ToBottom(view);
@@ -8769,15 +9783,31 @@ class TermdeckApp {
   }
 
   scheduleTerminalTailRepair(view) {
-    if (!view || view.closed || view.tailRepairFrame || !view.container.classList.contains("visible")) return;
-    if (!this.isTerminalScrollV2() || view.scrollMode !== "follow") return;
-    view.tailRepairFrame = requestAnimationFrame(() => {
-      view.tailRepairFrame = requestAnimationFrame(() => {
-        view.tailRepairFrame = 0;
-        if (view.closed || !view.container.classList.contains("visible") || view.scrollMode !== "follow") return;
-        this.repairTerminalRenderIfStale(view);
-      });
-    });
+    if (!view || view.closed || view.tailRepairTimer || view.tailRepairConfirmTimer ||
+        !view.container.classList.contains("visible") || !this.isTerminalScrollV2() ||
+        this.session(view.sessionId)?.agent_kind !== "codex") return;
+    view.tailRepairTimer = setTimeout(() => {
+      view.tailRepairTimer = 0;
+      if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
+      const candidate = this.terminalRenderMismatchSnapshot(view);
+      if (!candidate) {
+        view.renderRepairArmed = true;
+        return;
+      }
+      view.tailRepairConfirmTimer = setTimeout(() => {
+        view.tailRepairConfirmTimer = 0;
+        if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
+        const confirmed = this.terminalRenderMismatchSnapshot(view);
+        if (!this.sameTerminalRenderMismatch(candidate, confirmed)) {
+          if (!confirmed) view.renderRepairArmed = true;
+          else this.scheduleTerminalTailRepair(view);
+          return;
+        }
+        if (Date.now() - view.lastRenderRepairAt < TERMINAL_RENDER_REPAIR_COOLDOWN_MS) return;
+        view.renderRepairArmed = true;
+        if (this.repairTerminalRenderIfStale(view)) view.lastRenderRepairAt = Date.now();
+      }, TERMINAL_RENDER_CONFIRM_DELAY_MS);
+    }, TERMINAL_RENDER_CHECK_INTERVAL_MS);
   }
 
   scheduleTerminalActivationRepair(view, options = {}) {
@@ -8818,20 +9848,7 @@ class TermdeckApp {
     if (localStorage.getItem("td-debug-reflow-mode") === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     const kind = this.session(view.sessionId)?.agent_kind;
     if (kind !== "codex") return this.forceVisibleTerminalReflowViaClear(view);
-    // A "guarded" candidate (skip the nudge on repeat re-triggers unless terminalTailRenderMismatch
-    // actually finds something) was tried here to reduce the odd, self-healing wrap corruption reported
-    // on some running codex tabs, but showed no observed difference from unconditional nudging in
-    // practice and added a toggle nobody could tell apart -- removed. Always nudge; isFirstEverReflow
-    // is kept only to decide how long to hide the container below, not whether to nudge at all.
-    const isFirstEverReflow = !view.codexReflowEverAttempted;
-    view.codexReflowEverAttempted = true;
-    // Only a session's first-ever reflow can still have the SERVER's own screen repair
-    // (session_manager.py _force_screen_repaint, scheduled once per session per server run) yet to
-    // land -- it arrives ~0.28-0.43s later as ordinary output, a second genuine full-screen redraw from
-    // the real CLI process that this function's own hide (above) never covers. Stay hidden long enough
-    // to also mask that, so only one final, settled paint is ever visible; later re-triggers have no
-    // such pending server-side repair to wait out, so keep their hide brief.
-    const result = this.forceVisibleTerminalReflowViaResizeNudge(view, 2, isFirstEverReflow ? 600 : 0);
+    const result = this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     this.scheduleCodexReflowFollowup(view);
     return result;
   }
@@ -8901,16 +9918,7 @@ class TermdeckApp {
   // wide enough to catch a composer's horizontal rule right at its wrap boundary; testing whether 1
   // column is still enough to unstick a stale codex paint without landing on that boundary.
   //
-  // minHideMs: keeps the container hidden for at least this long, even though this function's OWN
-  // shrink/grow cycle finishes in about a frame. Reported: opening/refreshing shows content, then
-  // visibly repaints a second time shortly after with identical-looking content -- almost certainly the
-  // SERVER's own screen repair (session_manager.py _force_screen_repaint, ~0.28-0.43s delayed, now
-  // unconditional) landing as a second, genuine full-screen redraw from the real CLI process. That
-  // arrives as ordinary output (queueTerminalWrite), not through this function at all, so it was never
-  // covered by the hide above. On a session's first-ever reflow (forceVisibleTerminalReflow passes a
-  // longer minHideMs there), stay hidden long enough to cover that server-side window too, so only the
-  // one, final, settled paint is ever visible.
-  forceVisibleTerminalReflowViaResizeNudge(view, nudgeCols = 2, minHideMs = 0) {
+  forceVisibleTerminalReflowViaResizeNudge(view, nudgeCols = 2) {
     if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
         !view.container.classList.contains("visible")) return false;
     if (this.shouldDeferPromptWrapFit(view)) return false;
@@ -8925,42 +9933,9 @@ class TermdeckApp {
     const follow = view.scrollMode === "follow";
     view.suppressResizeToServer = true;
     view.v2Programmatic = true;
-    // The shrink/grow cycle below visibly re-wraps every on-screen line narrower and then back to
-    // normal -- reported as an "everything jumps/repaints" flicker. Hide the container for the
-    // duration (visibility, not display: it must keep its layout box so fit()/getBoundingClientRect()
-    // still measure real geometry, and IntersectionObserver-based renderer suspension only reacts to
-    // display:none, not visibility) so only the FINAL, correctly-sized result is ever actually seen.
-    //
-    // The hide is synchronous but the reveal depends on two requestAnimationFrame calls completing --
-    // under CPU load, rAFs can stall arbitrarily, which would leave the terminal invisible for however
-    // long that stall lasts and then have it "pop back" to its already-correct content once the reveal
-    // finally runs. That is indistinguishable from "it cleared everything and caught back up" to a
-    // user watching it happen, and was reported as exactly that right after this hide was added. A
-    // bounded setTimeout safety net (not tied to rAF, so it fires even if rAF itself is what's stalled)
-    // caps how long the terminal can ever stay invisible for, regardless of system load.
-    const hideStartedAt = Date.now();
-    view.container.style.visibility = "hidden";
-    // A visibility:hidden container cannot hold focus -- if scheduleActiveEditorFocus's
-    // view.term.focus() call (fired 80ms after activate(), see runScheduledActiveEditorFocus) lands
-    // while this hide is still in effect, the browser silently drops it (a hidden element is not a
-    // focusable area) and activeElement falls back to <body>. Nothing else ever re-requests focus once
-    // this reveals, so the terminal is left unfocusable until the user clicks it a second time -- this
-    // is what made a fresh/slow-loading codex tab need an extra click to type into, since only codex
-    // goes through this hide/reveal cycle and a slow tab is exactly the case where the 80ms focus
-    // attempt is most likely to race the hide window. Reclaim focus once actually revealed instead of
-    // just restoring visibility.
-    const restoreVisibility = () => { view.container.style.visibility = ""; this.reclaimTerminalFocusIfIdle(view); };
-    const revealDeadline = setTimeout(restoreVisibility, minHideMs + 250);
-    const revealContainer = () => {
-      const remaining = minHideMs - (Date.now() - hideStartedAt);
-      clearTimeout(revealDeadline);
-      if (remaining > 0) setTimeout(restoreVisibility, remaining);
-      else restoreVisibility();
-    };
     view.v2ForcedReflowFrame = requestAnimationFrame(() => {
       view.v2ForcedReflowFrame = 0;
       if (view.closed || !view.container.classList.contains("visible")) {
-        revealContainer();
         view.suppressResizeToServer = false;
         view.v2Programmatic = false;
         return;
@@ -8979,7 +9954,6 @@ class TermdeckApp {
             if (follow) this.scrollTerminalV2ToBottom(view);
             else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
           }
-          revealContainer();
         }
         view.suppressResizeToServer = false;
         queueMicrotask(() => {
@@ -9014,9 +9988,25 @@ class TermdeckApp {
         this.repairTerminalViewport(view);
       }
       if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleClaudeSnapshotSave(view);
+      if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleClaudeStatusRowRefresh(view);
       if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleTerminalTailRepair(view);
       this.drainTerminalWrites(view);
     });
+  }
+
+  scheduleClaudeStatusRowRefresh(view) {
+    if (!view || view.closed || view.claudeStatusRowRefreshTimer || this.session(view.sessionId)?.agent_kind !== "claude" ||
+        !view.container.classList.contains("visible") || view.scrollMode !== "follow" || !this.xtermAtBottom(view)) return;
+    const elapsed = Date.now() - view.lastClaudeStatusRowRefreshAt;
+    const delay = Math.max(0, CLAUDE_STATUS_ROW_REFRESH_INTERVAL_MS - elapsed);
+    view.claudeStatusRowRefreshTimer = setTimeout(() => {
+      view.claudeStatusRowRefreshTimer = 0;
+      if (view.closed || this.session(view.sessionId)?.agent_kind !== "claude" ||
+          !view.container.classList.contains("visible") || view.scrollMode !== "follow" || !this.xtermAtBottom(view)) return;
+      view.lastClaudeStatusRowRefreshAt = Date.now();
+      const lastRow = Math.max(0, view.term.rows - 1);
+      view.term.refresh(Math.max(0, lastRow - 2), lastRow);
+    }, delay);
   }
 
   repairTerminalViewport(view) {
@@ -9102,11 +10092,15 @@ class TermdeckApp {
 
   destroyView(id, view) {
     view.closed = true;
+    view.renderObserver?.dispose();
     this.clearActiveTerminalSettleWatchdog(view);
     clearTimeout(view.manualScrollReleaseTimer);
     clearTimeout(view.scrollSettleTimer);
     clearTimeout(view.resizeRepairTimer);
+    clearTimeout(view.tailRepairTimer);
+    clearTimeout(view.tailRepairConfirmTimer);
     clearTimeout(view.claudeInitialReplayCheckTimer);
+    clearTimeout(view.claudeStatusRowRefreshTimer);
     clearTimeout(view.promptWrapGuardTimer);
     clearTimeout(view.promptSubmissionReflowGuardTimer);
     clearTimeout(view.promptDraftSyncTimer);
@@ -9194,16 +10188,22 @@ class TermdeckApp {
     }
   }
 
-  closeOpenFileEntry(key, entry) {
+  closeOpenFileEntry(key, entry, recordRecent = true) {
     clearTimeout(entry.autosaveTimer);
     entry.autosaveTimer = 0;
     if (entry.model) {
       entry.model.dispose();
       entry.model = null;
     }
+    if (recordRecent) {
+      const recent = Array.isArray(this.settings.recent_closed_files) ? this.settings.recent_closed_files : [];
+      this.settings.recent_closed_files = [{ root: entry.root, path: entry.path },
+        ...recent.filter((item) => item.root !== entry.root || item.path !== entry.path)].slice(0, 30);
+    }
     this.openFiles.delete(key);
     this.sidebarSelectedFileKeys.delete(key);
     if (this.sidebarFileSelectionAnchorKey === key) this.sidebarFileSelectionAnchorKey = null;
+    if (this.secondaryFileKey === key) this.secondaryFileKey = null;
   }
 
   enforceOpenFilesLimit() {
@@ -9211,7 +10211,7 @@ class TermdeckApp {
     for (const [key, entry] of this.openFiles) {
       if (this.openFiles.size <= OPEN_FILES_MAX_ENTRIES) break;
       if (key === this.activeFileKey || entry.dirty || entry.savePromise) continue;
-      this.closeOpenFileEntry(key, entry);
+      this.closeOpenFileEntry(key, entry, false);
       changed = true;
     }
     return changed;
@@ -9305,6 +10305,7 @@ class TermdeckApp {
           scrollBeyondLastLine: false, fontSize: this.settings.code_font_size, lineNumbersMinChars: 4,
           renderLineHighlight: "all", folding: true, wordWrap: this.settings.word_wrap ? "on" : "off", fixedOverflowWidgets: true,
         });
+        monaco.editor.onDidChangeMarkers(() => this.scheduleProblemsRefresh());
         this.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => this.saveActiveFile());
         this.editor.addAction({
           id: "termdeck-save", label: "Save (⌘S)", contextMenuGroupId: "1_modification", contextMenuOrder: 0.5,
@@ -9665,7 +10666,8 @@ class TermdeckApp {
         row.append(spacer, this.fileTypeIconEl(entry.name, "tree-type-icon"), name);
         row.dataset.rel = childRel;
         row.dataset.kind = "file";
-        row.onclick = () => this.openFile(this.treeRoot, childRel, null, row);
+        row.onclick = () => this.openFile(this.treeRoot, childRel, null, row, { preview: true, fromFilePanel: true });
+        row.ondblclick = () => this.openFile(this.treeRoot, childRel, null, row, { pinned: true, fromFilePanel: true });
         this.appendMtime(row, entry);
         this.appendGitStatus(row, entry);
         container.appendChild(row);
@@ -9962,7 +10964,7 @@ class TermdeckApp {
     const isDir = current.dataset.kind === "dir";
     if (key === "Enter") {
       if (isDir) await this.toggleDir(current, rel);
-      else this.openFile(this.treeRoot, rel, null, current);
+      else this.openFile(this.treeRoot, rel, null, current, { preview: true, fromFilePanel: true });
       return;
     }
     if (key === "ArrowRight") {
@@ -10020,9 +11022,13 @@ class TermdeckApp {
   async openFile(root, path, line, treeRow, options = {}) {
     const key = `${root}|${path}`;
     if (!this.openFiles.has(key)) {
-      this.openFiles.set(key, { root, path, name: path.split("/").pop(), model: null, fullPath: null, truncated: false });
+      const previewEntry = [...this.openFiles.entries()].find(([, candidate]) => candidate.preview && !candidate.dirty && !candidate.savePromise);
+      if (options.preview && previewEntry) this.closeOpenFileEntry(previewEntry[0], previewEntry[1], false);
+      this.openFiles.set(key, { root, path, name: path.split("/").pop(), model: null, fullPath: null,
+        truncated: false, preview: !!options.preview && !options.pinned });
     } else {
       const entry = this.openFiles.get(key);
+      if (options.pinned) entry.preview = false;
       this.openFiles.delete(key);
       this.openFiles.set(key, entry);
     }
@@ -10087,6 +11093,7 @@ class TermdeckApp {
     }
     this.renderList();
     this.renderTopbar();
+    void this.renderSecondaryEditor(true);
     if (options.fromOpenFiles) {
       requestAnimationFrame(() => this.$("session-list").querySelector(".file-item.active")?.scrollIntoView({ block: "nearest" }));
     }
@@ -10133,8 +11140,16 @@ class TermdeckApp {
       entry.model = monaco.editor.createModel(data.content, undefined, uri);
       entry.model.onDidChangeContent(() => {
         if (entry.applyingDiskContent) return;
+        const becameDirty = !entry.dirty;
         entry.dirty = true;
+        entry.preview = false;
         this.scheduleFileAutosave(entry);
+        if (becameDirty) this.renderFileEditorChrome();
+        if (this.fileInspectorMode === "outline" && this.activeFileKey !== null && this.openFiles.get(this.activeFileKey) === entry) {
+          clearTimeout(this.fileOutlineTimer);
+          this.fileOutlineTimer = setTimeout(() => this.renderFileOutline(), 240);
+        }
+        this.scheduleProblemsRefresh();
         if (this.fileHistoryOpen && this.activeFileKey !== null && this.openFiles.get(this.activeFileKey) === entry) {
           clearTimeout(this.fileHistoryComparisonTimer);
           this.fileHistoryComparisonTimer = setTimeout(() => {
@@ -10212,6 +11227,7 @@ class TermdeckApp {
         }
         if (entry.model === model && model.getVersionId() === versionId) {
           entry.dirty = false;
+          this.renderFileEditorChrome();
         } else if (entry.model && !entry.autosaveTimer) {
           this.scheduleFileAutosave(entry);
         }
@@ -10268,6 +11284,7 @@ class TermdeckApp {
         const nextKey = remaining[remaining.length - 1];
         await this.activateFile(nextKey, null, { history: false });
         this.replaceNav({ kind: "file", key: nextKey });
+        this.saveSettings();
         return;
       }
       this.activeFileKey = null;
@@ -10278,6 +11295,7 @@ class TermdeckApp {
     }
     this.renderList();
     this.renderTopbar();
+    this.saveSettings();
   }
 
   closeActiveItem() {
@@ -10920,10 +11938,13 @@ class TermdeckApp {
     else if (actionId === "prev-terminal") this.cycleTerminal(-1);
     else if (actionId === "next-terminal") this.cycleTerminal(1);
     else if (actionId === "cycle-side-panel") this.cycleFilesSidePanel();
+    else if (actionId === "open-files-panel") this.openFilesSidePanelView("project");
+    else if (actionId === "open-file-search") this.openFilesSidePanelView("search");
+    else if (actionId === "open-terminal-search") this.openFilesSidePanelView("terminal-search");
     else if (actionId === "view-terminals") this.setSideView("terminals");
     else if (actionId === "switch-project") this.openProjectSwitcher();
     else if (actionId === "toggle-notebook") this.toggleNotebook();
-    else if (actionId === "selection-copy") this.copySelectionToClipboard();
+    else if (actionId === "selection-copy") this.copySelectionToClipboard(true);
     else if (actionId === "selection-note-new") void this.createNotebookNoteFromSelection();
     else if (actionId === "selection-note-append") void this.appendSelectionToNotebook();
     else if (actionId === "selection-copy-history") this.toggleSelectionCopyHistory();
@@ -10933,6 +11954,12 @@ class TermdeckApp {
     else if (actionId === "show-usages") this.showEditorUsages();
     else if (actionId === "select-active-input") this.selectActiveInputText();
     else if (actionId === "select-terminal-all") this.selectActiveTerminalText();
+    else if (actionId === "quick-open") {
+      if (this.$("quick-open-backdrop").classList.contains("hidden")) this.openQuickOpen();
+      else this.closeQuickOpen();
+    }
+    else if (actionId === "toggle-problems") this.toggleProblemsPanel();
+    else if (actionId === "conversation-outline") this.toggleConversationOutline();
     else if (actionId === "vscode-refresh") this.requestVscodeRefresh(false);
     else if (actionId === "vscode-reload") this.requestVscodeRefresh(true);
   }
@@ -11037,42 +12064,32 @@ class TermdeckApp {
   }
 
   async forkSession(s) {
-    const suggestion = this.effectiveTitle(s) + " fork";
-    const title = prompt(`Name for the forked terminal (branches ${s.agent_kind !== "none" ? s.agent_kind + " session" : "the shell"})`, suggestion);
-    if (!title) return;
-    const res = await fetch(`/api/sessions/${s.session_id}/fork`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title }),
-    });
-    if (!res.ok) { alert("fork failed"); return; }
-    const created = await res.json();
-    if (this.nativeVscodeMode) this.postVscodeNativeSession(created, true);
-    this.applyForkPlacement(s.session_id, [created]);
-    await this.refresh();
-    this.activate(created.session_id, { reveal: true });
-    const view = this.views.get(created.session_id);
-    if (view) view.pinBottomUntil = Date.now() + 8000;
-  }
-
-  async forkSessionMultiple(s) {
     const baseTitle = this.effectiveTitle(s) || "terminal";
-    const rawCount = prompt(`How many terminals should be forked from "${baseTitle}"?`, "3");
-    if (rawCount === null) return;
-    const normalizedCount = rawCount.trim();
-    const count = Number.parseInt(normalizedCount, 10);
-    if (!/^\d+$/.test(normalizedCount) || count < 1 || count > 50) {
-      alert("Enter a whole number from 1 to 50.");
+    const rawValue = prompt(`Fork "${baseTitle}": enter a number from 1 to ${MAX_FORK_COUNT}, or enter a name for one fork.`, "1");
+    if (rawValue === null || !rawValue.trim()) return;
+    const value = rawValue.trim();
+    if (!/^\d+$/.test(value)) {
+      await this.createForkedSessions(s, [value]);
       return;
     }
+    const count = Number.parseInt(value, 10);
+    if (count < 1 || count > MAX_FORK_COUNT) {
+      alert(`Enter a whole number from 1 to ${MAX_FORK_COUNT}, or a name for one fork.`);
+      return;
+    }
+    await this.createForkedSessions(s, Array.from({ length: count }, (_unused, index) => `${baseTitle} ${index + 1}`));
+  }
+
+  async createForkedSessions(s, titles) {
     const created = [];
     let failedAt = 0;
-    for (let index = 1; index <= count; index += 1) {
+    for (let index = 0; index < titles.length; index += 1) {
       const res = await fetch(`/api/sessions/${s.session_id}/fork`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: `${baseTitle} ${index}` }),
+        body: JSON.stringify({ title: titles[index] }),
       });
       if (!res.ok) {
-        failedAt = index;
+        failedAt = index + 1;
         break;
       }
       created.push(await res.json());
@@ -11086,10 +12103,15 @@ class TermdeckApp {
     }
     this.applyForkPlacement(s.session_id, created);
     await this.refresh();
+    if (created.length === 1 && !failedAt) {
+      this.activate(created[0].session_id, { reveal: true });
+      const view = this.views.get(created[0].session_id);
+      if (view) view.pinBottomUntil = Date.now() + 8000;
+    }
     this.$("status-name").textContent = failedAt
-      ? `forked ${created.length} of ${count} terminals`
-      : `forked ${created.length} terminals`;
-    if (failedAt) alert(`Forked ${created.length} of ${count}; fork ${failedAt} failed.`);
+      ? `forked ${created.length} of ${titles.length}`
+      : `forked ${created.length}`;
+    if (failedAt) alert(`Forked ${created.length} of ${titles.length}; fork ${failedAt} failed.`);
   }
 
   async restartSession(sessionId, permission = "") {
@@ -11258,6 +12280,160 @@ class TermdeckApp {
     const menu = this.$("search-history-menu");
     menu.classList.add("hidden");
     for (const id of ["search-history-btn", "name-search-history-btn"]) this.$(id)?.setAttribute("aria-expanded", "false");
+  }
+
+  fileTypeFilterTokens() {
+    return String(this.$("search-glob")?.value || "").split(",").map((token) => token.trim()).filter(Boolean);
+  }
+
+  rememberCustomFileTypePatterns(tokens) {
+    const knownPatterns = new Set(FILE_TYPE_FILTER_GROUPS.flatMap((group) => group.patterns));
+    for (const token of tokens) {
+      const pattern = String(token).replace(/^!/, "").trim();
+      if (pattern && !knownPatterns.has(pattern)) this.fileTypeCustomPatterns.add(pattern);
+    }
+    localStorage.setItem(FILE_TYPE_FILTER_CUSTOM_KEY, JSON.stringify([...this.fileTypeCustomPatterns]));
+  }
+
+  updateFileTypeFilterTokens(tokens) {
+    const normalized = [...new Set(tokens.map((token) => String(token).trim()).filter(Boolean))];
+    this.$("search-glob").value = normalized.join(", ");
+    this.settings.search_glob = this.$("search-glob").value;
+    this.rememberCustomFileTypePatterns(normalized);
+    this.saveSettings();
+    this.renderFileTypeFilterMenu();
+    if (this.sideView === "search" && this.$("search-query").value.trim()) this.debouncedSearch();
+    if (this.sideView === "project" && this.$("search-name").value.trim()) this.debouncedNameSearch();
+  }
+
+  closeFileTypeFilterMenu() {
+    this.rememberCustomFileTypePatterns(this.fileTypeFilterTokens());
+    this.$("file-type-filter-menu")?.classList.add("hidden");
+    this.$("file-type-filter-button")?.setAttribute("aria-expanded", "false");
+  }
+
+  toggleFileTypeFilterMenu(button) {
+    const menu = this.$("file-type-filter-menu");
+    const opening = menu.classList.contains("hidden");
+    if (!opening) {
+      this.closeFileTypeFilterMenu();
+      return;
+    }
+    this.closeSearchHistory();
+    menu.classList.remove("hidden");
+    button.setAttribute("aria-expanded", "true");
+    this.renderFileTypeFilterMenu();
+    const rect = button.getBoundingClientRect();
+    const width = Math.min(360, window.innerWidth - 20);
+    const left = Math.max(10, Math.min(rect.right - width, window.innerWidth - width - 10));
+    const below = rect.bottom + 4;
+    menu.style.width = `${width}px`;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${below + menu.offsetHeight <= window.innerHeight - 10 ? below : Math.max(10, rect.top - menu.offsetHeight - 4)}px`;
+  }
+
+  renderFileTypeFilterMenu() {
+    const menu = this.$("file-type-filter-menu");
+    if (!menu || menu.classList.contains("hidden")) return;
+    menu.textContent = "";
+    const head = document.createElement("div");
+    head.className = "file-type-filter-head";
+    const title = document.createElement("span");
+    title.className = "file-type-filter-title";
+    title.textContent = "File types";
+    head.appendChild(title);
+    for (const mode of ["include", "exclude"]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `file-type-filter-mode${this.fileTypeFilterMode === mode ? " on" : ""}`;
+      button.textContent = mode === "include" ? "Include" : "Exclude";
+      button.onclick = () => { this.fileTypeFilterMode = mode; this.renderFileTypeFilterMenu(); };
+      head.appendChild(button);
+    }
+    menu.appendChild(head);
+    const manual = document.createElement("div");
+    manual.className = "file-type-filter-manual";
+    const manualInput = document.createElement("input");
+    manualInput.id = "file-type-filter-manual-input";
+    manualInput.type = "text";
+    manualInput.value = this.$("search-glob").value;
+    manualInput.placeholder = "Patterns: *.py, !*.log";
+    manualInput.title = "Comma-separated include and exclude patterns";
+    manualInput.autocomplete = "off";
+    manualInput.spellcheck = false;
+    manualInput.addEventListener("input", () => {
+      this.$("search-glob").value = manualInput.value;
+      this.settings.search_glob = manualInput.value;
+      this.saveSettings();
+      if (this.sideView === "search" && this.$("search-query").value.trim()) this.debouncedSearch();
+      if (this.sideView === "project" && this.$("search-name").value.trim()) this.debouncedNameSearch();
+    });
+    manualInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      this.rememberCustomFileTypePatterns(this.fileTypeFilterTokens());
+      this.renderFileTypeFilterMenu();
+      const nextInput = this.$("file-type-filter-manual-input");
+      nextInput?.focus();
+      nextInput?.setSelectionRange(nextInput.value.length, nextInput.value.length);
+    });
+    manual.appendChild(manualInput);
+    menu.appendChild(manual);
+    const list = document.createElement("div");
+    list.className = "file-type-filter-list";
+    const tokens = this.fileTypeFilterTokens();
+    const tokenSet = new Set(tokens);
+    const knownPatterns = new Set(FILE_TYPE_FILTER_GROUPS.flatMap((group) => group.patterns));
+    for (const group of FILE_TYPE_FILTER_GROUPS) {
+      const desired = group.patterns.map((pattern) => this.fileTypeFilterMode === "exclude" ? `!${pattern}` : pattern);
+      const opposite = group.patterns.map((pattern) => this.fileTypeFilterMode === "exclude" ? pattern : `!${pattern}`);
+      const checked = desired.every((pattern) => tokenSet.has(pattern));
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = `file-type-filter-row${checked ? " on" : ""}`;
+      const check = document.createElement("span");
+      check.className = `codicon ${checked ? "codicon-check" : "codicon-circle-large-outline"} file-type-filter-check`;
+      const label = document.createElement("span");
+      label.textContent = group.label;
+      const pattern = document.createElement("span");
+      pattern.className = "file-type-filter-pattern";
+      pattern.textContent = group.patterns.map((item) => item.replace(/^\*/, "")).join(" ");
+      row.append(check, label, pattern);
+      row.onclick = () => {
+        const next = tokens.filter((token) => !desired.includes(token) && !opposite.includes(token));
+        if (!checked) next.push(...desired);
+        this.updateFileTypeFilterTokens(next);
+      };
+      list.appendChild(row);
+    }
+    const customPatterns = new Set([...this.fileTypeCustomPatterns,
+      ...tokens.map((token) => token.replace(/^!/, "")).filter((pattern) => !knownPatterns.has(pattern))]);
+    if (customPatterns.size) {
+      const section = document.createElement("div");
+      section.className = "file-type-filter-section";
+      section.textContent = "Custom patterns";
+      list.appendChild(section);
+      for (const pattern of [...customPatterns].sort()) {
+        const desired = this.fileTypeFilterMode === "exclude" ? `!${pattern}` : pattern;
+        const opposite = this.fileTypeFilterMode === "exclude" ? pattern : `!${pattern}`;
+        const checked = tokenSet.has(desired);
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = `file-type-filter-row${checked ? " on" : ""}`;
+        const check = document.createElement("span");
+        check.className = `codicon ${checked ? "codicon-check" : "codicon-circle-large-outline"} file-type-filter-check`;
+        const label = document.createElement("span");
+        label.textContent = pattern;
+        row.append(check, label);
+        row.onclick = () => {
+          const next = tokens.filter((candidate) => candidate !== desired && candidate !== opposite);
+          if (!checked) next.push(desired);
+          this.updateFileTypeFilterTokens(next);
+        };
+        list.appendChild(row);
+      }
+    }
+    menu.appendChild(list);
   }
 
   deleteSearchHistoryEntry(entry) {
@@ -11518,7 +12694,8 @@ class TermdeckApp {
       fileName.className = "search-file-name tree-name";
       fileName.textContent = String(file.path).split("/").pop();
       fileRow.append(spacer, this.fileTypeIconEl(fileName.textContent, "tree-type-icon"), fileName);
-      fileRow.onclick = () => this.openFile(root, file.path, file.hits[0]?.line || null, null, { fromFilePanel: true });
+      fileRow.onclick = () => this.openFile(root, file.path, file.hits[0]?.line || null, null, { fromFilePanel: true, preview: true });
+      fileRow.ondblclick = () => this.openFile(root, file.path, file.hits[0]?.line || null, null, { fromFilePanel: true, pinned: true });
       this.appendMtime(fileRow, file);
       this.appendGitStatus(fileRow, file);
       container.appendChild(fileRow);
@@ -11539,7 +12716,7 @@ class TermdeckApp {
         hitRow.title = `${hit.path}:${hit.line}`;
         hitRow.onclick = (event) => {
           event.stopPropagation();
-          this.openFile(root, hit.path, hit.line, null, { fromFilePanel: true });
+          this.openFile(root, hit.path, hit.line, null, { fromFilePanel: true, preview: true });
         };
         hitRow.onmouseenter = () => this.selectFileSearchResult("content", hitRow, { reveal: false });
         hits.appendChild(hitRow);
@@ -11553,6 +12730,9 @@ class TermdeckApp {
     if (queryOverride != null) this.$("search-query").value = queryOverride;
     const query = this.$("search-query").value.trim();
     const resultsEl = this.$("search-results");
+    this.$("replace-preview").classList.add("hidden");
+    this.lastSearchRoot = "";
+    this.lastSearchFiles = [];
     resultsEl.textContent = "";
     this.clearFileSearchSelection("content");
     this.contentSearchTree = null;
@@ -11574,7 +12754,27 @@ class TermdeckApp {
     summary.className = "search-summary";
     summary.textContent = "searching…";
     resultsEl.appendChild(summary);
-    const root = this.searchRoot();
+    const scope = this.$("search-scope")?.value || "project";
+    let root = this.searchRoot();
+    let allowedPaths = null;
+    if (scope === "folder") {
+      const selectedPath = this.selectedTreeRow?.dataset?.rel || "";
+      const selectedDirectory = this.selectedTreeRow?.dataset?.kind === "dir"
+        ? selectedPath : selectedPath.includes("/") ? selectedPath.slice(0, selectedPath.lastIndexOf("/")) : "";
+      const activeEntry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
+      const activeDirectory = activeEntry?.path?.includes("/") ? activeEntry.path.slice(0, activeEntry.path.lastIndexOf("/")) : "";
+      const relativeDirectory = selectedDirectory || activeDirectory;
+      if (relativeDirectory) root = `${root.replace(/\/$/, "")}/${relativeDirectory}`;
+    } else if (scope === "open") {
+      allowedPaths = new Set([...this.openFiles.values()].flatMap((entry) => {
+        const fullPath = `${entry.root.replace(/\/$/, "")}/${entry.path}`;
+        const prefix = `${root.replace(/\/$/, "")}/`;
+        return fullPath.startsWith(prefix) ? [fullPath.slice(prefix.length)] : [];
+      }));
+    } else if (scope === "changed") {
+      const statusResponse = await fetch(`/api/files/git-status?root=${encodeURIComponent(root)}`);
+      allowedPaths = new Set(statusResponse.ok ? Object.keys(await statusResponse.json()) : []);
+    }
     const globParts = this.$("search-glob").value.split(",").map((g) => g.trim()).filter(Boolean);
     const ignore = this.searchIgnoreTokens();
     const params = new URLSearchParams({ root, q: query, glob: globParts.join(","), ignore,
@@ -11587,7 +12787,8 @@ class TermdeckApp {
       summary.textContent = "search failed";
       return;
     }
-    const hits = await res.json();
+    const allHits = await res.json();
+    const hits = allowedPaths ? allHits.filter((hit) => allowedPaths.has(hit.path)) : allHits;
     resultsEl.textContent = "";
     const byFile = new Map();
     for (const hit of hits) {
@@ -11595,13 +12796,16 @@ class TermdeckApp {
       byFile.get(hit.path).hits.push(hit);
     }
     const files = [...byFile.values()].sort((a, b) => this.compareSearchFiles(a, b));
+    this.lastSearchRoot = root;
+    this.lastSearchFiles = files;
     const hierarchy = this.buildContentSearchHierarchy(files);
     this.contentSearchTree = { root, paths: new Set(files.map((file) => file.path)), directories: hierarchy.directories };
     this.renderContentSearchHierarchy(hierarchy.root, resultsEl, root);
     const done = document.createElement("div");
     done.className = "search-summary";
     const flags = [this.searchWord ? "whole word" : "", this.searchCase ? "case sensitive" : ""].filter(Boolean).join(", ");
-    done.textContent = `${hits.length} match${hits.length === 1 ? "" : "es"} in ${files.length} file${files.length === 1 ? "" : "s"}${flags ? ` · ${flags}` : ""}`;
+    const scopeLabel = { project: "project", folder: "folder", open: "open files", changed: "Git changes" }[scope];
+    done.textContent = `${hits.length} match${hits.length === 1 ? "" : "es"} in ${files.length} file${files.length === 1 ? "" : "s"} · ${scopeLabel}${flags ? ` · ${flags}` : ""}`;
     resultsEl.prepend(done);
   }
 
@@ -11621,10 +12825,13 @@ class TermdeckApp {
     clearTimeout(this.searchDebounce);
     const query = this.$("search-query").value.trim();
     if (!query) {
-    this.$("search-results").textContent = "";
-    this.clearFileSearchSelection("content");
-    this.contentSearchTree = null;
-    this.treeSearchFilter = null;
+      this.$("search-results").textContent = "";
+      this.$("replace-preview").classList.add("hidden");
+      this.lastSearchRoot = "";
+      this.lastSearchFiles = [];
+      this.clearFileSearchSelection("content");
+      this.contentSearchTree = null;
+      this.treeSearchFilter = null;
       return;
     }
     this.searchDebounce = setTimeout(() => this.runSearch(), SEARCH_DEBOUNCE_MS);
@@ -11732,14 +12939,54 @@ class TermdeckApp {
       alert("enter a search query first");
       return;
     }
-    if (!confirm(`Replace ALL matches of "${query}" with "${replacement}" across the project?\n` +
-                 "This edits files on disk (respects filters/excludes; capped at 200 files).")) return;
+    if (!this.lastSearchFiles.length) await this.runSearch(null, true);
+    this.renderReplacePreview(query, replacement);
+  }
+
+  renderReplacePreview(query, replacement) {
+    const panel = this.$("replace-preview");
+    panel.textContent = "";
+    panel.classList.remove("hidden");
+    const head = document.createElement("div");
+    head.className = "replace-preview-head";
+    const title = document.createElement("strong");
+    title.textContent = `${this.lastSearchFiles.length} files`;
+    const detail = document.createElement("span");
+    detail.textContent = `“${query}” → “${replacement}”`;
+    const apply = document.createElement("button");
+    apply.type = "button";
+    apply.textContent = "Apply selected";
+    apply.onclick = () => void this.applyReplacementPreview();
+    head.append(title, detail, apply);
+    panel.appendChild(head);
+    for (const file of this.lastSearchFiles) {
+      const label = document.createElement("label");
+      label.className = "replace-preview-file";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = true;
+      checkbox.value = file.path;
+      const path = document.createElement("span");
+      path.textContent = file.path;
+      const count = document.createElement("small");
+      count.textContent = `${file.hits.length}`;
+      label.append(checkbox, path, count);
+      panel.appendChild(label);
+    }
+  }
+
+  async applyReplacementPreview() {
+    const query = this.$("search-query").value.trim();
+    const replacement = this.$("replace-with").value;
+    const paths = [...this.$("replace-preview").querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value);
+    if (!paths.length) return;
+    if (!confirm(`Replace matches in ${paths.length} selected file${paths.length === 1 ? "" : "s"}?`)) return;
     const res = await fetch("/api/files/replace", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ root: this.searchRoot(), q: query, glob: this.$("search-glob").value.trim(),
+      body: JSON.stringify({ root: this.lastSearchRoot || this.searchRoot(), q: query, glob: this.$("search-glob").value.trim(),
                              ignore: this.searchIgnoreTokens(),
                              word: this.searchWord, case_sensitive: this.searchCase, regex: this.searchRegex,
-                             replacement }),
+                             replacement, paths }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -11747,6 +12994,7 @@ class TermdeckApp {
       return;
     }
     const result = await res.json();
+    this.$("replace-preview").classList.add("hidden");
     alert(`replaced ${result.replacements} match${result.replacements === 1 ? "" : "es"} in ${result.files} file${result.files === 1 ? "" : "s"}`);
     for (const entry of this.openFiles.values()) {
       if (entry.model && !entry.dirty) {
@@ -11823,7 +13071,7 @@ class TermdeckApp {
       this.appendMtime(row, hit);
       this.appendGitStatus(row, hit);
       row.onclick = () => hit.is_dir ? this.openNameDirectory(root, hit.path) :
-        this.openFile(root, hit.path, null, null, { fromFilePanel: true });
+        this.openFile(root, hit.path, null, null, { fromFilePanel: true, preview: true });
       row.onmouseenter = () => this.selectFileSearchResult("name", row, { reveal: false });
       resultsEl.appendChild(row);
     }

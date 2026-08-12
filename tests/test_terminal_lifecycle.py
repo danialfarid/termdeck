@@ -953,5 +953,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_output_path_defaults_to_absolute_for_session_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = TerminalSessionManager()
+            manager._spawn = MagicMock()
+            manager._persist = lambda: None
             ms = manager.create_session("bash", directory, "task", output_path="logs/task.out")
             self.assertEqual(ms.record.output_path, str(Path(directory, "logs", "task.out").resolve()))

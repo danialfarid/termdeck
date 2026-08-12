@@ -38,6 +38,8 @@
     <div id="files-explorer-panel">
       <div id="name-search-bar">
         <input id="search-name" placeholder="find file by name (fuzzy)" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <input id="search-glob" type="hidden">
+        <button id="file-type-filter-button" title="Choose included or excluded file types" aria-label="Choose file types" aria-expanded="false"><span class="codicon codicon-symbol-enum"></span></button>
         <button id="name-case-toggle" title="Match filename case">Aa</button>
         <button id="name-search-history-btn" title="Recent searches" aria-label="Recent searches" aria-expanded="false"><span class="codicon codicon-history"></span></button>
       </div>
@@ -45,17 +47,23 @@
         <div id="search-bar">
           <button id="search-back" title="Previous search"><span class="codicon codicon-arrow-left"></span></button>
           <input id="search-query" placeholder="search in files" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <select id="search-scope" title="Search scope" aria-label="Search scope">
+            <option value="project">Project</option>
+            <option value="folder">Current folder</option>
+            <option value="open">Open files</option>
+            <option value="changed">Git changes</option>
+          </select>
           <button id="search-case-toggle" title="Match case">Aa</button>
           <button id="search-word-toggle" title="Whole word">ab|</button>
           <button id="search-regex-toggle" title="Regular expression">.*</button>
           <button id="replace-toggle" title="Replace"><span class="codicon codicon-replace-all"></span></button>
           <button id="search-history-btn" title="Recent searches" aria-label="Recent searches" aria-expanded="false"><span class="codicon codicon-history"></span></button>
         </div>
-        <input id="search-glob" placeholder="filter (rg globs): !*.json, *.py, trainer/**" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
         <div id="replace-bar" class="hidden">
           <input id="replace-with" placeholder="replace with&hellip;" spellcheck="false">
-          <button id="replace-all-btn" title="Replace all matches in project">Replace</button>
+          <button id="replace-all-btn" title="Preview replacements">Preview</button>
         </div>
+        <div id="replace-preview" class="hidden"></div>
       </div>
       <div id="files-tree" tabindex="0" aria-label="Project file tree"></div>
       <div id="search-results" class="hidden"></div>
@@ -65,11 +73,12 @@
       <div id="search-history-head">Recent searches</div>
       <div id="search-history-items"></div>
     </div>
+    <div id="file-type-filter-menu" class="hidden" role="dialog" aria-label="File type filters"></div>
     <div id="terminal-search-bar">
-      <div id="terminal-search-description">Search terminal conversations (prompts and responses)</div>
+      <div id="terminal-search-description">Search terminal names and conversations</div>
       <div id="terminal-search-input-row">
-        <input id="terminal-search-input" placeholder="search conversations" spellcheck="false">
-        <button id="terminal-search-submit" title="Search terminal conversations" aria-label="Search terminal conversations"><span class="codicon codicon-search"></span></button>
+        <input id="terminal-search-input" placeholder="search names and conversations" spellcheck="false">
+        <button id="terminal-search-submit" title="Search terminal names and conversations" aria-label="Search terminal names and conversations"><span class="codicon codicon-search"></span></button>
         <button id="terminal-search-group-toggle" title="Group similar matched text" aria-label="Group similar matched text" aria-pressed="false"><span class="codicon codicon-list-tree"></span></button>
       </div>
       <div id="terminal-search-summary" aria-live="polite"></div>
@@ -81,7 +90,7 @@
     <button id="view-terminals" title="Terminals"><span class="codicon codicon-terminal"></span></button>
     <button id="view-project" title="Files"><span class="codicon codicon-files"></span></button>
     <button id="view-search" title="Search &amp; replace"><span class="codicon codicon-search"></span></button>
-    <button id="terminal-search-toggle" title="Search all terminal output"><span class="codicon codicon-terminal"></span></button>
+    <button id="terminal-search-toggle" title="Search terminal names and output"><span class="codicon codicon-terminal"></span></button>
     <span class="footer-spacer"></span>
     <button id="keys-btn" title="Keyboard shortcuts"><span class="codicon codicon-keyboard"></span></button>
     <button id="settings-gear" title="Settings"><span class="codicon codicon-settings-gear"></span></button>
@@ -98,10 +107,50 @@
     </div>
   </div>
 </div>
+<div id="quick-open-backdrop" class="hidden">
+  <div id="quick-open" role="dialog" aria-modal="true" aria-label="Quick Open">
+    <div id="quick-open-input-row">
+      <span class="codicon codicon-search"></span>
+      <input id="quick-open-input" placeholder="Open file, terminal, symbol, or command…" autocomplete="off" spellcheck="false">
+      <span id="quick-open-hint">↑↓ select · Enter open · Esc close</span>
+    </div>
+    <div id="quick-open-results" role="listbox"></div>
+  </div>
+</div>
 <div id="sidebar-resizer"></div>
 <div id="main">
   <div id="editor-area" class="hidden">
-    <div id="monaco-host"></div>
+    <div id="file-tabs-bar">
+      <div id="file-tabs" role="tablist" aria-label="Open files"></div>
+      <button id="file-tabs-more" title="File actions" aria-label="File actions"><span class="codicon codicon-ellipsis"></span></button>
+    </div>
+    <div id="file-editor-toolbar">
+      <div id="file-breadcrumbs" aria-label="File breadcrumbs"></div>
+      <div id="file-editor-actions">
+        <button id="file-outline-toggle" title="Outline" aria-label="Outline"><span class="codicon codicon-symbol-class"></span></button>
+        <button id="file-git-toggle" title="Git changes" aria-label="Git changes"><span class="codicon codicon-source-control"></span></button>
+        <button id="file-split-toggle" title="Split editor" aria-label="Split editor"><span class="codicon codicon-split-horizontal"></span></button>
+      </div>
+    </div>
+    <div id="file-editor-workspace">
+      <div id="monaco-host"></div>
+      <div id="secondary-editor-pane" class="hidden">
+        <div id="secondary-editor-head">
+          <select id="secondary-file-select" aria-label="Secondary file"></select>
+          <button id="secondary-diff-toggle" title="Compare files" aria-label="Compare files"><span class="codicon codicon-diff"></span></button>
+          <button id="secondary-editor-close" title="Close split" aria-label="Close split"><span class="codicon codicon-close"></span></button>
+        </div>
+        <div id="secondary-editor-host"></div>
+      </div>
+      <aside id="file-inspector" class="hidden">
+        <div id="file-inspector-head">
+          <span id="file-inspector-title"></span>
+          <button id="file-inspector-refresh" title="Refresh" aria-label="Refresh"><span class="codicon codicon-refresh"></span></button>
+          <button id="file-inspector-close" title="Close" aria-label="Close"><span class="codicon codicon-close"></span></button>
+        </div>
+        <div id="file-inspector-body"></div>
+      </aside>
+    </div>
   </div>
   <div id="history-area" class="hidden">
       <div id="history-head">
@@ -135,7 +184,7 @@
       <div id="history-prompt-history-items"></div>
     </div>
   </div>
-    <div id="terminal-area">
+  <div id="terminal-area">
       <div id="terminal-actions" class="vscode-terminal-actions">
       <button id="vscode-terminal-resync-btn" title="Resync terminal content" aria-label="Resync terminal content"><span class="codicon codicon-refresh"></span></button>
       <button id="vscode-history-btn" title="Open Markdown transcript" aria-label="Open Markdown transcript"><span class="codicon codicon-markdown"></span></button>
@@ -143,6 +192,14 @@
       </div>
   <div id="empty-state">no terminals &mdash; press + to open one</div>
   </div>
+  <div id="problems-panel" class="hidden">
+    <div id="problems-head"><span>Problems</span><span id="problems-count"></span><button id="problems-refresh" title="Refresh problems"><span class="codicon codicon-refresh"></span></button><button id="problems-close" title="Close problems"><span class="codicon codicon-close"></span></button></div>
+    <div id="problems-list"></div>
+  </div>
+  <aside id="conversation-outline" class="hidden">
+    <div id="conversation-outline-head"><span>Conversation outline</span><button id="conversation-outline-refresh" title="Refresh outline"><span class="codicon codicon-refresh"></span></button><button id="conversation-outline-close" title="Close outline"><span class="codicon codicon-close"></span></button></div>
+    <div id="conversation-outline-list"></div>
+  </aside>
   <div id="bottombar">
     <button id="history-btn" title="Open Markdown transcript" aria-label="Open Markdown transcript"><span class="codicon codicon-markdown"></span></button>
     <button id="terminal-resync-btn" title="Resync terminal content" aria-label="Resync terminal content"><span class="codicon codicon-refresh"></span></button>
@@ -153,6 +210,8 @@
     </button>
     <button id="reveal-session-btn" title="Select current terminal in sidebar" aria-label="Select current terminal in sidebar"><span class="codicon codicon-target"></span></button>
     <button id="attach-btn" title="Attach file/image → inserts its path (also paste or drag-drop onto the terminal)"><span class="codicon codicon-cloud-upload"></span></button>
+    <button id="problems-toggle" title="Problems" aria-label="Problems"><span class="codicon codicon-warning"></span></button>
+    <button id="conversation-outline-toggle" title="Conversation outline" aria-label="Conversation outline"><span class="codicon codicon-list-tree"></span></button>
     <span id="status-name"></span>
     <span id="terminal-age" class="hidden"></span>
     <span id="history-meta" class="hidden"></span>
@@ -227,12 +286,22 @@
     <div id="file-history-preview" class="hidden"></div>
   </div>
 </div>
-<div id="selection-actions" class="hidden" role="toolbar" aria-label="Selection actions">
-  <button id="selection-copy" type="button" title="Copy selection" aria-label="Copy selection"><span class="codicon codicon-copy" aria-hidden="true"></span></button>
-  <button id="selection-note-new" type="button" title="Create a new note from the selection" aria-label="Create a new note from the selection"><span class="codicon codicon-note" aria-hidden="true"></span></button>
-  <button id="selection-note-append" type="button" title="Append selection to the active note" aria-label="Append selection to the active note"><span class="codicon codicon-comment-add" aria-hidden="true"></span></button>
-  <button id="selection-search-content" type="button" title="Search within files using the selection" aria-label="Search within files using the selection"><span class="codicon codicon-search" aria-hidden="true"></span></button>
-  <button id="selection-search-file" type="button" title="Find a file matching the selection" aria-label="Find a file matching the selection"><span class="codicon codicon-symbol-file" aria-hidden="true"></span></button>
+<div id="selection-actions" class="hidden" role="menu" aria-label="Selection actions">
+  <button id="selection-copy" class="selection-action-icon-button" type="button" role="menuitem" title="Copy selection" aria-label="Copy selection"><span class="codicon codicon-copy" aria-hidden="true"></span></button>
+  <div class="selection-action-submenu">
+    <button class="selection-action-trigger selection-action-icon-button" type="button" role="menuitem" title="Note actions" aria-label="Note actions" aria-haspopup="menu"><span class="codicon codicon-note" aria-hidden="true"></span></button>
+    <div class="selection-action-submenu-items" role="menu">
+      <button id="selection-note-new" type="button" role="menuitem" title="Create a new note from the selection"><span class="codicon codicon-new-file" aria-hidden="true"></span><span>New note</span></button>
+      <button id="selection-note-append" type="button" role="menuitem" title="Append selection to the active note"><span class="codicon codicon-comment-add" aria-hidden="true"></span><span>Append to note</span></button>
+    </div>
+  </div>
+  <div class="selection-action-submenu">
+    <button class="selection-action-trigger selection-action-icon-button" type="button" role="menuitem" title="Search actions" aria-label="Search actions" aria-haspopup="menu"><span class="codicon codicon-search" aria-hidden="true"></span></button>
+    <div class="selection-action-submenu-items" role="menu">
+      <button id="selection-search-content" type="button" role="menuitem" title="Search within files using the selection"><span class="codicon codicon-search" aria-hidden="true"></span><span>File contents</span></button>
+      <button id="selection-search-file" type="button" role="menuitem" title="Find a file matching the selection"><span class="codicon codicon-symbol-file" aria-hidden="true"></span><span>File name</span></button>
+    </div>
+  </div>
   <div id="selection-copy-history-panel" class="hidden" role="dialog" aria-label="Recently copied text"></div>
 </div>
 <div id="history-search-backdrop" class="hidden">

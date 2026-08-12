@@ -19,7 +19,7 @@ from termdeck.config import TermdeckConfig
 from termdeck.file_history_service import FileHistoryService
 from termdeck.file_service import ProjectFileService
 from termdeck.history_index import HistorySearchIndex
-from termdeck.models import ApiFields, WsMessageFields
+from termdeck.models import AgentKind, ApiFields, WsMessageFields
 from termdeck.platform_paths import PlatformPaths
 from termdeck.search_service import ProjectSearchService
 from termdeck.session_manager import TerminalSessionManager
@@ -152,6 +152,12 @@ class FileWriteRequest(BaseModel):
     content: str
 
 
+class FileCreateRequest(BaseModel):
+    root: str
+    path: str
+    directory: bool = False
+
+
 class FileHistoryRestoreRequest(BaseModel):
     root: str
     path: str
@@ -167,6 +173,7 @@ class ReplaceRequest(BaseModel):
     case_sensitive: bool = False
     regex: bool = False
     replacement: str = ""
+    paths: list[str] = []
 
 
 class NotebookTrashRequest(BaseModel):
@@ -241,6 +248,8 @@ class UiSettings(BaseModel):
     side_full: bool = False
     side_split: float = 0.55
     side_split_user_set: bool = False
+    search_scope: str = "project"
+    recent_closed_files: list[dict[str, str]] = []
 
 
 class TermdeckServer:
@@ -352,8 +361,11 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_FILE_HISTORY_ROUTE, response_model=None)(self._file_history)
         app.get(TermdeckConfig.API_FILE_GIT_HISTORY_ROUTE, response_model=None)(self._git_file_history)
         app.get(TermdeckConfig.API_FILE_GIT_HISTORY_VERSION_ROUTE, response_model=None)(self._git_file_history_version)
+        app.get(TermdeckConfig.API_FILE_GIT_STATUS_ROUTE, response_model=None)(self._git_status)
         app.post(TermdeckConfig.API_UPLOAD_ROUTE, response_model=None)(self._upload_file)
         app.post(TermdeckConfig.API_FILE_WRITE_ROUTE, response_model=None)(self._write_file)
+        app.post(TermdeckConfig.API_FILE_CREATE_ROUTE, response_model=None)(self._create_file)
+        app.post(TermdeckConfig.API_FILE_DUPLICATE_ROUTE, response_model=None)(self._duplicate_file)
         app.post(TermdeckConfig.API_FILE_REPLACE_ROUTE, response_model=None)(self._replace_in_files)
         app.post(TermdeckConfig.API_FILE_RENAME_ROUTE, response_model=None)(self._rename_file)
         app.post(TermdeckConfig.API_FILE_MOVE_ROUTE, response_model=None)(self._move_file)
@@ -451,6 +463,12 @@ class TermdeckServer:
         except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError, OSError) as recent_error:
             raise HTTPException(status_code=404, detail=str(recent_error)) from recent_error
 
+    async def _git_status(self, root: str) -> dict[str, str]:
+        try:
+            return await asyncio.to_thread(self.files.git_statuses, root)
+        except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError, OSError) as git_error:
+            raise HTTPException(status_code=404, detail=str(git_error)) from git_error
+
     async def _read_file(self, root: str, path: str) -> dict[str, object]:
         try:
             result = self.files.read_file(root, path)
@@ -490,6 +508,18 @@ class TermdeckServer:
             return result
         except (ValueError, FileNotFoundError, PermissionError, OSError) as write_error:
             raise HTTPException(status_code=400, detail=str(write_error)) from write_error
+
+    async def _create_file(self, request: FileCreateRequest) -> dict[str, str | bool]:
+        try:
+            return self.files.create_path(request.root, request.path, request.directory)
+        except (ValueError, FileNotFoundError, FileExistsError, PermissionError, OSError) as create_error:
+            raise HTTPException(status_code=400, detail=str(create_error)) from create_error
+
+    async def _duplicate_file(self, request: FileOpRequest) -> dict[str, str]:
+        try:
+            return {"rel": self.files.duplicate_path(request.root, request.path, request.destination)}
+        except (ValueError, FileNotFoundError, FileExistsError, PermissionError, OSError) as duplicate_error:
+            raise HTTPException(status_code=400, detail=str(duplicate_error)) from duplicate_error
 
     async def _file_history(self, root: str, path: str) -> list[dict[str, object]]:
         try:
@@ -566,7 +596,7 @@ class TermdeckServer:
         try:
             return await self.search.replace_all(request.root, request.q, request.glob, request.ignore,
                                                  request.word, request.case_sensitive, request.regex,
-                                                 request.replacement)
+                                                 request.replacement, request.paths)
         except (ValueError, FileNotFoundError, PermissionError, re.error) as replace_error:
             raise HTTPException(status_code=400, detail=str(replace_error)) from replace_error
 
@@ -1263,6 +1293,8 @@ class TermdeckServer:
         repaint_preserved_buffer = websocket.query_params.get("repaint_preserved_buffer", "0").lower() not in {"0", "false", "no", "off"}
         scrollback, queue = self.manager.attach_client(session_id, screen_repaint, have_buffer, repaint_preserved_buffer)
         try:
+            if not have_buffer:
+                scrollback = await self._terminal_first_paint_scrollback(session_id, scrollback)
             await websocket.send_bytes(scrollback)
             await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.DRAFT,
                                                    WsMessageFields.DRAFT: self.manager.session_draft(session_id)}))
@@ -1277,6 +1309,38 @@ class TermdeckServer:
                     raise pump_error
         finally:
             self.manager.detach_client(session_id, queue)
+
+    async def _terminal_first_paint_scrollback(self, session_id: str, scrollback: bytes) -> bytes:
+        if self._terminal_bytes_have_visible_text(scrollback):
+            return scrollback
+        agent_kind, cwd, agent_session_id = self.manager.session_history_source(session_id)
+        if agent_kind != AgentKind.CODEX.value or not agent_session_id:
+            return scrollback
+        try:
+            payload = await asyncio.wait_for(
+                asyncio.to_thread(self.transcripts.history_page, agent_kind, cwd, agent_session_id, None, 24),
+                timeout=0.15,
+            )
+        except TimeoutError:
+            return scrollback
+        turns = [turn for turn in payload.get("turns", [])
+                 if turn.get("role") in {"user", "assistant"} and str(turn.get("text", "")).strip()]
+        if not turns:
+            return scrollback
+        lines = ["\x1b[2J\x1b[H\x1b[2mRecent conversation · restoring live terminal…\x1b[0m", ""]
+        for turn in turns[-10:]:
+            role = "You" if turn["role"] == "user" else "Codex"
+            text = re.sub(r"\s+", " ", str(turn["text"])).strip().replace("\x1b", "")
+            lines.extend((f"\x1b[1m{role}\x1b[0m", text[:1200], ""))
+        return "\r\n".join(lines).encode()
+
+    @staticmethod
+    def _terminal_bytes_have_visible_text(data: bytes) -> bool:
+        text = data.decode("utf-8", errors="replace")
+        text = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", "", text)
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"\x1b[()][0-2A-Za-z]", "", text)
+        return bool("".join(character for character in text if ord(character) >= 0x20).strip())
 
     async def _ws_status(self, websocket: WebSocket) -> None:
         await websocket.accept()

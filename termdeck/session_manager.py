@@ -936,7 +936,8 @@ class TerminalSessionManager:
             return
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.open("ab").write(data)
+            with output_path.open("ab") as output_file:
+                output_file.write(data)
         except OSError:
             ms.output_path_locked = True
 
