@@ -8406,6 +8406,7 @@ class TermdeckApp {
                    claudeSnapshotAddon: null, claudeSnapshotRestoreAttempted: false, claudeSnapshotRestored: false,
                    claudeSnapshotSaveTimer: 0, claudeSnapshotSavePromise: null,
                    claudeStatusRowRefreshTimer: 0, lastClaudeStatusRowRefreshAt: 0,
+                   codexFocusRefreshFrame: 0,
                    promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, promptDraftSyncDebounceTimer: 0,
                    pendingDraftSync: null, pendingTerminalDraft: null,
@@ -8468,6 +8469,7 @@ class TermdeckApp {
     };
     view.renderObserver = term.onRender(({ start, end }) => this.recordTerminalRenderedRows(view, start, end));
     this.refreshTerminal(view);
+    container.addEventListener("focusin", () => this.scheduleCodexFocusTailRefresh(view));
     // Capture before xterm's wheel handler so the first wheel after a tab
     // switch cannot be mistaken for an automatic bottom-follow scroll.
     container.addEventListener("wheel", markManualScroll, { passive: true, capture: true });
@@ -9528,6 +9530,19 @@ class TermdeckApp {
     view.term.refresh(0, view.term.rows - 1);
   }
 
+  scheduleCodexFocusTailRefresh(view) {
+    if (!view || view.closed || view.codexFocusRefreshFrame || this.session(view.sessionId)?.agent_kind !== "codex") return;
+    view.codexFocusRefreshFrame = requestAnimationFrame(() => {
+      view.codexFocusRefreshFrame = requestAnimationFrame(() => {
+        view.codexFocusRefreshFrame = 0;
+        if (view.closed || this.activeId !== view.sessionId || this.historyOpen || this.activeFileKey !== null ||
+            !view.container.classList.contains("visible")) return;
+        const lastRow = Math.max(0, view.term.rows - 1);
+        view.term.refresh(Math.max(0, lastRow - 5), lastRow);
+      });
+    });
+  }
+
   normalizeTerminalTailLine(line) {
     return String(line || "").replace(/\u00a0/g, " ").replace(/\s+$/g, "");
   }
@@ -10115,6 +10130,7 @@ class TermdeckApp {
     if (view.v2ForcedReflowRestoreFrame) cancelAnimationFrame(view.v2ForcedReflowRestoreFrame);
     if (view.tailRepairFrame) cancelAnimationFrame(view.tailRepairFrame);
     if (view.activationRepairFrame) cancelAnimationFrame(view.activationRepairFrame);
+    if (view.codexFocusRefreshFrame) cancelAnimationFrame(view.codexFocusRefreshFrame);
     clearTimeout(view.layoutFitRetryTimer);
     if (view.layoutObserver) view.layoutObserver.disconnect();
     if (view.scrollObserver) view.scrollObserver.disconnect();
