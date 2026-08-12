@@ -389,7 +389,7 @@ class HistorySearchIndex:
     @staticmethod
     def _fts_expression(query: str) -> str:
         terms = re.findall(r"[\w]+", query, re.UNICODE)
-        return " AND ".join(f'"{term.replace(chr(34), chr(34) + chr(34))}"' for term in terms)
+        return " AND ".join(terms)
 
     @staticmethod
     def _validate_source_path(path: Path) -> None:

@@ -72,5 +72,9 @@ class TimeUtil:
         return TimeUtil.now_est_naive().isoformat(sep=" ", timespec="seconds")
 
     @staticmethod
+    def est_naive_iso_timestamp(value: str) -> float:
+        return datetime.fromisoformat(value).replace(tzinfo=TimeUtil.EST_ZONE).timestamp()
+
+    @staticmethod
     def today_est() -> date:
         return TimeUtil.now_est_naive().date()

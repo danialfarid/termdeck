@@ -1,6 +1,8 @@
 import asyncio
 import json
+import os
 import re
+import signal
 import subprocess
 import time
 from collections.abc import AsyncGenerator, Callable
@@ -22,6 +24,7 @@ from termdeck.platform_paths import PlatformPaths
 from termdeck.search_service import ProjectSearchService
 from termdeck.session_manager import TerminalSessionManager
 from termdeck.settings_store import UiSettingsStore
+from termdeck.state_backup import StateBackupManager
 from termdeck.stats_service import ResourceStatsService
 from termdeck.transcript_service import TranscriptService
 
@@ -110,6 +113,14 @@ class MoveSessionProjectRequest(BaseModel):
 
 class RestartSessionRequest(BaseModel):
     permission: str = ""
+
+
+class CloseSessionRequest(BaseModel):
+    group_name: str = ""
+
+
+class StateRecoveryRestoreRequest(BaseModel):
+    snapshot: str
 
 
 class ProjectStatePatch(BaseModel):
@@ -215,6 +226,7 @@ class UiSettings(BaseModel):
     show_terminal_icons: bool = False
     prompt_wrap_guard: bool = False
     history_mode: bool = False
+    claude_snapshot_experimental: bool = False
     prompt_history: dict[str, list[str]] = {}
     selection_copy_history: list[str] = []
     notebook_open: bool = False
@@ -237,23 +249,38 @@ class TermdeckServer:
     events as JSON text frames; client sends JSON text frames for input and resize."""
 
     def __init__(self) -> None:
-        self.manager = TerminalSessionManager()
+        self.state_backup = StateBackupManager(TermdeckConfig.DATA_DIR, TermdeckConfig.STATE_BACKUP_MAX_BYTES,
+                                               TermdeckConfig.STATE_BACKUP_INTERVAL_SECONDS,
+                                               TermdeckConfig.STATE_BACKUP_PREWRITE_INTERVAL_SECONDS)
+        self.state_recovery = self.state_backup.recovery_status()
+        self.recovery_mode = bool(self.state_recovery["required"])
+        self.manager: TerminalSessionManager | None = None
+        if not self.recovery_mode:
+            self.manager = TerminalSessionManager(self.state_backup)
         self.files = ProjectFileService()
         self.file_history = FileHistoryService(TermdeckConfig.FILE_HISTORY_DATABASE)
         self.search = ProjectSearchService(self.files)
         self.stats = ResourceStatsService()
         self.transcripts = TranscriptService()
         self.history_index = HistorySearchIndex(TermdeckConfig.HISTORY_INDEX_FILE)
-        self.manager.attach_transcript_service(self.transcripts)
-        self.manager.attach_history_index(self.history_index)
+        if self.manager is not None:
+            self.manager.attach_transcript_service(self.transcripts)
+            self.manager.attach_history_index(self.history_index)
         self.transcripts.add_file_change_listener(self.history_index.notify_file_changed)
-        self.transcripts.add_file_change_listener(self.manager.notify_agent_transcript_changed)
-        self.settings_store = UiSettingsStore(TermdeckConfig.SETTINGS_FILE)
+        if self.manager is not None:
+            self.transcripts.add_file_change_listener(self.manager.notify_agent_transcript_changed)
+        self.settings_store = UiSettingsStore(TermdeckConfig.SETTINGS_FILE, self.state_backup)
+        self._state_backup_task: asyncio.Task | None = None
         self._origin_delivery_locks: dict[str, asyncio.Lock] = {}
         self._task_delivery_jobs: set[asyncio.Task] = set()
 
     @asynccontextmanager
     async def _lifespan(self, _app: FastAPI) -> AsyncGenerator[None]:
+        if self.recovery_mode:
+            yield
+            return
+        self.state_backup.create_snapshot("startup", True)
+        self._state_backup_task = asyncio.create_task(self.state_backup.run_periodic_snapshots())
         await self.manager.startup_respawn_saved_sessions()
         self.manager.start_background_tasks()
         self.transcripts.start(asyncio.get_running_loop())
@@ -261,10 +288,17 @@ class TermdeckServer:
         try:
             yield
         finally:
+            if self._state_backup_task is not None:
+                self._state_backup_task.cancel()
+                try:
+                    await self._state_backup_task
+                except asyncio.CancelledError:
+                    pass
             self.history_index.stop()
             self.transcripts.stop()
             self.manager.stop_background_tasks()
             self.manager.detach_for_shutdown()
+            self.state_backup.create_snapshot("shutdown", True)
             self.files.close()
 
     def build_app(self) -> FastAPI:
@@ -273,6 +307,8 @@ class TermdeckServer:
         app.mount(TermdeckConfig.STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.STATIC_DIR), name=TermdeckConfig.STATIC_NAME)
         app.get("/", response_model=None)(self._index)
         app.get(TermdeckConfig.PROJECT_PAGE_ROUTE, response_model=None)(self._project_page)
+        app.get(TermdeckConfig.API_STATE_RECOVERY_ROUTE, response_model=None)(self._state_recovery_status)
+        app.post(TermdeckConfig.API_STATE_RECOVERY_RESTORE_ROUTE, response_model=None)(self._restore_state_recovery)
         app.get(TermdeckConfig.API_PROJECTS_ROUTE, response_model=None)(self._list_projects)
         app.post(TermdeckConfig.API_PROJECTS_ROUTE, response_model=None)(self._add_project)
         app.post(TermdeckConfig.API_PROJECT_FOLDER_PICKER_ROUTE, response_model=None)(self._pick_project_folder)
@@ -566,12 +602,33 @@ class TermdeckServer:
         return response
 
     async def _index(self) -> FileResponse:
-        return FileResponse(TermdeckConfig.STATIC_DIR / TermdeckConfig.INDEX_FILE)
+        index_file = "recovery.html" if self.recovery_mode else TermdeckConfig.INDEX_FILE
+        return FileResponse(TermdeckConfig.STATIC_DIR / index_file)
 
     async def _project_page(self, project_name: str) -> FileResponse:
+        if self.recovery_mode:
+            return FileResponse(TermdeckConfig.STATIC_DIR / "recovery.html")
         if self.manager.registry.root_for(project_name) is None:
             raise HTTPException(status_code=404, detail=project_name)
         return FileResponse(TermdeckConfig.STATIC_DIR / TermdeckConfig.INDEX_FILE)
+
+    async def _state_recovery_status(self) -> dict[str, object]:
+        return self.state_backup.recovery_status()
+
+    async def _restore_state_recovery(self, request: StateRecoveryRestoreRequest) -> dict[str, object]:
+        if not self.recovery_mode:
+            raise HTTPException(status_code=409, detail="state recovery is not required")
+        try:
+            restored = self.state_backup.restore_snapshot(request.snapshot)
+        except ValueError as restore_error:
+            raise HTTPException(status_code=400, detail=str(restore_error)) from restore_error
+        asyncio.create_task(self._restart_after_state_recovery())
+        return {"restored": [path.name for path in restored], "restart_scheduled": True}
+
+    @staticmethod
+    async def _restart_after_state_recovery() -> None:
+        await asyncio.sleep(0.25)
+        os.kill(os.getpid(), signal.SIGTERM)
 
     async def _list_projects(self) -> list[dict[str, str]]:
         return self.manager.registry.list_projects()
@@ -1179,10 +1236,10 @@ class TermdeckServer:
             raise HTTPException(status_code=400, detail=str(project_error)) from project_error
         return self.manager.session_summary_by_id(session_id)
 
-    async def _delete_session(self, session_id: str) -> dict[str, object]:
+    async def _delete_session(self, session_id: str, request: CloseSessionRequest | None = None) -> dict[str, object]:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
-        socket_removed = await self.manager.delete_session(session_id)
+        socket_removed = await self.manager.delete_session(session_id, request.group_name if request else "")
         if not socket_removed:
             raise HTTPException(status_code=409, detail="could not terminate the detached terminal process tree")
         return {ApiFields.DELETED: session_id, "socket_removed": True}
@@ -1202,7 +1259,9 @@ class TermdeckServer:
             return
         await websocket.accept()
         screen_repaint = websocket.query_params.get("screen_repaint", "1").lower() not in {"0", "false", "no", "off"}
-        scrollback, queue = self.manager.attach_client(session_id, screen_repaint)
+        have_buffer = websocket.query_params.get("have_buffer", "0").lower() not in {"0", "false", "no", "off"}
+        repaint_preserved_buffer = websocket.query_params.get("repaint_preserved_buffer", "0").lower() not in {"0", "false", "no", "off"}
+        scrollback, queue = self.manager.attach_client(session_id, screen_repaint, have_buffer, repaint_preserved_buffer)
         try:
             await websocket.send_bytes(scrollback)
             await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.DRAFT,

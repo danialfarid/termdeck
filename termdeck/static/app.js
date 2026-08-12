@@ -3,6 +3,7 @@
 const SESSION_LIST_REFRESH_MS = 30000;
 const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
 const RECONNECT_MS = 1500;
+const TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS = 1800;
 const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~";
 const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 13, terminal_font_size: 13,
@@ -10,7 +11,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, history_mode: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, selection_copy_history: [],
+  show_terminal_icons: false, history_mode: false, claude_snapshot_experimental: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {}, prompt_wrap_guard: false };
 const MODEL_PERMISSIONS = {
@@ -43,6 +44,15 @@ const CLOSED_SESSIONS_INITIAL_DISPLAY = 50;
 const CLOSED_SESSIONS_MAX_DISPLAY = 100;
 const ACTIVITY_SORT_BUCKET_MS = 15 * 60 * 1000;
 const TERMINAL_AGE_REFRESH_MS = 30000;
+const CLAUDE_SNAPSHOT_DB_NAME = "termdeck.claude-snapshots";
+const CLAUDE_SNAPSHOT_DB_VERSION = 2;
+const CLAUDE_SNAPSHOT_STORE_NAME = "sessions";
+const CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME = "manifest";
+const CLAUDE_SNAPSHOT_FORMAT_VERSION = 2;
+const CLAUDE_SNAPSHOT_IDLE_SAVE_MS = 3000;
+const CLAUDE_SNAPSHOT_MAX_LINES = 4000;
+const CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES = 100 * 1024 * 1024;
+const CLAUDE_SNAPSHOT_RECORD_OVERHEAD_BYTES = 1024;
 const TERMINAL_AGE_DAY_MS = 24 * 60 * 60 * 1000;
 const TERMINAL_AGE_WEEK_MS = 7 * TERMINAL_AGE_DAY_MS;
 const TERMINAL_AGE_INTERMEDIATE_FADE = 0.48;
@@ -247,8 +257,11 @@ class TermdeckApp {
     this.historyEditsCollapsed = false;
     this.closedExpanded = false;
     this.closedDisplayLimit = CLOSED_SESSIONS_INITIAL_DISPLAY;
+    this.closedSearchQuery = "";
     this.settings = { ...SETTINGS_DEFAULTS };
     this.saveTimer = null;
+    this.claudeSnapshotDatabasePromise = null;
+    this.claudeSnapshotStorageLimitPromise = null;
     this.treeRoot = null;
     this.treeDirs = new Map();
     this.treeReloadPromise = null;
@@ -337,6 +350,8 @@ class TermdeckApp {
     this.statusWs = null;
     this.statusWsReconnectTimer = 0;
     this.layoutFitSettleTimer = 0;
+    this.sidebarResizeInProgress = false;
+    this.sidebarResizeFinalFitFrame = 0;
     this.activeEditorFocusTimer = 0;
     this.projects = [];
     const projectMatch = location.pathname.match(/^\/p\/([^/]+)/);
@@ -548,6 +563,11 @@ class TermdeckApp {
       .map((group) => ({ id: String(group.id), name: String(group.name).trim(), collapsed: !!group.collapsed }));
   }
 
+  terminalGroupNameForSession(sessionId) {
+    const groupId = this.getProjectState().session_groups?.[sessionId];
+    return this.terminalGroups().find((group) => group.id === groupId)?.name || "";
+  }
+
   createTerminalGroup() {
     const name = prompt("Name for the terminal group", "New group");
     if (!name || !name.trim()) return;
@@ -602,8 +622,9 @@ class TermdeckApp {
   }
 
   groupSessionIds(groupId, sessionGroups = this.getProjectState().session_groups || {}) {
+    const currentSessionIds = new Set(this.sessions.map((session) => session.session_id));
     return Object.entries(sessionGroups)
-      .filter(([, assignedGroupId]) => assignedGroupId === groupId)
+      .filter(([sessionId, assignedGroupId]) => assignedGroupId === groupId && currentSessionIds.has(sessionId))
       .map(([sessionId]) => sessionId);
   }
 
@@ -1301,15 +1322,18 @@ class TermdeckApp {
     window.addEventListener("pagehide", () => {
       this.flushPendingFileSavesOnPageExit();
       this.flushPendingSearchHistoryRecord();
+      this.flushClaudeSnapshotSaves();
     });
     window.addEventListener("beforeunload", () => {
       this.flushPendingFileSavesOnPageExit();
       this.flushPendingSearchHistoryRecord();
+      this.flushClaudeSnapshotSaves();
     });
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") {
         this.flushPendingFileSavesOnPageExit();
         this.flushPendingSearchHistoryRecord();
+        this.flushClaudeSnapshotSaves();
       }
     });
     await this.loadSettings();
@@ -1897,6 +1921,12 @@ class TermdeckApp {
     const previousSessionListSignature = this.sessionListSignature;
     this.sessions = this.applySessionOrder(sessions);
     this.closedSessions = closed;
+    const currentSessionIds = new Set(this.sessions.map((session) => session.session_id));
+    const staleUnreadSessionIds = [...this.unreadSessions].filter((sessionId) => !currentSessionIds.has(sessionId));
+    if (staleUnreadSessionIds.length) {
+      for (const sessionId of staleUnreadSessionIds) this.unreadSessions.delete(sessionId);
+      this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
+    }
     for (const s of this.sessions) {
       this.cacheSessionModel(s);
       const view = this.views.get(s.session_id);
@@ -2004,7 +2034,6 @@ class TermdeckApp {
       if (activity > 0) this.touchSessionActivity(session.session_id, activity > 1e12 ? activity : activity * 1000);
     }
     if (Object.prototype.hasOwnProperty.call(message, "processing")) session.processing = !!message.processing;
-    if (message.processing === true) this.touchSessionActivity(session.session_id);
     if (Object.prototype.hasOwnProperty.call(message, "processing_since")) {
       session.processing_since = message.processing_since;
       const processingSince = Number(message.processing_since);
@@ -3296,7 +3325,7 @@ class TermdeckApp {
       if (button) button.classList.toggle("on", name === view);
     }
     this.$("side-split").classList.toggle("hidden", view === "terminals" || filesVisible);
-    this.applySettings();
+    this.applySettings({ fitTerminals: !filesVisible || filesPinned });
     this.applySideLayout();
     if (view === "project" || view === "search") {
       const session = this.session(this.activeId);
@@ -3384,7 +3413,7 @@ class TermdeckApp {
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
     this.$("files-section").classList.toggle("floating", filesVisible && !this.settings.files_pinned);
     this.updateFilesPinButton();
-    this.applySettings();
+    this.applySettings({ fitTerminals: !filesVisible || this.settings.files_pinned });
     this.scheduleTerminalFitAfterSidebarChange();
     this.saveSettings();
   }
@@ -3402,7 +3431,21 @@ class TermdeckApp {
   }
 
   scheduleTerminalFitAfterSidebarChange() {
+    if (FILES_SIDE_PANEL_TABS.includes(this.sideView) && !this.settings.files_pinned) return;
     this.scheduleTerminalLayoutFit();
+  }
+
+  scheduleFinalTerminalFitAfterSidebarResize() {
+    if (this.sidebarResizeFinalFitFrame) cancelAnimationFrame(this.sidebarResizeFinalFitFrame);
+    this.sidebarResizeFinalFitFrame = requestAnimationFrame(() => {
+      this.sidebarResizeFinalFitFrame = requestAnimationFrame(() => {
+        this.sidebarResizeFinalFitFrame = 0;
+        if (this.sidebarResizeInProgress) return;
+        const view = this.views.get(this.activeId);
+        if (view && this.isTerminalScrollV2()) view.forceResizeAfterFit = false;
+        this.fitActive();
+      });
+    });
   }
 
   positionFloatingFilesPanel(fileWidth = null) {
@@ -4128,37 +4171,85 @@ class TermdeckApp {
     header.className = "side-section-label closed-header";
     const chevron = document.createElement("span");
     chevron.className = "codicon codicon-chevron-right closed-chevron" + (this.closedExpanded ? " open" : "");
-    header.append(chevron, document.createTextNode(`closed terminals (${this.closedSessions.length})`));
+    const title = document.createElement("span");
+    title.textContent = `closed terminals (${this.closedSessions.length})`;
+    header.append(chevron, title);
     header.onclick = () => { this.closedExpanded = !this.closedExpanded; this.renderList(); };
     list.appendChild(header);
     if (!this.closedExpanded) return;
-    const visibleClosed = this.closedSessions.slice(0, Math.min(
+    const search = this.closedSearchQuery.trim().toLocaleLowerCase();
+    const matchingClosed = search
+      ? this.closedSessions.filter((session) => String(session.title || "").toLocaleLowerCase().includes(search))
+      : this.closedSessions;
+    const searchInput = document.createElement("input");
+    searchInput.className = "closed-search-input";
+    searchInput.type = "search";
+    searchInput.placeholder = "search closed terminals";
+    searchInput.value = this.closedSearchQuery;
+    searchInput.autocomplete = "off";
+    searchInput.autocapitalize = "off";
+    searchInput.autocorrect = "off";
+    searchInput.spellcheck = false;
+    searchInput.title = "Search closed terminals by name";
+    searchInput.onclick = (event) => event.stopPropagation();
+    searchInput.oninput = () => {
+      this.closedSearchQuery = searchInput.value;
+      this.closedDisplayLimit = CLOSED_SESSIONS_INITIAL_DISPLAY;
+      this.renderList();
+      const nextInput = this.$("session-list")?.querySelector(".closed-search-input");
+      if (nextInput) {
+        nextInput.focus();
+        nextInput.setSelectionRange(nextInput.value.length, nextInput.value.length);
+      }
+    };
+    searchInput.onkeydown = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!this.closedSearchQuery) return;
+      this.closedSearchQuery = "";
+      this.renderList();
+    };
+    list.appendChild(searchInput);
+    if (!matchingClosed.length) {
+      const empty = document.createElement("div");
+      empty.className = "closed-search-empty";
+      empty.textContent = "no closed terminals match";
+      list.appendChild(empty);
+      return;
+    }
+    const visibleClosed = matchingClosed.slice(0, Math.min(
       this.closedDisplayLimit, CLOSED_SESSIONS_MAX_DISPLAY));
     for (const c of visibleClosed) {
       const item = document.createElement("div");
       item.className = "closed-item";
-      item.title = `${c.command || "zsh"}\n${c.cwd}\nclosed ${c.closed_at_est}` +
+      const groupName = c.group_name || this.terminalGroupNameForSession(c.session_id);
+      item.title = `${c.title}\n${c.command || "zsh"}\n${c.cwd}\nclosed ${c.closed_at_est}` +
+        (groupName ? `\ngroup ${groupName}` : "") +
         (c.agent_session_id ? `\nreopens ${c.agent_kind} session ${c.agent_session_id}` : "") + "\nclick to reopen";
       const icon = document.createElement("span");
       icon.className = "codicon codicon-history";
       const name = document.createElement("span");
       name.className = "file-item-name";
       name.textContent = c.title;
+      const group = document.createElement("span");
+      group.className = "closed-group";
+      group.textContent = groupName;
       const purge = document.createElement("button");
       purge.className = "item-close";
       purge.textContent = "✕";
       purge.title = "Remove from history";
       purge.onclick = (e) => { e.stopPropagation(); this.purgeClosed(c.session_id); };
-      item.append(icon, name, purge);
+      item.append(icon, name, group, purge);
       item.onclick = () => this.reopenClosed(c.session_id);
       list.appendChild(item);
     }
-    if (this.closedSessions.length > visibleClosed.length && visibleClosed.length < CLOSED_SESSIONS_MAX_DISPLAY) {
+    if (matchingClosed.length > visibleClosed.length && visibleClosed.length < CLOSED_SESSIONS_MAX_DISPLAY) {
       const loadMore = document.createElement("button");
       loadMore.className = "closed-load-more";
       loadMore.textContent = `load more (${Math.min(
         CLOSED_SESSIONS_MAX_DISPLAY - visibleClosed.length,
-        this.closedSessions.length - visibleClosed.length)})`;
+        matchingClosed.length - visibleClosed.length)})`;
       loadMore.title = "Show more recently closed terminals";
       loadMore.onclick = (event) => {
         event.stopPropagation();
@@ -7381,6 +7472,8 @@ class TermdeckApp {
                    promptSubmissionReflowGuardUntil: 0, promptSubmissionReflowGuardTimer: 0, promptWrapGuardUntil: 0, promptWrapGuardTimer: 0,
                    reconnectAfterClose: false, claudeInitialReplayCheckTimer: 0,
                    claudeInitialReplayRecoveryAttempted: false,
+                   claudeSnapshotAddon: null, claudeSnapshotRestoreAttempted: false, claudeSnapshotRestored: false,
+                   claudeSnapshotSaveTimer: 0, claudeSnapshotSavePromise: null,
                    promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, promptDraftSyncDebounceTimer: 0,
                    pendingDraftSync: null, pendingTerminalDraft: null,
@@ -7543,6 +7636,7 @@ class TermdeckApp {
     }
     view.layoutObserver = new ResizeObserver(() => {
       if (!view.container.classList.contains("visible") || view.closed) return;
+      if (this.sidebarResizeInProgress) return;
       if (this.isTerminalScrollV2()) {
         this.scheduleV2Fit(view);
         return;
@@ -7569,12 +7663,218 @@ class TermdeckApp {
     return view;
   }
 
+  claudeSnapshotExperimentEnabled() {
+    return !!this.settings.claude_snapshot_experimental && !!window.indexedDB && !!window.SerializeAddon?.SerializeAddon;
+  }
+
+  isClaudeSnapshotView(view) {
+    return !!view && this.session(view.sessionId)?.agent_kind === "claude";
+  }
+
+  ensureClaudeSnapshotAddon(view) {
+    if (!this.claudeSnapshotExperimentEnabled() || !this.isClaudeSnapshotView(view)) return false;
+    if (view.claudeSnapshotAddon) return true;
+    const Addon = window.SerializeAddon.SerializeAddon;
+    view.claudeSnapshotAddon = new Addon();
+    view.term.loadAddon(view.claudeSnapshotAddon);
+    return true;
+  }
+
+  openClaudeSnapshotDatabase() {
+    if (this.claudeSnapshotDatabasePromise) return this.claudeSnapshotDatabasePromise;
+    this.claudeSnapshotDatabasePromise = new Promise((resolve, reject) => {
+      const request = window.indexedDB.open(CLAUDE_SNAPSHOT_DB_NAME, CLAUDE_SNAPSHOT_DB_VERSION);
+      request.onupgradeneeded = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains(CLAUDE_SNAPSHOT_STORE_NAME)) {
+          database.createObjectStore(CLAUDE_SNAPSHOT_STORE_NAME, { keyPath: "sessionId" });
+        }
+        if (!database.objectStoreNames.contains(CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME)) {
+          database.createObjectStore(CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME, { keyPath: "sessionId" });
+        }
+      };
+      request.onsuccess = () => {
+        const database = request.result;
+        database.onversionchange = () => database.close();
+        resolve(database);
+      };
+      request.onerror = () => reject(request.error || new Error("Claude snapshot database could not be opened"));
+      request.onblocked = () => reject(new Error("Claude snapshot database is blocked"));
+    });
+    return this.claudeSnapshotDatabasePromise;
+  }
+
+  claudeSnapshotRecordByteSize(record) {
+    const sizedRecord = { ...record, byteSize: CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES };
+    return new TextEncoder().encode(JSON.stringify(sizedRecord)).byteLength + CLAUDE_SNAPSHOT_RECORD_OVERHEAD_BYTES;
+  }
+
+  ensureClaudeSnapshotStorageLimit() {
+    if (this.claudeSnapshotStorageLimitPromise) return this.claudeSnapshotStorageLimitPromise;
+    this.claudeSnapshotStorageLimitPromise = this.openClaudeSnapshotDatabase().then((database) => new Promise((resolve, reject) => {
+      const transaction = database.transaction(
+        [CLAUDE_SNAPSHOT_STORE_NAME, CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME], "readwrite");
+      const snapshotStore = transaction.objectStore(CLAUDE_SNAPSHOT_STORE_NAME);
+      const manifestStore = transaction.objectStore(CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME);
+      const request = snapshotStore.getAll();
+      manifestStore.clear();
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("Claude snapshot storage could not be reconciled"));
+      request.onerror = () => reject(request.error || new Error("Claude snapshots could not be enumerated"));
+      request.onsuccess = () => {
+        const records = request.result.sort((left, right) => Number(right.savedAt || 0) - Number(left.savedAt || 0));
+        let retainedBytes = 0;
+        for (const record of records) {
+          const byteSize = this.claudeSnapshotRecordByteSize(record);
+          if (byteSize > CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES || retainedBytes + byteSize > CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES) {
+            snapshotStore.delete(record.sessionId);
+            continue;
+          }
+          const sizedRecord = { ...record, byteSize };
+          retainedBytes += byteSize;
+          snapshotStore.put(sizedRecord);
+          manifestStore.put({ sessionId: record.sessionId, byteSize, savedAt: Number(record.savedAt || 0) });
+        }
+      };
+    }));
+    return this.claudeSnapshotStorageLimitPromise;
+  }
+
+  async readClaudeSnapshot(sessionId) {
+    const database = await this.openClaudeSnapshotDatabase();
+    await this.ensureClaudeSnapshotStorageLimit();
+    return new Promise((resolve, reject) => {
+      const transaction = database.transaction(CLAUDE_SNAPSHOT_STORE_NAME, "readonly");
+      const request = transaction.objectStore(CLAUDE_SNAPSHOT_STORE_NAME).get(sessionId);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error || new Error("Claude snapshot could not be read"));
+    });
+  }
+
+  async writeClaudeSnapshot(record) {
+    const database = await this.openClaudeSnapshotDatabase();
+    await this.ensureClaudeSnapshotStorageLimit();
+    const byteSize = this.claudeSnapshotRecordByteSize(record);
+    if (byteSize > CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES) {
+      throw new Error("Claude snapshot exceeds the 100 MiB storage limit");
+    }
+    const sizedRecord = { ...record, byteSize };
+    return new Promise((resolve, reject) => {
+      const transaction = database.transaction(
+        [CLAUDE_SNAPSHOT_STORE_NAME, CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME], "readwrite");
+      const snapshotStore = transaction.objectStore(CLAUDE_SNAPSHOT_STORE_NAME);
+      const manifestStore = transaction.objectStore(CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME);
+      const request = manifestStore.getAll();
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("Claude snapshot could not be saved"));
+      request.onerror = () => reject(request.error || new Error("Claude snapshot manifest could not be read"));
+      request.onsuccess = () => {
+        const existing = request.result.filter((entry) => entry.sessionId !== record.sessionId);
+        existing.sort((left, right) => Number(left.savedAt || 0) - Number(right.savedAt || 0));
+        let retainedBytes = byteSize + existing.reduce((total, entry) => total + Number(entry.byteSize || 0), 0);
+        for (const entry of existing) {
+          if (retainedBytes <= CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES) break;
+          snapshotStore.delete(entry.sessionId);
+          manifestStore.delete(entry.sessionId);
+          retainedBytes -= Number(entry.byteSize || 0);
+        }
+        snapshotStore.put(sizedRecord);
+        manifestStore.put({ sessionId: record.sessionId, byteSize, savedAt: Number(record.savedAt || 0) });
+      };
+    });
+  }
+
+  async restoreClaudeSnapshot(view) {
+    if (!this.ensureClaudeSnapshotAddon(view)) return false;
+    if (view.container.classList.contains("visible")) view.fit.fit();
+    try {
+      const record = await this.readClaudeSnapshot(view.sessionId);
+      if (!record || record.formatVersion !== CLAUDE_SNAPSHOT_FORMAT_VERSION || typeof record.snapshot !== "string" ||
+          !record.snapshot || record.cols !== view.term.cols) return false;
+      await new Promise((resolve) => view.term.write(record.snapshot, resolve));
+      view.claudeSnapshotRestored = true;
+      view.claudeSnapshotRestoredCols = record.cols;
+      return true;
+    } catch (error) {
+      view.claudeSnapshotError = error instanceof Error ? error.message : String(error);
+      return false;
+    }
+  }
+
+  scheduleClaudeSnapshotSave(view) {
+    if (!this.ensureClaudeSnapshotAddon(view) || !view.term.buffer.active.baseY) return;
+    clearTimeout(view.claudeSnapshotSaveTimer);
+    view.claudeSnapshotSaveTimer = setTimeout(() => {
+      view.claudeSnapshotSaveTimer = 0;
+      void this.persistClaudeSnapshot(view);
+    }, CLAUDE_SNAPSHOT_IDLE_SAVE_MS);
+  }
+
+  async persistClaudeSnapshot(view) {
+    if (!this.ensureClaudeSnapshotAddon(view) || !view.term.buffer.active.baseY) return;
+    if (view.claudeSnapshotSavePromise) return view.claudeSnapshotSavePromise;
+    let snapshot;
+    try {
+      snapshot = view.claudeSnapshotAddon.serialize({ scrollback: CLAUDE_SNAPSHOT_MAX_LINES });
+    } catch (error) {
+      view.claudeSnapshotError = error instanceof Error ? error.message : String(error);
+      return;
+    }
+    if (!snapshot) return;
+    const record = { sessionId: view.sessionId, formatVersion: CLAUDE_SNAPSHOT_FORMAT_VERSION, cols: view.term.cols,
+      snapshot, savedAt: Date.now() };
+    view.claudeSnapshotSavePromise = this.writeClaudeSnapshot(record).catch((error) => {
+      view.claudeSnapshotError = error instanceof Error ? error.message : String(error);
+    }).finally(() => { view.claudeSnapshotSavePromise = null; });
+    return view.claudeSnapshotSavePromise;
+  }
+
+  flushClaudeSnapshotSaves() {
+    if (!this.claudeSnapshotExperimentEnabled()) return;
+    for (const view of this.views.values()) {
+      clearTimeout(view.claudeSnapshotSaveTimer);
+      view.claudeSnapshotSaveTimer = 0;
+      void this.persistClaudeSnapshot(view);
+    }
+  }
+
+  configureClaudeSnapshotExperiment() {
+    for (const view of this.views.values()) {
+      if (!this.isClaudeSnapshotView(view)) continue;
+      if (!this.claudeSnapshotExperimentEnabled()) {
+        clearTimeout(view.claudeSnapshotSaveTimer);
+        view.claudeSnapshotSaveTimer = 0;
+        if (view.claudeSnapshotAddon) {
+          view.claudeSnapshotAddon.dispose();
+          view.claudeSnapshotAddon = null;
+        }
+        continue;
+      }
+      this.ensureClaudeSnapshotAddon(view);
+      if (view.everConnected) view.claudeSnapshotRestoreAttempted = true;
+      this.scheduleClaudeSnapshotSave(view);
+    }
+  }
+
   connect(id, view) {
     if (view.closed) return;
+    if (this.isClaudeSnapshotView(view) && this.claudeSnapshotExperimentEnabled() && !view.claudeSnapshotRestoreAttempted) {
+      view.claudeSnapshotRestoreAttempted = true;
+      void this.restoreClaudeSnapshot(view).then(() => {
+        if (!view.closed) this.connect(id, view);
+      });
+      return;
+    }
     view.suppressReconnect = false;
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws/${id}?screen_repaint=1`);
+    const hasPopulatedBuffer = (view.everConnected || view.claudeSnapshotRestored) && !view.closed && view.term?.buffer?.active?.baseY > 0;
+    const repaintPreservedBuffer = hasPopulatedBuffer && this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view);
+    const screenRepaint = hasPopulatedBuffer && !repaintPreservedBuffer ? 0 : 1;
+    const haveBuffer = hasPopulatedBuffer ? 1 : 0;
+    const ws = new WebSocket(`${proto}://${location.host}/ws/${id}?screen_repaint=${screenRepaint}&have_buffer=${haveBuffer}` +
+      `&repaint_preserved_buffer=${repaintPreservedBuffer ? 1 : 0}`);
     ws.binaryType = "arraybuffer";
+    view.preserveBufferOnReconnect = haveBuffer === 1;
     view.awaitingSnapshot = true;
     view.replaying = false;
     view.needsViewportRepair = false;
@@ -7584,6 +7884,7 @@ class TermdeckApp {
     view.lastSentRows = null;
     ws.onopen = () => {
       view.reconnectReset = view.everConnected;
+      view.attachActivitySuppressedUntil = Date.now() + TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS;
       if (view.everConnected) {
         view.replaying = true;
         if (!this.isTerminalScrollV2()) {
@@ -7620,9 +7921,11 @@ class TermdeckApp {
       // xterm's public scroll API, rather than a DOM scroll listener or PTY
       // resize/reflow.
       if (!view.container.classList.contains("visible")) view.hiddenOutputPending = true;
-      if (!view.awaitingSnapshot) this.touchSessionActivity(id);
+      if (!view.awaitingSnapshot && !view.replaying && Date.now() >= (view.attachActivitySuppressedUntil || 0)) {
+        this.touchSessionActivity(id);
+      }
       if (view.awaitingSnapshot) {
-        if (view.reconnectReset && e.data.byteLength > 0) view.term.reset();
+        if (view.reconnectReset && e.data.byteLength > 0 && !view.preserveBufferOnReconnect) view.term.reset();
         const snapshotScrollGeneration = view.manualScrollGeneration;
         const v2 = this.isTerminalScrollV2();
         const followSnapshot = v2 ? view.scrollMode === "follow" : view.keepBottom && !view.manualScroll;
@@ -7644,7 +7947,7 @@ class TermdeckApp {
             this.scheduleClaudeInitialReplayRecovery(id, view);
           }
           if (v2 && view.container.classList.contains("visible")) {
-            view.forceResizeAfterFit = true;
+            view.forceResizeAfterFit = !(this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view));
             this.scheduleV2Fit(view);
           } else if (view.resyncResizeRepairPending && view.container.classList.contains("visible")) {
             // Legacy (non-V2) scroll mode has no equivalent post-snapshot repaint trigger above, so it
@@ -7931,6 +8234,7 @@ class TermdeckApp {
   }
 
   sendResize(view, cols, rows, force = false) {
+    if (this.sidebarResizeInProgress) return;
     if (view.ws && view.ws.readyState === WebSocket.OPEN &&
         (force || view.lastSentCols !== cols || view.lastSentRows !== rows)) {
       view.lastSentCols = cols;
@@ -8060,6 +8364,10 @@ class TermdeckApp {
       view.keepBottom = true;
       view.pinBottomUntil = Date.now() + 8000;
     }
+    if (this.isClaudeSnapshotView(view) && this.claudeSnapshotExperimentEnabled()) {
+      view.claudeSnapshotRestored = false;
+      view.claudeSnapshotRestoreAttempted = false;
+    }
     view.term.reset();
     // V2 mode gets its repaint trigger for free once the forced reconnect below actually delivers a
     // snapshot (connect()'s post-replay callback), the same path a plain page refresh goes through --
@@ -8145,7 +8453,7 @@ class TermdeckApp {
     if (view.v2FitFrame) return;
     view.v2FitFrame = requestAnimationFrame(() => {
       view.v2FitFrame = 0;
-      if (view.closed || !view.container.classList.contains("visible")) return;
+      if (view.closed || !view.container.classList.contains("visible") || this.sidebarResizeInProgress) return;
       if (this.shouldDeferPromptWrapFit(view)) return;
       const rect = view.container.getBoundingClientRect();
       if (rect.width < 40 || rect.height < 40) {
@@ -8183,7 +8491,8 @@ class TermdeckApp {
       // A terminal may have been painted while its container was hidden or
       // at its pre-flex width. Refresh after the settled fit so the canvas
       // and text colors are repainted together with the final geometry.
-      const forceResizeThisFrame = forceResize || view.forceResizeAfterFit;
+      const suppressExperimentalClaudeReflow = this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view);
+      const forceResizeThisFrame = (forceResize || view.forceResizeAfterFit) && !suppressExperimentalClaudeReflow;
       if (forceResizeThisFrame) {
         view.forceResizeAfterFit = false;
         if (this.forceVisibleTerminalReflow(view)) return;
@@ -8439,7 +8748,8 @@ class TermdeckApp {
     if (!view || view.closed || !this.isTerminalScrollV2()) return;
     for (const delay of TERMINAL_ACTIVE_SETTLE_DELAYS_MS) {
       view.settleWatchdogTimers.push(setTimeout(() => {
-        if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
+        if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible") ||
+            this.sidebarResizeInProgress) return;
         if (this.shouldDeferPromptWrapFit(view)) return;
         const beforeCols = view.term.cols, beforeRows = view.term.rows;
         view.fit.fit();
@@ -8703,6 +9013,7 @@ class TermdeckApp {
         view.needsViewportRepair = false;
         this.repairTerminalViewport(view);
       }
+      if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleClaudeSnapshotSave(view);
       if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleTerminalTailRepair(view);
       this.drainTerminalWrites(view);
     });
@@ -8734,7 +9045,8 @@ class TermdeckApp {
     view.term.options.theme = { ...this.termTheme() };
     if (typeof view.term.clearTextureAtlas === "function") view.term.clearTextureAtlas();
     const renderService = view.term._core?._renderService;
-    if (forceResize && renderService) {
+    const allowForcedRendererReset = forceResize && !(this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view));
+    if (allowForcedRendererReset && renderService) {
       if (typeof renderService.clear === "function") renderService.clear();
       if (typeof renderService.handleResize === "function") renderService.handleResize(view.term.cols, view.term.rows);
       else if (view.term._core?.resize) view.term._core.resize(view.term.cols, view.term.rows);
@@ -8769,7 +9081,7 @@ class TermdeckApp {
   }
 
   fitActive() {
-    if (this.nativeVscodeMode) return;
+    if (this.nativeVscodeMode || this.sidebarResizeInProgress) return;
     if (this.$("terminal-area").classList.contains("hidden")) return;
     const view = this.views.get(this.activeId);
     if (!view || !view.container.classList.contains("visible")) return;
@@ -8918,7 +9230,7 @@ class TermdeckApp {
     return this.isLight() ? TERM_THEME_LIGHT : TERM_THEME_DARK;
   }
 
-  applySettings() {
+  applySettings({ fitTerminals = true } = {}) {
     const s = this.settings;
     const sidebar = this.$("sidebar");
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
@@ -8975,7 +9287,7 @@ class TermdeckApp {
     }
     this.$("stat-text").classList.toggle("hidden", !s.show_stats);
     this.$("stat-spark").classList.toggle("hidden", !s.show_stats);
-    this.fitActive();
+    if (fitTerminals) this.fitActive();
   }
 
   initMonaco() {
@@ -9131,6 +9443,8 @@ class TermdeckApp {
       () => { this.settings.word_wrap = !this.settings.word_wrap; }));
     pop.appendChild(this.buildToggleRow("Prompt wrap fix (test)", () => (this.settings.prompt_wrap_guard ? "on" : "off"),
       () => { this.settings.prompt_wrap_guard = !this.settings.prompt_wrap_guard; }));
+    pop.appendChild(this.buildToggleRow("Claude snapshots (experimental)", () => (this.settings.claude_snapshot_experimental ? "on" : "off"),
+      () => { this.settings.claude_snapshot_experimental = !this.settings.claude_snapshot_experimental; this.configureClaudeSnapshotExperiment(); }));
     pop.appendChild(this.buildToggleRow("Markdown transcript mode", () => (this.settings.history_mode ? "on" : "off"),
       () => { this.setHistoryMode(!this.settings.history_mode); }));
     pop.appendChild(this.buildActionRow("Keyboard shortcuts", "edit", () => { pop.classList.add("hidden"); this.openKeybindings(); }));
@@ -9192,6 +9506,13 @@ class TermdeckApp {
     this.$(handleId).onmousedown = (e) => {
       e.preventDefault();
       document.body.classList.add("dragging");
+      if (handleId === "sidebar-resizer") {
+        this.sidebarResizeInProgress = true;
+        if (this.sidebarResizeFinalFitFrame) {
+          cancelAnimationFrame(this.sidebarResizeFinalFitFrame);
+          this.sidebarResizeFinalFitFrame = 0;
+        }
+      }
       const move = (ev) => {
         const width = fromRight ? window.innerWidth - ev.clientX : ev.clientX;
         const resizingFiles = handleId === "sidebar-resizer" && this.settings.files_pinned &&
@@ -9202,12 +9523,15 @@ class TermdeckApp {
           : minWidth;
         const targetMax = resizingFiles ? Math.max(maxWidth, Math.floor(window.innerWidth * 0.75)) : maxWidth;
         this.settings[targetKey] = Math.max(targetMin, Math.min(targetMax, Math.round(width)));
-        this.applySettings();
+        this.applySettings({ fitTerminals: false });
       };
       const up = () => {
         document.body.classList.remove("dragging");
+        if (handleId === "sidebar-resizer") this.sidebarResizeInProgress = false;
         document.removeEventListener("mousemove", move);
         document.removeEventListener("mouseup", up);
+        this.applySettings({ fitTerminals: false });
+        if (handleId === "sidebar-resizer") this.scheduleFinalTerminalFitAfterSidebarResize();
         this.saveSettings();
       };
       document.addEventListener("mousemove", move);
@@ -9247,7 +9571,7 @@ class TermdeckApp {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     this.filesPanelResizePointerId = null;
     document.body.classList.remove("dragging-file-search-panel-resize");
-    this.applySettings();
+    this.applySettings({ fitTerminals: false });
     this.saveSettings();
   }
 
@@ -10795,7 +11119,10 @@ class TermdeckApp {
     const closeIndex = closeOrder.indexOf(sessionId);
     const nextOnClose = closeIndex >= 0 && closeIndex + 1 < closeOrder.length ? closeOrder[closeIndex + 1]
       : closeIndex > 0 ? closeOrder[closeIndex - 1] : null;
-    const response = await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
+    const response = await fetch(`/api/sessions/${sessionId}`, {
+      method: "DELETE", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_name: this.terminalGroupNameForSession(sessionId) }),
+    });
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));
       this.$("status-name").textContent = detail.detail || "terminal process cleanup did not complete";
@@ -10821,7 +11148,10 @@ class TermdeckApp {
     const nextSession = this.sessions.slice(activeIndex + 1).find((session) => !selectedIds.has(session.session_id)) ||
       this.sessions.slice(0, Math.max(activeIndex, 0)).reverse().find((session) => !selectedIds.has(session.session_id)) || null;
     const results = await Promise.all(selectedSessions.map(async (session) => ({ session,
-      response: await fetch(`/api/sessions/${session.session_id}`, { method: "DELETE" }) })));
+      response: await fetch(`/api/sessions/${session.session_id}`, {
+        method: "DELETE", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ group_name: this.terminalGroupNameForSession(session.session_id) }),
+      }) })));
     const closedIds = results.filter((result) => result.response.ok).map((result) => result.session.session_id);
     for (const sessionId of closedIds) this.postVscodeNativeClose(sessionId);
     this.sidebarSelectedSessionIds = new Set([...this.sidebarSelectedSessionIds]
@@ -11153,28 +11483,19 @@ class TermdeckApp {
     const directories = [...node.directories.values()].sort((a, b) => String(a.name).localeCompare(String(b.name), undefined,
       { numeric: true, sensitivity: "base" }));
     for (const directory of directories) {
-      const compacted = this.compactSearchDirectoryChain(directory);
-      const terminal = compacted.terminal;
       const row = document.createElement("div");
       row.className = "tree-row dir search-tree-row search-tree-directory open";
       row.tabIndex = 0;
-      row.title = `${root}/${terminal.path}`;
+      row.title = `${root}/${directory.path}`;
       const chevron = document.createElement("span");
       chevron.className = "codicon codicon-chevron-right tree-chevron";
       const icon = document.createElement("img");
       icon.className = "tree-type-icon tree-folder-icon";
       icon.src = MATERIAL_ICONS_BASE + "folder-open.svg";
-      row.append(chevron, icon);
-      compacted.chain.forEach((part, index) => {
-        const name = this.createCompactSearchPathPart(part.name, true);
-        row.appendChild(name);
-        if (index < compacted.chain.length - 1) {
-          const separator = document.createElement("span");
-          separator.className = "search-tree-path-separator";
-          separator.textContent = "›";
-          row.appendChild(separator);
-        }
-      });
+      const name = document.createElement("span");
+      name.className = "tree-name search-tree-directory-name";
+      name.textContent = directory.name;
+      row.append(chevron, icon, name);
       const children = document.createElement("div");
       children.className = "tree-children-wrap search-tree-children";
       row.onclick = () => {
@@ -11183,7 +11504,7 @@ class TermdeckApp {
         icon.src = MATERIAL_ICONS_BASE + (open ? "folder-open.svg" : "folder.svg");
       };
       container.append(row, children);
-      this.renderContentSearchHierarchy(terminal, children, root);
+      this.renderContentSearchHierarchy(directory, children, root);
     }
     const files = [...node.files].sort((a, b) => this.compareSearchFiles(a, b));
     for (const file of files) {

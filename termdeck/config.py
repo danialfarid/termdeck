@@ -21,6 +21,10 @@ class TermdeckConfig:
     PROJECTS_FILE = DATA_DIR / "projects.json"
     SCROLLBACK_DIR = DATA_DIR / "scrollback"
     SCROLLBACK_SUFFIX = ".bin"
+    STATE_BACKUP_DIR = DATA_DIR / "backups"
+    STATE_BACKUP_MAX_BYTES = 50_000_000
+    STATE_BACKUP_INTERVAL_SECONDS = 3600.0
+    STATE_BACKUP_PREWRITE_INTERVAL_SECONDS = 300.0
     UPLOADS_DIR = DATA_DIR / "uploads"
     API_UPLOAD_ROUTE = "/api/upload"
     UPLOAD_MAX_BYTES = 30_000_000
@@ -28,6 +32,8 @@ class TermdeckConfig:
     PROJECT_FALLBACK_SLUG = "project"
     API_PROJECTS_ROUTE = "/api/projects"
     API_PROJECT_FOLDER_PICKER_ROUTE = "/api/projects/pick-folder"
+    API_STATE_RECOVERY_ROUTE = "/api/state-recovery"
+    API_STATE_RECOVERY_RESTORE_ROUTE = "/api/state-recovery/restore"
     PROJECT_PAGE_ROUTE = "/p/{project_name}"
     STATIC_DIR = Path(__file__).resolve().parent / "static"
     INDEX_FILE = "index.html"
@@ -133,6 +139,7 @@ class TermdeckConfig:
     SCREEN_REPAINT_REATTACH_DELAY_SECONDS = 0.2
     SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS = 0.35
     SCREEN_REPAINT_NUDGE_HOLD_SECONDS = 0.08
+    SCREEN_REPAINT_ACTIVITY_SUPPRESSION_SECONDS = 1.5
     SCREEN_REPAINT_NUDGE_MIN_COLS = 20
     PTY_READ_CHUNK = 65536
     KILL_GRACE_POLLS = 30
@@ -144,6 +151,7 @@ class TermdeckConfig:
     JSONL_GLOB = "*.jsonl"
     CODEX_DAY_DIR_LOOKAROUND_DAYS = (-1, 0, 1)
     AGENT_DETECT_INITIAL_DELAY_SECONDS = 3.0
+    AGENT_DETECT_STARTUP_TIMEOUT_SECONDS = 60.0
     AGENT_DETECT_INPUT_DEBOUNCE_SECONDS = 2.0
     AGENT_TRANSCRIPT_ACTIVITY_DEBOUNCE_SECONDS = 0.75
     AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS = 20.0
@@ -154,6 +162,7 @@ class TermdeckConfig:
     SUBPROCESS_TIMEOUT_SECONDS = 10.0
     CLAUDE_RESUME_FLAG = "--resume"
     CLAUDE_FORK_FLAG = "--fork-session"
+    CLAUDE_NAME_FLAG = "--name"
     CODEX_RESUME_TEMPLATE = "codex resume {agent_session_id}"
     CODEX_FORK_TEMPLATE = "codex fork {agent_session_id}"
     CODEX_SESSION_INDEX_FILE = Path.home() / ".codex" / "session_index.jsonl"

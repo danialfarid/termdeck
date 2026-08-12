@@ -32,12 +32,21 @@ Layout inside the data directory:
 | `projects.json` | Registered project directories and their slugs |
 | `settings.json` | Fonts, panel widths, theme, keybindings, open files, active terminal |
 | `scrollback/` | One ring-buffer file per terminal |
+| `backups/` | Rotating snapshots of sessions, settings, projects, and closed-session metadata, capped at 50 MB |
 | `dtach/` | One socket per live terminal |
 | `uploads/` | Files pasted or dropped into a prompt |
 | `termdeck.log` | Service log (macOS; Linux logs to the journal) |
 
 Running two instances against the same data directory is not supported — give each one its own
 `TERMDECK_DATA_DIR` and port.
+
+TermDeck writes a state snapshot before critical JSON changes, throttled to one pre-write snapshot every five
+minutes, and once per hour. The backup directory is
+rotated by total size, keeping the newest snapshots within the 50 MB cap. If a critical JSON file is missing,
+malformed, or has the wrong top-level shape at startup, TermDeck enters recovery mode and does not restore
+anything automatically. The recovery page lists the available snapshots and their timestamps; selecting one
+explicitly restores all critical JSON files, preserves the current files under `backups/recovery/`, and restarts
+the service.
 
 ### Changing the data directory later
 

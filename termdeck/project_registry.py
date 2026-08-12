@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from termdeck.config import TermdeckConfig
+from termdeck.state_backup import StateBackupManager
 
 
 class ProjectRegistry:
@@ -10,8 +11,9 @@ class ProjectRegistry:
 
     TMP_SUFFIX = ".tmp"
 
-    def __init__(self, projects_file: Path) -> None:
+    def __init__(self, projects_file: Path, backup_manager: StateBackupManager | None = None) -> None:
         self._projects_file = projects_file
+        self._backup_manager = backup_manager
         self._projects: dict[str, str] = self._load()
 
     def _load(self) -> dict[str, str]:
@@ -21,6 +23,8 @@ class ProjectRegistry:
 
     def _save(self) -> None:
         self._projects_file.parent.mkdir(parents=True, exist_ok=True)
+        if self._backup_manager is not None:
+            self._backup_manager.before_state_write(self._projects_file)
         tmp_file = self._projects_file.with_suffix(self.TMP_SUFFIX)
         tmp_file.write_text(json.dumps(self._projects, indent=2, sort_keys=True))
         tmp_file.replace(self._projects_file)

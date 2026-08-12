@@ -32,6 +32,7 @@ class AgentSessionTracker:
     _AGY_ACTIVITY_TAIL_BYTES = 256 * 1024
     _CODEX_ACTIVITY_TAIL_BYTES = 8 * 1024 * 1024
     _CLAUDE_INTERRUPT_TEXT_PREFIX = "[Request interrupted by user"
+    _CLAUDE_LOCAL_COMMAND_MARKERS = ("<command-name>", "<local-command-")
     _CLI_TITLE_CACHE_SIZE = 120
     _SUBAGENT_FILE_CACHE_SIZE = 2000
 
@@ -180,12 +181,18 @@ class AgentSessionTracker:
         if not session_id:
             return None
         cache_key = (str(cwd), session_id)
+        path = self.claude_project_dir(cwd) / f"{session_id}.jsonl"
+        explicit_title = self._claude_explicit_session_title(path)
+        if explicit_title:
+            self._claude_session_title_cache[cache_key] = explicit_title
+            self._claude_session_title_cache.move_to_end(cache_key)
+            return explicit_title
         cached = self._claude_session_title_cache.get(cache_key)
         if cached is not None:
             self._claude_session_title_cache.move_to_end(cache_key)
             return cached
-        path = self.claude_project_dir(cwd) / f"{session_id}.jsonl"
-        title = None
+        ai_title = None
+        explicit_title = None
         try:
             with path.open(errors="replace") as handle:
                 for line in handle:
@@ -194,14 +201,28 @@ class AgentSessionTracker:
                     except json.JSONDecodeError:
                         continue
                     if payload.get("type") == "ai-title" and str(payload.get("aiTitle", "")).strip():
-                        title = str(payload["aiTitle"]).strip()
+                        ai_title = str(payload["aiTitle"]).strip()
+                    elif payload.get("type") == "custom-title" and str(payload.get("customTitle", "")).strip():
+                        explicit_title = str(payload["customTitle"]).strip()
+                    elif payload.get("type") == "agent-name" and str(payload.get("agentName", "")).strip():
+                        explicit_title = str(payload["agentName"]).strip()
         except OSError:
             return None
+        title = explicit_title or ai_title
         if title is not None:
             self._claude_session_title_cache[cache_key] = title
             while len(self._claude_session_title_cache) > self._CLI_TITLE_CACHE_SIZE:
                 self._claude_session_title_cache.popitem(last=False)
         return title
+
+    def invalidate_claude_session_title(self, cwd: Path, session_id: str | None) -> None:
+        if session_id:
+            self._claude_session_title_cache.pop((str(cwd), session_id), None)
+
+    def claude_explicit_session_title(self, cwd: Path, session_id: str | None) -> str | None:
+        if not session_id:
+            return None
+        return self._claude_explicit_session_title(self.claude_project_dir(cwd) / f"{session_id}.jsonl")
 
     def codex_session_id_for_reference(self, reference: str) -> str | None:
         """Resolve a Codex UUID or saved thread name to the UUID accepted by resume."""
@@ -321,6 +342,15 @@ class AgentSessionTracker:
         return any(text.strip().startswith(prefix) for text in texts)
 
     @staticmethod
+    def _claude_user_event_is_local_command(message: dict) -> bool:
+        content = message.get("content")
+        if isinstance(content, str):
+            texts = [content]
+        else:
+            texts = [part.get("text") or "" for part in content or [] if isinstance(part, dict)]
+        return any(marker in text for text in texts for marker in AgentSessionTracker._CLAUDE_LOCAL_COMMAND_MARKERS)
+
+    @staticmethod
     def _claude_subagent_is_active(path: Path) -> bool:
         """Infer active work from the last meaningful Claude subagent event."""
         try:
@@ -340,9 +370,11 @@ class AgentSessionTracker:
             message = event.get("message") or {}
             if event.get("type") == "user":
                 # Claude injects system reminders as isMeta user events; they say nothing about progress.
-                if event.get("isMeta"):
+                if event.get("isMeta") or AgentSessionTracker._claude_user_event_is_local_command(message):
                     continue
-                return not AgentSessionTracker._claude_user_event_is_interruption(message)
+                if AgentSessionTracker._claude_user_event_is_interruption(message):
+                    return False
+                return True
             if event.get("type") != "assistant" or message.get("type") != "message":
                 continue
             content = message.get("content") or []
@@ -444,6 +476,52 @@ class AgentSessionTracker:
     def claude_session_id_for_title(self, cwd: Path, cli_title: str | None) -> str | None:
         parent = self._claude_parent_for_title(cwd, cli_title)
         return parent.stem if parent else None
+
+    def claude_session_id_for_explicit_title(self, cwd: Path, title: str | None, after_timestamp: float,
+                                             claimed_ids: set[str]) -> str | None:
+        normalized_title = self._normalized_claude_title(title)
+        if not normalized_title:
+            return None
+        candidates: list[tuple[float, str]] = []
+        for path, session_id in self._candidate_session_files(AgentKind.CLAUDE, cwd):
+            if session_id in claimed_ids:
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if mtime < after_timestamp or self._normalized_claude_title(self._claude_explicit_session_title(path)) != normalized_title:
+                continue
+            candidates.append((mtime, session_id))
+        return max(candidates, default=(0.0, None))[1]
+
+    @staticmethod
+    def _normalized_claude_title(value: str | None) -> str:
+        return " ".join(str(value or "").split()).casefold()
+
+    @staticmethod
+    def _claude_explicit_session_title(path: Path) -> str | None:
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                handle.seek(max(0, handle.tell() - AgentSessionTracker._SUBAGENT_TAIL_BYTES))
+                lines = handle.read().decode(errors="replace").splitlines()
+        except OSError:
+            return None
+        for line in reversed(lines):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "custom-title":
+                title = event.get("customTitle")
+            elif event.get("type") == "agent-name":
+                title = event.get("agentName")
+            else:
+                continue
+            if isinstance(title, str) and title.strip():
+                return title.strip()
+        return None
 
     def snapshot_session_files(self, kind: AgentKind, cwd: Path) -> set[Path]:
         return {path for path, _ in self._candidate_session_files(kind, cwd)}
@@ -555,7 +633,7 @@ class AgentSessionTracker:
             parts = self._command_parts(original_command)
             if not parts:
                 return TermdeckConfig.CODEX_RESUME_TEMPLATE.format(agent_session_id=agent_session_id)
-            cleaned = self._strip_positional_session_token(parts, "codex", "resume")
+            cleaned = self._strip_codex_session_arguments(parts)
             return f"{shlex.join(cleaned)} resume {agent_session_id}"
         return original_command
 
@@ -598,9 +676,37 @@ class AgentSessionTracker:
             cleaned.append(token)
         return cleaned
 
-    def build_fork_command(self, kind: AgentKind, original_command: str, agent_session_id: str) -> str:
+    @staticmethod
+    def _strip_codex_session_arguments(parts: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        command_seen = False
+        skip_session_id = False
+        for token in parts:
+            if skip_session_id:
+                skip_session_id = False
+                continue
+            if not command_seen:
+                cleaned.append(token)
+                command_seen = Path(token).name == "codex"
+                continue
+            if token in {"fork", "resume"}:
+                skip_session_id = True
+                continue
+            cleaned.append(token)
+        return cleaned
+
+    def build_fork_command(self, kind: AgentKind, original_command: str, agent_session_id: str,
+                           session_name: str = "") -> str:
         if kind is AgentKind.CLAUDE:
-            return f"{original_command} {TermdeckConfig.CLAUDE_RESUME_FLAG} {agent_session_id} {TermdeckConfig.CLAUDE_FORK_FLAG}"
+            parts = self._command_parts(original_command)
+            cleaned = self._strip_resume_flag(parts, TermdeckConfig.CLAUDE_RESUME_FLAG)
+            cleaned = self._strip_resume_flag(cleaned, TermdeckConfig.CLAUDE_NAME_FLAG)
+            if not cleaned:
+                cleaned = ["claude"]
+            cleaned.extend((TermdeckConfig.CLAUDE_RESUME_FLAG, agent_session_id, TermdeckConfig.CLAUDE_FORK_FLAG))
+            if session_name.strip():
+                cleaned.extend((TermdeckConfig.CLAUDE_NAME_FLAG, " ".join(session_name.splitlines()).strip()))
+            return shlex.join(cleaned)
         if kind is AgentKind.CODEX:
             return TermdeckConfig.CODEX_FORK_TEMPLATE.format(agent_session_id=agent_session_id)
         return original_command

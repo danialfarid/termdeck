@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TermDeck recovery</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+    body { margin: 0; min-height: 100vh; background: #111318; color: #e7eaf0; }
+    main { box-sizing: border-box; width: min(920px, calc(100vw - 48px)); margin: 0 auto; padding: 56px 0 72px; }
+    h1 { margin: 0 0 12px; font-size: 28px; font-weight: 650; }
+    p { color: #aeb5c2; line-height: 1.5; }
+    .warning { margin: 24px 0; padding: 16px 18px; border: 1px solid #765b2d; border-radius: 10px; background: #2a2114; color: #f3d69d; }
+    .section-title { margin: 30px 0 12px; font-size: 16px; color: #f1f3f7; }
+    .issues { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+    .issue { padding: 10px 13px; border: 1px solid #303641; border-radius: 8px; background: #191c22; }
+    .issue strong { color: #f2a9a9; }
+    .snapshots { display: grid; gap: 12px; }
+    .snapshot { display: grid; grid-template-columns: 1fr auto; gap: 10px 20px; align-items: center; padding: 16px; border: 1px solid #343b49; border-radius: 10px; background: #1a1e26; }
+    .snapshot:hover { border-color: #5d83c7; }
+    .snapshot-name { color: #b9d2ff; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .snapshot-meta { margin-top: 5px; color: #aeb5c2; font-size: 13px; }
+    .snapshot-files { margin-top: 8px; color: #858e9d; font-size: 12px; }
+    button { border: 1px solid #5d83c7; border-radius: 7px; padding: 8px 13px; background: #2f5f9f; color: white; font: inherit; cursor: pointer; }
+    button:hover { background: #3972bc; }
+    button:disabled { opacity: .55; cursor: wait; }
+    #status { min-height: 20px; margin-top: 20px; color: #9fc5ff; }
+    .empty { padding: 18px; border: 1px dashed #404754; border-radius: 9px; color: #aeb5c2; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>TermDeck recovery mode</h1>
+    <p>TermDeck paused normal startup because its saved state needs attention. No state was restored automatically.</p>
+    <div class="warning">Choose a saved snapshot to restore manually. The current files will be preserved in <code>~/.termdeck/backups/recovery/</code>, then the service will restart.</div>
+    <h2 class="section-title">Detected issues</h2>
+    <ul id="issues" class="issues"></ul>
+    <h2 class="section-title">Choose a snapshot</h2>
+    <div id="snapshots" class="snapshots"></div>
+    <div id="status"></div>
+  </main>
+  <script>
+    const issuesElement = document.getElementById("issues");
+    const snapshotsElement = document.getElementById("snapshots");
+    const statusElement = document.getElementById("status");
+
+    function addTextElement(parent, tagName, text, className = "") {
+      const element = document.createElement(tagName);
+      element.textContent = text;
+      if (className) element.className = className;
+      parent.appendChild(element);
+      return element;
+    }
+
+    function renderIssues(issues) {
+      if (!issues.length) {
+        addTextElement(issuesElement, "li", "No specific issue details were recorded.", "issue");
+        return;
+      }
+      for (const issue of issues) {
+        const item = document.createElement("li");
+        item.className = "issue";
+        addTextElement(item, "strong", `${issue.file} — ${issue.kind}`);
+        addTextElement(item, "span", `: ${issue.detail}`);
+        issuesElement.appendChild(item);
+      }
+    }
+
+    function renderSnapshots(snapshots) {
+      if (!snapshots.length) {
+        addTextElement(snapshotsElement, "div", "No complete snapshots are available. The current state cannot be restored automatically.", "empty");
+        return;
+      }
+      for (const snapshot of snapshots) {
+        const card = document.createElement("article");
+        card.className = "snapshot";
+        const details = document.createElement("div");
+        addTextElement(details, "div", snapshot.name, "snapshot-name");
+        addTextElement(details, "div", `${snapshot.created_at_est || "unknown time"} · ${snapshot.reason || "snapshot"} · ${(snapshot.size_bytes / 1048576).toFixed(2)} MB`, "snapshot-meta");
+        addTextElement(details, "div", `Includes: ${snapshot.files.join(", ")}`, "snapshot-files");
+        const button = addTextElement(card, "button", "Restore this snapshot");
+        button.type = "button";
+        button.addEventListener("click", async () => {
+          if (!window.confirm(`Restore ${snapshot.name}? The current state files will be preserved first.`)) return;
+          button.disabled = true;
+          statusElement.textContent = "Restoring selected snapshot and restarting TermDeck…";
+          const response = await fetch("/api/state-recovery/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ snapshot: snapshot.name }) });
+          if (!response.ok) {
+            statusElement.textContent = `Restore failed: ${await response.text()}`;
+            button.disabled = false;
+            return;
+          }
+          statusElement.textContent = "Snapshot restored. Waiting for TermDeck to restart…";
+        });
+        card.insertBefore(details, button);
+        snapshotsElement.appendChild(card);
+      }
+    }
+
+    async function loadRecoveryStatus() {
+      try {
+        const response = await fetch("/api/state-recovery");
+        if (!response.ok) throw new Error(await response.text());
+        const status = await response.json();
+        renderIssues(status.issues || []);
+        renderSnapshots(status.snapshots || []);
+      } catch (error) {
+        statusElement.textContent = `Unable to load recovery information: ${error}`;
+      }
+    }
+
+    loadRecoveryStatus();
+  </script>
+</body>
+</html>
