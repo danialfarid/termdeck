@@ -189,6 +189,13 @@
       <button id="vscode-history-btn" title="Open Markdown transcript" aria-label="Open Markdown transcript"><span class="codicon codicon-markdown"></span></button>
       <button id="vscode-scroll-bottom-btn" title="Scroll terminal to bottom" aria-label="Scroll terminal to bottom"><span class="codicon codicon-fold-down"></span></button>
       </div>
+  <div id="terminal-find" class="hidden" role="search" aria-label="Search terminal output">
+    <input id="terminal-find-input" placeholder="Find in terminal" autocomplete="off" spellcheck="false">
+    <span id="terminal-find-count" aria-live="polite"></span>
+    <button id="terminal-find-previous" title="Previous match" aria-label="Previous match"><span class="codicon codicon-arrow-up"></span></button>
+    <button id="terminal-find-next" title="Next match" aria-label="Next match"><span class="codicon codicon-arrow-down"></span></button>
+    <button id="terminal-find-close" title="Close terminal search" aria-label="Close terminal search"><span class="codicon codicon-close"></span></button>
+  </div>
   <div id="empty-state">no terminals &mdash; press + to open one</div>
   </div>
   <div id="problems-panel" class="hidden">
@@ -217,6 +224,7 @@
     <span class="footer-spacer"></span>
     <span id="stat-text"></span>
     <canvas id="stat-spark" width="48" height="20"></canvas>
+    <button id="kill-stale-terminals-btn" title="Kill terminals older than 24 hours; keep tabs for reattach" aria-label="Kill terminals older than 24 hours; keep tabs for reattach"><span class="codicon codicon-trash"></span></button>
   </div>
 </div>
 <button id="file-view-close" class="hidden" title="Return to terminal (Esc)" aria-label="Return to terminal">

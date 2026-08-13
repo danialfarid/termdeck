@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-13
+
+### Added
+
+- Terminal output search with match navigation and viewport-aware highlighting.
+- Manual Codex repaint with scroll-position restoration.
+- Confirmed cleanup of running terminals older than 24 hours while retaining reattachable session records.
+- FileDeck project viewer foundation and expanded editor workspace tools.
+
 ## [0.1.0] — 2026-07-22
 
 First public release.
@@ -45,5 +54,6 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/danialfarid/termdeck/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/danialfarid/termdeck/releases/tag/v0.1.0

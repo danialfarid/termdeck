@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from termdeck.config import TermdeckConfig
 from termdeck.file_history_service import FileHistoryService
 from termdeck.file_service import ProjectFileService
+from filedeck.git_service import FileDeckGitService
 from termdeck.history_index import HistorySearchIndex
 from termdeck.models import AgentKind, ApiFields, WsMessageFields
 from termdeck.platform_paths import PlatformPaths
@@ -267,6 +268,7 @@ class TermdeckServer:
         if not self.recovery_mode:
             self.manager = TerminalSessionManager(self.state_backup)
         self.files = ProjectFileService()
+        self.filedeck_git = FileDeckGitService()
         self.file_history = FileHistoryService(TermdeckConfig.FILE_HISTORY_DATABASE)
         self.search = ProjectSearchService(self.files)
         self.stats = ResourceStatsService()
@@ -338,6 +340,7 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_SESSION_LAST_TURN_ROUTE, response_model=None)(self._task_result)
         app.post(TermdeckConfig.API_SESSION_PROMPT_ROUTE, response_model=None)(self._submit_prompt)
         app.post(TermdeckConfig.API_KILL_ALL_TERMINALS_ROUTE, response_model=None)(self._kill_all_terminals)
+        app.post(TermdeckConfig.API_KILL_STALE_TERMINALS_ROUTE, response_model=None)(self._kill_stale_terminals)
         app.get(TermdeckConfig.API_TERMINAL_PROCESSES_ROUTE, response_model=None)(self._terminal_process_report)
         app.post(TermdeckConfig.API_RECLAIM_ORPHAN_TERMINALS_ROUTE, response_model=None)(self._reclaim_orphan_terminals)
         app.get(TermdeckConfig.API_SESSION_HISTORY_ROUTE, response_model=None)(self._session_history)
@@ -365,6 +368,9 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_FILE_GIT_HISTORY_ROUTE, response_model=None)(self._git_file_history)
         app.get(TermdeckConfig.API_FILE_GIT_HISTORY_VERSION_ROUTE, response_model=None)(self._git_file_history_version)
         app.get(TermdeckConfig.API_FILE_GIT_STATUS_ROUTE, response_model=None)(self._git_status)
+        app.get(TermdeckConfig.API_FILE_GIT_BRANCH_ROUTE, response_model=None)(self._git_branch_state)
+        app.get(TermdeckConfig.API_FILE_GIT_BLAME_ROUTE, response_model=None)(self._git_blame)
+        app.get(TermdeckConfig.API_FILE_GIT_DIFF_ROUTE, response_model=None)(self._git_diff)
         app.post(TermdeckConfig.API_UPLOAD_ROUTE, response_model=None)(self._upload_file)
         app.post(TermdeckConfig.API_FILE_WRITE_ROUTE, response_model=None)(self._write_file)
         app.post(TermdeckConfig.API_FILE_CREATE_ROUTE, response_model=None)(self._create_file)
@@ -471,6 +477,27 @@ class TermdeckServer:
             return await asyncio.to_thread(self.files.git_statuses, root)
         except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError, OSError) as git_error:
             raise HTTPException(status_code=404, detail=str(git_error)) from git_error
+
+    async def _git_branch_state(self, root: str, limit: int = 100) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.filedeck_git.get_branch_state, base, limit)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as git_error:
+            raise HTTPException(status_code=404, detail=str(git_error)) from git_error
+
+    async def _git_blame(self, root: str, path: str) -> list[dict[str, str | int]]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.filedeck_git.get_blame, base, path)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as blame_error:
+            raise HTTPException(status_code=404, detail=str(blame_error)) from blame_error
+
+    async def _git_diff(self, root: str, path: str, commit: str = "") -> dict[str, str]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.filedeck_git.get_diff, base, path, commit)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as diff_error:
+            raise HTTPException(status_code=404, detail=str(diff_error)) from diff_error
 
     async def _read_file(self, root: str, path: str) -> dict[str, object]:
         try:
@@ -1286,6 +1313,9 @@ class TermdeckServer:
 
     async def _kill_all_terminals(self) -> dict[str, int]:
         return {"killed": await self.manager.kill_all_running_sessions()}
+
+    async def _kill_stale_terminals(self) -> dict[str, object]:
+        return await self.manager.kill_stale_running_sessions(TermdeckConfig.STALE_TERMINAL_AGE_SECONDS)
 
     async def _terminal_process_report(self) -> dict[str, object]:
         return await self.manager.terminal_process_report()

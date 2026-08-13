@@ -68,6 +68,7 @@ const TERMINAL_VIEWPORT_RESTORE_TIMEOUT_MS = 3000;
 const TERMINAL_VIEWPORT_ANCHOR_ROWS = 12;
 const TERMINAL_VIEWPORT_ANCHOR_MAX_CHARS = 180;
 const TERMINAL_VIEWPORT_ANCHOR_MIN_CHARS = 24;
+const TERMINAL_MANUAL_REPAINT_CLICK_WINDOW_MS = 1200;
 const OPEN_FILES_MAX_ENTRIES = 80;
 const TERMINAL_V2_FIT_RETRY_LIMIT = 32;
 const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
@@ -160,6 +161,7 @@ const REFERENCE_KEYS = [
   { keys: "⌘⌫ / ⌥⌫", label: "Delete to line start / delete word (in terminal)" },
   { keys: "⌘← / ⌘→", label: "Line start / end (in terminal)" },
   { keys: "⌘A", label: "Select all terminal text" },
+  { keys: "⌘F", label: "Find in the complete active terminal buffer" },
   { keys: "⇧F12", label: "Show usages of the editor symbol" },
   { keys: "⌃R / ⌃M / ⌘⌫", label: "Rename / move / delete selected tree file" },
   { keys: "↑ ↓ ← → Enter", label: "Navigate the file tree (when focused)" },
@@ -222,10 +224,12 @@ const TERMINAL_TYPE_SVGS = {
   claude: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.25c.42 0 .76.34.76.76v4.08l3.53-2.04a.76.76 0 1 1 .76 1.31L9.52 7.4l3.53 2.04a.76.76 0 1 1-.76 1.31L8.76 8.72v4.08a.76.76 0 0 1-1.52 0V8.72l-3.53 2.04a.76.76 0 1 1-.76-1.31L6.48 7.4 2.95 5.36a.76.76 0 1 1 .76-1.31l3.53 2.04V2.01c0-.42.34-.76.76-.76Z"/></svg>',
   codex: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zM3.5988 18.304a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1412-1.6462zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5968 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zm-12.6413 4.1347-2.0201-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805-4.783 2.7582a.7948.7948 0 0 0-.3927.6813zM9.4041 10.4976l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"/></svg>',
 };
-const makeTerminalTheme = (background, foreground, cursor, selectionBackground, ansi) => {
+const makeTerminalTheme = (background, foreground, cursor, selectionBackground, ansi, searchHighlightBackground) => {
   const [black, red, green, yellow, blue, magenta, cyan, white, brightBlack, brightRed, brightGreen,
     brightYellow, brightBlue, brightMagenta, brightCyan, brightWhite] = ansi;
-  return { background, foreground, cursor, selectionBackground, black, red, green, yellow, blue, magenta, cyan, white,
+  return { background, foreground, cursor, selectionBackground,
+    selectionInactiveBackground: rgbaThemeColor(searchHighlightBackground || selectionBackground, 0.82),
+    selectionForeground: foreground, black, red, green, yellow, blue, magenta, cyan, white,
     brightBlack, brightRed, brightGreen, brightYellow, brightBlue, brightMagenta, brightCyan, brightWhite };
 };
 const rgbaThemeColor = (color, alpha) => {
@@ -262,7 +266,7 @@ const makeTheme = (id, label, kind, colors, ansi, monacoBase = kind === "light" 
       "--tree-selected-bg": treeSelectedBackground, "--tree-selected-border": treeSelectedBorder,
     },
     terminal: makeTerminalTheme(terminalBackground, terminalForeground, colors.cursor || colors.accent,
-      colors.selection || activeBorder, ansi),
+      colors.selection || activeBorder, ansi, colors.accent),
     monacoColors: {
       "editor.background": monacoThemeColor(colors.monacoBg || terminalBackground), "editor.foreground": monacoThemeColor(colors.text),
       "editorGutter.background": monacoThemeColor(colors.monacoBg || terminalBackground), "editorLineNumber.foreground": monacoThemeColor(colors.dim),
@@ -442,6 +446,10 @@ class TermdeckApp {
     this.terminalSearchGroupSimilar = false;
     this.terminalSearchAbort = null;
     this.terminalSearchTimer = 0;
+    this.terminalFindMatches = [];
+    this.terminalFindIndex = -1;
+    this.terminalFindSessionId = "";
+    this.terminalFindQuery = "";
     this.nameSearchGeneration = 0;
     this.applyingHistory = false;
     this.lastNavJson = "";
@@ -1800,6 +1808,20 @@ class TermdeckApp {
       const button = this.$(id);
       if (button) button.onclick = () => this.resyncActiveTerminal();
     }
+    this.$("terminal-find-input").addEventListener("input", () => this.updateTerminalFindMatches());
+    this.$("terminal-find-input").addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        this.closeTerminalFind();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        this.moveTerminalFindMatch(event.shiftKey ? -1 : 1);
+      }
+    });
+    this.$("terminal-find-previous").onclick = () => this.moveTerminalFindMatch(-1);
+    this.$("terminal-find-next").onclick = () => this.moveTerminalFindMatch(1);
+    this.$("terminal-find-close").onclick = () => this.closeTerminalFind();
+    this.$("kill-stale-terminals-btn").onclick = () => void this.killStaleTerminals();
     this.$("history-attach").onclick = () => this.attachToHistory();
     this.$("history-reveal-session-btn").onclick = () => this.revealAndFocusActiveTerminalInSidebar();
     this.$("history-send").onclick = () => this.sendHistoryPrompt();
@@ -1913,6 +1935,13 @@ class TermdeckApp {
       if (modalOpen) {
         if (e.key === "Escape") this.closeModal();
         if (e.key === "Enter") this.createSession();
+        return;
+      }
+      if (!this.vscodeMode && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f" &&
+          this.activeFileKey === null && !this.historyOpen && e.target.closest?.(".xterm")) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.openTerminalFind();
         return;
       }
       if (this.tryAppShortcut(e)) return;
@@ -2956,6 +2985,107 @@ class TermdeckApp {
     button.title = this.terminalSearchGroupSimilar
       ? "Show search results by terminal"
       : "Group similar matched text";
+  }
+
+  openTerminalFind() {
+    const view = this.views.get(this.activeId);
+    if (!view || view.closed || this.activeFileKey !== null || this.historyOpen) return;
+    const panel = this.$("terminal-find");
+    const input = this.$("terminal-find-input");
+    if (!panel || !input) return;
+    panel.classList.remove("hidden");
+    this.terminalFindSessionId = view.sessionId;
+    input.focus();
+    input.select();
+    this.updateTerminalFindMatches();
+  }
+
+  closeTerminalFind() {
+    this.$("terminal-find")?.classList.add("hidden");
+    this.$("terminal-find-count").textContent = "";
+    this.terminalFindMatches = [];
+    this.terminalFindIndex = -1;
+    this.terminalFindQuery = "";
+    const view = this.views.get(this.activeId);
+    if (view) {
+      view.term.clearSelection();
+      view.term.focus();
+    }
+  }
+
+  updateTerminalFindMatches() {
+    const input = this.$("terminal-find-input");
+    const view = this.views.get(this.activeId);
+    if (!input || !view || view.closed || this.activeFileKey !== null || this.historyOpen) return;
+    const query = input.value;
+    const queryChanged = query !== this.terminalFindQuery || this.terminalFindSessionId !== view.sessionId;
+    this.terminalFindSessionId = view.sessionId;
+    this.terminalFindQuery = query;
+    this.terminalFindMatches = [];
+    this.terminalFindIndex = -1;
+    view.term.clearSelection();
+    if (!query) {
+      this.$("terminal-find-count").textContent = "";
+      return;
+    }
+    const needle = query.toLocaleLowerCase();
+    const buffer = view.term.buffer.active;
+    for (let row = 0; row < buffer.length; row += 1) {
+      const line = buffer.getLine(row);
+      const text = line ? line.translateToString(true) : "";
+      const searchable = text.toLocaleLowerCase();
+      let column = searchable.indexOf(needle);
+      while (column >= 0) {
+        this.terminalFindMatches.push({ row, column });
+        column = searchable.indexOf(needle, column + Math.max(1, needle.length));
+      }
+    }
+    if (!this.terminalFindMatches.length) {
+      this.$("terminal-find-count").textContent = "no matches";
+      return;
+    }
+    this.terminalFindIndex = queryChanged ? 0 : Math.max(0, Math.min(this.terminalFindIndex, this.terminalFindMatches.length - 1));
+    this.revealTerminalFindMatch();
+  }
+
+  moveTerminalFindMatch(direction) {
+    const input = this.$("terminal-find-input");
+    if (!input?.value) return;
+    const previousQuery = this.terminalFindQuery;
+    const previousSessionId = this.terminalFindSessionId;
+    const previousIndex = this.terminalFindIndex;
+    this.updateTerminalFindMatches();
+    if (!this.terminalFindMatches.length) return;
+    if (previousQuery === this.terminalFindQuery && previousSessionId === this.terminalFindSessionId) {
+      this.terminalFindIndex = (previousIndex + direction + this.terminalFindMatches.length) % this.terminalFindMatches.length;
+    } else if (direction < 0) {
+      this.terminalFindIndex = this.terminalFindMatches.length - 1;
+    }
+    this.revealTerminalFindMatch();
+  }
+
+  revealTerminalFindMatch() {
+    const view = this.views.get(this.activeId);
+    const input = this.$("terminal-find-input");
+    const count = this.$("terminal-find-count");
+    const match = this.terminalFindMatches[this.terminalFindIndex];
+    if (!view || !input?.value || !match) {
+      if (count) count.textContent = this.terminalFindMatches.length ? "0 matches" : "no matches";
+      return;
+    }
+    view.scrollMode = "preserve";
+    view.v2Programmatic = true;
+    const buffer = view.term.buffer.active;
+    const viewportStart = Math.max(0, Number(buffer.viewportY || 0));
+    const viewportRows = Math.max(1, Number(view.term.rows || 1));
+    const matchIsVisible = match.row >= viewportStart && match.row < viewportStart + viewportRows;
+    if (!matchIsVisible) {
+      const centeredLine = match.row - Math.floor(viewportRows / 2);
+      view.term.scrollToLine(Math.max(0, Math.min(centeredLine, Number(buffer.baseY || 0))));
+    }
+    view.term.select(match.column, match.row, input.value.length);
+    requestAnimationFrame(() => { view.v2Programmatic = false; });
+    if (count) count.textContent = `${this.terminalFindIndex + 1}/${this.terminalFindMatches.length}`;
   }
 
   clearTerminalSearch() {
@@ -5588,6 +5718,7 @@ class TermdeckApp {
   }
 
   setHistoryMode(enabled) {
+    this.closeTerminalFind();
     this.hideSelectionActions(true);
     if (!enabled) this.closePromptHistory();
     this.settings.history_mode = !!enabled;
@@ -8329,6 +8460,7 @@ class TermdeckApp {
     }
     this.applyMainLayout();
     this.scheduleTerminalLayoutFit();
+    if (!this.$("terminal-find").classList.contains("hidden")) this.updateTerminalFindMatches();
     if (this.historyOpen) {
       const historyId = id;
       if (previousId !== id) {
@@ -8460,6 +8592,7 @@ class TermdeckApp {
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptSubmissionReflowGuardUntil: 0, promptSubmissionReflowGuardTimer: 0, promptWrapGuardUntil: 0, promptWrapGuardTimer: 0,
+                   manualRepaintClickCount: 0, manualRepaintClickTimer: 0, manualRepaintLastClickAt: 0,
                    reconnectAfterClose: false, claudeInitialReplayCheckTimer: 0,
                    claudeInitialReplayRecoveryAttempted: false,
                    claudeSnapshotAddon: null, claudeSnapshotRestoreAttempted: false, claudeSnapshotRestored: false,
@@ -8530,14 +8663,7 @@ class TermdeckApp {
     view.renderObserver = term.onRender(({ start, end }) => this.recordTerminalRenderedRows(view, start, end));
     this.refreshTerminal(view);
     container.addEventListener("focusin", () => this.scheduleCodexFocusTailRefresh(view));
-    container.addEventListener("click", (event) => {
-      if (event.detail !== 3 || this.activeId !== id || this.activeFileKey !== null || this.historyOpen) return;
-      if (this.session(id)?.agent_kind !== "codex") return;
-      if (!view.ws || view.ws.readyState !== WebSocket.OPEN) return;
-      this.beginTerminalViewportRestore(view, this.captureTerminalViewportAnchor(view));
-      view.ws.send(JSON.stringify({ type: "repaint" }));
-      this.$("status-name").textContent = "requesting Codex repaint…";
-    }, true);
+    container.addEventListener("click", (event) => this.handleManualCodexRepaintClick(event, view, id), true);
     // Capture before xterm's wheel handler so the first wheel after a tab
     // switch cannot be mistaken for an automatic bottom-follow scroll.
     container.addEventListener("wheel", markManualScroll, { passive: true, capture: true });
@@ -9355,6 +9481,29 @@ class TermdeckApp {
     view.term.focus();
   }
 
+  handleManualCodexRepaintClick(event, view, id) {
+    if (event.button !== 0 || this.activeId !== id || this.activeFileKey !== null || this.historyOpen ||
+        this.session(id)?.agent_kind !== "codex") return;
+    const now = Date.now();
+    if (now - view.manualRepaintLastClickAt > TERMINAL_MANUAL_REPAINT_CLICK_WINDOW_MS) view.manualRepaintClickCount = 0;
+    view.manualRepaintLastClickAt = now;
+    view.manualRepaintClickCount += 1;
+    clearTimeout(view.manualRepaintClickTimer);
+    view.manualRepaintClickTimer = setTimeout(() => {
+      view.manualRepaintClickTimer = 0;
+      view.manualRepaintClickCount = 0;
+    }, TERMINAL_MANUAL_REPAINT_CLICK_WINDOW_MS);
+    if (view.manualRepaintClickCount < 3 && event.detail < 3) return;
+    view.manualRepaintClickCount = 0;
+    clearTimeout(view.manualRepaintClickTimer);
+    view.manualRepaintClickTimer = 0;
+    if (!view.ws || view.ws.readyState !== WebSocket.OPEN) return;
+    const anchor = this.captureTerminalViewportAnchor(view, { preserveFollow: true, restoreAfterDeadline: true });
+    this.beginTerminalViewportRestore(view, anchor);
+    view.ws.send(JSON.stringify({ type: "repaint" }));
+    this.$("status-name").textContent = "requesting Codex repaint…";
+  }
+
   scrollHistoryToBottom() {
     if (!this.historyOpen || this.activeFileKey !== null) return;
     const body = this.$("history-body");
@@ -9477,9 +9626,12 @@ class TermdeckApp {
     return String(value || "").replace(/\u00a0/g, " ").replace(/\s+/g, "");
   }
 
-  captureTerminalViewportAnchor(view) {
+  captureTerminalViewportAnchor(view, options = {}) {
+    const preserveFollow = Boolean(options.preserveFollow);
+    const restoreAfterDeadline = Boolean(options.restoreAfterDeadline);
+    const atBottom = this.xtermAtBottom(view);
     if (!view || view.closed || this.session(view.sessionId)?.agent_kind !== "codex" ||
-        view.scrollMode === "follow" || this.xtermAtBottom(view)) return null;
+        (!preserveFollow && (view.scrollMode === "follow" || atBottom))) return null;
     const buffer = view.term.buffer.active;
     const viewportY = Math.max(0, Number(buffer.viewportY || 0));
     const visibleRows = Math.min(TERMINAL_VIEWPORT_ANCHOR_ROWS, Math.max(1, Number(view.term.rows || 1)));
@@ -9500,11 +9652,13 @@ class TermdeckApp {
         candidates.push({ text, rowOffset: start });
       }
     }
-    if (!candidates.length) return null;
+    if (!candidates.length && !(preserveFollow && atBottom)) return null;
     candidates.sort((left, right) => left.rowOffset - right.rowOffset || right.text.length - left.text.length);
     return {
       candidates: candidates.slice(0, 6),
       rowsFromBottom: Math.max(0, Number(buffer.baseY || 0) - viewportY),
+      restoreAtBottom: preserveFollow && atBottom,
+      restoreAfterDeadline,
       redrawSeen: false,
       escapeMatchLength: 0,
       deadline: 0,
@@ -9599,12 +9753,20 @@ class TermdeckApp {
     if (!anchor || view.closed) return;
     const expired = Date.now() >= anchor.deadline;
     if (!anchor.redrawSeen) {
-      if (expired) this.cancelTerminalViewportRestore(view);
-      else this.scheduleTerminalViewportRestore(view);
-      return;
+      if (!expired || !anchor.restoreAfterDeadline) {
+        if (expired) this.cancelTerminalViewportRestore(view);
+        else this.scheduleTerminalViewportRestore(view);
+        return;
+      }
     }
     if (!expired && (view.outputWriteInFlight || view.outputQueue.length)) {
       this.scheduleTerminalViewportRestore(view);
+      return;
+    }
+    if (anchor.restoreAtBottom) {
+      view.scrollMode = "follow";
+      this.scrollTerminalV2ToBottom(view);
+      this.cancelTerminalViewportRestore(view);
       return;
     }
     const target = this.terminalViewportAnchorTarget(view, anchor);
@@ -10357,6 +10519,7 @@ class TermdeckApp {
     clearTimeout(view.promptSubmissionReflowGuardTimer);
     clearTimeout(view.promptDraftSyncTimer);
     clearTimeout(view.promptDraftSyncDebounceTimer);
+    clearTimeout(view.manualRepaintClickTimer);
     this.cancelTerminalViewportRestore(view);
     for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
     if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
@@ -11380,6 +11543,7 @@ class TermdeckApp {
   async activateFile(key, line, options = {}) {
     const entry = this.openFiles.get(key);
     if (!entry) return;
+    this.closeTerminalFind();
     this.closePromptHistory();
     this.activeFileKey = key;
     if (options.history !== false && !this.vscodeMode) {
@@ -12061,6 +12225,28 @@ class TermdeckApp {
       await this.refresh();
     } catch (error) {
       this.$("status-name").textContent = `unable to kill terminals: ${error.message}`;
+    }
+  }
+
+  async killStaleTerminals() {
+    const message = "Stop running terminals older than 24 hours? Their tabs and session information will stay available for reattach.";
+    if (!window.confirm(message)) return;
+    const button = this.$("kill-stale-terminals-btn");
+    if (button) button.disabled = true;
+    try {
+      const response = await fetch("/api/terminals/kill-stale", { method: "POST" });
+      if (!response.ok) throw new Error(`stale terminal cleanup failed: ${response.status}`);
+      const result = await response.json();
+      const killed = Array.isArray(result.killed) ? result.killed.length : 0;
+      const failed = Array.isArray(result.failed) ? result.failed.length : 0;
+      this.$("status-name").textContent = failed
+        ? `stopped ${killed} old terminal${killed === 1 ? "" : "s"}; ${failed} could not be stopped`
+        : killed ? `stopped ${killed} old terminal${killed === 1 ? "" : "s"}; tabs preserved` : "no terminals older than 24 hours";
+      await this.refresh();
+    } catch (error) {
+      this.$("status-name").textContent = `unable to stop old terminals: ${error.message}`;
+    } finally {
+      if (button) button.disabled = false;
     }
   }
 

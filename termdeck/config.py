@@ -59,6 +59,7 @@ class TermdeckConfig:
     API_SESSION_HISTORY_ROUTE = "/api/sessions/{session_id}/history"
     API_SESSION_HISTORY_PAGE_ROUTE = "/api/sessions/{session_id}/history-page"
     API_KILL_ALL_TERMINALS_ROUTE = "/api/terminals/kill-all"
+    API_KILL_STALE_TERMINALS_ROUTE = "/api/terminals/kill-stale"
     API_TERMINAL_PROCESSES_ROUTE = "/api/terminals/processes"
     API_RECLAIM_ORPHAN_TERMINALS_ROUTE = "/api/terminals/reclaim-orphans"
     API_TERMINAL_LAYOUT_ROUTE = "/api/terminal-layout"
@@ -84,6 +85,9 @@ class TermdeckConfig:
     API_FILE_GIT_HISTORY_ROUTE = "/api/files/git-history"
     API_FILE_GIT_HISTORY_VERSION_ROUTE = "/api/files/git-history/{commit_id}"
     API_FILE_GIT_STATUS_ROUTE = "/api/files/git-status"
+    API_FILE_GIT_BRANCH_ROUTE = "/api/files/git-branch"
+    API_FILE_GIT_BLAME_ROUTE = "/api/files/git-blame"
+    API_FILE_GIT_DIFF_ROUTE = "/api/files/git-diff"
     API_FILE_REPLACE_ROUTE = "/api/files/replace"
     REPLACE_MAX_FILES = 200
     FIND_MAX_RESULTS = 200
@@ -95,6 +99,7 @@ class TermdeckConfig:
     RG_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_RG_BIN, "rg")
     SEARCH_MAX_RESULTS = 400
     SEARCH_TIMEOUT_SECONDS = 15.0
+    STALE_TERMINAL_AGE_SECONDS = 24 * 60 * 60
     TERMINAL_SEARCH_MAX_QUERY = 200
     TERMINAL_SEARCH_MAX_SNIPPETS = 6
     TERMINAL_SEARCH_SNIPPET_CHARS = 180

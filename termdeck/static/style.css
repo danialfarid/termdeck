@@ -254,15 +254,16 @@ body.dragging { user-select: none; cursor: col-resize; }
 #terminal-age.hidden { display: none; }
 #history-meta { max-width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font: calc(var(--ui-font-size) - 0.5px) Menlo, monospace; opacity: 0.9; }
 #history-meta.hidden { display: none; }
-#history-btn, #attach-btn, #terminal-resync-btn, #scroll-bottom-btn, #reveal-session-btn, #problems-toggle, #conversation-outline-toggle { background: none; border: 1px solid transparent; color: var(--dim); border-radius: 5px; height: 23px; min-width: 26px; cursor: pointer; }
+#history-btn, #attach-btn, #terminal-resync-btn, #scroll-bottom-btn, #reveal-session-btn, #problems-toggle, #conversation-outline-toggle, #kill-stale-terminals-btn { background: none; border: 1px solid transparent; color: var(--dim); border-radius: 5px; height: 23px; min-width: 26px; cursor: pointer; }
 #attach-btn.hidden, #history-btn.hidden, #terminal-resync-btn.hidden, #scroll-bottom-btn.hidden,
 #history-edits-toggle.hidden, #history-scroll-bottom.hidden, #reveal-session-btn.hidden { display: none; }
 #history-btn:hover, #attach-btn:hover, #terminal-resync-btn:hover, #scroll-bottom-btn:hover,
 #history-edits-toggle:hover, #history-scroll-bottom:hover, #reveal-session-btn:hover, #problems-toggle:hover, #conversation-outline-toggle:hover { color: var(--text); border-color: var(--border); }
+#kill-stale-terminals-btn:hover { color: var(--text); border-color: var(--border); }
 #problems-toggle.on, #conversation-outline-toggle.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 #history-btn.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 #history-btn .codicon, #attach-btn .codicon, #terminal-resync-btn .codicon, #scroll-bottom-btn .codicon,
-#history-edits-toggle .codicon, #history-scroll-bottom .codicon, #reveal-session-btn .codicon { font-size: var(--bottom-font-size); }
+#history-edits-toggle .codicon, #history-scroll-bottom .codicon, #reveal-session-btn .codicon, #kill-stale-terminals-btn .codicon { font-size: var(--bottom-font-size); }
 #bottombar button { min-width: max(26px, calc(var(--bottom-font-size) + 12px)); height: max(23px, calc(var(--bottom-font-size) + 9px)); font-size: var(--bottom-font-size); }
 #history-edits-toggle, #history-scroll-bottom { background: none; border: 1px solid transparent; color: var(--dim); border-radius: 5px; height: 23px; min-width: 26px; cursor: pointer; }
 #history-edits-toggle.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
@@ -500,6 +501,14 @@ body:not(.vscode-mode) #terminal-actions { display: none; }
 #terminal-actions #vscode-history-btn { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); opacity: 1; box-shadow: 0 0 0 1px var(--active-border); }
 #terminal-actions #vscode-history-btn:hover { color: var(--text); border-color: var(--accent); background: var(--panel2); }
 #terminal-actions .codicon { font-size: 13px; }
+#terminal-find { position: absolute; top: 42px; right: 14px; z-index: 8; display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); }
+#terminal-find.hidden { display: none; }
+#terminal-find-input { width: min(340px, 38vw); height: 25px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; outline: none; background: var(--bg); color: var(--text); font: var(--ui-font-size)/1 Menlo, monospace; }
+#terminal-find-input:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--active-border); }
+#terminal-find-count { min-width: 52px; color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1 Menlo, monospace; text-align: center; white-space: nowrap; }
+#terminal-find button { width: 25px; height: 25px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--dim); cursor: pointer; }
+#terminal-find button:hover { border-color: var(--border); color: var(--text); background: var(--panel2); }
+#terminal-find .codicon { font-size: 13px; }
 .term-container { position: absolute; inset: 8px 4px 24px 10px; display: none; overflow: hidden; }
 .term-container.visible { display: block; }
 .term-container .xterm { height: 100%; min-height: 0; }

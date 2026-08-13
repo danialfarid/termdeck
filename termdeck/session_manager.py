@@ -1661,6 +1661,38 @@ class TerminalSessionManager:
         self._persist()
         return killed
 
+    @staticmethod
+    def _session_age_reference_timestamp(ms: ManagedSession) -> float:
+        return max(ms.last_activity_at, TimeUtil.est_naive_iso_timestamp(ms.record.created_at_est))
+
+    async def kill_stale_running_sessions(self, max_age_seconds: float) -> dict[str, object]:
+        now = time.time()
+        targets = [ms for ms in self._sessions.values() if ms.running and
+                   now - self._session_age_reference_timestamp(ms) >= max_age_seconds]
+        killed: list[str] = []
+        failed: list[str] = []
+        for ms in targets:
+            ms.lazy_start_pending = True
+            if ms.detect_task is not None:
+                ms.detect_task.cancel()
+            if not await self._terminate_proc(ms):
+                failed.append(ms.record.session_id)
+                self._broadcast_status(ms)
+                continue
+            ms.proc = None
+            ms.detached_live = False
+            ms.exit_code = None
+            ms.processing_started_at = None
+            ms.codex_transcript_active = False
+            ms.claude_main_active = False
+            ms.claude_subagents_active = False
+            ms.claude_subagent_states = {}
+            ms.agy_transcript_active = False
+            killed.append(ms.record.session_id)
+            self._broadcast_status(ms)
+        self._persist()
+        return {"killed": killed, "failed": failed, "threshold_seconds": max_age_seconds}
+
     def detach_for_shutdown(self) -> None:
         self._persist()
         TermdeckConfig.SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
