@@ -314,8 +314,11 @@ class TermdeckServer:
         app = FastAPI(lifespan=self._lifespan)
         app.middleware("http")(self._no_cache_middleware)
         app.mount(TermdeckConfig.STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.STATIC_DIR), name=TermdeckConfig.STATIC_NAME)
+        app.mount(TermdeckConfig.FILEDECK_STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.FILEDECK_STATIC_DIR),
+                  name=TermdeckConfig.FILEDECK_STATIC_NAME)
         app.get("/", response_model=None)(self._index)
         app.get(TermdeckConfig.PROJECT_PAGE_ROUTE, response_model=None)(self._project_page)
+        app.get(TermdeckConfig.FILEDECK_PAGE_ROUTE, response_model=None)(self._filedeck_page)
         app.get(TermdeckConfig.API_STATE_RECOVERY_ROUTE, response_model=None)(self._state_recovery_status)
         app.post(TermdeckConfig.API_STATE_RECOVERY_RESTORE_ROUTE, response_model=None)(self._restore_state_recovery)
         app.get(TermdeckConfig.API_PROJECTS_ROUTE, response_model=None)(self._list_projects)
@@ -641,6 +644,13 @@ class TermdeckServer:
         if self.manager.registry.root_for(project_name) is None:
             raise HTTPException(status_code=404, detail=project_name)
         return FileResponse(TermdeckConfig.STATIC_DIR / TermdeckConfig.INDEX_FILE)
+
+    async def _filedeck_page(self, project_name: str) -> FileResponse:
+        if self.recovery_mode:
+            return FileResponse(TermdeckConfig.STATIC_DIR / "recovery.html")
+        if self.manager.registry.root_for(project_name) is None:
+            raise HTTPException(status_code=404, detail=project_name)
+        return FileResponse(TermdeckConfig.FILEDECK_STATIC_DIR / "index.html")
 
     async def _state_recovery_status(self) -> dict[str, object]:
         return self.state_backup.recovery_status()

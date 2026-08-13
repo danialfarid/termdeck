@@ -206,7 +206,7 @@ body:not(.vscode-mode) .session-item .session-title:not(.session-title-working) 
 .file-item:hover, .closed-item:hover { background: var(--panel2); }
 .file-item.sidebar-selected { background: var(--tree-selected-bg); border-color: var(--tree-selected-border); }
 .file-item.sidebar-selected:hover { background: var(--active-bg); }
-.file-item.active { background: var(--active-bg); border-color: var(--active-border); }
+.file-item.active { background: var(--tree-selected-bg); border-color: var(--tree-selected-border); }
 .file-item.active .file-item-name { color: var(--active-text); }
 body:not(.vscode-mode) .file-item.active .file-item-name { color: var(--sidebar-text-color); }
 .file-item-name { font-size: var(--sidebar-font-size); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
@@ -1007,9 +1007,14 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
 #settings-popover.hidden { display: none; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: calc(var(--ui-font-size) + 1px); }
 .settings-row .settings-label { color: var(--dim); }
-.settings-theme-row .settings-label { flex: 1; }
-.settings-theme-select { min-width: 148px; max-width: 170px; height: 24px; padding: 0 5px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font: calc(var(--ui-font-size) + 1px)/1 -apple-system, sans-serif; cursor: pointer; }
-.settings-theme-select:hover, .settings-theme-select:focus { border-color: var(--accent); outline: none; }
+.settings-theme-row { align-items: flex-start; flex-direction: column; gap: 5px; }
+.settings-theme-heading { display: flex; align-items: baseline; justify-content: space-between; width: 100%; gap: 8px; }
+.settings-theme-heading .settings-label { color: var(--text); }
+.settings-theme-hint { color: var(--dim); font-size: calc(var(--ui-font-size) - 1px); white-space: nowrap; }
+.settings-theme-list { width: 100%; height: 156px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font: calc(var(--ui-font-size) + 1px)/1.35 -apple-system, sans-serif; cursor: pointer; outline: none; }
+.settings-theme-list:hover, .settings-theme-list:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--active-border); }
+.settings-theme-list option { padding: 3px 7px; border-radius: 4px; }
+.settings-theme-list option:checked { background: var(--active-bg); color: var(--accent); }
 .settings-row .settings-controls { display: flex; align-items: center; gap: 7px; }
 .settings-row button { width: 22px; height: 22px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 13px; line-height: 1; }
 .settings-row button:hover { border-color: var(--accent); color: var(--accent); }

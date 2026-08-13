@@ -1378,6 +1378,30 @@ class TermdeckApp {
     return p ? p.root : null;
   }
 
+  fileDeckProjectForRoot(root) {
+    const normalized = String(root || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    return this.projects
+      .filter((project) => {
+        const projectRoot = String(project.root || "").replace(/\\/g, "/").replace(/\/+$/, "");
+        return normalized === projectRoot || normalized.startsWith(projectRoot + "/");
+      })
+      .sort((left, right) => String(right.root || "").length - String(left.root || "").length)[0] || null;
+  }
+
+  openFileDeckInNewTab(root, relativePath = "") {
+    const project = this.fileDeckProjectForRoot(root);
+    if (!project) return;
+    const query = relativePath ? `?file=${encodeURIComponent(relativePath)}` : "";
+    window.open(`/f/${encodeURIComponent(project.name)}${query}`, "_blank", "noopener,noreferrer");
+  }
+
+  handleFileDeckAuxClick(event, root, relativePath = "") {
+    if (event.button !== 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.openFileDeckInNewTab(root, relativePath);
+  }
+
   compactProjectPath(root) {
     return String(root || "").replace(/^\/Users\/[^/]+/, "~");
   }
@@ -3375,6 +3399,7 @@ class TermdeckApp {
     else item.append(dot, typeIcon, title, groupIndicator, close);
     item.title = `${item.dataset.baseTitle}\nlast activity ${this.terminalAgeAgoLabel(s)}\n${this.terminalAgeExactTimestamp(s)}`;
     item.onclick = (event) => this.handleSessionRowSelection(event, s.session_id);
+    item.onauxclick = (event) => this.handleFileDeckAuxClick(event, s.cwd);
     item.oncontextmenu = (event) => this.openSessionContextMenu(event, s);
     this.makeLayoutDraggable(item, `session:${s.session_id}`, "session");
     list.appendChild(item);
@@ -3481,6 +3506,7 @@ class TermdeckApp {
           item.append(this.fileTypeIconEl(entry.name, "file-type-icon"), name);
           item.appendChild(close);
           item.onclick = (event) => this.handleOpenFileRowSelection(event, key);
+          item.onauxclick = (event) => this.handleFileDeckAuxClick(event, entry.root, entry.path);
           item.oncontextmenu = (event) => this.openFileContextMenu(event, key);
           this.makeDraggable(item, "file", key, (dragged, target, after) => this.reorderFiles(dragged, target, after));
           list.appendChild(item);
@@ -4080,6 +4106,7 @@ class TermdeckApp {
     const state = this.getProjectState();
     const assignedGroupId = state.session_groups?.[session.session_id] || "";
     if (!multiple) {
+      this.addContextItem(menu, "Open project files in new tab", () => this.openFileDeckInNewTab(session.cwd), "new-window");
       this.addContextItem(menu, this.shortcutLabel("Fork", "fork-terminal"),
         () => this.forkSession(session), "repo-forked");
       this.addContextItem(menu, this.shortcutLabel("Restart", "restart-terminal"),
@@ -4157,8 +4184,22 @@ class TermdeckApp {
     const menu = this.$("context-menu");
     menu.textContent = "";
     this.contextMenuTarget = { type: "files", keys };
+    if (keys.length === 1) {
+      const entry = this.openFiles.get(keys[0]);
+      if (entry) this.addContextItem(menu, "Open in FileDeck tab", () => this.openFileDeckInNewTab(entry.root, entry.path), "new-window");
+    }
     const label = keys.length === 1 ? "Close file" : `Close ${keys.length} selected files`;
     this.addContextItem(menu, this.shortcutLabel(label, "close-item"), () => this.closeFiles(keys), "close-all");
+    this.positionContextMenu(menu, event.clientX, event.clientY);
+  }
+
+  openFileDeckRowContextMenu(event, root, relativePath) {
+    event.preventDefault();
+    event.stopPropagation();
+    const menu = this.$("context-menu");
+    menu.textContent = "";
+    this.contextMenuTarget = { type: "filedeck", root, path: relativePath };
+    this.addContextItem(menu, "Open in FileDeck tab", () => this.openFileDeckInNewTab(root, relativePath), "new-window");
     this.positionContextMenu(menu, event.clientX, event.clientY);
   }
 
@@ -4197,6 +4238,7 @@ class TermdeckApp {
           () => this.toggleExcludeDir(name));
       }
     } else {
+      this.addContextItem(menu, "Open in FileDeck tab", () => this.openFileDeckInNewTab(this.treeRoot, rel), "new-window");
       this.addContextItem(menu, "Open", () => this.openFile(this.treeRoot, rel, null, row));
       this.markTreeSelection(row);
     }
@@ -4377,6 +4419,8 @@ class TermdeckApp {
         item.append(this.fileTypeIconEl(entry.name, "file-type-icon"), name, mtime);
         this.appendGitStatus(item, entry);
         item.onclick = () => this.openFile(this.recentFilesRoot, entry.path, null, null);
+        item.onauxclick = (event) => this.handleFileDeckAuxClick(event, this.recentFilesRoot, entry.path);
+        item.oncontextmenu = (event) => this.openFileDeckRowContextMenu(event, this.recentFilesRoot, entry.path);
         body.appendChild(item);
       }
       const hiddenCount = Math.max(0, recent.length - 8);
@@ -10588,6 +10632,12 @@ class TermdeckApp {
   openSettingsPopover(anchor, items) {
     const pop = this.$("settings-popover");
     pop.textContent = "";
+    pop.onkeydown = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      pop.classList.add("hidden");
+      anchor.focus();
+    };
     for (const item of items) {
       const row = document.createElement("div");
       row.className = "settings-row";
@@ -10674,6 +10724,8 @@ class TermdeckApp {
       void this.killAllRunningTerminals();
     }));
     this.positionPopover(pop, anchor);
+    const themeList = pop.querySelector(".settings-theme-list");
+    if (themeList) requestAnimationFrame(() => themeList.focus());
   }
 
   buildActionRow(labelText, buttonText, run) {
@@ -10693,12 +10745,19 @@ class TermdeckApp {
   buildThemeSelectRow() {
     const row = document.createElement("div");
     row.className = "settings-row settings-theme-row";
-    const label = document.createElement("span");
-    label.className = "settings-label";
-    label.textContent = "Theme";
+    const label = document.createElement("div");
+    label.className = "settings-theme-heading";
+    const title = document.createElement("span");
+    title.className = "settings-label";
+    title.textContent = "Theme";
+    const hint = document.createElement("span");
+    hint.className = "settings-theme-hint";
+    hint.textContent = "↑ ↓ choose · Enter apply";
+    label.append(title, hint);
     const select = document.createElement("select");
-    select.className = "settings-theme-select";
-    select.title = "Choose a TermDeck theme";
+    select.className = "settings-theme-list";
+    select.size = Math.min(8, THEME_DEFINITIONS.length);
+    select.title = "Use the arrow keys to preview themes";
     select.setAttribute("aria-label", "Choose a TermDeck theme");
     for (const theme of THEME_DEFINITIONS) {
       const option = document.createElement("option");
@@ -10707,11 +10766,13 @@ class TermdeckApp {
       select.appendChild(option);
     }
     select.value = this.themeDefinition().id;
-    select.onchange = () => {
+    const applySelection = () => {
       this.settings.theme = THEME_BY_ID[select.value] ? select.value : SETTINGS_DEFAULTS.theme;
       this.applySettings();
       this.saveSettings();
     };
+    select.oninput = applySelection;
+    select.onchange = applySelection;
     row.append(label, select);
     return row;
   }
@@ -10906,6 +10967,7 @@ class TermdeckApp {
         row.dataset.kind = "file";
         row.onclick = () => this.openFile(this.treeRoot, childRel, null, row, { preview: true, fromFilePanel: true });
         row.ondblclick = () => this.openFile(this.treeRoot, childRel, null, row, { pinned: true, fromFilePanel: true });
+        row.onauxclick = (event) => this.handleFileDeckAuxClick(event, this.treeRoot, childRel);
         this.appendMtime(row, entry);
         this.appendGitStatus(row, entry);
         container.appendChild(row);
@@ -12933,6 +12995,8 @@ class TermdeckApp {
       fileRow.append(spacer, this.fileTypeIconEl(fileName.textContent, "tree-type-icon"), fileName);
       fileRow.onclick = () => this.openFile(root, file.path, file.hits[0]?.line || null, null, { fromFilePanel: true, preview: true });
       fileRow.ondblclick = () => this.openFile(root, file.path, file.hits[0]?.line || null, null, { fromFilePanel: true, pinned: true });
+      fileRow.onauxclick = (event) => this.handleFileDeckAuxClick(event, root, file.path);
+      fileRow.oncontextmenu = (event) => this.openFileDeckRowContextMenu(event, root, file.path);
       this.appendMtime(fileRow, file);
       this.appendGitStatus(fileRow, file);
       container.appendChild(fileRow);
@@ -13309,6 +13373,8 @@ class TermdeckApp {
       this.appendGitStatus(row, hit);
       row.onclick = () => hit.is_dir ? this.openNameDirectory(root, hit.path) :
         this.openFile(root, hit.path, null, null, { fromFilePanel: true, preview: true });
+      if (!hit.is_dir) row.onauxclick = (event) => this.handleFileDeckAuxClick(event, root, hit.path);
+      if (!hit.is_dir) row.oncontextmenu = (event) => this.openFileDeckRowContextMenu(event, root, hit.path);
       row.onmouseenter = () => this.selectFileSearchResult("name", row, { reveal: false });
       resultsEl.appendChild(row);
     }

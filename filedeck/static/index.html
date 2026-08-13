@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FileDeck</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/vendor/codicons/codicon.css">
+<link rel="stylesheet" href="/filedeck/static/style.css">
+</head>
+<body>
+<aside id="filedeck-sidebar">
+  <header class="filedeck-header">
+    <div class="filedeck-brand"><span class="codicon codicon-files"></span><span>FileDeck</span></div>
+    <select id="project-select" aria-label="Project"></select>
+  </header>
+  <div class="filedeck-toolbar">
+    <button id="tree-refresh" title="Refresh project tree"><span class="codicon codicon-refresh"></span></button>
+    <button id="git-toggle" title="Show Git changes"><span class="codicon codicon-git-branch"></span><span>Git</span></button>
+  </div>
+  <div class="filedeck-search-tabs" role="tablist">
+    <button class="active" data-search-mode="content" role="tab">Contents</button>
+    <button data-search-mode="name" role="tab">File names</button>
+  </div>
+  <div class="filedeck-search-row">
+    <input id="search-input" placeholder="Search project" autocomplete="off" spellcheck="false">
+    <button id="search-button" title="Search"><span class="codicon codicon-search"></span></button>
+  </div>
+  <div id="replace-row" class="hidden">
+    <input id="replace-input" placeholder="Replace with" spellcheck="false">
+    <button id="replace-button" title="Replace all"><span class="codicon codicon-replace-all"></span></button>
+  </div>
+  <div id="sidebar-status" aria-live="polite"></div>
+  <div id="project-tree" tabindex="0" aria-label="Project files"></div>
+  <div id="search-results" class="hidden"></div>
+  <div id="git-results" class="hidden"></div>
+</aside>
+<main id="filedeck-main">
+  <div id="editor-toolbar">
+    <div id="file-title">Select a file</div>
+    <div class="editor-actions">
+      <button id="save-button" title="Save file"><span class="codicon codicon-save"></span><span>Save</span></button>
+      <button id="find-button" title="Find or replace in file"><span class="codicon codicon-search"></span><span>Find</span></button>
+      <button id="new-tab-button" title="Open this file in a new browser tab"><span class="codicon codicon-new-window"></span></button>
+    </div>
+  </div>
+  <div id="monaco-host"></div>
+  <div id="editor-status">Choose a file from the project tree.</div>
+</main>
+<div id="filedeck-context-menu" class="hidden" role="menu"></div>
+<script src="/static/vendor/monaco/vs/loader.js"></script>
+<script src="/filedeck/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+:root {
+  --sidebar-width: 330px;
+  --border: #30363d;
+  --panel: #161b22;
+  --panel-raised: #1d2430;
+  --editor: #0f141b;
+  --text: #d7dee8;
+  --muted: #8b98a9;
+  --accent: #4da3ff;
+  --changed: #e5b567;
+}
+
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { display: flex; background: var(--editor); color: var(--text); font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+button { border: 0; background: transparent; cursor: pointer; }
+button:hover { background: #293444; }
+.hidden { display: none !important; }
+#filedeck-sidebar { width: var(--sidebar-width); min-width: 250px; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--border); }
+.filedeck-header { min-height: 48px; padding: 9px 12px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--border); }
+.filedeck-brand { display: flex; gap: 8px; align-items: center; font-weight: 650; letter-spacing: .2px; white-space: nowrap; }
+.filedeck-brand .codicon { color: var(--accent); }
+#project-select { min-width: 0; flex: 1; background: var(--panel-raised); border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px; }
+.filedeck-toolbar, .filedeck-search-tabs { display: flex; align-items: center; gap: 4px; padding: 7px 9px 0; }
+.filedeck-toolbar { border-bottom: 1px solid var(--border); padding-bottom: 7px; }
+.filedeck-toolbar button, .filedeck-search-tabs button, #editor-toolbar button { padding: 5px 7px; border-radius: 4px; }
+.filedeck-search-tabs button { color: var(--muted); border-bottom: 2px solid transparent; border-radius: 0; }
+.filedeck-search-tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+.filedeck-search-row, #replace-row { display: flex; gap: 5px; padding: 8px 9px 0; }
+.filedeck-search-row input, #replace-row input { min-width: 0; flex: 1; background: #0d1117; border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; outline: none; }
+.filedeck-search-row input:focus, #replace-row input:focus { border-color: var(--accent); }
+.filedeck-search-row button, #replace-row button { width: 30px; border-radius: 4px; }
+#sidebar-status { min-height: 22px; padding: 7px 12px 2px; color: var(--muted); font-size: 12px; }
+#project-tree, #search-results, #git-results { flex: 1; overflow: auto; padding: 6px 7px 18px; }
+.tree-row, .result-row { min-height: 27px; display: flex; align-items: center; gap: 6px; padding: 3px 7px; border-radius: 4px; cursor: pointer; user-select: none; }
+.tree-row:hover, .result-row:hover, .tree-row.selected, .result-row.selected { background: #243044; }
+.tree-row.dir { color: #c8d4e3; }
+.tree-row.file { color: var(--text); }
+.tree-row .codicon, .result-row .codicon { color: var(--muted); flex: 0 0 auto; }
+.tree-row.dir > .codicon { color: #7ab7ff; }
+.tree-indent { width: 14px; flex: 0 0 14px; }
+.tree-name, .result-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-children { margin-left: 14px; }
+.git-status { margin-left: auto; color: var(--changed); font-size: 11px; }
+.result-row { align-items: flex-start; flex-wrap: wrap; padding: 7px; border: 1px solid transparent; }
+.result-path { flex: 1; min-width: 0; }
+.result-hit { width: 100%; padding-left: 21px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.result-hit strong { color: var(--text); font-weight: 500; }
+#filedeck-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+#editor-toolbar { min-height: 48px; display: flex; align-items: center; gap: 12px; padding: 7px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
+#file-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.editor-actions { display: flex; gap: 4px; }
+#monaco-host { flex: 1; min-height: 0; }
+#editor-status { min-height: 25px; padding: 5px 12px; background: var(--panel); border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+#filedeck-context-menu { position: fixed; z-index: 20; min-width: 190px; padding: 4px; background: #202938; border: 1px solid #46566c; border-radius: 6px; box-shadow: 0 8px 28px #0008; }
+#filedeck-context-menu button { width: 100%; padding: 7px 9px; text-align: left; border-radius: 4px; }
+@media (max-width: 700px) { :root { --sidebar-width: 250px; } .filedeck-brand span:last-child { display: none; } .editor-actions button span:last-child { display: none; } }

@@ -50,10 +50,10 @@ termdeck = "termdeck.cli:TermdeckCli.main"
 path = "termdeck/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["termdeck"]
+packages = ["termdeck", "filedeck"]
 
 [tool.hatch.build.targets.sdist]
-include = ["termdeck", "README.md", "LICENSE", "NOTICE", "CHANGELOG.md", "docs"]
+include = ["termdeck", "filedeck", "README.md", "LICENSE", "NOTICE", "CHANGELOG.md", "docs"]
 exclude = ["**/__pycache__", "**/*.pyc"]
 
 [tool.ruff]
