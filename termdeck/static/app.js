@@ -7,7 +7,7 @@ const TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS = 1800;
 const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~";
 const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 13, terminal_font_size: 13,
-  ui_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
+  ui_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
@@ -41,7 +41,6 @@ const SEARCH_HISTORY_RECORD_DELAY_MS = 3000;
 const PROMPT_DRAFT_SYNC_PASTE_DELAY_MS = 250;
 const FILE_AUTOSAVE_DELAY_MS = 500;
 const SESSION_GROUP_HOVER_DELAY_MS = 700;
-const SIDEBAR_DRAG_HOLD_DELAY_MS = 220;
 const CLOSED_SESSIONS_INITIAL_DISPLAY = 50;
 const CLOSED_SESSIONS_MAX_DISPLAY = 100;
 const ACTIVITY_SORT_BUCKET_MS = 15 * 60 * 1000;
@@ -223,20 +222,98 @@ const TERMINAL_TYPE_SVGS = {
   claude: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.25c.42 0 .76.34.76.76v4.08l3.53-2.04a.76.76 0 1 1 .76 1.31L9.52 7.4l3.53 2.04a.76.76 0 1 1-.76 1.31L8.76 8.72v4.08a.76.76 0 0 1-1.52 0V8.72l-3.53 2.04a.76.76 0 1 1-.76-1.31L6.48 7.4 2.95 5.36a.76.76 0 1 1 .76-1.31l3.53 2.04V2.01c0-.42.34-.76.76-.76Z"/></svg>',
   codex: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zM3.5988 18.304a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1412-1.6462zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5968 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zm-12.6413 4.1347-2.0201-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805-4.783 2.7582a.7948.7948 0 0 0-.3927.6813zM9.4041 10.4976l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"/></svg>',
 };
-const TERM_THEME_DARK = {
-  background: "#0a0c10", foreground: "#d8dee9", cursor: "#8fbcbb", selectionBackground: "#3b4252",
-  black: "#3b4252", red: "#bf616a", green: "#a3be8c", yellow: "#ebcb8b",
-  blue: "#81a1c1", magenta: "#b48ead", cyan: "#88c0d0", white: "#e5e9f0",
-  brightBlack: "#4c566a", brightRed: "#bf616a", brightGreen: "#a3be8c", brightYellow: "#ebcb8b",
-  brightBlue: "#81a1c1", brightMagenta: "#b48ead", brightCyan: "#8fbcbb", brightWhite: "#eceff4",
+const makeTerminalTheme = (background, foreground, cursor, selectionBackground, ansi) => {
+  const [black, red, green, yellow, blue, magenta, cyan, white, brightBlack, brightRed, brightGreen,
+    brightYellow, brightBlue, brightMagenta, brightCyan, brightWhite] = ansi;
+  return { background, foreground, cursor, selectionBackground, black, red, green, yellow, blue, magenta, cyan, white,
+    brightBlack, brightRed, brightGreen, brightYellow, brightBlue, brightMagenta, brightCyan, brightWhite };
 };
-const TERM_THEME_LIGHT = {
-  background: "#ffffff", foreground: "#1f2328", cursor: "#0969da", selectionBackground: "#b6d7fb",
-  black: "#24292f", red: "#cf222e", green: "#116329", yellow: "#4d2d00",
-  blue: "#0969da", magenta: "#8250df", cyan: "#1b7c83", white: "#6e7781",
-  brightBlack: "#57606a", brightRed: "#a40e26", brightGreen: "#1a7f37", brightYellow: "#633c01",
-  brightBlue: "#218bff", brightMagenta: "#a475f9", brightCyan: "#3192aa", brightWhite: "#8c959f",
+const makeTheme = (id, label, kind, colors, ansi, monacoBase = kind === "light" ? "vs" : "vs-dark") => {
+  const activeBackground = colors.activeBg || `color-mix(in srgb, ${colors.accent} 14%, transparent)`;
+  const activeBorder = colors.activeBorder || `color-mix(in srgb, ${colors.accent} 45%, transparent)`;
+  const treeSelectedBackground = colors.treeSelectedBg || `color-mix(in srgb, ${colors.accent} 17%, transparent)`;
+  const treeSelectedBorder = colors.treeSelectedBorder || `color-mix(in srgb, ${colors.accent} 48%, transparent)`;
+  const terminalBackground = colors.term || colors.bg;
+  const terminalForeground = colors.terminalForeground || colors.text;
+  return {
+    id, label, kind, monacoBase,
+    css: {
+      "--bg": colors.bg, "--panel": colors.panel, "--panel2": colors.panel2, "--border": colors.border,
+      "--text": colors.text, "--dim": colors.dim, "--accent": colors.accent, "--working-blue": colors.working || colors.accent,
+      "--sidebar-text-color": colors.sidebar || colors.text, "--green": colors.green, "--red": colors.red,
+      "--term-bg": colors.term || colors.bg, "--scroll-thumb": colors.scroll || colors.border,
+      "--scroll-thumb-hover": colors.scrollHover || colors.accent, "--active-bg": activeBackground,
+      "--active-border": activeBorder, "--active-text": colors.activeText || colors.text,
+      "--tree-selected-bg": treeSelectedBackground, "--tree-selected-border": treeSelectedBorder,
+    },
+    terminal: makeTerminalTheme(terminalBackground, terminalForeground, colors.cursor || colors.accent,
+      colors.selection || activeBorder, ansi),
+    monacoColors: {
+      "editor.background": colors.monacoBg || terminalBackground, "editor.foreground": colors.text,
+      "editorGutter.background": colors.monacoBg || terminalBackground, "editorLineNumber.foreground": colors.dim,
+      "editorLineNumber.activeForeground": colors.accent, "editor.selectionBackground": colors.selection || activeBorder,
+      "editorCursor.foreground": colors.cursor || colors.accent, "editor.lineHighlightBackground": activeBackground,
+      "editorIndentGuide.background1": colors.border, "editorIndentGuide.activeBackground1": activeBorder,
+    },
+  };
 };
+const THEME_DEFINITIONS = [
+  makeTheme("dark", "Nord dark", "dark",
+    { bg: "#0b0e12", panel: "#12161c", panel2: "#1a2029", border: "#232a35", text: "#d5dbe5", terminalForeground: "#d8dee9", dim: "#7a8494", accent: "#5ccfe6", working: "#83e6ff", green: "#9fe8a2", red: "#f28779", term: "#0a0c10", monacoBg: "#101418", cursor: "#8fbcbb", selection: "#3b4252", scroll: "#2b3440", scrollHover: "#3d4856", activeBg: "rgba(92, 207, 230, 0.13)", activeBorder: "rgba(92, 207, 230, 0.4)", activeText: "#eaf6f9", treeSelectedBg: "rgba(4, 57, 94, 0.55)", treeSelectedBorder: "rgba(0, 122, 204, 0.45)" },
+    ["#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0", "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"]),
+  makeTheme("light", "GitHub light", "light",
+    { bg: "#f2f4f7", panel: "#ffffff", panel2: "#e9edf2", border: "#d4dbe3", text: "#24292f", terminalForeground: "#1f2328", dim: "#6b7580", accent: "#0969da", green: "#1a7f37", red: "#cf222e", term: "#ffffff", cursor: "#0969da", selection: "#b6d7fb", scroll: "#c7cfd8", scrollHover: "#aab2c0", activeBg: "rgba(9, 105, 218, 0.1)", activeBorder: "rgba(9, 105, 218, 0.35)", activeText: "#0a3069", treeSelectedBg: "rgba(9, 105, 218, 0.12)", treeSelectedBorder: "rgba(9, 105, 218, 0.3)" },
+    ["#24292f", "#cf222e", "#116329", "#4d2d00", "#0969da", "#8250df", "#1b7c83", "#6e7781", "#57606a", "#a40e26", "#1a7f37", "#633c01", "#218bff", "#a475f9", "#3192aa", "#8c959f"]),
+  makeTheme("mac-terminal", "macOS terminal", "dark",
+    { bg: "#202124", panel: "#292a2d", panel2: "#343539", border: "#484a50", text: "#f1f3f4", dim: "#a9adb5", accent: "#7dd3fc", working: "#86efac", green: "#8bd49c", red: "#ff8a80", term: "#1e1f22", cursor: "#f1f3f4", selection: "#4b5563" },
+    ["#303238", "#ff8a80", "#8bd49c", "#ffe082", "#82b1ff", "#cf93d9", "#80cbc4", "#f1f3f4", "#6b7078", "#ff5252", "#69f0ae", "#ffd740", "#448aff", "#e040fb", "#64ffda", "#ffffff"]),
+  makeTheme("github-dark", "GitHub dark", "dark",
+    { bg: "#0d1117", panel: "#161b22", panel2: "#21262d", border: "#30363d", text: "#c9d1d9", dim: "#8b949e", accent: "#58a6ff", working: "#79c0ff", green: "#7ee787", red: "#ff7b72", term: "#0d1117", cursor: "#58a6ff", selection: "#264f78" },
+    ["#484f58", "#ff7b72", "#7ee787", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf", "#b1bac4", "#6e7681", "#ffa198", "#56d364", "#e3b341", "#79c0ff", "#d2a8ff", "#56d4dd", "#f0f6fc"]),
+  makeTheme("one-dark", "One Dark", "dark",
+    { bg: "#1e2127", panel: "#282c34", panel2: "#313640", border: "#3e4451", text: "#abb2bf", dim: "#7f848e", accent: "#61afef", working: "#56b6c2", green: "#98c379", red: "#e06c75", term: "#1e2127", cursor: "#61afef", selection: "#3e4451" },
+    ["#545862", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#abb2bf", "#7f848e", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#ffffff"]),
+  makeTheme("monokai", "Monokai", "dark",
+    { bg: "#272822", panel: "#2d2e27", panel2: "#3e3d32", border: "#5a594f", text: "#f8f8f2", dim: "#a6a69c", accent: "#a6e22e", working: "#66d9ef", green: "#a6e22e", red: "#f92672", term: "#272822", cursor: "#f8f8f0", selection: "#49483e" },
+    ["#272822", "#f92672", "#a6e22e", "#f4bf75", "#66d9ef", "#ae81ff", "#a1efe4", "#f8f8f2", "#75715e", "#f92672", "#a6e22e", "#f4bf75", "#66d9ef", "#ae81ff", "#a1efe4", "#f9f8f5"]),
+  makeTheme("dracula", "Dracula", "dark",
+    { bg: "#282a36", panel: "#303241", panel2: "#3a3c4e", border: "#4b4d60", text: "#f8f8f2", dim: "#a7a9be", accent: "#bd93f9", working: "#8be9fd", green: "#50fa7b", red: "#ff5555", term: "#282a36", cursor: "#f8f8f2", selection: "#44475a" },
+    ["#21222c", "#ff5555", "#50fa7b", "#f1fa8c", "#8be9fd", "#bd93f9", "#8be9fd", "#f8f8f2", "#6272a4", "#ff6e6e", "#69ff94", "#ffffa5", "#a4ffff", "#d6acff", "#a4ffff", "#ffffff"]),
+  makeTheme("solarized-dark", "Solarized dark", "dark",
+    { bg: "#002b36", panel: "#073642", panel2: "#0b4654", border: "#1b5965", text: "#839496", dim: "#657b83", accent: "#2aa198", working: "#268bd2", green: "#859900", red: "#dc322f", term: "#002b36", cursor: "#2aa198", selection: "#174b55" },
+    ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5", "#586e75", "#cb4b16", "#b4c342", "#c9a400", "#458bd2", "#d33682", "#2aa198", "#fdf6e3"]),
+  makeTheme("solarized-light", "Solarized light", "light",
+    { bg: "#fdf6e3", panel: "#eee8d5", panel2: "#e6dfcb", border: "#d8cfb9", text: "#586e75", dim: "#839496", accent: "#268bd2", green: "#859900", red: "#dc322f", term: "#fdf6e3", cursor: "#268bd2", selection: "#c9dff0" },
+    ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5", "#586e75", "#cb4b16", "#b4c342", "#c9a400", "#458bd2", "#d33682", "#2aa198", "#fdf6e3"]),
+  makeTheme("gruvbox-dark", "Gruvbox dark", "dark",
+    { bg: "#282828", panel: "#32302f", panel2: "#3c3836", border: "#504945", text: "#ebdbb2", dim: "#a89984", accent: "#83a598", working: "#8ec07c", green: "#b8bb26", red: "#fb4934", term: "#282828", cursor: "#ebdbb2", selection: "#504945" },
+    ["#3c3836", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#a89984", "#7c6f64", "#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b", "#8ec07c", "#ebdbb2"]),
+  makeTheme("gruvbox-light", "Gruvbox light", "light",
+    { bg: "#fbf1c7", panel: "#f2e5bc", panel2: "#ebdbb2", border: "#d5c4a1", text: "#3c3836", dim: "#7c6f64", accent: "#076678", green: "#79740e", red: "#9d0006", term: "#fbf1c7", cursor: "#076678", selection: "#d5e5e8" },
+    ["#3c3836", "#9d0006", "#79740e", "#b57614", "#076678", "#8f3f71", "#427b58", "#7c6f64", "#928374", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#ebdbb2"]),
+  makeTheme("tokyo-night", "Tokyo Night", "dark",
+    { bg: "#16161e", panel: "#1f2335", panel2: "#292e42", border: "#3b4261", text: "#c0caf5", dim: "#7982a9", accent: "#7aa2f7", working: "#7dcfff", green: "#9ece6a", red: "#f7768e", term: "#16161e", cursor: "#7aa2f7", selection: "#283457" },
+    ["#15161e", "#f7768e", "#41a6b5", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#7982a9", "#414868", "#ff7a93", "#73daca", "#ff9e64", "#8db0ff", "#c7a0ff", "#a4daff", "#acb0d0"]),
+  makeTheme("catppuccin-mocha", "Catppuccin mocha", "dark",
+    { bg: "#11111b", panel: "#181825", panel2: "#313244", border: "#45475a", text: "#cdd6f4", dim: "#9399b2", accent: "#89b4fa", working: "#74c7ec", green: "#a6e3a1", red: "#f38ba8", term: "#11111b", cursor: "#f5e0e6", selection: "#45475a" },
+    ["#45475a", "#f38ba8", "#a6e3a1", "#f9e2af", "#89b4fa", "#f5c2e7", "#94e2d5", "#bac2de", "#585b70", "#f38ba8", "#a6e3a1", "#f9e2af", "#89b4fa", "#f5c2e7", "#94e2d5", "#a6adc8"]),
+  makeTheme("catppuccin-latte", "Catppuccin latte", "light",
+    { bg: "#eff1f5", panel: "#e6e9ef", panel2: "#dce0e8", border: "#bcc0cc", text: "#4c4f69", dim: "#7c7f93", accent: "#1e66f5", green: "#40a02b", red: "#d20f39", term: "#eff1f5", cursor: "#1e66f5", selection: "#cbd7f5" },
+    ["#5c5f77", "#d20f39", "#40a02b", "#df8e1d", "#1e66f5", "#8839ef", "#179299", "#acb0be", "#6c6f85", "#d20f39", "#40a02b", "#df8e1d", "#1e66f5", "#8839ef", "#179299", "#bcc0cc"]),
+  makeTheme("rose-pine", "Rosé Pine", "dark",
+    { bg: "#191724", panel: "#1f1d2e", panel2: "#26233a", border: "#403d52", text: "#e0def4", dim: "#908caa", accent: "#c4a7e7", working: "#9ccfd8", green: "#9ccfd8", red: "#eb6f92", term: "#191724", cursor: "#c4a7e7", selection: "#403d52" },
+    ["#26233a", "#eb6f92", "#9ccfd8", "#f6c177", "#31748f", "#c4a7e7", "#ebbcba", "#e0def4", "#6e6a86", "#eb6f92", "#9ccfd8", "#f6c177", "#31748f", "#c4a7e7", "#ebbcba", "#e0def4"]),
+  makeTheme("ayu-dark", "Ayu dark", "dark",
+    { bg: "#0b0e14", panel: "#11151c", panel2: "#1b212b", border: "#303846", text: "#bfbdb6", dim: "#7d8799", accent: "#e6b450", working: "#59c2ff", green: "#aad94c", red: "#f07178", term: "#0b0e14", cursor: "#e6b450", selection: "#273747" },
+    ["#0b0e14", "#f07178", "#aad94c", "#e6b450", "#59c2ff", "#d2a6ff", "#95e6cb", "#bfbdb6", "#565b66", "#ff8f8f", "#c2d94c", "#ffb454", "#73d0ff", "#dfbfff", "#a8e6cf", "#f8f8f2"]),
+  makeTheme("ayu-light", "Ayu light", "light",
+    { bg: "#fafafa", panel: "#f3f4f5", panel2: "#e7e9eb", border: "#cfd3d8", text: "#5c6166", dim: "#8a9199", accent: "#399ee6", green: "#86b300", red: "#ed9366", term: "#fafafa", cursor: "#399ee6", selection: "#cfe8f8" },
+    ["#5c6166", "#f07171", "#86b300", "#f2ae49", "#399ee6", "#a37acc", "#4cbf99", "#fafafa", "#8a9199", "#f07171", "#86b300", "#f2ae49", "#399ee6", "#a37acc", "#4cbf99", "#ffffff"]),
+  makeTheme("high-contrast", "High contrast", "dark",
+    { bg: "#000000", panel: "#080808", panel2: "#171717", border: "#777777", text: "#ffffff", dim: "#c7c7c7", accent: "#00ffff", working: "#ffff00", green: "#00ff66", red: "#ff5555", term: "#000000", cursor: "#ffffff", selection: "#444444" },
+    ["#000000", "#ff5555", "#00ff66", "#ffff00", "#55aaff", "#ff55ff", "#00ffff", "#ffffff", "#777777", "#ff7777", "#55ff88", "#ffff77", "#77bbff", "#ff77ff", "#77ffff", "#ffffff"], "hc-black"),
+];
+const THEME_BY_ID = Object.fromEntries(THEME_DEFINITIONS.map((theme) => [theme.id, theme]));
 
 class TermdeckApp {
   constructor() {
@@ -583,10 +660,12 @@ class TermdeckApp {
 
   getProjectState() {
     const states = this.settings.project_state || {};
-    return states[this.projectStateKey()] || {
-      active_session_id: "", open_files: [], open_files_collapsed: false, recent_files_collapsed: false,
+    return {
+      active_session_id: "", open_files: [], open_files_collapsed: false, recent_files_collapsed: true,
       unread_sessions: [],
       terminal_groups: [], session_groups: {},
+      ...(states[this.projectStateKey()] || {}),
+      recent_files_collapsed: states[this.projectStateKey()]?.recent_files_collapsed ?? true,
     };
   }
 
@@ -1413,6 +1492,7 @@ class TermdeckApp {
     this.$("settings-gear").onclick = (e) => this.openSettingsPopover(e.currentTarget,
       [{ label: "Sidebar font", key: "sidebar_font_size" }, { label: "Terminal font", key: "terminal_font_size" },
        { label: "UI font", key: "ui_font_size" }, { label: "Code font", key: "code_font_size" },
+       { label: "Bottom bar buttons", key: "bottom_font_size" },
        { label: "Diff font", key: "diff_font_size" }, { label: "Tree/search font", key: "tree_font_size" },
        { label: "Sidebar text color", key: "sidebar_text_color", type: "color" }]);
     this.$("file-view-close").onclick = () => this.navigateBackFromActiveFile();
@@ -2349,13 +2429,8 @@ class TermdeckApp {
   }
 
   makeDraggable(item, type, key, onReorder) {
-    const delayedDrag = this.prepareDelayedSidebarDrag(item);
     item.draggable = true;
     item.ondragstart = (e) => {
-      if (!delayedDrag.ready()) {
-        e.preventDefault();
-        return;
-      }
       this.dragItem = { type, key };
       this.clearDragGroupingTimer();
       item.classList.add("dragging-tab");
@@ -2413,46 +2488,21 @@ class TermdeckApp {
       this.dragItem = null;
     };
     item.ondragend = () => {
-      delayedDrag.reset();
       this.clearDragLandingIndicator(true);
       this.dragItem = null;
     };
   }
 
-  prepareDelayedSidebarDrag(item) {
-    let ready = false;
-    let timer = 0;
-    const reset = () => {
-      if (timer) window.clearTimeout(timer);
-      timer = 0;
-      ready = false;
-      item.classList.remove("drag-ready");
-    };
-    item.addEventListener("pointerdown", (event) => {
-      reset();
-      if (event.button !== 0 || event.target.closest("button, input, textarea, select")) return;
-      timer = window.setTimeout(() => {
-        timer = 0;
-        ready = true;
-        item.classList.add("drag-ready");
-      }, SIDEBAR_DRAG_HOLD_DELAY_MS);
-    });
-    item.addEventListener("pointerup", reset);
-    item.addEventListener("pointercancel", reset);
-    item.addEventListener("pointerleave", () => {
-      if (!ready) reset();
-    });
-    return { ready: () => ready, reset };
+  setDragLandingMode(item, mode, label) {
+    item.classList.remove("drop-before", "drop-after", "drop-group", "group-drop-pending", "group-drop-target");
+    if (mode) item.classList.add(mode);
+    const hint = item.querySelector(".group-drop-indicator span:last-child");
+    if (hint && label) hint.textContent = label;
   }
 
   makeLayoutDraggable(item, token, kind) {
-    const delayedDrag = this.prepareDelayedSidebarDrag(item);
     item.draggable = true;
     item.ondragstart = (event) => {
-      if (!delayedDrag.ready()) {
-        event.preventDefault();
-        return;
-      }
       const sessionId = kind === "session" ? token.slice("session:".length) : null;
       const sessionIds = sessionId ? this.selectedSessionIdsForDrag(sessionId) : [];
       const tokens = kind === "session" ? sessionIds.map((id) => `session:${id}`) : [token];
@@ -2481,12 +2531,9 @@ class TermdeckApp {
       event.dataTransfer.dropEffect = "move";
       if (source.kind === "session" && kind === "group") {
         this.clearDragLandingIndicator();
-        item.classList.add("drop-group");
-        const hint = item.querySelector(".group-drop-indicator span:last-child");
-        if (hint) hint.textContent = "group";
+        this.setDragLandingMode(item, "drop-group", "add to group");
         return;
       }
-      const holdToMerge = source.kind === "group" && kind === "group";
       const sessionGroups = this.getProjectState().session_groups || {};
       const sourceGroupIds = [...new Set(sourceSessionIds.map((id) => sessionGroups[id]).filter(Boolean))];
       const targetGroup = targetId ? sessionGroups[targetId] : null;
@@ -2497,38 +2544,33 @@ class TermdeckApp {
         event.clientY <= rect.top + rect.height * 0.75;
       if (holdToCreate && !centerDrop) {
         this.clearDragLandingIndicator();
-        item.classList.add(event.clientY >= rect.top + rect.height / 2 ? "drop-after" : "drop-before");
+        const after = event.clientY >= rect.top + rect.height / 2;
+        const moveLabel = source.kind === "group" ? "move group" : "move";
+        this.setDragLandingMode(item, after ? "drop-after" : "drop-before", `${moveLabel} ${after ? "after" : "before"}`);
         return;
       }
-      if (holdToMerge || holdToCreate) {
+      if (holdToCreate) {
         if (this.dragGroupTargetKey === token) {
-          item.classList.remove("drop-before", "drop-after");
-          item.classList.add("group-drop-target");
+          this.setDragLandingMode(item, "group-drop-target", "create group");
           return;
         }
         if (this.dragGroupHoverKey !== token) {
           this.clearDragLandingIndicator();
-          if (!holdToCreate) {
-            item.classList.add(event.clientY >= rect.top + rect.height / 2 ? "drop-after" : "drop-before");
-          }
+          this.setDragLandingMode(item, "group-drop-pending", "hold to create group");
           this.dragGroupHoverKey = token;
           const sourceToken = source.token;
           this.dragGroupTimer = window.setTimeout(() => {
             if (this.dragItem?.type !== "layout" || this.dragItem.token !== sourceToken) return;
             this.dragGroupTargetKey = token;
-            item.classList.remove("drop-before", "drop-after");
-            const hint = item.querySelector(".group-drop-indicator span:last-child");
-            if (hint) hint.textContent = holdToMerge ? "merge" : targetGroup || sourceGroupIds.length ? "group" : "new group";
-            item.classList.add("group-drop-target");
+            this.setDragLandingMode(item, "group-drop-target", "create group");
           }, SESSION_GROUP_HOVER_DELAY_MS);
-        } else if (!holdToCreate) {
-          item.classList.remove("group-drop-target");
-          item.classList.add(event.clientY >= rect.top + rect.height / 2 ? "drop-after" : "drop-before");
         }
         return;
       }
       this.clearDragLandingIndicator();
-      item.classList.add(event.clientY >= rect.top + rect.height / 2 ? "drop-after" : "drop-before");
+      const after = event.clientY >= rect.top + rect.height / 2;
+      const moveLabel = source.kind === "group" ? "move group" : "move";
+      this.setDragLandingMode(item, after ? "drop-after" : "drop-before", `${moveLabel} ${after ? "after" : "before"}`);
     };
     item.ondragleave = (event) => {
       if (!event.relatedTarget || !item.contains(event.relatedTarget)) this.clearDragLandingIndicator();
@@ -2538,7 +2580,6 @@ class TermdeckApp {
       const source = this.dragItem;
       if (source?.type === "layout" && source.token !== token) {
         const sourceSessionIds = this.sessionIdsFromDragItem(source);
-        const sourceId = source.token.slice(source.token.indexOf(":") + 1);
         const targetId = token.slice(token.indexOf(":") + 1);
         if (kind === "session" && sourceSessionIds.includes(targetId)) {
           this.clearDragLandingIndicator();
@@ -2549,9 +2590,7 @@ class TermdeckApp {
         const targetGroup = kind === "session" ? sessionGroups[targetId] : null;
         const targetRect = kind === "session" ? item.getBoundingClientRect() : null;
         if (source.kind === "session" && kind === "group") this.moveSelectedSessionsIntoGroup(sourceSessionIds, targetId);
-        else if (source.kind === "group" && kind === "group" && this.dragGroupTargetKey === token) {
-          this.mergeTerminalGroups(sourceId, targetId);
-        } else if (source.kind === "session" && kind === "session" && this.dragGroupTargetKey === token) {
+        else if (source.kind === "session" && kind === "session" && this.dragGroupTargetKey === token) {
           const rect = item.getBoundingClientRect();
           this.groupSelectedSessionsFromDrop(sourceSessionIds, targetId, event.clientY >= rect.top + rect.height / 2);
         } else {
@@ -2570,7 +2609,6 @@ class TermdeckApp {
       this.dragItem = null;
     };
     item.ondragend = () => {
-      delayedDrag.reset();
       this.clearDragLandingIndicator(true);
       this.dragItem = null;
     };
@@ -2580,7 +2618,7 @@ class TermdeckApp {
     this.clearDragGroupingTimer();
     // Scoped to the document, not the session list: group labels, the file tree and the terminal's
     // drop-to-attach overlay all raise indicators that outlive a drag ending outside their own element.
-    const landingClasses = ["drop-before", "drop-after", "drop-group", "group-drop-target", "drag-over"];
+    const landingClasses = ["drop-before", "drop-after", "drop-group", "group-drop-pending", "group-drop-target", "drag-over"];
     document.querySelectorAll(landingClasses.map((name) => `.${name}`).join(", "))
       .forEach((row) => row.classList.remove(...landingClasses));
     if (clearSource) document.querySelectorAll(".dragging-tab")
@@ -4922,7 +4960,7 @@ class TermdeckApp {
     const host = this.$("file-history-editor-host");
     host.classList.remove("hidden");
     const editor = monaco.editor.create(host, { ...this.fileHistoryEditorOptions(), readOnly: false, model: entry.model,
-      theme: this.isLight() ? "termdeck-light" : "termdeck-dark" });
+      theme: this.monacoThemeName() });
     this.fileHistoryCurrentEditor = editor;
     this.fileHistoryActiveComparison = { isDiff: false, modifiedEditable: false, entry, editor };
     this.$("file-history-preview-empty").classList.add("hidden");
@@ -4938,7 +4976,7 @@ class TermdeckApp {
     const originalModel = this.createFileHistoryTransientModel(originalContent, entry, originalItem);
     const modifiedModel = modifiedEditable ? entry.model : this.createFileHistoryTransientModel(modifiedContent, entry, modifiedItem);
     const editor = monaco.editor.createDiffEditor(host, { ...this.fileHistoryEditorOptions(), readOnly: !modifiedEditable,
-      originalEditable: false, renderSideBySide: true, theme: this.isLight() ? "termdeck-light" : "termdeck-dark" });
+      originalEditable: false, renderSideBySide: true, theme: this.monacoThemeName() });
     editor.setModel({ original: originalModel, modified: modifiedModel });
     this.fileHistoryDiffEditor = editor;
     this.fileHistoryActiveComparison = { isDiff: true, modifiedEditable, entry, editor,
@@ -6604,6 +6642,11 @@ class TermdeckApp {
     this.$("conversation-outline-toggle").onclick = () => this.toggleConversationOutline();
     this.$("conversation-outline-close").onclick = () => this.setConversationOutlineOpen(false);
     this.$("conversation-outline-refresh").onclick = () => void this.loadConversationOutline(true);
+    document.addEventListener("pointerdown", (event) => {
+      if (!this.conversationOutlineOpen) return;
+      if (this.$("conversation-outline").contains(event.target) || this.$("conversation-outline-toggle").contains(event.target)) return;
+      this.setConversationOutlineOpen(false);
+    });
   }
 
   openQuickOpen(initialQuery = "") {
@@ -7156,27 +7199,36 @@ class TermdeckApp {
     const list = this.$("conversation-outline-list");
     list.textContent = "";
     const messages = turns.filter((turn) => ["user", "assistant"].includes(turn.role) && String(turn.text || "").trim());
+    let latestPromptItem = null;
     for (const turn of messages) {
       const item = document.createElement("button");
       item.type = "button";
-      item.className = "conversation-outline-item";
+      const prompt = turn.role === "user";
+      item.className = `conversation-outline-item ${prompt ? "prompt" : "response"}`;
       const role = document.createElement("span");
-      role.className = `conversation-outline-role codicon codicon-${turn.role === "user" ? "account" : "sparkle"}`;
+      role.className = `conversation-outline-role codicon codicon-${prompt ? "arrow-right" : "sparkle"}`;
       const label = document.createElement("span");
       label.className = "conversation-outline-label";
-      label.textContent = turn.role === "user" ? "Prompt" : "Response";
+      label.textContent = prompt ? "Prompt" : "Response";
       const text = document.createElement("span");
       text.className = "conversation-outline-text";
       text.textContent = String(turn.text || "").replace(/\s+/g, " ").trim();
       item.append(role, label, text);
       item.onclick = () => this.openConversationOutlineTurn(turn);
       list.appendChild(item);
+      if (prompt) latestPromptItem = item;
     }
     if (!messages.length) {
       const empty = document.createElement("div");
       empty.className = "file-inspector-empty";
       empty.textContent = "No user prompts or assistant responses yet.";
       list.appendChild(empty);
+    }
+    if (latestPromptItem) {
+      requestAnimationFrame(() => {
+        if (!this.conversationOutlineOpen || !latestPromptItem.isConnected) return;
+        list.scrollTop = Math.max(0, latestPromptItem.offsetTop - list.offsetTop - 6);
+      });
     }
   }
 
@@ -10270,6 +10322,7 @@ class TermdeckApp {
         if (/^#[0-9a-f]{6}$/i.test(String(legacyColor || ""))) incoming.sidebar_text_color = legacyColor;
       }
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
+      if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
       this.settings.show_git_status = true;
       const searchGlobTokens = String(this.settings.search_glob || "").split(",").map((token) => token.trim()).filter(Boolean);
       if (!searchGlobTokens.includes("!*.log")) {
@@ -10294,6 +10347,7 @@ class TermdeckApp {
     if (!/^#[0-9a-f]{6}$/i.test(String(this.settings.sidebar_text_color || ""))) {
       this.settings.sidebar_text_color = SETTINGS_DEFAULTS.sidebar_text_color;
     }
+    if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
     if (this.normalizeNotebookNotes()) this.saveSettings();
     // V2 is now the only desktop terminal scroll controller. Remove the old
     // browser-only opt-in so a previous preference cannot revive V1.
@@ -10357,12 +10411,39 @@ class TermdeckApp {
     return this.projectForCwd(root)?.name || "__all__";
   }
 
+  themeDefinition() {
+    return THEME_BY_ID[this.settings.theme] || THEME_BY_ID.dark;
+  }
+
+  themeLabel() {
+    return this.themeDefinition().label;
+  }
+
   isLight() {
-    return this.settings.theme === "light";
+    return this.themeDefinition().kind === "light";
+  }
+
+  monacoThemeName() {
+    return "termdeck-theme";
   }
 
   termTheme() {
-    return this.isLight() ? TERM_THEME_LIGHT : TERM_THEME_DARK;
+    return this.themeDefinition().terminal;
+  }
+
+  applyThemeVariables() {
+    const theme = this.themeDefinition();
+    for (const [name, value] of Object.entries(theme.css)) document.documentElement.style.setProperty(name, value);
+    document.documentElement.dataset.theme = theme.id;
+    document.body.classList.toggle("theme-light", theme.kind === "light");
+    document.body.classList.toggle("theme-dark", theme.kind !== "light");
+  }
+
+  defineMonacoTheme(theme = this.themeDefinition()) {
+    monaco.editor.defineTheme(this.monacoThemeName(), {
+      base: theme.monacoBase, inherit: true, rules: [], colors: theme.monacoColors,
+    });
+    if (this.editor) monaco.editor.setTheme(this.monacoThemeName());
   }
 
   applySettings({ fitTerminals = true } = {}) {
@@ -10388,6 +10469,7 @@ class TermdeckApp {
     document.documentElement.style.setProperty("--sidebar-font-size", s.sidebar_font_size + "px");
     document.documentElement.style.setProperty("--ui-font-size", s.ui_font_size + "px");
     document.documentElement.style.setProperty("--code-font-size", s.code_font_size + "px");
+    document.documentElement.style.setProperty("--bottom-font-size", s.bottom_font_size + "px");
     document.documentElement.style.setProperty("--sidebar-text-color", s.sidebar_text_color);
     this.updateSessionAgeStyles();
     const codeFontSize = Number(s.code_font_size) || SETTINGS_DEFAULTS.code_font_size;
@@ -10397,14 +10479,14 @@ class TermdeckApp {
       : Math.min(configuredDiffFontSize, Math.max(8, codeFontSize - 1));
     document.documentElement.style.setProperty("--diff-font-size", relativeDiffFontSize + "px");
     document.documentElement.style.setProperty("--tree-font-size", s.tree_font_size + "px");
-    document.body.classList.toggle("theme-light", this.isLight());
+    this.applyThemeVariables();
     for (const view of this.views.values()) {
       if (view.term.options.fontSize !== s.terminal_font_size) view.term.options.fontSize = s.terminal_font_size;
       this.refreshTerminalAppearance(view);
     }
     if (this.editor) {
       this.editor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.word_wrap ? "on" : "off" });
-      monaco.editor.setTheme(this.isLight() ? "termdeck-light" : "termdeck-dark");
+      this.defineMonacoTheme();
     }
     if (this.notebookEditor) {
       this.notebookEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.word_wrap ? "on" : "off" });
@@ -10429,13 +10511,9 @@ class TermdeckApp {
     this.monacoReady = new Promise((resolve) => {
       require.config({ paths: { vs: "/static/vendor/monaco/vs" } });
       require(["vs/editor/editor.main"], () => {
-        monaco.editor.defineTheme("termdeck-dark", {
-          base: "vs-dark", inherit: true, rules: [],
-          colors: { "editor.background": "#101418", "editorGutter.background": "#101418" },
-        });
-        monaco.editor.defineTheme("termdeck-light", { base: "vs", inherit: true, rules: [], colors: {} });
+        this.defineMonacoTheme();
         this.editor = monaco.editor.create(this.$("monaco-host"), {
-          readOnly: false, theme: this.isLight() ? "termdeck-light" : "termdeck-dark",
+          readOnly: false, theme: this.monacoThemeName(),
           automaticLayout: true, minimap: { enabled: false },
           scrollBeyondLastLine: false, fontSize: this.settings.code_font_size, lineNumbersMinChars: 4,
           renderLineHighlight: "all", folding: true, wordWrap: this.settings.word_wrap ? "on" : "off", fixedOverflowWidgets: true,
@@ -10464,7 +10542,7 @@ class TermdeckApp {
         if (notebookHost) {
           notebookHost.textContent = "";
           this.notebookEditor = monaco.editor.create(notebookHost, {
-            readOnly: false, theme: this.isLight() ? "termdeck-light" : "termdeck-dark",
+            readOnly: false, theme: this.monacoThemeName(),
             automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
             fontSize: this.settings.code_font_size, lineNumbersMinChars: 2, lineDecorationsWidth: 8, glyphMargin: false,
             renderLineHighlight: "all", folding: true, wordWrap: this.settings.word_wrap ? "on" : "off",
@@ -10567,8 +10645,7 @@ class TermdeckApp {
       row.append(label, controls);
       pop.appendChild(row);
     }
-    pop.appendChild(this.buildToggleRow("Theme", () => this.settings.theme,
-      () => { this.settings.theme = this.isLight() ? "dark" : "light"; }));
+    pop.appendChild(this.buildThemeSelectRow());
     pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));
     pop.appendChild(this.buildToggleRow("Terminal icons", () => (this.settings.show_terminal_icons ? "on" : "off"),
@@ -10610,6 +10687,32 @@ class TermdeckApp {
     button.textContent = buttonText;
     button.onclick = run;
     row.append(label, button);
+    return row;
+  }
+
+  buildThemeSelectRow() {
+    const row = document.createElement("div");
+    row.className = "settings-row settings-theme-row";
+    const label = document.createElement("span");
+    label.className = "settings-label";
+    label.textContent = "Theme";
+    const select = document.createElement("select");
+    select.className = "settings-theme-select";
+    select.title = "Choose a TermDeck theme";
+    select.setAttribute("aria-label", "Choose a TermDeck theme");
+    for (const theme of THEME_DEFINITIONS) {
+      const option = document.createElement("option");
+      option.value = theme.id;
+      option.textContent = theme.label;
+      select.appendChild(option);
+    }
+    select.value = this.themeDefinition().id;
+    select.onchange = () => {
+      this.settings.theme = THEME_BY_ID[select.value] ? select.value : SETTINGS_DEFAULTS.theme;
+      this.applySettings();
+      this.saveSettings();
+    };
+    row.append(label, select);
     return row;
   }
 
@@ -11224,6 +11327,7 @@ class TermdeckApp {
       this.editor.revealLineInCenter(line);
       this.editor.setPosition({ lineNumber: line, column: 1 });
     }
+    this.editor.focus();
     this.renderList();
     this.renderTopbar();
     void this.renderSecondaryEditor(true);
