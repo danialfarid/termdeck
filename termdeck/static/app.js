@@ -228,11 +228,26 @@ const makeTerminalTheme = (background, foreground, cursor, selectionBackground, 
   return { background, foreground, cursor, selectionBackground, black, red, green, yellow, blue, magenta, cyan, white,
     brightBlack, brightRed, brightGreen, brightYellow, brightBlue, brightMagenta, brightCyan, brightWhite };
 };
+const rgbaThemeColor = (color, alpha) => {
+  const match = String(color || "").match(/^#([0-9a-f]{6})$/i);
+  if (!match) return color;
+  const value = Number.parseInt(match[1], 16);
+  return `rgba(${value >> 16}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
+};
+const monacoThemeColor = (color) => {
+  const value = String(color || "").trim();
+  const hex = value.match(/^#([0-9a-f]{6})([0-9a-f]{2})?$/i);
+  if (hex) return `#${hex[1]}${hex[2] || "ff"}`;
+  const rgba = value.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)$/i);
+  if (!rgba) return "#00000000";
+  const alpha = Math.round((rgba[4] == null ? 1 : Number(rgba[4])) * 255).toString(16).padStart(2, "0");
+  return `#${[rgba[1], rgba[2], rgba[3]].map((channel) => Number(channel).toString(16).padStart(2, "0")).join("")}${alpha}`;
+};
 const makeTheme = (id, label, kind, colors, ansi, monacoBase = kind === "light" ? "vs" : "vs-dark") => {
-  const activeBackground = colors.activeBg || `color-mix(in srgb, ${colors.accent} 14%, transparent)`;
-  const activeBorder = colors.activeBorder || `color-mix(in srgb, ${colors.accent} 45%, transparent)`;
-  const treeSelectedBackground = colors.treeSelectedBg || `color-mix(in srgb, ${colors.accent} 17%, transparent)`;
-  const treeSelectedBorder = colors.treeSelectedBorder || `color-mix(in srgb, ${colors.accent} 48%, transparent)`;
+  const activeBackground = colors.activeBg || rgbaThemeColor(colors.accent, 0.14);
+  const activeBorder = colors.activeBorder || rgbaThemeColor(colors.accent, 0.45);
+  const treeSelectedBackground = colors.treeSelectedBg || rgbaThemeColor(colors.accent, 0.17);
+  const treeSelectedBorder = colors.treeSelectedBorder || rgbaThemeColor(colors.accent, 0.48);
   const terminalBackground = colors.term || colors.bg;
   const terminalForeground = colors.terminalForeground || colors.text;
   return {
@@ -249,11 +264,12 @@ const makeTheme = (id, label, kind, colors, ansi, monacoBase = kind === "light" 
     terminal: makeTerminalTheme(terminalBackground, terminalForeground, colors.cursor || colors.accent,
       colors.selection || activeBorder, ansi),
     monacoColors: {
-      "editor.background": colors.monacoBg || terminalBackground, "editor.foreground": colors.text,
-      "editorGutter.background": colors.monacoBg || terminalBackground, "editorLineNumber.foreground": colors.dim,
-      "editorLineNumber.activeForeground": colors.accent, "editor.selectionBackground": colors.selection || activeBorder,
-      "editorCursor.foreground": colors.cursor || colors.accent, "editor.lineHighlightBackground": activeBackground,
-      "editorIndentGuide.background1": colors.border, "editorIndentGuide.activeBackground1": activeBorder,
+      "editor.background": monacoThemeColor(colors.monacoBg || terminalBackground), "editor.foreground": monacoThemeColor(colors.text),
+      "editorGutter.background": monacoThemeColor(colors.monacoBg || terminalBackground), "editorLineNumber.foreground": monacoThemeColor(colors.dim),
+      "editorLineNumber.activeForeground": monacoThemeColor(colors.accent), "editor.selectionBackground": monacoThemeColor(colors.selection || activeBorder),
+      "editorCursor.foreground": monacoThemeColor(colors.cursor || colors.accent),
+      "editor.lineHighlightBackground": monacoThemeColor(activeBackground), "editor.lineHighlightBorder": monacoThemeColor(activeBorder),
+      "editorIndentGuide.background1": monacoThemeColor(colors.border), "editorIndentGuide.activeBackground1": monacoThemeColor(activeBorder),
     },
   };
 };
@@ -8626,7 +8642,7 @@ class TermdeckApp {
       view.scrollObserver.observe(scrollArea);
     }
     view.layoutObserver = new ResizeObserver(() => {
-      if (!view.container.classList.contains("visible") || view.closed) return;
+      if (!view.container.classList.contains("visible") || view.closed || !this.terminalPageCanResize()) return;
       if (this.sidebarResizeInProgress) return;
       if (this.isTerminalScrollV2()) {
         this.scheduleV2Fit(view);
@@ -9242,8 +9258,14 @@ class TermdeckApp {
     input.click();
   }
 
+  terminalPageCanResize() {
+    return document.visibilityState === "visible" && document.hasFocus();
+  }
+
   sendResize(view, cols, rows, force = false) {
-    if (this.sidebarResizeInProgress || view.suppressResizeToServer) return;
+    if (this.sidebarResizeInProgress || view.suppressResizeToServer || !this.terminalPageCanResize() ||
+        view.closed || view.sessionId !== this.activeId || !view.container.classList.contains("visible") ||
+        this.activeFileKey !== null || this.historyOpen) return;
     if (view.ws && view.ws.readyState === WebSocket.OPEN &&
         (force || view.lastSentCols !== cols || view.lastSentRows !== rows)) {
       view.lastSentCols = cols;
@@ -9603,7 +9625,7 @@ class TermdeckApp {
 
   scheduleV2Fit(view, options = {}) {
     const forceResize = !!options.force;
-    if (!view || view.closed || !view.container.classList.contains("visible")) return;
+    if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return;
     if (this.shouldDeferPromptWrapFit(view)) return;
     if (view.v2FitFrame && forceResize) {
       cancelAnimationFrame(view.v2FitFrame);
@@ -9612,7 +9634,7 @@ class TermdeckApp {
     if (view.v2FitFrame) return;
     view.v2FitFrame = requestAnimationFrame(() => {
       view.v2FitFrame = 0;
-      if (view.closed || !view.container.classList.contains("visible") || this.sidebarResizeInProgress) return;
+      if (view.closed || !view.container.classList.contains("visible") || this.sidebarResizeInProgress || !this.terminalPageCanResize()) return;
       if (this.shouldDeferPromptWrapFit(view)) return;
       const rect = view.container.getBoundingClientRect();
       if (rect.width < 40 || rect.height < 40) {
@@ -9896,7 +9918,7 @@ class TermdeckApp {
   }
 
   repairTerminalRenderIfStale(view) {
-    if (!view || view.closed || !view.container.classList.contains("visible")) return false;
+    if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
     if (this.shouldDeferPromptWrapFit(view)) return false;
     if (!this.terminalTailRenderMismatch(view)) {
       view.renderRepairArmed = true;
@@ -9981,11 +10003,11 @@ class TermdeckApp {
   // and self-terminating instead of a standing timer.
   scheduleActiveTerminalSettleWatchdog(view) {
     this.clearActiveTerminalSettleWatchdog(view);
-    if (!view || view.closed || !this.isTerminalScrollV2()) return;
+    if (!view || view.closed || !this.isTerminalScrollV2() || !this.terminalPageCanResize()) return;
     for (const delay of TERMINAL_ACTIVE_SETTLE_DELAYS_MS) {
       view.settleWatchdogTimers.push(setTimeout(() => {
         if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible") ||
-            this.sidebarResizeInProgress) return;
+            this.sidebarResizeInProgress || !this.terminalPageCanResize()) return;
         if (this.shouldDeferPromptWrapFit(view)) return;
         const beforeCols = view.term.cols, beforeRows = view.term.rows;
         const viewportAnchor = this.captureTerminalViewportAnchor(view);
@@ -10009,10 +10031,11 @@ class TermdeckApp {
   scheduleTerminalTailRepair(view) {
     if (!view || view.closed || view.tailRepairTimer || view.tailRepairConfirmTimer ||
         !view.container.classList.contains("visible") || !this.isTerminalScrollV2() ||
-        this.session(view.sessionId)?.agent_kind !== "codex") return;
+        this.session(view.sessionId)?.agent_kind !== "codex" || !this.terminalPageCanResize()) return;
     view.tailRepairTimer = setTimeout(() => {
       view.tailRepairTimer = 0;
-      if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
+      if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible") ||
+          !this.terminalPageCanResize()) return;
       const candidate = this.terminalRenderMismatchSnapshot(view);
       if (!candidate) {
         view.renderRepairArmed = true;
@@ -10020,7 +10043,8 @@ class TermdeckApp {
       }
       view.tailRepairConfirmTimer = setTimeout(() => {
         view.tailRepairConfirmTimer = 0;
-        if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
+        if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible") ||
+            !this.terminalPageCanResize()) return;
         const confirmed = this.terminalRenderMismatchSnapshot(view);
         if (!this.sameTerminalRenderMismatch(candidate, confirmed)) {
           if (!confirmed) view.renderRepairArmed = true;
@@ -10035,14 +10059,15 @@ class TermdeckApp {
   }
 
   scheduleTerminalActivationRepair(view, options = {}) {
-    if (!view || view.closed || view.activationRepairFrame || !view.container.classList.contains("visible")) return;
+    if (!view || view.closed || view.activationRepairFrame || !view.container.classList.contains("visible") ||
+        !this.terminalPageCanResize()) return;
     if (!this.isTerminalScrollV2()) return;
     const generation = view.outputWriteGeneration;
     const forceReflow = !!options.forceReflow;
     view.activationRepairFrame = requestAnimationFrame(() => {
       view.activationRepairFrame = requestAnimationFrame(() => {
         view.activationRepairFrame = 0;
-        if (view.closed || !view.container.classList.contains("visible")) return;
+        if (view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return;
         if (view.outputWriteInFlight && generation !== view.outputWriteGeneration) return;
         const repaired = this.repairTerminalRenderIfStale(view);
         if (repaired) {
@@ -10103,7 +10128,8 @@ class TermdeckApp {
   }
 
   forceVisibleTerminalReflowViaClear(view) {
-    if (!view || view.closed || view.v2ForcedReflowFrame || !view.container.classList.contains("visible")) return false;
+    if (!view || view.closed || view.v2ForcedReflowFrame || !view.container.classList.contains("visible") ||
+        !this.terminalPageCanResize()) return false;
     if (this.shouldDeferPromptWrapFit(view)) return false;
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return false;
@@ -10144,7 +10170,7 @@ class TermdeckApp {
   //
   forceVisibleTerminalReflowViaResizeNudge(view, nudgeCols = 2) {
     if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
-        !view.container.classList.contains("visible")) return false;
+        !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
     if (this.shouldDeferPromptWrapFit(view)) return false;
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return false;
@@ -10297,7 +10323,7 @@ class TermdeckApp {
   }
 
   fitActive() {
-    if (this.nativeVscodeMode || this.sidebarResizeInProgress) return;
+    if (this.nativeVscodeMode || this.sidebarResizeInProgress || !this.terminalPageCanResize()) return;
     if (this.$("terminal-area").classList.contains("hidden")) return;
     const view = this.views.get(this.activeId);
     if (!view || !view.container.classList.contains("visible")) return;
