@@ -22,18 +22,21 @@
   <div id="side-split" class="hidden"></div>
   <div id="files-section" class="side-view hidden">
     <div id="files-section-tabs">
-      <button id="files-tab-project" class="files-section-tab" title="Open files" aria-label="Files"><span class="codicon codicon-files"></span><span class="files-tab-label">Files</span></button>
-      <button id="files-tab-search" class="files-section-tab" title="Search files" aria-label="Search files"><span class="codicon codicon-search"></span><span class="files-tab-label">Search</span></button>
+      <button id="files-tab-project" class="files-section-tab" title="Open files · middle-click opens in a new TermDeck tab" aria-label="Files"><span class="codicon codicon-files"></span><span class="files-tab-label">Files</span></button>
+      <button id="files-tab-search" class="files-section-tab" title="Search files · middle-click opens in a new TermDeck tab" aria-label="Search files"><span class="codicon codicon-search"></span><span class="files-tab-label">Search</span></button>
       <button id="files-tab-terminal-search" class="files-section-tab" title="Search terminal output" aria-label="Search terminal output"><span class="codicon codicon-terminal"></span><span class="files-tab-label">Terminal search</span></button>
+      <button id="files-tab-git" class="files-section-tab" title="Git changes and history · middle-click opens in a new TermDeck tab" aria-label="Git changes and history"><span class="codicon codicon-git-branch"></span><span class="files-tab-label">Git</span></button>
     </div>
     <div id="files-section-header">
       <span class="side-section-label" id="files-root-label">files</span>
+      <span id="git-branch-label" class="branch-label hidden"></span>
       <button id="reveal-toggle" title="Reveal active file in tree"><span class="codicon codicon-target"></span></button>
       <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
       <button id="tree-sort-toggle" title="Sort files alphabetically"><span class="codicon codicon-sort-precedence"></span></button>
       <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-filter"></span></button>
-      <button id="hide-dot-toggle" title="Hide dot folders"><span class="codicon codicon-eye-closed"></span></button>
-      <button id="files-pin-toggle" title="Keep this panel open after opening a file" aria-label="Pin file panel" aria-pressed="false"><span class="codicon codicon-pin"></span></button>
+     <button id="hide-dot-toggle" title="Hide dot folders"><span class="codicon codicon-eye-closed"></span></button>
+      <button id="git-refresh" class="hidden" title="Refresh Git status"><span class="codicon codicon-refresh"></span></button>
+     <button id="files-pin-toggle" title="Keep this panel open after opening a file" aria-label="Pin file panel" aria-pressed="false"><span class="codicon codicon-pin"></span></button>
       <button id="minimize-toggle" class="far-right" title="Minimize panel"><span class="codicon codicon-chrome-minimize"></span></button>
     </div>
     <div id="files-explorer-panel">
@@ -69,6 +72,7 @@
       <div id="files-tree" tabindex="0" aria-label="Project file tree"></div>
       <div id="search-results" class="hidden"></div>
       <div id="name-results" class="hidden"></div>
+      <div id="git-results" class="hidden"></div>
     </div>
     <div id="search-history-menu" class="hidden" role="menu" aria-label="Recent searches">
       <div id="search-history-head">Recent searches</div>
@@ -88,10 +92,10 @@
     <div id="files-section-resizer" aria-label="Resize file/search panel" role="separator" aria-orientation="vertical"></div>
   </div>
   <div id="sidebar-footer">
-    <button id="view-terminals" title="Terminals · middle-click opens this terminal in a new browser tab" aria-label="Terminals"><span class="codicon codicon-terminal"></span></button>
-    <button id="view-project" title="Files · opens the pinned file panel; middle-click opens the current file in FileDeck" aria-label="Files"><span class="codicon codicon-files"></span></button>
-    <button id="view-search" title="Search &amp; replace · middle-click opens FileDeck search in a new browser tab" aria-label="Search and replace"><span class="codicon codicon-search"></span></button>
-    <button id="view-git" title="Git · open FileDeck Git view" aria-label="Git"><span class="codicon codicon-git-branch"></span></button>
+    <button id="view-terminals" title="Terminals · click to close this section; middle-click opens this terminal in a new browser tab" aria-label="Terminals"><span class="codicon codicon-terminal"></span></button>
+    <button id="view-project" title="Files · middle-click opens in a new TermDeck tab" aria-label="Files"><span class="codicon codicon-files"></span></button>
+    <button id="view-search" title="Search &amp; replace · middle-click opens in a new TermDeck tab" aria-label="Search and replace"><span class="codicon codicon-search"></span></button>
+    <button id="view-git" title="Git · middle-click opens in a new TermDeck tab" aria-label="Git"><span class="codicon codicon-git-branch"></span></button>
     <button id="terminal-search-toggle" title="Search terminal names and output"><span class="codicon codicon-terminal"></span></button>
     <span class="footer-spacer"></span>
     <button id="keys-btn" title="Keyboard shortcuts"><span class="codicon codicon-keyboard"></span></button>
@@ -102,7 +106,6 @@
   <div id="keys-modal">
     <div class="modal-title">Keyboard shortcuts</div>
     <div id="keys-list"></div>
-    <div id="keys-reference"></div>
     <div class="modal-actions">
       <button id="keys-reset">Reset to defaults</button>
       <button id="keys-done">Done</button>
@@ -170,14 +173,12 @@
       <div id="history-composer">
       <div id="history-prompt-wrap">
         <textarea id="history-prompt" rows="1" placeholder="Continue this session…" spellcheck="false"></textarea>
-        <span id="history-model" class="hidden"></span>
-      <div id="history-prompt-help">Enter submit · Tab queue (model) · ↑↓ edit queued · Shift+Enter newline · Esc interrupt</div>
+      <div id="history-prompt-help"><span id="history-prompt-help-text">Enter submit · Tab queue · ↑↓ edit queued · Shift+Enter newline · Esc interrupt</span><span id="history-model" class="hidden"></span></div>
       </div>
       <div id="history-composer-actions">
-        <button id="history-prompt-history-btn" title="Recent prompts" aria-label="Recent prompts" aria-expanded="false"><span class="codicon codicon-history"></span></button>
         <button id="history-send" title="Send prompt" aria-label="Send prompt"><span class="codicon codicon-send"></span></button>
-        <button id="history-reveal-session-btn" title="Select current terminal in sidebar" aria-label="Select current terminal in sidebar"><span class="codicon codicon-target"></span></button>
-        <button id="history-attach" title="Upload file/image into prompt" aria-label="Upload file/image into prompt"><span class="codicon codicon-cloud-upload"></span></button>
+        <button id="history-queue-btn" title="Queue prompt after the current task" aria-label="Queue prompt after the current task"><span class="codicon codicon-list-ordered"></span></button>
+        <button id="history-prompt-history-btn" title="Recent prompts" aria-label="Recent prompts" aria-expanded="false"><span class="codicon codicon-history"></span></button>
       </div>
     </div>
     <div id="history-prompt-history" class="hidden" role="dialog" aria-label="Recent prompts">

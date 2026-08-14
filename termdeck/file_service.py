@@ -361,13 +361,35 @@ class ProjectFileService:
     def save_upload(self, filename: str, data: bytes) -> str:
         if len(data) > TermdeckConfig.UPLOAD_MAX_BYTES:
             raise ValueError(f"file too large: {len(data)} bytes")
+        if len(data) > TermdeckConfig.UPLOAD_TOTAL_MAX_BYTES:
+            raise ValueError(f"file too large for upload storage: {len(data)} bytes")
         safe_name = Path(filename or TermdeckConfig.UPLOAD_FALLBACK_NAME).name
         safe_name = "".join(ch for ch in safe_name if ch.isalnum() or ch in "-_.") or TermdeckConfig.UPLOAD_FALLBACK_NAME
         TermdeckConfig.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        self._evict_oldest_uploads_for_capacity(len(data))
         stamp = TimeUtil.now_est_naive().strftime("%Y%m%d-%H%M%S-%f")
         target = TermdeckConfig.UPLOADS_DIR / f"{stamp}-{safe_name}"
         target.write_bytes(data)
         return str(target)
+
+    def _evict_oldest_uploads_for_capacity(self, incoming_size: int) -> None:
+        upload_files = self._list_upload_files_oldest_first()
+        total_size = sum(size for _, _, size in upload_files)
+        for _, path, size in upload_files:
+            if total_size + incoming_size <= TermdeckConfig.UPLOAD_TOTAL_MAX_BYTES:
+                return
+            path.unlink()
+            total_size -= size
+
+    @staticmethod
+    def _list_upload_files_oldest_first() -> list[tuple[float, Path, int]]:
+        upload_files = []
+        for path in TermdeckConfig.UPLOADS_DIR.iterdir():
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            upload_files.append((stat.st_mtime, path, stat.st_size))
+        return sorted(upload_files, key=lambda entry: (entry[0], entry[1].name))
 
     def write_file(self, root: str, rel: str, content: str) -> dict[str, int]:
         target = self.resolve_confined(root, rel)

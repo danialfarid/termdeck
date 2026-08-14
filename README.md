@@ -319,6 +319,7 @@ Fixed bindings:
 | Open file browser/search modal | **⌃⇧Space** |
 | Delete to line start / delete word *(in terminal)* | **⌘⌫** / **⌥⌫** |
 | Line start / end *(in terminal)* | **⌘←** / **⌘→** |
+| Select active terminal input line | **⌘A** |
 | Rename / move / delete selected tree file | **⌃R** / **⌃M** / **⌘⌫** |
 | Navigate the file tree | **↑ ↓ ← → Enter** |
 

@@ -53,6 +53,12 @@
     </div>
     <div id="filedeck-status" aria-live="polite"></div>
   </section>
+  <nav id="filedeck-footer" aria-label="Navigation">
+    <button id="filedeck-view-terminals" title="Terminals · click opens TermDeck; middle-click opens TermDeck in a new browser tab" aria-label="Terminals"><span class="codicon codicon-terminal"></span><span class="filedeck-footer-label">Terminals</span></button>
+    <button id="filedeck-view-project" class="on" title="Files · middle-click opens this file view in a new browser tab" aria-label="Files"><span class="codicon codicon-files"></span><span class="filedeck-footer-label">Files</span></button>
+    <button id="filedeck-view-search" title="Search · middle-click opens this search view in a new browser tab" aria-label="Search"><span class="codicon codicon-search"></span><span class="filedeck-footer-label">Search</span></button>
+    <button id="filedeck-view-git" title="Git · middle-click opens this Git view in a new browser tab" aria-label="Git"><span class="codicon codicon-git-branch"></span><span class="filedeck-footer-label">Git</span></button>
+  </nav>
 </aside>
 <main id="main">
   <div id="editor-toolbar">
@@ -60,7 +66,7 @@
     <div id="editor-actions">
       <button id="save-button" title="Save file"><span class="codicon codicon-save"></span></button>
       <button id="find-button" title="Find or replace in file"><span class="codicon codicon-search"></span></button>
-      <button id="new-tab-button" title="Open file in a new browser tab"><span class="codicon codicon-new-window"></span></button>
+      <button id="new-tab-button" title="Open this file in a new browser tab" aria-label="Open this file in a new browser tab"><span class="codicon codicon-new-window"></span></button>
     </div>
   </div>
   <div id="editor-workspace">

@@ -28,6 +28,7 @@ class TermdeckConfig:
     UPLOADS_DIR = DATA_DIR / "uploads"
     API_UPLOAD_ROUTE = "/api/upload"
     UPLOAD_MAX_BYTES = 30_000_000
+    UPLOAD_TOTAL_MAX_BYTES = 200_000_000
     UPLOAD_FALLBACK_NAME = "pasted"
     PROJECT_FALLBACK_SLUG = "project"
     API_PROJECTS_ROUTE = "/api/projects"

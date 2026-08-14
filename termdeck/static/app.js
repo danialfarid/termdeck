@@ -11,7 +11,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, history_mode: false, claude_snapshot_experimental: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, selection_copy_history: [],
+  show_terminal_icons: false, history_mode: false, claude_snapshot_experimental: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {}, prompt_wrap_guard: false,
   search_scope: "project", recent_closed_files: [] };
@@ -70,6 +70,7 @@ const TERMINAL_VIEWPORT_ANCHOR_MAX_CHARS = 180;
 const TERMINAL_VIEWPORT_ANCHOR_MIN_CHARS = 24;
 const TERMINAL_MANUAL_REPAINT_CLICK_WINDOW_MS = 1200;
 const OPEN_FILES_MAX_ENTRIES = 80;
+const RECENTLY_OPENED_TERMINALS_MAX_ENTRIES = 80;
 const TERMINAL_V2_FIT_RETRY_LIMIT = 32;
 const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
 // Three checks, well spread out, not five packed inside the first 600ms: only a genuine geometry change
@@ -79,12 +80,17 @@ const PROMPT_WRAP_GUARD_IDLE_MS = 1200;
 const TERMINAL_DEBUG_SNAPSHOT_LIMIT = 50;
 const SELECTION_SEARCH_MAX_CHARS = 1000;
 const SELECTION_ACTION_DELAY_MS = 500;
+const IMAGE_ATTACHMENT_MIME_RE = /^image\//i;
+const IMAGE_ATTACHMENT_EXTENSION_RE = /\.(?:avif|bmp|gif|heic|jpeg|jpg|png|svg|tif|tiff|webp)$/i;
 const MAX_FORK_COUNT = 25;
 const TERMINAL_CLAUDE_IDLE_RECONNECT_MS = 5 * 60 * 1000;
 const CLAUDE_STATUS_ROW_REFRESH_INTERVAL_MS = 500;
 const CODEX_PROMPT_REFLOW_GUARD_MS = 1800;
+const KEYBOARD_SHORTCUT_SECTIONS = ["Terminal", "Files", "General"];
 // Files viewer, file search, and terminal search share one files-section panel and one shortcut.
-const FILES_SIDE_PANEL_TABS = ["project", "search", "terminal-search"];
+const FILEDECK_DEFAULT_SIDEBAR_WIDTH = 250;
+const FILES_SIDE_PANEL_TABS = ["project", "search", "terminal-search", "git"];
+const CLOSED_SIDE_VIEW = "closed";
 const FILES_SIDE_PANEL_LAST_TAB_KEY = "termdeck.files_panel_last_tab";
 const FILE_TYPE_FILTER_CUSTOM_KEY = "termdeck.file_type_filter_custom";
 const FILE_TYPE_FILTER_GROUPS = [
@@ -105,71 +111,79 @@ const FILE_TYPE_FILTER_GROUPS = [
   { label: "Data", patterns: ["*.csv", "*.parquet"] },
 ];
 const DESKTOP_KEYBINDINGS = [
-  { id: "new-terminal", label: "New terminal", def: "Meta+b" },
-  { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
-  { id: "fork-terminal", label: "Fork active terminal", def: "Meta+Shift+b" },
-  { id: "restart-terminal", label: "Restart active terminal", def: "Meta+Alt+r" },
-  { id: "rename-terminal", label: "Rename active terminal", def: "Alt+r" },
-  { id: "copy-session-id", label: "Copy active session id", def: "Alt+i" },
-  { id: "mark-terminal-unread", label: "Mark active terminal as unread", def: "Alt+u" },
-  { id: "create-terminal-group-from-active", label: "Create group from active terminal", def: "Alt+Shift+g" },
-  { id: "move-active-to-top", label: "Move active terminal / group to top", def: "Alt+t" },
-  { id: "open-move-menu", label: "Open active terminal Move to menu", def: "Alt+m" },
-  { id: "save-file", label: "Save open file", def: "Meta+s" },
-  { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp" },
-  { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown" },
-  { id: "cycle-side-panel", label: "Files / Search / Terminal search (4th press closes)", def: "Meta+Shift+s" },
-  { id: "open-files-panel", label: "Open files panel", def: "Meta+Shift+d" },
-  { id: "open-file-search", label: "Open file-content search", def: "Meta+Shift+f" },
-  { id: "open-terminal-search", label: "Open terminal search", def: "Meta+Shift+g" },
-  { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t" },
-  { id: "switch-project", label: "Switch project", def: "Alt+s" },
-  { id: "toggle-notebook", label: "Quick notebook", def: "Alt+n" },
-  { id: "selection-copy", label: "Copy selected terminal / Markdown text", def: "Meta+c" },
-  { id: "selection-note-new", label: "Create note from selected text", def: "Meta+Alt+n" },
-  { id: "selection-note-append", label: "Append selected text to note", def: "Meta+Alt+Shift+n" },
-  { id: "selection-copy-history", label: "Open copied text history", def: "Meta+Shift+v" },
-  { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Alt+g" },
-  { id: "scroll-bottom", label: "Scroll terminal / transcript to bottom", def: "Meta+Shift+ArrowDown" },
-  { id: "focus-prompt", label: "Focus active terminal / editor / Markdown prompt", def: "Alt+f" },
-  { id: "show-usages", label: "Show usages of editor symbol", def: "Shift+F12" },
-  { id: "select-active-input", label: "Select active terminal / editor / prompt text", def: "Alt+a" },
-  { id: "select-terminal-all", label: "Select all terminal text", def: "Meta+Shift+a" },
-  { id: "quick-open", label: "Quick Open", def: "Alt+p" },
-  { id: "toggle-problems", label: "Problems panel", def: "Alt+Shift+p" },
-  { id: "conversation-outline", label: "Conversation outline", def: "Alt+o" },
+  { id: "new-terminal", label: "New terminal", def: "Meta+b", section: "Terminal" },
+  { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace", section: "General" },
+  { id: "fork-terminal", label: "Fork active terminal", def: "Meta+Shift+b", section: "Terminal" },
+  { id: "restart-terminal", label: "Restart active terminal", def: "Meta+Alt+r", section: "Terminal" },
+  { id: "rename-terminal", label: "Rename active terminal", def: "Alt+r", section: "Terminal" },
+  { id: "copy-session-id", label: "Copy active session id", def: "Alt+i", section: "Terminal" },
+  { id: "mark-terminal-unread", label: "Mark active terminal as unread", def: "Alt+u", section: "Terminal" },
+  { id: "create-terminal-group-from-active", label: "Create group from active terminal", def: "Alt+Shift+g", section: "Terminal" },
+  { id: "move-active-to-top", label: "Move active terminal / group to top", def: "Alt+t", section: "Terminal" },
+  { id: "open-move-menu", label: "Open active terminal Move to menu", def: "Alt+m", section: "Terminal" },
+  { id: "undo-terminal-edit", label: "Undo terminal composer edit", def: "Meta+z", section: "Terminal" },
+  { id: "open-terminal-new-tab", label: "Open active terminal in a new browser tab", def: "Meta+Alt+o", section: "Terminal" },
+  { id: "save-file", label: "Save open file", def: "Meta+s", section: "Files" },
+  { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp", section: "Terminal" },
+  { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown", section: "Terminal" },
+  { id: "cycle-side-panel", label: "Files / Search / Terminal search (4th press closes)", def: "Meta+Shift+s", section: "Files" },
+  { id: "open-files-panel", label: "Open files panel", def: "Meta+Shift+d", section: "Files" },
+  { id: "open-file-search", label: "Open file-content search", def: "Meta+Shift+f", section: "Files" },
+  { id: "open-files-new-tab", label: "Open files in a new browser tab", def: "Meta+Alt+d", section: "Files" },
+  { id: "open-search-new-tab", label: "Open file search in a new browser tab", def: "Meta+Alt+f", section: "Files" },
+  { id: "open-terminal-search", label: "Open terminal search", def: "Meta+Shift+g", section: "Terminal" },
+  { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t", section: "Terminal" },
+  { id: "switch-project", label: "Switch project", def: "Alt+s", section: "General" },
+  { id: "toggle-notebook", label: "Quick notebook", def: "Alt+n", section: "General" },
+  { id: "selection-copy", label: "Copy selected terminal / Markdown text", def: "Meta+c", section: "General" },
+  { id: "selection-note-new", label: "Create note from selected text", def: "Meta+Alt+n", section: "General" },
+  { id: "selection-note-append", label: "Append selected text to note", def: "Meta+Alt+Shift+n", section: "General" },
+  { id: "selection-copy-history", label: "Open copied text history", def: "Meta+Shift+v", section: "General" },
+  { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Alt+g", section: "General" },
+  { id: "scroll-bottom", label: "Scroll terminal / transcript to bottom", def: "Meta+Shift+ArrowDown", section: "General" },
+  { id: "focus-prompt", label: "Focus active terminal / editor / Markdown prompt", def: "Alt+f", section: "General" },
+  { id: "show-usages", label: "Show usages of editor symbol", def: "Shift+F12", section: "Files" },
+  { id: "select-active-input", label: "Select active terminal / editor / prompt text", def: "Alt+a", section: "General" },
+  { id: "select-terminal-all", label: "Select all terminal text", def: "Meta+Shift+a", section: "Terminal" },
+  { id: "recent-terminals", label: "Recently opened terminals", def: "Meta+e", section: "Terminal" },
+  { id: "quick-open", label: "Quick Open", def: "Alt+p", section: "Files" },
+  { id: "toggle-problems", label: "Problems panel", def: "Alt+Shift+p", section: "Files" },
+  { id: "conversation-outline", label: "Conversation outline", def: "Alt+o", section: "General" },
 ];
 const VSCODE_KEYBINDINGS = [
-  { id: "new-terminal", label: "New terminal", def: "Ctrl+Alt+b" },
-  { id: "close-item", label: "Close active terminal", def: "Ctrl+Alt+Backspace" },
-  { id: "fork-terminal", label: "Fork active terminal", def: "Ctrl+Alt+Shift+b" },
-  { id: "restart-terminal", label: "Restart active terminal", def: "Ctrl+Alt+Shift+r" },
-  { id: "prev-terminal", label: "Previous terminal", def: "Ctrl+Alt+ArrowUp" },
-  { id: "next-terminal", label: "Next terminal", def: "Ctrl+Alt+ArrowDown" },
-  { id: "toggle-notebook", label: "Quick notebook", def: "Ctrl+Alt+n" },
-  { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Ctrl+Alt+m" },
-  { id: "select-terminal-all", label: "Select all terminal text", def: "Ctrl+Alt+Shift+a" },
-  { id: "vscode-refresh", label: "Refresh TermDeck", def: "Ctrl+r" },
-  { id: "vscode-reload", label: "Reload TermDeck webview", def: "Ctrl+Shift+r" },
+  { id: "new-terminal", label: "New terminal", def: "Ctrl+Alt+b", section: "Terminal" },
+  { id: "close-item", label: "Close active terminal", def: "Ctrl+Alt+Backspace", section: "Terminal" },
+  { id: "fork-terminal", label: "Fork active terminal", def: "Ctrl+Alt+Shift+b", section: "Terminal" },
+  { id: "restart-terminal", label: "Restart active terminal", def: "Ctrl+Alt+Shift+r", section: "Terminal" },
+  { id: "prev-terminal", label: "Previous terminal", def: "Ctrl+Alt+ArrowUp", section: "Terminal" },
+  { id: "next-terminal", label: "Next terminal", def: "Ctrl+Alt+ArrowDown", section: "Terminal" },
+  { id: "open-terminal-new-tab", label: "Open active terminal in a new browser tab", def: "Ctrl+Alt+o", section: "Terminal" },
+  { id: "toggle-notebook", label: "Quick notebook", def: "Ctrl+Alt+n", section: "General" },
+  { id: "open-files-new-tab", label: "Open files in a new browser tab", def: "Ctrl+Alt+d", section: "Files" },
+  { id: "open-search-new-tab", label: "Open file search in a new browser tab", def: "Ctrl+Alt+f", section: "Files" },
+  { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Ctrl+Alt+m", section: "General" },
+  { id: "select-terminal-all", label: "Select all terminal text", def: "Ctrl+Alt+Shift+a", section: "Terminal" },
+  { id: "vscode-refresh", label: "Refresh TermDeck", def: "Ctrl+r", section: "General" },
+  { id: "vscode-reload", label: "Reload TermDeck webview", def: "Ctrl+Shift+r", section: "General" },
 ];
 const REFERENCE_KEYS = [
-  { keys: "⌘[ / ⌘]", label: "Browser back / forward (last-clicked navigation)" },
-  { keys: "⌃⇧E", label: "Focus file-name search" },
-  { keys: "⌃⇧F", label: "Focus file-content search" },
-  { keys: "⌃⇧Space", label: "Open file browser/search" },
-  { keys: "↑ ↓ Enter", label: "Navigate file and content search results from their search input" },
-  { keys: "⌘⌫ / ⌥⌫", label: "Delete to line start / delete word (in terminal)" },
-  { keys: "⌘← / ⌘→", label: "Line start / end (in terminal)" },
-  { keys: "⌘A", label: "Select all terminal text" },
-  { keys: "⌘F", label: "Find in the complete active terminal buffer" },
-  { keys: "⇧F12", label: "Show usages of the editor symbol" },
-  { keys: "⌃R / ⌃M / ⌘⌫", label: "Rename / move / delete selected tree file" },
-  { keys: "↑ ↓ ← → Enter", label: "Navigate the file tree (when focused)" },
+  { keys: "⌘[ / ⌘]", label: "Browser back / forward (last-clicked navigation)", section: "General" },
+  { keys: "⌃⇧E", label: "Focus file-name search", section: "Files" },
+  { keys: "⌃⇧F", label: "Focus file-content search", section: "Files" },
+  { keys: "⌃⇧Space", label: "Open file browser/search", section: "Files" },
+  { keys: "↑ ↓ Enter", label: "Navigate file and content search results from their search input", section: "Files" },
+  { keys: "⌘⌫ / ⌥⌫", label: "Delete to line start / delete word (in terminal)", section: "Terminal" },
+  { keys: "⌘← / ⌘→", label: "Line start / end (in terminal)", section: "Terminal" },
+  { keys: "⌘A", label: "Select active terminal input line", section: "Terminal" },
+  { keys: "⌘F", label: "Find in the complete active terminal buffer", section: "Terminal" },
+  { keys: "⇧F12", label: "Show usages of the editor symbol", section: "Files" },
+  { keys: "⌃R / ⌃M / ⌘⌫", label: "Rename / move / delete selected tree file", section: "Files" },
+  { keys: "↑ ↓ ← → Enter", label: "Navigate the file tree (when focused)", section: "Files" },
 ];
 const VSCODE_REFERENCE_KEYS = [
-  { keys: "⌘⇧P", label: "Open VS Code Command Palette" },
-  { keys: "⌘⇧E", label: "Open VS Code Explorer" },
-  { keys: "⌘W", label: "Close editor tab" },
+  { keys: "⌘⇧P", label: "Open VS Code Command Palette", section: "General" },
+  { keys: "⌘⇧E", label: "Open VS Code Explorer", section: "Files" },
+  { keys: "⌘W", label: "Close editor tab", section: "General" },
 ];
 function parseModeFlag(raw) {
   if (typeof raw === "boolean") return raw;
@@ -224,11 +238,11 @@ const TERMINAL_TYPE_SVGS = {
   claude: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.25c.42 0 .76.34.76.76v4.08l3.53-2.04a.76.76 0 1 1 .76 1.31L9.52 7.4l3.53 2.04a.76.76 0 1 1-.76 1.31L8.76 8.72v4.08a.76.76 0 0 1-1.52 0V8.72l-3.53 2.04a.76.76 0 1 1-.76-1.31L6.48 7.4 2.95 5.36a.76.76 0 1 1 .76-1.31l3.53 2.04V2.01c0-.42.34-.76.76-.76Z"/></svg>',
   codex: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zM3.5988 18.304a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1412-1.6462zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5968 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zm-12.6413 4.1347-2.0201-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805-4.783 2.7582a.7948.7948 0 0 0-.3927.6813zM9.4041 10.4976l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"/></svg>',
 };
-const makeTerminalTheme = (background, foreground, cursor, selectionBackground, ansi, searchHighlightBackground) => {
+const makeTerminalTheme = (background, foreground, cursor, selectionBackground, ansi) => {
   const [black, red, green, yellow, blue, magenta, cyan, white, brightBlack, brightRed, brightGreen,
     brightYellow, brightBlue, brightMagenta, brightCyan, brightWhite] = ansi;
   return { background, foreground, cursor, selectionBackground,
-    selectionInactiveBackground: rgbaThemeColor(searchHighlightBackground || selectionBackground, 0.82),
+    selectionInactiveBackground: selectionBackground,
     selectionForeground: foreground, black, red, green, yellow, blue, magenta, cyan, white,
     brightBlack, brightRed, brightGreen, brightYellow, brightBlue, brightMagenta, brightCyan, brightWhite };
 };
@@ -266,7 +280,7 @@ const makeTheme = (id, label, kind, colors, ansi, monacoBase = kind === "light" 
       "--tree-selected-bg": treeSelectedBackground, "--tree-selected-border": treeSelectedBorder,
     },
     terminal: makeTerminalTheme(terminalBackground, terminalForeground, colors.cursor || colors.accent,
-      colors.selection || activeBorder, ansi, colors.accent),
+      colors.selection || activeBorder, ansi),
     monacoColors: {
       "editor.background": monacoThemeColor(colors.monacoBg || terminalBackground), "editor.foreground": monacoThemeColor(colors.text),
       "editorGutter.background": monacoThemeColor(colors.monacoBg || terminalBackground), "editorLineNumber.foreground": monacoThemeColor(colors.dim),
@@ -408,6 +422,8 @@ class TermdeckApp {
     this.treeEventRefreshTimer = 0;
     this.treeChangedDirectories = new Set();
     this.treeChangedEntries = new Map();
+    this.gitSideGeneration = 0;
+    this.gitSideState = null;
     this.recentFiles = [];
     this.recentFilesRoot = null;
     this.recentFilesFingerprint = "";
@@ -417,6 +433,7 @@ class TermdeckApp {
     this.sideView = "terminals";
     this.filesSidePanelCycleView = null;
     this.filesSidePanelCycleTransition = false;
+    this.filesPanelWidthInitialized = localStorage.getItem("termdeck.files_panel_width_v2") === "1";
     const savedFilesTab = localStorage.getItem(FILES_SIDE_PANEL_LAST_TAB_KEY);
     this.lastFilesSidePanelTab = FILES_SIDE_PANEL_TABS.includes(savedFilesTab) ? savedFilesTab : "project";
     this.searchWord = false;
@@ -489,6 +506,7 @@ class TermdeckApp {
     this.problemsRefreshTimer = 0;
     this.quickOpenResults = [];
     this.quickOpenSelection = 0;
+    this.quickOpenMode = "all";
     this.quickOpenTimer = 0;
     this.quickOpenGeneration = 0;
     this.conversationOutlineOpen = false;
@@ -524,13 +542,18 @@ class TermdeckApp {
     this.projectSlug = projectMatch ? decodeURIComponent(projectMatch[1])
       : this.vscodeEditorMode ? (LOCATION_PARAMS.get("project") || null) : null;
     const urlParams = new URLSearchParams(location.search);
+    const requestedFileView = ["project", "search", "git"].includes(urlParams.get("view")) ? urlParams.get("view") : "project";
     if (urlParams.get("t")) this.initialNav = { kind: "term", id: urlParams.get("t") };
     else if (urlParams.get("f")) {
       this.initialNav = {
-        kind: "file",
+        kind: "open-file",
         key: urlParams.get("f"),
+        view: requestedFileView,
+        pinned: urlParams.get("pinned") === "1",
         return_to: String(urlParams.get("rt") || "").trim(),
       };
+    } else if (["project", "search", "git"].includes(urlParams.get("view"))) {
+      this.initialNav = { kind: "files", view: requestedFileView, q: urlParams.get("q") || "", pinned: urlParams.get("pinned") === "1" };
     }
     else if (urlParams.get("q")) {
       this.initialNav = { kind: "search", q: urlParams.get("q"), glob: urlParams.get("glob") || "",
@@ -552,7 +575,7 @@ class TermdeckApp {
     document.body.classList.toggle("vscode-editor-mode", this.vscodeEditorMode);
     if (!this.vscodeMode) return;
     const forceHidden = ["active-toggle", "terminal-search-toggle",
-      "view-project", "view-search", "files-section", "side-split", "project-select", "project-select-label"];
+      "view-project", "view-search", "view-git", "files-section", "side-split", "project-select", "project-select-label"];
     for (const id of forceHidden) {
       const el = this.$(id);
       if (el) {
@@ -686,7 +709,7 @@ class TermdeckApp {
     const states = this.settings.project_state || {};
     return {
       active_session_id: "", open_files: [], open_files_collapsed: false, recent_files_collapsed: true,
-      unread_sessions: [],
+      recently_opened_terminal_ids: [], unread_sessions: [],
       terminal_groups: [], session_groups: {},
       ...(states[this.projectStateKey()] || {}),
       recent_files_collapsed: states[this.projectStateKey()]?.recent_files_collapsed ?? true,
@@ -698,6 +721,14 @@ class TermdeckApp {
     states[this.projectStateKey()] = { ...this.getProjectState(), ...patch };
     this.settings.project_state = states;
     this.saveSettings();
+  }
+
+  rememberRecentlyOpenedTerminal(sessionId) {
+    if (!sessionId || !this.session(sessionId)) return;
+    const current = this.getProjectState().recently_opened_terminal_ids || [];
+    const next = [sessionId, ...current.filter((id) => id !== sessionId)].slice(0, RECENTLY_OPENED_TERMINALS_MAX_ENTRIES);
+    if (next.length === current.length && next.every((id, index) => id === current[index])) return;
+    this.patchProjectState({ recently_opened_terminal_ids: next });
   }
 
   sectionCollapsed(field) {
@@ -1416,21 +1447,30 @@ class TermdeckApp {
     this.openFileDeckViewInNewTab(root, "tree", relativePath);
   }
 
-  openFileDeckViewInNewTab(root, view, relativePath = "") {
+  projectRelativeFilePath(project, root, relativePath) {
+    const projectRoot = String(project.root || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    const currentRoot = String(root || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    const nestedRoot = currentRoot === projectRoot ? "" :
+      currentRoot.startsWith(`${projectRoot}/`) ? currentRoot.slice(projectRoot.length + 1) : "";
+    return [nestedRoot, String(relativePath || "").replace(/^\/+/, "")].filter(Boolean).join("/");
+  }
+
+  openFileDeckViewInNewTab(root, view, relativePath = "", searchQuery = "") {
     const project = this.fileDeckProjectForRoot(root);
     if (!project) return;
     const params = new URLSearchParams();
-    if (view !== "tree") params.set("view", view);
-    if (relativePath) params.set("file", relativePath);
+    params.set("view", view === "tree" ? "project" : view);
+    params.set("pinned", "1");
+    if (relativePath) params.set("f", `${project.root}|${this.projectRelativeFilePath(project, root, relativePath)}`);
+    if (searchQuery) params.set("q", searchQuery);
     const query = params.toString() ? `?${params}` : "";
-    window.open(`/f/${encodeURIComponent(project.name)}${query}`, "_blank", "noopener,noreferrer");
+    window.open(`/p/${encodeURIComponent(project.name)}${query}`, "_blank", "noopener,noreferrer");
   }
 
   openFileDeckView(view) {
     const project = this.fileDeckProjectForRoot(this.projectRoot() || this.sessions.find((session) => session.session_id === this.activeId)?.cwd);
     if (!project) return;
-    const params = new URLSearchParams({ view });
-    location.href = `/f/${encodeURIComponent(project.name)}?${params}`;
+    this.setSideView(view === "tree" ? "project" : view, false);
   }
 
   openTerminalInNewTab(session) {
@@ -1461,7 +1501,8 @@ class TermdeckApp {
     const root = entry?.root || this.treeRoot || this.projectRoot();
     if (!root) return;
     if (view === "project" && entry) this.openFileDeckViewInNewTab(root, "tree", entry.path);
-    else this.openFileDeckViewInNewTab(root, view === "project" ? "tree" : view);
+    else this.openFileDeckViewInNewTab(root, view === "project" ? "tree" : view,
+      "", view === "search" ? this.$("search-query").value.trim() : "");
   }
 
   compactProjectPath(root) {
@@ -1592,7 +1633,7 @@ class TermdeckApp {
     this.initNotebook();
     this.initSelectionActions();
     this.initIdeFeatures();
-    for (const view of ["terminals", "project", "search"]) {
+    for (const view of ["terminals", "project", "search", "git"]) {
       this.$("view-" + view).onclick = () => {
         if (view === "terminals") {
           this.setSideView(view);
@@ -1602,13 +1643,20 @@ class TermdeckApp {
           this.openFilesSidePanelView(view);
           return;
         }
-        if (view === "search" && this.searchContentFromSelection()) return;
-        if (view === "project" && this.searchFileFromSelection()) return;
+       if (view === "search" && this.searchContentFromSelection()) {
+         return;
+       }
+       if (view === "project" && this.searchFileFromSelection()) {
+         return;
+       }
         this.openFilesSidePanelView(view);
       };
+      this.$("view-" + view).onauxclick = (event) => this.handleNavigationAuxClick(event, view);
     }
+    this.$("view-git").onclick = () => this.openFilesSidePanelView("git");
+    this.$("view-git").onauxclick = (event) => this.handleNavigationAuxClick(event, "git");
     for (const [view, id] of [["project", "files-tab-project"], ["search", "files-tab-search"],
-      ["terminal-search", "files-tab-terminal-search"]]) {
+      ["terminal-search", "files-tab-terminal-search"], ["git", "files-tab-git"]]) {
       const button = this.$(id);
       if (!button) continue;
       button.onclick = () => {
@@ -1620,6 +1668,7 @@ class TermdeckApp {
         if (view === "project" && this.searchFileFromSelection()) return;
         this.openFilesSidePanelView(view);
       };
+      button.onauxclick = (event) => this.handleNavigationAuxClick(event, view);
     }
     const replaceToggle = this.$("replace-toggle");
     replaceToggle.onclick = () => {
@@ -1748,6 +1797,7 @@ class TermdeckApp {
     hideDotBtn.onclick = () => this.toggleHideDotFolders();
     this.$("files-pin-toggle").onclick = () => this.toggleFilesPinned();
     this.updateFilesPinButton();
+    this.$("git-refresh").onclick = () => void this.loadGitSidePanel();
     this.$("files-tree").addEventListener("contextmenu", (e) => {
       const row = e.target.closest(".tree-row");
       if (row && row.dataset.rel) this.openTreeContextMenu(e, row);
@@ -1860,9 +1910,8 @@ class TermdeckApp {
     this.$("terminal-find-next").onclick = () => this.moveTerminalFindMatch(1);
     this.$("terminal-find-close").onclick = () => this.closeTerminalFind();
     this.$("kill-stale-terminals-btn").onclick = () => void this.killStaleTerminals();
-    this.$("history-attach").onclick = () => this.attachToHistory();
-    this.$("history-reveal-session-btn").onclick = () => this.revealAndFocusActiveTerminalInSidebar();
     this.$("history-send").onclick = () => this.sendHistoryPrompt();
+    this.$("history-queue-btn").onclick = () => this.sendHistoryPrompt({ queue: true });
     this.$("history-prompt-history-btn").onclick = () => this.togglePromptHistory();
     this.$("history-prompt").addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
@@ -1879,7 +1928,6 @@ class TermdeckApp {
         return;
       }
       if (e.key === "Tab") {
-        if (this.session(this.activeId)?.agent_kind !== "codex") return;
         e.preventDefault();
         e.stopPropagation();
         this.sendHistoryPrompt({ queue: true });
@@ -1913,7 +1961,32 @@ class TermdeckApp {
         this.sendHistoryPrompt({ queue: false });
       }
     }, true);
-    this.$("history-prompt").addEventListener("input", () => {
+    const historyPrompt = this.$("history-prompt");
+    historyPrompt.addEventListener("paste", (event) => {
+      const files = this.historyImageFilesFromDataTransfer(event.clipboardData);
+      if (!files.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void this.insertHistoryAttachmentFiles(this.views.get(this.activeId), files);
+    });
+    historyPrompt.addEventListener("dragover", (event) => {
+      const files = this.historyImageFilesFromDataTransfer(event.dataTransfer);
+      if (!files.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "copy";
+      historyPrompt.classList.add("image-drop-target");
+    });
+    historyPrompt.addEventListener("dragleave", () => historyPrompt.classList.remove("image-drop-target"));
+    historyPrompt.addEventListener("drop", (event) => {
+      const files = this.historyImageFilesFromDataTransfer(event.dataTransfer);
+      historyPrompt.classList.remove("image-drop-target");
+      if (!files.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void this.insertHistoryAttachmentFiles(this.views.get(this.activeId), files);
+    });
+    historyPrompt.addEventListener("input", () => {
       const view = this.views.get(this.activeId);
       if (!view) return;
       this.markPromptWrapActivity(view);
@@ -1926,7 +1999,7 @@ class TermdeckApp {
       this.syncPromptToTerminal(view, { writeToTerminal: false });
       this.resizeHistoryPrompt();
     });
-    this.$("attach-btn").onclick = () => this.attachToActive();
+    this.$("attach-btn").onclick = () => this.historyOpen ? this.attachToHistory() : this.attachToActive();
     this.$("reveal-session-btn").onclick = () => this.revealAndFocusActiveTerminalInSidebar();
     for (const id of ["scroll-bottom-btn", "vscode-scroll-bottom-btn"]) {
       const button = this.$(id);
@@ -1940,6 +2013,12 @@ class TermdeckApp {
       if (e.target.id === "modal-backdrop") this.closeModal();
     });
     document.addEventListener("keydown", (e) => {
+      if (this.isDesktopTerminalSelectInputEvent(e)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        this.selectActiveTerminalInputText();
+        return;
+      }
       if (!this.isDesktopTerminalSelectAllEvent(e)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -1992,13 +2071,6 @@ class TermdeckApp {
       if (e.key === "Escape" && this.closeUnpinnedFilesPanelAndFocusEditor()) {
         e.preventDefault();
         e.stopPropagation();
-        return;
-      }
-      if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a" &&
-          e.target.closest && e.target.closest(".xterm") && this.activeFileKey === null && !this.historyOpen) {
-        e.preventDefault();
-        e.stopPropagation();
-        this.selectActiveTerminalText();
         return;
       }
       if (this.isTypingTarget(e)) return;
@@ -2113,6 +2185,26 @@ class TermdeckApp {
 
   applyNavState(state) {
     if (!state || state.kind === "init") return;
+    if (state.kind === "open-file") {
+      const separator = String(state.key || "").indexOf("|");
+      if (separator <= 0) return;
+      const root = String(state.key).slice(0, separator);
+      const path = String(state.key).slice(separator + 1);
+      if (state.pinned) this.setFilesPinned(true);
+      this.setSideView(["project", "search", "git"].includes(state.view) ? state.view : "project", false);
+      void this.openFile(root, path, null, null, { pinned: true, history: false });
+      return;
+    }
+    if (state.kind === "files") {
+      if (state.pinned) this.setFilesPinned(true);
+      const view = ["project", "search", "git"].includes(state.view) ? state.view : "project";
+      this.setSideView(view, false);
+      if (view === "search" && state.q) {
+        this.$("search-query").value = state.q;
+        void this.runSearch(state.q, true);
+      }
+      return;
+    }
     if (state.kind === "file" && !this.openFiles.has(state.key)) {
       const returnId = String(state.return_to || "");
       const fallback = returnId && this.session(returnId)
@@ -2483,6 +2575,51 @@ class TermdeckApp {
     this.updateUnreadIndicator(id);
     this.updateHistoryThinkingIndicator();
     this.renderHistoryMeta();
+    if (!spinning) this.dispatchNextMarkdownPrompt(this.views.get(id));
+  }
+
+  markdownPromptQueueForSession(sessionId) {
+    const queues = this.settings.md_prompt_queues && typeof this.settings.md_prompt_queues === "object"
+      ? this.settings.md_prompt_queues : {};
+    const saved = Array.isArray(queues[sessionId]) ? queues[sessionId] : [];
+    return saved.map((text) => ({ text: String(text || "") })).filter((item) => item.text.trim());
+  }
+
+  persistMarkdownPromptQueue(view) {
+    if (!view) return;
+    const queues = this.settings.md_prompt_queues && typeof this.settings.md_prompt_queues === "object"
+      ? this.settings.md_prompt_queues : {};
+    const nextQueues = { ...queues };
+    const texts = (view.promptQueue || []).map((item) => String(item.draftText ?? item.text ?? "")).filter((text) => text.trim());
+    if (texts.length) nextQueues[view.sessionId] = texts;
+    else delete nextQueues[view.sessionId];
+    this.settings.md_prompt_queues = nextQueues;
+    this.saveSettings();
+  }
+
+  dispatchNextMarkdownPrompt(view) {
+    if (!view || view.closed || view.promptQueueDispatching || !view.promptQueue.length ||
+        this.processingStates.get(view.sessionId) || this.session(view.sessionId)?.processing === true ||
+        this.historyPendingProcessing.has(view.sessionId) || !view.ws || view.ws.readyState !== WebSocket.OPEN) return false;
+    const item = view.promptQueue.shift();
+    const text = String(item?.draftText ?? item?.text ?? "");
+    if (!text.trim()) {
+      this.persistMarkdownPromptQueue(view);
+      this.renderHistoryQueue(view);
+      return this.dispatchNextMarkdownPrompt(view);
+    }
+    view.promptQueueDispatching = true;
+    this.persistMarkdownPromptQueue(view);
+    this.renderHistoryQueue(view);
+    const sent = this.submitHistoryPromptText(view, text, { fromQueue: true });
+    view.promptQueueDispatching = false;
+    if (!sent) {
+      view.promptQueue.unshift({ text });
+      this.persistMarkdownPromptQueue(view);
+      this.renderHistoryQueue(view);
+      return false;
+    }
+    return true;
   }
 
   session(id) {
@@ -3111,6 +3248,7 @@ class TermdeckApp {
       if (count) count.textContent = this.terminalFindMatches.length ? "0 matches" : "no matches";
       return;
     }
+    view.userScrollIntent = true;
     view.scrollMode = "preserve";
     view.v2Programmatic = true;
     const buffer = view.term.buffer.active;
@@ -3743,7 +3881,8 @@ class TermdeckApp {
   setSideView(view, allowToggle = true, allowFloating = true) {
     if (this.vscodeMode && view !== "terminals") return;
     if (!this.filesSidePanelCycleTransition) this.filesSidePanelCycleView = null;
-    const nextView = allowToggle && this.sideView === view && view !== "terminals" ? "terminals" : view;
+    const nextView = allowToggle && this.sideView === view
+      ? (view === "terminals" ? CLOSED_SIDE_VIEW : "terminals") : view;
     this.sideView = nextView;
     view = this.sideView;
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(view);
@@ -3751,28 +3890,32 @@ class TermdeckApp {
       this.lastFilesSidePanelTab = view;
       localStorage.setItem(FILES_SIDE_PANEL_LAST_TAB_KEY, view);
     }
-    if (!filesVisible || view === "terminal-search") this.closeFileTypeFilterMenu();
+    if (!filesVisible || view === "terminal-search" || view === "git") this.closeFileTypeFilterMenu();
     const filesPinned = filesVisible && !!this.settings.files_pinned;
     this.settings.side_full = filesVisible;
-    if (filesPinned) {
-      const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
-      this.settings.files_width = Math.max(Number(this.settings.files_width) || 0, normalWidth * 2);
-    }
     this.$("files-section").classList.toggle("hidden", !filesVisible);
+    this.$("session-list").classList.toggle("hidden", view === CLOSED_SIDE_VIEW);
     this.$("files-section").classList.toggle("with-search", view === "search");
     this.$("files-section").classList.toggle("with-terminal-search", view === "terminal-search");
+    this.$("files-section").classList.toggle("with-git", view === "git");
     this.$("files-section").classList.toggle("floating", filesVisible && !filesPinned);
-    for (const [name, id] of [["terminals", "view-terminals"], ["project", "view-project"], ["search", "view-search"]]) {
+    const gitView = view === "git";
+    this.$("git-branch-label").classList.toggle("hidden", !gitView);
+    this.$("git-refresh").classList.toggle("hidden", !gitView);
+    for (const id of ["reveal-toggle", "mtime-toggle", "tree-sort-toggle", "hide-excluded-toggle", "hide-dot-toggle"]) {
+      this.$(id).classList.toggle("hidden", gitView);
+    }
+    for (const [name, id] of [["terminals", "view-terminals"], ["project", "view-project"], ["search", "view-search"], ["git", "view-git"]]) {
       const button = this.$(id);
       if (button) button.classList.toggle("on", name === view);
     }
     this.$("terminal-search-toggle").classList.toggle("on", view === "terminal-search");
-    for (const name of ["project", "search", "terminal-search"]) {
+    for (const name of ["project", "search", "terminal-search", "git"]) {
       const id = `files-tab-${name}`;
       const button = this.$(id);
       if (button) button.classList.toggle("on", name === view);
     }
-    this.$("side-split").classList.toggle("hidden", view === "terminals" || filesVisible);
+    this.$("side-split").classList.toggle("hidden", view === "terminals" || view === CLOSED_SIDE_VIEW || filesVisible);
     this.applySettings({ fitTerminals: !filesVisible || filesPinned });
     this.applySideLayout();
     if (view === "project" || view === "search") {
@@ -3797,6 +3940,9 @@ class TermdeckApp {
       this.$("search-query").focus();
       if (this.$("search-query").value.trim()) this.runSearch(null, true);
       else this.setExplorerMode("content");
+    } else if (view === "git") {
+      this.setExplorerMode("git");
+      void this.loadGitSidePanel();
     } else if (view === "terminal-search") {
       this.updateTerminalSearchGroupButton();
       this.$("terminal-search-input").focus();
@@ -3836,6 +3982,106 @@ class TermdeckApp {
     this.$("files-tree").classList.toggle("hidden", mode !== "tree");
     this.$("search-results").classList.toggle("hidden", mode !== "content");
     this.$("name-results").classList.toggle("hidden", mode !== "name");
+    this.$("git-results").classList.toggle("hidden", mode !== "git");
+  }
+
+  async loadGitSidePanel() {
+    if (this.sideView !== "git" || this.vscodeMode) return;
+    const generation = ++this.gitSideGeneration;
+    const root = this.projectRoot() || this.treeRoot || this.session(this.activeId)?.cwd;
+    const results = this.$("git-results");
+    const branch = this.$("git-branch-label");
+    if (!root || !results || !branch) return;
+    results.textContent = "Loading Git status…";
+    const response = await fetch(`/api/files/git-branch?${new URLSearchParams({ root, limit: "100" })}`);
+    if (generation !== this.gitSideGeneration || this.sideView !== "git") return;
+    if (!response.ok) {
+      results.textContent = "Git status unavailable";
+      branch.textContent = "Git unavailable";
+      return;
+    }
+    const state = await response.json();
+    this.gitSideState = state;
+    branch.textContent = state.branch || "(detached HEAD)";
+    branch.title = state.upstream ? `${state.branch} → ${state.upstream}` : state.branch || "Git";
+    results.textContent = "";
+    const files = state.files || [];
+    const summary = document.createElement("div");
+    summary.className = "git-summary";
+    summary.textContent = files.length ? `${files.length} modified file${files.length === 1 ? "" : "s"} in ${state.branch}` : `Working tree clean · ${state.branch}`;
+    results.appendChild(summary);
+    this.renderGitSideGroupHeader(results, "working tree", "diff-modified");
+    if (!files.length) {
+      const empty = document.createElement("div");
+      empty.className = "file-inspector-empty";
+      empty.textContent = "No uncommitted changes on this branch.";
+      results.appendChild(empty);
+    }
+    for (const file of files) this.renderGitSideFile(results, root, file);
+    this.renderGitSideGroupHeader(results, "branch history", "history");
+    for (const commit of (state.commits || []).slice(0, 30)) this.renderGitSideCommit(results, commit);
+    this.$("status-name").textContent = `${files.length} modified file${files.length === 1 ? "" : "s"} · branch ${state.branch}`;
+  }
+
+  renderGitSideGroupHeader(container, label, icon) {
+    const header = document.createElement("div");
+    header.className = "git-group-header";
+    const glyph = document.createElement("span");
+    glyph.className = `codicon codicon-${icon}`;
+    const text = document.createElement("span");
+    text.textContent = label;
+    header.append(glyph, text);
+    container.appendChild(header);
+  }
+
+  renderGitSideFile(container, root, file) {
+    const row = document.createElement("div");
+    row.className = "tree-row file git-file-row";
+    row.dataset.path = file.path;
+    row.title = `${root}/${file.path}\nOpen file; middle-click opens in a new TermDeck tab`;
+    row.append(this.fileTypeIconEl(file.path.split("/").pop(), "tree-type-icon"));
+    const name = document.createElement("span");
+    name.className = "tree-name";
+    name.textContent = file.path;
+    row.appendChild(name);
+    this.appendGitStatus(row, { git_status: file.status });
+    row.onclick = () => void this.openFile(root, file.path, null, row, { fromFilePanel: true, pinned: false });
+    row.onauxclick = (event) => this.handleFileDeckAuxClick(event, root, file.path);
+    row.oncontextmenu = (event) => this.openFileDeckRowContextMenu(event, root, file.path);
+    container.appendChild(row);
+  }
+
+  renderGitSideCommit(container, commit) {
+    const row = document.createElement("div");
+    row.className = "git-commit";
+    const id = document.createElement("span");
+    id.className = "git-commit-id";
+    id.textContent = commit.short_id;
+    const message = document.createElement("span");
+    message.className = "git-commit-message";
+    message.textContent = commit.message;
+    const date = document.createElement("span");
+    date.className = "git-commit-date";
+    date.textContent = this.gitDateLabel(commit.committed_at);
+    row.append(id, message, date);
+    row.title = `${commit.author} · ${commit.committed_at}`;
+    row.onclick = () => this.openGitHistoryForActiveFile();
+    container.appendChild(row);
+  }
+
+  gitDateLabel(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value || "") : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  openGitHistoryForActiveFile() {
+    if (this.activeFileKey === null) {
+      this.$("status-name").textContent = "Open a file to inspect its Git history";
+      return;
+    }
+    this.fileHistoryMode = "git";
+    if (!this.fileHistoryOpen) this.toggleFileHistory();
+    else void this.loadFileHistory();
   }
 
   updateFilesPinButton() {
@@ -3851,19 +4097,27 @@ class TermdeckApp {
     if (icon) icon.className = `codicon ${pinned ? "codicon-pinned" : "codicon-pin"}`;
   }
 
-  toggleFilesPinned() {
-    this.settings.files_pinned = !this.settings.files_pinned;
-    localStorage.setItem("termdeck.files_pinned", this.settings.files_pinned ? "1" : "0");
-    if (this.settings.files_pinned) {
-      const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
-      this.settings.files_width = Math.max(Number(this.settings.files_width) || 0, normalWidth * 2);
+  setFilesPinned(pinned) {
+    const nextPinned = !!pinned;
+    if (this.settings.files_pinned === nextPinned) return;
+    this.settings.files_pinned = nextPinned;
+    localStorage.setItem("termdeck.files_pinned", nextPinned ? "1" : "0");
+    if (nextPinned && !this.filesPanelWidthInitialized) {
+      this.settings.files_width = FILEDECK_DEFAULT_SIDEBAR_WIDTH;
+      this.filesPanelWidthInitialized = true;
+      localStorage.setItem("termdeck.files_panel_width_v2", "1");
     }
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
-    this.$("files-section").classList.toggle("floating", filesVisible && !this.settings.files_pinned);
+    this.$("files-section").classList.toggle("floating", filesVisible && !nextPinned);
     this.updateFilesPinButton();
-    this.applySettings({ fitTerminals: !filesVisible || this.settings.files_pinned });
+    this.applySideLayout();
+    this.applySettings({ fitTerminals: !filesVisible || nextPinned });
     this.scheduleTerminalFitAfterSidebarChange();
     this.saveSettings();
+  }
+
+  toggleFilesPinned() {
+    this.setFilesPinned(!this.settings.files_pinned);
   }
 
   dismissUnpinnedFilesPanel() {
@@ -3971,20 +4225,22 @@ class TermdeckApp {
     if (nextView === "project") this.focusFileNameSearch();
     else if (nextView === "search") this.focusFileContentSearch();
     else if (nextView === "terminal-search") this.$("terminal-search-input").focus();
+    else if (nextView === "git") requestAnimationFrame(() => this.$("git-refresh")?.focus());
     else requestAnimationFrame(() => this.focusActiveEditor());
   }
 
-  openFilesSidePanelView(view) {
+  openFilesSidePanelView(view, pinned = false) {
     if (this.vscodeMode || !FILES_SIDE_PANEL_TABS.includes(view)) return;
     if (this.sideView === view) {
       this.setSideView("terminals", false);
       requestAnimationFrame(() => this.focusActiveEditor());
       return;
     }
+    if (pinned) this.setFilesPinned(true);
     this.setSideView(view, false);
     if (view === "project") this.focusFileNameSearch();
     else if (view === "search") this.focusFileContentSearch();
-    else this.$("terminal-search-input").focus();
+    else if (view === "terminal-search") this.$("terminal-search-input").focus();
   }
 
   applySideLayout() {
@@ -4254,6 +4510,12 @@ class TermdeckApp {
       const directAction = this.bindingToDisplay(this.bindingFor(actionId));
       if (button) button.title = `${label} (${directAction}; ${sidePanelAction} cycles tabs)`;
     }
+    for (const id of ["view-project", "view-search", "view-git", "files-tab-project", "files-tab-search", "files-tab-git"]) {
+      const button = this.$(id);
+      if (button) button.title = id === "view-git" || id === "files-tab-git"
+        ? `Git (click; ${sidePanelAction} cycles tabs) · middle-click opens in a new TermDeck tab`
+        : `${button.title} · middle-click opens in a new TermDeck tab`;
+    }
     const notebookToggle = this.$("notebook-toggle");
     if (notebookToggle) {
       notebookToggle.title = `Quick notebook (${this.bindingToDisplay(this.bindingFor("toggle-notebook"))})`;
@@ -4297,7 +4559,6 @@ class TermdeckApp {
     const state = this.getProjectState();
     const assignedGroupId = state.session_groups?.[session.session_id] || "";
     if (!multiple) {
-      this.addContextItem(menu, "Open terminal in new tab", () => this.openTerminalInNewTab(session), "new-window");
       this.addContextItem(menu, this.shortcutLabel("Fork", "fork-terminal"),
         () => this.forkSession(session), "repo-forked");
       this.addContextItem(menu, this.shortcutLabel("Restart", "restart-terminal"),
@@ -4365,6 +4626,10 @@ class TermdeckApp {
       : this.shortcutLabel("Close", "close-item"),
     () => multiple ? this.closeSelectedSessions(sessionIds) : this.closeSession(session.session_id),
     multiple ? "close-all" : "close");
+    if (!multiple) {
+      this.addContextItem(menu, this.shortcutLabel("Open in a new browser tab", "open-terminal-new-tab"),
+        () => this.openTerminalInNewTab(session), "new-window");
+    }
     this.positionContextMenu(menu, event.clientX, event.clientY);
   }
 
@@ -4377,7 +4642,7 @@ class TermdeckApp {
     this.contextMenuTarget = { type: "files", keys };
     if (keys.length === 1) {
       const entry = this.openFiles.get(keys[0]);
-      if (entry) this.addContextItem(menu, "Open in FileDeck tab", () => this.openFileDeckInNewTab(entry.root, entry.path), "new-window");
+      if (entry) this.addContextItem(menu, "Open this file in a new browser tab", () => this.openFileDeckInNewTab(entry.root, entry.path), "new-window");
     }
     const label = keys.length === 1 ? "Close file" : `Close ${keys.length} selected files`;
     this.addContextItem(menu, this.shortcutLabel(label, "close-item"), () => this.closeFiles(keys), "close-all");
@@ -4390,7 +4655,7 @@ class TermdeckApp {
     const menu = this.$("context-menu");
     menu.textContent = "";
     this.contextMenuTarget = { type: "filedeck", root, path: relativePath };
-    this.addContextItem(menu, "Open in FileDeck tab", () => this.openFileDeckInNewTab(root, relativePath), "new-window");
+    this.addContextItem(menu, "Open this file in a new browser tab", () => this.openFileDeckInNewTab(root, relativePath), "new-window");
     this.positionContextMenu(menu, event.clientX, event.clientY);
   }
 
@@ -4429,7 +4694,7 @@ class TermdeckApp {
           () => this.toggleExcludeDir(name));
       }
     } else {
-      this.addContextItem(menu, "Open in FileDeck tab", () => this.openFileDeckInNewTab(this.treeRoot, rel), "new-window");
+      this.addContextItem(menu, "Open this file in a new browser tab", () => this.openFileDeckInNewTab(this.treeRoot, rel), "new-window");
       this.addContextItem(menu, "Open", () => this.openFile(this.treeRoot, rel, null, row));
       this.markTreeSelection(row);
     }
@@ -5418,7 +5683,7 @@ class TermdeckApp {
   historyModelFromValue(raw) {
     const value = this.normalizeModelText(raw).replace(/^["']|["']$/g, "");
     if (!value) return "";
-    const modelPattern = /\b(gpt-[a-z0-9.+-]+(?:-[a-z0-9.+-]+)*(?:\s+x(?:high|medium|low|standard|mini|turbo))?)\b/gi;
+    const modelPattern = /\b(gpt-[a-z0-9.+-]+(?:-[a-z0-9.+-]+)*(?:\s+(?:x)?(?:high|medium|low|standard|mini|turbo))?)\b/gi;
     const match = value.match(modelPattern);
     if (!match) return "";
     return match[0];
@@ -5508,6 +5773,30 @@ class TermdeckApp {
     return this.normalizeModelText(model);
   }
 
+  terminalStatusModelFromLine(line) {
+    const text = this.normalizeTerminalTailLine(line);
+    if (!text || !/(?:context|tokens?|remaining|left|used|model|thinking|working|%)/i.test(text)) return "";
+    const gptModel = this.historyModelFromValue(text);
+    if (gptModel && !this.historyModelIsGeneric(gptModel)) return gptModel;
+    const match = text.match(/\b((?:claude|gemini)(?:[-\s](?!(?:context|tokens?|remaining|left|used|model|thinking|working)\b)[a-z0-9.]+)*|(?:opus|sonnet|haiku)(?:[-\s](?!(?:context|tokens?|remaining|left|used|model|thinking|working)\b)[a-z0-9.]+)*)\b/i);
+    const model = this.normalizeModelText(match?.[1] || "");
+    return this.historyModelIsGeneric(model) ? "" : model;
+  }
+
+  terminalStatusModel(view) {
+    const buffer = view?.term?.buffer?.active;
+    if (!buffer || typeof buffer.getLine !== "function") return "";
+    const rows = Math.max(1, Number(view.term.rows || 1));
+    const end = Math.max(rows, Number(buffer.baseY || 0) + rows);
+    const start = Math.max(0, end - Math.max(12, rows));
+    for (let index = end - 1; index >= start; index--) {
+      const line = buffer.getLine(index);
+      const model = this.terminalStatusModelFromLine(line ? line.translateToString(true) : "");
+      if (model) return model;
+    }
+    return "";
+  }
+
   renderHistoryModel(session, turns = []) {
     const modelEl = this.$("history-model");
     if (!modelEl) return;
@@ -5516,7 +5805,8 @@ class TermdeckApp {
       modelEl.classList.add("hidden");
       return;
     }
-    const model = this.historyModelDisplay(session, turns);
+    const model = this.terminalStatusModel(this.views.get(session?.session_id || this.activeId)) ||
+      this.historyModelDisplay(session, turns);
     if (!model) {
       modelEl.textContent = "";
       modelEl.classList.add("hidden");
@@ -5545,8 +5835,14 @@ class TermdeckApp {
       if (button) button.classList.toggle("hidden", !historyMode);
     }
     this.updateShortcutTitles();
-    this.$("attach-btn").classList.toggle("hidden", historyMode || fileMode);
-    this.$("reveal-session-btn").classList.toggle("hidden", historyMode || fileMode);
+    this.$("attach-btn").classList.toggle("hidden", fileMode);
+    this.$("reveal-session-btn").classList.toggle("hidden", fileMode);
+    const attachButton = this.$("attach-btn");
+    if (attachButton) {
+      const label = historyMode ? "Upload file/image into Markdown prompt" : "Attach file/image to terminal";
+      attachButton.title = label;
+      attachButton.setAttribute("aria-label", label);
+    }
     for (const id of ["terminal-resync-btn"]) {
       const button = this.$(id);
       if (button) button.classList.toggle("hidden", fileMode);
@@ -5611,11 +5907,18 @@ class TermdeckApp {
     const count = this.$("history-queued-count");
     if (!container || !items || !count) return;
     const queued = view?.promptQueue || [];
+    const queueButton = this.$("history-queue-btn");
+    if (queueButton) {
+      queueButton.classList.toggle("on", queued.length > 0);
+      const queueLabel = queued.length ? `Queue prompt (${queued.length} pending)` : "Queue prompt after the current task";
+      queueButton.title = queueLabel;
+      queueButton.setAttribute("aria-label", queueLabel);
+    }
     container.classList.toggle("hidden", !this.historyOpen || !queued.length);
     count.textContent = queued.length ? `${queued.length} message${queued.length === 1 ? "" : "s"}` : "";
     const activeEditor = document.activeElement?.classList?.contains("history-queued-editor") ? document.activeElement : null;
     if (activeEditor && items.contains(activeEditor) && activeEditor.dataset.sessionId === view?.sessionId &&
-        !view?.promptQueueMutation) return;
+        !view?.promptQueueDispatching) return;
     items.textContent = "";
     queued.forEach((item, index) => {
       const row = document.createElement("div");
@@ -5627,7 +5930,6 @@ class TermdeckApp {
       const editor = document.createElement("textarea");
       editor.className = "history-queued-editor";
       editor.dataset.sessionId = view?.sessionId || "";
-      editor.disabled = !!view?.promptQueueMutation;
       editor.value = item.draftText ?? item.text;
       editor.rows = 1;
       editor.spellcheck = false;
@@ -5641,14 +5943,18 @@ class TermdeckApp {
         const current = view?.promptQueue?.[index];
         if (!current) return;
         current.draftText = editor.value;
+        this.persistMarkdownPromptQueue(view);
         resize();
       });
       editor.addEventListener("keydown", (event) => {
         if (event.key === "Escape") {
           event.preventDefault();
           const current = view?.promptQueue?.[index];
-          if (current) delete current.draftText;
-          this.renderHistoryQueue(view);
+          if (current) {
+            delete current.draftText;
+            editor.value = current.text;
+            resize();
+          }
           return;
         }
         if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -5667,7 +5973,6 @@ class TermdeckApp {
       const remove = document.createElement("button");
       remove.className = "history-queued-remove";
       remove.type = "button";
-      remove.disabled = !!view?.promptQueueMutation;
       remove.title = "Remove queued prompt";
       remove.setAttribute("aria-label", `Remove queued prompt ${index + 1}`);
       remove.textContent = "×";
@@ -5680,45 +5985,21 @@ class TermdeckApp {
 
   commitHistoryQueueEdit(view, index, text) {
     const item = view?.promptQueue?.[index];
-    if (!item || item.mutationPending) return;
+    if (!item) return;
     const next = String(text || "");
-    if (next === item.text) {
-      delete item.draftText;
-      return;
-    }
-    this.mutateHistoryQueue(view, index, next, !next.trim());
+    if (!next.trim()) view.promptQueue.splice(index, 1);
+    else item.text = next;
+    delete item.draftText;
+    view.promptQueueEditIndex = null;
+    this.persistMarkdownPromptQueue(view);
+    this.renderHistoryQueue(view);
   }
 
   removeHistoryQueueItem(view, index) {
-    if (!view?.promptQueue?.[index] || view.promptQueueMutation) return;
-    this.mutateHistoryQueue(view, index, "", true);
-  }
-
-  mutateHistoryQueue(view, index, text, remove) {
-    if (!view || view.promptQueueMutation || this.session(view.sessionId)?.agent_kind !== "codex" ||
-        !view.ws || view.ws.readyState !== WebSocket.OPEN) return;
-    const queue = view.promptQueue.map((item) => String(item.text || ""));
-    if (index < 0 || index >= queue.length) return;
-    view.promptQueueMutation = true;
-    view.promptQueue.forEach((item) => { item.mutationPending = true; });
-    this.renderHistoryQueue(view);
-    const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
-    view.ws.send(JSON.stringify({ type: "queue_edit", index, queue, text: String(text || ""), remove, bracketed }));
-    this.$("status-name").textContent = remove ? "removing queued prompt…" : "updating queued prompt…";
-  }
-
-  reconcileHistoryQueue(view, turns) {
-    if (!view?.promptQueue?.length) return;
-    const userTexts = turns.filter((turn) => turn.role === "user").map((turn) => String(turn.text || ""));
-    for (let index = 0; index < view.promptQueue.length;) {
-      const queued = view.promptQueue[index];
-      const match = userTexts.slice(queued.userCount || 0).indexOf(queued.text);
-      if (match < 0) {
-        index += 1;
-        continue;
-      }
-      view.promptQueue.splice(index, 1);
-    }
+    if (!view?.promptQueue?.[index]) return;
+    view.promptQueue.splice(index, 1);
+    view.promptQueueEditIndex = null;
+    this.persistMarkdownPromptQueue(view);
     this.renderHistoryQueue(view);
   }
 
@@ -6010,34 +6291,48 @@ class TermdeckApp {
     const text = this.settings.prompt_wrap_guard ? rawText.replace(/\r\n/g, "\n").replace(/[\r\n]+$/, "") : rawText;
     if (!text.trim()) return;
     const view = this.views.get(this.activeId);
-    if (!view || !view.ws || view.ws.readyState !== WebSocket.OPEN) {
+    if (!view) return;
+    if (options.queue) {
+      view.promptQueue.push({ text });
+      this.persistMarkdownPromptQueue(view);
+      this.renderHistoryQueue(view);
+      this.recordPromptHistory(view.sessionId, text);
+      view.promptDraft = "";
+      this.showPromptDraft(view);
+      prompt.focus();
+      this.$("status-name").textContent = "prompt queued";
+      this.dispatchNextMarkdownPrompt(view);
+      return;
+    }
+    if (!view.ws || view.ws.readyState !== WebSocket.OPEN) {
       this.$("status-name").textContent = "terminal is still connecting…";
       return;
     }
+    this.submitHistoryPromptText(view, text);
+  }
+
+  submitHistoryPromptText(view, text, options = {}) {
+    if (!view || !view.ws || view.ws.readyState !== WebSocket.OPEN || !String(text || "").trim()) return false;
+    const promptText = String(text);
+    const prompt = this.$("history-prompt");
     this.markPromptWrapActivity(view);
-    view.promptDraft = text;
+    view.promptDraft = promptText;
     view.promptSubmitting = true;
     view.promptSubmitEntered = false;
     view.promptEditing = false;
     view.promptSubmitVersion = view.promptEditVersion;
     const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
-    const queue = !!options.queue && this.session(this.activeId)?.agent_kind === "codex";
-    const sessionId = this.activeId;
+    const sessionId = view.sessionId;
     if (this.session(sessionId)?.agent_kind === "codex") this.deferTerminalReflowAfterPrompt(view);
-    if (!queue) {
-      this.historyPendingProcessing.set(sessionId, Date.now());
-      this.updateHistoryThinkingIndicator();
-    }
-    if (!queue) {
-      // The agent transcript may not contain the submitted user turn until it
-      // starts producing its next event. Show it immediately, then let the
-      // authoritative transcript update reconcile this optimistic row.
+    this.historyPendingProcessing.set(sessionId, Date.now());
+    this.updateHistoryThinkingIndicator();
+    if (this.historyOpen && this.activeId === sessionId) {
       const turns = this.historyTurnsBySession.get(sessionId) || this.historyTurns;
       const pending = this.historyPendingPrompts.get(sessionId) || [];
-      const authoritativeCount = turns.filter((turn) => turn.role === "user" && turn.text === text && !turn.pending_id).length;
-      const beforeCount = authoritativeCount + pending.filter((item) => item.text === text).length;
+      const authoritativeCount = turns.filter((turn) => turn.role === "user" && turn.text === promptText && !turn.pending_id).length;
+      const beforeCount = authoritativeCount + pending.filter((item) => item.text === promptText).length;
       const pendingId = `${Date.now()}-${this.historyPendingPromptSequence++}`;
-      pending.push({ text, beforeCount, pending_id: pendingId });
+      pending.push({ text: promptText, beforeCount, pending_id: pendingId });
       this.historyPendingPrompts.set(sessionId, pending);
       const live = this.historyLiveTurnsBySession.get(sessionId) || turns;
       const optimisticLive = this.mergePendingHistoryPrompts(sessionId, live);
@@ -6045,25 +6340,22 @@ class TermdeckApp {
       const optimisticTurns = this.combineHistoryWindow(sessionId, optimisticLive);
       this.applyHistoryTurns(sessionId, optimisticTurns, { preserveScroll: true });
     }
-    if (queue) {
-      view.promptQueue.push({ text, userCount: this.historyTurns.filter((turn) => turn.role === "user").length });
-      this.renderHistoryQueue(view);
-    }
     try {
-      view.ws.send(JSON.stringify({ type: "submit", text, bracketed, queue }));
+      view.ws.send(JSON.stringify({ type: "submit", text: promptText, bracketed, queue: false }));
     } catch (error) {
       this.historyPendingProcessing.delete(sessionId);
       this.updateHistoryThinkingIndicator();
+      view.promptSubmitting = false;
       this.$("status-name").textContent = "unable to send prompt";
       console.warn("unable to send Markdown prompt", error);
-      return;
+      return false;
     }
-    this.recordPromptHistory(sessionId, text);
-    // Clear the local draft immediately so switching views cannot reinsert the
-    // prompt while the PTY consumes the synchronized text and Enter.
+    if (!options.fromQueue) this.recordPromptHistory(sessionId, promptText);
     view.promptDraft = "";
-    this.showPromptDraft(view);
-    prompt.focus();
+    if (this.historyOpen && this.activeId === sessionId) {
+      this.showPromptDraft(view);
+      prompt.focus();
+    }
     clearTimeout(view.promptSubmitTimer);
     view.promptSubmitTimer = setTimeout(() => {
       view.promptSubmitting = false;
@@ -6071,7 +6363,8 @@ class TermdeckApp {
     }, 1500);
     view.keepBottom = true;
     view.pinBottomUntil = Date.now() + 5000;
-    this.$("status-name").textContent = queue ? "prompt queued" : "prompt sent";
+    this.$("status-name").textContent = options.fromQueue ? "queued prompt sent" : "prompt sent";
+    return true;
   }
 
   recordPromptHistory(sessionId, text) {
@@ -6296,21 +6589,13 @@ class TermdeckApp {
     if (submittedText && view.ws && view.ws.readyState === WebSocket.OPEN) this.recordPromptHistory(view.sessionId, submittedText);
     if (view.promptDraft !== previousDraft && !pastedInput) this.sendPromptDraftSync(view, view.promptDraft);
     if (queueText) {
-      // Codex has accepted this composer into its queue. Keep the two editors
-      // consistent with the terminal instead of leaving the queued text as a
-      // draft that reappears when Markdown is opened.
       view.promptDraft = "";
       view.promptEditing = false;
       view.pendingTerminalDraft = null;
       view.pendingDraftSync = null;
       if (view.ws && view.ws.readyState === WebSocket.OPEN) this.recordPromptHistory(view.sessionId, queueText);
-      view.promptQueue.push({
-        text: queueText,
-        userCount: this.historyTurns.filter((turn) => turn.role === "user").length,
-      });
       this.sendPromptDraftSync(view, "");
       this.showPromptDraft(view);
-      if (this.historyOpen && view.sessionId === this.activeId) this.renderHistoryQueue(view);
     }
   }
 
@@ -6665,7 +6950,6 @@ class TermdeckApp {
     const preserveScroll = options.preserveScroll === true;
     if (sessionId !== this.activeId || !this.historyOpen) return;
     this.cacheSessionModelFromHistory(sessionId, turns);
-    this.reconcileHistoryQueue(this.views.get(sessionId), turns);
     // Capture this after the request completes so scrolling while the refresh
     // is in flight is never overwritten by an older scroll position.
     const scrollSnapshot = preserveScroll ? this.captureHistoryScroll(body, this.historyTurns) : null;
@@ -6887,6 +7171,27 @@ class TermdeckApp {
 
   openQuickOpen(initialQuery = "") {
     if (this.vscodeMode) return;
+    this.quickOpenMode = "all";
+    this.showQuickOpen(initialQuery);
+  }
+
+  openRecentTerminalsQuickOpen() {
+    if (this.vscodeMode) return;
+    const backdrop = this.$("quick-open-backdrop");
+    if (!backdrop.classList.contains("hidden") && this.quickOpenMode === "recent-terminals") {
+      const recentIndexes = this.quickOpenResults.map((result, index) => result.kind === "Recently opened terminals" ? index : -1)
+        .filter((index) => index >= 0);
+      if (!recentIndexes.length) return;
+      const currentIndex = recentIndexes.indexOf(this.quickOpenSelection);
+      this.quickOpenSelection = recentIndexes[(currentIndex + 1 + recentIndexes.length) % recentIndexes.length];
+      this.updateQuickOpenSelection();
+      return;
+    }
+    this.quickOpenMode = "recent-terminals";
+    this.showQuickOpen("");
+  }
+
+  showQuickOpen(initialQuery) {
     const backdrop = this.$("quick-open-backdrop");
     const input = this.$("quick-open-input");
     backdrop.classList.remove("hidden");
@@ -6899,6 +7204,7 @@ class TermdeckApp {
   closeQuickOpen() {
     clearTimeout(this.quickOpenTimer);
     this.$("quick-open-backdrop").classList.add("hidden");
+    this.quickOpenMode = "all";
     requestAnimationFrame(() => this.focusActiveEditor());
   }
 
@@ -6947,6 +7253,30 @@ class TermdeckApp {
     ];
   }
 
+  recentlyOpenedTerminalSessions() {
+    const sessionsById = new Map(this.sessions.map((session) => [session.session_id, session]));
+    const ordered = [];
+    const seen = new Set();
+    for (const sessionId of this.getProjectState().recently_opened_terminal_ids || []) {
+      const session = sessionsById.get(sessionId);
+      if (!session || seen.has(session.session_id)) continue;
+      seen.add(session.session_id);
+      ordered.push(session);
+    }
+    for (const session of this.sessions) {
+      if (seen.has(session.session_id)) continue;
+      seen.add(session.session_id);
+      ordered.push(session);
+    }
+    return ordered;
+  }
+
+  quickOpenTerminalResult(session, kind) {
+    const title = this.titlePresentation(session).text;
+    return { kind, title, detail: session.cwd, icon: "terminal",
+      run: () => this.activate(session.session_id, { reveal: true }) };
+  }
+
   async renderQuickOpen(rawQuery) {
     const generation = ++this.quickOpenGeneration;
     const query = String(rawQuery || "").trim();
@@ -6954,17 +7284,25 @@ class TermdeckApp {
     const symbolOnly = query.startsWith("@");
     const searchQuery = query.replace(/^[>@]/, "").trim();
     const results = [];
-    if (!symbolOnly) {
+    const recentOnly = this.quickOpenMode === "recent-terminals";
+    if (!symbolOnly && !recentOnly) {
       for (const command of this.quickOpenCommands()) {
         if (!this.quickOpenTextMatches(searchQuery, command.title)) continue;
         results.push({ kind: "Commands", title: command.title, detail: "command", icon: command.icon, run: command.run });
       }
     }
     if (!commandOnly && !symbolOnly) {
-      for (const session of this.sessions) {
-        const title = this.titlePresentation(session).text;
-        if (!this.quickOpenTextMatches(searchQuery, title, session.cwd)) continue;
-        results.push({ kind: "Terminals", title, detail: session.cwd, icon: "terminal", run: () => this.activate(session.session_id, { reveal: true }) });
+      const terminalSessions = this.recentlyOpenedTerminalSessions();
+      const recentSessionIds = new Set(this.getProjectState().recently_opened_terminal_ids || []);
+      for (const session of terminalSessions) {
+        if (!this.quickOpenTextMatches(searchQuery, this.titlePresentation(session).text, session.cwd)) continue;
+        const kind = recentSessionIds.has(session.session_id) ? "Recently opened terminals" : "Terminals";
+        if (recentOnly && kind === "Terminals" && recentSessionIds.size) continue;
+        results.push(this.quickOpenTerminalResult(session, kind));
+      }
+      if (recentOnly) {
+        this.paintQuickOpenResults(results);
+        return;
       }
       for (const [key, entry] of this.openFiles) {
         if (!this.quickOpenTextMatches(searchQuery, entry.name, entry.path)) continue;
@@ -7440,12 +7778,14 @@ class TermdeckApp {
       const item = document.createElement("button");
       item.type = "button";
       const prompt = turn.role === "user";
-      item.className = `conversation-outline-item ${prompt ? "prompt" : "response"}`;
+      const question = !prompt && /[?？]\s*$/.test(String(turn.text || "").trim());
+      const messageType = prompt ? "prompt" : question ? "question" : "response";
+      item.className = `conversation-outline-item ${messageType}`;
       const role = document.createElement("span");
-      role.className = `conversation-outline-role codicon codicon-${prompt ? "arrow-right" : "sparkle"}`;
+      role.className = `conversation-outline-role codicon codicon-${prompt ? "arrow-right" : question ? "question" : "sparkle"}`;
       const label = document.createElement("span");
       label.className = "conversation-outline-label";
-      label.textContent = prompt ? "Prompt" : "Response";
+      label.textContent = prompt ? "Prompt" : question ? "Question" : "LLM response";
       const text = document.createElement("span");
       text.className = "conversation-outline-text";
       text.textContent = String(turn.text || "").replace(/\s+/g, " ").trim();
@@ -8438,6 +8778,7 @@ class TermdeckApp {
     }
     if (unreadChanged) this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
     const selected = this.session(id);
+    this.rememberRecentlyOpenedTerminal(id);
     if (selected && !this.titlePresentation(selected).spinning) this.viewedCompletedSessions.add(id);
     else this.viewedCompletedSessions.delete(id);
     if (selected) {
@@ -8469,17 +8810,18 @@ class TermdeckApp {
       this.reloadTree();
     }
     const view = this.ensureView(id);
+    if (previousView && previousView !== view) previousView.term.clearSelection();
     if (previousView && previousView !== view) {
       if (this.isTerminalScrollV2()) {
-        // v2 deliberately trusts xterm's own buffer state instead of the
-        // browser's private viewport scroll position.
-        previousView.scrollMode = this.xtermAtBottom(previousView) ? "follow" : "preserve";
+        const previousAtBottom = this.xtermAtBottom(previousView);
+        previousView.scrollMode = previousAtBottom || !previousView.userScrollIntent ? "follow" : "preserve";
+        if (previousAtBottom || !previousView.userScrollIntent) previousView.userScrollIntent = false;
         // Captured as an OFFSET, not the absolute viewportY: if this tab's background websocket has
         // closed by the time we come back to it, reactivating it resets and replays the whole buffer
         // from scratch (see ws.onopen's view.term.reset()), making an absolute row index meaningless
         // against the freshly rebuilt buffer. "N rows above the latest line" survives that rebuild.
-        previousView.preserveRowsFromBottom =
-          previousView.term.buffer.active.baseY - previousView.term.buffer.active.viewportY;
+        previousView.preserveRowsFromBottom = previousView.scrollMode === "preserve"
+          ? previousView.term.buffer.active.baseY - previousView.term.buffer.active.viewportY : 0;
       } else {
         // xterm's buffer viewport can still report the old bottom row while
         // the browser scrollbar has already moved. Carry the native position
@@ -8527,6 +8869,7 @@ class TermdeckApp {
       this.connectHistoryStream(historyId, { fresh: previousId !== id });
     }
     if (view) {
+      if (this.isTerminalScrollV2() && !view.userScrollIntent) view.scrollMode = "follow";
       this.refreshTerminalAppearance(view);
       if (this.shouldReconnectIdleClaudeView(view, s, previousId)) this.reconnectIdleClaudeView(view);
       else if (!view.ws) this.connect(id, view);
@@ -8623,6 +8966,7 @@ class TermdeckApp {
                    layoutFitRetryTimer: 0, layoutFitRetryCount: 0,
                    keepBottom: true, manualScroll: false, manualScrollGeneration: 0, manualScrollReleaseTimer: 0,
                    wasAtBottom: true, scrollMode: "follow", v2Programmatic: false, v2FitFrame: 0,
+                   userScrollIntent: false,
                    v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
                    forceResizeAfterFit: true, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
                    suppressResizeToServer: false, resyncResizeRepairPending: false,
@@ -8642,9 +8986,9 @@ class TermdeckApp {
                    claudeInitialReplayRecoveryAttempted: false,
                    claudeSnapshotAddon: null, claudeSnapshotRestoreAttempted: false, claudeSnapshotRestored: false,
                    claudeSnapshotSaveTimer: 0, claudeSnapshotSavePromise: null,
-                   claudeStatusRowRefreshTimer: 0, lastClaudeStatusRowRefreshAt: 0,
+                   claudeStatusRowRefreshTimer: 0, historyModelRefreshTimer: 0, lastClaudeStatusRowRefreshAt: 0,
                    codexFocusRefreshFrame: 0,
-                   promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
+                   promptQueue: this.markdownPromptQueueForSession(id), promptQueueEditIndex: null, promptQueueDispatching: false,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, promptDraftSyncDebounceTimer: 0,
                    pendingDraftSync: null, pendingTerminalDraft: null,
                    promptEditVersion: 0, promptSubmitVersion: -1 };
@@ -8676,6 +9020,7 @@ class TermdeckApp {
       // Preserve immediately so a live output callback in that gap cannot
       // pull the viewport back to the prompt.
       view.v2Programmatic = false;
+      view.userScrollIntent = true;
       view.scrollMode = "preserve";
     };
     const markManualScroll = () => {
@@ -8762,7 +9107,12 @@ class TermdeckApp {
       if (!view.container.classList.contains("visible")) return;
       if (this.isTerminalScrollV2()) {
         if (!view.v2Programmatic) {
-          view.scrollMode = this.xtermAtBottom(view) ? "follow" : "preserve";
+          if (this.xtermAtBottom(view)) {
+            view.scrollMode = "follow";
+            view.userScrollIntent = false;
+          } else if (view.userScrollIntent) {
+            view.scrollMode = "preserve";
+          }
           this.scheduleTerminalTailRepair(view);
         }
         return;
@@ -9054,6 +9404,10 @@ class TermdeckApp {
 
   connect(id, view) {
     if (view.closed) return;
+    if (this.isTerminalScrollV2() && !view.userScrollIntent) {
+      view.scrollMode = "follow";
+      view.preserveRowsFromBottom = 0;
+    }
     if (this.isClaudeSnapshotView(view) && this.claudeSnapshotExperimentEnabled() && !view.claudeSnapshotRestoreAttempted) {
       view.claudeSnapshotRestoreAttempted = true;
       void this.restoreClaudeSnapshot(view).then(() => {
@@ -9108,6 +9462,7 @@ class TermdeckApp {
         this.sendResize(view, view.term.cols, view.term.rows);
       }
       this.flushPromptSync(view);
+      this.dispatchNextMarkdownPrompt(view);
     };
     ws.onmessage = (e) => {
       if (typeof e.data === "string") { this.handleControl(id, view, JSON.parse(e.data)); return; }
@@ -9211,12 +9566,6 @@ class TermdeckApp {
       const reconnectAfterClose = view.reconnectAfterClose;
       view.reconnectAfterClose = false;
       view.ws = null;
-      if (view.promptQueueMutation) {
-        view.promptQueueMutation = false;
-        view.promptQueue.forEach((item) => { delete item.mutationPending; });
-        this.renderHistoryQueue(view);
-        if (id === this.activeId) this.$("status-name").textContent = "queued prompt update disconnected — retry";
-      }
       if (reconnectAfterClose) view.suppressReconnect = false;
       if (reconnectAfterClose && !view.closed && id === this.activeId && this.activeFileKey === null &&
           !this.session(id)?.dormant) {
@@ -9237,6 +9586,11 @@ class TermdeckApp {
 
   handleTerminalEditingKeys(view, e) {
     if (e.type !== "keydown") return true;
+    if (this.isDesktopTerminalSelectInputEvent(e)) {
+      e.preventDefault();
+      this.selectActiveTerminalInputText();
+      return false;
+    }
     if (this.isDesktopTerminalSelectAllEvent(e)) {
       e.preventDefault();
       this.selectActiveTerminalText();
@@ -9275,7 +9629,6 @@ class TermdeckApp {
       if (key === "backspace") { e.preventDefault(); this.sendTrackedInput(view, "\x15"); return false; }
       if (key === "arrowleft") { e.preventDefault(); this.sendTrackedInput(view, "\x01"); return false; }
       if (key === "arrowright") { e.preventDefault(); this.sendTrackedInput(view, "\x05"); return false; }
-      if (key === "a") { e.preventDefault(); this.selectActiveTerminalText(); return false; }
     }
     if (e.altKey && !e.metaKey && !e.ctrlKey) {
       if (e.key === "Backspace") { e.preventDefault(); this.sendTrackedInput(view, "\x1b\x7f"); return false; }
@@ -9303,7 +9656,6 @@ class TermdeckApp {
       view.promptDraftSyncPending = false;
       clearTimeout(view.promptDraftSyncTimer);
       view.promptDraftSyncTimer = 0;
-      if (view.promptQueueMutation) return;
       if (view.promptSubmitting) {
         return;
       }
@@ -9330,20 +9682,6 @@ class TermdeckApp {
         if (this.historyOpen && id === this.activeId) this.$("history-prompt").focus();
       }
       return;
-    } else if (msg.type === "queue_mutation") {
-      view.promptQueueMutation = false;
-      view.promptQueue.forEach((item) => { delete item.mutationPending; });
-      if (msg.ok && Array.isArray(msg.queue)) {
-        const userCount = this.historyTurns.filter((turn) => turn.role === "user").length;
-        view.promptQueue = msg.queue.map((text) => ({ text: String(text || ""), userCount }));
-        view.promptQueueEditIndex = null;
-        this.renderHistoryQueue(view);
-        this.$("status-name").textContent = "queued prompt updated";
-      } else {
-        this.renderHistoryQueue(view);
-        this.$("status-name").textContent = msg.error || "queued prompt update failed";
-      }
-      return;
     } else if (msg.type === "agent_session") {
       // Session discovery is asynchronous and can arrive while the user is
       // reading older output. It must not turn that event into an implicit
@@ -9367,6 +9705,62 @@ class TermdeckApp {
     if (view.ws && view.ws.readyState === WebSocket.OPEN) {
       view.ws.send(JSON.stringify({ type: "input", data }));
     }
+  }
+
+  isImageAttachmentFile(file) {
+    return !!file && (IMAGE_ATTACHMENT_MIME_RE.test(String(file.type || "")) ||
+      IMAGE_ATTACHMENT_EXTENSION_RE.test(String(file.name || "")));
+  }
+
+  historyImageFilesFromDataTransfer(dataTransfer) {
+    if (!dataTransfer) return [];
+    const files = [];
+    const seen = new Set();
+    const addFile = (file) => {
+      if (!this.isImageAttachmentFile(file) || seen.has(file)) return;
+      seen.add(file);
+      files.push(file);
+    };
+    for (const item of dataTransfer.items || []) {
+      if (item.kind === "file") addFile(item.getAsFile());
+    }
+    for (const file of dataTransfer.files || []) addFile(file);
+    return files;
+  }
+
+  insertHistoryAttachmentPaths(view, paths, selection = null, append = false) {
+    if (!view || !this.historyOpen || this.activeFileKey !== null || !paths.length) return;
+    const prompt = this.$("history-prompt");
+    const value = prompt.value;
+    const start = append ? value.length : Math.max(0, Math.min(value.length,
+      Number(selection?.start ?? prompt.selectionStart ?? value.length)));
+    const end = append ? value.length : Math.max(start, Math.min(value.length,
+      Number(selection?.end ?? prompt.selectionEnd ?? start)));
+    const text = paths.map((path) => (/\s/.test(path) ? `'${path}'` : path)).join(" ");
+    const before = value.slice(0, start);
+    const after = value.slice(end);
+    const prefix = before && !/\s$/.test(before) ? " " : "";
+    const suffix = after && /^\s/.test(after) ? "" : " ";
+    view.promptDraft = `${before}${prefix}${text}${suffix}${after}`;
+    view.promptEditing = true;
+    this.showPromptDraft(view);
+    this.syncPromptToTerminal(view, { writeToTerminal: false });
+    prompt.focus();
+    const cursor = before.length + prefix.length + text.length + suffix.length;
+    prompt.setSelectionRange(cursor, cursor);
+  }
+
+  async insertHistoryAttachmentFiles(view, files) {
+    if (!view || !this.historyOpen || this.activeFileKey !== null || !files.length) return;
+    const prompt = this.$("history-prompt");
+    const selection = { start: prompt.selectionStart, end: prompt.selectionEnd };
+    const paths = await this.uploadFiles(files);
+    if (!paths.length) {
+      this.$("status-name").textContent = "image upload failed";
+      return;
+    }
+    this.insertHistoryAttachmentPaths(view, paths, selection);
+    this.$("status-name").textContent = `inserted ${paths.length} image${paths.length === 1 ? "" : "s"}`;
   }
 
   async uploadFiles(files) {
@@ -9406,14 +9800,7 @@ class TermdeckApp {
       if (!input.files.length) return;
       const paths = await this.uploadFiles([...input.files]);
       if (!paths.length) { this.$("status-name").textContent = "upload failed"; return; }
-      const text = paths.map((p) => (/\s/.test(p) ? `'${p}'` : p)).join(" ") + " ";
-      const prompt = this.$("history-prompt");
-      const separator = prompt.value && !/\s$/.test(prompt.value) ? " " : "";
-      view.promptDraft = `${prompt.value}${separator}${text}`;
-      view.promptEditing = true;
-      this.showPromptDraft(view);
-      this.syncPromptToTerminal(view, { writeToTerminal: false });
-      prompt.focus();
+      this.insertHistoryAttachmentPaths(view, paths, null, true);
       this.$("status-name").textContent = `inserted ${paths.length} path${paths.length === 1 ? "" : "s"}`;
     };
     input.click();
@@ -9644,6 +10031,7 @@ class TermdeckApp {
 
   scrollTerminalV2ToBottom(view) {
     if (!view || view.closed) return;
+    view.userScrollIntent = false;
     view.scrollMode = "follow";
     view.v2Programmatic = true;
     view.term.scrollToBottom();
@@ -9826,6 +10214,7 @@ class TermdeckApp {
       return;
     }
     view.scrollMode = "preserve";
+    view.userScrollIntent = true;
     this.scrollTerminalV2ToLine(view, Math.max(0, view.term.buffer.active.baseY - anchor.rowsFromBottom));
     this.cancelTerminalViewportRestore(view);
   }
@@ -9919,6 +10308,10 @@ class TermdeckApp {
       view.v2ViewportSyncFrame = 0;
       if (view.closed || !view.hiddenOutputPending || !view.container.classList.contains("visible")) return;
       view.hiddenOutputPending = false;
+      if (view.scrollMode === "follow") {
+        this.scrollTerminalV2ToBottom(view);
+        return;
+      }
       const buffer = view.term.buffer.active;
       const target = buffer.viewportY;
       if (buffer.baseY <= 0) return;
@@ -10446,6 +10839,7 @@ class TermdeckApp {
         this.repairTerminalViewport(view);
       }
       if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleClaudeSnapshotSave(view);
+      if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleHistoryTerminalModelRefresh(view);
       if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleClaudeStatusRowRefresh(view);
       if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleTerminalTailRepair(view);
       if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleTerminalViewportRestore(view);
@@ -10466,6 +10860,16 @@ class TermdeckApp {
       const lastRow = Math.max(0, view.term.rows - 1);
       view.term.refresh(Math.max(0, lastRow - 2), lastRow);
     }, delay);
+  }
+
+  scheduleHistoryTerminalModelRefresh(view) {
+    if (!view || view.closed || view.historyModelRefreshTimer || !this.historyOpen ||
+        view.sessionId !== this.activeId || this.activeFileKey !== null) return;
+    view.historyModelRefreshTimer = setTimeout(() => {
+      view.historyModelRefreshTimer = 0;
+      if (view.closed || !this.historyOpen || view.sessionId !== this.activeId || this.activeFileKey !== null) return;
+      this.renderHistoryModel(this.session(view.sessionId), this.historyTurnsBySession.get(view.sessionId) || this.historyTurns);
+    }, 180);
   }
 
   repairTerminalViewport(view) {
@@ -10560,6 +10964,7 @@ class TermdeckApp {
     clearTimeout(view.tailRepairConfirmTimer);
     clearTimeout(view.claudeInitialReplayCheckTimer);
     clearTimeout(view.claudeStatusRowRefreshTimer);
+    clearTimeout(view.historyModelRefreshTimer);
     clearTimeout(view.promptWrapGuardTimer);
     clearTimeout(view.promptSubmissionReflowGuardTimer);
     clearTimeout(view.promptDraftSyncTimer);
@@ -10600,6 +11005,7 @@ class TermdeckApp {
         if (/^#[0-9a-f]{6}$/i.test(String(legacyColor || ""))) incoming.sidebar_text_color = legacyColor;
       }
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
+      if (!this.settings.md_prompt_queues || typeof this.settings.md_prompt_queues !== "object") this.settings.md_prompt_queues = {};
       if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
       this.settings.show_git_status = true;
       const searchGlobTokens = String(this.settings.search_glob || "").split(",").map((token) => token.trim()).filter(Boolean);
@@ -10729,8 +11135,14 @@ class TermdeckApp {
     const sidebar = this.$("sidebar");
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
     const normalWidth = Number(s.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
-    const fileWidth = Math.max(Number(s.files_width) || 0, normalWidth * 2);
-    const activeSidebarWidth = filesVisible && s.files_pinned ? fileWidth : normalWidth;
+    if (filesVisible && s.files_pinned && !this.filesPanelWidthInitialized) {
+      s.files_width = FILEDECK_DEFAULT_SIDEBAR_WIDTH;
+      this.filesPanelWidthInitialized = true;
+      localStorage.setItem("termdeck.files_panel_width_v2", "1");
+    }
+    const pinnedFileWidth = Math.max(Number(s.files_width) || 0, FILEDECK_DEFAULT_SIDEBAR_WIDTH);
+    const floatingFileWidth = Math.max(Number(s.files_width) || 0, normalWidth * 2);
+    const activeSidebarWidth = filesVisible && s.files_pinned ? pinnedFileWidth : normalWidth;
     const sidebarLeft = sidebar.getBoundingClientRect().left || 0;
     const sidebarRight = sidebarLeft + activeSidebarWidth;
     const maximumNotebookLeft = Math.max(0, window.innerWidth - 334);
@@ -10743,7 +11155,7 @@ class TermdeckApp {
     sidebar.style.minWidth = activeSidebarWidth + "px";
     document.documentElement.style.setProperty("--history-sidebar-width", `${normalWidth}px`);
     document.documentElement.style.setProperty("--notebook-panel-left", `${notebookLeft}px`);
-    this.positionFloatingFilesPanel(fileWidth);
+    this.positionFloatingFilesPanel(floatingFileWidth);
     document.documentElement.style.setProperty("--sidebar-font-size", s.sidebar_font_size + "px");
     document.documentElement.style.setProperty("--ui-font-size", s.ui_font_size + "px");
     document.documentElement.style.setProperty("--code-font-size", s.code_font_size + "px");
@@ -10987,10 +11399,7 @@ class TermdeckApp {
     const title = document.createElement("span");
     title.className = "settings-label";
     title.textContent = "Theme";
-    const hint = document.createElement("span");
-    hint.className = "settings-theme-hint";
-    hint.textContent = "click to expand · arrows switch";
-    label.append(title, hint);
+    label.append(title);
     const controls = document.createElement("div");
     controls.className = "settings-theme-control";
     const toggle = document.createElement("button");
@@ -11106,9 +11515,7 @@ class TermdeckApp {
         const resizingFiles = handleId === "sidebar-resizer" && this.settings.files_pinned &&
           FILES_SIDE_PANEL_TABS.includes(this.sideView);
         const targetKey = resizingFiles ? "files_width" : key;
-        const targetMin = resizingFiles
-          ? Math.max(minWidth, (Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width) * 2)
-          : minWidth;
+        const targetMin = resizingFiles ? Math.max(minWidth, FILEDECK_DEFAULT_SIDEBAR_WIDTH) : minWidth;
         const targetMax = resizingFiles ? Math.max(maxWidth, Math.floor(window.innerWidth * 0.75)) : maxWidth;
         this.settings[targetKey] = Math.max(targetMin, Math.min(targetMax, Math.round(width)));
         this.applySettings({ fitTerminals: false });
@@ -11234,6 +11641,7 @@ class TermdeckApp {
         onAuxClick: (event, fileRow, path) => this.handleFileDeckAuxClick(event, this.treeRoot, path),
         onContextMenu: (event, fileRow) => this.openTreeContextMenu(event, fileRow),
       });
+      if (!entry.is_dir) row.title = `${row.title || childRel}\nMiddle-click opens in a new TermDeck tab`;
       row.dataset.metadata = this.treeRowMetadataKey(entry);
       container.appendChild(row);
       if (entry.is_dir && this.expandedDirs.has(childRel)) await this.expandDirRow(row, childRel);
@@ -11592,7 +12000,7 @@ class TermdeckApp {
     this.markTreeSelection(treeRow || null);
     const entry = this.openFiles.get(key);
     const returnTo = typeof options.returnTo === "string" ? options.returnTo.trim() : "";
-    await this.activateFile(key, line, { returnTo });
+    await this.activateFile(key, line, { returnTo, history: options.history });
     const openedFromFilePanel = !!treeRow || !!options.fromFilePanel;
     if (openedFromFilePanel && !this.settings.files_pinned && entry.model && this.sideView !== "terminals") {
       this.setSideView("terminals", false);
@@ -12207,37 +12615,53 @@ class TermdeckApp {
     this.activate(created.session_id, { reveal: true });
   }
 
+  createShortcutSection(title) {
+    const section = document.createElement("section");
+    section.className = "keys-section";
+    const heading = document.createElement("div");
+    heading.className = "keys-section-title";
+    heading.textContent = title;
+    section.appendChild(heading);
+    return section;
+  }
+
+  appendShortcutRow(section, shortcut, builtin = false) {
+    const row = document.createElement("div");
+    row.className = builtin ? "keys-row builtin" : "keys-row";
+    const label = document.createElement("span");
+    label.className = "keys-label";
+    label.textContent = shortcut.label;
+    const bind = document.createElement("button");
+    bind.className = builtin ? "keys-bind builtin" : "keys-bind";
+    bind.textContent = builtin ? shortcut.keys : this.bindingToDisplay(this.bindingFor(shortcut.id));
+    if (builtin) {
+      bind.disabled = true;
+      bind.setAttribute("aria-disabled", "true");
+    } else {
+      bind.onclick = () => this.captureBinding(shortcut.id, bind);
+    }
+    row.append(label, bind);
+    section.appendChild(row);
+  }
+
   openKeybindings() {
     const list = this.$("keys-list");
     list.textContent = "";
-    for (const k of this.keybindingDefinitions()) {
-      const row = document.createElement("div");
-      row.className = "keys-row";
-      const label = document.createElement("span");
-      label.className = "keys-label";
-      label.textContent = k.label;
-      const bind = document.createElement("button");
-      bind.className = "keys-bind";
-      bind.textContent = this.bindingToDisplay(this.bindingFor(k.id));
-      bind.onclick = () => this.captureBinding(k.id, bind);
-      row.append(label, bind);
-      list.appendChild(row);
-    }
-    const ref = this.$("keys-reference");
-    ref.textContent = "";
-    for (const r of (this.vscodeMode ? VSCODE_REFERENCE_KEYS : REFERENCE_KEYS)) {
-      const row = document.createElement("div");
-      row.className = "keys-row builtin";
-      const lbl = document.createElement("span");
-      lbl.className = "keys-label";
-      lbl.textContent = r.label;
-      const bind = document.createElement("button");
-      bind.className = "keys-bind builtin";
-      bind.textContent = r.keys;
-      bind.disabled = true;
-      bind.setAttribute("aria-disabled", "true");
-      row.append(lbl, bind);
-      list.appendChild(row);
+    const references = this.vscodeMode ? VSCODE_REFERENCE_KEYS : REFERENCE_KEYS;
+    for (const sectionName of KEYBOARD_SHORTCUT_SECTIONS) {
+      const section = this.createShortcutSection(sectionName);
+      let hasRows = false;
+      for (const shortcut of this.keybindingDefinitions()) {
+        if (shortcut.section !== sectionName) continue;
+        this.appendShortcutRow(section, shortcut);
+        hasRows = true;
+      }
+      for (const shortcut of references) {
+        if (shortcut.section !== sectionName) continue;
+        this.appendShortcutRow(section, shortcut, true);
+        hasRows = true;
+      }
+      if (hasRows) list.appendChild(section);
     }
     this.$("keys-backdrop").classList.remove("hidden");
   }
@@ -12385,10 +12809,25 @@ class TermdeckApp {
     return parts.join("+");
   }
 
-  isDesktopTerminalSelectAllEvent(e) {
-    return !this.vscodeMode && e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey &&
+  isRecentTerminalsShortcut(e) {
+    if (this.vscodeMode || e.altKey || e.shiftKey || e.metaKey === e.ctrlKey || e.key.toLowerCase() !== "e") return false;
+    const mappedAction = this.bindingMap()[this.eventToBinding(e)];
+    return !mappedAction || mappedAction === "recent-terminals";
+  }
+
+  isDesktopTerminalSelectInputEvent(e) {
+    return !this.vscodeMode && e.metaKey && !e.shiftKey && !e.ctrlKey && !e.altKey &&
       (e.code === "KeyA" || String(e.key || "").toLowerCase() === "a") &&
-      this.activeFileKey === null && !this.historyOpen && !!this.views.get(this.activeId);
+      this.activeFileKey === null && !this.historyOpen && !!this.views.get(this.activeId) &&
+      !!e.target?.closest?.(".xterm");
+  }
+
+  isDesktopTerminalSelectAllEvent(e) {
+    return !this.vscodeMode && this.bindingFor("select-terminal-all") === "Meta+Shift+a" &&
+      e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey &&
+      (e.code === "KeyA" || String(e.key || "").toLowerCase() === "a") &&
+      this.activeFileKey === null && !this.historyOpen && !!this.views.get(this.activeId) &&
+      !!e.target?.closest?.(".xterm");
   }
 
   bindingFor(actionId) {
@@ -12423,6 +12862,12 @@ class TermdeckApp {
         this.cycleView("project");
         return true;
       }
+    }
+    if (this.isRecentTerminalsShortcut(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      this.runAction("recent-terminals");
+      return true;
     }
     const binding = this.eventToBinding(e);
     if (!binding) return false;
@@ -12513,12 +12958,22 @@ class TermdeckApp {
       }
     }
     else if (actionId === "open-move-menu") this.openActiveMoveMenu();
+    else if (actionId === "undo-terminal-edit") {
+      const view = this.views.get(this.activeId);
+      if (view && this.activeFileKey === null) this.sendTrackedInput(view, "\x1f");
+    }
+    else if (actionId === "open-terminal-new-tab") {
+      const session = this.session(this.activeId);
+      if (session) this.openTerminalInNewTab(session);
+    }
     else if (actionId === "save-file") { if (this.activeFileKey !== null) this.saveActiveFile(); }
     else if (actionId === "prev-terminal") this.cycleTerminal(-1);
     else if (actionId === "next-terminal") this.cycleTerminal(1);
     else if (actionId === "cycle-side-panel") this.cycleFilesSidePanel();
     else if (actionId === "open-files-panel") this.openFilesSidePanelView("project");
     else if (actionId === "open-file-search") this.openFilesSidePanelView("search");
+    else if (actionId === "open-files-new-tab") this.openFileDeckViewInNewTab(this.treeRoot || this.projectRoot(), "tree");
+    else if (actionId === "open-search-new-tab") this.openFileDeckViewInNewTab(this.treeRoot || this.projectRoot(), "search", "", this.$("search-query").value.trim());
     else if (actionId === "open-terminal-search") this.openFilesSidePanelView("terminal-search");
     else if (actionId === "view-terminals") this.setSideView("terminals");
     else if (actionId === "switch-project") this.openProjectSwitcher();
@@ -12533,6 +12988,7 @@ class TermdeckApp {
     else if (actionId === "show-usages") this.showEditorUsages();
     else if (actionId === "select-active-input") this.selectActiveInputText();
     else if (actionId === "select-terminal-all") this.selectActiveTerminalText();
+    else if (actionId === "recent-terminals") this.openRecentTerminalsQuickOpen();
     else if (actionId === "quick-open") {
       if (this.$("quick-open-backdrop").classList.contains("hidden")) this.openQuickOpen();
       else this.closeQuickOpen();
@@ -12557,6 +13013,22 @@ class TermdeckApp {
     // Some browser/macOS paths apply their page-level select-all after the
     // key event despite preventDefault(). Re-apply xterm's selection after
     // that default-action frame.
+    requestAnimationFrame(select);
+  }
+
+  selectActiveTerminalInputText() {
+    if (this.activeFileKey !== null || this.historyOpen) return;
+    const view = this.views.get(this.activeId);
+    if (!view) return;
+    const select = () => {
+      if (this.activeFileKey !== null || this.historyOpen || this.views.get(this.activeId) !== view) return;
+      const buffer = view.term.buffer.active;
+      const line = buffer.cursorY + buffer.baseY;
+      window.getSelection()?.removeAllRanges();
+      view.term.focus();
+      view.term.selectLines(line, line);
+    };
+    select();
     requestAnimationFrame(select);
   }
 
@@ -13266,7 +13738,7 @@ class TermdeckApp {
       const fileRow = document.createElement("div");
       fileRow.className = "tree-row file search-file search-tree-row search-tree-file";
       fileRow.tabIndex = 0;
-      fileRow.title = `${root}/${file.path}`;
+      fileRow.title = `${root}/${file.path}\nMiddle-click opens in a new TermDeck tab`;
       const spacer = document.createElement("span");
       spacer.className = "tree-file-spacer";
       const fileName = document.createElement("span");
@@ -13299,6 +13771,7 @@ class TermdeckApp {
           event.stopPropagation();
           this.openFile(root, hit.path, hit.line, null, { fromFilePanel: true, preview: true });
         };
+        hitRow.onauxclick = (event) => this.handleFileDeckAuxClick(event, root, hit.path);
         hitRow.onmouseenter = () => this.selectFileSearchResult("content", hitRow, { reveal: false });
         hits.appendChild(hitRow);
       }
@@ -13641,7 +14114,7 @@ class TermdeckApp {
       const row = document.createElement("div");
       row.className = "search-file clickable";
       row.tabIndex = 0;
-      row.title = hit.path;
+      row.title = `${hit.path}\nMiddle-click opens in a new TermDeck tab`;
       const icon = hit.is_dir ? document.createElement("span") : this.fileTypeIconEl(hit.path.split("/").pop(), "file-type-icon");
       if (hit.is_dir) {
         icon.className = "codicon codicon-folder file-type-icon";
@@ -13716,14 +14189,14 @@ class TermdeckApp {
     ctx.lineWidth = 1;
     ctx.beginPath();
     this.statHistory.forEach((p, i) => {
-      const x = i * step, y = h - 1 - (p.rss / maxRss) * (h - 3);
+      const x = w - (this.statHistory.length - 1 - i) * step, y = h - 1 - (p.rss / maxRss) * (h - 3);
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
     ctx.stroke();
     ctx.strokeStyle = this.cssVar("--accent");
     ctx.beginPath();
     this.statHistory.forEach((p, i) => {
-      const x = i * step, y = h - 1 - (p.cpu / maxCpu) * (h - 3);
+      const x = w - (this.statHistory.length - 1 - i) * step, y = h - 1 - (p.cpu / maxCpu) * (h - 3);
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
     ctx.stroke();

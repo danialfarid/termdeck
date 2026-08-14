@@ -129,6 +129,7 @@ class ProjectStatePatch(BaseModel):
     open_files: list[dict[str, str]] | None = None
     open_files_collapsed: bool | None = None
     recent_files_collapsed: bool | None = None
+    recently_opened_terminal_ids: list[str] | None = None
     session_order: list[str] | None = None
     # Legacy-only fields: the desktop client migrates saved pins into its
     # ordinary terminal layout, then clears them. New UI/API code has no pin action.
@@ -187,6 +188,7 @@ class ProjectUiState(BaseModel):
     open_files: list[dict[str, str]] = []
     open_files_collapsed: bool = False
     recent_files_collapsed: bool = False
+    recently_opened_terminal_ids: list[str] = []
     session_order: list[str] = []
     # Retained solely so older settings files can be migrated by the client.
     pinned_sessions: list[str] = []

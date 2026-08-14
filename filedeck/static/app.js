@@ -18,6 +18,9 @@ class FileDeckApp {
     this.inspectorMode = "history";
     this.inspectorPath = "";
     this.inspectorCommit = "";
+    const params = new URLSearchParams(location.search);
+    this.initialView = ["tree", "search", "git"].includes(params.get("view")) ? params.get("view") : "tree";
+    this.initialSearchQuery = params.get("q") || "";
     this.$ = (id) => document.getElementById(id);
   }
 
@@ -29,10 +32,21 @@ class FileDeckApp {
     await this.loadTree();
     const path = new URLSearchParams(location.search).get("file") || "";
     if (path) await this.openFile(path);
+    if (this.initialView !== "tree") this.setView(this.initialView);
+    if (this.initialView === "search" && this.initialSearchQuery) {
+      this.$("search-input").value = this.initialSearchQuery;
+      await this.runSearch();
+    }
   }
 
   bindEvents() {
     this.$("project-select").onchange = () => { location.href = `/f/${encodeURIComponent(this.$("project-select").value)}`; };
+    for (const [view, id] of [["terminals", "filedeck-view-terminals"], ["tree", "filedeck-view-project"],
+      ["search", "filedeck-view-search"], ["git", "filedeck-view-git"]]) {
+      const button = this.$(id);
+      button.onclick = () => view === "terminals" ? location.href = `/p/${encodeURIComponent(this.projectName)}` : this.setView(view);
+      button.onauxclick = (event) => this.handleNavigationAuxClick(event, view);
+    }
     this.$("files-tab-project").onclick = () => this.setView("tree");
     this.$("files-tab-search").onclick = () => this.setView("search");
     this.$("files-tab-git").onclick = () => this.setView("git");
@@ -137,6 +151,24 @@ class FileDeckApp {
     return false;
   }
 
+  openNavigationViewInNewTab(view) {
+    if (view === "terminals") {
+      window.open(`/p/${encodeURIComponent(this.projectName)}`, "_blank", "noopener,noreferrer");
+      return;
+    }
+    const params = new URLSearchParams({ view });
+    if (this.activePath) params.set("file", this.activePath);
+    if (view === "search" && this.$("search-input").value.trim()) params.set("q", this.$("search-input").value.trim());
+    window.open(`/f/${encodeURIComponent(this.projectName)}?${params}`, "_blank", "noopener,noreferrer");
+  }
+
+  handleNavigationAuxClick(event, view) {
+    if (event.button !== 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.openNavigationViewInNewTab(view);
+  }
+
   async persistSettings() {
     const response = await fetch("/api/settings");
     if (!response.ok) return;
@@ -192,6 +224,8 @@ class FileDeckApp {
     this.view = view;
     const buttons = [["files-tab-project", "tree"], ["files-tab-search", "search"], ["files-tab-git", "git"]];
     for (const [id, value] of buttons) this.$(id).classList.toggle("on", value === view);
+    const footerButtons = [["filedeck-view-project", "tree"], ["filedeck-view-search", "search"], ["filedeck-view-git", "git"]];
+    for (const [id, value] of footerButtons) this.$(id).classList.toggle("on", value === view);
     this.$("search-view-controls").classList.toggle("hidden", view !== "search");
     this.$("files-tree").classList.toggle("hidden", view !== "tree");
     this.$("search-results").classList.toggle("hidden", view !== "search");
@@ -355,7 +389,7 @@ class FileDeckApp {
       }
     } else {
       this.addMenuItem(menu, "Open", () => void this.openFile(path));
-      this.addMenuItem(menu, "Open in new browser tab", () => this.openNewTab(path));
+      this.addMenuItem(menu, "Open this file in a new browser tab", () => this.openNewTab(path));
       this.addMenuItem(menu, "Git history", () => void this.openInspector("history", path));
       this.addMenuItem(menu, "Git blame", () => void this.openInspector("blame", path));
       this.addMenuItem(menu, "Diff against HEAD", () => void this.openInspector("diff", path));

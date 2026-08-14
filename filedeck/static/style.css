@@ -53,7 +53,7 @@ button:hover { color: var(--text); border-color: var(--dim); background: var(--a
 .tree-file-spacer { width: calc(var(--tree-font-size) + 2px); flex: none; }
 .tree-type-icon, .file-type-icon { width: calc(var(--tree-font-size) + 3px); height: calc(var(--tree-font-size) + 3px); flex: none; object-fit: contain; }
 .tree-name, .search-file-name { min-width: 0; overflow: hidden; flex: 1; text-overflow: ellipsis; }
-.tree-children-wrap { margin-left: 12px; padding-left: 15px; border-left: 1px solid rgba(90, 100, 115, .18); }
+.tree-children-wrap { margin-left: calc(4px * var(--ui-scale)); padding-left: calc(8px * var(--ui-scale)); border-left: 1px solid rgba(90, 100, 115, .18); }
 .tree-mtime { flex: none; margin-left: auto; padding-left: 8px; color: var(--dim); font-size: calc(var(--tree-font-size) - 2px); }
 .git-row-m { background: rgba(90, 169, 255, .08); }
 .git-row-a { background: rgba(115, 212, 138, .08); }
@@ -80,6 +80,10 @@ button:hover { color: var(--text); border-color: var(--dim); background: var(--a
 .git-commit-id { flex: none; color: var(--accent); } .git-commit-message { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-commit-date { flex: none; margin-left: auto; color: var(--dim); font-size: 10px; }
 #filedeck-status { flex: none; min-height: 21px; padding: 4px 9px; color: var(--dim); border-top: 1px solid var(--border); font: calc(var(--ui-font-size) - 1px) Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#filedeck-footer { display: flex; align-items: center; gap: 5px; padding: 6px 8px; border-top: 1px solid var(--border); flex: none; }
+#filedeck-footer button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; flex: 1; height: 26px; padding: 0 6px; border: 1px solid transparent; border-radius: 6px; background: none; color: var(--dim); font-size: 11px; }
+#filedeck-footer button:hover, #filedeck-footer button.on { color: var(--text); border-color: var(--active-border); background: var(--active-bg); }
+#filedeck-footer .codicon { font-size: 14px; }
 #main { display: flex; flex: 1; min-width: 0; flex-direction: column; background: var(--term-bg); }
 #editor-toolbar { display: flex; align-items: center; gap: 8px; min-height: 35px; padding: 4px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
 #file-title { min-width: 0; flex: 1; overflow: hidden; color: var(--text); font: var(--tree-font-size) Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
@@ -111,7 +115,7 @@ button:hover { color: var(--text); border-color: var(--dim); background: var(--a
 #filedeck-context-menu button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 10px; border: 0; border-radius: 5px; background: none; color: var(--text); text-align: left; font-size: calc(var(--ui-font-size) + 1px); white-space: nowrap; }
 #filedeck-context-menu button:hover { background: var(--active-bg); }
 #filedeck-context-menu button:disabled { color: var(--dim); cursor: default; opacity: .75; }
-@media (max-width: 760px) { :root { --sidebar-width: 220px; } .files-tab-label { display: none; } #git-inspector { flex-basis: 300px; } }
+@media (max-width: 760px) { :root { --sidebar-width: 220px; } .files-tab-label, .filedeck-footer-label { display: none; } #git-inspector { flex-basis: 300px; } }
 
 #sidebar-header { gap: calc(8px * var(--ui-scale)); padding: calc(8px * var(--ui-scale)) calc(14px * var(--ui-scale)) calc(7px * var(--ui-scale)); }
 #files-section-tabs { gap: calc(3px * var(--ui-scale)); padding: calc(5px * var(--ui-scale)) calc(4px * var(--ui-scale)) calc(4px * var(--ui-scale)); }
@@ -135,3 +139,6 @@ button:hover { color: var(--text); border-color: var(--dim); background: var(--a
 #git-inspector-tabs button { height: calc(22px * var(--ui-scale)); }
 #filedeck-context-menu { padding: calc(4px * var(--ui-scale)); }
 #filedeck-context-menu button { gap: calc(8px * var(--ui-scale)); padding: calc(5px * var(--ui-scale)) calc(10px * var(--ui-scale)); }
+#filedeck-footer { gap: calc(5px * var(--ui-scale)); padding: calc(6px * var(--ui-scale)) calc(8px * var(--ui-scale)); }
+#filedeck-footer button { gap: calc(5px * var(--ui-scale)); height: calc(26px * var(--ui-scale)); padding: 0 calc(6px * var(--ui-scale)); }
+#filedeck-footer .codicon { font-size: calc(14px * var(--ui-scale)); }
