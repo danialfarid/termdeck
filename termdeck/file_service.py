@@ -93,7 +93,11 @@ class ProjectFileService:
         git_statuses = self._git_statuses(root)
         children = sorted(directory.iterdir(), key=self._dirs_first_case_insensitive)
         entries: list[dict[str, object]] = []
-        for child in children[:TermdeckConfig.FILE_LIST_MAX_ENTRIES]:
+        for child in children:
+            if child.name.startswith("."):
+                continue
+            if len(entries) >= TermdeckConfig.FILE_LIST_MAX_ENTRIES:
+                break
             try:
                 mtime = int(child.stat().st_mtime)
             except (FileNotFoundError, OSError):
@@ -126,9 +130,9 @@ class ProjectFileService:
         candidates: list[tuple[float, str, Path]] = []
         scanned = 0
         for current, dirs, names in os.walk(base, topdown=True, followlinks=False):
-            dirs[:] = [name for name in dirs if name not in TermdeckConfig.RECENT_FILES_IGNORED_DIRS]
+            dirs[:] = [name for name in dirs if name not in TermdeckConfig.RECENT_FILES_IGNORED_DIRS and not name.startswith(".")]
             for name in names:
-                if name in TermdeckConfig.RECENT_FILES_IGNORED_NAMES:
+                if name in TermdeckConfig.RECENT_FILES_IGNORED_NAMES or name.startswith("."):
                     continue
                 if scanned >= TermdeckConfig.RECENT_FILES_MAX_SCAN:
                     break

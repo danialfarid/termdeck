@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-14
+
+### Added
+
+- Native project file browsing, search, Git navigation, editor history, notes, themes, and terminal search improvements.
+- Explicit hidden-file search through the file-type exclusion menu.
+- Persistent terminal activity, prompt, clipboard, and automation workflow improvements.
+
+### Changed
+
+- Hidden project files are excluded from listings, recent-file scans, search, fuzzy filename matching, and replace by default.
+- Git view typography follows the configurable tree font, and stale Git results are cleared when switching views.
+
 ## [0.2.0] — 2026-08-13
 
 ### Added
@@ -54,6 +67,7 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/danialfarid/termdeck/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/danialfarid/termdeck/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/danialfarid/termdeck/releases/tag/v0.1.0

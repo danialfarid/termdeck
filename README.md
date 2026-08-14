@@ -2,8 +2,8 @@
 
 # TermDeck
 
-**A deck of persistent terminals in your browser — where your Claude Code and Codex sessions
-survive restarts, reboots, and closed tabs.**
+**A persistent local workspace for Codex, Claude Code, AGY/Antigravity, and shell terminals — built
+for running, watching, and returning to many agent sessions without losing the thread.**
 
 [![Release](https://img.shields.io/github/v/release/danialfarid/termdeck?sort=semver)](https://github.com/danialfarid/termdeck/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
@@ -17,47 +17,58 @@ survive restarts, reboots, and closed tabs.**
 ## What it is
 
 TermDeck is a small local web app that runs a deck of named terminals and serves them to your browser.
-It is built around one idea: **an AI coding agent session should never be lost.**
+It is built around one idea: **an AI coding agent session should never be lost in a pile of terminal
+windows.**
 
-Close the tab, reboot your laptop, restart the server — every terminal comes back, and any terminal running
-`claude` or `codex` comes back **resumed into the exact session it was on**, not a fresh one.
+Close the tab or restart the TermDeck server and live processes keep running under `dtach`. After a computer
+restart, saved Codex and Claude terminals reopen **resumed into the exact agent session they were on**, not a
+fresh one.
 
-Around that sits a small IDE: a VS Code file tree, the real Monaco editor, project-wide ripgrep search and
-replace, and a rendered Markdown view of your agent's conversation with a prompt composer.
+The terminal deck stays at the center. Around it are tools that shorten the loop around agent work: grouped
+and searchable sessions, activity and unread state, a rendered conversation view, prompt and clipboard
+history, quick notes, a Monaco file editor, project search, Git history, and an automation API for spawning
+parallel agents.
 
 ```
-┌────────────────────────┬──────────────────────────────────────────────────────┐
-│ stock            ▾  +  │                                              ⟳  ▤  ⌄ │
-├────────────────────────┤                                                      │
-│ TERMINALS              │  $ claude --resume 4f2a…                             │
-│  ● ⌁ refactor parser   │                                                      │
-│  ● ⌁ fix flaky test    │    ● Analyzing the parser module…                    │
-│  ○ ⌁ codex: migrate    │                                                      │
-│  ● $ zsh               │    I found three call sites that need updating:      │
-│                        │      1. trainer/prep/features/index_feat.py:210      │
-│ FILES                  │      2. miner/sec/sec_miner.py:88                    │
-│  index_feat.py       ✕ │                                                      │
-│  README.md           ✕ │  > continue                                          │
-│                        │                                                      │
-│ CLOSED                 │                                                      │
-│  ↺ old bugfix run      │                                                      │
-├────────────────────────┼──────────────────────────────────────────────────────┤
-│ ⌨  ⚙                   │  refactor parser            cpu 12%  rss 480M   ▁▃▅▂ │
-└────────────────────────┴──────────────────────────────────────────────────────┘
+┌──────────────────────────┬────────────────────────────────────────────────────┐
+│ stock ▾                  │ terminal / conversation / file editor              │
+├──────────────────────────┤                                                    │
+│ TERMINALS          +  ⋯  │ $ codex resume 4f2a…                              │
+│ ▾ ingestion         2 ●  │                                                    │
+│   ◉ refactor parser      │   Analyzing the parser module…                     │
+│   ○ review tests         │                                                    │
+│ ● migrate cache         │   I found three call sites that need updating:      │
+│                          │     trainer/prep/features/index_feat.py:210         │
+│ RECENTLY CLOSED (50)     │     miner/sec/sec_miner.py:88                      │
+│   ↺ old bugfix run       │                                                    │
+│                          │ > continue                                          │
+├──────────────────────────┼────────────────────────────────────────────────────┤
+│ Files Search Git Notes   │ MD  refresh  bottom  upload   model · cpu · rss    │
+└──────────────────────────┴────────────────────────────────────────────────────┘
 ```
 
 ## Why you might want it
 
 - **Agent sessions are precious.** A long Claude Code or Codex session holds hours of context. TermDeck
-  tracks which session each terminal is currently on and re-enters it on restart with `--resume`.
+  tracks the active CLI session and re-enters it after a restart instead of starting over.
 - **Terminals keep running when nothing is watching.** Every terminal is backed by
-  [`dtach`](https://github.com/crigler/dtach), so processes survive the server going away, not just the tab.
-- **Your unsent prompt survives too.** Half-typed input is reconstructed server-side and re-injected after
-  the CLI boots back up.
-- **One browser tab per project.** Terminals, open files, and layout are scoped per project and
-  URL-addressable at `/p/<name>`.
-- **Read your agent, don't squint at it.** Switch any agent terminal to a rendered Markdown transcript with
-  collapsible diffs, a prompt composer, and a queue.
+  [`dtach`](https://github.com/crigler/dtach), so processes survive browser and TermDeck server restarts.
+- **Parallel work remains understandable.** Group and reorder terminals, see working and unread state, sort
+  by recent activity, search every terminal, and open a conversation outline when you need the short version.
+- **Agents can delegate through the same UI.** Fork one session or up to 25 copies, or use the local API to
+  start named tasks with a model, permission, prompt, placement, and result path. Every child remains a normal,
+  inspectable TermDeck terminal.
+- **Read your agent, don't squint at it.** Switch an agent terminal to a rendered conversation with model and
+  status information, collapsible thinking and diffs, prompt history, a composer, and a queue.
+- **Your input is recoverable.** Unsent drafts are persisted, terminal and Markdown prompts stay in history,
+  and clipboard history and quick notes keep useful snippets nearby.
+- **One browser tab per project — or per task.** Projects are URL-addressable at `/p/<name>`, while a terminal,
+  file browser, or search view can also open in its own browser tab.
+- **The supporting tools understand the terminal workflow.** Printed paths are clickable, files open in
+  Monaco, and file-name search, content search, Git history, blame, definitions, usages, and Problems are close
+  without turning TermDeck into a full IDE replacement.
+- **Long-running decks are maintainable.** Process inventory, orphan cleanup, recently closed sessions, and an
+  explicit kill-all action help reclaim resources without erasing saved history.
 - **It's local.** Binds `127.0.0.1` by default, stores everything in `~/.termdeck`, talks to no network service.
 
 ---
@@ -70,7 +81,7 @@ replace, and a rendered Markdown view of your agent's conversation with a prompt
 | **Python** | 3.11 or newer |
 | **Required** | [`dtach`](https://github.com/crigler/dtach) — keeps terminals alive across restarts |
 | **Recommended** | [`ripgrep`](https://github.com/BurntSushi/ripgrep) — powers project search and replace |
-| **Optional** | [`claude`](https://claude.com/claude-code) and/or [`codex`](https://github.com/openai/codex) CLIs — for agent session resume |
+| **Optional** | [`claude`](https://claude.com/claude-code), [`codex`](https://github.com/openai/codex), and/or the `agy` Antigravity CLI |
 | **Browser** | Any current Chrome, Safari, Firefox, or Edge |
 
 Run `termdeck doctor` at any time to see exactly what was found and what's missing.
@@ -101,7 +112,7 @@ sudo pacman -S dtach ripgrep               # Arch
 then TermDeck itself:
 
 ```sh
-uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.1.0"
+uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.3.0"
 termdeck --open
 ```
 
@@ -110,7 +121,7 @@ Upgrade to a newer release by re-running the same command with the new tag.
 ### pipx
 
 ```sh
-pipx install "git+https://github.com/danialfarid/termdeck.git@v0.1.0"
+pipx install "git+https://github.com/danialfarid/termdeck.git@v0.3.0"
 ```
 
 ### From source
@@ -135,9 +146,10 @@ termdeck --open
 That starts the server on <http://127.0.0.1:8530> and opens it in your browser. Then:
 
 1. Press **⌘B** (or click **+**) to open a terminal.
-2. Pick **Codex**, **Claude**, or **Shell**, choose a permission mode, and set the directory.
+2. Pick **Codex**, **Claude**, **AGY**, or **Shell**, choose a permission mode, and select the project directory.
 3. Work in it like any terminal.
-4. Now quit the server and start it again — the terminal is back, resumed, with your unsent prompt intact.
+4. Close the browser or restart TermDeck — the live process remains attached to its saved terminal. After a
+   machine restart, Codex and Claude sessions resume when opened.
 
 To keep it running in the background forever:
 
@@ -156,7 +168,7 @@ you pass at install time.
 ```sh
 termdeck service install               # install + start, and start at every login
 termdeck --port 9000 service install   # same, but the service remembers port 9000
-termdeck service restart               # restart it (terminals respawn and resume)
+termdeck service restart               # restart TermDeck; live dtach terminals keep running
 termdeck service status                # is it running?
 termdeck service logs                  # tail the log (journalctl on Linux)
 termdeck service uninstall             # stop it and remove the unit file
@@ -176,15 +188,14 @@ On Linux, if you want the service to run before you log in graphically, enable l
 
 ### Opening terminals
 
-Click **+** or press **⌘B**. The dialog asks for four things:
+Click **+** or press **⌘B**:
 
 | Field | Meaning |
 |---|---|
-| **Model** | `Codex`, `Claude`, or `Shell` (a plain interactive login shell) |
+| **Model** | `Codex`, `Claude`, `AGY`, or `Shell` (a plain interactive login shell) |
 | **Permission** | The sandbox/approval mode to launch the agent with — see the table below |
-| **Session name** | Optional. Pins a title so the CLI can't overwrite it |
-| **Resume existing session** | Optional. A saved session ID or a name you gave a past session |
-| **Directory** | Working directory. Defaults to the current project's root |
+| **Session name / Resume** | Name a new terminal, or choose a saved Codex/Claude session ID or name to resume |
+| **Directory** | Working directory, with a native folder picker for adding a project |
 
 Permission modes map to real CLI flags:
 
@@ -198,6 +209,8 @@ Permission modes map to real CLI flags:
 | Claude | `accept-edits` | `--permission-mode acceptEdits` |
 | Claude | `auto` | `--permission-mode auto` |
 | Claude | `full-access` | `--dangerously-skip-permissions` |
+| AGY | `default` | *(none)* |
+| AGY | `full-access` | `--dangerously-skip-permissions` |
 
 An empty command gives you an interactive login shell. Any other command runs through your login shell
 (`$SHELL -ilc`), so aliases and shell functions work.
@@ -207,7 +220,8 @@ An empty command gives you an interactive login shell. Any other command runs th
 This is the core feature, so it's worth knowing the mechanics.
 
 For any terminal whose command contains `claude` or `codex`, TermDeck continuously tracks **which CLI session
-that terminal is on right now**:
+that terminal is on right now**. AGY terminals have transcript and activity support, but currently open new
+AGY sessions rather than resuming a saved one.
 
 - **Primarily via open file handles.** It uses `lsof` to see which session file the process group holds open.
   This is exact, and it catches picker-resumes and in-TUI session switches.
@@ -225,8 +239,23 @@ After a computer restart, opening a saved terminal starts it as:
 Using `/clear` or switching sessions inside the TUI updates the recorded ID, so a restart always lands you
 on the session you were actually on — not the one you started with.
 
-**Fork** branches a copy of the current agent session into a new terminal, leaving the original untouched —
-`--fork-session` for Claude, `codex fork` for Codex.
+**Fork** branches the current Codex or Claude session into a new terminal, leaving the original untouched.
+Enter a name for one fork or a number to create up to 25 numbered forks; the copies are inserted beside the
+source terminal rather than disappearing at the end of the deck.
+
+### Managing a large terminal deck
+
+Terminals can be reordered by drag and drop, placed into collapsible groups, moved between projects, or opened
+alone in a browser tab. Working state animates while an agent is active; unread dots remain after it finishes.
+Group headers summarize active/unread children, and sorting by recent activity temporarily flattens the groups.
+
+- **Terminal search** searches names and conversation/output text, groups results by session, and can group
+  similar matches from several agents.
+- **Quick Open** searches commands, recently opened terminals, open files, file names, and symbols.
+- **Conversation outline** presents the prompts and responses in a compact, clickable history.
+- The context menu supports fork, restart with a permission mode, rename, copy session ID, mark unread, move,
+  open in a new tab, and close. Multi-selection is available for moving several terminals together.
+- Recently closed terminals retain their group and session metadata and can be searched and reopened.
 
 ### Terminals that outlive the server
 
@@ -251,41 +280,77 @@ Each project is URL-addressable at `/p/<name>` — for example `/p/termdeck`. Th
 browser tab per project**. `/` shows everything at once. Switching projects from the sidebar dropdown swaps
 terminals, open files, closed history, remembered selection, and the default directory for new terminals.
 
-### The Markdown transcript
+### The conversation view
 
-Click the **markdown** icon in the terminal toolbar (or press **⌘⇧M**) to swap an agent terminal for a
-rendered transcript of the conversation, read directly from the CLI's own session file:
+Click the **MD** icon in the bottom toolbar (or press **⌥G**) to swap an agent terminal for a rendered
+transcript read directly from the CLI's own session file:
 
 - Prose rendered as Markdown instead of TUI-wrapped text — selectable and copyable properly
-- Code edits shown as collapsible diffs — collapse them all with one button
-- A live **THINKING** banner with elapsed time
+- Code edits and thinking blocks shown as collapsible sections
+- Live working state, elapsed time, model name, reasoning effort, and context/status information
 - A prompt composer at the bottom: **Enter** submits, **Shift+Enter** newline, **Esc** interrupts
 - **Tab** queues a prompt (Codex); queued prompts are listed, editable in place, and removable
+- Persisted prompt history from both terminal and conversation mode
+- A conversation outline (**⌥O**) for jumping to earlier prompts and responses
 - An attach button to upload a file or image straight into the prompt
 
-Press **⌘⇧M** again, or hit the terminal icon, to go back to the live terminal.
+Press **⌥G** again, or hit **TERM**, to go back to the live terminal.
 
 ### Files and the editor
 
-The **Files** view (**⌘⇧D**) is a lazy VS Code–style tree that auto-re-roots to the active terminal's
-directory. Selecting a file swaps the main area to a Monaco editor — the actual VS Code editor component,
-vendored locally — with syntax highlighting, folding, and find.
+The **Files** view (**⌘⇧D**) is a lazy VS Code–style tree rooted at the active project. It can float over the
+terminal, stay pinned, or open in its own browser tab. Selecting a file swaps the main area to Monaco — the
+actual VS Code editor component, vendored locally — with syntax highlighting, folding, find/replace, symbol
+navigation, definitions, usages, and a Problems panel.
 
 - **File paths printed in any terminal are clickable.** They resolve against that terminal's directory, and
-  `path:line` jumps straight to the line.
-- Open files persist across reloads and restarts; content is re-fetched lazily.
+  wrapped `path:line` references are reconstructed before jumping to the line.
+- Open files and navigation history persist across reloads; externally changed content is re-fetched.
 - **⌘S** saves. **⌃R** renames, **⌃M** moves, **⌘⌫** trashes the selected tree file.
+- The file-tree context menu creates, renames, duplicates, moves, refreshes, or trashes files and folders.
+- Local snapshots and Git history show earlier versions of an open file, with diffs and targeted restore.
+- Git view lists branch changes; file tools include history and blame.
 - Access is confined to your home directory, files over 2 MB are refused, and binaries are refused.
 - Deletes go to the system trash (`~/.Trash` on macOS, the XDG trash on Linux), never `rm`.
 
 ### Search and replace
 
 The **Search** view (**⌘⇧F**) runs ripgrep across the project: fixed-string or regex, match case, whole word,
-and an `rg`-glob filter box (`!*.json, *.py, trainer/**`). Results are grouped by file and click through to
-the exact line.
+include patterns, and editable exclusion chips. Results retain the file-tree hierarchy, Git state, and modified
+time and click through to the exact line. File-name search ranks exact matches before fuzzy matches and keeps
+its own search history and filters.
 
 Toggle the replace bar to run a project-wide replace across every matching file (capped at 200 files per
-run). The fuzzy **find file by name** box sits above it.
+run). Files, Search, and Git share one panel; **⌘⇧S** cycles through them and closes the panel on the fourth
+press.
+
+### Quick notes and copied text
+
+Press **⌥N** to open a resizable, multi-tab plain-text notebook over the workspace. Notes autosave, use the
+same Monaco editing behavior as source files, and can be populated directly from selected terminal or
+conversation text. Closed notes go to the system trash.
+
+TermDeck also keeps a bounded copied-text history. **⌘⇧V** opens a keyboard-navigable picker that pastes into
+the currently focused terminal, conversation prompt, file, or note. The notebook's **Copied** tab provides a
+larger view for reviewing and reusing snippets.
+
+### Automation and parallel agents
+
+The localhost API can create a persistent terminal, select Codex, Claude, AGY, or shell, choose a model and
+permission mode, place it after a session or group, submit a prompt, and optionally append raw output to a
+file. Calls are non-blocking; poll the last-turn endpoint for status and the latest agent response.
+
+`POST /api/terminals/batch` launches up to 32 named tasks at once. This makes TermDeck useful as a visible
+agent orchestration layer: a parent agent or script can delegate reviews and subtasks while every worker stays
+available in the same deck for inspection, follow-up, restart, or manual takeover. See
+[docs/api.md](docs/api.md) and [docs/agents-termdeck-api.md](docs/agents-termdeck-api.md).
+
+### VS Code integration
+
+The optional [VS Code extension](integrations/vscode/README.md) uses a native Activity Bar Tree View and native
+VS Code terminals by default. Its groups, ordering, selection, and sessions are shared with the browser app.
+An optional single-tab mode keeps one TermDeck editor open while the native tree switches the selected
+terminal. The extension can auto-start the local TermDeck server.
 
 ### Keyboard shortcuts
 

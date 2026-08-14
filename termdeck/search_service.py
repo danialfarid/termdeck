@@ -14,6 +14,7 @@ class ProjectSearchService:
     of directory names to exclude on top of gitignore."""
 
     _LINE_PARTS = 3
+    _HIDDEN_IGNORE_PATTERNS = frozenset({".*", "**/.*"})
 
     def __init__(self, files: ProjectFileService) -> None:
         self._files = files
@@ -42,6 +43,15 @@ class ProjectSearchService:
                 include.append(token)
         return include, exclude
 
+    @classmethod
+    def _normalize_hidden_ignore(cls, raw: str, include_hidden: bool) -> str:
+        tokens = [value.strip() for value in raw.split(",") if value.strip()]
+        if include_hidden:
+            tokens = [token for token in tokens if token not in cls._HIDDEN_IGNORE_PATTERNS]
+        elif not any(token in cls._HIDDEN_IGNORE_PATTERNS for token in tokens):
+            tokens.append(".*")
+        return ",".join(tokens)
+
     @staticmethod
     def _path_matches_glob(path: str, patterns: list[str]) -> bool:
         if not patterns:
@@ -63,6 +73,10 @@ class ProjectSearchService:
         return any(fnmatch.fnmatch(normalized, pattern) or
                    fnmatch.fnmatch(f"{normalized}/", pattern) or
                    any(fnmatch.fnmatch(part, pattern) for part in parts) for pattern in wildcard)
+
+    @staticmethod
+    def _path_contains_hidden_component(path: str) -> bool:
+        return any(part.startswith(".") for part in path.replace("\\", "/").split("/") if part)
 
     def _attach_git_statuses(self, root: os.PathLike[str], results: list[dict[str, str | int]]) -> list[dict[str, str | int]]:
         paths = {str(result["path"]) for result in results}
@@ -131,18 +145,21 @@ class ProjectSearchService:
         return results
 
     async def search(self, root: str, query: str, glob: str, ignore: str, word: bool,
-                     case_sensitive: bool, regex: bool) -> list[dict[str, str | int]]:
+                     case_sensitive: bool, regex: bool, include_hidden: bool = False) -> list[dict[str, str | int]]:
         base = self._files.resolve_confined(root, "")
+        normalized_ignore = self._normalize_hidden_ignore(ignore, include_hidden)
         argv = [TermdeckConfig.RG_BIN, "--line-number", "--no-heading", "--color", "never",
                 "--max-columns", "300", "--max-filesize", "2M", "--max-count", "50",
                 "--case-sensitive" if case_sensitive else "--smart-case"]
+        if include_hidden:
+            argv.append("--hidden")
         if not regex:
             argv.append("--fixed-strings")
         if word:
             argv.append("--word-regexp")
         for pattern in (token.strip() for token in glob.split(",") if token.strip()):
             argv.extend(("--glob", pattern))
-        for directory in (token.strip() for token in ignore.split(",") if token.strip()):
+        for directory in (token.strip() for token in normalized_ignore.split(",") if token.strip()):
             argv.extend(("--glob", f"!**/{directory}/**", "--glob", f"!{directory}/**"))
         argv.extend(("--", query, str(base)))
         try:
@@ -171,27 +188,33 @@ class ProjectSearchService:
                 if len(results) >= TermdeckConfig.SEARCH_MAX_RESULTS:
                     break
             if proc.returncode not in (None, 0):
-                return self._attach_git_statuses(base, self._python_search(base, query, glob, ignore, word, case_sensitive, regex))
+                return self._attach_git_statuses(base, self._python_search(base, query, glob, normalized_ignore, word, case_sensitive, regex))
             return self._attach_git_statuses(base, results)
         except FileNotFoundError:
-            return self._attach_git_statuses(base, self._python_search(base, query, glob, ignore, word, case_sensitive, regex))
+            return self._attach_git_statuses(base, self._python_search(base, query, glob, normalized_ignore, word, case_sensitive, regex))
 
     async def replace_all(self, root: str, query: str, glob: str, ignore: str, word: bool, case_sensitive: bool,
-                          regex: bool, replacement: str, paths: list[str] | None = None) -> dict[str, int]:
+                          regex: bool, replacement: str, paths: list[str] | None = None,
+                          include_hidden: bool = False) -> dict[str, int]:
         base = self._files.resolve_confined(root, "")
+        normalized_ignore = self._normalize_hidden_ignore(ignore, include_hidden)
         if paths:
             relative_paths = [str(self._files.resolve_confined(root, path).relative_to(base))
                               for path in paths[:TermdeckConfig.REPLACE_MAX_FILES]]
+            if not include_hidden:
+                relative_paths = [path for path in relative_paths if not self._path_contains_hidden_component(path)]
         else:
             argv = [TermdeckConfig.RG_BIN, "--files-with-matches", "--color", "never", "--max-filesize", "2M",
                     "--case-sensitive" if case_sensitive else "--smart-case"]
+            if include_hidden:
+                argv.append("--hidden")
             if not regex:
                 argv.append("--fixed-strings")
             if word:
                 argv.append("--word-regexp")
             for pattern in (token.strip() for token in glob.split(",") if token.strip()):
                 argv.extend(("--glob", pattern))
-            for directory in (token.strip() for token in ignore.split(",") if token.strip()):
+            for directory in (token.strip() for token in normalized_ignore.split(",") if token.strip()):
                 argv.extend(("--glob", f"!**/{directory}/**", "--glob", f"!{directory}/**"))
             argv.extend(("--", query))
             proc = await asyncio.create_subprocess_exec(*argv, cwd=str(base), stdout=asyncio.subprocess.PIPE,
@@ -223,13 +246,17 @@ class ProjectSearchService:
                 total_replacements += count
         return {"files": files_changed, "replacements": total_replacements}
 
-    async def find_files(self, root: str, query: str, ignore: str, glob: str = "", case_sensitive: bool = False) -> list[dict[str, str | bool | int]]:
+    async def find_files(self, root: str, query: str, ignore: str, glob: str = "", case_sensitive: bool = False,
+                         include_hidden: bool = False) -> list[dict[str, str | bool | int]]:
         base = self._files.resolve_confined(root, "")
+        normalized_ignore = self._normalize_hidden_ignore(ignore, include_hidden)
         try:
             argv = [TermdeckConfig.RG_BIN, "--files"]
+            if include_hidden:
+                argv.append("--hidden")
             for pattern in (token.strip() for token in glob.split(",") if token.strip()):
                 argv.extend(("--glob", pattern))
-            for directory in (token.strip() for token in ignore.split(",") if token.strip()):
+            for directory in (token.strip() for token in normalized_ignore.split(",") if token.strip()):
                 argv.extend(("--glob", f"!**/{directory}/**", "--glob", f"!{directory}/**"))
             proc = await asyncio.create_subprocess_exec(*argv, cwd=str(base), stdout=asyncio.subprocess.PIPE,
                                                         stderr=asyncio.subprocess.DEVNULL)
@@ -240,12 +267,12 @@ class ProjectSearchService:
                 return []
             lines = stdout.decode(errors="replace").splitlines()
             if proc.returncode not in (None, 0):
-                return self._python_find_files(base, query, ignore, glob, case_sensitive)
+                return self._python_find_files(base, query, normalized_ignore, glob, case_sensitive)
             stdout_lines = lines
         except asyncio.TimeoutError:
             return []
         except FileNotFoundError:
-            return self._python_find_files(base, query, ignore, glob, case_sensitive)
+            return self._python_find_files(base, query, normalized_ignore, glob, case_sensitive)
         # `rg --files` intentionally returns files only. Add the parent
         # directories of those files as candidates so a folder name is a real
         # filename-search result too while avoiding a second full filesystem walk.
@@ -260,11 +287,11 @@ class ProjectSearchService:
         scored: list[tuple[int, int, int, int, str, bool]] = []
         for rel, is_dir in candidates:
             basename = rel.rsplit("/", 1)[-1]
-            basename_score = self._fuzzy_span_score(query, basename, case_sensitive)
-            path_score = basename_score if basename_score is not None else self._fuzzy_span_score(query, rel, case_sensitive)
-            if path_score is None:
+            match_rank, basename_score = self._filename_match_score(query, basename, is_dir, case_sensitive)
+            if basename_score is None:
                 continue
-            scored.append((0 if basename_score is not None else 1, path_score, len(rel), int(not is_dir), rel, is_dir))
+            scored.append((match_rank,
+                           basename_score, len(rel), int(is_dir), rel, is_dir))
         scored.sort()
         results = [self._file_find_result(base, rel, is_dir) for _, _, _, _, rel, is_dir in scored[:TermdeckConfig.FIND_MAX_RESULTS]]
         return self._attach_git_statuses(base, results)
@@ -303,11 +330,11 @@ class ProjectSearchService:
         scored: list[tuple[int, int, int, int, str, bool]] = []
         for rel, is_dir in candidates:
             basename = rel.rsplit("/", 1)[-1]
-            basename_score = self._fuzzy_span_score(query, basename, case_sensitive)
-            path_score = basename_score if basename_score is not None else self._fuzzy_span_score(query, rel, case_sensitive)
-            if path_score is None:
+            match_rank, basename_score = self._filename_match_score(query, basename, is_dir, case_sensitive)
+            if basename_score is None:
                 continue
-            scored.append((0 if basename_score is not None else 1, path_score, len(rel), int(not is_dir), rel, is_dir))
+            scored.append((match_rank,
+                           basename_score, len(rel), int(is_dir), rel, is_dir))
         scored.sort()
         results = [self._file_find_result(base, rel, is_dir) for _, _, _, _, rel, is_dir in scored[:TermdeckConfig.FIND_MAX_RESULTS]]
         return self._attach_git_statuses(base, results)
@@ -321,15 +348,30 @@ class ProjectSearchService:
         return {"path": relative_path, "is_dir": is_directory, "mtime": modified_time}
 
     @staticmethod
-    def _fuzzy_span_score(query: str, candidate: str, case_sensitive: bool = False) -> int | None:
-        lowered = candidate if case_sensitive else candidate.lower()
-        query = query if case_sensitive else query.lower()
-        position = -1
-        first = -1
-        for ch in query:
-            position = lowered.find(ch, position + 1)
-            if position == -1:
+    def _filename_fuzzy_score(query: str, candidate: str, case_sensitive: bool = False) -> int | None:
+        normalized_candidate = candidate if case_sensitive else candidate.lower()
+        normalized_query = query if case_sensitive else query.lower()
+        cursor = 0
+        first_position = None
+        gap_score = 0
+        for character in normalized_query:
+            position = normalized_candidate.find(character, cursor)
+            if position < 0:
                 return None
-            if first == -1:
-                first = position
-        return (position - first + 1) - len(query)
+            if first_position is None:
+                first_position = position
+            gap_score += position - cursor
+            cursor = position + 1
+        return (first_position or 0) * 4 + gap_score
+
+    @classmethod
+    def _filename_match_score(cls, query: str, basename: str, is_directory: bool, case_sensitive: bool) -> tuple[int, int | None]:
+        normalized_query = query if case_sensitive else query.lower()
+        normalized_name = basename if case_sensitive else basename.lower()
+        if normalized_name == normalized_query:
+            return 0, 0
+        if not is_directory and normalized_name.rsplit(".", 1)[0] == normalized_query:
+            return 1, 0
+        if normalized_name.startswith(normalized_query):
+            return 2, 0
+        return 4, cls._filename_fuzzy_score(query, basename, case_sensitive)

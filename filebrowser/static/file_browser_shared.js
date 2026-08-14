@@ -57,7 +57,7 @@ window.TermDeckFileBrowser = (() => {
       chevron.className = "codicon codicon-chevron-right tree-chevron";
       const icon = document.createElement("img");
       icon.className = "tree-type-icon tree-folder-icon";
-      icon.src = `${materialIconsBase}folder.svg`;
+      icon.src = `${materialIconsBase}folder-project.svg`;
       icon.onerror = () => { icon.src = `${materialIconsBase}folder.svg`; };
       row.append(chevron, icon, name);
       row.onclick = () => onDirectory?.(row, childPath);

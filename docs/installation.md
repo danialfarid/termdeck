@@ -38,7 +38,7 @@ Upgrade later with `brew update && brew upgrade termdeck`.
 `uv` brings its own Python, so the system Python version doesn't matter.
 
 ```sh
-uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.1.0"
+uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.3.0"
 ```
 
 Upgrade to a newer release by re-running with the new tag. Pin to `main` instead of a tag for the latest
@@ -47,7 +47,7 @@ development version.
 ## pipx
 
 ```sh
-pipx install "git+https://github.com/danialfarid/termdeck.git@v0.1.0"
+pipx install "git+https://github.com/danialfarid/termdeck.git@v0.3.0"
 ```
 
 ## pip
@@ -55,7 +55,7 @@ pipx install "git+https://github.com/danialfarid/termdeck.git@v0.1.0"
 Only if you want it inside a specific environment rather than as a standalone tool:
 
 ```sh
-python3 -m pip install "git+https://github.com/danialfarid/termdeck.git@v0.1.0"
+python3 -m pip install "git+https://github.com/danialfarid/termdeck.git@v0.3.0"
 ```
 
 ### Installing the external tools
@@ -174,9 +174,9 @@ Remove it with `termdeck service uninstall`.
 | Installed with | Upgrade |
 |---|---|
 | Homebrew | `brew update && brew upgrade termdeck` |
-| uv | `uv tool install --force "git+https://github.com/danialfarid/termdeck.git@v0.1.0"` |
-| pipx | `pipx install --force "git+https://github.com/danialfarid/termdeck.git@v0.1.0"` |
-| pip | `pip install --upgrade "git+https://github.com/danialfarid/termdeck.git@v0.1.0"` |
+| uv | `uv tool install --force "git+https://github.com/danialfarid/termdeck.git@v0.3.0"` |
+| pipx | `pipx install --force "git+https://github.com/danialfarid/termdeck.git@v0.3.0"` |
+| pip | `pip install --upgrade "git+https://github.com/danialfarid/termdeck.git@v0.3.0"` |
 | Source | `git pull` |
 
 If you run it as a service, restart it afterwards so the new version is picked up:

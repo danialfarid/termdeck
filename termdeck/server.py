@@ -20,7 +20,7 @@ from termdeck.file_history_service import FileHistoryService
 from termdeck.file_service import ProjectFileService
 from filedeck.git_service import FileDeckGitService
 from termdeck.history_index import HistorySearchIndex
-from termdeck.models import AgentKind, ApiFields, WsMessageFields
+from termdeck.models import ApiFields, WsMessageFields
 from termdeck.platform_paths import PlatformPaths
 from termdeck.search_service import ProjectSearchService
 from termdeck.session_manager import TerminalSessionManager
@@ -174,6 +174,7 @@ class ReplaceRequest(BaseModel):
     word: bool = False
     case_sensitive: bool = False
     regex: bool = False
+    include_hidden: bool = False
     replacement: str = ""
     paths: list[str] = []
 
@@ -208,11 +209,15 @@ class UiSettings(BaseModel):
     sidebar_width: int = 250
     files_width: int = 380
     sidebar_font_size: int = 13
+    project_font_size: int = 18
     terminal_font_size: int = 13
     ui_font_size: int = 11
+    files_tab_font_size: int = 11
     viewer_font_size: int = 12
     code_font_size: int = 12
     diff_font_size: int = 13
+    bottom_font_size: int = 14
+    terminal_icon_size: int = 14
     active_session_id: str = ""
     open_files: list[dict[str, str]] = []
     project_state: dict[str, ProjectUiState] = {}
@@ -228,12 +233,16 @@ class UiSettings(BaseModel):
     recent_exclude: str = ""
     word_wrap: bool = False
     search_glob: str = "!*.json, !*.csv, !*.log"
+    tree_file_glob: str = ""
+    search_file_glob: str = ""
+    excluded_file_glob: str = "!*.json, !*.csv, !*.log"
     keybindings: dict[str, str] = {}
     vscode_keybindings: dict[str, str] = {}
     last_command: str = "codex"
     last_model: str = "codex"
     last_permissions: dict[str, str] = {}
     show_terminal_icons: bool = False
+    inline_size_controls: bool = False
     prompt_wrap_guard: bool = False
     history_mode: bool = False
     claude_snapshot_experimental: bool = False
@@ -512,17 +521,18 @@ class TermdeckServer:
             raise HTTPException(status_code=404, detail=str(read_error)) from read_error
 
     async def _search_files(self, root: str, q: str, glob: str = "", ignore: str = "", word: bool = False,
-                            case_sensitive: bool = False, regex: bool = False) -> list[dict[str, str | int]]:
+                            case_sensitive: bool = False, regex: bool = False, include_hidden: bool = False) -> list[dict[str, str | int]]:
         if not q.strip():
             return []
         try:
-            return await self.search.search(root, q, glob, ignore, word, case_sensitive, regex)
+            return await self.search.search(root, q, glob, ignore, word, case_sensitive, regex, include_hidden)
         except (ValueError, FileNotFoundError, PermissionError) as search_error:
             raise HTTPException(status_code=404, detail=str(search_error)) from search_error
 
-    async def _find_files(self, root: str, q: str, glob: str = "", ignore: str = "", case_sensitive: bool = False) -> list[dict[str, str | bool | int]]:
+    async def _find_files(self, root: str, q: str, glob: str = "", ignore: str = "", case_sensitive: bool = False,
+                          include_hidden: bool = False) -> list[dict[str, str | bool | int]]:
         try:
-            return await self.search.find_files(root, q, ignore, glob, case_sensitive)
+            return await self.search.find_files(root, q, ignore, glob, case_sensitive, include_hidden)
         except (ValueError, FileNotFoundError, PermissionError) as find_error:
             raise HTTPException(status_code=404, detail=str(find_error)) from find_error
 
@@ -630,7 +640,7 @@ class TermdeckServer:
         try:
             return await self.search.replace_all(request.root, request.q, request.glob, request.ignore,
                                                  request.word, request.case_sensitive, request.regex,
-                                                 request.replacement, request.paths)
+                                                 request.replacement, request.paths, request.include_hidden)
         except (ValueError, FileNotFoundError, PermissionError, re.error) as replace_error:
             raise HTTPException(status_code=400, detail=str(replace_error)) from replace_error
 
@@ -1337,8 +1347,6 @@ class TermdeckServer:
         repaint_preserved_buffer = websocket.query_params.get("repaint_preserved_buffer", "0").lower() not in {"0", "false", "no", "off"}
         scrollback, queue = self.manager.attach_client(session_id, screen_repaint, have_buffer, repaint_preserved_buffer)
         try:
-            if not have_buffer:
-                scrollback = await self._terminal_first_paint_scrollback(session_id, scrollback)
             await websocket.send_bytes(scrollback)
             await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.DRAFT,
                                                    WsMessageFields.DRAFT: self.manager.session_draft(session_id)}))
@@ -1353,38 +1361,6 @@ class TermdeckServer:
                     raise pump_error
         finally:
             self.manager.detach_client(session_id, queue)
-
-    async def _terminal_first_paint_scrollback(self, session_id: str, scrollback: bytes) -> bytes:
-        if self._terminal_bytes_have_visible_text(scrollback):
-            return scrollback
-        agent_kind, cwd, agent_session_id = self.manager.session_history_source(session_id)
-        if agent_kind != AgentKind.CODEX.value or not agent_session_id:
-            return scrollback
-        try:
-            payload = await asyncio.wait_for(
-                asyncio.to_thread(self.transcripts.history_page, agent_kind, cwd, agent_session_id, None, 24),
-                timeout=0.15,
-            )
-        except TimeoutError:
-            return scrollback
-        turns = [turn for turn in payload.get("turns", [])
-                 if turn.get("role") in {"user", "assistant"} and str(turn.get("text", "")).strip()]
-        if not turns:
-            return scrollback
-        lines = ["\x1b[2J\x1b[H\x1b[2mRecent conversation · restoring live terminal…\x1b[0m", ""]
-        for turn in turns[-10:]:
-            role = "You" if turn["role"] == "user" else "Codex"
-            text = re.sub(r"\s+", " ", str(turn["text"])).strip().replace("\x1b", "")
-            lines.extend((f"\x1b[1m{role}\x1b[0m", text[:1200], ""))
-        return "\r\n".join(lines).encode()
-
-    @staticmethod
-    def _terminal_bytes_have_visible_text(data: bytes) -> bool:
-        text = data.decode("utf-8", errors="replace")
-        text = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", "", text)
-        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
-        text = re.sub(r"\x1b[()][0-2A-Za-z]", "", text)
-        return bool("".join(character for character in text if ord(character) >= 0x20).strip())
 
     async def _ws_status(self, websocket: WebSocket) -> None:
         await websocket.accept()

@@ -24,26 +24,23 @@
     <div id="files-section-tabs">
       <button id="files-tab-project" class="files-section-tab" title="Open files · middle-click opens in a new TermDeck tab" aria-label="Files"><span class="codicon codicon-files"></span><span class="files-tab-label">Files</span></button>
       <button id="files-tab-search" class="files-section-tab" title="Search files · middle-click opens in a new TermDeck tab" aria-label="Search files"><span class="codicon codicon-search"></span><span class="files-tab-label">Search</span></button>
-      <button id="files-tab-terminal-search" class="files-section-tab" title="Search terminal output" aria-label="Search terminal output"><span class="codicon codicon-terminal"></span><span class="files-tab-label">Terminal search</span></button>
       <button id="files-tab-git" class="files-section-tab" title="Git changes and history · middle-click opens in a new TermDeck tab" aria-label="Git changes and history"><span class="codicon codicon-git-branch"></span><span class="files-tab-label">Git</span></button>
     </div>
     <div id="files-section-header">
       <span class="side-section-label" id="files-root-label">files</span>
       <span id="git-branch-label" class="branch-label hidden"></span>
-      <button id="reveal-toggle" title="Reveal active file in tree"><span class="codicon codicon-target"></span></button>
       <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
       <button id="tree-sort-toggle" title="Sort files alphabetically"><span class="codicon codicon-sort-precedence"></span></button>
       <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-filter"></span></button>
-     <button id="hide-dot-toggle" title="Hide dot folders"><span class="codicon codicon-eye-closed"></span></button>
       <button id="git-refresh" class="hidden" title="Refresh Git status"><span class="codicon codicon-refresh"></span></button>
-     <button id="files-pin-toggle" title="Keep this panel open after opening a file" aria-label="Pin file panel" aria-pressed="false"><span class="codicon codicon-pin"></span></button>
       <button id="minimize-toggle" class="far-right" title="Minimize panel"><span class="codicon codicon-chrome-minimize"></span></button>
+      <button id="files-pin-toggle" title="Keep this panel open after opening a file" aria-label="Pin file panel" aria-pressed="false"><span class="codicon codicon-pin"></span></button>
     </div>
     <div id="files-explorer-panel">
       <div id="name-search-bar">
         <input id="search-name" placeholder="find file by name (fuzzy)" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
         <input id="search-glob" type="hidden">
-        <button id="file-type-filter-button" title="Choose included or excluded file types" aria-label="Choose file types" aria-expanded="false"><span class="codicon codicon-symbol-enum"></span></button>
+        <button id="file-type-filter-button" title="Exclude file types" aria-label="Exclude file types" aria-expanded="false"><span class="codicon codicon-symbol-enum"></span></button>
         <button id="name-case-toggle" title="Match filename case">Aa</button>
         <button id="name-search-history-btn" title="Recent searches" aria-label="Recent searches" aria-expanded="false"><span class="codicon codicon-history"></span></button>
       </div>
@@ -51,12 +48,8 @@
         <div id="search-bar">
           <button id="search-back" title="Previous search"><span class="codicon codicon-arrow-left"></span></button>
           <input id="search-query" placeholder="search in files" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-          <select id="search-scope" title="Search scope" aria-label="Search scope">
-            <option value="project">Project</option>
-            <option value="folder">Current folder</option>
-            <option value="open">Open files</option>
-            <option value="changed">Git changes</option>
-          </select>
+          <input id="search-file-glob" class="file-include-glob" placeholder="include *.py" title="Only search these file patterns" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <button id="search-file-type-filter-button" title="Exclude file types" aria-label="Exclude file types" aria-expanded="false"><span class="codicon codicon-symbol-enum"></span></button>
           <button id="search-case-toggle" title="Match case">Aa</button>
           <button id="search-word-toggle" title="Whole word">ab|</button>
           <button id="search-regex-toggle" title="Regular expression">.*</button>
@@ -79,16 +72,6 @@
       <div id="search-history-items"></div>
     </div>
     <div id="file-type-filter-menu" class="hidden" role="dialog" aria-label="File type filters"></div>
-    <div id="terminal-search-bar">
-      <div id="terminal-search-description">Search terminal names and conversations</div>
-      <div id="terminal-search-input-row">
-        <input id="terminal-search-input" placeholder="search names and conversations" spellcheck="false">
-        <button id="terminal-search-submit" title="Search terminal names and conversations" aria-label="Search terminal names and conversations"><span class="codicon codicon-search"></span></button>
-        <button id="terminal-search-group-toggle" title="Group similar matched text" aria-label="Group similar matched text" aria-pressed="false"><span class="codicon codicon-list-tree"></span></button>
-      </div>
-      <div id="terminal-search-summary" aria-live="polite"></div>
-      <div id="terminal-search-results"></div>
-    </div>
     <div id="files-section-resizer" aria-label="Resize file/search panel" role="separator" aria-orientation="vertical"></div>
   </div>
   <div id="sidebar-footer">
@@ -96,7 +79,6 @@
     <button id="view-project" title="Files · middle-click opens in a new TermDeck tab" aria-label="Files"><span class="codicon codicon-files"></span></button>
     <button id="view-search" title="Search &amp; replace · middle-click opens in a new TermDeck tab" aria-label="Search and replace"><span class="codicon codicon-search"></span></button>
     <button id="view-git" title="Git · middle-click opens in a new TermDeck tab" aria-label="Git"><span class="codicon codicon-git-branch"></span></button>
-    <button id="terminal-search-toggle" title="Search terminal names and output"><span class="codicon codicon-terminal"></span></button>
     <span class="footer-spacer"></span>
     <button id="keys-btn" title="Keyboard shortcuts"><span class="codicon codicon-keyboard"></span></button>
     <button id="settings-gear" title="Settings"><span class="codicon codicon-settings-gear"></span></button>
@@ -217,7 +199,8 @@
     <button id="history-edits-toggle" class="hidden" title="Collapse all code edits" aria-label="Collapse all code edits">
       <span class="codicon codicon-collapse-all"></span>
     </button>
-    <button id="reveal-session-btn" title="Select current terminal in sidebar" aria-label="Select current terminal in sidebar"><span class="codicon codicon-target"></span></button>
+    <button id="reveal-session-btn" title="Select current terminal in terminal list" aria-label="Select current terminal in terminal list"><span class="codicon codicon-target"></span></button>
+    <button id="editor-wrap-toggle" title="Editor wrap: off" aria-label="Toggle editor wrap" aria-pressed="false"><span class="codicon codicon-word-wrap"></span></button>
     <button id="attach-btn" title="Attach file/image → inserts its path (also paste or drag-drop onto the terminal)"><span class="codicon codicon-cloud-upload"></span></button>
     <button id="problems-toggle" title="Problems" aria-label="Problems"><span class="codicon codicon-warning"></span></button>
     <button id="conversation-outline-toggle" title="Conversation outline" aria-label="Conversation outline"><span class="codicon codicon-list-tree"></span></button>
@@ -328,6 +311,16 @@
 </div>
 <div id="settings-popover" class="hidden"></div>
 <div id="context-menu" class="hidden"></div>
+<div id="terminal-process-report-backdrop" class="hidden">
+  <section id="terminal-process-report" role="dialog" aria-modal="true" aria-labelledby="terminal-process-report-title">
+    <div id="terminal-process-report-head">
+      <span id="terminal-process-report-title">Terminal process report</span>
+      <button id="terminal-process-report-close" title="Close process report" aria-label="Close process report"><span class="codicon codicon-close"></span></button>
+    </div>
+    <div id="terminal-process-report-status" aria-live="polite"></div>
+    <pre id="terminal-process-report-text" tabindex="0" aria-label="Terminal process report contents"></pre>
+  </section>
+</div>
 <div id="modal-backdrop" class="hidden">
   <div id="modal">
     <div class="modal-title">New terminal</div>

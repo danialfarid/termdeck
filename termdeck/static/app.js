@@ -6,14 +6,14 @@ const RECONNECT_MS = 1500;
 const TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS = 1800;
 const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~";
-const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 13, terminal_font_size: 13,
-  ui_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
+const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 13, project_font_size: 18, terminal_font_size: 13,
+  ui_font_size: 11, files_tab_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
-  show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", keybindings: {},
+  show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, history_mode: false, claude_snapshot_experimental: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_size: 14, history_mode: false, claude_snapshot_experimental: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
-  files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {}, prompt_wrap_guard: false,
+  files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [] };
 const MODEL_PERMISSIONS = {
   codex: [
@@ -76,7 +76,6 @@ const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
 // Three checks, well spread out, not five packed inside the first 600ms: only a genuine geometry change
 // sends a pty resize, so a tight burst cannot interrupt an agent CLI's multi-line composer redraw.
 const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [150, 800, 2000];
-const PROMPT_WRAP_GUARD_IDLE_MS = 1200;
 const TERMINAL_DEBUG_SNAPSHOT_LIMIT = 50;
 const SELECTION_SEARCH_MAX_CHARS = 1000;
 const SELECTION_ACTION_DELAY_MS = 500;
@@ -88,28 +87,10 @@ const CLAUDE_STATUS_ROW_REFRESH_INTERVAL_MS = 500;
 const CODEX_PROMPT_REFLOW_GUARD_MS = 1800;
 const KEYBOARD_SHORTCUT_SECTIONS = ["Terminal", "Files", "General"];
 // Files viewer, file search, and terminal search share one files-section panel and one shortcut.
-const FILEDECK_DEFAULT_SIDEBAR_WIDTH = 250;
-const FILES_SIDE_PANEL_TABS = ["project", "search", "terminal-search", "git"];
+const FILEDECK_DEFAULT_SIDEBAR_WIDTH = 300;
+const FILES_SIDE_PANEL_TABS = ["project", "search", "git"];
 const CLOSED_SIDE_VIEW = "closed";
 const FILES_SIDE_PANEL_LAST_TAB_KEY = "termdeck.files_panel_last_tab";
-const FILE_TYPE_FILTER_CUSTOM_KEY = "termdeck.file_type_filter_custom";
-const FILE_TYPE_FILTER_GROUPS = [
-  { label: "Python", patterns: ["*.py", "*.pyi"] },
-  { label: "JavaScript / TypeScript", patterns: ["*.js", "*.jsx", "*.ts", "*.tsx", "*.mjs", "*.cjs"] },
-  { label: "Markdown", patterns: ["*.md", "*.mdx"] },
-  { label: "JSON", patterns: ["*.json"] },
-  { label: "YAML / TOML", patterns: ["*.yaml", "*.yml", "*.toml"] },
-  { label: "Shell", patterns: ["*.sh", "*.zsh", "*.bash"] },
-  { label: "C / C++", patterns: ["*.c", "*.h", "*.cc", "*.cpp", "*.hpp"] },
-  { label: "Rust", patterns: ["*.rs"] },
-  { label: "Go", patterns: ["*.go"] },
-  { label: "Java / Kotlin", patterns: ["*.java", "*.kt", "*.kts"] },
-  { label: "Web styles / markup", patterns: ["*.html", "*.css", "*.scss", "*.sass"] },
-  { label: "Plain text", patterns: ["*.txt"] },
-  { label: "Logs", patterns: ["*.log"] },
-  { label: "Notebooks", patterns: ["*.ipynb"] },
-  { label: "Data", patterns: ["*.csv", "*.parquet"] },
-];
 const DESKTOP_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Meta+b", section: "Terminal" },
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace", section: "General" },
@@ -126,12 +107,12 @@ const DESKTOP_KEYBINDINGS = [
   { id: "save-file", label: "Save open file", def: "Meta+s", section: "Files" },
   { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp", section: "Terminal" },
   { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown", section: "Terminal" },
-  { id: "cycle-side-panel", label: "Files / Search / Terminal search (4th press closes)", def: "Meta+Shift+s", section: "Files" },
+  { id: "cycle-side-panel", label: "Files / Search / Git (4th press closes)", def: "Meta+Shift+s", section: "Files" },
   { id: "open-files-panel", label: "Open files panel", def: "Meta+Shift+d", section: "Files" },
   { id: "open-file-search", label: "Open file-content search", def: "Meta+Shift+f", section: "Files" },
   { id: "open-files-new-tab", label: "Open files in a new browser tab", def: "Meta+Alt+d", section: "Files" },
   { id: "open-search-new-tab", label: "Open file search in a new browser tab", def: "Meta+Alt+f", section: "Files" },
-  { id: "open-terminal-search", label: "Open terminal search", def: "Meta+Shift+g", section: "Terminal" },
+  { id: "open-terminal-search", label: "Search terminal names and output", def: "Meta+Shift+g", section: "Terminal" },
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t", section: "Terminal" },
   { id: "switch-project", label: "Switch project", def: "Alt+s", section: "General" },
   { id: "toggle-notebook", label: "Quick notebook", def: "Alt+n", section: "General" },
@@ -142,7 +123,6 @@ const DESKTOP_KEYBINDINGS = [
   { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Alt+g", section: "General" },
   { id: "scroll-bottom", label: "Scroll terminal / transcript to bottom", def: "Meta+Shift+ArrowDown", section: "General" },
   { id: "focus-prompt", label: "Focus active terminal / editor / Markdown prompt", def: "Alt+f", section: "General" },
-  { id: "show-usages", label: "Show usages of editor symbol", def: "Shift+F12", section: "Files" },
   { id: "select-active-input", label: "Select active terminal / editor / prompt text", def: "Alt+a", section: "General" },
   { id: "select-terminal-all", label: "Select all terminal text", def: "Meta+Shift+a", section: "Terminal" },
   { id: "recent-terminals", label: "Recently opened terminals", def: "Meta+e", section: "Terminal" },
@@ -171,14 +151,7 @@ const REFERENCE_KEYS = [
   { keys: "⌃⇧E", label: "Focus file-name search", section: "Files" },
   { keys: "⌃⇧F", label: "Focus file-content search", section: "Files" },
   { keys: "⌃⇧Space", label: "Open file browser/search", section: "Files" },
-  { keys: "↑ ↓ Enter", label: "Navigate file and content search results from their search input", section: "Files" },
-  { keys: "⌘⌫ / ⌥⌫", label: "Delete to line start / delete word (in terminal)", section: "Terminal" },
-  { keys: "⌘← / ⌘→", label: "Line start / end (in terminal)", section: "Terminal" },
-  { keys: "⌘A", label: "Select active terminal input line", section: "Terminal" },
-  { keys: "⌘F", label: "Find in the complete active terminal buffer", section: "Terminal" },
-  { keys: "⇧F12", label: "Show usages of the editor symbol", section: "Files" },
   { keys: "⌃R / ⌃M / ⌘⌫", label: "Rename / move / delete selected tree file", section: "Files" },
-  { keys: "↑ ↓ ← → Enter", label: "Navigate the file tree (when focused)", section: "Files" },
 ];
 const VSCODE_REFERENCE_KEYS = [
   { keys: "⌘⇧P", label: "Open VS Code Command Palette", section: "General" },
@@ -197,6 +170,13 @@ const ALWAYS_EXCLUDED = TermDeckFileBrowser.alwaysExcluded;
 const STATS_POLL_MS = 5000;
 const STAT_HISTORY_MAX = 48;
 const FONT_MIN = 8, FONT_MAX = 32;
+const INLINE_SIZE_SETTING_DEFINITIONS = [
+  { key: "sidebar_font_size", label: "Terminal list" }, { key: "project_font_size", label: "Project title" },
+  { key: "terminal_icon_size", label: "Terminal icons" }, { key: "terminal_font_size", label: "Terminal" },
+  { key: "ui_font_size", label: "Status" }, { key: "files_tab_font_size", label: "Files / Search tabs" }, { key: "code_font_size", label: "Code" },
+  { key: "bottom_font_size", label: "UI icons / spacing" }, { key: "diff_font_size", label: "Diff" },
+  { key: "tree_font_size", label: "Tree / search" },
+];
 const RECENT_FILES_REFRESH_MS = 5000;
 const FILE_TREE_WS_ROUTE = "/ws/files";
 const FILE_TREE_CHANGED = "file_tree_changed";
@@ -205,6 +185,8 @@ const PATH_LINK_RE = /(?:~\/|\.{1,2}\/|\/)?[\w@%+=.-]+(?:\/[\w@%+=.-]+)*\.[A-Za-
 const KNOWN_EXTS = new Set(["py", "md", "json", "js", "ts", "tsx", "css", "html", "sh", "zsh", "txt", "yaml", "yml",
   "toml", "csv", "log", "plist", "sql", "xml", "ini", "cfg", "lock", "ipynb", "rs", "go", "c", "h", "cpp", "hpp", "java"]);
 const MATERIAL_ICONS_BASE = "/static/vendor/material-icons/icons/";
+const FOLDER_ICON_CLOSED = `${MATERIAL_ICONS_BASE}folder-project.svg`;
+const FOLDER_ICON_OPEN = `${MATERIAL_ICONS_BASE}folder-project-open.svg`;
 const MATERIAL_ICONS_MAP_URL = "/static/vendor/material-icons/dist/material-icons.json";
 const HAS_VSCODE_WEBVIEW_API = typeof acquireVsCodeApi === "function";
 const IS_VSCODE_EMBEDDED = window.parent !== window;
@@ -406,7 +388,9 @@ class TermdeckApp {
     this.historyEditsCollapsed = false;
     this.closedExpanded = false;
     this.closedDisplayLimit = CLOSED_SESSIONS_INITIAL_DISPLAY;
-    this.closedSearchQuery = "";
+    this.terminalSearchText = "";
+    this.terminalSearchEditorOpen = false;
+    this.terminalSearchFocusIndex = -1;
     this.settings = { ...SETTINGS_DEFAULTS };
     this.saveTimer = null;
     this.claudeSnapshotDatabasePromise = null;
@@ -440,12 +424,6 @@ class TermdeckApp {
     this.searchCase = false;
     this.searchRegex = false;
     this.nameSearchCase = false;
-    this.fileTypeFilterMode = "include";
-    try {
-      this.fileTypeCustomPatterns = new Set(JSON.parse(localStorage.getItem(FILE_TYPE_FILTER_CUSTOM_KEY) || "[]"));
-    } catch (_error) {
-      this.fileTypeCustomPatterns = new Set();
-    }
     this.searchGeneration = 0;
     this.searchHistory = [];
     this.searchHistorySelection = -1;
@@ -457,6 +435,7 @@ class TermdeckApp {
     this.nameSearchTree = null;
     this.treeSearchFilter = null;
     this.terminalSearchMatches = new Map();
+    this.terminalSearchClosedMatches = new Map();
     this.terminalTitleSearchResults = [];
     this.historySearchResults = [];
     this.historySearchOperations = false;
@@ -574,7 +553,7 @@ class TermdeckApp {
     document.body.classList.toggle("vscode-native-mode", this.nativeVscodeMode);
     document.body.classList.toggle("vscode-editor-mode", this.vscodeEditorMode);
     if (!this.vscodeMode) return;
-    const forceHidden = ["active-toggle", "terminal-search-toggle",
+    const forceHidden = ["active-toggle",
       "view-project", "view-search", "view-git", "files-section", "side-split", "project-select", "project-select-label"];
     for (const id of forceHidden) {
       const el = this.$(id);
@@ -1589,6 +1568,18 @@ class TermdeckApp {
   }
 
   async init() {
+    this.initInlineSizeControls();
+    window.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      if (!this.settings.inline_size_controls && !this.fontSizeEditorOpen) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (this.settings.inline_size_controls) this.exitInlineSizeControls();
+      else {
+        this.fontSizeEditorOpen = false;
+        this.$("settings-popover").classList.add("hidden");
+      }
+    }, true);
     window.addEventListener("message", this.handleHostMessageBound, false);
     window.addEventListener("pagehide", () => {
       this.flushPendingFileSavesOnPageExit();
@@ -1617,11 +1608,12 @@ class TermdeckApp {
       this.loadIconMap();
     }
     this.$("settings-gear").onclick = (e) => this.openSettingsPopover(e.currentTarget,
-      [{ label: "Sidebar font", key: "sidebar_font_size" }, { label: "Terminal font", key: "terminal_font_size" },
-       { label: "UI font", key: "ui_font_size" }, { label: "Code font", key: "code_font_size" },
-       { label: "UI icons / spacing", key: "bottom_font_size", type: "scale" },
-       { label: "Diff font", key: "diff_font_size" }, { label: "Tree/search font", key: "tree_font_size" },
-       { label: "Sidebar text color", key: "sidebar_text_color", type: "color" }]);
+      [{ label: "Terminal font", key: "terminal_font_size" }, { label: "Terminal icon size", key: "terminal_icon_size", type: "scale" },
+       { label: "Code font", key: "code_font_size" },
+       { label: "Terminal list font", key: "sidebar_font_size" }, { label: "Project title font", key: "project_font_size" },
+       { label: "Tree/search font", key: "tree_font_size" }, { label: "Files / Search tabs font", key: "files_tab_font_size" },
+       { label: "Diff font", key: "diff_font_size" }, { label: "System / status font", key: "ui_font_size" },
+       { label: "UI icons / spacing", key: "bottom_font_size", type: "scale" }]);
     this.$("file-view-close").onclick = () => this.navigateBackFromActiveFile();
     this.$("file-history-toggle").onclick = () => this.toggleFileHistory();
     this.$("file-history-close").onclick = () => this.closeFileHistory();
@@ -1655,8 +1647,7 @@ class TermdeckApp {
     }
     this.$("view-git").onclick = () => this.openFilesSidePanelView("git");
     this.$("view-git").onauxclick = (event) => this.handleNavigationAuxClick(event, "git");
-    for (const [view, id] of [["project", "files-tab-project"], ["search", "files-tab-search"],
-      ["terminal-search", "files-tab-terminal-search"], ["git", "files-tab-git"]]) {
+    for (const [view, id] of [["project", "files-tab-project"], ["search", "files-tab-search"], ["git", "files-tab-git"]]) {
       const button = this.$(id);
       if (!button) continue;
       button.onclick = () => {
@@ -1702,27 +1693,22 @@ class TermdeckApp {
       }
     });
     queryInput.addEventListener("input", () => this.debouncedSearch());
-    const searchScope = this.$("search-scope");
-    searchScope.value = ["project", "folder", "open", "changed"].includes(this.settings.search_scope)
-      ? this.settings.search_scope : "project";
-    searchScope.onchange = () => {
-      this.settings.search_scope = searchScope.value;
-      this.saveSettings();
-      this.$("replace-preview").classList.add("hidden");
-      if (queryInput.value.trim()) void this.runSearch(null, true);
-    };
-    const globInput = this.$("search-glob");
-    globInput.autocomplete = "off";
-    globInput.autocapitalize = "off";
-    globInput.autocorrect = "off";
-    globInput.value = this.settings.search_glob || "";
-    globInput.addEventListener("input", () => {
-      this.settings.search_glob = globInput.value;
-      this.saveSettings();
-      if (this.sideView === "search" && this.$("search-query").value.trim()) this.debouncedSearch();
-      if (this.sideView === "project" && this.$("search-name").value.trim()) this.debouncedNameSearch();
-    });
+    this.syncFileGlobInputs();
+    for (const [id, mode] of [["search-file-glob", "search"]]) {
+      const input = this.$(id);
+      input.autocomplete = "off";
+      input.autocapitalize = "off";
+      input.autocorrect = "off";
+      input.spellcheck = false;
+      input.addEventListener("input", () => {
+        this.settings[mode === "tree" ? "tree_file_glob" : "search_file_glob"] = input.value;
+        this.saveSettings();
+        this.syncLegacySearchGlob();
+        if (mode === "search" && this.sideView === "search" && this.$("search-query").value.trim()) this.debouncedSearch();
+      });
+    }
     this.$("file-type-filter-button").onclick = (event) => this.toggleFileTypeFilterMenu(event.currentTarget);
+    this.$("search-file-type-filter-button").onclick = (event) => this.toggleFileTypeFilterMenu(event.currentTarget);
     this.$("minimize-toggle").onclick = () => this.setSideView("terminals");
     const wordBtn = this.$("search-word-toggle"), caseBtn = this.$("search-case-toggle"), regexBtn = this.$("search-regex-toggle");
     wordBtn.onclick = () => { this.searchWord = !this.searchWord; wordBtn.classList.toggle("on", this.searchWord); };
@@ -1756,7 +1742,6 @@ class TermdeckApp {
     this.$("search-history-btn").onclick = (event) => this.toggleSearchHistory(event.currentTarget);
     this.$("name-search-history-btn").onclick = (event) => this.toggleSearchHistory(event.currentTarget);
     this.$("replace-all-btn").onclick = () => this.replaceAll();
-    this.$("reveal-toggle").onclick = () => this.revealActiveFile();
     this.$("search-back").onclick = () => this.prevSearch();
     const mtimeBtn = this.$("mtime-toggle");
     mtimeBtn.classList.toggle("on", !this.settings.show_mtime);
@@ -1792,9 +1777,7 @@ class TermdeckApp {
       this.saveSettings();
       this.rerenderTree();
     };
-    const hideDotBtn = this.$("hide-dot-toggle");
     this.updateHideDotButton();
-    hideDotBtn.onclick = () => this.toggleHideDotFolders();
     this.$("files-pin-toggle").onclick = () => this.toggleFilesPinned();
     this.updateFilesPinButton();
     this.$("git-refresh").onclick = () => void this.loadGitSidePanel();
@@ -1828,6 +1811,7 @@ class TermdeckApp {
         const pop = this.$(id);
         if (!pop.classList.contains("hidden") && !pop.contains(e.target)) {
           pop.classList.add("hidden");
+          if (id === "settings-popover") this.fontSizeEditorOpen = false;
           if (id === "context-menu") this.contextMenuTarget = null;
         }
       }
@@ -1856,23 +1840,6 @@ class TermdeckApp {
       if (this.fileHistoryOpen && fileHistoryPanel && !fileHistoryPanel.contains(e.target) &&
           !fileHistoryToggle?.contains(e.target)) this.closeFileHistory();
     });
-    this.$("terminal-search-toggle").onclick = () => this.setSideView("terminal-search");
-    this.$("terminal-search-submit").onclick = () => {
-      clearTimeout(this.terminalSearchTimer);
-      this.runTerminalSearch();
-    };
-    this.$("terminal-search-group-toggle").onclick = () => {
-      this.terminalSearchGroupSimilar = !this.terminalSearchGroupSimilar;
-      this.updateTerminalSearchGroupButton();
-      this.renderTerminalHistoryResults();
-    };
-    this.$("terminal-search-input").addEventListener("keydown", (event) => {
-      if (event.key === "Enter") { event.preventDefault(); clearTimeout(this.terminalSearchTimer); this.runTerminalSearch(); }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (!this.closeUnpinnedFilesPanelAndFocusEditor()) this.clearTerminalSearch();
-      }
-    });
     this.$("history-search-close").onclick = () => this.closeHistorySearchContext();
     this.$("history-search-open").onclick = () => this.openHistorySearchSession();
     this.$("history-search-backdrop").onclick = (event) => {
@@ -1896,6 +1863,11 @@ class TermdeckApp {
       const button = this.$(id);
       if (button) button.onclick = () => this.resyncActiveTerminal();
     }
+    this.$("editor-wrap-toggle").onclick = () => {
+      this.settings.word_wrap = !this.settings.word_wrap;
+      this.applySettings({ fitTerminals: false });
+      this.saveSettings();
+    };
     this.$("terminal-find-input").addEventListener("input", () => this.updateTerminalFindMatches());
     this.$("terminal-find-input").addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
@@ -1989,7 +1961,6 @@ class TermdeckApp {
     historyPrompt.addEventListener("input", () => {
       const view = this.views.get(this.activeId);
       if (!view) return;
-      this.markPromptWrapActivity(view);
       view.promptSubmitEntered = false;
       view.promptSubmitting = false;
       clearTimeout(view.promptSubmitTimer);
@@ -2009,6 +1980,10 @@ class TermdeckApp {
     this.$("keys-done").onclick = () => this.$("keys-backdrop").classList.add("hidden");
     this.$("keys-reset").onclick = () => this.resetKeybindings();
     this.$("keys-backdrop").addEventListener("mousedown", (e) => { if (e.target.id === "keys-backdrop") this.$("keys-backdrop").classList.add("hidden"); });
+    this.$("terminal-process-report-close").onclick = () => this.closeTerminalProcessReport();
+    this.$("terminal-process-report-backdrop").addEventListener("mousedown", (e) => {
+      if (e.target.id === "terminal-process-report-backdrop") this.closeTerminalProcessReport();
+    });
     this.$("modal-backdrop").addEventListener("mousedown", (e) => {
       if (e.target.id === "modal-backdrop") this.closeModal();
     });
@@ -2052,6 +2027,11 @@ class TermdeckApp {
       if (modalOpen) {
         if (e.key === "Escape") this.closeModal();
         if (e.key === "Enter") this.createSession();
+        return;
+      }
+      if (e.key === "Escape" && this.exitInlineSizeControls()) {
+        e.preventDefault();
+        e.stopPropagation();
         return;
       }
       if (!this.vscodeMode && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f" &&
@@ -2230,7 +2210,7 @@ class TermdeckApp {
         this.$("search-word-toggle").classList.toggle("on", this.searchWord);
         this.$("search-case-toggle").classList.toggle("on", this.searchCase);
         this.$("search-regex-toggle").classList.toggle("on", this.searchRegex);
-        this.$("search-glob").value = state.glob || "";
+        this.setFileGlobForMode("search", state.glob || "");
         if (this.sideView !== "search") {
           this.sideView = "terminals";
           this.setSideView("search");
@@ -2466,6 +2446,11 @@ class TermdeckApp {
   }
 
   setSessionTitleText(title, text) {
+    const row = title.closest(".session-item");
+    if (row?.classList.contains("terminal-search-match") && this.terminalSearchText.trim()) {
+      this.appendTerminalSearchHighlightedText(title, text, this.terminalSearchText);
+      return;
+    }
     title.textContent = text;
   }
 
@@ -2933,6 +2918,18 @@ class TermdeckApp {
         event.stopPropagation();
         this.createTerminalGroup();
       };
+      const search = document.createElement("button");
+      search.id = "terminal-search-inline-toggle";
+      search.className = "section-toggle";
+      search.innerHTML = '<span class="codicon codicon-search"></span>';
+      search.title = this.shortcutTitle("Search terminal names and output", "open-terminal-search");
+      search.setAttribute("aria-label", search.title);
+      search.setAttribute("aria-pressed", String(this.terminalSearchEditorOpen));
+      search.classList.toggle("on", this.terminalSearchEditorOpen);
+      search.onclick = (event) => {
+        event.stopPropagation();
+        this.toggleTerminalSearchEditor();
+      };
       const add = document.createElement("button");
       add.id = "new-session-btn";
       add.className = "section-toggle terminal-new-toggle";
@@ -2943,7 +2940,7 @@ class TermdeckApp {
         event.stopPropagation();
         this.openModal();
       };
-      controls.append(sort, group, add);
+      controls.append(sort, group, search, add);
       label.appendChild(controls);
     }
     return label;
@@ -2954,6 +2951,92 @@ class TermdeckApp {
     const header = this.sectionLabel("terminals");
     this.attachGroupDropTarget(header, null);
     list.prepend(header);
+    if (this.terminalSearchEditorOpen) header.after(this.createTerminalSearchEditor());
+  }
+
+  createTerminalSearchEditor() {
+    const bar = document.createElement("div");
+    bar.id = "terminal-search-inline";
+    const icon = document.createElement("span");
+    icon.className = "codicon codicon-search terminal-search-inline-icon";
+    const input = document.createElement("input");
+    input.id = "terminal-search-input";
+    input.type = "text";
+    input.placeholder = "search terminal names and conversations";
+    input.value = this.terminalSearchText;
+    input.autocomplete = "off";
+    input.autocapitalize = "off";
+    input.autocorrect = "off";
+    input.spellcheck = false;
+    const summary = document.createElement("span");
+    summary.id = "terminal-search-summary";
+    summary.setAttribute("aria-live", "polite");
+    const close = document.createElement("button");
+    close.id = "terminal-search-inline-close";
+    close.className = "section-toggle";
+    close.innerHTML = '<span class="codicon codicon-close"></span>';
+    close.title = "Close terminal search";
+    close.setAttribute("aria-label", close.title);
+    input.oninput = () => {
+      this.terminalSearchText = input.value;
+      this.terminalSearchFocusIndex = -1;
+      clearTimeout(this.terminalSearchTimer);
+      this.terminalSearchTimer = window.setTimeout(() => this.runTerminalSearch(), 240);
+    };
+    input.onkeydown = (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.moveTerminalSearchRow(event.key === "ArrowDown" ? 1 : -1);
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        clearTimeout(this.terminalSearchTimer);
+        this.runTerminalSearch();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.closeTerminalSearchEditor();
+      }
+    };
+    input.onclick = (event) => event.stopPropagation();
+    close.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeTerminalSearchEditor();
+    };
+    bar.append(icon, input, summary, close);
+    return bar;
+  }
+
+  openTerminalSearchEditor() {
+    this.terminalSearchEditorOpen = true;
+    this.renderList();
+    requestAnimationFrame(() => {
+      const input = this.$("terminal-search-input");
+      if (!input) return;
+      input.focus();
+      input.select();
+    });
+  }
+
+  toggleTerminalSearchEditor() {
+    if (this.terminalSearchEditorOpen) this.closeTerminalSearchEditor();
+    else this.openTerminalSearchEditor();
+  }
+
+  closeTerminalSearchEditor() {
+    clearTimeout(this.terminalSearchTimer);
+    if (this.terminalSearchAbort) this.terminalSearchAbort.abort();
+    this.terminalSearchAbort = null;
+    this.terminalSearchText = "";
+    this.terminalSearchEditorOpen = false;
+    this.terminalSearchFocusIndex = -1;
+    this.terminalSearchMatches.clear();
+    this.terminalSearchClosedMatches.clear();
+    this.terminalTitleSearchResults = [];
+    this.historySearchResults = [];
+    this.renderList();
+    requestAnimationFrame(() => this.focusActiveEditor());
   }
 
   collapsibleSectionLabel(text, field, extra = null) {
@@ -3162,6 +3245,67 @@ class TermdeckApp {
       : "Group similar matched text";
   }
 
+  appendTerminalSearchHighlightedText(element, text, query) {
+    const value = String(text || "");
+    const terms = [...new Set(String(query || "").split(/\s+/).filter(Boolean))];
+    const ranges = terms.flatMap((term) => this.searchHighlightRanges(value, term, { caseSensitive: false }))
+      .sort((left, right) => left[0] - right[0] || right[1] - left[1]);
+    const merged = [];
+    for (const [start, end] of ranges) {
+      const previous = merged[merged.length - 1];
+      if (previous && start <= previous[1]) previous[1] = Math.max(previous[1], end);
+      else merged.push([start, end]);
+    }
+    element.textContent = "";
+    let cursor = 0;
+    for (const [start, end] of merged) {
+      if (start > cursor) element.appendChild(document.createTextNode(value.slice(cursor, start)));
+      const mark = document.createElement("mark");
+      mark.className = "terminal-search-highlight";
+      mark.textContent = value.slice(start, end);
+      element.appendChild(mark);
+      cursor = end;
+    }
+    if (cursor < value.length) element.appendChild(document.createTextNode(value.slice(cursor)));
+  }
+
+  renderTerminalSearchSnippets(match) {
+    const snippets = document.createElement("div");
+    snippets.className = "terminal-search-snippets";
+    for (const snippet of (match?.snippets || []).slice(0, 3)) {
+      const row = document.createElement("div");
+      row.className = "terminal-search-snippet";
+      const line = String(snippet.line || "");
+      if (line) {
+        const lineLabel = document.createElement("span");
+        lineLabel.className = "terminal-search-snippet-line";
+        lineLabel.textContent = line;
+        row.appendChild(lineLabel);
+      }
+      const text = document.createElement("span");
+      text.className = "terminal-search-snippet-text";
+      this.appendTerminalSearchHighlightedText(text, this.searchMatchText(snippet.text), this.terminalSearchText);
+      row.appendChild(text);
+      snippets.appendChild(row);
+    }
+    return snippets;
+  }
+
+  terminalSearchRows() {
+    return [...this.$("session-list").querySelectorAll(".session-item.terminal-search-match, .closed-item.terminal-search-match")];
+  }
+
+  moveTerminalSearchRow(direction) {
+    const rows = this.terminalSearchRows();
+    if (!rows.length) return;
+    const current = rows.indexOf(document.activeElement);
+    const start = current >= 0 ? current : this.terminalSearchFocusIndex;
+    this.terminalSearchFocusIndex = (start + direction + rows.length) % rows.length;
+    const row = rows[this.terminalSearchFocusIndex];
+    row.focus({ preventScroll: true });
+    row.scrollIntoView({ block: "nearest" });
+  }
+
   openTerminalFind() {
     const view = this.views.get(this.activeId);
     if (!view || view.closed || this.activeFileKey !== null || this.historyOpen) return;
@@ -3265,21 +3409,26 @@ class TermdeckApp {
   }
 
   clearTerminalSearch() {
+    const preserveInputFocus = document.activeElement?.id === "terminal-search-input";
     clearTimeout(this.terminalSearchTimer);
     if (this.terminalSearchAbort) this.terminalSearchAbort.abort();
     this.terminalSearchAbort = null;
-    this.$("terminal-search-input").value = "";
-    this.$("terminal-search-summary").textContent = "";
-    this.$("terminal-search-results").textContent = "";
+    this.terminalSearchText = "";
+    this.terminalSearchFocusIndex = -1;
     this.terminalTitleSearchResults = [];
     this.historySearchResults = [];
     this.terminalSearchMatches.clear();
+    this.terminalSearchClosedMatches.clear();
     this.renderList();
+    if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
   }
 
   async runTerminalSearch() {
     const input = this.$("terminal-search-input");
-    const query = input.value.trim();
+    const query = String(input?.value ?? this.terminalSearchText).trim();
+    const preserveInputFocus = document.activeElement?.id === "terminal-search-input";
+    this.terminalSearchText = query;
+    this.terminalSearchFocusIndex = -1;
     if (!query) {
       this.clearTerminalSearch();
       return;
@@ -3290,9 +3439,14 @@ class TermdeckApp {
     this.terminalSearchMatches = new Map(this.terminalTitleSearchResults.map((result) => [result.open_session_id, {
       count: 1, snippets: [{ line: "name", text: result.title }],
     }]));
+    this.terminalSearchClosedMatches = new Map(this.closedSessions
+      .filter((session) => String(session.title || "").toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+      .map((session) => [session.session_id, { count: 1, snippets: [{ line: "name", text: session.title }] }]));
+    this.closedExpanded = true;
     this.renderList();
-    this.renderTerminalHistoryResults();
-    this.$("terminal-search-summary").textContent = "searching…";
+    const searchingSummary = this.$("terminal-search-summary");
+    if (searchingSummary) searchingSummary.textContent = "searching…";
+    if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
     try {
       const historyParams = new URLSearchParams({ q: query, include_operations: String(this.historySearchOperations) });
       const requests = [fetch(`/api/history-search?${historyParams}`, { signal: this.terminalSearchAbort.signal })];
@@ -3306,42 +3460,43 @@ class TermdeckApp {
       const liveResults = liveResponse ? await liveResponse.json() : [];
       const historyPayload = await historyResponse.json();
       this.historySearchResults = Array.isArray(historyPayload.results) ? historyPayload.results : [];
+      if (this.terminalSearchText.trim() !== query) return;
       this.terminalSearchMatches = new Map(this.terminalTitleSearchResults.map((result) => [result.open_session_id, {
         count: 1, snippets: [{ line: "name", text: result.title }],
       }]));
+      this.terminalSearchClosedMatches = new Map(this.closedSessions
+        .filter((session) => String(session.title || "").toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+        .map((session) => [session.session_id, { count: 1, snippets: [{ line: "name", text: session.title }] }]));
       for (const result of liveResults) this.terminalSearchMatches.set(result.session_id, result);
       for (const result of this.historySearchResults) {
         const openSessionId = result.open_session_id || result.parent_open_session_id;
-        if (!openSessionId) continue;
-        this.terminalSearchMatches.set(openSessionId, {
+        const closedSessionId = result.closed_session_id || result.parent_closed_session_id;
+        const match = {
           count: result.count, snippets: (result.matches || []).map((match) => ({ line: match.line_no, text: match.text })),
-        });
+        };
+        if (openSessionId) this.terminalSearchMatches.set(openSessionId, match);
+        else if (closedSessionId) this.terminalSearchClosedMatches.set(closedSessionId, match);
       }
-      const terminalCount = new Set([...this.terminalTitleSearchResults.map((result) => result.open_session_id),
-        ...liveResults.map((result) => result.session_id),
-        ...this.historySearchResults.map((result) => result.open_session_id || result.parent_open_session_id).filter(Boolean)]).size;
-      const matchCount = this.terminalTitleSearchResults.length +
-        liveResults.reduce((sum, result) => sum + Number(result.count || 0), 0) +
-        this.historySearchResults.reduce((sum, result) => sum + Number(result.count || 0), 0);
+      const terminalCount = this.terminalSearchMatches.size + this.terminalSearchClosedMatches.size;
+      const matchCount = [...this.terminalSearchMatches.values(), ...this.terminalSearchClosedMatches.values()]
+        .reduce((sum, result) => sum + Number(result.count || 0), 0);
       const indexing = historyPayload.indexing ? " · indexing history" : "";
       const scope = this.historySearchOperations ? "all output" : "conversation";
-      this.$("terminal-search-summary").textContent = terminalCount || this.historySearchResults.length
-        ? `${scope} · ${terminalCount} open terminal${terminalCount === 1 ? "" : "s"} · ${matchCount} match${matchCount === 1 ? "" : "es"}${indexing}`
-        : `no ${scope} matches${indexing}`;
       this.renderList();
-      this.renderTerminalHistoryResults();
+      const summary = this.$("terminal-search-summary");
+      if (summary) summary.textContent = terminalCount
+        ? `${scope} · ${terminalCount} terminal${terminalCount === 1 ? "" : "s"} · ${matchCount} match${matchCount === 1 ? "" : "es"}${indexing}`
+        : `no ${scope} matches${indexing}`;
+      if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
     } catch (error) {
       if (error.name === "AbortError") return;
       this.historySearchResults = [];
-      this.terminalSearchMatches = new Map(this.terminalTitleSearchResults.map((result) => [result.open_session_id, {
-        count: 1, snippets: [{ line: "name", text: result.title }],
-      }]));
-      const titleCount = this.terminalTitleSearchResults.length;
-      this.$("terminal-search-summary").textContent = titleCount
-        ? `${titleCount} terminal name${titleCount === 1 ? "" : "s"} · conversation search unavailable`
-        : error.message || "search failed";
       this.renderList();
-      this.renderTerminalHistoryResults();
+      const summary = this.$("terminal-search-summary");
+      if (summary) summary.textContent = this.terminalSearchMatches.size
+        ? `${this.terminalSearchMatches.size} terminal name match${this.terminalSearchMatches.size === 1 ? "" : "es"} · conversation search unavailable`
+        : error.message || "search failed";
+      if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
     }
   }
 
@@ -3652,6 +3807,7 @@ class TermdeckApp {
     const item = document.createElement("div");
     item.className = "session-item" + (s.session_id === this.activeId && this.activeFileKey === null ? " active" : "") +
       (searchMatch ? " terminal-search-match" : "");
+    if (searchMatch) item.tabIndex = 0;
     item.dataset.sessionId = s.session_id;
     item.classList.toggle("sidebar-selected", this.sidebarSelectedSessionIds.has(s.session_id));
     item.title = `${s.command || "zsh"}\n${s.cwd}` + (s.agent_session_id ? `\n${s.agent_kind}: ${s.agent_session_id}` : "") + "\nright-click for actions";
@@ -3719,9 +3875,26 @@ class TermdeckApp {
     if (showDesktopBrandIndicator) item.append(spinner, typeIcon, title, groupIndicator, close);
     else if (useTextStatusIndicator) item.append(dot, typeIcon, title, groupIndicator, close);
     else item.append(dot, typeIcon, title, groupIndicator, close);
+    if (searchMatch) item.appendChild(this.renderTerminalSearchSnippets(searchMatch));
     item.title = `${item.dataset.baseTitle}\nlast activity ${this.terminalAgeAgoLabel(s)}\n${this.terminalAgeExactTimestamp(s)}`;
     item.onclick = (event) => {
       this.handleSessionRowSelection(event, s.session_id);
+    };
+    item.onfocus = () => {
+      if (this.terminalSearchText.trim()) this.terminalSearchFocusIndex = this.terminalSearchRows().indexOf(item);
+    };
+    item.onkeydown = (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.moveTerminalSearchRow(event.key === "ArrowDown" ? 1 : -1);
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        item.click();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        this.closeTerminalSearchEditor();
+      }
     };
     item.onauxclick = (event) => {
       if (event.button !== 1) return;
@@ -3774,9 +3947,13 @@ class TermdeckApp {
     const groups = this.terminalGroups();
     const groupsById = new Map(groups.map((group) => [group.id, group]));
     const sessionGroups = state.session_groups || {};
-    const visibleSessions = this.activitySort
+    const allVisibleSessions = this.activitySort
       ? [...this.sessions].sort((a, b) => this.compareRecentActivityForSort(a, b))
       : this.sessions;
+    const terminalSearchQuery = this.terminalSearchText.trim();
+    const visibleSessions = terminalSearchQuery
+      ? allVisibleSessions.filter((session) => this.terminalSearchMatches.has(session.session_id))
+      : allVisibleSessions;
     const sessionsById = new Map(visibleSessions.map((session) => [session.session_id, session]));
     const grouped = new Map(groups.map((group) => [group.id, []]));
     for (const session of visibleSessions) {
@@ -3805,6 +3982,7 @@ class TermdeckApp {
           const group = groupsById.get(id);
           if (!group) continue;
           const members = grouped.get(id) || [];
+          if (terminalSearchQuery && !members.length) continue;
           this.renderTerminalGroup(group, members, list);
           continue;
         }
@@ -3812,6 +3990,12 @@ class TermdeckApp {
         if (!session || sessionGroups[id]) continue;
         this.renderTerminalItem(session, list);
       }
+    }
+    if (terminalSearchQuery && !visibleSessions.length && !this.terminalSearchClosedMatches.size) {
+      const empty = document.createElement("div");
+      empty.className = "terminal-search-empty";
+      empty.textContent = "no terminals match";
+      list.appendChild(empty);
     }
     if (!this.vscodeMode && this.openFiles.size) {
       const collapsed = this.sectionCollapsed("open_files_collapsed");
@@ -3890,27 +4074,25 @@ class TermdeckApp {
       this.lastFilesSidePanelTab = view;
       localStorage.setItem(FILES_SIDE_PANEL_LAST_TAB_KEY, view);
     }
-    if (!filesVisible || view === "terminal-search" || view === "git") this.closeFileTypeFilterMenu();
+    if (!filesVisible || view === "git") this.closeFileTypeFilterMenu();
     const filesPinned = filesVisible && !!this.settings.files_pinned;
     this.settings.side_full = filesVisible;
     this.$("files-section").classList.toggle("hidden", !filesVisible);
     this.$("session-list").classList.toggle("hidden", view === CLOSED_SIDE_VIEW);
     this.$("files-section").classList.toggle("with-search", view === "search");
-    this.$("files-section").classList.toggle("with-terminal-search", view === "terminal-search");
     this.$("files-section").classList.toggle("with-git", view === "git");
     this.$("files-section").classList.toggle("floating", filesVisible && !filesPinned);
     const gitView = view === "git";
     this.$("git-branch-label").classList.toggle("hidden", !gitView);
     this.$("git-refresh").classList.toggle("hidden", !gitView);
-    for (const id of ["reveal-toggle", "mtime-toggle", "tree-sort-toggle", "hide-excluded-toggle", "hide-dot-toggle"]) {
+    for (const id of ["mtime-toggle", "tree-sort-toggle", "hide-excluded-toggle"]) {
       this.$(id).classList.toggle("hidden", gitView);
     }
     for (const [name, id] of [["terminals", "view-terminals"], ["project", "view-project"], ["search", "view-search"], ["git", "view-git"]]) {
       const button = this.$(id);
       if (button) button.classList.toggle("on", name === view);
     }
-    this.$("terminal-search-toggle").classList.toggle("on", view === "terminal-search");
-    for (const name of ["project", "search", "terminal-search", "git"]) {
+    for (const name of ["project", "search", "git"]) {
       const id = `files-tab-${name}`;
       const button = this.$(id);
       if (button) button.classList.toggle("on", name === view);
@@ -3943,9 +4125,6 @@ class TermdeckApp {
     } else if (view === "git") {
       this.setExplorerMode("git");
       void this.loadGitSidePanel();
-    } else if (view === "terminal-search") {
-      this.updateTerminalSearchGroupButton();
-      this.$("terminal-search-input").focus();
     }
     this.scheduleTerminalFitAfterSidebarChange();
   }
@@ -3983,6 +4162,11 @@ class TermdeckApp {
     this.$("search-results").classList.toggle("hidden", mode !== "content");
     this.$("name-results").classList.toggle("hidden", mode !== "name");
     this.$("git-results").classList.toggle("hidden", mode !== "git");
+    if (mode !== "git") {
+      this.gitSideGeneration += 1;
+      this.$("git-results").textContent = "";
+      this.$("git-branch-label").textContent = "";
+    }
   }
 
   async loadGitSidePanel() {
@@ -4206,7 +4390,6 @@ class TermdeckApp {
     if (this.sideView !== view) return;
     if (view === "project") this.focusFileNameSearch();
     else if (view === "search") this.focusFileContentSearch();
-    else if (view === "terminal-search") this.$("terminal-search-input").focus();
   }
 
   cycleFilesSidePanel() {
@@ -4224,7 +4407,6 @@ class TermdeckApp {
     this.filesSidePanelCycleView = nextView === "terminals" ? null : nextView;
     if (nextView === "project") this.focusFileNameSearch();
     else if (nextView === "search") this.focusFileContentSearch();
-    else if (nextView === "terminal-search") this.$("terminal-search-input").focus();
     else if (nextView === "git") requestAnimationFrame(() => this.$("git-refresh")?.focus());
     else requestAnimationFrame(() => this.focusActiveEditor());
   }
@@ -4240,7 +4422,6 @@ class TermdeckApp {
     this.setSideView(view, false);
     if (view === "project") this.focusFileNameSearch();
     else if (view === "search") this.focusFileContentSearch();
-    else if (view === "terminal-search") this.$("terminal-search-input").focus();
   }
 
   applySideLayout() {
@@ -4309,6 +4490,10 @@ class TermdeckApp {
     return [...new Set(tokens)].join(",");
   }
 
+  includeHiddenFilesInSearch() {
+    return this.settings.hide_dot_folders === false;
+  }
+
   isExcludedPath(relPath) {
     return String(relPath || "").split("/").filter(Boolean).some((part) => this.isExcludedName(part));
   }
@@ -4336,12 +4521,10 @@ class TermdeckApp {
   }
 
   toggleHideDotFolders() {
-    this.settings.hide_dot_folders = !this.settings.hide_dot_folders;
-    this.updateHideDotButton();
-    this.saveSettings();
-    if (this.sideView === "search" && this.$("search-query").value.trim()) void this.runSearch(null, true);
-    else if (this.sideView === "project" && this.$("search-name").value.trim()) void this.runNameSearch();
-    else this.rerenderTree();
+    const nextHidden = !this.settings.hide_dot_folders;
+    const tokens = this.fileTypeFilterTokens().filter((token) => token !== "!.*");
+    if (nextHidden) tokens.unshift("!.*");
+    this.updateFileTypeFilterTokens(tokens);
   }
 
   toggleExcludeDir(name) {
@@ -4501,10 +4684,9 @@ class TermdeckApp {
     const sidePanelAction = this.bindingToDisplay(this.bindingFor("cycle-side-panel"));
     const sidePanelTitles = [["view-project", "Files", "open-files-panel"],
       ["view-search", "Search & replace", "open-file-search"],
-      ["terminal-search-toggle", "Search terminal names and output", "open-terminal-search"],
+      ["terminal-search-inline-toggle", "Search terminal names and output", "open-terminal-search"],
       ["files-tab-project", "Files", "open-files-panel"],
-      ["files-tab-search", "Search & replace", "open-file-search"],
-      ["files-tab-terminal-search", "Search terminal names and output", "open-terminal-search"]];
+      ["files-tab-search", "Search & replace", "open-file-search"]];
     for (const [id, label, actionId] of sidePanelTitles) {
       const button = this.$(id);
       const directAction = this.bindingToDisplay(this.bindingFor(actionId));
@@ -4705,6 +4887,7 @@ class TermdeckApp {
     this.addContextItem(menu, "Duplicate…", () => this.duplicateTreePath(rel), "files");
     this.addContextItem(menu, "Move…", () => this.moveTreePath(rel));
     this.addContextItem(menu, "Delete (to Trash)", () => this.deleteTreePath(rel));
+    this.addContextItem(menu, "Refresh", () => void this.refreshTreeDirectories(), "refresh");
     this.addContextItem(menu, "Copy relative path", () => this.copyTextToClipboard(rel, "relative path copied"), "copy");
     this.addContextItem(menu, "Copy absolute path", () => this.copyTextToClipboard(`${this.treeRoot}/${rel}`, "path copied"), "copy");
     menu.classList.remove("hidden");
@@ -4952,62 +5135,30 @@ class TermdeckApp {
 
   renderClosedInto(list) {
     if (!this.closedSessions.length) return;
+    const search = this.terminalSearchText.trim();
+    const matchingClosed = search
+      ? this.closedSessions.filter((session) => this.terminalSearchClosedMatches.has(session.session_id))
+      : this.closedSessions;
+    if (search && !matchingClosed.length) return;
     const header = document.createElement("div");
     header.className = "side-section-label closed-header";
     const chevron = document.createElement("span");
     chevron.className = "codicon codicon-chevron-right closed-chevron" + (this.closedExpanded ? " open" : "");
     const title = document.createElement("span");
-    title.textContent = `closed terminals (${this.closedSessions.length})`;
+    title.textContent = search
+      ? `closed terminals (${matchingClosed.length}/${this.closedSessions.length})`
+      : `closed terminals (${this.closedSessions.length})`;
     header.append(chevron, title);
     header.onclick = () => { this.closedExpanded = !this.closedExpanded; this.renderList(); };
     list.appendChild(header);
     if (!this.closedExpanded) return;
-    const search = this.closedSearchQuery.trim().toLocaleLowerCase();
-    const matchingClosed = search
-      ? this.closedSessions.filter((session) => String(session.title || "").toLocaleLowerCase().includes(search))
-      : this.closedSessions;
-    const searchInput = document.createElement("input");
-    searchInput.className = "closed-search-input";
-    searchInput.type = "search";
-    searchInput.placeholder = "search closed terminals";
-    searchInput.value = this.closedSearchQuery;
-    searchInput.autocomplete = "off";
-    searchInput.autocapitalize = "off";
-    searchInput.autocorrect = "off";
-    searchInput.spellcheck = false;
-    searchInput.title = "Search closed terminals by name";
-    searchInput.onclick = (event) => event.stopPropagation();
-    searchInput.oninput = () => {
-      this.closedSearchQuery = searchInput.value;
-      this.closedDisplayLimit = CLOSED_SESSIONS_INITIAL_DISPLAY;
-      this.renderList();
-      const nextInput = this.$("session-list")?.querySelector(".closed-search-input");
-      if (nextInput) {
-        nextInput.focus();
-        nextInput.setSelectionRange(nextInput.value.length, nextInput.value.length);
-      }
-    };
-    searchInput.onkeydown = (event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (!this.closedSearchQuery) return;
-      this.closedSearchQuery = "";
-      this.renderList();
-    };
-    list.appendChild(searchInput);
-    if (!matchingClosed.length) {
-      const empty = document.createElement("div");
-      empty.className = "closed-search-empty";
-      empty.textContent = "no closed terminals match";
-      list.appendChild(empty);
-      return;
-    }
     const visibleClosed = matchingClosed.slice(0, Math.min(
       this.closedDisplayLimit, CLOSED_SESSIONS_MAX_DISPLAY));
     for (const c of visibleClosed) {
       const item = document.createElement("div");
-      item.className = "closed-item";
+      const searchMatch = search ? this.terminalSearchClosedMatches.get(c.session_id) : null;
+      item.className = "closed-item" + (searchMatch ? " terminal-search-match" : "");
+      if (searchMatch) item.tabIndex = 0;
       const groupName = c.group_name || this.terminalGroupNameForSession(c.session_id);
       item.title = `${c.title}\n${c.command || "zsh"}\n${c.cwd}\nclosed ${c.closed_at_est}` +
         (groupName ? `\ngroup ${groupName}` : "") +
@@ -5016,7 +5167,8 @@ class TermdeckApp {
       icon.className = "codicon codicon-history";
       const name = document.createElement("span");
       name.className = "file-item-name";
-      name.textContent = c.title;
+      if (searchMatch) this.appendTerminalSearchHighlightedText(name, c.title, search);
+      else name.textContent = c.title;
       const group = document.createElement("span");
       group.className = "closed-group";
       group.textContent = groupName;
@@ -5026,7 +5178,24 @@ class TermdeckApp {
       purge.title = "Remove from history";
       purge.onclick = (e) => { e.stopPropagation(); this.purgeClosed(c.session_id); };
       item.append(icon, name, group, purge);
+      if (searchMatch) item.appendChild(this.renderTerminalSearchSnippets(searchMatch));
       item.onclick = () => this.reopenClosed(c.session_id);
+      item.onfocus = () => {
+        if (this.terminalSearchText.trim()) this.terminalSearchFocusIndex = this.terminalSearchRows().indexOf(item);
+      };
+      item.onkeydown = (event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          event.stopPropagation();
+          this.moveTerminalSearchRow(event.key === "ArrowDown" ? 1 : -1);
+        } else if (event.key === "Enter") {
+          event.preventDefault();
+          item.click();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          this.closeTerminalSearchEditor();
+        }
+      };
       list.appendChild(item);
     }
     if (matchingClosed.length > visibleClosed.length && visibleClosed.length < CLOSED_SESSIONS_MAX_DISPLAY) {
@@ -5856,6 +6025,7 @@ class TermdeckApp {
     this.updateHistoryThinkingIndicator();
     this.renderHistoryQueue();
     this.fitActive();
+    this.renderInlineSizeControls();
   }
 
   updateHistoryThinkingIndicator() {
@@ -6288,7 +6458,7 @@ class TermdeckApp {
     if (!this.historyOpen || this.activeFileKey !== null || !this.activeId) return;
     const prompt = this.$("history-prompt");
     const rawText = prompt.value;
-    const text = this.settings.prompt_wrap_guard ? rawText.replace(/\r\n/g, "\n").replace(/[\r\n]+$/, "") : rawText;
+    const text = rawText;
     if (!text.trim()) return;
     const view = this.views.get(this.activeId);
     if (!view) return;
@@ -6315,7 +6485,6 @@ class TermdeckApp {
     if (!view || !view.ws || view.ws.readyState !== WebSocket.OPEN || !String(text || "").trim()) return false;
     const promptText = String(text);
     const prompt = this.$("history-prompt");
-    this.markPromptWrapActivity(view);
     view.promptDraft = promptText;
     view.promptSubmitting = true;
     view.promptSubmitEntered = false;
@@ -6473,7 +6642,6 @@ class TermdeckApp {
   }
 
   writePromptDraftToTerminal(view, text) {
-    this.markPromptWrapActivity(view);
     this.sendInput(view, "\x15");
     if (text) this.sendInput(view, text.includes("\n") ? this.terminalPastePayload(view, text) : text);
   }
@@ -6504,17 +6672,6 @@ class TermdeckApp {
     }, PROMPT_DRAFT_SYNC_PASTE_DELAY_MS);
   }
 
-  markPromptWrapActivity(view) {
-    if (!view || !this.settings.prompt_wrap_guard) return;
-    view.promptWrapGuardUntil = Date.now() + PROMPT_WRAP_GUARD_IDLE_MS;
-    clearTimeout(view.promptWrapGuardTimer);
-    view.promptWrapGuardTimer = setTimeout(() => {
-      view.promptWrapGuardTimer = 0;
-      if (view.closed || view.promptWrapGuardUntil > Date.now() || !view.container.classList.contains("visible")) return;
-      this.scheduleV2Fit(view);
-    }, PROMPT_WRAP_GUARD_IDLE_MS + 20);
-  }
-
   deferTerminalReflowAfterPrompt(view) {
     if (!view || this.session(view.sessionId)?.agent_kind !== "codex") return;
     view.promptSubmissionReflowGuardUntil = Date.now() + CODEX_PROMPT_REFLOW_GUARD_MS;
@@ -6527,10 +6684,9 @@ class TermdeckApp {
     }, CODEX_PROMPT_REFLOW_GUARD_MS + 40);
   }
 
-  shouldDeferPromptWrapFit(view) {
+  shouldDeferPromptReflowFit(view) {
     if (!view) return false;
-    return (this.settings.prompt_wrap_guard && view.promptWrapGuardUntil > Date.now()) ||
-      view.promptSubmissionReflowGuardUntil > Date.now();
+    return view.promptSubmissionReflowGuardUntil > Date.now();
   }
 
   isPastedTerminalInput(data) {
@@ -6556,7 +6712,6 @@ class TermdeckApp {
   }
 
   sendTrackedInput(view, data) {
-    this.markPromptWrapActivity(view);
     const pastedInput = this.isPastedTerminalInput(data);
     const session = this.session(view.sessionId);
     const submittedText = (data === "\r" || data === "\n") && session && session.agent_kind !== "none"
@@ -7300,10 +7455,6 @@ class TermdeckApp {
         if (recentOnly && kind === "Terminals" && recentSessionIds.size) continue;
         results.push(this.quickOpenTerminalResult(session, kind));
       }
-      if (recentOnly) {
-        this.paintQuickOpenResults(results);
-        return;
-      }
       for (const [key, entry] of this.openFiles) {
         if (!this.quickOpenTextMatches(searchQuery, entry.name, entry.path)) continue;
         results.push({ kind: "Open files", title: entry.name, detail: entry.path, icon: "file-code", run: () => void this.activateFile(key, null) });
@@ -7324,8 +7475,8 @@ class TermdeckApp {
     this.paintQuickOpenResults(results);
     if (!commandOnly && !symbolOnly && searchQuery) {
       const root = this.searchRoot();
-      const params = new URLSearchParams({ root, q: searchQuery, glob: this.$("search-glob").value.trim(),
-        ignore: this.searchIgnoreTokens(), case_sensitive: "false" });
+      const params = new URLSearchParams({ root, q: searchQuery, glob: this.fileGlobForMode("search"),
+        ignore: this.searchIgnoreTokens(), include_hidden: String(this.includeHiddenFilesInSearch()), case_sensitive: "false" });
       const response = await fetch(`/api/files/find?${params}`);
       if (generation !== this.quickOpenGeneration || !response.ok) return;
       const files = (await response.json()).filter((item) => !item.is_dir).slice(0, 80);
@@ -8869,6 +9020,7 @@ class TermdeckApp {
       this.connectHistoryStream(historyId, { fresh: previousId !== id });
     }
     if (view) {
+      this.prepareTerminalForFirstPaint(view);
       if (this.isTerminalScrollV2() && !view.userScrollIntent) view.scrollMode = "follow";
       this.refreshTerminalAppearance(view);
       if (this.shouldReconnectIdleClaudeView(view, s, previousId)) this.reconnectIdleClaudeView(view);
@@ -8947,7 +9099,7 @@ class TermdeckApp {
   ensureView(id) {
     if (this.views.has(id)) return this.views.get(id);
     const container = document.createElement("div");
-    container.className = "term-container";
+    container.className = "term-container initializing";
     this.$("terminal-area").appendChild(container);
     const term = new Terminal({
       fontSize: this.settings.terminal_font_size, fontFamily: '"SF Mono", Menlo, monospace', letterSpacing: -0.2, theme: this.termTheme(),
@@ -8980,7 +9132,7 @@ class TermdeckApp {
                    preserveRowsFromBottom: 0, reconnectReset: false,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
-                   promptSubmissionReflowGuardUntil: 0, promptSubmissionReflowGuardTimer: 0, promptWrapGuardUntil: 0, promptWrapGuardTimer: 0,
+                   promptSubmissionReflowGuardUntil: 0, promptSubmissionReflowGuardTimer: 0,
                    manualRepaintClickCount: 0, manualRepaintClickTimer: 0, manualRepaintLastClickAt: 0,
                    reconnectAfterClose: false, claudeInitialReplayCheckTimer: 0,
                    claudeInitialReplayRecoveryAttempted: false,
@@ -9189,6 +9341,16 @@ class TermdeckApp {
     view.visibilityObserver.observe(container);
     this.views.set(id, view);
     return view;
+  }
+
+  prepareTerminalForFirstPaint(view) {
+    if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
+    const rect = view.container.getBoundingClientRect();
+    if (rect.width < 40 || rect.height < 40) return false;
+    view.fit.fit();
+    this.refreshTerminalAppearance(view);
+    view.container.classList.remove("initializing");
+    return true;
   }
 
   claudeSnapshotExperimentEnabled() {
@@ -10222,7 +10384,7 @@ class TermdeckApp {
   scheduleV2Fit(view, options = {}) {
     const forceResize = !!options.force;
     if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return;
-    if (this.shouldDeferPromptWrapFit(view)) return;
+    if (this.shouldDeferPromptReflowFit(view)) return;
     if (view.v2FitFrame && forceResize) {
       cancelAnimationFrame(view.v2FitFrame);
       view.v2FitFrame = 0;
@@ -10231,7 +10393,7 @@ class TermdeckApp {
     view.v2FitFrame = requestAnimationFrame(() => {
       view.v2FitFrame = 0;
       if (view.closed || !view.container.classList.contains("visible") || this.sidebarResizeInProgress || !this.terminalPageCanResize()) return;
-      if (this.shouldDeferPromptWrapFit(view)) return;
+      if (this.shouldDeferPromptReflowFit(view)) return;
       const rect = view.container.getBoundingClientRect();
       if (rect.width < 40 || rect.height < 40) {
         const retryLimit = forceResize ? TERMINAL_V2_FIT_RETRY_LIMIT : 12;
@@ -10263,6 +10425,7 @@ class TermdeckApp {
       // .xterm-viewport or .xterm-scroll-area; xterm owns its scrollbar.
       const viewportAnchor = this.captureTerminalViewportAnchor(view);
       view.fit.fit();
+      view.container.classList.remove("initializing");
       const terminalSizeChanged = view.term.cols !== beforeCols || view.term.rows !== beforeRows;
       if (terminalSizeChanged) this.beginTerminalViewportRestore(view, viewportAnchor);
       if (view.scrollMode !== "follow" && terminalSizeChanged) {
@@ -10519,7 +10682,7 @@ class TermdeckApp {
 
   repairTerminalRenderIfStale(view) {
     if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
-    if (this.shouldDeferPromptWrapFit(view)) return false;
+    if (this.shouldDeferPromptReflowFit(view)) return false;
     if (!this.terminalTailRenderMismatch(view)) {
       view.renderRepairArmed = true;
       return false;
@@ -10608,7 +10771,7 @@ class TermdeckApp {
       view.settleWatchdogTimers.push(setTimeout(() => {
         if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible") ||
             this.sidebarResizeInProgress || !this.terminalPageCanResize()) return;
-        if (this.shouldDeferPromptWrapFit(view)) return;
+        if (this.shouldDeferPromptReflowFit(view)) return;
         const beforeCols = view.term.cols, beforeRows = view.term.rows;
         const viewportAnchor = this.captureTerminalViewportAnchor(view);
         view.fit.fit();
@@ -10730,7 +10893,7 @@ class TermdeckApp {
   forceVisibleTerminalReflowViaClear(view) {
     if (!view || view.closed || view.v2ForcedReflowFrame || !view.container.classList.contains("visible") ||
         !this.terminalPageCanResize()) return false;
-    if (this.shouldDeferPromptWrapFit(view)) return false;
+    if (this.shouldDeferPromptReflowFit(view)) return false;
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return false;
     const restoreLine = view.term.buffer.active.viewportY;
@@ -10771,7 +10934,7 @@ class TermdeckApp {
   forceVisibleTerminalReflowViaResizeNudge(view, nudgeCols = 2) {
     if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
         !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
-    if (this.shouldDeferPromptWrapFit(view)) return false;
+    if (this.shouldDeferPromptReflowFit(view)) return false;
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return false;
     const computed = window.getComputedStyle(view.container);
@@ -10946,6 +11109,7 @@ class TermdeckApp {
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return;
     view.fit.fit();
+    view.container.classList.remove("initializing");
     this.refreshTerminal(view);
     const { cols, rows } = view.term;
     if (cols < 2 || rows < 2) return;
@@ -10965,7 +11129,6 @@ class TermdeckApp {
     clearTimeout(view.claudeInitialReplayCheckTimer);
     clearTimeout(view.claudeStatusRowRefreshTimer);
     clearTimeout(view.historyModelRefreshTimer);
-    clearTimeout(view.promptWrapGuardTimer);
     clearTimeout(view.promptSubmissionReflowGuardTimer);
     clearTimeout(view.promptDraftSyncTimer);
     clearTimeout(view.promptDraftSyncDebounceTimer);
@@ -11004,15 +11167,31 @@ class TermdeckApp {
         const legacyColor = incoming.sidebar_status_color || incoming.wave_color;
         if (/^#[0-9a-f]{6}$/i.test(String(legacyColor || ""))) incoming.sidebar_text_color = legacyColor;
       }
+      const legacyGlobTokens = String(incoming.search_glob || "").split(",").map((token) => token.trim()).filter(Boolean);
+      const legacyIncludeGlob = legacyGlobTokens.filter((token) => !token.startsWith("!")).join(", ");
+      const legacyExcludeGlob = legacyGlobTokens.filter((token) => token.startsWith("!")).join(", ");
+      const migratedFileGlobSettings = incoming.tree_file_glob === SETTINGS_DEFAULTS.tree_file_glob &&
+        incoming.search_file_glob === SETTINGS_DEFAULTS.search_file_glob && legacyIncludeGlob;
+      const migratedExcludeGlob = incoming.excluded_file_glob === SETTINGS_DEFAULTS.excluded_file_glob &&
+        incoming.search_glob !== SETTINGS_DEFAULTS.search_glob && legacyExcludeGlob;
+      if (migratedFileGlobSettings) {
+        incoming.tree_file_glob = legacyIncludeGlob;
+        incoming.search_file_glob = legacyIncludeGlob;
+      }
+      if (migratedExcludeGlob) incoming.excluded_file_glob = legacyExcludeGlob;
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
       if (!this.settings.md_prompt_queues || typeof this.settings.md_prompt_queues !== "object") this.settings.md_prompt_queues = {};
       if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
       this.settings.show_git_status = true;
-      const searchGlobTokens = String(this.settings.search_glob || "").split(",").map((token) => token.trim()).filter(Boolean);
-      if (!searchGlobTokens.includes("!*.log")) {
-        this.settings.search_glob = [...searchGlobTokens, "!*.log"].join(", ");
-        this.saveSettings();
-      }
+      const excludedTokens = this.fileTypeFilterTokens();
+      if (this.settings.hide_dot_folders !== false && !excludedTokens.includes("!.*")) excludedTokens.unshift("!.*");
+      if (!excludedTokens.includes("!*.log")) excludedTokens.push("!*.log");
+      const normalizedExcludedGlob = [...new Set(excludedTokens)].join(", ");
+      const excludedGlobChanged = this.settings.excluded_file_glob !== normalizedExcludedGlob;
+      this.settings.excluded_file_glob = normalizedExcludedGlob;
+      this.settings.hide_dot_folders = excludedTokens.includes("!.*");
+      this.syncLegacySearchGlob();
+      if (migratedFileGlobSettings || migratedExcludeGlob || excludedGlobChanged) this.saveSettings();
     } catch (err) {
       this.settings = { ...SETTINGS_DEFAULTS };
     }
@@ -11031,6 +11210,9 @@ class TermdeckApp {
     if (!/^#[0-9a-f]{6}$/i.test(String(this.settings.sidebar_text_color || ""))) {
       this.settings.sidebar_text_color = SETTINGS_DEFAULTS.sidebar_text_color;
     }
+    this.settings.sidebar_text_color = SETTINGS_DEFAULTS.sidebar_text_color;
+    this.settings.show_terminal_age = true;
+    this.settings.claude_snapshot_experimental = true;
     if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
     if (this.normalizeNotebookNotes()) this.saveSettings();
     // V2 is now the only desktop terminal scroll controller. Remove the old
@@ -11157,11 +11339,14 @@ class TermdeckApp {
     document.documentElement.style.setProperty("--notebook-panel-left", `${notebookLeft}px`);
     this.positionFloatingFilesPanel(floatingFileWidth);
     document.documentElement.style.setProperty("--sidebar-font-size", s.sidebar_font_size + "px");
+    document.documentElement.style.setProperty("--project-font-size", s.project_font_size + "px");
     document.documentElement.style.setProperty("--ui-font-size", s.ui_font_size + "px");
+    document.documentElement.style.setProperty("--files-tab-font-size", s.files_tab_font_size + "px");
     document.documentElement.style.setProperty("--code-font-size", s.code_font_size + "px");
     document.documentElement.style.setProperty("--bottom-font-size", s.bottom_font_size + "px");
     document.documentElement.style.setProperty("--ui-scale", String(this.normalizeUiScale((Number(s.bottom_font_size) || SETTINGS_DEFAULTS.bottom_font_size) / SETTINGS_DEFAULTS.bottom_font_size)));
     document.documentElement.style.setProperty("--sidebar-text-color", s.sidebar_text_color);
+    document.documentElement.style.setProperty("--terminal-icon-size", `${Math.max(FONT_MIN, Math.min(FONT_MAX, Number(s.terminal_icon_size) || SETTINGS_DEFAULTS.terminal_icon_size))}px`);
     this.updateSessionAgeStyles();
     const codeFontSize = Number(s.code_font_size) || SETTINGS_DEFAULTS.code_font_size;
     const configuredDiffFontSize = Number(s.diff_font_size) || SETTINGS_DEFAULTS.diff_font_size;
@@ -11195,6 +11380,14 @@ class TermdeckApp {
     }
     this.$("stat-text").classList.toggle("hidden", !s.show_stats);
     this.$("stat-spark").classList.toggle("hidden", !s.show_stats);
+    const editorWrapToggle = this.$("editor-wrap-toggle");
+    if (editorWrapToggle) {
+      const editorWrapEnabled = !!s.word_wrap;
+      editorWrapToggle.classList.toggle("on", editorWrapEnabled);
+      editorWrapToggle.setAttribute("aria-pressed", String(editorWrapEnabled));
+      editorWrapToggle.title = `Editor wrap: ${editorWrapEnabled ? "on" : "off"}`;
+    }
+    this.renderInlineSizeControls();
     if (fitTerminals) this.fitActive();
   }
 
@@ -11226,7 +11419,7 @@ class TermdeckApp {
         });
         this.editor.addAction({
           id: "termdeck-find-usages", label: "Find Usages in Project", contextMenuGroupId: "navigation",
-          contextMenuOrder: 1.5, keybindings: [monaco.KeyMod.Shift | monaco.KeyCode.F12],
+          contextMenuOrder: 1.5,
           run: () => this.showEditorUsages(),
         });
         const notebookHost = this.$("notebook-editor-host");
@@ -11276,12 +11469,258 @@ class TermdeckApp {
     }, 400);
   }
 
+  initInlineSizeControls() {
+    this.inlineSizeControlRoots = new Map();
+    for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) {
+      const root = document.createElement("div");
+      root.id = `inline-size-control-${definition.key}`;
+      root.className = "inline-size-controls hidden";
+      root.setAttribute("role", "toolbar");
+      root.setAttribute("aria-label", `${definition.label} size`);
+      root.title = `${definition.label} size`;
+      const row = document.createElement("div");
+      row.className = "inline-size-control-row";
+      const label = document.createElement("span");
+      label.className = "inline-size-control-label";
+      label.textContent = definition.label;
+      const minus = document.createElement("button");
+      minus.type = "button";
+      minus.className = "inline-size-control-step";
+      minus.textContent = "−";
+      minus.title = `Decrease ${definition.label.toLowerCase()} size`;
+      minus.setAttribute("aria-label", minus.title);
+      const range = document.createElement("input");
+      range.type = "range";
+      range.className = "inline-size-control-range";
+      range.min = String(FONT_MIN);
+      range.max = String(FONT_MAX);
+      range.step = "1";
+      range.title = `Adjust ${definition.label.toLowerCase()} size`;
+      range.setAttribute("aria-label", range.title);
+      const value = document.createElement("span");
+      value.className = "inline-size-control-value";
+      const plus = document.createElement("button");
+      plus.type = "button";
+      plus.className = "inline-size-control-step";
+      plus.textContent = "+";
+      plus.title = `Increase ${definition.label.toLowerCase()} size`;
+      plus.setAttribute("aria-label", plus.title);
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.className = "inline-size-control-reset";
+      reset.textContent = "↺";
+      reset.title = `Reset ${definition.label.toLowerCase()} size to default`;
+      reset.setAttribute("aria-label", reset.title);
+      minus.onclick = () => this.setInlineSize(definition.key, Number(range.value) - 1);
+      plus.onclick = () => this.setInlineSize(definition.key, Number(range.value) + 1);
+      range.oninput = () => this.setInlineSize(definition.key, Number(range.value));
+      reset.onclick = () => this.resetInlineSize(definition.key);
+      row.append(label, minus, range, value, plus, reset);
+      root.appendChild(row);
+      root.addEventListener("pointerdown", (event) => {
+        this.startInlineSizeControlDrag(event, this.inlineSizeControlRoots.get(definition.key));
+        event.stopPropagation();
+      });
+      root.addEventListener("click", (event) => event.stopPropagation());
+      document.body.appendChild(root);
+      this.inlineSizeControlRoots.set(definition.key, { root, range, value, position: null });
+    }
+    document.addEventListener("pointerover", (event) => {
+      if (!this.settings.inline_size_controls || !(event.target instanceof Element)) return;
+      if ([...this.inlineSizeControlRoots.values()].some((controls) => !controls.root.classList.contains("hidden"))) return;
+      if (this.inlineSizeTargetForElement(event.target)) this.renderInlineSizeControls();
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (![...this.inlineSizeControlRoots.values()].some((controls) => controls.root.contains(event.target))) {
+        this.hideInlineSizeControls();
+      }
+    }, true);
+    document.addEventListener("pointermove", (event) => this.dragInlineSizeControl(event));
+    document.addEventListener("pointerup", () => this.finishInlineSizeControlDrag());
+    window.addEventListener("resize", () => this.renderInlineSizeControls());
+  }
+
+  startInlineSizeControlDrag(event, controls) {
+    if (event.button !== 0 || event.target instanceof HTMLInputElement || event.target instanceof HTMLButtonElement || !controls) return;
+    const rect = controls.root.getBoundingClientRect();
+    controls.position = { left: rect.left, top: rect.top };
+    this.inlineSizeDrag = { controls, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
+    controls.root.classList.add("dragging");
+    event.preventDefault();
+  }
+
+  dragInlineSizeControl(event) {
+    if (!this.inlineSizeDrag) return;
+    const { controls, offsetX, offsetY } = this.inlineSizeDrag;
+    const width = controls.root.offsetWidth;
+    const height = controls.root.offsetHeight;
+    const left = Math.max(8, Math.min(window.innerWidth - width - 8, event.clientX - offsetX));
+    const top = Math.max(8, Math.min(window.innerHeight - height - 8, event.clientY - offsetY));
+    controls.position = { left, top };
+    controls.root.style.left = `${left}px`;
+    controls.root.style.top = `${top}px`;
+  }
+
+  finishInlineSizeControlDrag() {
+    if (!this.inlineSizeDrag) return;
+    this.inlineSizeDrag.controls.root.classList.remove("dragging");
+    this.inlineSizeDrag = null;
+  }
+
+  inlineSizeTargetForElement(element) {
+    if (element.closest(".inline-size-controls, #settings-popover, #keys-backdrop")) return null;
+    const targets = [
+      { selectors: "#project-select", key: "project_font_size" },
+      { selectors: "#files-section-tabs, .files-section-tab", key: "files_tab_font_size" },
+      { selectors: "#status-name, #terminal-age, #history-meta, #stat-text", key: "ui_font_size" },
+      { selectors: "#bottombar, #sidebar-footer, #terminal-actions, #files-section-header", key: "bottom_font_size" },
+      { selectors: ".history-event pre, .history-diff, .markdown pre code", key: "diff_font_size" },
+      { selectors: "#terminal-area, .term-container, .xterm", key: "terminal_font_size" },
+      { selectors: "#editor-area, #history-area, #notebook-panel, #file-history-editor-host, #file-history-preview", key: "code_font_size" },
+      { selectors: ".terminal-type-icon", key: "terminal_icon_size" },
+      { selectors: ".tree-row, .search-file, .search-hit, .git-commit, .terminal-history-title-match, #files-section, #terminal-search-inline", key: "tree_font_size" },
+      { selectors: ".session-item, .terminal-group, .closed-item, #sidebar-header, #session-list, #closed-section", key: "sidebar_font_size" },
+      { selectors: "#main", key: "ui_font_size" },
+    ];
+    for (const target of targets) {
+      const matched = element.closest(target.selectors);
+      if (matched) return { element: matched, key: target.key };
+    }
+    return null;
+  }
+
+  inlineSizeTargetForKey(key) {
+    const selectors = {
+      sidebar_font_size: "#session-list, #closed-section",
+      project_font_size: "#project-select",
+      terminal_icon_size: ".terminal-type-icon",
+      terminal_font_size: "#terminal-area",
+      ui_font_size: "#status-name, #terminal-age, #history-meta, #stat-text",
+      files_tab_font_size: "#files-section-tabs",
+      code_font_size: "#editor-area, #history-area, #notebook-panel, #file-history-panel",
+      bottom_font_size: "#sidebar-footer",
+      diff_font_size: ".history-diff, .history-event pre, #file-history-preview",
+      tree_font_size: "#files-tree, #search-results, #name-results, #git-results, #terminal-search-inline",
+    }[key];
+    if (!selectors) return null;
+    for (const element of document.querySelectorAll(selectors)) {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      if (style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" &&
+          rect.width > 1 && rect.height > 1 && rect.bottom > 0 && rect.right > 0 &&
+          rect.top < window.innerHeight && rect.left < window.innerWidth) return element;
+    }
+    return null;
+  }
+
+  renderInlineSizeControls() {
+    if (!this.inlineSizeControlRoots) return;
+    if (!this.settings.inline_size_controls) {
+      this.hideInlineSizeControls();
+      return;
+    }
+    const visibleTargets = new Map();
+    const placedControls = [];
+    for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) {
+      const controls = this.inlineSizeControlRoots.get(definition.key);
+      const target = this.inlineSizeTargetForKey(definition.key);
+      if (!target) {
+        controls.root.classList.add("hidden");
+        continue;
+      }
+      controls.range.value = String(Math.round(Number(this.settings[definition.key]) || 0));
+      controls.value.textContent = `${Math.round(Number(this.settings[definition.key]) || 0)}px`;
+      controls.root.classList.remove("hidden");
+      visibleTargets.set(definition.key, target);
+      if (controls.position) {
+        const width = controls.root.offsetWidth;
+        const height = controls.root.offsetHeight;
+        const left = Math.max(8, Math.min(window.innerWidth - width - 8, controls.position.left));
+        const top = Math.max(8, Math.min(window.innerHeight - height - 8, controls.position.top));
+        controls.position = { left, top };
+        placedControls.push({ left, top, right: left + width, bottom: top + height });
+      }
+    }
+    for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) {
+      const controls = this.inlineSizeControlRoots.get(definition.key);
+      const target = visibleTargets.get(definition.key);
+      if (!target || controls.position) continue;
+      const rect = target.getBoundingClientRect();
+      const width = controls.root.offsetWidth;
+      const height = controls.root.offsetHeight;
+      const maxLeft = Math.max(8, window.innerWidth - width - 8);
+      const maxTop = Math.max(8, window.innerHeight - height - 8);
+      const left = Math.min(Math.max(8, rect.right - width - 8), maxLeft);
+      let top = Math.min(Math.max(8, rect.top + 8), maxTop);
+      for (let attempt = 0; attempt <= placedControls.length; attempt += 1) {
+        const overlap = placedControls.find((placed) => left < placed.right && left + width > placed.left &&
+          top < placed.bottom && top + height > placed.top);
+        if (!overlap) break;
+        top = overlap.bottom + 8;
+        if (top > maxTop) top = Math.max(8, overlap.top - height - 8);
+      }
+      controls.root.style.left = `${left}px`;
+      controls.root.style.top = `${top}px`;
+      controls.position = { left, top };
+      placedControls.push({ left, top, right: left + width, bottom: top + height });
+    }
+  }
+
+  hideInlineSizeControls() {
+    if (!this.inlineSizeControlRoots) return;
+    for (const controls of this.inlineSizeControlRoots.values()) controls.root.classList.add("hidden");
+  }
+
+  setInlineSize(key, value) {
+    if (!this.inlineSizeControlRoots?.has(key)) return;
+    this.settings[key] = Math.max(FONT_MIN, Math.min(FONT_MAX, Number(value) || FONT_MIN));
+    this.applySettings({ fitTerminals: false });
+    this.saveSettings();
+    this.renderInlineSizeControls();
+  }
+
+  resetInlineSize(key) {
+    if (!this.inlineSizeControlRoots?.has(key) || typeof SETTINGS_DEFAULTS[key] !== "number") return;
+    this.setInlineSize(key, SETTINGS_DEFAULTS[key]);
+  }
+
+  resetAllFontSizes() {
+    for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) this.settings[definition.key] = SETTINGS_DEFAULTS[definition.key];
+    this.applySettings({ fitTerminals: false });
+    this.saveSettings();
+    this.renderInlineSizeControls();
+  }
+
+  resetAllFontSizesWithConfirmation() {
+    if (window.confirm("Reset all font sizes to their defaults?")) this.resetAllFontSizes();
+  }
+
+  openInlineSizeEditor() {
+    this.settings.inline_size_controls = true;
+    this.fontSizeEditorOpen = false;
+    this.applySettings({ fitTerminals: false });
+    this.saveSettings();
+    this.$("settings-popover").classList.add("hidden");
+    this.renderInlineSizeControls();
+  }
+
+  exitInlineSizeControls() {
+    if (!this.settings.inline_size_controls) return false;
+    this.settings.inline_size_controls = false;
+    this.fontSizeEditorOpen = false;
+    this.hideInlineSizeControls();
+    this.saveSettings();
+    this.$("settings-popover").classList.add("hidden");
+    return true;
+  }
+
   formatSettingValue(item) {
     return item.type === "scale" ? `${this.settings[item.key]}px` : this.settings[item.key];
   }
 
-  openSettingsPopover(anchor, items) {
+  openSettingsPopover(anchor, items, showFontSizeEditor = false) {
     const pop = this.$("settings-popover");
+    this.fontSizeEditorOpen = showFontSizeEditor;
     pop.textContent = "";
     pop.onkeydown = (event) => {
       if (event.key !== "Escape") return;
@@ -11289,7 +11728,13 @@ class TermdeckApp {
       pop.classList.add("hidden");
       anchor.focus();
     };
+    pop.appendChild(this.buildThemeSelectRow());
+    pop.appendChild(this.buildToggleRow("Terminal icons", () => (this.settings.show_terminal_icons ? "on" : "off"),
+      () => { this.settings.show_terminal_icons = !this.settings.show_terminal_icons; this.renderList(); }));
+    pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
+      () => { this.settings.show_stats = !this.settings.show_stats; }));
     for (const item of items) {
+      if (!showFontSizeEditor || (this.settings.inline_size_controls && item.type !== "color")) continue;
       const row = document.createElement("div");
       row.className = "settings-row";
       const label = document.createElement("span");
@@ -11346,34 +11791,15 @@ class TermdeckApp {
       row.append(label, controls);
       pop.appendChild(row);
     }
-    pop.appendChild(this.buildThemeSelectRow());
-    pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
-      () => { this.settings.show_stats = !this.settings.show_stats; }));
-    pop.appendChild(this.buildToggleRow("Terminal icons", () => (this.settings.show_terminal_icons ? "on" : "off"),
-      () => { this.settings.show_terminal_icons = !this.settings.show_terminal_icons; this.renderList(); }));
-    pop.appendChild(this.buildToggleRow("Terminal age colors", () => (this.settings.show_terminal_age ? "on" : "off"),
-      () => { this.settings.show_terminal_age = !this.settings.show_terminal_age; }));
-    pop.appendChild(this.buildToggleRow("Editor wrap", () => (this.settings.word_wrap ? "on" : "off"),
-      () => { this.settings.word_wrap = !this.settings.word_wrap; }));
-    pop.appendChild(this.buildToggleRow("Prompt wrap fix (test)", () => (this.settings.prompt_wrap_guard ? "on" : "off"),
-      () => { this.settings.prompt_wrap_guard = !this.settings.prompt_wrap_guard; }));
-    pop.appendChild(this.buildToggleRow("Claude snapshots (experimental)", () => (this.settings.claude_snapshot_experimental ? "on" : "off"),
-      () => { this.settings.claude_snapshot_experimental = !this.settings.claude_snapshot_experimental; this.configureClaudeSnapshotExperiment(); }));
-    pop.appendChild(this.buildToggleRow("Markdown transcript mode", () => (this.settings.history_mode ? "on" : "off"),
-      () => { this.setHistoryMode(!this.settings.history_mode); }));
-    pop.appendChild(this.buildActionRow("Keyboard shortcuts", "edit", () => { pop.classList.add("hidden"); this.openKeybindings(); }));
-    pop.appendChild(this.buildActionRow("Export settings", "download", () => { pop.classList.add("hidden"); this.exportSettings(); }));
-    pop.appendChild(this.buildActionRow("Terminal process report", "view", () => {
-      void this.showTerminalProcessReport();
-    }));
-    pop.appendChild(this.buildActionRow("Reclaim orphan terminals", "clean", () => {
-      pop.classList.add("hidden");
-      void this.reclaimOrphanTerminals();
-    }));
-    pop.appendChild(this.buildActionRow("Kill all running terminals", "kill", () => {
-      pop.classList.add("hidden");
-      void this.killAllRunningTerminals();
-    }));
+    if (!showFontSizeEditor) {
+      pop.appendChild(this.buildFontSizeEditRow(anchor, items));
+    }
+    pop.appendChild(this.buildSettingsSubmenu("Maintenance", [
+      { label: "Export settings", buttonText: "download", run: () => { pop.classList.add("hidden"); this.exportSettings(); } },
+      { label: "Terminal process report", buttonText: "view", run: () => { pop.classList.add("hidden"); void this.showTerminalProcessReport(); } },
+      { label: "Reclaim orphan terminals", buttonText: "clean", run: () => { pop.classList.add("hidden"); void this.reclaimOrphanTerminals(); } },
+      { label: "Kill all running terminals", buttonText: "kill", run: () => { pop.classList.add("hidden"); void this.killAllRunningTerminals(); } },
+    ]));
     this.positionPopover(pop, anchor);
   }
 
@@ -11388,6 +11814,66 @@ class TermdeckApp {
     button.textContent = buttonText;
     button.onclick = run;
     row.append(label, button);
+    return row;
+  }
+
+  buildSettingsSubmenu(labelText, entries) {
+    const root = document.createElement("div");
+    root.className = "settings-submenu";
+    const header = document.createElement("div");
+    header.className = "settings-row settings-submenu-header";
+    const label = document.createElement("span");
+    label.className = "settings-label";
+    label.textContent = labelText;
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "theme-toggle settings-submenu-toggle";
+    toggle.textContent = "open";
+    toggle.setAttribute("aria-expanded", "false");
+    const items = document.createElement("div");
+    items.className = "settings-submenu-items";
+    for (const entry of entries) items.appendChild(this.buildActionRow(entry.label, entry.buttonText, entry.run));
+    toggle.onclick = () => {
+      const expanded = root.classList.toggle("expanded");
+      toggle.setAttribute("aria-expanded", String(expanded));
+    };
+    header.append(label, toggle);
+    root.append(header, items);
+    return root;
+  }
+
+  buildFontSizeEditRow(anchor, items) {
+    const row = document.createElement("div");
+    row.className = "settings-row settings-font-size-mode-row";
+    const label = document.createElement("span");
+    label.className = "settings-label";
+    label.textContent = "Font sizes";
+    const controls = document.createElement("span");
+    controls.className = "settings-font-size-mode-controls";
+    const visualize = document.createElement("button");
+    visualize.type = "button";
+    visualize.className = "theme-toggle";
+    visualize.textContent = "visualize";
+    visualize.title = "Edit font sizes in place on their UI elements";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "theme-toggle";
+    edit.textContent = "edit";
+    edit.title = "Edit font sizes in Settings";
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "settings-font-size-reset";
+    reset.innerHTML = '<span class="codicon codicon-refresh"></span>';
+    reset.title = "Reset all font sizes to defaults";
+    reset.setAttribute("aria-label", reset.title);
+    visualize.onclick = () => this.openInlineSizeEditor();
+    edit.onclick = () => {
+      this.exitInlineSizeControls();
+      this.openSettingsPopover(anchor, items, true);
+    };
+    reset.onclick = () => this.resetAllFontSizesWithConfirmation();
+    controls.append(visualize, edit, reset);
+    row.append(label, controls);
     return row;
   }
 
@@ -11470,7 +11956,7 @@ class TermdeckApp {
     return row;
   }
 
-  buildToggleRow(labelText, valueText, flip) {
+  buildToggleRow(labelText, valueText, flip, afterFlip = null) {
     const row = document.createElement("div");
     row.className = "settings-row";
     const label = document.createElement("span");
@@ -11484,6 +11970,7 @@ class TermdeckApp {
       button.textContent = valueText();
       this.applySettings();
       this.saveSettings();
+      if (afterFlip) afterFlip();
     };
     row.append(label, button);
     return row;
@@ -11620,6 +12107,37 @@ class TermdeckApp {
     return `${entry.mtime || 0}|${String(entry.git_status || "").toUpperCase()}`;
   }
 
+  filePatternRegex(pattern) {
+    const value = String(pattern || "").trim();
+    if (!value) return null;
+    const source = value.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+    try {
+      return new RegExp(`^${source}$`, "i");
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  filePathMatchesPattern(relativePath, pattern) {
+    const normalizedPath = String(relativePath || "").replaceAll("\\", "/");
+    const basename = normalizedPath.split("/").pop() || normalizedPath;
+    let value = String(pattern || "").trim();
+    if (!value) return false;
+    if (value === ".*" || value === "**/.*") return normalizedPath.split("/").some((part) => part.startsWith("."));
+    if (value.startsWith(".")) value = `*${value}`;
+    const matcher = this.filePatternRegex(value);
+    return !!matcher && (matcher.test(normalizedPath) || matcher.test(basename));
+  }
+
+  filePathMatchesExcludedPattern(relativePath) {
+    return this.fileTypeFilterTokens().some((token) => this.filePathMatchesPattern(relativePath, token.replace(/^!/, "")));
+  }
+
+  filePathMatchesIncludedPattern(relativePath, mode) {
+    const patterns = this.splitFileGlobTokens(this.fileIncludeGlob(mode));
+    return !patterns.length || patterns.some((pattern) => this.filePathMatchesPattern(relativePath, pattern));
+  }
+
   async renderDirInto(container, relPath, entries) {
     if (entries === undefined) entries = await this.fetchDirEntries(relPath);
     if (entries === null) return;
@@ -11631,6 +12149,7 @@ class TermdeckApp {
       const hiddenDotFolder = entry.is_dir && this.settings.hide_dot_folders !== false && this.isDotFolderName(entry.name);
       if (hiddenDotFolder || (excluded && this.settings.hide_excluded)) continue;
       const childRel = relPath ? `${relPath}/${entry.name}` : entry.name;
+      if (!entry.is_dir && (this.filePathMatchesExcludedPattern(childRel) || !this.filePathMatchesIncludedPattern(childRel, "tree"))) continue;
       if (!this.treeFilterAllows(childRel, entry.is_dir)) continue;
       const row = TermDeckFileBrowser.createTreeEntryRow({ root: this.treeRoot, relativePath: relPath, entry, excluded,
         showMtime: this.settings.show_mtime, showGitStatus: this.settings.show_git_status !== false,
@@ -11678,7 +12197,7 @@ class TermdeckApp {
 
   async expandDirRow(row, relPath) {
     row.classList.add("open");
-    row.querySelector(".tree-folder-icon").src = MATERIAL_ICONS_BASE + "folder-open.svg";
+      row.querySelector(".tree-folder-icon").src = FOLDER_ICON_OPEN;
     const wrap = document.createElement("div");
     wrap.className = "tree-children-wrap";
     row.after(wrap);
@@ -11696,7 +12215,7 @@ class TermdeckApp {
     if (next && next.classList && next.classList.contains("tree-children-wrap")) {
       next.remove();
       row.classList.remove("open");
-      row.querySelector(".tree-folder-icon").src = MATERIAL_ICONS_BASE + "folder.svg";
+      row.querySelector(".tree-folder-icon").src = FOLDER_ICON_CLOSED;
       this.expandedDirs.delete(relPath);
       this.dropTreeDirsUnder(relPath);
       return;
@@ -12742,7 +13261,52 @@ class TermdeckApp {
     }
   }
 
+  closeTerminalProcessReport() {
+    this.$("terminal-process-report-backdrop").classList.add("hidden");
+  }
+
+  formatTerminalProcessReportEntry(entry, compact = false) {
+    const sessionId = String(entry.session_id || "unknown");
+    const name = entry.known_session ? (entry.title || sessionId) : `ORPHAN ${sessionId}`;
+    const project = entry.project ? ` · project ${entry.project}` : "";
+    const socket = String(entry.socket || "").split(/[\\/]/).pop() || "unknown socket";
+    const mode = entry.live ? entry.attached ? "attached" : entry.detached ? "detached" : "live" : "stale";
+    const processes = Array.isArray(entry.processes) ? entry.processes : [];
+    const processDetails = processes.map((process) => {
+      const command = String(process.command || "").replace(/\s+/g, " ").trim();
+      const state = process.state ? ` ${process.state}` : "";
+      return `pid ${process.pid}${state}${command ? ` ${command}` : ""}`;
+    });
+    if (compact) {
+      const pidText = processDetails.length ? processDetails.join("; ") : "no live pids";
+      return `• ${name}${project} · ${mode} · ${socket} · ${pidText}`;
+    }
+    const lines = [`${name} [${sessionId}]${project}`, `  ${mode} · socket ${socket}`];
+    if (processDetails.length) lines.push(...processDetails.map((detail) => `  ${detail}`));
+    else lines.push("  no processes found");
+    return lines.join("\n");
+  }
+
+  formatTerminalProcessReport(report) {
+    const summary = report.summary || {};
+    const entries = Array.isArray(report.sockets) ? report.sockets : [];
+    const liveSockets = Number(summary.live_sockets || 0);
+    const header = `${liveSockets} live socket${liveSockets === 1 ? "" : "s"} · ` +
+      `${summary.processes || 0} processes · ${summary.node_repl_processes || 0} node_repl · ` +
+      `${summary.zombie_processes || 0} zombies · ${summary.orphan_sockets || 0} orphan sockets`;
+    const body = entries.length ? entries.map((entry) => this.formatTerminalProcessReportEntry(entry)).join("\n\n") : "No TermDeck dtach sockets found.";
+    return { header, body, entries };
+  }
+
   async showTerminalProcessReport() {
+    const backdrop = this.$("terminal-process-report-backdrop");
+    const status = this.$("terminal-process-report-status");
+    const text = this.$("terminal-process-report-text");
+    backdrop.classList.remove("hidden");
+    backdrop.setAttribute("aria-busy", "true");
+    status.classList.add("loading");
+    status.textContent = "Generating report…";
+    text.textContent = "";
     try {
       const response = await fetch("/api/terminals/processes");
       if (response.status === 404) {
@@ -12750,20 +13314,18 @@ class TermdeckApp {
       }
       if (!response.ok) throw new Error(`report request failed: ${response.status}`);
       const report = await response.json();
-      const summary = report.summary || {};
-      const entries = Array.isArray(report.sockets) ? report.sockets : [];
-      const lines = entries.map((entry) => {
-        const name = entry.known_session ? (entry.title || entry.session_id) : `orphan ${entry.session_id}`;
-        const mode = entry.live ? entry.detached ? "detached" : "attached" : "stale";
-        return `• ${name}: ${mode}, ${(entry.processes || []).length} processes`;
-      });
-      const header = `${summary.live_sockets || 0} live socket${summary.live_sockets === 1 ? "" : "s"} · ` +
-        `${summary.processes || 0} processes · ${summary.node_repl_processes || 0} node_repl · ` +
-        `${summary.zombie_processes || 0} zombies · ${summary.orphan_sockets || 0} orphan sockets`;
-      this.$("status-name").textContent = header;
-      window.alert(["TermDeck terminal process report", "", header, "", ...lines].join("\n"));
+      const formatted = this.formatTerminalProcessReport(report);
+      status.classList.remove("loading");
+      status.textContent = `Generated · ${formatted.header}`;
+      text.textContent = formatted.body;
+      backdrop.setAttribute("aria-busy", "false");
+      text.focus({ preventScroll: true });
+      this.$("status-name").textContent = formatted.header;
     } catch (error) {
-      this.$("status-name").textContent = `unable to load terminal process report: ${error.message}`;
+      status.classList.remove("loading");
+      status.textContent = `Unable to generate report: ${error.message}`;
+      backdrop.setAttribute("aria-busy", "false");
+      this.$("status-name").textContent = status.textContent;
     }
   }
 
@@ -12780,8 +13342,10 @@ class TermdeckApp {
         this.$("status-name").textContent = "no orphaned TermDeck terminal sockets";
         return;
       }
-      const confirmed = window.confirm(`Reclaim ${orphans.length} orphaned TermDeck socket${orphans.length === 1 ? "" : "s"}? ` +
-        "This terminates only processes reachable from those unlisted TermDeck sockets.");
+      const details = orphans.map((entry) => this.formatTerminalProcessReportEntry(entry, true)).join("\n");
+      const confirmed = window.confirm([`Reclaim ${orphans.length} orphaned TermDeck socket${orphans.length === 1 ? "" : "s"}?`,
+        "These are the processes that will be terminated:", "", details, "",
+        "This terminates only processes reachable from those unlisted TermDeck sockets."].join("\n"));
       if (!confirmed) return;
       const cleanup = await fetch("/api/terminals/reclaim-orphans", { method: "POST" });
       if (!cleanup.ok) throw new Error(`cleanup request failed: ${cleanup.status}`);
@@ -12974,7 +13538,7 @@ class TermdeckApp {
     else if (actionId === "open-file-search") this.openFilesSidePanelView("search");
     else if (actionId === "open-files-new-tab") this.openFileDeckViewInNewTab(this.treeRoot || this.projectRoot(), "tree");
     else if (actionId === "open-search-new-tab") this.openFileDeckViewInNewTab(this.treeRoot || this.projectRoot(), "search", "", this.$("search-query").value.trim());
-    else if (actionId === "open-terminal-search") this.openFilesSidePanelView("terminal-search");
+    else if (actionId === "open-terminal-search") this.openTerminalSearchEditor();
     else if (actionId === "view-terminals") this.setSideView("terminals");
     else if (actionId === "switch-project") this.openProjectSwitcher();
     else if (actionId === "toggle-notebook") this.toggleNotebook();
@@ -13333,46 +13897,83 @@ class TermdeckApp {
     for (const id of ["search-history-btn", "name-search-history-btn"]) this.$(id)?.setAttribute("aria-expanded", "false");
   }
 
-  fileTypeFilterTokens() {
-    return String(this.$("search-glob")?.value || "").split(",").map((token) => token.trim()).filter(Boolean);
+  splitFileGlobTokens(raw) {
+    return String(raw || "").split(",").map((token) => token.trim()).filter(Boolean);
   }
 
-  rememberCustomFileTypePatterns(tokens) {
-    const knownPatterns = new Set(FILE_TYPE_FILTER_GROUPS.flatMap((group) => group.patterns));
-    for (const token of tokens) {
-      const pattern = String(token).replace(/^!/, "").trim();
-      if (pattern && !knownPatterns.has(pattern)) this.fileTypeCustomPatterns.add(pattern);
-    }
-    localStorage.setItem(FILE_TYPE_FILTER_CUSTOM_KEY, JSON.stringify([...this.fileTypeCustomPatterns]));
+  fileIncludeGlob(mode) {
+    return String(this.settings[mode === "tree" ? "tree_file_glob" : "search_file_glob"] || "").trim();
+  }
+
+  fileExcludeGlob() {
+    return String(this.settings.excluded_file_glob || "").trim();
+  }
+
+  fileGlobForMode(mode) {
+    return [...this.splitFileGlobTokens(this.fileIncludeGlob(mode)), ...this.fileTypeFilterTokens()].join(", ");
+  }
+
+  fileGlobForNameSearch() {
+    return this.fileTypeFilterTokens().join(", ");
+  }
+
+  syncLegacySearchGlob() {
+    this.settings.search_glob = this.fileGlobForMode("search");
+    const hidden = this.$("search-glob");
+    if (hidden) hidden.value = this.settings.search_glob;
+  }
+
+  syncFileGlobInputs() {
+    const treeInput = this.$("tree-file-glob");
+    const searchInput = this.$("search-file-glob");
+    if (treeInput) treeInput.value = this.fileIncludeGlob("tree");
+    if (searchInput) searchInput.value = this.fileIncludeGlob("search");
+    this.syncLegacySearchGlob();
+  }
+
+  setFileGlobForMode(mode, raw) {
+    const tokens = this.splitFileGlobTokens(raw);
+    this.settings[mode === "tree" ? "tree_file_glob" : "search_file_glob"] = tokens.filter((token) => !token.startsWith("!")).join(", ");
+    const excluded = tokens.filter((token) => token.startsWith("!"));
+    if (excluded.length) this.settings.excluded_file_glob = [...new Set([...this.fileTypeFilterTokens(), ...excluded])].join(", ");
+    this.syncFileGlobInputs();
+    this.saveSettings();
+  }
+
+  fileTypeFilterTokens() {
+    return this.splitFileGlobTokens(this.settings.excluded_file_glob || this.settings.search_glob || "").filter((token) => token.startsWith("!"));
   }
 
   updateFileTypeFilterTokens(tokens) {
-    const normalized = [...new Set(tokens.map((token) => String(token).trim()).filter(Boolean))];
-    this.$("search-glob").value = normalized.join(", ");
-    this.settings.search_glob = this.$("search-glob").value;
-    this.rememberCustomFileTypePatterns(normalized);
+    const normalized = [...new Set(tokens.map((token) => {
+      const value = String(token).trim();
+      return value ? (value.startsWith("!") ? value : `!${value}`) : "";
+    }).filter(Boolean))];
+    this.settings.hide_dot_folders = normalized.includes("!.*");
+    this.settings.excluded_file_glob = normalized.join(", ");
+    this.updateHideDotButton();
+    this.syncFileGlobInputs();
     this.saveSettings();
     this.renderFileTypeFilterMenu();
     if (this.sideView === "search" && this.$("search-query").value.trim()) this.debouncedSearch();
-    if (this.sideView === "project" && this.$("search-name").value.trim()) this.debouncedNameSearch();
+    else if (this.sideView === "project" && this.$("search-name").value.trim()) this.debouncedNameSearch();
+    else this.rerenderTree();
   }
 
   closeFileTypeFilterMenu() {
-    this.rememberCustomFileTypePatterns(this.fileTypeFilterTokens());
     this.$("file-type-filter-menu")?.classList.add("hidden");
-    this.$("file-type-filter-button")?.setAttribute("aria-expanded", "false");
+    for (const id of ["file-type-filter-button", "search-file-type-filter-button"]) this.$(id)?.setAttribute("aria-expanded", "false");
   }
 
   toggleFileTypeFilterMenu(button) {
     const menu = this.$("file-type-filter-menu");
-    const opening = menu.classList.contains("hidden");
-    if (!opening) {
+    if (!menu.classList.contains("hidden")) {
       this.closeFileTypeFilterMenu();
       return;
     }
     this.closeSearchHistory();
     menu.classList.remove("hidden");
-    button.setAttribute("aria-expanded", "true");
+    for (const id of ["file-type-filter-button", "search-file-type-filter-button"]) this.$(id)?.setAttribute("aria-expanded", String(id === button.id));
     this.renderFileTypeFilterMenu();
     const rect = button.getBoundingClientRect();
     const width = Math.min(360, window.innerWidth - 20);
@@ -13391,100 +13992,73 @@ class TermdeckApp {
     head.className = "file-type-filter-head";
     const title = document.createElement("span");
     title.className = "file-type-filter-title";
-    title.textContent = "File types";
+    title.textContent = "Exclude file types";
     head.appendChild(title);
-    for (const mode of ["include", "exclude"]) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `file-type-filter-mode${this.fileTypeFilterMode === mode ? " on" : ""}`;
-      button.textContent = mode === "include" ? "Include" : "Exclude";
-      button.onclick = () => { this.fileTypeFilterMode = mode; this.renderFileTypeFilterMenu(); };
-      head.appendChild(button);
-    }
     menu.appendChild(head);
-    const manual = document.createElement("div");
-    manual.className = "file-type-filter-manual";
-    const manualInput = document.createElement("input");
-    manualInput.id = "file-type-filter-manual-input";
-    manualInput.type = "text";
-    manualInput.value = this.$("search-glob").value;
-    manualInput.placeholder = "Patterns: *.py, !*.log";
-    manualInput.title = "Comma-separated include and exclude patterns";
-    manualInput.autocomplete = "off";
-    manualInput.spellcheck = false;
-    manualInput.addEventListener("input", () => {
-      this.$("search-glob").value = manualInput.value;
-      this.settings.search_glob = manualInput.value;
-      this.saveSettings();
-      if (this.sideView === "search" && this.$("search-query").value.trim()) this.debouncedSearch();
-      if (this.sideView === "project" && this.$("search-name").value.trim()) this.debouncedNameSearch();
-    });
-    manualInput.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      this.rememberCustomFileTypePatterns(this.fileTypeFilterTokens());
-      this.renderFileTypeFilterMenu();
-      const nextInput = this.$("file-type-filter-manual-input");
-      nextInput?.focus();
-      nextInput?.setSelectionRange(nextInput.value.length, nextInput.value.length);
-    });
-    manual.appendChild(manualInput);
-    menu.appendChild(manual);
     const list = document.createElement("div");
-    list.className = "file-type-filter-list";
+    list.className = "file-type-filter-chip-list";
     const tokens = this.fileTypeFilterTokens();
-    const tokenSet = new Set(tokens);
-    const knownPatterns = new Set(FILE_TYPE_FILTER_GROUPS.flatMap((group) => group.patterns));
-    for (const group of FILE_TYPE_FILTER_GROUPS) {
-      const desired = group.patterns.map((pattern) => this.fileTypeFilterMode === "exclude" ? `!${pattern}` : pattern);
-      const opposite = group.patterns.map((pattern) => this.fileTypeFilterMode === "exclude" ? pattern : `!${pattern}`);
-      const checked = desired.every((pattern) => tokenSet.has(pattern));
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = `file-type-filter-row${checked ? " on" : ""}`;
-      const check = document.createElement("span");
-      check.className = `codicon ${checked ? "codicon-check" : "codicon-circle-large-outline"} file-type-filter-check`;
-      const label = document.createElement("span");
-      label.textContent = group.label;
-      const pattern = document.createElement("span");
-      pattern.className = "file-type-filter-pattern";
-      pattern.textContent = group.patterns.map((item) => item.replace(/^\*/, "")).join(" ");
-      row.append(check, label, pattern);
-      row.onclick = () => {
-        const next = tokens.filter((token) => !desired.includes(token) && !opposite.includes(token));
-        if (!checked) next.push(...desired);
-        this.updateFileTypeFilterTokens(next);
+    for (const [index, token] of tokens.entries()) {
+      const chip = document.createElement("span");
+      chip.className = "file-type-filter-chip";
+      chip.textContent = token.replace(/^!/, "");
+      chip.title = token === "!.*" ? "Hidden files are excluded; remove this chip to include them" : token;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.title = token === "!.*" ? "Include hidden files" : "Remove exclusion";
+      remove.setAttribute("aria-label", token === "!.*" ? "Include hidden files" : `Remove ${token}`);
+      remove.innerHTML = '<span class="codicon codicon-close"></span>';
+      remove.onclick = () => this.updateFileTypeFilterTokens(tokens.filter((candidate) => candidate !== token));
+      remove.onkeydown = (event) => {
+        const buttons = [...list.querySelectorAll(".file-type-filter-chip button")];
+        if (event.key === "ArrowLeft" && index > 0) {
+          event.preventDefault();
+          buttons[index - 1]?.focus();
+        } else if (event.key === "ArrowRight") {
+          event.preventDefault();
+          (buttons[index + 1] || input)?.focus();
+        } else if (event.key === "Backspace" || event.key === "Delete") {
+          event.preventDefault();
+          this.updateFileTypeFilterTokens(tokens.filter((_, candidateIndex) => candidateIndex !== index));
+        }
       };
-      list.appendChild(row);
+      chip.appendChild(remove);
+      list.appendChild(chip);
     }
-    const customPatterns = new Set([...this.fileTypeCustomPatterns,
-      ...tokens.map((token) => token.replace(/^!/, "")).filter((pattern) => !knownPatterns.has(pattern))]);
-    if (customPatterns.size) {
-      const section = document.createElement("div");
-      section.className = "file-type-filter-section";
-      section.textContent = "Custom patterns";
-      list.appendChild(section);
-      for (const pattern of [...customPatterns].sort()) {
-        const desired = this.fileTypeFilterMode === "exclude" ? `!${pattern}` : pattern;
-        const opposite = this.fileTypeFilterMode === "exclude" ? pattern : `!${pattern}`;
-        const checked = tokenSet.has(desired);
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = `file-type-filter-row${checked ? " on" : ""}`;
-        const check = document.createElement("span");
-        check.className = `codicon ${checked ? "codicon-check" : "codicon-circle-large-outline"} file-type-filter-check`;
-        const label = document.createElement("span");
-        label.textContent = pattern;
-        row.append(check, label);
-        row.onclick = () => {
-          const next = tokens.filter((candidate) => candidate !== desired && candidate !== opposite);
-          if (!checked) next.push(desired);
-          this.updateFileTypeFilterTokens(next);
-        };
-        list.appendChild(row);
-      }
+    if (!tokens.length) {
+      const empty = document.createElement("div");
+      empty.className = "file-type-filter-empty";
+      empty.textContent = "No excluded file patterns";
+      list.appendChild(empty);
     }
     menu.appendChild(list);
+    const manual = document.createElement("div");
+    manual.className = "file-type-filter-manual";
+    const input = document.createElement("input");
+    input.id = "file-type-filter-manual-input";
+    input.type = "text";
+    input.placeholder = "add exclusion: *.log or .*";
+    input.title = "Press Enter to add an excluded file pattern";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const value = input.value.trim();
+        if (!value) return;
+        this.updateFileTypeFilterTokens([...tokens, value]);
+        this.$("file-type-filter-manual-input")?.focus();
+      } else if (event.key === "Backspace" && !input.value && tokens.length) {
+        event.preventDefault();
+        this.updateFileTypeFilterTokens(tokens.slice(0, -1));
+        this.$("file-type-filter-manual-input")?.focus();
+      } else if (event.key === "ArrowLeft" && input.selectionStart === 0 && tokens.length) {
+        event.preventDefault();
+        list.querySelector(".file-type-filter-chip button:last-child")?.focus();
+      }
+    });
+    manual.appendChild(input);
+    menu.appendChild(manual);
   }
 
   deleteSearchHistoryEntry(entry) {
@@ -13498,6 +14072,7 @@ class TermdeckApp {
     if (entry.mode === "name") {
       this.nameSearchCase = !!entry.case_sensitive;
       this.$("name-case-toggle").classList.toggle("on", this.nameSearchCase);
+      this.setFileGlobForMode("tree", entry.glob || "");
       this.$("search-name").value = entry.q;
       if (this.sideView !== "project") this.setSideView("project");
       void this.runNameSearch(true);
@@ -13509,7 +14084,7 @@ class TermdeckApp {
     this.$("search-word-toggle").classList.toggle("on", this.searchWord);
     this.$("search-case-toggle").classList.toggle("on", this.searchCase);
     this.$("search-regex-toggle").classList.toggle("on", this.searchRegex);
-    this.$("search-glob").value = entry.glob || "";
+    this.setFileGlobForMode("search", entry.glob || "");
     if (this.sideView !== "search") this.setSideView("search");
     void this.runSearch(entry.q, true);
   }
@@ -13597,10 +14172,10 @@ class TermdeckApp {
   }
 
   async findEditorSymbolDefinition(entry, word) {
-    const glob = this.$("search-glob")?.value.trim() || "";
+    const glob = this.fileGlobForMode("search");
     const ignore = this.searchIgnoreTokens();
     const params = new URLSearchParams({ root: entry.root, q: this.editorSymbolDefinitionPattern(word, entry.path),
-      glob, ignore, word: "false", case_sensitive: "true", regex: "true" });
+      glob, ignore, include_hidden: String(this.includeHiddenFilesInSearch()), word: "false", case_sensitive: "true", regex: "true" });
     try {
       const response = await fetch(`/api/files/search?${params}`);
       if (!response.ok) return null;
@@ -13639,12 +14214,80 @@ class TermdeckApp {
     this.searchCase = prev.case_sensitive;
     this.$("search-word-toggle").classList.toggle("on", this.searchWord);
     this.$("search-case-toggle").classList.toggle("on", this.searchCase);
-    this.$("search-glob").value = prev.glob;
+    this.setFileGlobForMode("search", prev.glob || "");
     if (this.sideView !== "search") {
       this.sideView = "terminals";
       this.setSideView("search");
     }
     this.runSearch(prev.q, true);
+  }
+
+  searchHighlightRanges(text, query, options = {}) {
+    const source = String(text || "");
+    const needle = String(query || "");
+    if (!source || !needle) return [];
+    const caseSensitive = Boolean(options.caseSensitive);
+    const regexMode = Boolean(options.regex);
+    const fuzzy = Boolean(options.fuzzy);
+    const wholeWord = Boolean(options.wholeWord);
+    const flags = caseSensitive ? "g" : "gi";
+    if (regexMode || wholeWord) {
+      const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = regexMode ? needle : (/\s/.test(needle) ? escaped : `\\b${escaped}\\b`);
+      let matcher;
+      try {
+        matcher = new RegExp(pattern, flags);
+      } catch (error) {
+        return [];
+      }
+      const ranges = [];
+      let match;
+      while ((match = matcher.exec(source))) {
+        if (match[0].length) ranges.push([match.index, match.index + match[0].length]);
+        else matcher.lastIndex += 1;
+      }
+      return ranges;
+    }
+    if (fuzzy) {
+      const sourceValue = caseSensitive ? source : source.toLocaleLowerCase();
+      const queryValue = caseSensitive ? needle : needle.toLocaleLowerCase();
+      const ranges = [];
+      let cursor = 0;
+      for (const character of queryValue) {
+        const index = sourceValue.indexOf(character, cursor);
+        if (index < 0) return [];
+        ranges.push([index, index + character.length]);
+        cursor = index + character.length;
+      }
+      return ranges;
+    }
+    const sourceValue = caseSensitive ? source : source.toLocaleLowerCase();
+    const queryValue = caseSensitive ? needle : needle.toLocaleLowerCase();
+    const ranges = [];
+    let cursor = 0;
+    while (true) {
+      const index = sourceValue.indexOf(queryValue, cursor);
+      if (index < 0) break;
+      ranges.push([index, index + queryValue.length]);
+      cursor = index + queryValue.length;
+    }
+    return ranges;
+  }
+
+  appendSearchHighlightedText(element, text, query, options = {}) {
+    const value = String(text || "");
+    element.textContent = "";
+    const ranges = this.searchHighlightRanges(value, query, options);
+    let cursor = 0;
+    for (const [start, end] of ranges) {
+      if (start > cursor) element.appendChild(document.createTextNode(value.slice(cursor, start)));
+      const mark = document.createElement("mark");
+      mark.className = "search-match-highlight";
+      mark.textContent = value.slice(start, end);
+      element.appendChild(mark);
+      cursor = end;
+    }
+    if (cursor < value.length) element.appendChild(document.createTextNode(value.slice(cursor)));
   }
 
   buildContentSearchHierarchy(files) {
@@ -13665,73 +14308,61 @@ class TermdeckApp {
     return { root, directories };
   }
 
-  compactSearchDirectoryChain(directory) {
+  collapseSearchDirectoryChain(directory, includeMatchedDirectory = false) {
     const chain = [directory];
-    let terminal = directory;
-    while (!terminal.files.length && terminal.directories.size === 1) {
-      terminal = [...terminal.directories.values()][0];
-      chain.push(terminal);
+    let current = directory;
+    while (!current.files.length && current.directories.size === 1 && (!includeMatchedDirectory || !current.hit)) {
+      current = [...current.directories.values()][0];
+      chain.push(current);
     }
-    return { chain, terminal };
+    return { chain, directory: current };
   }
 
-  appendCompactSearchPath(row, path, isDirectory) {
-    const parts = String(path || "").split("/").filter(Boolean);
-    const visibleParts = isDirectory ? parts : parts.slice(0, -1);
-    for (const [index, part] of visibleParts.entries()) {
-      row.appendChild(this.createCompactSearchPathPart(part));
-      if (index < visibleParts.length - 1 || !isDirectory) {
+  appendSearchDirectoryChainName(element, chain, query, options = {}) {
+    element.textContent = "";
+    chain.forEach((part, index) => {
+      if (index) {
         const separator = document.createElement("span");
         separator.className = "search-tree-path-separator";
-        separator.textContent = "›";
-        row.appendChild(separator);
+        separator.textContent = ">";
+        element.appendChild(separator);
       }
-    }
-    if (!isDirectory) {
-      const file = document.createElement("span");
-      file.className = "search-file-name";
-      file.textContent = parts[parts.length - 1] || "";
-      row.appendChild(file);
-    }
+      const segment = document.createElement("span");
+      segment.className = "search-tree-path-segment";
+      if (options.highlight) this.appendSearchHighlightedText(segment, part.name, query, options);
+      else segment.textContent = part.name;
+      element.appendChild(segment);
+    });
   }
 
-  createCompactSearchPathPart(part, includeTreeName = false) {
-    const folder = document.createElement("span");
-    folder.className = includeTreeName ? "tree-name search-tree-path-part" : "search-tree-path-part";
-    folder.textContent = part;
-    folder.title = part;
-    const width = `${Math.min(Array.from(String(part)).length, 4)}ch`;
-    folder.style.width = width;
-    folder.style.flexBasis = width;
-    return folder;
-  }
-
-  renderContentSearchHierarchy(node, container, root) {
+  renderContentSearchHierarchy(node, container, root, query) {
     const directories = [...node.directories.values()].sort((a, b) => String(a.name).localeCompare(String(b.name), undefined,
       { numeric: true, sensitivity: "base" }));
     for (const directory of directories) {
+      const collapsed = this.collapseSearchDirectoryChain(directory);
+      const displayDirectory = collapsed.directory;
       const row = document.createElement("div");
-      row.className = "tree-row dir search-tree-row search-tree-directory open";
+      row.className = `tree-row dir search-tree-row search-tree-directory search-tree-context-directory open${collapsed.chain.length > 1 ? " search-tree-collapsed-directory" : ""}`;
       row.tabIndex = 0;
-      row.title = `${root}/${directory.path}`;
+      row.title = `${root}/${displayDirectory.path}`;
       const chevron = document.createElement("span");
       chevron.className = "codicon codicon-chevron-right tree-chevron";
       const icon = document.createElement("img");
       icon.className = "tree-type-icon tree-folder-icon";
-      icon.src = MATERIAL_ICONS_BASE + "folder-open.svg";
+      icon.src = FOLDER_ICON_OPEN;
       const name = document.createElement("span");
       name.className = "tree-name search-tree-directory-name";
-      name.textContent = directory.name;
+      this.appendSearchDirectoryChainName(name, collapsed.chain, query);
       row.append(chevron, icon, name);
       const children = document.createElement("div");
       children.className = "tree-children-wrap search-tree-children";
       row.onclick = () => {
         const open = row.classList.toggle("open");
         children.classList.toggle("hidden", !open);
-        icon.src = MATERIAL_ICONS_BASE + (open ? "folder-open.svg" : "folder.svg");
+        icon.src = open ? FOLDER_ICON_OPEN : FOLDER_ICON_CLOSED;
       };
       container.append(row, children);
-      this.renderContentSearchHierarchy(directory, children, root);
+      this.renderContentSearchHierarchy(displayDirectory, children, root, query);
     }
     const files = [...node.files].sort((a, b) => this.compareSearchFiles(a, b));
     for (const file of files) {
@@ -13743,7 +14374,7 @@ class TermdeckApp {
       spacer.className = "tree-file-spacer";
       const fileName = document.createElement("span");
       fileName.className = "search-file-name tree-name";
-      fileName.textContent = String(file.path).split("/").pop();
+      this.appendSearchHighlightedText(fileName, String(file.path).split("/").pop(), query, { caseSensitive: this.searchCase });
       fileRow.append(spacer, this.fileTypeIconEl(fileName.textContent, "tree-type-icon"), fileName);
       fileRow.onclick = () => this.openFile(root, file.path, file.hits[0]?.line || null, null, { fromFilePanel: true, preview: true });
       fileRow.ondblclick = () => this.openFile(root, file.path, file.hits[0]?.line || null, null, { fromFilePanel: true, pinned: true });
@@ -13764,7 +14395,9 @@ class TermdeckApp {
         line.textContent = hit.line;
         const text = document.createElement("span");
         text.className = "hit-text";
-        text.textContent = hit.text;
+        this.appendSearchHighlightedText(text, hit.text, query, {
+          caseSensitive: this.searchCase, regex: this.searchRegex, wholeWord: this.searchWord,
+        });
         hitRow.append(line, text);
         hitRow.title = `${hit.path}:${hit.line}`;
         hitRow.onclick = (event) => {
@@ -13797,7 +14430,7 @@ class TermdeckApp {
     }
     this.setExplorerMode("content");
     if (!skipRecord) {
-      const state = { mode: "content", q: query, glob: this.$("search-glob").value.trim(),
+      const state = { mode: "content", q: query, glob: this.fileGlobForMode("search"),
                       word: this.searchWord, case_sensitive: this.searchCase, regex: this.searchRegex };
       this.recordSearch(state);
       // Search selection is also a fixed sidebar view, so keep it in the
@@ -13808,30 +14441,11 @@ class TermdeckApp {
     summary.className = "search-summary";
     summary.textContent = "searching…";
     resultsEl.appendChild(summary);
-    const scope = this.$("search-scope")?.value || "project";
-    let root = this.searchRoot();
-    let allowedPaths = null;
-    if (scope === "folder") {
-      const selectedPath = this.selectedTreeRow?.dataset?.rel || "";
-      const selectedDirectory = this.selectedTreeRow?.dataset?.kind === "dir"
-        ? selectedPath : selectedPath.includes("/") ? selectedPath.slice(0, selectedPath.lastIndexOf("/")) : "";
-      const activeEntry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-      const activeDirectory = activeEntry?.path?.includes("/") ? activeEntry.path.slice(0, activeEntry.path.lastIndexOf("/")) : "";
-      const relativeDirectory = selectedDirectory || activeDirectory;
-      if (relativeDirectory) root = `${root.replace(/\/$/, "")}/${relativeDirectory}`;
-    } else if (scope === "open") {
-      allowedPaths = new Set([...this.openFiles.values()].flatMap((entry) => {
-        const fullPath = `${entry.root.replace(/\/$/, "")}/${entry.path}`;
-        const prefix = `${root.replace(/\/$/, "")}/`;
-        return fullPath.startsWith(prefix) ? [fullPath.slice(prefix.length)] : [];
-      }));
-    } else if (scope === "changed") {
-      const statusResponse = await fetch(`/api/files/git-status?root=${encodeURIComponent(root)}`);
-      allowedPaths = new Set(statusResponse.ok ? Object.keys(await statusResponse.json()) : []);
-    }
-    const globParts = this.$("search-glob").value.split(",").map((g) => g.trim()).filter(Boolean);
+    const root = this.searchRoot();
+    const globParts = this.splitFileGlobTokens(this.fileGlobForMode("search"));
     const ignore = this.searchIgnoreTokens();
     const params = new URLSearchParams({ root, q: query, glob: globParts.join(","), ignore,
+                                         include_hidden: String(this.includeHiddenFilesInSearch()),
                                          word: this.searchWord ? "true" : "false",
                                          case_sensitive: this.searchCase ? "true" : "false",
                                          regex: this.searchRegex ? "true" : "false" });
@@ -13841,8 +14455,7 @@ class TermdeckApp {
       summary.textContent = "search failed";
       return;
     }
-    const allHits = await res.json();
-    const hits = allowedPaths ? allHits.filter((hit) => allowedPaths.has(hit.path)) : allHits;
+    const hits = await res.json();
     resultsEl.textContent = "";
     const byFile = new Map();
     for (const hit of hits) {
@@ -13854,12 +14467,11 @@ class TermdeckApp {
     this.lastSearchFiles = files;
     const hierarchy = this.buildContentSearchHierarchy(files);
     this.contentSearchTree = { root, paths: new Set(files.map((file) => file.path)), directories: hierarchy.directories };
-    this.renderContentSearchHierarchy(hierarchy.root, resultsEl, root);
+    this.renderContentSearchHierarchy(hierarchy.root, resultsEl, root, query);
     const done = document.createElement("div");
     done.className = "search-summary";
     const flags = [this.searchWord ? "whole word" : "", this.searchCase ? "case sensitive" : ""].filter(Boolean).join(", ");
-    const scopeLabel = { project: "project", folder: "folder", open: "open files", changed: "Git changes" }[scope];
-    done.textContent = `${hits.length} match${hits.length === 1 ? "" : "es"} in ${files.length} file${files.length === 1 ? "" : "s"} · ${scopeLabel}${flags ? ` · ${flags}` : ""}`;
+    done.textContent = `${hits.length} match${hits.length === 1 ? "" : "es"} in ${files.length} file${files.length === 1 ? "" : "s"}${flags ? ` · ${flags}` : ""}`;
     resultsEl.prepend(done);
   }
 
@@ -13873,6 +14485,20 @@ class TermdeckApp {
     }
     return String(a.path || "").localeCompare(String(b.path || ""), undefined,
       { numeric: true, sensitivity: "base" });
+  }
+
+  compareNameSearchFiles(a, b, query) {
+    return this.nameSearchMatchRank(a, query) - this.nameSearchMatchRank(b, query) || this.compareSearchFiles(a, b);
+  }
+
+  nameSearchMatchRank(entry, query) {
+    const basename = String(entry.path || "").split("/").pop() || "";
+    const normalizedName = this.nameSearchCase ? basename : basename.toLowerCase();
+    const normalizedQuery = this.nameSearchCase ? query : query.toLowerCase();
+    if (normalizedName === normalizedQuery) return 0;
+    if (!entry.is_dir && normalizedName.replace(/\.[^.]+$/, "") === normalizedQuery) return 1;
+    if (normalizedName.startsWith(normalizedQuery)) return 2;
+    return this.searchHighlightRanges(basename, query, { caseSensitive: this.nameSearchCase, fuzzy: true }).length ? 4 : 5;
   }
 
   debouncedSearch() {
@@ -13893,7 +14519,7 @@ class TermdeckApp {
 
   fileSearchResultRows(mode) {
     const container = this.$(mode === "name" ? "name-results" : "search-results");
-    const selector = mode === "name" ? ".search-file.clickable" : ".search-hit";
+    const selector = mode === "name" ? ".search-file.clickable, .search-tree-directory.clickable" : ".search-hit";
     return container ? [...container.querySelectorAll(selector)] : [];
   }
 
@@ -14037,8 +14663,9 @@ class TermdeckApp {
     if (!confirm(`Replace matches in ${paths.length} selected file${paths.length === 1 ? "" : "s"}?`)) return;
     const res = await fetch("/api/files/replace", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ root: this.lastSearchRoot || this.searchRoot(), q: query, glob: this.$("search-glob").value.trim(),
+      body: JSON.stringify({ root: this.lastSearchRoot || this.searchRoot(), q: query, glob: this.fileGlobForMode("search"),
                              ignore: this.searchIgnoreTokens(),
+                             include_hidden: this.includeHiddenFilesInSearch(),
                              word: this.searchWord, case_sensitive: this.searchCase, regex: this.searchRegex,
                              replacement, paths }),
     });
@@ -14086,19 +14713,20 @@ class TermdeckApp {
       this.setSideView("project");
     }
     this.setExplorerMode("name");
-    if (!skipRecord) this.recordSearch({ mode: "name", q: query, glob: this.$("search-glob").value.trim(), case_sensitive: this.nameSearchCase });
+    if (!skipRecord) this.recordSearch({ mode: "name", q: query, glob: this.fileGlobForNameSearch(), case_sensitive: this.nameSearchCase });
     const loading = document.createElement("div");
     loading.className = "search-summary";
     loading.textContent = "loading project files…";
     resultsEl.appendChild(loading);
     const root = this.searchRoot();
     const ignore = this.searchIgnoreTokens();
-    const glob = this.$("search-glob").value.trim();
-    const res = await fetch(`/api/files/find?${new URLSearchParams({ root, q: query, glob, ignore, case_sensitive: this.nameSearchCase ? "true" : "false" })}`);
+    const glob = this.fileGlobForNameSearch();
+    const res = await fetch(`/api/files/find?${new URLSearchParams({ root, q: query, glob, ignore,
+      include_hidden: String(this.includeHiddenFilesInSearch()), case_sensitive: this.nameSearchCase ? "true" : "false" })}`);
     if (!res.ok) return;
     const hits = await res.json();
     if (generation !== this.nameSearchGeneration) return;
-    const orderedHits = [...hits].sort((a, b) => this.compareSearchFiles(a, b));
+    const orderedHits = [...hits].sort((a, b) => this.compareNameSearchFiles(a, b, query));
     this.nameSearchTree = {
       root,
       paths: new Set(orderedHits.map((hit) => hit.path)),
@@ -14110,26 +14738,95 @@ class TermdeckApp {
     const folderCount = orderedHits.filter((hit) => hit.is_dir).length;
     summary.textContent = `${orderedHits.length} result${orderedHits.length === 1 ? "" : "s"}${folderCount ? ` · ${folderCount} folder${folderCount === 1 ? "" : "s"}` : ""}`;
     resultsEl.appendChild(summary);
-    for (const hit of orderedHits) {
-      const row = document.createElement("div");
-      row.className = "search-file clickable";
-      row.tabIndex = 0;
-      row.title = `${hit.path}\nMiddle-click opens in a new TermDeck tab`;
-      const icon = hit.is_dir ? document.createElement("span") : this.fileTypeIconEl(hit.path.split("/").pop(), "file-type-icon");
-      if (hit.is_dir) {
-        icon.className = "codicon codicon-folder file-type-icon";
-        icon.setAttribute("aria-hidden", "true");
+    const exactHits = orderedHits.filter((hit) => this.nameSearchMatchRank(hit, query) < 2);
+    const fuzzyHits = orderedHits.filter((hit) => this.nameSearchMatchRank(hit, query) >= 2);
+    for (const [label, sectionHits] of [["Exact matches", exactHits], ["Fuzzy matches", fuzzyHits]]) {
+      if (!sectionHits.length) continue;
+      const section = document.createElement("div");
+      section.className = "search-result-section-label";
+      section.textContent = `${label} · ${sectionHits.length}`;
+      resultsEl.appendChild(section);
+      this.renderNameSearchHierarchy(this.buildNameSearchHierarchy(sectionHits), resultsEl, root, query);
+    }
+  }
+
+  buildNameSearchHierarchy(hits) {
+    const root = { path: "", directories: new Map(), files: [] };
+    for (const hit of hits) {
+      const parts = String(hit.path || "").split("/").filter(Boolean);
+      if (!parts.length) continue;
+      const directoryParts = hit.is_dir ? parts : parts.slice(0, -1);
+      let node = root;
+      let directoryPath = "";
+      for (const part of directoryParts) {
+        directoryPath = directoryPath ? `${directoryPath}/${part}` : part;
+        if (!node.directories.has(part)) node.directories.set(part, { path: directoryPath, name: part, hit: null, directories: new Map(), files: [] });
+        node = node.directories.get(part);
       }
-      row.append(icon);
-      this.appendCompactSearchPath(row, hit.path, hit.is_dir);
-      this.appendMtime(row, hit);
-      this.appendGitStatus(row, hit);
-      row.onclick = () => hit.is_dir ? this.openNameDirectory(root, hit.path) :
-        this.openFile(root, hit.path, null, null, { fromFilePanel: true, preview: true });
-      if (!hit.is_dir) row.onauxclick = (event) => this.handleFileDeckAuxClick(event, root, hit.path);
-      if (!hit.is_dir) row.oncontextmenu = (event) => this.openFileDeckRowContextMenu(event, root, hit.path);
+      if (hit.is_dir) node.hit = hit;
+      else node.files.push(hit);
+    }
+    return root;
+  }
+
+  renderNameSearchHierarchy(node, container, root, query) {
+    const directories = [...node.directories.values()].sort((a, b) => String(a.name).localeCompare(String(b.name), undefined,
+      { numeric: true, sensitivity: "base" }));
+    for (const directory of directories) {
+      const collapsed = this.collapseSearchDirectoryChain(directory, true);
+      const displayDirectory = collapsed.directory;
+      const row = document.createElement("div");
+      const directoryNameMatches = collapsed.chain.some((part) => part.hit || this.searchHighlightRanges(part.name, query, { caseSensitive: this.nameSearchCase, fuzzy: true }).length > 0);
+      row.className = `tree-row dir clickable search-tree-row search-tree-directory ${directoryNameMatches ? "search-tree-matching-directory" : "search-tree-context-directory"} open${collapsed.chain.length > 1 ? " search-tree-collapsed-directory" : ""}`;
+      row.tabIndex = 0;
+      row.title = `${root}/${displayDirectory.path}`;
+      const chevron = document.createElement("span");
+      chevron.className = "codicon codicon-chevron-right tree-chevron";
+      const icon = document.createElement("img");
+      icon.className = "tree-type-icon tree-folder-icon";
+      icon.src = FOLDER_ICON_OPEN;
+      const name = document.createElement("span");
+      name.className = "tree-name search-tree-directory-name";
+      this.appendSearchDirectoryChainName(name, collapsed.chain, query, { caseSensitive: this.nameSearchCase, fuzzy: true, highlight: true });
+      row.append(chevron, icon, name);
+      if (displayDirectory.hit) {
+        this.appendMtime(row, displayDirectory.hit);
+        this.appendGitStatus(row, displayDirectory.hit);
+      }
+      const children = document.createElement("div");
+      children.className = "tree-children-wrap search-tree-children";
+      row.onclick = () => {
+        const open = row.classList.toggle("open");
+        children.classList.toggle("hidden", !open);
+        icon.src = open ? FOLDER_ICON_OPEN : FOLDER_ICON_CLOSED;
+      };
+      row.ondblclick = () => this.openNameDirectory(root, displayDirectory.path);
       row.onmouseenter = () => this.selectFileSearchResult("name", row, { reveal: false });
-      resultsEl.appendChild(row);
+      container.append(row, children);
+      this.renderNameSearchHierarchy(displayDirectory, children, root, query);
+    }
+    const files = [...node.files].sort((a, b) => this.compareSearchFiles(a, b));
+    for (const file of files) {
+      const fileRow = document.createElement("div");
+      fileRow.className = "tree-row file search-file clickable search-tree-row search-tree-file";
+      fileRow.tabIndex = 0;
+      fileRow.title = `${root}/${file.path}\nMiddle-click opens in a new TermDeck tab`;
+      const spacer = document.createElement("span");
+      spacer.className = "tree-file-spacer";
+      const fileName = String(file.path).split("/").pop() || "";
+      fileRow.append(spacer, this.fileTypeIconEl(fileName, "tree-type-icon"));
+      const name = document.createElement("span");
+      name.className = "tree-name search-file-name";
+      this.appendSearchHighlightedText(name, fileName, query, { caseSensitive: this.nameSearchCase, fuzzy: true });
+      fileRow.appendChild(name);
+      this.appendMtime(fileRow, file);
+      this.appendGitStatus(fileRow, file);
+      fileRow.onclick = () => this.openFile(root, file.path, null, null, { fromFilePanel: true, preview: true });
+      fileRow.ondblclick = () => this.openFile(root, file.path, null, null, { fromFilePanel: true, pinned: true });
+      fileRow.onauxclick = (event) => this.handleFileDeckAuxClick(event, root, file.path);
+      fileRow.oncontextmenu = (event) => this.openFileDeckRowContextMenu(event, root, file.path);
+      fileRow.onmouseenter = () => this.selectFileSearchResult("name", fileRow, { reveal: false });
+      container.appendChild(fileRow);
     }
   }
 

@@ -54,7 +54,6 @@ class FileDeckApp {
     this.$("tree-sort-toggle").onclick = () => { this.sortMode = this.sortMode === "name" ? "mtime" : "name"; this.settings.file_tree_sort = this.sortMode; this.updateSortButton(); void this.persistSettings(); void this.loadTree(); };
     this.$("mtime-toggle").onclick = () => { this.settings.show_mtime = !this.settings.show_mtime; this.showMtime = this.settings.show_mtime; this.updateFileBrowserButtons(); void this.persistSettings(); void this.loadTree(); };
     this.$("hide-excluded-toggle").onclick = () => { this.settings.hide_excluded = !this.settings.hide_excluded; this.updateFileBrowserButtons(); void this.persistSettings(); void this.loadTree(); };
-    this.$("hide-dot-toggle").onclick = () => { this.settings.hide_dot_folders = !this.settings.hide_dot_folders; this.updateFileBrowserButtons(); void this.persistSettings(); void this.loadTree(); };
     this.$("search-content-mode").onclick = () => this.setSearchMode("content");
     this.$("search-name-mode").onclick = () => this.setSearchMode("name");
     this.$("search-button").onclick = () => void this.runSearch();
@@ -182,11 +181,6 @@ class FileDeckApp {
     const excluded = this.$("hide-excluded-toggle");
     excluded.classList.toggle("on", !this.settings.hide_excluded);
     excluded.title = this.settings.hide_excluded ? "Show excluded folders" : "Hide excluded folders";
-    const dots = this.$("hide-dot-toggle");
-    dots.classList.toggle("on", !this.settings.hide_dot_folders);
-    dots.title = this.settings.hide_dot_folders ? "Show dot folders" : "Hide dot folders";
-    const icon = dots.querySelector(".codicon");
-    if (icon) icon.className = `codicon ${this.settings.hide_dot_folders ? "codicon-eye-closed" : "codicon-eye"}`;
     this.$("mtime-toggle").classList.toggle("on", this.showMtime);
   }
 
@@ -295,6 +289,7 @@ class FileDeckApp {
       children.remove();
       row.classList.remove("open");
       row.querySelector(".tree-chevron")?.classList.replace("codicon-chevron-down", "codicon-chevron-right");
+      row.querySelector(".tree-folder-icon").src = `${TermDeckFileBrowser.materialIconsBase}folder-project.svg`;
       return;
     }
     const childContainer = document.createElement("div");
@@ -302,6 +297,7 @@ class FileDeckApp {
     row.after(childContainer);
     row.classList.add("open");
     row.querySelector(".tree-chevron")?.classList.replace("codicon-chevron-right", "codicon-chevron-down");
+    row.querySelector(".tree-folder-icon").src = `${TermDeckFileBrowser.materialIconsBase}folder-project-open.svg`;
     await this.renderDirectory(childContainer, path, this.treeGeneration);
   }
 
