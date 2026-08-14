@@ -318,6 +318,8 @@ class TermdeckServer:
         app.mount(TermdeckConfig.STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.STATIC_DIR), name=TermdeckConfig.STATIC_NAME)
         app.mount(TermdeckConfig.FILEDECK_STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.FILEDECK_STATIC_DIR),
                   name=TermdeckConfig.FILEDECK_STATIC_NAME)
+        app.mount(TermdeckConfig.FILEBROWSER_STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.FILEBROWSER_STATIC_DIR),
+                  name=TermdeckConfig.FILEBROWSER_STATIC_NAME)
         app.get("/", response_model=None)(self._index)
         app.get(TermdeckConfig.PROJECT_PAGE_ROUTE, response_model=None)(self._project_page)
         app.get(TermdeckConfig.FILEDECK_PAGE_ROUTE, response_model=None)(self._filedeck_page)

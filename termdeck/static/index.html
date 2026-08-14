@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <link rel="stylesheet" href="/static/vendor/codicons/codicon.css">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/filebrowser/static/file_browser_shared.css">
 </head>
 <body>
 <div id="sidebar">
@@ -87,9 +88,10 @@
     <div id="files-section-resizer" aria-label="Resize file/search panel" role="separator" aria-orientation="vertical"></div>
   </div>
   <div id="sidebar-footer">
-    <button id="view-terminals" title="Terminals"><span class="codicon codicon-terminal"></span></button>
-    <button id="view-project" title="Files"><span class="codicon codicon-files"></span></button>
-    <button id="view-search" title="Search &amp; replace"><span class="codicon codicon-search"></span></button>
+    <button id="view-terminals" title="Terminals · middle-click opens this terminal in a new browser tab" aria-label="Terminals"><span class="codicon codicon-terminal"></span></button>
+    <button id="view-project" title="Files · opens the pinned file panel; middle-click opens the current file in FileDeck" aria-label="Files"><span class="codicon codicon-files"></span></button>
+    <button id="view-search" title="Search &amp; replace · middle-click opens FileDeck search in a new browser tab" aria-label="Search and replace"><span class="codicon codicon-search"></span></button>
+    <button id="view-git" title="Git · open FileDeck Git view" aria-label="Git"><span class="codicon codicon-git-branch"></span></button>
     <button id="terminal-search-toggle" title="Search terminal names and output"><span class="codicon codicon-terminal"></span></button>
     <span class="footer-spacer"></span>
     <button id="keys-btn" title="Keyboard shortcuts"><span class="codicon codicon-keyboard"></span></button>
@@ -349,6 +351,7 @@
 <script src="/static/vendor/addon-serialize.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/monaco/vs/loader.js"></script>
+<script src="/filebrowser/static/file_browser_shared.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

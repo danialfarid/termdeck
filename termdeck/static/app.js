@@ -179,7 +179,7 @@ function parseModeFlag(raw) {
   if (["0", "false", "no", "off"].includes(value)) return false;
   return false;
 }
-const ALWAYS_EXCLUDED = [".git", "node_modules", "__pycache__", ".venv", ".idea", "_"];
+const ALWAYS_EXCLUDED = TermDeckFileBrowser.alwaysExcluded;
 const STATS_POLL_MS = 5000;
 const STAT_HISTORY_MAX = 48;
 const FONT_MIN = 8, FONT_MAX = 32;
@@ -1413,10 +1413,32 @@ class TermdeckApp {
   }
 
   openFileDeckInNewTab(root, relativePath = "") {
+    this.openFileDeckViewInNewTab(root, "tree", relativePath);
+  }
+
+  openFileDeckViewInNewTab(root, view, relativePath = "") {
     const project = this.fileDeckProjectForRoot(root);
     if (!project) return;
-    const query = relativePath ? `?file=${encodeURIComponent(relativePath)}` : "";
+    const params = new URLSearchParams();
+    if (view !== "tree") params.set("view", view);
+    if (relativePath) params.set("file", relativePath);
+    const query = params.toString() ? `?${params}` : "";
     window.open(`/f/${encodeURIComponent(project.name)}${query}`, "_blank", "noopener,noreferrer");
+  }
+
+  openFileDeckView(view) {
+    const project = this.fileDeckProjectForRoot(this.projectRoot() || this.sessions.find((session) => session.session_id === this.activeId)?.cwd);
+    if (!project) return;
+    const params = new URLSearchParams({ view });
+    location.href = `/f/${encodeURIComponent(project.name)}?${params}`;
+  }
+
+  openTerminalInNewTab(session) {
+    const project = this.projects.find((candidate) => candidate.name === session.project) ||
+      this.fileDeckProjectForRoot(session.cwd);
+    if (!project) return;
+    window.open(`/p/${encodeURIComponent(project.name)}?t=${encodeURIComponent(session.session_id)}`,
+      "_blank", "noopener,noreferrer");
   }
 
   handleFileDeckAuxClick(event, root, relativePath = "") {
@@ -1424,6 +1446,22 @@ class TermdeckApp {
     event.preventDefault();
     event.stopPropagation();
     this.openFileDeckInNewTab(root, relativePath);
+  }
+
+  handleNavigationAuxClick(event, view) {
+    if (event.button !== 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (view === "terminals") {
+      const session = this.session(this.activeId);
+      if (session) this.openTerminalInNewTab(session);
+      return;
+    }
+    const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
+    const root = entry?.root || this.treeRoot || this.projectRoot();
+    if (!root) return;
+    if (view === "project" && entry) this.openFileDeckViewInNewTab(root, "tree", entry.path);
+    else this.openFileDeckViewInNewTab(root, view === "project" ? "tree" : view);
   }
 
   compactProjectPath(root) {
@@ -1540,7 +1578,7 @@ class TermdeckApp {
     this.$("settings-gear").onclick = (e) => this.openSettingsPopover(e.currentTarget,
       [{ label: "Sidebar font", key: "sidebar_font_size" }, { label: "Terminal font", key: "terminal_font_size" },
        { label: "UI font", key: "ui_font_size" }, { label: "Code font", key: "code_font_size" },
-       { label: "Bottom bar buttons", key: "bottom_font_size" },
+       { label: "UI icons / spacing", key: "bottom_font_size", type: "scale" },
        { label: "Diff font", key: "diff_font_size" }, { label: "Tree/search font", key: "tree_font_size" },
        { label: "Sidebar text color", key: "sidebar_text_color", type: "color" }]);
     this.$("file-view-close").onclick = () => this.navigateBackFromActiveFile();
@@ -3544,8 +3582,15 @@ class TermdeckApp {
     else if (useTextStatusIndicator) item.append(dot, typeIcon, title, groupIndicator, close);
     else item.append(dot, typeIcon, title, groupIndicator, close);
     item.title = `${item.dataset.baseTitle}\nlast activity ${this.terminalAgeAgoLabel(s)}\n${this.terminalAgeExactTimestamp(s)}`;
-    item.onclick = (event) => this.handleSessionRowSelection(event, s.session_id);
-    item.onauxclick = (event) => this.handleFileDeckAuxClick(event, s.cwd);
+    item.onclick = (event) => {
+      this.handleSessionRowSelection(event, s.session_id);
+    };
+    item.onauxclick = (event) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.openTerminalInNewTab(s);
+    };
     item.oncontextmenu = (event) => this.openSessionContextMenu(event, s);
     this.makeLayoutDraggable(item, `session:${s.session_id}`, "session");
     list.appendChild(item);
@@ -4252,7 +4297,7 @@ class TermdeckApp {
     const state = this.getProjectState();
     const assignedGroupId = state.session_groups?.[session.session_id] || "";
     if (!multiple) {
-      this.addContextItem(menu, "Open project files in new tab", () => this.openFileDeckInNewTab(session.cwd), "new-window");
+      this.addContextItem(menu, "Open terminal in new tab", () => this.openTerminalInNewTab(session), "new-window");
       this.addContextItem(menu, this.shortcutLabel("Fork", "fork-terminal"),
         () => this.forkSession(session), "repo-forked");
       this.addContextItem(menu, this.shortcutLabel("Restart", "restart-terminal"),
@@ -10703,6 +10748,7 @@ class TermdeckApp {
     document.documentElement.style.setProperty("--ui-font-size", s.ui_font_size + "px");
     document.documentElement.style.setProperty("--code-font-size", s.code_font_size + "px");
     document.documentElement.style.setProperty("--bottom-font-size", s.bottom_font_size + "px");
+    document.documentElement.style.setProperty("--ui-scale", String(this.normalizeUiScale((Number(s.bottom_font_size) || SETTINGS_DEFAULTS.bottom_font_size) / SETTINGS_DEFAULTS.bottom_font_size)));
     document.documentElement.style.setProperty("--sidebar-text-color", s.sidebar_text_color);
     this.updateSessionAgeStyles();
     const codeFontSize = Number(s.code_font_size) || SETTINGS_DEFAULTS.code_font_size;
@@ -10818,6 +10864,10 @@ class TermdeckApp {
     }, 400);
   }
 
+  formatSettingValue(item) {
+    return item.type === "scale" ? `${this.settings[item.key]}px` : this.settings[item.key];
+  }
+
   openSettingsPopover(anchor, items) {
     const pop = this.$("settings-popover");
     pop.textContent = "";
@@ -10875,11 +10925,11 @@ class TermdeckApp {
       minus.textContent = "−";
       const value = document.createElement("span");
       value.className = "settings-value";
-      value.textContent = this.settings[item.key];
+      value.textContent = this.formatSettingValue(item);
       const plus = document.createElement("button");
       plus.textContent = "+";
-      minus.onclick = () => { this.bumpSetting(item.key, -1); value.textContent = this.settings[item.key]; };
-      plus.onclick = () => { this.bumpSetting(item.key, 1); value.textContent = this.settings[item.key]; };
+      minus.onclick = () => { this.bumpSetting(item.key, -1); value.textContent = this.formatSettingValue(item); };
+      plus.onclick = () => { this.bumpSetting(item.key, 1); value.textContent = this.formatSettingValue(item); };
       controls.append(minus, value, plus);
       row.append(label, controls);
       pop.appendChild(row);
@@ -10913,8 +10963,6 @@ class TermdeckApp {
       void this.killAllRunningTerminals();
     }));
     this.positionPopover(pop, anchor);
-    const themeList = pop.querySelector(".settings-theme-list");
-    if (themeList) requestAnimationFrame(() => themeList.focus());
   }
 
   buildActionRow(labelText, buttonText, run) {
@@ -10941,13 +10989,25 @@ class TermdeckApp {
     title.textContent = "Theme";
     const hint = document.createElement("span");
     hint.className = "settings-theme-hint";
-    hint.textContent = "↑ ↓ choose · Enter apply";
+    hint.textContent = "click to expand · arrows switch";
     label.append(title, hint);
+    const controls = document.createElement("div");
+    controls.className = "settings-theme-control";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "theme-toggle settings-theme-toggle";
+    toggle.setAttribute("aria-haspopup", "listbox");
+    toggle.setAttribute("aria-expanded", "false");
+    const updateToggle = () => {
+      const theme = this.themeDefinition();
+      toggle.textContent = theme.label;
+      toggle.title = `${theme.label} theme · Click to expand`;
+    };
     const select = document.createElement("select");
     select.className = "settings-theme-list";
-    select.size = Math.min(8, THEME_DEFINITIONS.length);
-    select.title = "Use the arrow keys to preview themes";
     select.setAttribute("aria-label", "Choose a TermDeck theme");
+    select.setAttribute("size", String(Math.min(8, THEME_DEFINITIONS.length)));
+    select.setAttribute("role", "listbox");
     for (const theme of THEME_DEFINITIONS) {
       const option = document.createElement("option");
       option.value = theme.id;
@@ -10957,12 +11017,47 @@ class TermdeckApp {
     select.value = this.themeDefinition().id;
     const applySelection = () => {
       this.settings.theme = THEME_BY_ID[select.value] ? select.value : SETTINGS_DEFAULTS.theme;
+      select.value = this.settings.theme;
       this.applySettings();
       this.saveSettings();
+      updateToggle();
+    };
+    const moveSelection = (delta) => {
+      const currentIndex = THEME_DEFINITIONS.findIndex((theme) => theme.id === this.settings.theme);
+      const nextIndex = (Math.max(0, currentIndex) + delta + THEME_DEFINITIONS.length) % THEME_DEFINITIONS.length;
+      select.value = THEME_DEFINITIONS[nextIndex].id;
+      applySelection();
+    };
+    const setExpanded = (expanded) => {
+      row.classList.toggle("expanded", expanded);
+      select.classList.toggle("hidden", !expanded);
+      toggle.setAttribute("aria-expanded", String(expanded));
+      toggle.title = expanded ? "Collapse theme list" : `${this.themeDefinition().label} theme · Click to expand`;
+      if (expanded) select.focus();
+      else toggle.focus();
+    };
+    toggle.onclick = () => setExpanded(!row.classList.contains("expanded"));
+    toggle.onkeydown = (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+        event.preventDefault();
+        moveSelection(1);
+      } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+        event.preventDefault();
+        moveSelection(-1);
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        setExpanded(!row.classList.contains("expanded"));
+      } else if (event.key === "Escape" && row.classList.contains("expanded")) {
+        event.preventDefault();
+        setExpanded(false);
+      }
     };
     select.oninput = applySelection;
     select.onchange = applySelection;
-    row.append(label, select);
+    updateToggle();
+    select.classList.add("hidden");
+    controls.append(toggle, select);
+    row.append(label, controls);
     return row;
   }
 
@@ -10983,6 +11078,10 @@ class TermdeckApp {
     };
     row.append(label, button);
     return row;
+  }
+
+  normalizeUiScale(value) {
+    return Math.max(0.8, Math.min(1.4, Math.round((Number(value) || 1) * 20) / 20));
   }
 
   bumpSetting(key, delta) {
@@ -11126,41 +11225,18 @@ class TermdeckApp {
       if (hiddenDotFolder || (excluded && this.settings.hide_excluded)) continue;
       const childRel = relPath ? `${relPath}/${entry.name}` : entry.name;
       if (!this.treeFilterAllows(childRel, entry.is_dir)) continue;
-      const row = document.createElement("div");
-      row.className = "tree-row " + (entry.is_dir ? "dir" : "file") + (excluded ? " excluded" : "");
-      row.tabIndex = 0;
-      row.title = `${this.treeRoot}/${childRel}`;
+      const row = TermDeckFileBrowser.createTreeEntryRow({ root: this.treeRoot, relativePath: relPath, entry, excluded,
+        showMtime: this.settings.show_mtime, showGitStatus: this.settings.show_git_status !== false,
+        fileIcon: (name) => this.fileTypeIconEl(name, "tree-type-icon"),
+        onDirectory: (directoryRow, path) => void this.toggleDir(directoryRow, path),
+        onFile: (event, fileRow, path) => void this.openFile(this.treeRoot, path, null, fileRow, { preview: true, fromFilePanel: true }),
+        onDoubleClick: (fileRow, path) => void this.openFile(this.treeRoot, path, null, fileRow, { pinned: true, fromFilePanel: true }),
+        onAuxClick: (event, fileRow, path) => this.handleFileDeckAuxClick(event, this.treeRoot, path),
+        onContextMenu: (event, fileRow) => this.openTreeContextMenu(event, fileRow),
+      });
       row.dataset.metadata = this.treeRowMetadataKey(entry);
-      const name = document.createElement("span");
-      name.className = "tree-name";
-      name.textContent = entry.name;
-      if (entry.is_dir) {
-        const chevron = document.createElement("span");
-        chevron.className = "codicon codicon-chevron-right tree-chevron";
-        const icon = document.createElement("img");
-        icon.className = "tree-type-icon tree-folder-icon";
-        icon.src = MATERIAL_ICONS_BASE + "folder.svg";
-        row.append(chevron, icon, name);
-        row.dataset.rel = childRel;
-        row.dataset.kind = "dir";
-        row.onclick = () => this.toggleDir(row, childRel);
-        this.appendMtime(row, entry);
-        this.appendGitStatus(row, entry);
-        container.appendChild(row);
-        if (this.expandedDirs.has(childRel)) await this.expandDirRow(row, childRel);
-      } else {
-        const spacer = document.createElement("span");
-        spacer.className = "tree-file-spacer";
-        row.append(spacer, this.fileTypeIconEl(entry.name, "tree-type-icon"), name);
-        row.dataset.rel = childRel;
-        row.dataset.kind = "file";
-        row.onclick = () => this.openFile(this.treeRoot, childRel, null, row, { preview: true, fromFilePanel: true });
-        row.ondblclick = () => this.openFile(this.treeRoot, childRel, null, row, { pinned: true, fromFilePanel: true });
-        row.onauxclick = (event) => this.handleFileDeckAuxClick(event, this.treeRoot, childRel);
-        this.appendMtime(row, entry);
-        this.appendGitStatus(row, entry);
-        container.appendChild(row);
-      }
+      container.appendChild(row);
+      if (entry.is_dir && this.expandedDirs.has(childRel)) await this.expandDirRow(row, childRel);
     }
   }
 
@@ -11184,15 +11260,7 @@ class TermdeckApp {
   }
 
   formatMtime(epochSeconds) {
-    const totalMinutes = Math.max(0, Math.floor((Date.now() - new Date(epochSeconds * 1000).getTime()) / 60000));
-    const totalHours = Math.floor(totalMinutes / 60);
-    const totalDays = Math.floor(totalHours / 24);
-    const totalWeeks = Math.floor(totalDays / 7);
-    const totalMonths = Math.floor(totalWeeks / 4);
-    const items = totalMonths >= 12 ? [[Math.floor(totalMonths / 12), "y"], [totalMonths % 12, "m"]] :
-      totalMonths ? [[totalMonths, "m"], [totalWeeks % 4, "w"]] : totalWeeks ? [[totalWeeks, "w"], [totalDays % 7, "d"]] :
-      totalDays ? [[totalDays, "d"], [totalHours % 24, "h"]] : totalHours ? [[totalHours, "h"], [totalMinutes % 60, "m"]] : [[totalMinutes, "m"]];
-    return `${items.filter(([value]) => value > 0).map(([value, suffix]) => `${value}${suffix}`).join(" ") || "0m"} ago`;
+    return TermDeckFileBrowser.formatMtime(epochSeconds);
   }
 
   exactMtime(epochSeconds) {

@@ -7,48 +7,82 @@
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/vendor/codicons/codicon.css">
 <link rel="stylesheet" href="/filedeck/static/style.css">
+<link rel="stylesheet" href="/filebrowser/static/file_browser_shared.css">
 </head>
 <body>
-<aside id="filedeck-sidebar">
-  <header class="filedeck-header">
-    <div class="filedeck-brand"><span class="codicon codicon-files"></span><span>FileDeck</span></div>
+<aside id="sidebar">
+  <div id="sidebar-header">
     <select id="project-select" aria-label="Project"></select>
-  </header>
-  <div class="filedeck-toolbar">
-    <button id="tree-refresh" title="Refresh project tree"><span class="codicon codicon-refresh"></span></button>
-    <button id="git-toggle" title="Show Git changes"><span class="codicon codicon-git-branch"></span><span>Git</span></button>
   </div>
-  <div class="filedeck-search-tabs" role="tablist">
-    <button class="active" data-search-mode="content" role="tab">Contents</button>
-    <button data-search-mode="name" role="tab">File names</button>
-  </div>
-  <div class="filedeck-search-row">
-    <input id="search-input" placeholder="Search project" autocomplete="off" spellcheck="false">
-    <button id="search-button" title="Search"><span class="codicon codicon-search"></span></button>
-  </div>
-  <div id="replace-row" class="hidden">
-    <input id="replace-input" placeholder="Replace with" spellcheck="false">
-    <button id="replace-button" title="Replace all"><span class="codicon codicon-replace-all"></span></button>
-  </div>
-  <div id="sidebar-status" aria-live="polite"></div>
-  <div id="project-tree" tabindex="0" aria-label="Project files"></div>
-  <div id="search-results" class="hidden"></div>
-  <div id="git-results" class="hidden"></div>
+  <section id="files-section">
+    <div id="files-section-tabs">
+      <button id="files-tab-project" class="files-section-tab on" title="Project files" aria-label="Project files"><span class="codicon codicon-files"></span><span class="files-tab-label">Files</span></button>
+      <button id="files-tab-search" class="files-section-tab" title="Search files" aria-label="Search files"><span class="codicon codicon-search"></span><span class="files-tab-label">Search</span></button>
+      <button id="files-tab-git" class="files-section-tab" title="Git changes and branch history" aria-label="Git changes and branch history"><span class="codicon codicon-git-branch"></span><span class="files-tab-label">Git</span></button>
+    </div>
+    <div id="files-section-header">
+      <span id="files-root-label" class="side-section-label">FILES</span>
+      <span id="branch-label" class="branch-label hidden"></span>
+      <button id="tree-refresh" title="Refresh files"><span class="codicon codicon-refresh"></span></button>
+      <button id="tree-sort-toggle" title="Sort files alphabetically"><span class="codicon codicon-sort-precedence"></span></button>
+      <button id="mtime-toggle" class="on" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
+      <button id="hide-excluded-toggle" title="Show excluded folders"><span class="codicon codicon-filter"></span></button>
+      <button id="hide-dot-toggle" title="Show dot folders"><span class="codicon codicon-eye-closed"></span></button>
+    </div>
+    <div id="files-explorer-panel">
+      <div id="search-view-controls" class="hidden">
+        <div id="search-mode-tabs">
+          <button id="search-content-mode" class="on" title="Search file contents"><span class="codicon codicon-symbol-string"></span><span>Contents</span></button>
+          <button id="search-name-mode" title="Search file names"><span class="codicon codicon-symbol-file"></span><span>Names</span></button>
+        </div>
+        <div id="search-bar">
+          <input id="search-input" placeholder="search in files" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <button id="search-button" title="Search"><span class="codicon codicon-search"></span></button>
+          <button id="search-case-toggle" title="Match case">Aa</button>
+          <button id="search-regex-toggle" title="Regular expression">.*</button>
+          <button id="replace-toggle" title="Replace"><span class="codicon codicon-replace-all"></span></button>
+        </div>
+        <div id="replace-bar" class="hidden">
+          <input id="replace-input" placeholder="replace with…" spellcheck="false">
+          <button id="replace-button" title="Preview replacements">Preview</button>
+        </div>
+      </div>
+      <div id="files-tree" tabindex="0" aria-label="Project files"></div>
+      <div id="search-results" class="hidden"></div>
+      <div id="git-results" class="hidden"></div>
+    </div>
+    <div id="filedeck-status" aria-live="polite"></div>
+  </section>
 </aside>
-<main id="filedeck-main">
+<main id="main">
   <div id="editor-toolbar">
     <div id="file-title">Select a file</div>
-    <div class="editor-actions">
-      <button id="save-button" title="Save file"><span class="codicon codicon-save"></span><span>Save</span></button>
-      <button id="find-button" title="Find or replace in file"><span class="codicon codicon-search"></span><span>Find</span></button>
-      <button id="new-tab-button" title="Open this file in a new browser tab"><span class="codicon codicon-new-window"></span></button>
+    <div id="editor-actions">
+      <button id="save-button" title="Save file"><span class="codicon codicon-save"></span></button>
+      <button id="find-button" title="Find or replace in file"><span class="codicon codicon-search"></span></button>
+      <button id="new-tab-button" title="Open file in a new browser tab"><span class="codicon codicon-new-window"></span></button>
     </div>
   </div>
-  <div id="monaco-host"></div>
+  <div id="editor-workspace">
+    <div id="monaco-host"></div>
+    <aside id="git-inspector" class="hidden">
+      <div id="git-inspector-header">
+        <span id="git-inspector-title">Git</span>
+        <button id="git-inspector-close" title="Close Git details"><span class="codicon codicon-close"></span></button>
+      </div>
+      <div id="git-inspector-tabs">
+        <button data-inspector-mode="history" class="on">History</button>
+        <button data-inspector-mode="blame">Blame</button>
+        <button data-inspector-mode="diff">Diff</button>
+      </div>
+      <div id="git-inspector-content"></div>
+    </aside>
+  </div>
   <div id="editor-status">Choose a file from the project tree.</div>
 </main>
 <div id="filedeck-context-menu" class="hidden" role="menu"></div>
 <script src="/static/vendor/monaco/vs/loader.js"></script>
+<script src="/filebrowser/static/file_browser_shared.js"></script>
 <script src="/filedeck/static/app.js"></script>
 </body>
 </html>
