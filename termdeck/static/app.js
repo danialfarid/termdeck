@@ -18,7 +18,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, claude_snapshot_experimental: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_experimental: false, claude_snapshot_experimental: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [] };
@@ -275,7 +275,9 @@ const makeTheme = (id, label, kind, colors, ansi, monacoBase = kind === "light" 
       "--bg": colors.bg, "--panel": colors.panel, "--panel2": colors.panel2, "--border": colors.border,
       "--text": colors.text, "--dim": colors.dim, "--accent": colors.accent, "--working-blue": colors.working || colors.accent,
       "--sidebar-text-color": colors.sidebar || colors.text, "--green": colors.green, "--red": colors.red,
-      "--term-bg": colors.term || colors.bg, "--scroll-thumb": colors.scroll || colors.border,
+      "--term-bg": colors.term || colors.bg, "--term-text": terminalForeground, "--term-blue": ansi[12],
+      "--term-cyan": ansi[14], "--term-green": ansi[10], "--term-yellow": ansi[11], "--term-magenta": ansi[13],
+      "--scroll-thumb": colors.scroll || colors.border,
       "--scroll-thumb-hover": colors.scrollHover || colors.accent, "--active-bg": activeBackground,
       "--active-border": activeBorder, "--active-text": colors.activeText || colors.text,
       "--tree-selected-bg": treeSelectedBackground, "--tree-selected-border": treeSelectedBorder,
@@ -406,6 +408,7 @@ class TermdeckApp {
     this.historyTurns = [];
     this.historyLoaded = false;
     this.historyEditsCollapsed = false;
+    this.transcriptTerminalOverrides = new Set();
     this.closedExpanded = false;
     this.closedDisplayLimit = CLOSED_SESSIONS_INITIAL_DISPLAY;
     this.terminalSearchText = "";
@@ -7163,18 +7166,46 @@ class TermdeckApp {
     modelEl.title = modelEl.textContent;
   }
 
+  transcriptFirstSessionEnabled(session = this.session(this.activeId)) {
+    return !!this.settings.transcript_first_experimental && !!session && ["codex", "claude", "agy"].includes(session.agent_kind);
+  }
+
+  shouldOpenTranscriptFirst(sessionId) {
+    return this.transcriptFirstSessionEnabled(this.session(sessionId)) && !this.transcriptTerminalOverrides.has(sessionId);
+  }
+
+  applyTranscriptFirstSettingChange() {
+    this.transcriptTerminalOverrides.clear();
+    if (!this.activeId || this.activeFileKey !== null) {
+      this.applyMainLayout();
+      return;
+    }
+    const historyEnabled = this.shouldOpenTranscriptFirst(this.activeId) || !!this.settings.history_mode;
+    if (historyEnabled !== this.historyOpen) this.setHistoryMode(historyEnabled);
+    else this.applyMainLayout();
+  }
+
   applyMainLayout() {
     const fileMode = this.activeFileKey !== null;
     if (!fileMode && this.fileHistoryOpen) this.closeFileHistory();
     const historyMode = this.historyOpen && !fileMode;
+    const transcriptFirstMode = historyMode && this.transcriptFirstSessionEnabled();
     this.$("editor-area").classList.toggle("hidden", !fileMode);
     this.$("history-area").classList.toggle("hidden", !historyMode);
+    this.$("history-area").classList.toggle("transcript-first", transcriptFirstMode);
     this.$("terminal-area").classList.toggle("hidden", fileMode || historyMode);
     this.$("conversation-outline").classList.toggle("hidden", fileMode || !this.conversationOutlineOpen);
     this.$("conversation-outline-toggle").classList.toggle("on", !fileMode && this.conversationOutlineOpen);
     for (const id of ["history-btn", "vscode-history-btn"]) {
       const historyButton = this.$(id);
-      if (historyButton) historyButton.classList.toggle("on", historyMode);
+      if (!historyButton) continue;
+      historyButton.classList.toggle("on", historyMode);
+      const openTerminal = transcriptFirstMode && historyMode;
+      const label = openTerminal ? "Open terminal" : "Open Markdown transcript";
+      historyButton.title = label;
+      historyButton.setAttribute("aria-label", label);
+      const icon = historyButton.querySelector(".codicon");
+      if (icon) icon.className = `codicon codicon-${openTerminal ? "terminal" : "markdown"}`;
     }
     for (const id of ["history-edits-toggle", "history-scroll-bottom"]) {
       const button = this.$(id);
@@ -7394,8 +7425,13 @@ class TermdeckApp {
     this.closeTerminalFind();
     this.hideSelectionActions(true);
     if (!enabled) this.closePromptHistory();
-    this.settings.history_mode = !!enabled;
-    this.saveSettings();
+    if (this.transcriptFirstSessionEnabled()) {
+      if (enabled) this.transcriptTerminalOverrides.delete(this.activeId);
+      else this.transcriptTerminalOverrides.add(this.activeId);
+    } else {
+      this.settings.history_mode = !!enabled;
+      this.saveSettings();
+    }
     this.stopHistoryRefresh();
     this.disconnectHistoryStream();
     this.historyFingerprint = "";
@@ -8220,10 +8256,10 @@ class TermdeckApp {
       const text = document.createElement("div");
       text.className = "turn-text markdown";
       text.innerHTML = this.renderMarkdown(turn.text);
-      if (turn.role === "user") {
+      if (["user", "assistant"].includes(turn.role)) {
         const role = document.createElement("div");
         role.className = "turn-role";
-        role.textContent = "You";
+        role.textContent = turn.role === "user" ? "You" : "Assistant";
         block.append(role);
       }
       block.append(text);
@@ -10428,7 +10464,7 @@ class TermdeckApp {
     this.historyLoaded = cachedHistory.length > 0;
     const previousView = previousId ? this.views.get(previousId) : null;
     this.activeId = id;
-    this.historyOpen = !!this.settings.history_mode;
+    this.historyOpen = this.shouldOpenTranscriptFirst(id) || !!this.settings.history_mode;
     if (options.history !== false) this.pushNav({ kind: "term", id });
     if (this.getProjectState().active_session_id !== id) {
       this.patchProjectState({ active_session_id: id });
@@ -12722,6 +12758,7 @@ class TermdeckApp {
 
   destroyView(id, view) {
     view.closed = true;
+    this.transcriptTerminalOverrides.delete(id);
     view.renderObserver?.dispose();
     this.clearActiveTerminalSettleWatchdog(view);
     clearTimeout(view.manualScrollReleaseTimer);
@@ -13392,6 +13429,10 @@ class TermdeckApp {
       anchor.focus();
     };
     pop.appendChild(this.buildThemeSelectRow());
+    pop.appendChild(this.buildToggleRow("Transcript-first experiment",
+      () => (this.settings.transcript_first_experimental ? "on" : "off"),
+      () => { this.settings.transcript_first_experimental = !this.settings.transcript_first_experimental; },
+      () => this.applyTranscriptFirstSettingChange()));
     pop.appendChild(this.buildTerminalIconSettingsRow());
     pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));

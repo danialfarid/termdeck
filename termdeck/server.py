@@ -300,6 +300,7 @@ class UiSettings(BaseModel):
     inline_size_controls: bool = False
     prompt_wrap_guard: bool = False
     history_mode: bool = False
+    transcript_first_experimental: bool = False
     claude_snapshot_experimental: bool = False
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
