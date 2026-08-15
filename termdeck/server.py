@@ -182,6 +182,7 @@ class ProjectStatePatch(BaseModel):
     open_files: list[dict[str, str]] | None = None
     open_files_collapsed: bool | None = None
     recent_files_collapsed: bool | None = None
+    recent_file_exclude_glob: str | None = None
     recently_opened_terminal_ids: list[str] | None = None
     session_order: list[str] | None = None
     # Legacy-only fields: the desktop client migrates saved pins into its
@@ -241,7 +242,8 @@ class ProjectUiState(BaseModel):
     active_session_id: str = ""
     open_files: list[dict[str, str]] = []
     open_files_collapsed: bool = False
-    recent_files_collapsed: bool = False
+    recent_files_collapsed: bool = True
+    recent_file_exclude_glob: str = "!*.json, !*.log, !*.csv"
     recently_opened_terminal_ids: list[str] = []
     session_order: list[str] = []
     # Retained solely so older settings files can be migrated by the client.
@@ -261,9 +263,9 @@ class NotebookNote(BaseModel):
 class UiSettings(BaseModel):
     sidebar_width: int = 250
     files_width: int = 380
-    sidebar_font_size: int = 13
+    sidebar_font_size: int = 18
     project_font_size: int = 18
-    terminal_font_size: int = 13
+    terminal_font_size: int = 18
     ui_font_size: int = 11
     files_tab_font_size: int = 11
     viewer_font_size: int = 12
@@ -283,7 +285,6 @@ class UiSettings(BaseModel):
     show_stats: bool = True
     show_mtime: bool = True
     show_git_status: bool = True
-    recent_exclude: str = ""
     word_wrap: bool = False
     search_glob: str = "!*.json, !*.csv, !*.log"
     tree_file_glob: str = ""
@@ -295,6 +296,7 @@ class UiSettings(BaseModel):
     last_model: str = "codex"
     last_permissions: dict[str, str] = {}
     show_terminal_icons: bool = False
+    terminal_icon_agents: dict[str, bool] = {}
     inline_size_controls: bool = False
     prompt_wrap_guard: bool = False
     history_mode: bool = False

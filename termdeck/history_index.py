@@ -144,19 +144,45 @@ class HistorySearchIndex:
                 raw_lines = source.read(max(0, byte_end - byte_start)).splitlines()
         except OSError:
             return []
-        decoded: list[tuple[int, str]] = []
+        decoded: list[tuple[int, str, str | int | float | None]] = []
         for offset, raw in enumerate(raw_lines):
-            text = cls._line_text(path, raw.decode(errors="replace"), conversation_only=not include_operations)
+            raw_line = raw.decode(errors="replace")
+            text = cls._line_text(path, raw_line, conversation_only=not include_operations)
             text = re.sub(r"\s+", " ", text).strip()
             if text:
-                decoded.append((line_start + offset, text))
-        matching = [(line_no, text) for line_no, text in decoded
+                decoded.append((line_start + offset, text, cls._line_timestamp(raw_line)))
+        matching = [(line_no, text, timestamp) for line_no, text, timestamp in decoded
                     if all(term in text.casefold() for term in terms)]
         if not matching:
-            matching = [(line_no, text) for line_no, text in decoded
+            matching = [(line_no, text, timestamp) for line_no, text, timestamp in decoded
                         if any(term in text.casefold() for term in terms)]
-        return [{"line_no": line_no, "line_end": line_no, "text": text[:240]}
-                for line_no, text in matching[:6]]
+        return [{"line_no": line_no, "line_end": line_no, "text": cls._matching_text_excerpt(text, terms),
+                 "timestamp": timestamp}
+                for line_no, text, timestamp in matching[:6]]
+
+    @staticmethod
+    def _matching_text_excerpt(text: str, terms: list[str], max_chars: int = 280) -> str:
+        folded = text.casefold()
+        positions = [position for term in terms if (position := folded.find(term)) >= 0]
+        if not positions or len(text) <= max_chars:
+            return text
+        match_start = min(positions)
+        start = max(0, match_start - max_chars // 3)
+        end = min(len(text), start + max_chars)
+        start = max(0, end - max_chars)
+        excerpt = text[start:end].strip()
+        return f"{'…' if start else ''}{excerpt}{'…' if end < len(text) else ''}"
+
+    @staticmethod
+    def _line_timestamp(raw_line: str) -> str | int | float | None:
+        try:
+            payload = json.loads(raw_line)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        timestamp = payload.get("timestamp")
+        return timestamp if isinstance(timestamp, (str, int, float)) else None
 
     def context(self, source_path: str, line_no: int, radius: int = 4, query: str = "",
                 include_operations: bool = False) -> dict[str, object]:
@@ -180,15 +206,20 @@ class HistorySearchIndex:
         with path.open("rb") as source:
             source.seek(int(chunk[2]))
             raw_lines = source.read(int(chunk[3]) - int(chunk[2])).splitlines()
-        decoded_lines = [(int(chunk[0]) + index, self._line_text(
-            path, raw.decode(errors="replace"), conversation_only=not include_operations))
+        decoded_lines = [(int(chunk[0]) + index,
+                          self._line_text(path, raw.decode(errors="replace"), conversation_only=not include_operations),
+                          self._line_timestamp(raw.decode(errors="replace")))
                          for index, raw in enumerate(raw_lines)]
         terms = [term.lower() for term in re.findall(r"[\w]+", query, re.UNICODE)]
-        target_index = next((index for index, (_, text) in enumerate(decoded_lines)
-                             if text and terms and all(term in text.lower() for term in terms)), 0)
+        target_index = next((index for index, (line, text, _) in enumerate(decoded_lines)
+                             if line == int(line_no) and text), -1)
+        if target_index < 0:
+            target_index = next((index for index, (_, text, _) in enumerate(decoded_lines)
+                                 if text and terms and all(term in text.lower() for term in terms)), 0)
         start_index = max(0, target_index - radius)
         end_index = min(len(decoded_lines), target_index + radius + 1)
-        records = [{"line_no": line, "text": text} for line, text in decoded_lines[start_index:end_index] if text]
+        records = [{"line_no": line, "text": text, "timestamp": timestamp}
+                   for line, text, timestamp in decoded_lines[start_index:end_index] if text]
         target_line = decoded_lines[target_index][0] if decoded_lines else int(line_no)
         return {"source_path": str(path), "agent_kind": metadata[0], "agent_session_id": metadata[1],
                 "cwd": metadata[2], "title": metadata[3], "line_no": target_line, "lines": records}

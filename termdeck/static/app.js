@@ -11,12 +11,14 @@ const RECONNECT_MS = 1500;
 const TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS = 1800;
 const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~";
-const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 13, project_font_size: 18, terminal_font_size: 13,
+const TERMINAL_ICON_AGENT_KINDS = ["codex", "claude", "agy", "none"];
+const TERMINAL_ICON_AGENT_LABELS = { codex: "Codex", claude: "Claude", agy: "AGY", none: "Shell" };
+const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 18, project_font_size: 18, terminal_font_size: 18,
   ui_font_size: 11, files_tab_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
-  show_mtime: true, show_git_status: true, recent_exclude: "", word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
+  show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_size: 14, history_mode: false, claude_snapshot_experimental: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, claude_snapshot_experimental: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [] };
@@ -89,6 +91,10 @@ const MAX_FORK_COUNT = 25;
 const TERMINAL_CLAUDE_IDLE_RECONNECT_MS = 5 * 60 * 1000;
 const CLAUDE_STATUS_ROW_REFRESH_INTERVAL_MS = 500;
 const CODEX_PROMPT_REFLOW_GUARD_MS = 1800;
+const AGENT_PASTE_RETRY_DELAY_MS = 250;
+const AGENT_PASTE_TIMEOUT_MS = 15000;
+const CLAUDE_AGENT_PASTE_DELAY_MS = 1500;
+const DEFAULT_AGENT_PASTE_DELAY_MS = 250;
 const TERMINAL_ATTENTION_ANIMATION_MS = 2600;
 const TERMINAL_ATTENTION_TEXT_MARKERS = ["esc to cancel", "tab to amend"];
 const KEYBOARD_SHORTCUT_SECTIONS = ["Terminal", "Files", "General"];
@@ -462,6 +468,9 @@ class TermdeckApp {
     this.terminalSearchTimer = 0;
     this.terminalSearchGroupId = null;
     this.terminalSearchWorktreeId = null;
+    this.terminalSearchHoverHideTimer = 0;
+    this.pendingHistorySearchNavigation = null;
+    this.historySearchNavigationBusy = false;
     this.terminalFindMatches = [];
     this.terminalFindIndex = -1;
     this.terminalFindSessionId = "";
@@ -529,6 +538,7 @@ class TermdeckApp {
     this.selectionCopyHistoryIndex = 0;
     this.selectionActionUpdateFrame = 0;
     this.selectionActionUpdateTimer = 0;
+    this.pendingNewAgentSelection = "";
     this.nativeSessionIds = new Set();
     this.sessionModelById = new Map();
     this.selectedTreeRow = null;
@@ -733,6 +743,7 @@ class TermdeckApp {
     const state = states[key] || {};
     return {
       active_session_id: "", open_files: [], open_files_collapsed: false, recent_files_collapsed: true,
+      recent_file_exclude_glob: "!*.json, !*.log, !*.csv",
       recently_opened_terminal_ids: [], unread_sessions: [],
       terminal_groups: [], session_groups: {},
       ...state,
@@ -2212,7 +2223,9 @@ class TermdeckApp {
       }
       const fileTypeMenu = this.$("file-type-filter-menu");
       if (fileTypeMenu && !fileTypeMenu.classList.contains("hidden") && !fileTypeMenu.contains(e.target) &&
-          !e.target.closest("#file-type-filter-button, #search-file-type-filter-button")) this.closeFileTypeFilterMenu();
+          !e.target.closest("#file-type-filter-button, #search-file-type-filter-button, #recent-file-type-filter-button")) {
+        this.closeFileTypeFilterMenu();
+      }
       const notebookPanel = this.$("notebook-panel");
       const notebookToggle = this.$("notebook-toggle");
       if (this.settings.notebook_open && notebookPanel && !notebookPanel.contains(e.target) &&
@@ -2228,7 +2241,10 @@ class TermdeckApp {
       if (event.target === this.$("history-search-backdrop")) this.closeHistorySearchContext();
     };
     this.$("modal-cancel").onclick = () => this.closeModal();
-    this.$("modal-create").onclick = () => this.createSession();
+    this.$("modal").addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.createSession();
+    });
     this.$("modal-model").onchange = () => { this.clearModalError(); this.updateModalPermissions(); };
     this.$("worktree-modal-cancel").onclick = () => this.closeWorktreeModal();
     this.$("worktree-modal-create").onclick = () => void this.createProjectWorktree();
@@ -2409,6 +2425,24 @@ class TermdeckApp {
       e.stopImmediatePropagation();
       this.runAction(actionId);
     }, true);
+    window.addEventListener("keydown", (e) => {
+      if (!this.isRecentTerminalsShortcut(e) || !this.$("keys-backdrop").classList.contains("hidden") ||
+          !this.$("modal-backdrop").classList.contains("hidden")) return;
+      const actionId = this.bindingMap()[this.eventToBinding(e)];
+      if (actionId !== "recent-terminals") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.runAction(actionId);
+    }, true);
+    window.addEventListener("keydown", (e) => {
+      if (this.vscodeMode || !this.$("keys-backdrop").classList.contains("hidden") ||
+          !this.$("modal-backdrop").classList.contains("hidden")) return;
+      const actionId = this.bindingMap()[this.eventToBinding(e)];
+      if (actionId !== "open-file-search") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.runAction(actionId);
+    }, true);
     document.addEventListener("keydown", (e) => {
       if (!this.$("keys-backdrop").classList.contains("hidden")) {
         if (e.key === "Escape") this.$("keys-backdrop").classList.add("hidden");
@@ -2440,7 +2474,12 @@ class TermdeckApp {
       const modalOpen = !this.$("modal-backdrop").classList.contains("hidden");
       if (modalOpen) {
         if (e.key === "Escape") this.closeModal();
-        if (e.key === "Enter") this.createSession();
+        return;
+      }
+      if (e.key === "Escape" && !this.$("context-menu").classList.contains("hidden")) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.closeContextMenu();
         return;
       }
       if (e.key === "Escape" && this.exitInlineSizeControls()) {
@@ -2859,7 +2898,7 @@ class TermdeckApp {
     const spinning = !session.dormant && session.processing === true;
     const titleEl = this.sessionTitleEls.get(session.session_id);
     if (titleEl) this.setSessionTitleText(titleEl, presentation.text,
-      this.usesTextTerminalStatus() && presentation.spinning);
+      this.usesTextTerminalStatus(session.agent_kind) && presentation.spinning);
     this.postVscodeNativeSession(session, session.session_id === this.activeId ? !this.historyOpen : undefined);
     this.updateProcessingState(session.session_id, spinning);
     if (session.needs_attention && !previousNeedsAttention) {
@@ -2898,7 +2937,7 @@ class TermdeckApp {
   updateSessionTextStatus(id, spinning = !!this.processingStates.get(id)) {
     const title = this.sessionTitleEls.get(id);
     if (!title) return;
-    const textOnly = this.usesTextTerminalStatus();
+    const textOnly = this.usesTextTerminalStatus(this.session(id)?.agent_kind);
     const working = textOnly && !!spinning;
     title.classList.toggle("session-title-working", working);
     title.classList.toggle("session-title-unread", textOnly && !working && this.unreadSessions.has(id));
@@ -2916,8 +2955,25 @@ class TermdeckApp {
     title.textContent = text;
   }
 
-  usesTextTerminalStatus() {
-    return !this.vscodeMode && !this.settings.show_terminal_icons;
+  terminalIconAgentKind(agentKind) {
+    const kind = String(agentKind || "none").toLowerCase();
+    return TERMINAL_ICON_AGENT_KINDS.includes(kind) ? kind : "none";
+  }
+
+  terminalIconEnabledForAgent(agentKind) {
+    const kind = this.terminalIconAgentKind(agentKind);
+    const states = this.settings.terminal_icon_agents;
+    if (states && typeof states === "object" && Object.prototype.hasOwnProperty.call(states, kind)) return !!states[kind];
+    return !!this.settings.show_terminal_icons;
+  }
+
+  setTerminalIconEnabledForAgent(agentKind, enabled) {
+    const kind = this.terminalIconAgentKind(agentKind);
+    this.settings.terminal_icon_agents = { ...(this.settings.terminal_icon_agents || {}), [kind]: !!enabled };
+  }
+
+  usesTextTerminalStatus(agentKind) {
+    return !this.vscodeMode && !this.terminalIconEnabledForAgent(agentKind);
   }
 
   updateUnreadIndicator(id) {
@@ -2995,7 +3051,9 @@ class TermdeckApp {
     const icon = title?.closest(".session-item")?.querySelector(".terminal-type-icon");
     const session = this.session(id);
     if (!icon || !session) return;
-    const enabled = !!this.settings.show_terminal_icons;
+    const enabled = this.terminalIconEnabledForAgent(session.agent_kind);
+    icon.classList.toggle("on", enabled);
+    icon.closest(".session-item")?.classList.toggle("terminal-icons-hidden", !enabled);
     const active = enabled && (!!this.processingStates.get(id) || this.unreadSessions.has(id));
     const exited = enabled && !session.running && !session.dormant;
     icon.classList.toggle("terminal-status-active", active);
@@ -3109,7 +3167,7 @@ class TermdeckApp {
       const presentation = this.titlePresentation(s);
       const title = this.sessionTitleEls.get(s.session_id);
       if (title) this.setSessionTitleText(title, presentation.text,
-        this.usesTextTerminalStatus() && presentation.spinning);
+        this.usesTextTerminalStatus(s.agent_kind) && presentation.spinning);
       const dot = this.sessionStatusEls.get(s.session_id);
       if (dot) {
         dot.className = "status-dot" + (s.running ? "" : s.dormant ? " dormant" : " exited") +
@@ -3532,7 +3590,7 @@ class TermdeckApp {
       event.stopPropagation();
       this.closeTerminalSearchEditor();
     };
-    bar.append(icon, input, summary, close);
+    bar.append(icon, input, close, summary);
     return bar;
   }
 
@@ -3567,6 +3625,7 @@ class TermdeckApp {
 
   closeTerminalSearchEditor() {
     clearTimeout(this.terminalSearchTimer);
+    this.hideTerminalSearchHoverPopup();
     if (this.terminalSearchAbort) this.terminalSearchAbort.abort();
     this.terminalSearchAbort = null;
     this.terminalSearchText = "";
@@ -3801,26 +3860,138 @@ class TermdeckApp {
     if (cursor < value.length) element.appendChild(document.createTextNode(value.slice(cursor)));
   }
 
+  terminalSearchSnippetMatchesQuery(snippet) {
+    const text = this.searchMatchText(snippet?.text).toLocaleLowerCase();
+    const terms = String(this.terminalSearchText || "").toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    return terms.length > 0 && terms.some((term) => text.includes(term));
+  }
+
+  terminalSearchTimestampMillis(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      if (value > 1e16) return value / 1e6;
+      if (value > 1e12) return value;
+      return value * 1000;
+    }
+    if (!value) return 0;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && String(value).trim() !== "") return this.terminalSearchTimestampMillis(numeric);
+    return Date.parse(String(value)) || 0;
+  }
+
+  terminalSearchTimestampLabel(value) {
+    const timestamp = this.terminalSearchTimestampMillis(value);
+    if (!timestamp) return { relative: "", exact: "" };
+    const age = this.formatTerminalAge(Math.max(0, Date.now() - timestamp));
+    return { relative: age === "just now" ? age : `${age} ago`, exact: new Date(timestamp).toLocaleString() };
+  }
+
   renderTerminalSearchSnippets(match) {
     const snippets = document.createElement("div");
     snippets.className = "terminal-search-snippets";
-    for (const snippet of (match?.snippets || []).slice(0, 3)) {
+    const matchingSnippets = (match?.snippets || []).filter((snippet) => this.terminalSearchSnippetMatchesQuery(snippet));
+    for (const snippet of matchingSnippets.slice(0, 8)) {
       const row = document.createElement("div");
       row.className = "terminal-search-snippet";
-      const line = String(snippet.line || "");
-      if (line) {
-        const lineLabel = document.createElement("span");
-        lineLabel.className = "terminal-search-snippet-line";
-        lineLabel.textContent = line;
-        row.appendChild(lineLabel);
+      const heading = document.createElement("div");
+      heading.className = "terminal-search-snippet-heading";
+      const kind = document.createElement("span");
+      kind.className = "terminal-search-snippet-kind";
+      kind.textContent = snippet.kind === "name" ? "terminal name" : "conversation";
+      heading.appendChild(kind);
+      const timestamp = this.terminalSearchTimestampLabel(snippet.timestamp);
+      if (timestamp.relative) {
+        const age = document.createElement("span");
+        age.className = "terminal-search-snippet-age";
+        age.textContent = timestamp.relative;
+        age.title = timestamp.exact;
+        heading.appendChild(age);
       }
-      const text = document.createElement("span");
+      if (snippet.result && snippet.source_path) {
+        const expand = document.createElement("button");
+        expand.type = "button";
+        expand.className = "terminal-search-snippet-expand";
+        expand.innerHTML = '<span class="codicon codicon-chevron-down"></span>';
+        expand.title = "Show surrounding context";
+        expand.setAttribute("aria-label", expand.title);
+        expand.onclick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void this.toggleTerminalSearchSnippetContext(row, snippet, expand);
+        };
+        heading.appendChild(expand);
+      }
+      const text = document.createElement(snippet.result ? "button" : "div");
+      if (snippet.result) text.type = "button";
       text.className = "terminal-search-snippet-text";
       this.appendTerminalSearchHighlightedText(text, this.searchMatchText(snippet.text), this.terminalSearchText);
-      row.appendChild(text);
+      if (snippet.result) {
+        text.title = "Open this turn in the Markdown transcript";
+        text.onclick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void this.openTerminalSearchTranscriptMatch(snippet);
+        };
+      }
+      const context = document.createElement("div");
+      context.className = "terminal-search-snippet-context hidden";
+      row.append(heading, text, context);
       snippets.appendChild(row);
     }
     return snippets;
+  }
+
+  async toggleTerminalSearchSnippetContext(row, snippet, button) {
+    const context = row.querySelector(".terminal-search-snippet-context");
+    const expanded = button.getAttribute("aria-expanded") === "true";
+    if (expanded) {
+      context.classList.add("hidden");
+      button.setAttribute("aria-expanded", "false");
+      button.querySelector(".codicon").className = "codicon codicon-chevron-down";
+      return;
+    }
+    context.classList.remove("hidden");
+    button.setAttribute("aria-expanded", "true");
+    button.querySelector(".codicon").className = "codicon codicon-chevron-up";
+    if (context.dataset.loaded === "true") return;
+    context.textContent = "loading context…";
+    try {
+      const params = new URLSearchParams({ source: snippet.source_path, line: String(snippet.line || 1), radius: "6",
+        q: this.terminalSearchText, include_operations: String(this.historySearchOperations) });
+      const response = await fetch(`/api/history-context?${params}`);
+      if (!response.ok) throw new Error("history context unavailable");
+      const payload = await response.json();
+      context.textContent = "";
+      context.dataset.loaded = "true";
+      for (const line of payload.lines || []) {
+        const contextLine = document.createElement("button");
+        contextLine.type = "button";
+        contextLine.className = "terminal-search-context-line" +
+          (Number(line.line_no) === Number(payload.line_no) ? " target" : "");
+        const contextTimestamp = this.terminalSearchTimestampLabel(line.timestamp);
+        if (contextTimestamp.relative) {
+          const age = document.createElement("span");
+          age.className = "terminal-search-context-age";
+          age.textContent = contextTimestamp.relative;
+          age.title = contextTimestamp.exact;
+          contextLine.appendChild(age);
+        }
+        const content = document.createElement("span");
+        content.className = "terminal-search-context-text";
+        this.appendTerminalSearchHighlightedText(content, this.searchMatchText(line.text), this.terminalSearchText);
+        contextLine.appendChild(content);
+        contextLine.title = "Open this turn in the Markdown transcript";
+        contextLine.onclick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void this.openTerminalSearchTranscriptMatch({ ...snippet, line: line.line_no, text: line.text,
+            timestamp: line.timestamp });
+        };
+        context.appendChild(contextLine);
+      }
+      if (!context.childElementCount) context.textContent = "no surrounding conversation available";
+    } catch (error) {
+      context.textContent = error.message || "history context unavailable";
+    }
   }
 
   terminalSearchHoverPopup() {
@@ -3829,34 +4000,51 @@ class TermdeckApp {
     popup = document.createElement("div");
     popup.id = "terminal-search-hover-popup";
     popup.className = "hidden";
+    popup.addEventListener("mouseenter", () => this.cancelTerminalSearchHoverHide());
+    popup.addEventListener("mouseleave", () => this.scheduleTerminalSearchHoverHide());
     document.body.appendChild(popup);
     return popup;
   }
 
   showTerminalSearchHoverPopup(item, match) {
     if (!item?.isConnected || !match || !this.terminalSearchText.trim()) return;
+    this.cancelTerminalSearchHoverHide();
     const snippets = this.renderTerminalSearchSnippets(match);
-    if (!snippets.childElementCount) return;
+    if (!snippets.childElementCount) {
+      this.hideTerminalSearchHoverPopup();
+      return;
+    }
     const popup = this.terminalSearchHoverPopup();
     popup.replaceChildren(snippets);
     popup.classList.remove("hidden");
     const bounds = item.getBoundingClientRect();
-    const availableWidth = Math.max(280, window.innerWidth - bounds.right - 18);
-    popup.style.width = `${Math.min(560, availableWidth)}px`;
-    popup.style.left = `${Math.min(window.innerWidth - popup.offsetWidth - 8, bounds.right + 7)}px`;
+    const availableWidth = Math.max(320, window.innerWidth - bounds.right - 18);
+    popup.style.width = `${Math.min(660, availableWidth)}px`;
+    popup.style.left = `${Math.max(8, Math.min(window.innerWidth - popup.offsetWidth - 8, bounds.right + 7))}px`;
     popup.style.top = `${Math.max(8, Math.min(bounds.top, window.innerHeight - popup.offsetHeight - 8))}px`;
   }
 
   hideTerminalSearchHoverPopup() {
+    this.cancelTerminalSearchHoverHide();
     document.getElementById("terminal-search-hover-popup")?.classList.add("hidden");
+  }
+
+  cancelTerminalSearchHoverHide() {
+    clearTimeout(this.terminalSearchHoverHideTimer);
+    this.terminalSearchHoverHideTimer = 0;
+  }
+
+  scheduleTerminalSearchHoverHide() {
+    this.cancelTerminalSearchHoverHide();
+    this.terminalSearchHoverHideTimer = window.setTimeout(() => this.hideTerminalSearchHoverPopup(), 320);
   }
 
   bindTerminalSearchHoverPopup(item, match) {
     if (!match) return;
     item.addEventListener("mouseenter", () => this.showTerminalSearchHoverPopup(item, match));
-    item.addEventListener("mouseleave", () => this.hideTerminalSearchHoverPopup());
+    item.addEventListener("mouseleave", () => this.scheduleTerminalSearchHoverHide());
     item.addEventListener("focus", () => this.showTerminalSearchHoverPopup(item, match));
-    item.addEventListener("blur", () => this.hideTerminalSearchHoverPopup());
+    item.addEventListener("blur", () => this.scheduleTerminalSearchHoverHide());
   }
 
   terminalSearchRows() {
@@ -4016,6 +4204,33 @@ class TermdeckApp {
     }
   }
 
+  mergeTerminalSearchMatch(target, sessionId, incoming) {
+    if (!sessionId || !incoming) return;
+    const previous = target.get(sessionId) || { count: 0, snippets: [] };
+    const snippets = [...(previous.snippets || [])];
+    const keys = new Set(snippets.map((snippet) => `${snippet.source_path || ""}:${snippet.line || ""}:${snippet.text || ""}`));
+    for (const snippet of incoming.snippets || []) {
+      const key = `${snippet.source_path || ""}:${snippet.line || ""}:${snippet.text || ""}`;
+      if (keys.has(key)) continue;
+      keys.add(key);
+      snippets.push(snippet);
+    }
+    target.set(sessionId, { count: Number(previous.count || 0) + Number(incoming.count || 0), snippets });
+  }
+
+  historyTerminalSearchMatch(result) {
+    return {
+      count: result.count,
+      snippets: (result.matches || []).map((match) => ({
+        line: match.line_no,
+        text: match.text,
+        timestamp: match.timestamp,
+        source_path: result.source_path,
+        result,
+      })),
+    };
+  }
+
   async runTerminalSearch() {
     const input = this.$("terminal-search-input");
     const query = String(input?.value ?? this.terminalSearchText).trim();
@@ -4030,11 +4245,11 @@ class TermdeckApp {
     this.terminalSearchAbort = new AbortController();
     this.terminalTitleSearchResults = this.matchingTerminalTitleSearchResults(query);
     this.terminalSearchMatches = new Map(this.terminalTitleSearchResults.map((result) => [result.open_session_id, {
-      count: 1, snippets: [{ line: "name", text: result.title }],
+      count: 1, snippets: [{ line: "name", text: result.title, kind: "name" }],
     }]));
     this.terminalSearchClosedMatches = new Map(this.closedSessions
       .filter((session) => String(session.title || "").toLocaleLowerCase().includes(query.toLocaleLowerCase()))
-      .map((session) => [session.session_id, { count: 1, snippets: [{ line: "name", text: session.title }] }]));
+      .map((session) => [session.session_id, { count: 1, snippets: [{ line: "name", text: session.title, kind: "name" }] }]));
     this.filterTerminalSearchMatchesToGroup();
     this.expandGlobalTerminalSearchClosedSections();
     this.renderList();
@@ -4056,20 +4271,18 @@ class TermdeckApp {
       this.historySearchResults = Array.isArray(historyPayload.results) ? historyPayload.results : [];
       if (this.terminalSearchText.trim() !== query) return;
       this.terminalSearchMatches = new Map(this.terminalTitleSearchResults.map((result) => [result.open_session_id, {
-        count: 1, snippets: [{ line: "name", text: result.title }],
+        count: 1, snippets: [{ line: "name", text: result.title, kind: "name" }],
       }]));
       this.terminalSearchClosedMatches = new Map(this.closedSessions
         .filter((session) => String(session.title || "").toLocaleLowerCase().includes(query.toLocaleLowerCase()))
-        .map((session) => [session.session_id, { count: 1, snippets: [{ line: "name", text: session.title }] }]));
-      for (const result of liveResults) this.terminalSearchMatches.set(result.session_id, result);
+        .map((session) => [session.session_id, { count: 1, snippets: [{ line: "name", text: session.title, kind: "name" }] }]));
+      for (const result of liveResults) this.mergeTerminalSearchMatch(this.terminalSearchMatches, result.session_id, result);
       for (const result of this.historySearchResults) {
         const openSessionId = result.open_session_id || result.parent_open_session_id;
         const closedSessionId = result.closed_session_id || result.parent_closed_session_id;
-        const match = {
-          count: result.count, snippets: (result.matches || []).map((match) => ({ line: match.line_no, text: match.text })),
-        };
-        if (openSessionId) this.terminalSearchMatches.set(openSessionId, match);
-        else if (closedSessionId) this.terminalSearchClosedMatches.set(closedSessionId, match);
+        const match = this.historyTerminalSearchMatch(result);
+        if (openSessionId) this.mergeTerminalSearchMatch(this.terminalSearchMatches, openSessionId, match);
+        else if (closedSessionId) this.mergeTerminalSearchMatch(this.terminalSearchClosedMatches, closedSessionId, match);
       }
       this.filterTerminalSearchMatchesToGroup();
       const terminalCount = this.terminalSearchMatches.size + this.terminalSearchClosedMatches.size;
@@ -4307,9 +4520,7 @@ class TermdeckApp {
     this.historySearchContextResult = null;
   }
 
-  async openHistorySearchSession() {
-    const result = this.historySearchContextResult;
-    if (!result) return;
+  async ensureHistorySearchSession(result) {
     const isSubagent = !!result.is_subagent;
     let sessionId = isSubagent ? result.parent_open_session_id : result.open_session_id;
     const closedSessionId = isSubagent ? result.parent_closed_session_id : result.closed_session_id;
@@ -4328,13 +4539,95 @@ class TermdeckApp {
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}));
         alert(detail.detail || "unable to open saved session");
-        return;
+        return null;
       }
       sessionId = (await response.json()).session_id;
     }
+    return sessionId;
+  }
+
+  async openHistorySearchSession() {
+    const result = this.historySearchContextResult;
+    if (!result) return;
+    const sessionId = await this.ensureHistorySearchSession(result);
+    if (!sessionId) return;
     this.closeHistorySearchContext();
     await this.refresh();
     this.activate(sessionId, { reveal: true });
+  }
+
+  async openTerminalSearchTranscriptMatch(snippet) {
+    if (!snippet?.result) return;
+    const query = this.terminalSearchText;
+    const sessionId = await this.ensureHistorySearchSession(snippet.result);
+    if (!sessionId) return;
+    this.pendingHistorySearchNavigation = {
+      sessionId,
+      query,
+      text: this.searchMatchText(snippet.text).replace(/^…+|…+$/g, "").trim(),
+      sourcePath: snippet.source_path,
+      line: Number(snippet.line || 0),
+    };
+    this.hideTerminalSearchHoverPopup();
+    this.closeTerminalSearchEditor();
+    await this.refresh();
+    this.settings.history_mode = true;
+    this.saveSettings();
+    this.activate(sessionId, { reveal: true });
+    if (!this.historyOpen) this.setHistoryMode(true);
+    this.schedulePendingHistorySearchReveal();
+  }
+
+  normalizedHistorySearchText(value) {
+    return String(value || "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+  }
+
+  pendingHistorySearchTurnIndex(target, allowQueryFallback = false) {
+    const targetText = this.normalizedHistorySearchText(target.text);
+    if (targetText.length >= 8) {
+      const exactIndex = this.historyTurns.findIndex((turn) =>
+        this.normalizedHistorySearchText(turn?.text).includes(targetText));
+      if (exactIndex >= 0) return exactIndex;
+    }
+    if (!allowQueryFallback) return -1;
+    const terms = this.normalizedHistorySearchText(target.query).split(/\s+/).filter(Boolean);
+    if (!terms.length) return -1;
+    return this.historyTurns.findIndex((turn) => {
+      const text = this.normalizedHistorySearchText(turn?.text);
+      return text && terms.every((term) => text.includes(term));
+    });
+  }
+
+  schedulePendingHistorySearchReveal() {
+    if (!this.pendingHistorySearchNavigation || this.historySearchNavigationBusy) return;
+    requestAnimationFrame(() => { void this.revealPendingHistorySearchMatch(); });
+  }
+
+  async revealPendingHistorySearchMatch() {
+    const target = this.pendingHistorySearchNavigation;
+    if (!target || this.historySearchNavigationBusy || target.sessionId !== this.activeId || !this.historyOpen) return;
+    this.historySearchNavigationBusy = true;
+    let index = -1;
+    try {
+      for (let page = 0; page < 25; page += 1) {
+        index = this.pendingHistorySearchTurnIndex(target, false);
+        if (index >= 0 || !this.historyHasMoreBySession.get(target.sessionId)) break;
+        const previousBefore = this.historyBeforeBySession.get(target.sessionId);
+        const loaded = await this.loadOlderHistory();
+        if (!loaded || previousBefore === this.historyBeforeBySession.get(target.sessionId)) break;
+      }
+      if (index < 0) index = this.pendingHistorySearchTurnIndex(target, true);
+      if (index < 0) return;
+      const body = this.$("history-body");
+      const turn = body?.children[index];
+      if (!turn) return;
+      this.pendingHistorySearchNavigation = null;
+      turn.classList.add("history-search-target-turn");
+      turn.scrollIntoView({ block: "center", behavior: "smooth" });
+      window.setTimeout(() => turn.classList.remove("history-search-target-turn"), 3200);
+    } finally {
+      this.historySearchNavigationBusy = false;
+    }
   }
 
   terminalTypeIcon(s) {
@@ -4350,7 +4643,7 @@ class TermdeckApp {
     icon.classList.toggle("claude-terminal-icon", s.agent_kind === "claude");
     icon.classList.toggle("codex-terminal-icon", s.agent_kind === "codex");
     icon.classList.toggle("agy-terminal-icon", s.agent_kind === "agy");
-    icon.classList.toggle("on", !!this.settings.show_terminal_icons);
+    icon.classList.toggle("on", this.terminalIconEnabledForAgent(s.agent_kind));
     return icon;
   }
 
@@ -4441,7 +4734,8 @@ class TermdeckApp {
     item.style.setProperty("--session-age-color", this.terminalAgeColor(s));
     this.sessionRowEls.set(s.session_id, item);
     const presentation = this.titlePresentation(s);
-    const useTextStatusIndicator = this.usesTextTerminalStatus();
+    const showDesktopBrandIndicator = !this.vscodeMode && this.terminalIconEnabledForAgent(s.agent_kind);
+    const useTextStatusIndicator = !this.vscodeMode && !showDesktopBrandIndicator;
     if (useTextStatusIndicator) item.classList.add("terminal-icons-hidden");
     const dot = document.createElement("span");
     dot.className = "status-dot" + (s.running ? "" : s.dormant ? " dormant" : " exited") +
@@ -4480,7 +4774,6 @@ class TermdeckApp {
     if (!this.vscodeMode && !presentation.spinning) title.style.color = this.terminalAgeColor(s);
     this.sessionTitleEls.set(s.session_id, title);
     const typeIcon = this.terminalTypeIcon(s);
-    const showDesktopBrandIndicator = !this.vscodeMode && this.settings.show_terminal_icons;
     const iconStatusActive = showDesktopBrandIndicator &&
       (presentation.spinning || this.unreadSessions.has(s.session_id));
     const iconStatusExited = showDesktopBrandIndicator && !s.running && !s.dormant;
@@ -4542,10 +4835,7 @@ class TermdeckApp {
 
   renderTerminalGroup(group, members, list) {
     const groupBox = document.createElement("div");
-    // Without brand icons, retain a little breathing room between grouped
-    // rows and the group border instead of pinning their status mark to it.
-    groupBox.className = "terminal-group" + (this.usesTextTerminalStatus()
-      ? " terminal-icons-hidden" : "");
+    groupBox.className = "terminal-group";
     groupBox.dataset.groupId = group.id;
     groupBox.dataset.worktreeId = this.stateWorktreeId();
     const attentionCount = members.filter((session) => this.processingStates.get(session.session_id) ||
@@ -5364,8 +5654,8 @@ class TermdeckApp {
 
   positionContextMenu(menu, x, y) {
     menu.classList.remove("hidden");
-    menu.style.left = Math.min(x, window.innerWidth - menu.offsetWidth - 10) + "px";
-    menu.style.top = Math.min(y, window.innerHeight - menu.offsetHeight - 10) + "px";
+    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 10)) + "px";
+    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 10)) + "px";
   }
 
   async copyTextToClipboard(text, label = "copied") {
@@ -5522,6 +5812,8 @@ class TermdeckApp {
       }
       this.addContextItem(menu, this.shortcutLabel("Rename", "rename-terminal"),
         () => this.renameSession(session), "edit");
+      this.addContextItem(menu, "Copy session name",
+        () => this.copyTextToClipboard(this.titlePresentation(session).text, "session name copied"), "copy");
       this.addContextItem(menu, this.shortcutLabel("Copy session id", "copy-session-id"),
         () => this.copyTextToClipboard(session.session_id, "session id copied"), "copy");
       if (session.worktree_branch) {
@@ -5875,11 +6167,16 @@ class TermdeckApp {
     if (collapsed) return;
     const controls = document.createElement("div");
     controls.className = "recent-files-controls";
-    const filter = document.createElement("input");
+    const filter = document.createElement("button");
+    filter.id = "recent-file-type-filter-button";
+    filter.type = "button";
     filter.className = "recent-files-filter";
-    filter.placeholder = "exclude types: .json, .csv";
-    filter.title = "Comma-separated extensions or globs to exclude";
-    filter.value = this.settings.recent_exclude || "";
+    const recentExcludeTokens = this.recentFileExcludeTokens();
+    filter.innerHTML = `<span class="codicon codicon-symbol-enum"></span><span>${recentExcludeTokens.length} exclusions</span>`;
+    filter.title = recentExcludeTokens.length ? recentExcludeTokens.join(", ") : "No recently modified exclusions";
+    filter.setAttribute("aria-label", "Recently modified file exclusions");
+    filter.setAttribute("aria-expanded", "false");
+    filter.onclick = (event) => this.toggleFileTypeFilterMenu(event.currentTarget);
     controls.appendChild(filter);
     list.appendChild(controls);
     const body = document.createElement("div");
@@ -5888,7 +6185,7 @@ class TermdeckApp {
 
     const renderBody = () => {
       const recent = this.recentFiles.filter((entry) => entry.path &&
-        !openKeys.has(`${this.recentFilesRoot}|${entry.path}`) && !this.recentFileExcluded(entry, filter.value));
+        !openKeys.has(`${this.recentFilesRoot}|${entry.path}`) && !this.recentFileExcluded(entry, this.getProjectState().recent_file_exclude_glob));
       const limit = this.recentFilesExpanded ? 30 : 8;
       body.textContent = "";
       for (const entry of recent.slice(0, limit)) {
@@ -5905,7 +6202,7 @@ class TermdeckApp {
         mtime.title = `modified ${this.exactMtime(entry.mtime)}`;
         item.append(this.fileTypeIconEl(entry.name, "file-type-icon"), name, mtime);
         this.appendGitStatus(item, entry);
-        item.onclick = () => this.openFile(this.recentFilesRoot, entry.path, null, null);
+        item.onclick = () => void this.openRecentlyModifiedFile(this.recentFilesRoot, entry.path);
         item.onauxclick = (event) => this.handleFileDeckAuxClick(event, this.recentFilesRoot, entry.path);
         item.oncontextmenu = (event) => this.openFileDeckRowContextMenu(event, this.recentFilesRoot, entry.path);
         body.appendChild(item);
@@ -5927,19 +6224,13 @@ class TermdeckApp {
       this.recentFilesExpanded = !this.recentFilesExpanded;
       renderBody();
     };
-    filter.addEventListener("input", () => {
-      this.settings.recent_exclude = filter.value;
-      this.saveSettings();
-      this.recentFilesExpanded = false;
-      renderBody();
-    });
     renderBody();
   }
 
   recentFileExcluded(entry, rawPatterns) {
     const path = String(entry.path || "").toLowerCase();
     const name = String(entry.name || path.split("/").pop() || "").toLowerCase();
-    const patterns = String(rawPatterns || "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
+    const patterns = String(rawPatterns || "").split(",").map((value) => value.trim().replace(/^!/, "").toLowerCase()).filter(Boolean);
     return patterns.some((pattern) => {
       if (pattern.startsWith("*.")) return path.endsWith(pattern.slice(1));
       if (pattern.startsWith(".")) return path.endsWith(pattern);
@@ -5949,6 +6240,19 @@ class TermdeckApp {
       const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
       return new RegExp(`(?:^|/)${escaped}$`).test(path);
     });
+  }
+
+  async openRecentlyModifiedFile(root, path) {
+    await this.openFile(root, path, null, null);
+    if (this.vscodeMode || this.activeFileKey !== `${root}|${path}`) return;
+    this.fileHistoryMode = "local";
+    this.fileHistoryOpen = true;
+    this.fileHistorySelections = [];
+    this.$("file-history-panel").classList.remove("hidden");
+    this.$("file-history-toggle").classList.add("on");
+    this.$("file-history-toggle").setAttribute("aria-pressed", "true");
+    this.renderTopbar();
+    await this.loadFileHistory(true);
   }
 
   async refreshRecentFiles(force = false) {
@@ -6081,10 +6385,18 @@ class TermdeckApp {
   async reopenClosed(sessionId) {
     const res = await fetch(`/api/closed/${sessionId}/reopen`, { method: "POST" });
     if (!res.ok) return;
+    const reopened = await res.json();
+    const reopenedSessionId = reopened.session_id || sessionId;
     await this.refresh();
-    this.activate(sessionId);
-    const view = this.views.get(sessionId);
+    if (!this.session(reopenedSessionId)) return;
+    this.activate(reopenedSessionId, { reveal: true });
+    const view = this.views.get(reopenedSessionId);
     if (view) view.pinBottomUntil = Date.now() + 6000;
+    requestAnimationFrame(() => {
+      if (this.activeId !== reopenedSessionId || this.activeFileKey !== null) return;
+      this.keepActiveSessionVisible();
+      this.focusActiveEditor();
+    });
   }
 
   async purgeClosed(sessionId) {
@@ -6236,7 +6548,7 @@ class TermdeckApp {
     void this.loadFileHistory();
   }
 
-  async loadFileHistory() {
+  async loadFileHistory(compareWithPreviousVersion = false) {
     const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
     if (!entry || this.vscodeMode) {
       this.closeFileHistory();
@@ -6270,7 +6582,9 @@ class TermdeckApp {
     if (generation !== this.fileHistoryLoadGeneration || !this.fileHistoryOpen) return;
     const availableKeys = new Set(this.fileHistoryItems.map((item) => this.fileHistoryItemKey(item)));
     this.fileHistorySelections = this.fileHistorySelections.filter((key) => availableKeys.has(key)).slice(-2);
-    if (!this.fileHistorySelections.length && this.fileHistoryItems.length) {
+    if (compareWithPreviousVersion && historicalItems.length > 1) {
+      this.fileHistorySelections = ["current", this.fileHistoryItemKey(historicalItems[1])];
+    } else if (!this.fileHistorySelections.length && this.fileHistoryItems.length) {
       this.fileHistorySelections = [this.fileHistoryItemKey(this.fileHistoryItems[0])];
     }
     this.renderFileHistoryRows();
@@ -7251,11 +7565,11 @@ class TermdeckApp {
   }
 
   async loadOlderHistory() {
-    if (this.historyOlderLoadBusy || !this.historyOpen || !this.activeId || this.activeFileKey !== null) return;
+    if (this.historyOlderLoadBusy || !this.historyOpen || !this.activeId || this.activeFileKey !== null) return false;
     const sessionId = this.activeId;
-    if (!this.historyHasMoreBySession.get(sessionId)) return;
+    if (!this.historyHasMoreBySession.get(sessionId)) return false;
     const before = this.historyBeforeBySession.get(sessionId);
-    if (before == null) return;
+    if (before == null) return false;
     this.historyOlderLoadBusy = true;
     const body = this.$("history-body");
     const previousHeight = body.scrollHeight;
@@ -7269,7 +7583,7 @@ class TermdeckApp {
         this.historyBeforeBySession.set(sessionId, null);
         this.historyHasMoreBySession.set(sessionId, false);
         this.connectHistoryStream(sessionId, { fresh: true });
-        return;
+        return false;
       }
       const olderPage = Array.isArray(page.turns) ? page.turns : [];
       const existingOlder = this.historyOlderTurnsBySession.get(sessionId) || [];
@@ -7286,10 +7600,15 @@ class TermdeckApp {
         const scratch = document.createElement("div");
         this.renderHistoryTurns(olderPage, { target: scratch, preserveExpanded: true });
         while (scratch.firstChild) body.insertBefore(scratch.firstChild, body.firstChild);
-        requestAnimationFrame(() => { body.scrollTop += body.scrollHeight - previousHeight; });
+        await new Promise((resolve) => requestAnimationFrame(() => {
+          body.scrollTop += body.scrollHeight - previousHeight;
+          resolve();
+        }));
       }
+      return olderPage.length > 0;
     } catch (error) {
       console.warn("unable to load older transcript history", error);
+      return false;
     } finally {
       this.historyOlderLoadBusy = false;
     }
@@ -7572,6 +7891,56 @@ class TermdeckApp {
       this.writePromptDraftToTerminal(view, text);
     }
     if (view.pendingDraftSync !== null) this.sendPromptDraftSync(view, view.pendingDraftSync);
+  }
+
+  schedulePendingAgentPaste(view, delay = 0) {
+    if (!view || view.closed || !view.pendingAgentPaste) return;
+    if (!view.pendingAgentPasteStartedAt) view.pendingAgentPasteStartedAt = Date.now();
+    clearTimeout(view.pendingAgentPasteTimer);
+    const readyDelay = Math.max(0, (view.pendingAgentPasteReadyAt || 0) - Date.now());
+    const wait = Math.max(Number(delay) || 0, readyDelay);
+    view.pendingAgentPasteTimer = window.setTimeout(() => {
+      view.pendingAgentPasteTimer = 0;
+      if (view.closed || !view.pendingAgentPaste) return;
+      if (Date.now() - view.pendingAgentPasteStartedAt >= AGENT_PASTE_TIMEOUT_MS) {
+        view.pendingAgentPaste = "";
+        view.pendingAgentPasteStartedAt = 0;
+        view.pendingAgentPasteReadyAt = 0;
+        this.$("status-name").textContent = "selected text could not be pasted into the agent";
+        return;
+      }
+      if (view.awaitingSnapshot || view.replaying || !view.ws || view.ws.readyState !== WebSocket.OPEN ||
+          Date.now() < (view.pendingAgentPasteReadyAt || 0)) {
+        this.schedulePendingAgentPaste(view, AGENT_PASTE_RETRY_DELAY_MS);
+        return;
+      }
+      this.flushPendingAgentPaste(view);
+    }, wait);
+  }
+
+  queuePendingAgentPaste(view, text) {
+    const value = this.normalizeSelectionText(text);
+    if (!view || view.closed || !value) return false;
+    view.pendingAgentPaste = value;
+    view.pendingAgentPasteStartedAt = Date.now();
+    view.pendingAgentPasteReadyAt = Date.now() + (this.session(view.sessionId)?.agent_kind === "claude"
+      ? CLAUDE_AGENT_PASTE_DELAY_MS : DEFAULT_AGENT_PASTE_DELAY_MS);
+    this.schedulePendingAgentPaste(view);
+    return true;
+  }
+
+  flushPendingAgentPaste(view) {
+    if (!view || view.closed || !view.pendingAgentPaste || view.awaitingSnapshot || view.replaying ||
+        !view.ws || view.ws.readyState !== WebSocket.OPEN || Date.now() < (view.pendingAgentPasteReadyAt || 0)) return false;
+    const text = view.pendingAgentPaste;
+    view.pendingAgentPaste = "";
+    view.pendingAgentPasteStartedAt = 0;
+    view.pendingAgentPasteReadyAt = 0;
+    if (this.activeId === view.sessionId && this.activeFileKey === null && !this.historyOpen) view.term.focus();
+    this.sendTrackedInput(view, this.terminalPastePayload(view, text));
+    this.$("status-name").textContent = "selected text pasted into " +
+      (TERMINAL_ICON_AGENT_LABELS[this.session(view.sessionId)?.agent_kind] || "agent");
+    return true;
   }
 
   sendTrackedInput(view, data) {
@@ -8028,6 +8397,7 @@ class TermdeckApp {
     this.updateHistoryEditToggle();
     this.updateActiveThinkingBlock();
     this.restoreHistoryScroll(body, scrollSnapshot, turns);
+    this.schedulePendingHistorySearchReveal();
   }
 
   renderMarkdown(text) {
@@ -8144,6 +8514,16 @@ class TermdeckApp {
       event.stopPropagation();
     });
     actions.addEventListener("click", (event) => event.stopPropagation());
+    document.addEventListener("contextmenu", (event) => {
+      const source = event.target.closest?.(".xterm, #history-body, #monaco-host, #notebook-editor-host");
+      if (!source) return;
+      const state = this.readSelectionActionState(event.target);
+      event.preventDefault();
+      event.stopPropagation();
+      const contextKind = source.matches(".xterm") ? "terminal" : source.id === "history-body" ? "history"
+        : source.id === "monaco-host" ? "file" : "notebook";
+      this.openSelectionContextMenu(state, { x: event.clientX, y: event.clientY }, contextKind);
+    });
     document.addEventListener("selectionchange", () => this.scheduleSelectionActions());
     document.addEventListener("mouseup", () => this.scheduleSelectionActions());
     document.addEventListener("copy", () => this.recordDocumentSelectionCopy());
@@ -8862,15 +9242,18 @@ class TermdeckApp {
         this.positionSelectionCopyHistoryPanel(this.selectionActionAnchorRect());
         return;
       }
+      if (this.contextMenuTarget?.type === "selection" && !this.$("context-menu").classList.contains("hidden")) return;
       this.hideSelectionActions();
       return;
     }
     this.selectionActionState = state;
     if (!actions) return;
-    if (!historyPanelOpen) actions.classList.remove("history-picker");
-    actions.classList.remove("hidden");
-    this.positionSelectionActions(state.rect);
-    if (historyPanelOpen) this.positionSelectionCopyHistoryPanel(state.rect);
+    if (historyPanelOpen) {
+      this.positionSelectionCopyHistoryPanel(state.rect);
+      return;
+    }
+    actions.classList.add("hidden");
+    if (this.contextMenuTarget?.type === "selection") this.openSelectionContextMenu(state);
   }
 
   positionSelectionActions(rect) {
@@ -8902,11 +9285,35 @@ class TermdeckApp {
     actions.classList.toggle("selection-submenus-right", left < 160);
   }
 
-  readSelectionActionState() {
-    if (this.activeFileKey !== null) return null;
+  readSelectionActionState(sourceElement = null) {
+    if (this.activeFileKey !== null) {
+      const editorHost = this.$("monaco-host");
+      if (sourceElement && !editorHost?.contains(sourceElement)) return null;
+      const editor = this.editor;
+      const selection = editor?.getSelection();
+      const model = editor?.getModel();
+      if (!selection || selection.isEmpty || !model) return null;
+      const text = this.normalizeSelectionText(model.getValueInRange(selection));
+      const rect = this.monacoSelectionRect(editor, selection);
+      return text && rect ? { kind: "file", fileKey: this.activeFileKey, text, rawText: text, rect } : null;
+    }
+    if (this.settings.notebook_open && this.notebookEditor && this.notebookMounted) {
+      const editorHost = this.$("notebook-editor-host");
+      const focusedInNotebook = editorHost?.contains(document.activeElement);
+      if ((!sourceElement && focusedInNotebook) || (sourceElement && editorHost?.contains(sourceElement))) {
+        const selection = this.notebookEditor.getSelection();
+        const model = this.notebookEditor.getModel();
+        if (selection && !selection.isEmpty && model) {
+          const text = this.normalizeSelectionText(model.getValueInRange(selection));
+          const rect = this.monacoSelectionRect(this.notebookEditor, selection);
+          return text && rect ? { kind: "notebook", text, rawText: text, rect } : null;
+        }
+      }
+    }
     if (this.historyOpen) {
       const selection = window.getSelection();
       const body = this.$("history-body");
+      if (sourceElement && !body?.contains(sourceElement)) return null;
       if (!this.selectionWithinContainer(selection, body)) return null;
       const range = selection.getRangeAt(0).cloneRange();
       const rawText = this.normalizeSelectionText(selection.toString());
@@ -8916,6 +9323,7 @@ class TermdeckApp {
       return text && rect ? { kind: "history", text, rawText, html, rect } : null;
     }
     const view = this.views.get(this.activeId);
+    if (sourceElement && !view?.container.contains(sourceElement)) return null;
     if (!view || !view.container.classList.contains("visible") || !view.term.hasSelection()) return null;
     const text = this.normalizeSelectionText(view.term.getSelection());
     const rect = this.terminalSelectionRect(view);
@@ -9039,9 +9447,83 @@ class TermdeckApp {
       top: container.bottom - 28, bottom: container.bottom - 8 };
   }
 
+  monacoSelectionRect(editor, selection) {
+    const node = editor?.getDomNode();
+    if (!node || !selection) return null;
+    const start = editor.getScrolledVisiblePosition(selection.getStartPosition());
+    const end = editor.getScrolledVisiblePosition(selection.getEndPosition());
+    if (!start || !end) return null;
+    const bounds = node.getBoundingClientRect();
+    const left = bounds.left + Math.min(start.left, end.left);
+    const right = bounds.left + Math.max(start.left + start.width, end.left + end.width);
+    const top = bounds.top + Math.min(start.top, end.top);
+    const bottom = bounds.top + Math.max(start.top + start.height, end.top + end.height);
+    return { left, right, top, bottom };
+  }
+
+  openSelectionContextMenu(state, point = null, contextKind = "terminal") {
+    const menu = this.$("context-menu");
+    if (!menu) return;
+    const hasSelection = !!state?.text;
+    const selectionState = state || { kind: contextKind, text: "", rect: { left: point?.x || 0, right: point?.x || 0,
+      top: point?.y || 0, bottom: point?.y || 0 } };
+    this.selectionActionState = hasSelection ? state : null;
+    const selectionKey = `${selectionState.kind}:${selectionState.text}`;
+    const existingSelectionMenu = this.contextMenuTarget?.type === "selection" &&
+      this.contextMenuTarget.key === selectionKey;
+    if (!existingSelectionMenu) {
+      menu.textContent = "";
+      this.contextMenuTarget = { type: "selection", key: selectionKey, point };
+      const selectionText = hasSelection ? state.text : "";
+      this.addContextItem(menu, "Copy", hasSelection ? () => this.copySelectionToClipboard() : null, "copy");
+      this.addContextItem(menu, "New note", hasSelection ? () => { void this.createNotebookNoteFromSelection(); } : null, "new-file");
+      this.addContextItem(menu, "Append to note", hasSelection ? () => { void this.appendSelectionToNotebook(); } : null, "comment-add");
+      this.addContextItem(menu, "File contents", hasSelection ? () => this.searchContentFromSelection() : null, "search");
+      this.addContextItem(menu, "File name", hasSelection ? () => this.searchFileFromSelection() : null, "symbol-file");
+      const agentEntries = [{
+        label: "New agent…",
+        handler: hasSelection ? () => this.openNewAgentFromSelection(selectionText) : () => this.openModal(),
+        icon: "add",
+      }, { kind: "label", label: "Existing agents" }];
+      const existingAgents = this.recentAgentSessionsForContextMenu();
+      if (existingAgents.length) {
+        for (const session of existingAgents) {
+          agentEntries.push({
+            label: this.agentSessionContextLabel(session),
+            handler: hasSelection ? () => this.pasteSelectionIntoAgent(session.session_id, selectionText) : null,
+            icon: "terminal",
+          });
+        }
+      } else {
+        agentEntries.push({ kind: "label", label: "No existing agents" });
+      }
+      this.addContextSubmenu(menu, "Ask an agent", agentEntries, "terminal");
+    } else if (point) {
+      this.contextMenuTarget.point = point;
+    }
+    menu.classList.remove("hidden");
+    const contextPoint = point || this.contextMenuTarget?.point;
+    if (contextPoint) {
+      this.positionContextMenu(menu, contextPoint.x + 4, contextPoint.y + 4);
+      return;
+    }
+    const width = menu.offsetWidth;
+    const height = menu.offsetHeight;
+    const right = selectionState.rect.right + 8;
+    const left = selectionState.rect.left - width - 8 >= 8 ? selectionState.rect.left - width - 8 : right;
+    const top = selectionState.rect.top + Math.max(0, (selectionState.rect.bottom - selectionState.rect.top - height) / 2);
+    this.positionContextMenu(menu, left, top);
+  }
+
+  closeSelectionContextMenu() {
+    if (this.contextMenuTarget?.type !== "selection") return;
+    this.closeContextMenu();
+  }
+
   hideSelectionActions(clearSelection = false) {
     const state = this.selectionActionState;
     this.selectionActionState = null;
+    this.closeSelectionContextMenu();
     this.selectionCopyHistoryIndex = 0;
     clearTimeout(this.selectionActionUpdateTimer);
     this.selectionActionUpdateTimer = 0;
@@ -9147,6 +9629,7 @@ class TermdeckApp {
     if (!actions || !panel) return;
     const state = this.selectionActionState || this.readSelectionActionState();
     if (state) this.selectionActionState = state;
+    this.closeSelectionContextMenu();
     actions.classList.add("history-picker");
     actions.classList.remove("hidden");
     panel.classList.remove("hidden");
@@ -9256,6 +9739,43 @@ class TermdeckApp {
     }
     input.value = query;
     void this.runNameSearch();
+    return true;
+  }
+
+  recentAgentSessionsForContextMenu() {
+    return this.sessions.filter((session) => session.agent_kind && session.agent_kind !== "none" &&
+      (session.running || session.dormant)).sort((left, right) => {
+      const activityDifference = this.sessionActivityTime(right) - this.sessionActivityTime(left);
+      if (activityDifference) return activityDifference;
+      return this.agentSessionContextLabel(left).localeCompare(this.agentSessionContextLabel(right));
+    });
+  }
+
+  agentSessionContextLabel(session) {
+    const title = this.titlePresentation(session).text.trim();
+    const cwd = String(session.cwd || "").replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop() || "";
+    const name = title || cwd || session.session_id;
+    return (TERMINAL_ICON_AGENT_LABELS[session.agent_kind] || session.agent_kind) + " · " + name;
+  }
+
+  pasteSelectionIntoAgent(sessionId, text = "") {
+    const value = this.normalizeSelectionText(text || this.selectionActionState?.text);
+    const session = this.session(sessionId);
+    if (!value || !session || !session.agent_kind || session.agent_kind === "none" ||
+        (!session.running && !session.dormant)) return false;
+    this.hideSelectionActions(true);
+    const view = this.ensureView(sessionId);
+    if (!this.queuePendingAgentPaste(view, value)) return false;
+    if (!view.ws) this.connect(sessionId, view);
+    this.$("status-name").textContent = "selected text queued for " + this.agentSessionContextLabel(session);
+    return true;
+  }
+
+  openNewAgentFromSelection(text = "") {
+    const value = this.normalizeSelectionText(text || this.selectionActionState?.text);
+    if (!value) return false;
+    this.hideSelectionActions(true);
+    this.openModal(null, null, value);
     return true;
   }
 
@@ -9897,6 +10417,7 @@ class TermdeckApp {
       if (spinning && !this.processingSince.has(id)) this.processingSince.set(id, Date.now());
       if (!spinning) this.processingSince.delete(id);
     }
+    this.saveActiveFileViewState();
     this.activeFileKey = null;
     this.stopHistoryRefresh();
     this.disconnectHistoryStream();
@@ -10095,13 +10616,14 @@ class TermdeckApp {
                    reconnectAfterClose: false, claudeInitialReplayCheckTimer: 0,
                    claudeInitialReplayRecoveryAttempted: false,
                    claudeSnapshotAddon: null, claudeSnapshotRestoreAttempted: false, claudeSnapshotRestored: false,
-                   claudeSnapshotRequiresRepaint: false,
+                   claudeSnapshotRequiresRepaint: false, claudeSnapshotBlankScreenPending: false,
                    claudeSnapshotSaveTimer: 0, claudeSnapshotSavePromise: null,
                    claudeStatusRowRefreshTimer: 0, historyModelRefreshTimer: 0, lastClaudeStatusRowRefreshAt: 0,
                    codexFocusRefreshFrame: 0,
                    promptQueue: this.markdownPromptQueueForSession(id), promptQueueEditIndex: null, promptQueueDispatching: false,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, promptDraftSyncDebounceTimer: 0,
-                   pendingDraftSync: null, pendingTerminalDraft: null,
+                   pendingDraftSync: null, pendingTerminalDraft: null, pendingAgentPaste: "", pendingAgentPasteTimer: 0,
+                   pendingAgentPasteStartedAt: 0, pendingAgentPasteReadyAt: 0,
                    promptEditVersion: 0, promptSubmitVersion: -1 };
     const releaseManualScrollWhenStable = () => {
       clearTimeout(view.manualScrollReleaseTimer);
@@ -10455,6 +10977,40 @@ class TermdeckApp {
     return false;
   }
 
+  claudeBottomViewportHasVisibleContent(view) {
+    const buffer = view?.term?.buffer?.active;
+    if (!buffer) return false;
+    const start = Math.max(0, Number(buffer.baseY || 0));
+    const end = Math.min(buffer.length, start + Math.max(1, view.term.rows));
+    for (let row = start; row < end; row += 1) {
+      if (buffer.getLine(row)?.translateToString(true).trim()) return true;
+    }
+    return false;
+  }
+
+  claudeLastContentLineAboveBottomViewport(view) {
+    const buffer = view?.term?.buffer?.active;
+    if (!buffer) return -1;
+    const searchStart = Math.max(0, Number(buffer.baseY || 0) - 1);
+    const searchEnd = Math.max(0, searchStart - Math.max(view.term.rows * 4, 120));
+    for (let row = searchStart; row >= searchEnd; row -= 1) {
+      if (buffer.getLine(row)?.translateToString(true).trim()) return row;
+    }
+    return -1;
+  }
+
+  revealClaudeContentAbovePendingBlankScreen(view) {
+    if (!view?.claudeSnapshotBlankScreenPending || !this.isClaudeSnapshotView(view)) return false;
+    if (this.claudeBottomViewportHasVisibleContent(view)) {
+      view.claudeSnapshotBlankScreenPending = false;
+      return false;
+    }
+    const contentLine = this.claudeLastContentLineAboveBottomViewport(view);
+    if (contentLine < 0) return false;
+    this.scrollTerminalV2ToLine(view, Math.max(0, contentLine - view.term.rows + 1));
+    return true;
+  }
+
   async restoreClaudeSnapshot(view) {
     if (!this.ensureClaudeSnapshotAddon(view)) return false;
     if (view.container.classList.contains("visible")) view.fit.fit();
@@ -10475,15 +11031,19 @@ class TermdeckApp {
       }
       const sessionIsProcessing = !!this.session(view.sessionId)?.processing;
       const requiresRepaint = record.formatVersion === 3 || sessionIsProcessing;
-      if (record.formatVersion === 3) historySnapshot = record.snapshot;
-      if (requiresRepaint) {
+      const legacyHistoryOnlySnapshot = record.formatVersion === 3;
+      if (legacyHistoryOnlySnapshot) {
+        historySnapshot = record.snapshot;
         const emptyScreen = `\x1b[0m${"\r\n".repeat(Math.max(1, view.term.rows))}\x1b[2J\x1b[H`;
         await new Promise((resolve) => view.term.write(historySnapshot + emptyScreen, resolve));
       } else {
         await new Promise((resolve) => view.term.write(fullSnapshot, resolve));
       }
       view.claudeSnapshotRestored = true;
-      view.claudeSnapshotRequiresRepaint = requiresRepaint;
+      const restoredWithBlankTail = !this.claudeBottomViewportHasVisibleContent(view) &&
+        this.claudeLastContentLineAboveBottomViewport(view) >= 0;
+      view.claudeSnapshotRequiresRepaint = requiresRepaint || restoredWithBlankTail;
+      view.claudeSnapshotBlankScreenPending = restoredWithBlankTail;
       view.claudeSnapshotRestoredCols = record.cols;
       return true;
     } catch (error) {
@@ -10493,7 +11053,8 @@ class TermdeckApp {
   }
 
   scheduleClaudeSnapshotSave(view) {
-    if (!this.ensureClaudeSnapshotAddon(view) || !this.claudeTerminalBufferHasContent(view)) return;
+    if (!this.ensureClaudeSnapshotAddon(view) || view.claudeSnapshotBlankScreenPending ||
+        !this.claudeTerminalBufferHasContent(view)) return;
     clearTimeout(view.claudeSnapshotSaveTimer);
     view.claudeSnapshotSaveTimer = setTimeout(() => {
       view.claudeSnapshotSaveTimer = 0;
@@ -10502,7 +11063,8 @@ class TermdeckApp {
   }
 
   async persistClaudeSnapshot(view) {
-    if (!this.ensureClaudeSnapshotAddon(view) || !this.claudeTerminalBufferHasContent(view)) return;
+    if (!this.ensureClaudeSnapshotAddon(view) || view.claudeSnapshotBlankScreenPending ||
+        !this.claudeTerminalBufferHasContent(view)) return;
     if (view.claudeSnapshotSavePromise) return view.claudeSnapshotSavePromise;
     let snapshot, historySnapshot;
     try {
@@ -10615,6 +11177,7 @@ class TermdeckApp {
       }
       this.flushPromptSync(view);
       this.dispatchNextMarkdownPrompt(view);
+      if (view.pendingAgentPaste) this.schedulePendingAgentPaste(view, AGENT_PASTE_RETRY_DELAY_MS);
     };
     ws.onmessage = (e) => {
       if (typeof e.data === "string") { this.handleControl(id, view, JSON.parse(e.data)); return; }
@@ -10647,6 +11210,7 @@ class TermdeckApp {
         this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
           this.refreshTerminal(view);
           view.replaying = false;
+          this.schedulePendingAgentPaste(view);
           if (!view.reconnectReset && this.session(id)?.agent_kind === "claude") {
             this.scheduleClaudeInitialReplayRecovery(id, view);
           }
@@ -10703,7 +11267,10 @@ class TermdeckApp {
       const followOutput = this.isTerminalScrollV2() ? false : view.keepBottom || Date.now() < view.pinBottomUntil;
       const outputScrollGeneration = view.manualScrollGeneration;
       this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
-        if (shouldRepaintClaudeBuffer && e.data.byteLength > 0) view.claudeSnapshotRequiresRepaint = false;
+        if (shouldRepaintClaudeBuffer && e.data.byteLength > 0 && this.claudeBottomViewportHasVisibleContent(view)) {
+          view.claudeSnapshotRequiresRepaint = false;
+          view.claudeSnapshotBlankScreenPending = false;
+        }
         if (this.isTerminalScrollV2()) {
           if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
           return;
@@ -11204,6 +11771,7 @@ class TermdeckApp {
     if (!view || view.closed) return;
     view.userScrollIntent = false;
     view.scrollMode = "follow";
+    if (this.revealClaudeContentAbovePendingBlankScreen(view)) return;
     view.v2Programmatic = true;
     view.term.scrollToBottom();
     queueMicrotask(() => {
@@ -12168,6 +12736,7 @@ class TermdeckApp {
     clearTimeout(view.promptDraftSyncTimer);
     clearTimeout(view.promptDraftSyncDebounceTimer);
     clearTimeout(view.manualRepaintClickTimer);
+    clearTimeout(view.pendingAgentPasteTimer);
     this.cancelTerminalViewportRestore(view);
     for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
     if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
@@ -12194,6 +12763,12 @@ class TermdeckApp {
     try {
       const res = await fetch("/api/settings");
       const incoming = await res.json();
+      const legacyTerminalIconsEnabled = incoming.show_terminal_icons === true;
+      const storedTerminalIconAgents = incoming.terminal_icon_agents && typeof incoming.terminal_icon_agents === "object"
+        ? incoming.terminal_icon_agents : {};
+      incoming.terminal_icon_agents = Object.fromEntries(TERMINAL_ICON_AGENT_KINDS.map((kind) => [kind,
+        Object.prototype.hasOwnProperty.call(storedTerminalIconAgents, kind)
+          ? !!storedTerminalIconAgents[kind] : legacyTerminalIconsEnabled]));
       if (incoming.code_font_size == null) incoming.code_font_size = incoming.viewer_font_size || SETTINGS_DEFAULTS.code_font_size;
       if (incoming.side_split != null && incoming.side_split !== SETTINGS_DEFAULTS.side_split) {
         incoming.side_split_user_set = true;
@@ -12380,13 +12955,21 @@ class TermdeckApp {
     this.positionFloatingFilesPanel(floatingFileWidth);
     document.documentElement.style.setProperty("--sidebar-font-size", s.sidebar_font_size + "px");
     document.documentElement.style.setProperty("--project-font-size", s.project_font_size + "px");
+    document.documentElement.style.setProperty("--terminal-font-size", s.terminal_font_size + "px");
     document.documentElement.style.setProperty("--ui-font-size", s.ui_font_size + "px");
     document.documentElement.style.setProperty("--files-tab-font-size", s.files_tab_font_size + "px");
     document.documentElement.style.setProperty("--code-font-size", s.code_font_size + "px");
     document.documentElement.style.setProperty("--bottom-font-size", s.bottom_font_size + "px");
     document.documentElement.style.setProperty("--ui-scale", String(this.normalizeUiScale((Number(s.bottom_font_size) || SETTINGS_DEFAULTS.bottom_font_size) / SETTINGS_DEFAULTS.bottom_font_size)));
     document.documentElement.style.setProperty("--sidebar-text-color", s.sidebar_text_color);
-    document.documentElement.style.setProperty("--terminal-icon-size", `${Math.max(FONT_MIN, Math.min(FONT_MAX, Number(s.terminal_icon_size) || SETTINGS_DEFAULTS.terminal_icon_size))}px`);
+    const terminalIconSize = Math.max(FONT_MIN, Math.min(FONT_MAX, Number(s.terminal_icon_size) || SETTINGS_DEFAULTS.terminal_icon_size));
+    const terminalStatusDotSize = Math.max(5, Math.min(10, terminalIconSize * 0.43));
+    const terminalStatusDotLeft = 2 + (terminalIconSize - terminalStatusDotSize) / 2;
+    const terminalRowLeftPadding = Math.max(20, terminalIconSize + 7);
+    document.documentElement.style.setProperty("--terminal-icon-size", `${terminalIconSize}px`);
+    document.documentElement.style.setProperty("--terminal-status-dot-size", `${terminalStatusDotSize}px`);
+    document.documentElement.style.setProperty("--terminal-status-dot-left", `${terminalStatusDotLeft}px`);
+    document.documentElement.style.setProperty("--terminal-row-left-padding", `${terminalRowLeftPadding}px`);
     this.updateSessionAgeStyles();
     const codeFontSize = Number(s.code_font_size) || SETTINGS_DEFAULTS.code_font_size;
     const configuredDiffFontSize = Number(s.diff_font_size) || SETTINGS_DEFAULTS.diff_font_size;
@@ -12809,8 +13392,7 @@ class TermdeckApp {
       anchor.focus();
     };
     pop.appendChild(this.buildThemeSelectRow());
-    pop.appendChild(this.buildToggleRow("Terminal icons", () => (this.settings.show_terminal_icons ? "on" : "off"),
-      () => { this.settings.show_terminal_icons = !this.settings.show_terminal_icons; this.renderList(); }));
+    pop.appendChild(this.buildTerminalIconSettingsRow());
     pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));
     for (const item of items) {
@@ -13055,6 +13637,53 @@ class TermdeckApp {
     };
     row.append(label, button);
     return row;
+  }
+
+  buildTerminalIconSettingsRow() {
+    const rows = document.createDocumentFragment();
+    const heading = document.createElement("div");
+    heading.className = "settings-row terminal-icon-settings-row";
+    const label = document.createElement("span");
+    label.className = "settings-label";
+    label.textContent = "Show terminal icons";
+    heading.appendChild(label);
+    rows.appendChild(heading);
+    const row = document.createElement("div");
+    row.className = "settings-row terminal-icon-agent-row";
+    const controls = document.createElement("span");
+    controls.className = "settings-controls terminal-icon-settings-controls";
+    const buttons = new Map();
+    const updateButtons = () => {
+      for (const [kind, button] of buttons) {
+        const enabled = this.terminalIconEnabledForAgent(kind);
+        const labelText = TERMINAL_ICON_AGENT_LABELS[kind];
+        button.textContent = labelText;
+        button.classList.toggle("on", enabled);
+        button.setAttribute("aria-pressed", String(enabled));
+        button.title = `${labelText} terminal icons: ${enabled ? "on" : "off"}`;
+        button.setAttribute("aria-label", button.title);
+      }
+    };
+    for (const kind of TERMINAL_ICON_AGENT_KINDS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "theme-toggle terminal-icon-agent-toggle";
+      button.title = `${TERMINAL_ICON_AGENT_LABELS[kind]} terminal icon`;
+      button.setAttribute("aria-label", button.title);
+      button.onclick = () => {
+        this.setTerminalIconEnabledForAgent(kind, !this.terminalIconEnabledForAgent(kind));
+        updateButtons();
+        this.applySettings();
+        this.saveSettings();
+        this.renderList();
+      };
+      buttons.set(kind, button);
+      controls.appendChild(button);
+    }
+    updateButtons();
+    row.appendChild(controls);
+    rows.appendChild(row);
+    return rows;
   }
 
   normalizeUiScale(value) {
@@ -13611,6 +14240,13 @@ class TermdeckApp {
     }
   }
 
+  saveActiveFileViewState() {
+    if (this.activeFileKey === null || !this.editor) return;
+    const entry = this.openFiles.get(this.activeFileKey);
+    if (!entry?.model || this.editor.getModel() !== entry.model) return;
+    entry.viewState = this.editor.saveViewState();
+  }
+
   positionPopover(pop, anchor) {
     const rect = anchor.getBoundingClientRect();
     pop.classList.remove("hidden");
@@ -13625,6 +14261,7 @@ class TermdeckApp {
     if (!entry) return;
     this.closeTerminalFind();
     this.closePromptHistory();
+    if (this.activeFileKey !== key) this.saveActiveFileViewState();
     this.activeFileKey = key;
     if (options.history !== false && !this.vscodeMode) {
       const requestedReturnTo = typeof options.returnTo === "string" ? options.returnTo.trim() : "";
@@ -13658,7 +14295,7 @@ class TermdeckApp {
     if (line) {
       this.editor.revealLineInCenter(line);
       this.editor.setPosition({ lineNumber: line, column: 1 });
-    }
+    } else if (entry.viewState) this.editor.restoreViewState(entry.viewState);
     this.editor.focus();
     this.renderList();
     this.renderTopbar();
@@ -13677,6 +14314,7 @@ class TermdeckApp {
       return true;
     }
     const activeId = this.activeId;
+    this.saveActiveFileViewState();
     this.activeFileKey = null;
     this.applyMainLayout();
     this.renderList();
@@ -14184,7 +14822,8 @@ class TermdeckApp {
     }
   }
 
-  openModal(groupId = null, afterSessionId = null) {
+  openModal(groupId = null, afterSessionId = null, initialAgentText = "") {
+    this.pendingNewAgentSelection = this.normalizeSelectionText(initialAgentText);
     this.modalGroupId = !this.vscodeMode && groupId && this.terminalGroups().some((group) => group.id === groupId)
       ? groupId : null;
     this.modalAfterSessionId = !this.modalGroupId && afterSessionId && this.session(afterSessionId) ? afterSessionId : null;
@@ -14204,6 +14843,7 @@ class TermdeckApp {
   closeModal() {
     this.modalGroupId = null;
     this.modalAfterSessionId = null;
+    this.pendingNewAgentSelection = "";
     this.$("modal-backdrop").classList.add("hidden");
   }
 
@@ -14224,6 +14864,18 @@ class TermdeckApp {
 
   async createSession() {
     if (this.$("modal-backdrop").classList.contains("hidden")) return;
+    const createButton = this.$("modal-create");
+    if (createButton.disabled) return;
+    createButton.disabled = true;
+    try {
+      await this.createSessionFromModal();
+    } finally {
+      createButton.disabled = false;
+    }
+  }
+
+  async createSessionFromModal() {
+    const pendingAgentText = this.pendingNewAgentSelection;
     const targetGroupId = this.modalGroupId;
     const requestedAfterSessionId = this.modalAfterSessionId;
     const model = this.$("modal-model").value;
@@ -14269,6 +14921,8 @@ class TermdeckApp {
       this.repositionSelectedSessions([created.session_id], anchorSessionId, true);
     }
     this.activate(created.session_id, { reveal: true });
+    const createdView = this.views.get(created.session_id);
+    if (createdView && pendingAgentText) this.queuePendingAgentPaste(createdView, pendingAgentText);
   }
 
   createShortcutSection(title) {
@@ -14684,7 +15338,7 @@ class TermdeckApp {
     else if (actionId === "view-terminals") this.setSideView("terminals");
     else if (actionId === "switch-project") this.openProjectSwitcher();
     else if (actionId === "toggle-notebook") this.toggleNotebook();
-    else if (actionId === "selection-copy") this.copySelectionToClipboard(true);
+    else if (actionId === "selection-copy") this.copySelectionToClipboard();
     else if (actionId === "selection-note-new") void this.createNotebookNoteFromSelection();
     else if (actionId === "selection-note-append") void this.appendSelectionToNotebook();
     else if (actionId === "selection-copy-history") this.toggleSelectionCopyHistory();
@@ -15101,11 +15755,19 @@ class TermdeckApp {
     return this.splitFileGlobTokens(this.settings.excluded_file_glob || this.settings.search_glob || "").filter((token) => token.startsWith("!"));
   }
 
-  updateFileTypeFilterTokens(tokens) {
-    const normalized = [...new Set(tokens.map((token) => {
+  recentFileExcludeTokens() {
+    return this.splitFileGlobTokens(this.getProjectState().recent_file_exclude_glob);
+  }
+
+  normalizedFileExclusionTokens(tokens) {
+    return [...new Set(tokens.map((token) => {
       const value = String(token).trim();
       return value ? (value.startsWith("!") ? value : `!${value}`) : "";
     }).filter(Boolean))];
+  }
+
+  updateFileTypeFilterTokens(tokens) {
+    const normalized = this.normalizedFileExclusionTokens(tokens);
     this.settings.hide_dot_folders = normalized.includes("!.*");
     this.settings.excluded_file_glob = normalized.join(", ");
     this.updateHideDotButton();
@@ -15117,10 +15779,24 @@ class TermdeckApp {
     else this.rerenderTree();
   }
 
+  updateVisibleFileTypeFilterTokens(tokens) {
+    if (this.fileTypeFilterMenuMode !== "recent") {
+      this.updateFileTypeFilterTokens(tokens);
+      return;
+    }
+    this.patchProjectState({ recent_file_exclude_glob: this.normalizedFileExclusionTokens(tokens).join(", ") });
+    this.recentFilesExpanded = false;
+    this.renderList();
+    this.$("recent-file-type-filter-button")?.setAttribute("aria-expanded", "true");
+    this.renderFileTypeFilterMenu();
+  }
+
   closeFileTypeFilterMenu() {
     this.$("file-type-filter-menu")?.classList.add("hidden");
     this.fileTypeFilterMenuMode = "name";
-    for (const id of ["file-type-filter-button", "search-file-type-filter-button"]) this.$(id)?.setAttribute("aria-expanded", "false");
+    for (const id of ["file-type-filter-button", "search-file-type-filter-button", "recent-file-type-filter-button"]) {
+      this.$(id)?.setAttribute("aria-expanded", "false");
+    }
   }
 
   toggleFileTypeFilterMenu(button) {
@@ -15130,9 +15806,12 @@ class TermdeckApp {
       return;
     }
     this.closeSearchHistory();
-    this.fileTypeFilterMenuMode = button.id === "search-file-type-filter-button" ? "search" : "name";
+    this.fileTypeFilterMenuMode = button.id === "search-file-type-filter-button" ? "search" :
+      button.id === "recent-file-type-filter-button" ? "recent" : "name";
     menu.classList.remove("hidden");
-    for (const id of ["file-type-filter-button", "search-file-type-filter-button"]) this.$(id)?.setAttribute("aria-expanded", String(id === button.id));
+    for (const id of ["file-type-filter-button", "search-file-type-filter-button", "recent-file-type-filter-button"]) {
+      this.$(id)?.setAttribute("aria-expanded", String(id === button.id));
+    }
     this.renderFileTypeFilterMenu();
     const rect = button.getBoundingClientRect();
     const width = Math.min(360, window.innerWidth - 20);
@@ -15151,7 +15830,8 @@ class TermdeckApp {
     head.className = "file-type-filter-head";
     const title = document.createElement("span");
     title.className = "file-type-filter-title";
-    title.textContent = this.fileTypeFilterMenuMode === "search" ? "Search file filters" : "Name search filters";
+    title.textContent = this.fileTypeFilterMenuMode === "search" ? "Search file filters" :
+      this.fileTypeFilterMenuMode === "recent" ? "Recently modified filters" : "Name search filters";
     head.appendChild(title);
     menu.appendChild(head);
     if (this.fileTypeFilterMenuMode === "search") {
@@ -15181,7 +15861,7 @@ class TermdeckApp {
     menu.appendChild(excludeLabel);
     const list = document.createElement("div");
     list.className = "file-type-filter-chip-list";
-    const tokens = this.fileTypeFilterTokens();
+    const tokens = this.fileTypeFilterMenuMode === "recent" ? this.recentFileExcludeTokens() : this.fileTypeFilterTokens();
     for (const [index, token] of tokens.entries()) {
       const chip = document.createElement("span");
       chip.className = "file-type-filter-chip";
@@ -15192,7 +15872,7 @@ class TermdeckApp {
       remove.title = token === "!.*" ? "Include hidden files" : "Remove exclusion";
       remove.setAttribute("aria-label", token === "!.*" ? "Include hidden files" : `Remove ${token}`);
       remove.innerHTML = '<span class="codicon codicon-close"></span>';
-      remove.onclick = () => this.updateFileTypeFilterTokens(tokens.filter((candidate) => candidate !== token));
+      remove.onclick = () => this.updateVisibleFileTypeFilterTokens(tokens.filter((candidate) => candidate !== token));
       remove.onkeydown = (event) => {
         const buttons = [...list.querySelectorAll(".file-type-filter-chip button")];
         if (event.key === "ArrowLeft" && index > 0) {
@@ -15203,7 +15883,7 @@ class TermdeckApp {
           (buttons[index + 1] || input)?.focus();
         } else if (event.key === "Backspace" || event.key === "Delete") {
           event.preventDefault();
-          this.updateFileTypeFilterTokens(tokens.filter((_, candidateIndex) => candidateIndex !== index));
+          this.updateVisibleFileTypeFilterTokens(tokens.filter((_, candidateIndex) => candidateIndex !== index));
         }
       };
       chip.appendChild(remove);
@@ -15230,11 +15910,11 @@ class TermdeckApp {
         event.preventDefault();
         const value = input.value.trim();
         if (!value) return;
-        this.updateFileTypeFilterTokens([...tokens, value]);
+        this.updateVisibleFileTypeFilterTokens([...tokens, value]);
         this.$("file-type-filter-manual-input")?.focus();
       } else if (event.key === "Backspace" && !input.value && tokens.length) {
         event.preventDefault();
-        this.updateFileTypeFilterTokens(tokens.slice(0, -1));
+        this.updateVisibleFileTypeFilterTokens(tokens.slice(0, -1));
         this.$("file-type-filter-manual-input")?.focus();
       } else if (event.key === "ArrowLeft" && input.selectionStart === 0 && tokens.length) {
         event.preventDefault();

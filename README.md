@@ -342,6 +342,10 @@ TermDeck also keeps a bounded copied-text history. **⌘⇧V** opens a keyboard-
 the currently focused terminal, conversation prompt, file, or note. The notebook's **Copied** tab provides a
 larger view for reviewing and reusing snippets.
 
+Right-click selected terminal, conversation, file, or note text to copy it, add it to notes, search from it,
+or open the New terminal dialog as **Ask an agent**; the selected text is pasted into the new agent after it
+starts.
+
 ### Automation and parallel agents
 
 The localhost API can create a persistent terminal, select Codex, Claude, AGY, or shell, choose a model and

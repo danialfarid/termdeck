@@ -46,8 +46,8 @@
       <button id="tree-sort-toggle" title="Sort files alphabetically"><span class="codicon codicon-sort-precedence"></span></button>
       <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-filter"></span></button>
       <button id="git-refresh" class="hidden" title="Refresh Git status"><span class="codicon codicon-refresh"></span></button>
-      <button id="minimize-toggle" class="far-right" title="Minimize panel"><span class="codicon codicon-chrome-minimize"></span></button>
       <button id="files-pin-toggle" title="Keep this panel open after opening a file" aria-label="Pin file panel" aria-pressed="false"><span class="codicon codicon-pin"></span></button>
+      <button id="minimize-toggle" class="far-right" title="Minimize panel"><span class="codicon codicon-chrome-minimize"></span></button>
     </div>
     <div id="files-explorer-panel">
       <div id="name-search-bar">
@@ -334,7 +334,7 @@
   </section>
 </div>
 <div id="modal-backdrop" class="hidden">
-  <div id="modal">
+  <form id="modal" autocomplete="off">
     <div class="modal-title">New terminal</div>
     <label>Model<select id="modal-model">
       <option value="codex">Codex</option>
@@ -345,16 +345,16 @@
     <label id="modal-permission-field">Permission<select id="modal-permission"></select></label>
     <label>Session name / Resume existing session<input id="modal-session-title" list="modal-session-refs" placeholder="optional: name this terminal or saved ID/name to resume" spellcheck="false"></label>
     <datalist id="modal-session-refs"></datalist>
-    <label>Directory<div id="modal-project-picker"><input id="modal-cwd" placeholder="~/projects/my-app" spellcheck="false"><button id="modal-project-add-btn" title="Add project folder" aria-label="Add project folder"><span class="codicon codicon-new-folder"></span></button></div></label>
+    <label>Directory<div id="modal-project-picker"><input id="modal-cwd" placeholder="~/projects/my-app" spellcheck="false"><button id="modal-project-add-btn" type="button" title="Add project folder" aria-label="Add project folder"><span class="codicon codicon-new-folder"></span></button></div></label>
     <div id="modal-error" class="hidden" role="alert" aria-live="assertive">
       <div id="modal-error-message"></div>
       <button id="modal-error-install" class="hidden" type="button">Install with Homebrew</button>
     </div>
     <div class="modal-actions">
-      <button id="modal-cancel">Cancel</button>
-      <button id="modal-create">Open</button>
+      <button id="modal-cancel" type="button">Cancel</button>
+      <button id="modal-create" type="submit">Open</button>
     </div>
-  </div>
+  </form>
 </div>
 <div id="worktree-modal-backdrop" class="hidden">
   <div id="worktree-modal">
