@@ -1,0 +1,682 @@
+diff --git a/termdeck/search_service.py b/termdeck/search_service.py
+index e69c368..95e5665 100644
+--- a/termdeck/search_service.py
++++ b/termdeck/search_service.py
+@@ -1,5 +1,8 @@
+-import asyncio
++import os
++import fnmatch
+ import re
++import asyncio
++import time
+ 
+ from termdeck.config import TermdeckConfig
+ from termdeck.file_service import ProjectFileService
+@@ -15,6 +18,96 @@ class ProjectSearchService:
+     def __init__(self, files: ProjectFileService) -> None:
+         self._files = files
+ 
++    @staticmethod
++    def _split_tokens(raw: str) -> tuple[list[str], list[str]]:
++        exact = []
++        wildcard = []
++        for token in (value.strip() for value in raw.split(",") if value.strip()):
++            if any(ch in token for ch in "*?[]"):
++                wildcard.append(token)
++            else:
++                exact.append(token)
++        return exact, wildcard
++
++    @staticmethod
++    def _path_matches_glob(path: str, patterns: list[str]) -> bool:
++        if not patterns:
++            return False
++        normalized = path.replace("\\", "/")
++        segments = normalized.split("/")
++        return any(fnmatch.fnmatch(normalized, pattern) or segment == pattern for pattern in patterns for segment in segments)
++
++    @staticmethod
++    def _path_is_ignored(path: str, exact: list[str], wildcard: list[str]) -> bool:
++        if not path or (not exact and not wildcard):
++            return False
++        normalized = path.replace("\\", "/")
++        parts = set(normalized.split("/"))
++        for part in parts:
++            for pattern in exact:
++                if part == pattern or (pattern.startswith(".") and part.startswith(pattern)):
++                    return True
++        return any(fnmatch.fnmatch(normalized, pattern) or
++                   fnmatch.fnmatch(f"{normalized}/", pattern) or
++                   any(fnmatch.fnmatch(part, pattern) for part in parts) for pattern in wildcard)
++
++    def _python_search(self, base: os.PathLike[str], query: str, glob: str, ignore: str, word: bool,
++                       case_sensitive: bool, regex: bool) -> list[dict[str, str | int]]:
++        query_lower = query.lower()
++        pattern = query if regex else re.escape(query)
++        if word:
++            pattern = rf"\b(?:{pattern})\b"
++        flags = re.IGNORECASE if (not case_sensitive and query == query_lower) else 0
++        compiled = re.compile(pattern, flags)
++        ignore_exact, ignore_wildcard = self._split_tokens(ignore)
++        include_patterns = [value.strip() for value in glob.split(",") if value.strip()]
++        results: list[dict[str, str | int]] = []
++        mtime_cache: dict[str, int] = {}
++        base_path = os.fspath(base)
++        deadline = time.monotonic() + TermdeckConfig.SEARCH_TIMEOUT_SECONDS
++        for current, dirs, files in os.walk(base_path):
++            if time.monotonic() > deadline:
++                return results
++            rel_dir = os.path.relpath(current, base_path)
++            if rel_dir == ".":
++                rel_dir = ""
++            keep_dirs = []
++            for directory in dirs:
++                rel_directory = directory if not rel_dir else f"{rel_dir}/{directory}"
++                if self._path_is_ignored(rel_directory, ignore_exact, ignore_wildcard):
++                    continue
++                keep_dirs.append(directory)
++            dirs[:] = keep_dirs
++            for name in files:
++                rel_path = name if not rel_dir else f"{rel_dir}/{name}"
++                if self._path_is_ignored(rel_path, ignore_exact, ignore_wildcard):
++                    continue
++                if include_patterns and not self._path_matches_glob(rel_path, include_patterns):
++                    continue
++                if time.monotonic() > deadline:
++                    return results
++                path = os.path.join(base_path, rel_path)
++                try:
++                    stat = os.stat(path)
++                    if stat.st_size > TermdeckConfig.FILE_READ_MAX_BYTES:
++                        continue
++                    with open(path, "rb") as handle:
++                        text = handle.read(TermdeckConfig.FILE_READ_MAX_BYTES)
++                    if b"\x00" in text[:8192]:
++                        continue
++                    lines = text.decode("utf-8", errors="replace").splitlines()
++                except (FileNotFoundError, OSError, UnicodeDecodeError):
++                    continue
++                rel = rel_path
++                mtime_cache.setdefault(rel, int(stat.st_mtime))
++                for number, line in enumerate(lines, 1):
++                    if not compiled.search(line):
++                        continue
++                    results.append({"path": rel, "line": number, "text": line.strip()[:240], "mtime": mtime_cache[rel]})
++                    if len(results) >= TermdeckConfig.SEARCH_MAX_RESULTS:
++                        return results
++        return results
++
+     async def search(self, root: str, query: str, glob: str, ignore: str, word: bool,
+                      case_sensitive: bool, regex: bool) -> list[dict[str, str | int]]:
+         base = self._files.resolve_confined(root, "")
+@@ -30,31 +123,36 @@ class ProjectSearchService:
+         for directory in (token.strip() for token in ignore.split(",") if token.strip()):
+             argv.extend(("--glob", f"!**/{directory}/**", "--glob", f"!{directory}/**"))
+         argv.extend(("--", query, str(base)))
+-        proc = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE,
+-                                                    stderr=asyncio.subprocess.DEVNULL)
+         try:
+-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=TermdeckConfig.SEARCH_TIMEOUT_SECONDS)
+-        except asyncio.TimeoutError:
+-            proc.kill()
+-            return []
+-        results: list[dict[str, str | int]] = []
+-        prefix = str(base) + "/"
+-        mtime_cache: dict[str, int] = {}
+-        for line in stdout.decode(errors="replace").splitlines():
+-            parts = line.split(":", self._LINE_PARTS - 1)
+-            if len(parts) < self._LINE_PARTS:
+-                continue
+-            path, line_no, text = parts
+-            rel = path[len(prefix):] if path.startswith(prefix) else path
+-            if rel not in mtime_cache:
+-                try:
+-                    mtime_cache[rel] = int((base / rel).stat().st_mtime)
+-                except (FileNotFoundError, OSError):
+-                    mtime_cache[rel] = 0
+-            results.append({"path": rel, "line": int(line_no), "text": text.strip()[:240], "mtime": mtime_cache[rel]})
+-            if len(results) >= TermdeckConfig.SEARCH_MAX_RESULTS:
+-                break
+-        return results
++            proc = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE,
++                                                        stderr=asyncio.subprocess.DEVNULL)
++            try:
++                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=TermdeckConfig.SEARCH_TIMEOUT_SECONDS)
++            except asyncio.TimeoutError:
++                proc.kill()
++                return []
++            results = []
++            prefix = str(base) + "/"
++            mtime_cache: dict[str, int] = {}
++            for line in stdout.decode(errors="replace").splitlines():
++                parts = line.split(":", self._LINE_PARTS - 1)
++                if len(parts) < self._LINE_PARTS:
++                    continue
++                path, line_no, text = parts
++                rel = path[len(prefix):] if path.startswith(prefix) else path
++                if rel not in mtime_cache:
++                    try:
++                        mtime_cache[rel] = int((base / rel).stat().st_mtime)
++                    except (FileNotFoundError, OSError):
++                        mtime_cache[rel] = 0
++                results.append({"path": rel, "line": int(line_no), "text": text.strip()[:240], "mtime": mtime_cache[rel]})
++                if len(results) >= TermdeckConfig.SEARCH_MAX_RESULTS:
++                    break
++            if proc.returncode not in (None, 0):
++                return self._python_search(base, query, glob, ignore, word, case_sensitive, regex)
++            return results
++        except FileNotFoundError:
++            return self._python_search(base, query, glob, ignore, word, case_sensitive, regex)
+ 
+     async def replace_all(self, root: str, query: str, glob: str, ignore: str, word: bool, case_sensitive: bool,
+                           regex: bool, replacement: str) -> dict[str, int]:
+@@ -100,22 +198,30 @@ class ProjectSearchService:
+ 
+     async def find_files(self, root: str, query: str, ignore: str) -> list[dict[str, str | bool]]:
+         base = self._files.resolve_confined(root, "")
+-        argv = [TermdeckConfig.RG_BIN, "--files"]
+-        for directory in (token.strip() for token in ignore.split(",") if token.strip()):
+-            argv.extend(("--glob", f"!**/{directory}/**", "--glob", f"!{directory}/**"))
+-        proc = await asyncio.create_subprocess_exec(*argv, cwd=str(base), stdout=asyncio.subprocess.PIPE,
+-                                                    stderr=asyncio.subprocess.DEVNULL)
+         try:
+-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=TermdeckConfig.SEARCH_TIMEOUT_SECONDS)
++            argv = [TermdeckConfig.RG_BIN, "--files"]
++            for directory in (token.strip() for token in ignore.split(",") if token.strip()):
++                argv.extend(("--glob", f"!**/{directory}/**", "--glob", f"!{directory}/**"))
++            proc = await asyncio.create_subprocess_exec(*argv, cwd=str(base), stdout=asyncio.subprocess.PIPE,
++                                                        stderr=asyncio.subprocess.DEVNULL)
++            try:
++                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=TermdeckConfig.SEARCH_TIMEOUT_SECONDS)
++            except asyncio.TimeoutError:
++                proc.kill()
++                return []
++            lines = stdout.decode(errors="replace").splitlines()
++            if proc.returncode not in (None, 0):
++                return self._python_find_files(base, query, ignore)
++            stdout_lines = lines
+         except asyncio.TimeoutError:
+-            proc.kill()
+             return []
++        except FileNotFoundError:
++            return self._python_find_files(base, query, ignore)
+         # `rg --files` intentionally returns files only. Add the parent
+         # directories of those files as candidates so a folder name is a real
+-        # filename-search result too (while retaining rg's ignore/gitignore
+-        # behavior and avoiding a second full filesystem walk).
++        # filename-search result too while avoiding a second full filesystem walk.
+         candidates: set[tuple[str, bool]] = set()
+-        for rel in stdout.decode(errors="replace").splitlines():
++        for rel in stdout_lines:
+             rel = rel.strip()
+             if not rel:
+                 continue
+@@ -133,6 +239,41 @@ class ProjectSearchService:
+         scored.sort()
+         return [{"path": rel, "is_dir": is_dir} for _, _, _, _, rel, is_dir in scored[:TermdeckConfig.FIND_MAX_RESULTS]]
+ 
++    def _python_find_files(self, base: os.PathLike[str], query: str, ignore: str) -> list[dict[str, str | bool]]:
++        ignore_exact, ignore_wildcard = self._split_tokens(ignore)
++        candidates: set[tuple[str, bool]] = set()
++        base_path = os.fspath(base)
++        deadline = time.monotonic() + TermdeckConfig.SEARCH_TIMEOUT_SECONDS
++        for current, dirs, files in os.walk(base_path):
++            if time.monotonic() > deadline:
++                break
++            rel_dir = os.path.relpath(current, base_path)
++            if rel_dir == ".":
++                rel_dir = ""
++            keep_dirs = []
++            for directory in dirs:
++                rel_directory = directory if not rel_dir else f"{rel_dir}/{directory}"
++                if self._path_is_ignored(rel_directory, ignore_exact, ignore_wildcard):
++                    continue
++                candidates.add((rel_directory, True))
++                keep_dirs.append(directory)
++            dirs[:] = keep_dirs
++            for name in files:
++                rel_path = name if not rel_dir else f"{rel_dir}/{name}"
++                if self._path_is_ignored(rel_path, ignore_exact, ignore_wildcard):
++                    continue
++                candidates.add((rel_path, False))
++        scored: list[tuple[int, int, int, int, str, bool]] = []
++        for rel, is_dir in candidates:
++            basename = rel.rsplit("/", 1)[-1]
++            basename_score = self._fuzzy_span_score(query, basename)
++            path_score = basename_score if basename_score is not None else self._fuzzy_span_score(query, rel)
++            if path_score is None:
++                continue
++            scored.append((0 if basename_score is not None else 1, path_score, len(rel), int(not is_dir), rel, is_dir))
++        scored.sort()
++        return [{"path": rel, "is_dir": is_dir} for _, _, _, _, rel, is_dir in scored[:TermdeckConfig.FIND_MAX_RESULTS]]
++
+     @staticmethod
+     def _fuzzy_span_score(query: str, candidate: str) -> int | None:
+         lowered = candidate.lower()
+diff --git a/termdeck/server.py b/termdeck/server.py
+index bf18e0d..2a4ef16 100644
+--- a/termdeck/server.py
++++ b/termdeck/server.py
+@@ -2,12 +2,12 @@ import asyncio
+ import json
+ import re
+ import subprocess
+-from collections.abc import AsyncGenerator, Callable
++from collections.abc import AsyncGenerator, Callable, Awaitable
+ from contextlib import asynccontextmanager
+ from pathlib import Path
+ 
+ import uvicorn
+-from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
++from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+ from fastapi.responses import FileResponse
+ from fastapi.staticfiles import StaticFiles
+ from pydantic import BaseModel
+@@ -24,6 +24,36 @@ from termdeck.stats_service import ResourceStatsService
+ from termdeck.transcript_service import TranscriptService
+ 
+ 
++class CacheControlNoCacheMiddleware:
++    NO_CACHE_HEADER = b"no-cache, no-store, must-revalidate"
++    SKIP_PREFIX = "/static/vendor/"
++
++    def __init__(self, app: Callable[[dict[str, object], Callable[[], Awaitable[dict[str, object]]],
++                                      Callable[[dict[str, object]], Awaitable[None]]], Awaitable[None]]) -> None:
++        self.app = app
++
++    async def __call__(self, scope: dict[str, object], receive: Callable[[], Awaitable[dict[str, object]]],
++                       send: Callable[[dict[str, object]], Awaitable[None]]) -> None:
++        if scope.get("type") != "http":
++            await self.app(scope, receive, send)
++            return
++
++        path = scope.get("path", "")
++        if not isinstance(path, str) or path.startswith(self.SKIP_PREFIX):
++            await self.app(scope, receive, send)
++            return
++
++        async def send_with_cache_control(message: dict[str, object]) -> None:
++            if message.get("type") == "http.response.start":
++                headers = list(message.get("headers", []))
++                headers = [(name, value) for name, value in headers if name.lower() != b"cache-control"]
++                headers.append((b"cache-control", self.NO_CACHE_HEADER))
++                message["headers"] = headers
++            await send(message)
++
++        await self.app(scope, receive, send_with_cache_control)
++
++
+ class CreateSessionRequest(BaseModel):
+     command: str = ""
+     cwd: str = ""
+@@ -220,7 +250,7 @@ class TermdeckServer:
+ 
+     def build_app(self) -> FastAPI:
+         app = FastAPI(lifespan=self._lifespan)
+-        app.middleware("http")(self._no_cache_middleware)
++        app.add_middleware(CacheControlNoCacheMiddleware)
+         app.mount(TermdeckConfig.STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.STATIC_DIR), name=TermdeckConfig.STATIC_NAME)
+         app.get("/", response_model=None)(self._index)
+         app.get(TermdeckConfig.PROJECT_PAGE_ROUTE, response_model=None)(self._project_page)
+@@ -378,12 +408,6 @@ class TermdeckServer:
+         except (ValueError, FileNotFoundError, PermissionError, OSError) as delete_error:
+             raise HTTPException(status_code=400, detail=str(delete_error)) from delete_error
+ 
+-    async def _no_cache_middleware(self, request: Request, call_next: Callable) -> Response:
+-        response = await call_next(request)
+-        if not request.url.path.startswith("/static/vendor/"):
+-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+-        return response
+-
+     async def _index(self) -> FileResponse:
+         return FileResponse(TermdeckConfig.STATIC_DIR / TermdeckConfig.INDEX_FILE)
+ 
+diff --git a/termdeck/static/app.js b/termdeck/static/app.js
+index 32b71db..ead200d 100644
+--- a/termdeck/static/app.js
++++ b/termdeck/static/app.js
+@@ -38,6 +38,13 @@ const CLOSED_SESSIONS_MAX_DISPLAY = 100;
+ const ACTIVITY_SORT_BUCKET_MS = 15 * 60 * 1000;
+ const TERMINAL_TAIL_REPAIR_LINES = 16;
+ const TERMINAL_ACTIVATION_REFLOW_IDLE_MS = 1200;
++const TERMINAL_BLACK_RECOVERY_MAX_MS = 200000;
++const TERMINAL_BLACK_RECOVERY_POLL_MS = 650;
++const TERMINAL_BLACK_RECOVERY_STEPS_MS = [120, 320, 760, 1700, 3600];
++const TERMINAL_PROJECT_SWITCH_RECOVERY_STEPS_MS = [120, 340, 860, 1700, 3200];
++const TERMINAL_V2_FIT_RETRY_LIMIT = 32;
++const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
++const TERMINAL_LAYOUT_RECOVERY_MIN_DIMENSION = 32;
+ const DESKTOP_KEYBINDINGS = [
+   { id: "new-terminal", label: "New terminal", def: "Meta+b" },
+   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace" },
+@@ -251,6 +258,8 @@ class TermdeckApp {
+     this.revealActiveSessionOnLoad = true;
+     this.processingStates = new Map();
+     this.processingSince = new Map();
++    this.projectSwitchRecoveryPending = false;
++    this.projectSwitchRecoveryTimer = 0;
+     // A prompt can be accepted by the PTY before the agent reports
+     // processing=true. Keep that hand-off visible in Markdown mode.
+     this.historyPendingProcessing = new Map();
+@@ -274,6 +283,14 @@ class TermdeckApp {
+     const projectMatch = location.pathname.match(/^\/p\/([^/]+)/);
+     this.projectSlug = projectMatch ? decodeURIComponent(projectMatch[1])
+       : this.vscodeEditorMode ? (LOCATION_PARAMS.get("project") || null) : null;
++    const currentProject = this.projectSlug || "__all__";
++    try {
++      const previousProject = String(sessionStorage.getItem("termdeck.last_project_slug") || "");
++      this.projectSwitchRecoveryPending = !!previousProject && previousProject !== currentProject;
++      sessionStorage.setItem("termdeck.last_project_slug", currentProject);
++    } catch (error) {
++      this.projectSwitchRecoveryPending = false;
++    }
+     const urlParams = new URLSearchParams(location.search);
+     if (urlParams.get("t")) this.initialNav = { kind: "term", id: urlParams.get("t") };
+     else if (urlParams.get("f")) {
+@@ -424,6 +441,7 @@ class TermdeckApp {
+       this.projectSlug = this.vscodeProjectName;
+     }
+     if (this.projectSlug && this.projectSlug !== previousProjectSlug) {
++      this.projectSwitchRecoveryPending = true;
+       void this.refresh();
+     }
+   }
+@@ -1702,6 +1720,18 @@ class TermdeckApp {
+       this.revealActiveSessionOnLoad = false;
+       this.keepActiveSessionVisible();
+     }
++    if (this.activeId && this.activeFileKey === null && !this.historyOpen) {
++      const activeView = this.views.get(this.activeId);
++      if (activeView) {
++        this.startTerminalBlackRecovery(activeView);
++        if (this.projectSwitchRecoveryPending) {
++          this.projectSwitchRecoveryPending = false;
++          clearTimeout(this.projectSwitchRecoveryTimer);
++          this.projectSwitchRecoveryTimer = 0;
++          this.scheduleProjectSwitchTerminalRecovery(activeView);
++        }
++      }
++    }
+     this.renderTopbar();
+     if (this.nativeVscodeMode) {
+       for (const session of this.sessions) {
+@@ -3043,6 +3073,32 @@ class TermdeckApp {
+     }, 420);
+   }
+ 
++  scheduleProjectSwitchTerminalRecovery(view) {
++    if (!this.isTerminalScrollV2() || !view || view.closed || !view.container.classList.contains("visible")) return;
++    if (this.projectSwitchRecoveryTimer) {
++      clearTimeout(this.projectSwitchRecoveryTimer);
++      this.projectSwitchRecoveryTimer = 0;
++    }
++    const steps = TERMINAL_PROJECT_SWITCH_RECOVERY_STEPS_MS;
++    let index = 0;
++    const recover = () => {
++      if (view.closed || view.sessionId !== this.activeId || !view.container.classList.contains("visible")) {
++        this.projectSwitchRecoveryTimer = 0;
++        return;
++      }
++      view.forceResizeAfterFit = true;
++      this.scheduleV2Fit(view, { force: true });
++      this.startTerminalBlackRecovery(view);
++      if (index >= steps.length) {
++        this.projectSwitchRecoveryTimer = 0;
++        return;
++      }
++      const delay = steps[index++];
++      this.projectSwitchRecoveryTimer = setTimeout(recover, delay);
++    };
++    recover();
++  }
++
+   cycleView(view) {
+     if (this.vscodeMode && (view === "project" || view === "search")) return;
+     this.setSideView(view);
+@@ -5349,12 +5405,18 @@ class TermdeckApp {
+         if (previousId !== id && (!view.everConnected || view.awaitingSnapshot || view.replaying)) {
+           view.scrollMode = "follow";
+         }
+-        this.scheduleV2Fit(view);
++        const forceFit = this.shouldForceTerminalActivationReflow(view, switchedViews);
++        this.scheduleV2Fit(view, { force: forceFit });
+         this.scheduleInitialV2Fit(view);
+         if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+         this.scheduleTerminalActivationRepair(view, {
+           forceReflow: this.shouldForceTerminalActivationReflow(view, switchedViews),
+         });
++        requestAnimationFrame(() => {
++          if (id === this.activeId && !this.historyOpen && this.activeFileKey === null) {
++            this.startTerminalBlackRecovery(view);
++          }
++        });
+       } else if (previousId !== id) {
+         const needsInitialFollow = !view.everConnected || view.awaitingSnapshot || view.replaying;
+         if (needsInitialFollow || view.keepBottom) {
+@@ -5414,7 +5476,7 @@ class TermdeckApp {
+                    suppressResizeToServer: false, resyncResizeRepairPending: false,
+                    hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
+                    tailRepairFrame: 0, activationRepairFrame: 0, tailRepairSignature: "",
+-                   lastSentCols: null, lastSentRows: null,
++                   lastSentCols: null, lastSentRows: null, terminalBlackRecoveryTimer: 0, terminalBlackRecoveryUntil: 0,
+                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
+                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
+                    promptQueue: [], promptQueueEditIndex: null, promptQueueMutation: false,
+@@ -5666,6 +5728,7 @@ class TermdeckApp {
+           if (v2 && view.container.classList.contains("visible")) {
+             view.forceResizeAfterFit = true;
+             this.scheduleV2Fit(view);
++            this.startTerminalBlackRecovery(view);
+           }
+           if (view.resyncResizeRepairPending && view.container.classList.contains("visible")) {
+             view.resyncResizeRepairPending = false;
+@@ -5699,6 +5762,7 @@ class TermdeckApp {
+       const outputScrollGeneration = view.manualScrollGeneration;
+       this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
+         if (this.isTerminalScrollV2()) {
++          this.startTerminalBlackRecovery(view);
+           if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+           return;
+         }
+@@ -6042,19 +6106,27 @@ class TermdeckApp {
+     });
+   }
+ 
+-  scheduleV2Fit(view) {
+-    if (!view || view.closed || view.v2FitFrame || !view.container.classList.contains("visible")) return;
++  scheduleV2Fit(view, options = {}) {
++    const forceResize = !!options.force;
++    if (!view || view.closed || !view.container.classList.contains("visible")) return;
++    if (view.v2FitFrame && forceResize) {
++      cancelAnimationFrame(view.v2FitFrame);
++      view.v2FitFrame = 0;
++    }
++    if (view.v2FitFrame) return;
+     view.v2FitFrame = requestAnimationFrame(() => {
+       view.v2FitFrame = 0;
+       if (view.closed || !view.container.classList.contains("visible")) return;
+       const rect = view.container.getBoundingClientRect();
+       if (rect.width < 40 || rect.height < 40) {
+-        if (!view.layoutFitRetryTimer && view.layoutFitRetryCount < 12) {
++        const retryLimit = forceResize ? TERMINAL_V2_FIT_RETRY_LIMIT : 12;
++        const retryDelay = forceResize ? TERMINAL_V2_FIT_RETRY_DELAY_MS : 60;
++        if (!view.layoutFitRetryTimer && view.layoutFitRetryCount < retryLimit) {
+           view.layoutFitRetryCount += 1;
+           view.layoutFitRetryTimer = setTimeout(() => {
+             view.layoutFitRetryTimer = 0;
+-            if (!view.closed && view.container.classList.contains("visible")) this.scheduleV2Fit(view);
+-          }, 60);
++            if (!view.closed && view.container.classList.contains("visible")) this.scheduleV2Fit(view, options);
++          }, retryDelay);
+         }
+         return;
+       }
+@@ -6067,13 +6139,15 @@ class TermdeckApp {
+       // A terminal may have been painted while its container was hidden or
+       // at its pre-flex width. Refresh after the settled fit so the canvas
+       // and text colors are repainted together with the final geometry.
+-      const forceResize = view.forceResizeAfterFit;
+-      if (forceResize) {
++      const forceResizeThisFrame = forceResize || view.forceResizeAfterFit;
++      if (forceResizeThisFrame) {
+         view.forceResizeAfterFit = false;
+         if (this.forceVisibleTerminalReflow(view)) return;
++      } else {
++        view.forceResizeAfterFit = false;
+       }
+-      this.refreshTerminalAppearance(view, forceResize);
+-      if (forceResize && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
++      this.refreshTerminalAppearance(view, forceResizeThisFrame);
++      if (forceResizeThisFrame && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
+       if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+     });
+   }
+@@ -6239,6 +6313,140 @@ class TermdeckApp {
+     return compared > 0 && invisible > 0 && visible === 0;
+   }
+ 
++  terminalFirstLineLooksBlack(view) {
++    const rows = [...(view?.container?.querySelectorAll(".xterm-rows > div") || [])];
++    if (!rows.length) return false;
++    const firstTextRow = rows.slice(0, 10).find((row) => String(row.textContent || "").trim());
++    if (!firstTextRow) return true;
++    const sample = [...firstTextRow.querySelectorAll("span")].find((span) => String(span.textContent || "").trim()) || firstTextRow;
++    const style = sample ? window.getComputedStyle(sample) : null;
++    if (!style) return true;
++    if (style.display === "none" || style.visibility === "hidden") return true;
++    const opacity = Number.parseFloat(style.opacity);
++    if (Number.isFinite(opacity) && opacity <= 0.002) return true;
++    const foreground = this.parseCssColor(style.color);
++    if (!foreground) return false;
++    if (foreground[3] === 0) return true;
++    const rowBg = this.parseCssColor(style.backgroundColor);
++    const screen = view.container.querySelector(".xterm-screen") || view.container;
++    const screenBackground = this.parseCssColor(window.getComputedStyle(screen).backgroundColor);
++    const themeBackground = this.parseCssColor(this.termTheme().background);
++    const background = rowBg && rowBg[3] > 0 ? rowBg : (screenBackground || themeBackground);
++    if (!background) return false;
++    const distance = this.colorDistance(foreground, background);
++    return Number.isFinite(distance) && distance < 28;
++  }
++
++  terminalRenderedRowsLooksBlack(view, options = {}) {
++    const maxRows = Number.isFinite(options.rows) ? Math.max(1, Math.floor(options.rows)) : 40;
++    const rows = [...(view?.container?.querySelectorAll(".xterm-rows > div") || [])];
++    if (!rows.length) return false;
++    const screen = view.container.querySelector(".xterm-screen") || view.container;
++    const computedBackground = this.parseCssColor(window.getComputedStyle(screen).backgroundColor);
++    const themeBackground = this.parseCssColor(this.termTheme().background);
++    const background = computedBackground && computedBackground[3] > 0 ? computedBackground : themeBackground;
++    let compared = 0;
++    let invisible = 0;
++    let visible = 0;
++    const candidates = rows.slice(0, Math.min(rows.length, maxRows));
++    for (const row of candidates) {
++      if (!String(row.textContent || "").trim()) continue;
++      const spans = [...row.querySelectorAll("span")];
++      const sample = spans.find((span) => String(span.textContent || "").trim()) || row;
++      const style = window.getComputedStyle(sample);
++      if (style.display === "none" || style.visibility === "hidden") {
++        invisible += 1;
++        compared += 1;
++        continue;
++      }
++      const opacity = Number.parseFloat(style.opacity);
++      if (Number.isFinite(opacity) && opacity <= 0.002) {
++        invisible += 1;
++        compared += 1;
++        continue;
++      }
++      const foreground = this.parseCssColor(style.color);
++      if (!foreground || foreground[3] === 0) {
++        invisible += 1;
++        compared += 1;
++        continue;
++      }
++      const rowBg = this.parseCssColor(style.backgroundColor);
++      const rowBackground = rowBg && rowBg[3] > 0 ? rowBg : background;
++      const distance = rowBackground ? this.colorDistance(foreground, rowBackground) : Number.POSITIVE_INFINITY;
++      if (Number.isFinite(distance) && distance < 28) invisible += 1;
++      else visible += 1;
++      compared += 1;
++    }
++    return compared > 0 && invisible > 0 && visible === 0;
++  }
++
++  terminalLayoutLooksCorrupt(view) {
++    if (!view || !view.container || !view.term) return true;
++    const containerRect = view.container.getBoundingClientRect();
++    if (!containerRect || containerRect.width < TERMINAL_LAYOUT_RECOVERY_MIN_DIMENSION ||
++        containerRect.height < TERMINAL_LAYOUT_RECOVERY_MIN_DIMENSION) {
++      return true;
++    }
++    const screen = view.container.querySelector(".xterm-screen");
++    const viewport = view.container.querySelector(".xterm-viewport");
++    const rows = view.container.querySelectorAll(".xterm-rows > div");
++    if (!screen || !viewport || !rows.length) return true;
++    if (screen.clientWidth < TERMINAL_LAYOUT_RECOVERY_MIN_DIMENSION ||
++        screen.clientHeight < TERMINAL_LAYOUT_RECOVERY_MIN_DIMENSION) return true;
++    return false;
++  }
++
++  stopTerminalBlackRecovery(view) {
++    if (!view?.terminalBlackRecoveryTimer) return;
++    clearTimeout(view.terminalBlackRecoveryTimer);
++    view.terminalBlackRecoveryTimer = 0;
++    view.terminalBlackRecoveryUntil = 0;
++  }
++
++  startTerminalBlackRecovery(view) {
++    if (!this.isTerminalScrollV2() || !view || view.closed || !view.container.classList.contains("visible") ||
++        view.sessionId !== this.activeId || view.terminalBlackRecoveryTimer) return;
++    const shouldRecover = () => {
++      if (!this.terminalLayoutLooksCorrupt(view)) {
++        if (this.terminalFirstLineLooksBlack(view)) return true;
++        if (this.terminalRenderedRowsLooksBlack(view)) return true;
++        const expected = this.terminalBufferVisibleTailLines(view);
++        if (!expected.length) return false;
++        const rendered = this.terminalRenderedTailLines(view);
++        return this.terminalRenderedTailLooksInvisible(view, expected, rendered);
++      }
++      return true;
++    };
++    if (!shouldRecover()) return;
++    this.stopTerminalBlackRecovery(view);
++    view.terminalBlackRecoveryUntil = Date.now() + TERMINAL_BLACK_RECOVERY_MAX_MS;
++    const steps = TERMINAL_BLACK_RECOVERY_STEPS_MS;
++    let stepIndex = 0;
++    const poll = () => {
++      if (view.closed || view.sessionId !== this.activeId || !view.container.classList.contains("visible")) {
++        this.stopTerminalBlackRecovery(view);
++        return;
++      }
++      if (Date.now() > view.terminalBlackRecoveryUntil) {
++        this.stopTerminalBlackRecovery(view);
++        return;
++      }
++      if (!shouldRecover()) {
++        this.stopTerminalBlackRecovery(view);
++        return;
++      }
++      if (!this.forceVisibleTerminalReflow(view)) {
++        view.forceResizeAfterFit = true;
++        this.scheduleV2Fit(view, { force: true });
++      }
++      const delay = steps[Math.min(stepIndex, steps.length - 1)] || TERMINAL_BLACK_RECOVERY_POLL_MS;
++      stepIndex += 1;
++      view.terminalBlackRecoveryTimer = setTimeout(poll, delay);
++    };
++    poll();
++  }
++
+   terminalTailRenderMismatch(view) {
+     const expected = this.terminalBufferVisibleTailLines(view);
+     const rendered = this.terminalRenderedTailLines(view);
+@@ -6480,6 +6688,7 @@ class TermdeckApp {
+     if (view.v2ForcedReflowRestoreFrame) cancelAnimationFrame(view.v2ForcedReflowRestoreFrame);
+     if (view.tailRepairFrame) cancelAnimationFrame(view.tailRepairFrame);
+     if (view.activationRepairFrame) cancelAnimationFrame(view.activationRepairFrame);
++    if (view.terminalBlackRecoveryTimer) clearTimeout(view.terminalBlackRecoveryTimer);
+     clearTimeout(view.layoutFitRetryTimer);
+     if (view.layoutObserver) view.layoutObserver.disconnect();
+     if (view.scrollObserver) view.scrollObserver.disconnect();

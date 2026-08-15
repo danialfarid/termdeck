@@ -13,7 +13,20 @@
 <body>
 <div id="sidebar">
   <div id="sidebar-header">
-    <select id="project-select" title="Project (url: /p/&lt;name&gt;)"></select>
+    <div id="project-worktree-header">
+      <div id="project-header-row">
+        <select id="project-select" title="Project (url: /p/&lt;name&gt;)"></select>
+        <button id="project-add-btn" title="Create or open a project, worktree, or terminal" aria-label="Create or open a project, worktree, or terminal"><span class="codicon codicon-add"></span></button>
+      </div>
+      <div id="worktree-header-row" class="hidden">
+        <select id="worktree-select" title="Current worktree" aria-label="Current worktree"></select>
+      </div>
+    </div>
+    <div id="header-add-menu" class="hidden" role="menu" aria-label="Create or open">
+      <button id="header-add-project" role="menuitem"><span class="codicon codicon-new-folder"></span><span class="header-add-label">New project</span><span class="header-add-shortcut"></span></button>
+      <button id="header-add-worktree" role="menuitem"><span class="codicon codicon-git-branch"></span><span class="header-add-label">New worktree</span><span class="header-add-shortcut"></span></button>
+      <button id="header-add-terminal" role="menuitem"><span class="codicon codicon-terminal"></span><span class="header-add-label">New terminal</span><span class="header-add-shortcut"></span></button>
+    </div>
     <span class="panel-actions">
       <button id="vscode-refresh-btn" class="vscode-only" title="Refresh TermDeck" aria-label="Refresh TermDeck"><span class="codicon codicon-refresh"></span></button>
     </span>
@@ -48,8 +61,7 @@
         <div id="search-bar">
           <button id="search-back" title="Previous search"><span class="codicon codicon-arrow-left"></span></button>
           <input id="search-query" placeholder="search in files" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-          <input id="search-file-glob" class="file-include-glob" placeholder="include *.py" title="Only search these file patterns" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-          <button id="search-file-type-filter-button" title="Exclude file types" aria-label="Exclude file types" aria-expanded="false"><span class="codicon codicon-symbol-enum"></span></button>
+          <button id="search-file-type-filter-button" title="Search file filters" aria-label="Search file filters" aria-expanded="false"><span class="codicon codicon-symbol-enum"></span></button>
           <button id="search-case-toggle" title="Match case">Aa</button>
           <button id="search-word-toggle" title="Whole word">ab|</button>
           <button id="search-regex-toggle" title="Regular expression">.*</button>
@@ -181,7 +193,7 @@
     <button id="terminal-find-next" title="Next match" aria-label="Next match"><span class="codicon codicon-arrow-down"></span></button>
     <button id="terminal-find-close" title="Close terminal search" aria-label="Close terminal search"><span class="codicon codicon-close"></span></button>
   </div>
-  <div id="empty-state">no terminals &mdash; press + to open one</div>
+  <div id="empty-state" class="loading" role="status" aria-live="polite">loading TermDeck&hellip;</div>
   </div>
   <div id="problems-panel" class="hidden">
     <div id="problems-head"><span>Problems</span><span id="problems-count"></span><button id="problems-refresh" title="Refresh problems"><span class="codicon codicon-refresh"></span></button><button id="problems-close" title="Close problems"><span class="codicon codicon-close"></span></button></div>
@@ -334,10 +346,38 @@
     <label>Session name / Resume existing session<input id="modal-session-title" list="modal-session-refs" placeholder="optional: name this terminal or saved ID/name to resume" spellcheck="false"></label>
     <datalist id="modal-session-refs"></datalist>
     <label>Directory<div id="modal-project-picker"><input id="modal-cwd" placeholder="~/projects/my-app" spellcheck="false"><button id="modal-project-add-btn" title="Add project folder" aria-label="Add project folder"><span class="codicon codicon-new-folder"></span></button></div></label>
+    <div id="modal-error" class="hidden" role="alert" aria-live="assertive">
+      <div id="modal-error-message"></div>
+      <button id="modal-error-install" class="hidden" type="button">Install with Homebrew</button>
+    </div>
     <div class="modal-actions">
       <button id="modal-cancel">Cancel</button>
       <button id="modal-create">Open</button>
     </div>
+  </div>
+</div>
+<div id="worktree-modal-backdrop" class="hidden">
+  <div id="worktree-modal">
+  <div class="modal-title">New worktree</div>
+  <div id="worktree-modal-project"></div>
+  <label>Branch to create from<input id="worktree-base-ref" list="worktree-base-ref-options" placeholder="current branch" spellcheck="false" autocomplete="off"></label>
+  <datalist id="worktree-base-ref-options"></datalist>
+  <label>New branch name <span class="worktree-field-hint">(also the worktree name)</span><input id="worktree-branch" placeholder="optional; generated from source branch" spellcheck="false"></label>
+  <div id="worktree-location-hint">The resulting Git branch is used as the worktree name. TermDeck creates a free folder automatically outside the project root.</div>
+    <div class="modal-actions">
+      <button id="worktree-modal-cancel">Cancel</button>
+      <button id="worktree-modal-create">Create</button>
+    </div>
+  </div>
+</div>
+<div id="worktree-result-backdrop" class="hidden">
+  <div id="worktree-result" role="dialog" aria-modal="true" aria-labelledby="worktree-result-title">
+    <div class="modal-title" id="worktree-result-title">Worktree created</div>
+    <div id="worktree-result-name"></div>
+    <a id="worktree-result-link"></a>
+    <div id="worktree-result-hint">Click to open here. Command/Ctrl-click or middle-click opens a new tab; right-click can open a new window.</div>
+    <div id="worktree-result-path"></div>
+    <div class="modal-actions"><button id="worktree-result-close">Done</button></div>
   </div>
 </div>
 <script src="/static/vendor/xterm.js"></script>

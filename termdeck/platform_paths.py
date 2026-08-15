@@ -1,6 +1,8 @@
 import os
 import platform
+import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -54,6 +56,16 @@ class PlatformPaths:
         for directory in PlatformPaths.FALLBACK_BIN_DIRS:
             candidate = Path(directory) / program
             if candidate.exists():
+                return str(candidate)
+        try:
+            shell = PlatformPaths.login_shell()
+            result = subprocess.run([shell, "-ilc", f"command -v {shlex.quote(program)}"], capture_output=True,
+                                    text=True, timeout=4, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return program
+        for resolved in reversed(result.stdout.splitlines()):
+            candidate = Path(resolved.strip()).expanduser()
+            if candidate.is_absolute() and candidate.exists():
                 return str(candidate)
         return program
 

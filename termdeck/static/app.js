@@ -2,6 +2,11 @@
 // fallback only reconciles session-list metadata such as created/closed tabs.
 const SESSION_LIST_REFRESH_MS = 30000;
 const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
+// Same status glyphs as TITLE_STATUS_RE, plus the leading ellipsis codex shows while working. Used only
+// when GENERATING a new fork's name, never for display: a fork is seeded from the parent's live title,
+// so one surviving glyph per generation compounds into names like "✳ ✳ ◐ ✳ ✳ name fork 1 1 1". Display
+// keeps using TITLE_STATUS_RE so a rendered name still matches the title the session is stored under.
+const TITLE_STATUS_PREFIX_RE = /^(?:[⠀-⣿○-◗⏳⚡✳]|\.\.\.|…)\s*/;
 const RECONNECT_MS = 1500;
 const TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS = 1800;
 const DEFAULT_COMMAND = "codex";
@@ -35,7 +40,7 @@ const MODEL_PERMISSIONS = {
   none: [{ value: "default", label: "Shell permissions" }],
 };
 const SEARCH_DEBOUNCE_MS = 500;
-const TERMINAL_SEARCH_DEBOUNCE_MS = 250;
+const TERMINAL_SEARCH_DEBOUNCE_MS = 700;
 const SEARCH_HISTORY_STORAGE_KEY = "termdeck.search_history";
 const SEARCH_HISTORY_RECORD_DELAY_MS = 3000;
 const PROMPT_DRAFT_SYNC_PASTE_DELAY_MS = 250;
@@ -43,13 +48,12 @@ const FILE_AUTOSAVE_DELAY_MS = 500;
 const SESSION_GROUP_HOVER_DELAY_MS = 700;
 const CLOSED_SESSIONS_INITIAL_DISPLAY = 50;
 const CLOSED_SESSIONS_MAX_DISPLAY = 100;
-const ACTIVITY_SORT_BUCKET_MS = 15 * 60 * 1000;
 const TERMINAL_AGE_REFRESH_MS = 30000;
 const CLAUDE_SNAPSHOT_DB_NAME = "termdeck.claude-snapshots";
 const CLAUDE_SNAPSHOT_DB_VERSION = 2;
 const CLAUDE_SNAPSHOT_STORE_NAME = "sessions";
 const CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME = "manifest";
-const CLAUDE_SNAPSHOT_FORMAT_VERSION = 3;
+const CLAUDE_SNAPSHOT_FORMAT_VERSION = 4;
 const CLAUDE_SNAPSHOT_IDLE_SAVE_MS = 3000;
 const CLAUDE_SNAPSHOT_MAX_LINES = 4000;
 const CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES = 100 * 1024 * 1024;
@@ -68,7 +72,7 @@ const TERMINAL_VIEWPORT_RESTORE_TIMEOUT_MS = 3000;
 const TERMINAL_VIEWPORT_ANCHOR_ROWS = 12;
 const TERMINAL_VIEWPORT_ANCHOR_MAX_CHARS = 180;
 const TERMINAL_VIEWPORT_ANCHOR_MIN_CHARS = 24;
-const TERMINAL_MANUAL_REPAINT_CLICK_WINDOW_MS = 1200;
+const TERMINAL_MANUAL_REPAINT_CLICK_WINDOW_MS = 2000;
 const OPEN_FILES_MAX_ENTRIES = 80;
 const RECENTLY_OPENED_TERMINALS_MAX_ENTRIES = 80;
 const TERMINAL_V2_FIT_RETRY_LIMIT = 32;
@@ -85,17 +89,26 @@ const MAX_FORK_COUNT = 25;
 const TERMINAL_CLAUDE_IDLE_RECONNECT_MS = 5 * 60 * 1000;
 const CLAUDE_STATUS_ROW_REFRESH_INTERVAL_MS = 500;
 const CODEX_PROMPT_REFLOW_GUARD_MS = 1800;
+const TERMINAL_ATTENTION_ANIMATION_MS = 2600;
+const TERMINAL_ATTENTION_TEXT_MARKERS = ["esc to cancel", "tab to amend"];
 const KEYBOARD_SHORTCUT_SECTIONS = ["Terminal", "Files", "General"];
 // Files viewer, file search, and terminal search share one files-section panel and one shortcut.
 const FILEDECK_DEFAULT_SIDEBAR_WIDTH = 300;
 const FILES_SIDE_PANEL_TABS = ["project", "search", "git"];
 const CLOSED_SIDE_VIEW = "closed";
+const ALL_WORKTREES_ID = "all";
 const FILES_SIDE_PANEL_LAST_TAB_KEY = "termdeck.files_panel_last_tab";
+const CLIENT_PLATFORM = String(globalThis.navigator?.userAgentData?.platform || globalThis.navigator?.platform || globalThis.navigator?.userAgent || "").toLowerCase();
+const IS_MAC_KEYBOARD_PLATFORM = /mac|iphone|ipad|ipod/.test(CLIENT_PLATFORM);
+const PRIMARY_MODIFIER_DISPLAY = IS_MAC_KEYBOARD_PLATFORM ? "⌘" : "Ctrl";
 const DESKTOP_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Meta+b", section: "Terminal" },
+  { id: "new-project", label: "New project", def: "Alt+Shift+s", section: "General" },
+  { id: "new-worktree", label: "New worktree", def: "Alt+Shift+w", section: "General" },
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace", section: "General" },
   { id: "fork-terminal", label: "Fork active terminal", def: "Meta+Shift+b", section: "Terminal" },
   { id: "restart-terminal", label: "Restart active terminal", def: "Meta+Alt+r", section: "Terminal" },
+  { id: "resync-terminal", label: "Resync active terminal content", def: "Alt+Shift+r", section: "Terminal" },
   { id: "rename-terminal", label: "Rename active terminal", def: "Alt+r", section: "Terminal" },
   { id: "copy-session-id", label: "Copy active session id", def: "Alt+i", section: "Terminal" },
   { id: "mark-terminal-unread", label: "Mark active terminal as unread", def: "Alt+u", section: "Terminal" },
@@ -107,12 +120,12 @@ const DESKTOP_KEYBINDINGS = [
   { id: "save-file", label: "Save open file", def: "Meta+s", section: "Files" },
   { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp", section: "Terminal" },
   { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown", section: "Terminal" },
-  { id: "cycle-side-panel", label: "Files / Search / Git (4th press closes)", def: "Meta+Shift+s", section: "Files" },
+  { id: "cycle-side-panel", label: "Files / Search / Git (4th press closes)", def: "Meta+Shift+e", section: "Files" },
   { id: "open-files-panel", label: "Open files panel", def: "Meta+Shift+d", section: "Files" },
   { id: "open-file-search", label: "Open file-content search", def: "Meta+Shift+f", section: "Files" },
   { id: "open-files-new-tab", label: "Open files in a new browser tab", def: "Meta+Alt+d", section: "Files" },
   { id: "open-search-new-tab", label: "Open file search in a new browser tab", def: "Meta+Alt+f", section: "Files" },
-  { id: "open-terminal-search", label: "Search terminal names and output", def: "Meta+Shift+g", section: "Terminal" },
+  { id: "open-terminal-search", label: "Search terminal names and output", def: "Meta+Shift+s", section: "Terminal" },
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t", section: "Terminal" },
   { id: "switch-project", label: "Switch project", def: "Alt+s", section: "General" },
   { id: "toggle-notebook", label: "Quick notebook", def: "Alt+n", section: "General" },
@@ -135,6 +148,7 @@ const VSCODE_KEYBINDINGS = [
   { id: "close-item", label: "Close active terminal", def: "Ctrl+Alt+Backspace", section: "Terminal" },
   { id: "fork-terminal", label: "Fork active terminal", def: "Ctrl+Alt+Shift+b", section: "Terminal" },
   { id: "restart-terminal", label: "Restart active terminal", def: "Ctrl+Alt+Shift+r", section: "Terminal" },
+  { id: "resync-terminal", label: "Resync active terminal content", def: "Ctrl+Alt+r", section: "Terminal" },
   { id: "prev-terminal", label: "Previous terminal", def: "Ctrl+Alt+ArrowUp", section: "Terminal" },
   { id: "next-terminal", label: "Next terminal", def: "Ctrl+Alt+ArrowDown", section: "Terminal" },
   { id: "open-terminal-new-tab", label: "Open active terminal in a new browser tab", def: "Ctrl+Alt+o", section: "Terminal" },
@@ -147,16 +161,15 @@ const VSCODE_KEYBINDINGS = [
   { id: "vscode-reload", label: "Reload TermDeck webview", def: "Ctrl+Shift+r", section: "General" },
 ];
 const REFERENCE_KEYS = [
-  { keys: "⌘[ / ⌘]", label: "Browser back / forward (last-clicked navigation)", section: "General" },
-  { keys: "⌃⇧E", label: "Focus file-name search", section: "Files" },
-  { keys: "⌃⇧F", label: "Focus file-content search", section: "Files" },
-  { keys: "⌃⇧Space", label: "Open file browser/search", section: "Files" },
-  { keys: "⌃R / ⌃M / ⌘⌫", label: "Rename / move / delete selected tree file", section: "Files" },
+  { keys: `${PRIMARY_MODIFIER_DISPLAY}[ / ${PRIMARY_MODIFIER_DISPLAY}]`, label: "Browser back / forward (last-clicked navigation)", section: "General" },
+  { keys: IS_MAC_KEYBOARD_PLATFORM ? "⌃⇧F" : "Ctrl+Shift+F", label: "Focus file-content search", section: "Files" },
+  { keys: IS_MAC_KEYBOARD_PLATFORM ? "⌃⇧Space" : "Ctrl+Shift+Space", label: "Open file browser/search", section: "Files" },
+  { keys: IS_MAC_KEYBOARD_PLATFORM ? "⌃R / ⌃M / ⌘⌫" : "Ctrl+R / Ctrl+M / Ctrl+Backspace", label: "Rename / move / delete selected tree file", section: "Files" },
 ];
 const VSCODE_REFERENCE_KEYS = [
-  { keys: "⌘⇧P", label: "Open VS Code Command Palette", section: "General" },
-  { keys: "⌘⇧E", label: "Open VS Code Explorer", section: "Files" },
-  { keys: "⌘W", label: "Close editor tab", section: "General" },
+  { keys: IS_MAC_KEYBOARD_PLATFORM ? "⌘⇧P" : "Ctrl+Shift+P", label: "Open VS Code Command Palette", section: "General" },
+  { keys: IS_MAC_KEYBOARD_PLATFORM ? "⌘⇧E" : "Ctrl+Shift+E", label: "Open VS Code Explorer", section: "Files" },
+  { keys: IS_MAC_KEYBOARD_PLATFORM ? "⌘W" : "Ctrl+W", label: "Close editor tab", section: "General" },
 ];
 function parseModeFlag(raw) {
   if (typeof raw === "boolean") return raw;
@@ -345,6 +358,7 @@ class TermdeckApp {
     this.handleHostMessageBound = this.handleHostMessage.bind(this);
     this.sessions = [];
     this.closedSessions = [];
+    this.initialLoadComplete = false;
     this.views = new Map();
     this.openFiles = new Map();
     this.openFilesPersistPromise = Promise.resolve();
@@ -392,7 +406,10 @@ class TermdeckApp {
     this.terminalSearchEditorOpen = false;
     this.terminalSearchFocusIndex = -1;
     this.settings = { ...SETTINGS_DEFAULTS };
+    this.persistedSettings = { ...SETTINGS_DEFAULTS };
     this.saveTimer = null;
+    this.settingsSavePromise = Promise.resolve();
+    this.projectStateSavePromise = Promise.resolve();
     this.claudeSnapshotDatabasePromise = null;
     this.claudeSnapshotStorageLimitPromise = null;
     this.treeRoot = null;
@@ -417,6 +434,7 @@ class TermdeckApp {
     this.sideView = "terminals";
     this.filesSidePanelCycleView = null;
     this.filesSidePanelCycleTransition = false;
+    this.fileTypeFilterMenuMode = "name";
     this.filesPanelWidthInitialized = localStorage.getItem("termdeck.files_panel_width_v2") === "1";
     const savedFilesTab = localStorage.getItem(FILES_SIDE_PANEL_LAST_TAB_KEY);
     this.lastFilesSidePanelTab = FILES_SIDE_PANEL_TABS.includes(savedFilesTab) ? savedFilesTab : "project";
@@ -442,6 +460,8 @@ class TermdeckApp {
     this.terminalSearchGroupSimilar = false;
     this.terminalSearchAbort = null;
     this.terminalSearchTimer = 0;
+    this.terminalSearchGroupId = null;
+    this.terminalSearchWorktreeId = null;
     this.terminalFindMatches = [];
     this.terminalFindIndex = -1;
     this.terminalFindSessionId = "";
@@ -449,9 +469,8 @@ class TermdeckApp {
     this.nameSearchGeneration = 0;
     this.applyingHistory = false;
     this.lastNavJson = "";
-    this.activitySort = false;
+    this.hideInactiveTerminals = false;
     this.sessionActivityAt = new Map();
-    this.activitySortRenderTimer = 0;
     this.sessionTitleEls = new Map();
     this.sessionSpinnerEls = new Map();
     this.sessionStatusEls = new Map();
@@ -465,9 +484,14 @@ class TermdeckApp {
     this.sidebarSelectionAnchorId = null;
     this.contextMenuTarget = null;
     this.modalGroupId = null;
+    this.modalAfterSessionId = null;
+    this.worktreeReviewSessionId = null;
     this.revealActiveSessionOnLoad = true;
     this.processingStates = new Map();
     this.processingSince = new Map();
+    this.attentionSessions = new Set();
+    this.attentionTimers = new Map();
+    this.attentionServerStates = new Map();
     // A prompt can be accepted by the PTY before the agent reports
     // processing=true. Keep that hand-off visible in Markdown mode.
     this.historyPendingProcessing = new Map();
@@ -517,10 +541,15 @@ class TermdeckApp {
     this.sidebarResizeFinalFitFrame = 0;
     this.activeEditorFocusTimer = 0;
     this.projects = [];
+    this.worktrees = [];
+    this.worktreeId = "root";
+    this.interactionWorktreeId = "root";
+    this.renderWorktreeId = null;
     const projectMatch = location.pathname.match(/^\/p\/([^/]+)/);
     this.projectSlug = projectMatch ? decodeURIComponent(projectMatch[1])
       : this.vscodeEditorMode ? (LOCATION_PARAMS.get("project") || null) : null;
     const urlParams = new URLSearchParams(location.search);
+    this.worktreeId = String(urlParams.get("wt") || "root").trim() || "root";
     const requestedFileView = ["project", "search", "git"].includes(urlParams.get("view")) ? urlParams.get("view") : "project";
     if (urlParams.get("t")) this.initialNav = { kind: "term", id: urlParams.get("t") };
     else if (urlParams.get("f")) {
@@ -545,7 +574,10 @@ class TermdeckApp {
   }
 
   projectQuery() {
-    return this.projectSlug ? `?project=${encodeURIComponent(this.projectSlug)}` : "";
+    if (!this.projectSlug) return "";
+    const params = new URLSearchParams({ project: this.projectSlug });
+    if (this.worktreeId !== ALL_WORKTREES_ID) params.set("worktree_id", this.worktreeId || "root");
+    return `?${params}`;
   }
 
   applyVscodeModeLayout() {
@@ -553,8 +585,8 @@ class TermdeckApp {
     document.body.classList.toggle("vscode-native-mode", this.nativeVscodeMode);
     document.body.classList.toggle("vscode-editor-mode", this.vscodeEditorMode);
     if (!this.vscodeMode) return;
-    const forceHidden = ["active-toggle",
-      "view-project", "view-search", "view-git", "files-section", "side-split", "project-select", "project-select-label"];
+    const forceHidden = ["active-toggle", "view-project", "view-search", "view-git", "files-section", "side-split",
+      "project-worktree-header", "project-select", "project-select-label"];
     for (const id of forceHidden) {
       const el = this.$(id);
       if (el) {
@@ -680,26 +712,147 @@ class TermdeckApp {
     }
   }
 
-  projectStateKey() {
-    return this.projectSlug || "__all__";
+  projectStateKeyFor(worktreeId) {
+    const project = this.projectSlug || "__all__";
+    return worktreeId && worktreeId !== "root" ? `${project}::worktree:${worktreeId}` : project;
   }
 
-  getProjectState() {
+  stateWorktreeId() {
+    if (this.renderWorktreeId) return this.renderWorktreeId;
+    if (this.worktreeId === ALL_WORKTREES_ID) return this.interactionWorktreeId || "root";
+    return this.worktreeId || "root";
+  }
+
+  projectStateKey() {
+    return this.projectStateKeyFor(this.stateWorktreeId());
+  }
+
+  getProjectStateForWorktree(worktreeId) {
     const states = this.settings.project_state || {};
+    const key = this.projectStateKeyFor(worktreeId || "root");
+    const state = states[key] || {};
     return {
       active_session_id: "", open_files: [], open_files_collapsed: false, recent_files_collapsed: true,
       recently_opened_terminal_ids: [], unread_sessions: [],
       terminal_groups: [], session_groups: {},
-      ...(states[this.projectStateKey()] || {}),
-      recent_files_collapsed: states[this.projectStateKey()]?.recent_files_collapsed ?? true,
+      ...state,
+      recent_files_collapsed: state.recent_files_collapsed ?? true,
     };
+  }
+
+  getProjectState() {
+    return this.getProjectStateForWorktree(this.stateWorktreeId());
+  }
+
+  worktreeSectionStorageKey(worktreeId, field) {
+    return `termdeck.${this.projectSlug || "__all__"}.worktree.${worktreeId}.${field}`;
+  }
+
+  worktreeSectionCollapsed(worktreeId) {
+    try {
+      return window.localStorage.getItem(this.worktreeSectionStorageKey(worktreeId, "collapsed")) === "1";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  setWorktreeSectionCollapsed(worktreeId, collapsed) {
+    try {
+      window.localStorage.setItem(this.worktreeSectionStorageKey(worktreeId, "collapsed"), collapsed ? "1" : "0");
+    } catch (error) {
+      return;
+    }
+  }
+
+  worktreeClosedExpanded(worktreeId) {
+    if (this.worktreeId !== ALL_WORKTREES_ID) return this.closedExpanded;
+    try {
+      const stored = window.localStorage.getItem(this.worktreeSectionStorageKey(worktreeId, "closed-expanded"));
+      return stored === null ? false : stored === "1";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  setWorktreeClosedExpanded(worktreeId, expanded) {
+    if (this.worktreeId !== ALL_WORKTREES_ID) {
+      this.closedExpanded = expanded;
+      return;
+    }
+    try {
+      window.localStorage.setItem(this.worktreeSectionStorageKey(worktreeId, "closed-expanded"), expanded ? "1" : "0");
+    } catch (error) {
+      return;
+    }
+  }
+
+  worktreeIdForSession(session) {
+    return String(session?.worktree_id || "root").trim() || "root";
+  }
+
+  sessionsForWorktree(worktreeId, sessions = this.sessions) {
+    return sessions.filter((session) => this.worktreeIdForSession(session) === worktreeId);
+  }
+
+  setInteractionWorktreeFromElement(element, fallbackSession = null) {
+    if (this.worktreeId !== ALL_WORKTREES_ID) return;
+    const worktreeId = String(element?.dataset?.worktreeId || this.worktreeIdForSession(fallbackSession)).trim();
+    if (worktreeId && worktreeId !== ALL_WORKTREES_ID) this.interactionWorktreeId = worktreeId;
+  }
+
+  availableWorktreeSections() {
+    const sections = this.worktrees.filter((worktree) => worktree.available).map((worktree) => ({ ...worktree }));
+    const knownIds = new Set(sections.map((worktree) => String(worktree.id)));
+    const records = [...this.sessions, ...this.closedSessions];
+    for (const record of records) {
+      const id = this.worktreeIdForSession(record);
+      if (knownIds.has(id)) continue;
+      knownIds.add(id);
+      sections.push({ id, name: id === "root" ? "Project root" : `Worktree ${id}`, branch: "", path: "", available: true });
+    }
+    if (!sections.length && this.projectSlug) {
+      sections.push({ id: "root", name: this.projectSlug, branch: "", path: this.projectRoot() || "", available: true });
+    }
+    return sections;
+  }
+
+  unreadSessionIdsForCurrentWorktreeView() {
+    if (this.worktreeId !== ALL_WORKTREES_ID) return new Set(this.getProjectState().unread_sessions || []);
+    const project = this.projectSlug || "__all__";
+    const prefix = `${project}::worktree:`;
+    const ids = new Set();
+    for (const [key, state] of Object.entries(this.settings.project_state || {})) {
+      if (key !== project && !key.startsWith(prefix)) continue;
+      for (const sessionId of state.unread_sessions || []) ids.add(sessionId);
+    }
+    return ids;
   }
 
   patchProjectState(patch) {
     const states = this.settings.project_state || {};
-    states[this.projectStateKey()] = { ...this.getProjectState(), ...patch };
+    const stateKey = this.projectStateKey();
+    states[stateKey] = { ...this.getProjectState(), ...patch };
     this.settings.project_state = states;
-    this.saveSettings();
+    this.queueProjectStatePatch(stateKey, patch);
+  }
+
+  queueProjectStatePatch(stateKey, patch) {
+    const params = new URLSearchParams();
+    if (stateKey !== "__all__") {
+      const [projectName, worktreeId] = stateKey.split("::worktree:");
+      params.set("project", projectName);
+      if (worktreeId) params.set("worktree_id", worktreeId);
+    }
+    const payload = JSON.stringify(this.copySettings(patch));
+    this.projectStateSavePromise = this.projectStateSavePromise.then(async () => {
+      const response = await fetch(`/api/terminal-layout?${params}`, { method: "PATCH", keepalive: payload.length < 60000,
+        headers: { "Content-Type": "application/json" }, body: payload });
+      if (!response.ok) throw new Error(`project state save failed (${response.status})`);
+    }).catch((error) => {
+      console.error("TermDeck project state save failed", error);
+      const status = this.$("stat-text");
+      if (status) status.textContent = error.message;
+    });
   }
 
   rememberRecentlyOpenedTerminal(sessionId) {
@@ -736,14 +889,18 @@ class TermdeckApp {
   }
 
   terminalGroups() {
-    return (this.getProjectState().terminal_groups || [])
+    return this.terminalGroupsForWorktree();
+  }
+
+  terminalGroupsForWorktree(worktreeId = this.stateWorktreeId()) {
+    return (this.getProjectStateForWorktree(worktreeId).terminal_groups || [])
       .filter((group) => group && group.id && String(group.name || "").trim())
       .map((group) => ({ id: String(group.id), name: String(group.name).trim(), collapsed: !!group.collapsed }));
   }
 
-  terminalGroupNameForSession(sessionId) {
-    const groupId = this.getProjectState().session_groups?.[sessionId];
-    return this.terminalGroups().find((group) => group.id === groupId)?.name || "";
+  terminalGroupNameForSession(sessionId, worktreeId = this.stateWorktreeId()) {
+    const groupId = this.getProjectStateForWorktree(worktreeId).session_groups?.[sessionId];
+    return this.terminalGroupsForWorktree(worktreeId).find((group) => group.id === groupId)?.name || "";
   }
 
   createTerminalGroup() {
@@ -800,7 +957,7 @@ class TermdeckApp {
   }
 
   groupSessionIds(groupId, sessionGroups = this.getProjectState().session_groups || {}) {
-    const currentSessionIds = new Set(this.sessions.map((session) => session.session_id));
+    const currentSessionIds = new Set(this.sessionsForWorktree(this.stateWorktreeId()).map((session) => session.session_id));
     return Object.entries(sessionGroups)
       .filter(([sessionId, assignedGroupId]) => assignedGroupId === groupId && currentSessionIds.has(sessionId))
       .map(([sessionId]) => sessionId);
@@ -892,7 +1049,10 @@ class TermdeckApp {
   }
 
   handleSessionRowSelection(event, sessionId) {
-    const orderedIds = this.sidebarSessionIdsInRenderOrder();
+    this.setInteractionWorktreeFromElement(event.currentTarget, this.session(sessionId));
+    const selectedWorktreeId = this.stateWorktreeId();
+    const orderedIds = this.sidebarSessionIdsInRenderOrder()
+      .filter((id) => this.worktreeIdForSession(this.session(id)) === selectedWorktreeId);
     const multiSelect = event.metaKey || event.ctrlKey;
     if (event.shiftKey) {
       const anchorId = this.sidebarSelectionAnchorId && orderedIds.includes(this.sidebarSelectionAnchorId)
@@ -923,12 +1083,13 @@ class TermdeckApp {
   }
 
   selectedSessionIdsForDrag(sessionId) {
+    const selectedWorktreeId = this.stateWorktreeId();
     const selected = this.sidebarSelectedSessionIds.has(sessionId)
       ? [...this.sidebarSelectedSessionIds]
       : [sessionId];
     const order = new Map(this.sidebarSessionIdsInRenderOrder().map((id, index) => [id, index]));
     return [...new Set(selected)]
-      .filter((id) => !!this.session(id))
+      .filter((id) => !!this.session(id) && this.worktreeIdForSession(this.session(id)) === selectedWorktreeId)
       .sort((left, right) => (order.get(left) ?? Number.MAX_SAFE_INTEGER) - (order.get(right) ?? Number.MAX_SAFE_INTEGER));
   }
 
@@ -954,7 +1115,8 @@ class TermdeckApp {
 
   sessionOrderWithSelectedIdsAroundTarget(selectedIds, targetId, after = false) {
     const selected = new Set(selectedIds);
-    const order = this.sessions.map((session) => session.session_id).filter((id) => !selected.has(id));
+    const order = this.sessionsForWorktree(this.stateWorktreeId()).map((session) => session.session_id)
+      .filter((id) => !selected.has(id));
     const targetIndex = order.indexOf(targetId);
     if (targetIndex < 0) return order;
     order.splice(targetIndex + (after ? 1 : 0), 0, ...selectedIds);
@@ -962,7 +1124,9 @@ class TermdeckApp {
   }
 
   moveSelectedSessionsIntoGroup(sessionIds, groupId, targetId = null, after = false) {
-    const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id));
+    const selectedWorktreeId = this.stateWorktreeId();
+    const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id) &&
+      this.worktreeIdForSession(this.session(id)) === selectedWorktreeId);
     if (!ids.length) return;
     const state = this.getProjectState();
     const sessionGroups = { ...(state.session_groups || {}) };
@@ -1004,9 +1168,11 @@ class TermdeckApp {
   }
 
   repositionSelectedSessions(sessionIds, targetId, after = false) {
-    const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id) && id !== targetId);
+    const selectedWorktreeId = this.stateWorktreeId();
+    const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id) && id !== targetId &&
+      this.worktreeIdForSession(this.session(id)) === selectedWorktreeId);
     const target = this.session(targetId);
-    if (!ids.length || !target) return;
+    if (!ids.length || !target || this.worktreeIdForSession(target) !== selectedWorktreeId) return;
     const state = this.getProjectState();
     const targetGroupId = state.session_groups?.[targetId] || null;
     if (targetGroupId) {
@@ -1030,9 +1196,11 @@ class TermdeckApp {
   }
 
   groupSelectedSessionsFromDrop(sessionIds, targetId, after = false) {
-    const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id) && id !== targetId);
+    const selectedWorktreeId = this.stateWorktreeId();
+    const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id) && id !== targetId &&
+      this.worktreeIdForSession(this.session(id)) === selectedWorktreeId);
     const target = this.session(targetId);
-    if (!ids.length || !target) return;
+    if (!ids.length || !target || this.worktreeIdForSession(target) !== selectedWorktreeId) return;
     const state = this.getProjectState();
     const sessionGroups = state.session_groups || {};
     const targetGroupId = sessionGroups[targetId] || null;
@@ -1100,11 +1268,13 @@ class TermdeckApp {
     this.renderList();
   }
 
-  terminalLayout() {
+  terminalLayout(sessions = this.sessions) {
     const state = this.getProjectState();
+    const scopedSessions = this.worktreeId === ALL_WORKTREES_ID && !this.renderWorktreeId
+      ? this.sessionsForWorktree(this.stateWorktreeId(), sessions) : sessions;
     const groups = this.terminalGroups();
     const groupIds = new Set(groups.map((group) => group.id));
-    const sessionIds = new Set(this.sessions.map((session) => session.session_id));
+    const sessionIds = new Set(scopedSessions.map((session) => session.session_id));
     const sessionGroups = state.session_groups || {};
     const layout = [];
     const seen = new Set();
@@ -1124,7 +1294,7 @@ class TermdeckApp {
       // member instead of losing the relationship at the end of the list.
       const orderedIds = state.session_order?.length
         ? state.session_order
-        : this.sessions.map((session) => session.session_id);
+        : scopedSessions.map((session) => session.session_id);
       const groupsAt = new Map();
       for (const group of groups) {
         const memberIndex = orderedIds.findIndex((id) => sessionGroups[id] === group.id);
@@ -1138,7 +1308,7 @@ class TermdeckApp {
         if (index < orderedIds.length) add(`session:${orderedIds[index]}`);
       }
     }
-    for (const session of this.sessions) add(`session:${session.session_id}`);
+    for (const session of scopedSessions) add(`session:${session.session_id}`);
     for (const group of groups) add(`group:${group.id}`);
     return layout;
   }
@@ -1405,11 +1575,246 @@ class TermdeckApp {
     select.onchange = () => {
       location.href = select.value ? `/p/${encodeURIComponent(select.value)}` : "/";
     };
+    await this.loadWorktrees();
+  }
+
+  async loadWorktrees() {
+    const row = this.$("worktree-header-row");
+    const select = this.$("worktree-select");
+    if (!row || !select || !this.projectSlug || this.vscodeMode) {
+      this.worktrees = [];
+      row?.classList.add("hidden");
+      this.updateHeaderAddMenu();
+      return;
+    }
+    try {
+      const response = await fetch(`/api/worktrees?project=${encodeURIComponent(this.projectSlug)}`);
+      if (!response.ok) throw new Error("worktree list failed");
+      this.worktrees = await response.json();
+    } catch (error) {
+      this.worktrees = [];
+    }
+    select.textContent = "";
+    const availableWorktrees = this.worktrees.filter((worktree) => worktree.available);
+    if (availableWorktrees.length > 1) {
+      const allOption = document.createElement("option");
+      allOption.value = ALL_WORKTREES_ID;
+      allOption.textContent = "All worktrees";
+      allOption.title = "Show terminals and closed sessions from every worktree";
+      select.appendChild(allOption);
+    }
+    for (const worktree of this.worktrees) {
+      const option = document.createElement("option");
+      option.value = worktree.id;
+      option.textContent = worktree.branch || worktree.name || worktree.path;
+      option.title = `${worktree.branch || worktree.path}\n${worktree.path}`;
+      if (!worktree.available) {
+        option.textContent += " (missing)";
+        option.disabled = true;
+      }
+      select.appendChild(option);
+    }
+    if (!this.worktrees.length) {
+      row.classList.add("hidden");
+      this.updateHeaderAddMenu();
+      return;
+    }
+    const saved = localStorage.getItem(`termdeck.${this.projectSlug}.worktree_id`) || "";
+    const availableIds = new Set(availableWorktrees.map((worktree) => worktree.id));
+    if (availableWorktrees.length > 1) availableIds.add(ALL_WORKTREES_ID);
+    if (!availableIds.has(this.worktreeId)) this.worktreeId = availableIds.has(saved) ? saved : "root";
+    if (!availableIds.has(this.worktreeId)) this.worktreeId = "root";
+    select.value = this.worktreeId;
+    row.classList.remove("hidden");
+    this.updateHeaderAddMenu();
+    select.onchange = () => this.switchWorktree(select.value);
+  }
+
+  async switchWorktree(worktreeId) {
+    if (worktreeId === ALL_WORKTREES_ID && this.worktrees.filter((worktree) => worktree.available).length > 1) {
+      this.worktreeId = ALL_WORKTREES_ID;
+    } else {
+      const selected = this.worktrees.find((worktree) => worktree.id === worktreeId);
+      if (!selected || !selected.available) return;
+      this.worktreeId = selected.id;
+    }
+    this.interactionWorktreeId = this.worktreeId === ALL_WORKTREES_ID ? this.interactionWorktreeId : this.worktreeId;
+    this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
+    localStorage.setItem(`termdeck.${this.projectSlug}.worktree_id`, this.worktreeId);
+    const params = new URLSearchParams(location.search);
+    if (this.worktreeId === "root") params.delete("wt");
+    else params.set("wt", this.worktreeId);
+    params.delete("t");
+    params.delete("f");
+    params.delete("view");
+    params.delete("q");
+    history.pushState({ kind: "init" }, "", `${location.pathname}${params.toString() ? `?${params}` : ""}`);
+    this.activeId = null;
+    this.activeFileKey = null;
+    this.openFiles.clear();
+    this.treeRoot = null;
+    await this.refresh();
+    this.setSideView("terminals", false);
+  }
+
+  async addProjectFromHeader() {
+    await this.chooseProjectFolder();
+  }
+
+  updateHeaderAddMenu() {
+    const button = this.$("header-add-worktree");
+    if (!button) return;
+    const rootWorktree = this.worktrees.find((worktree) => worktree.is_root);
+    const gitAvailable = !!this.projectSlug && !this.vscodeMode && !!rootWorktree && rootWorktree.git_repository !== false;
+    button.disabled = !gitAvailable;
+    button.title = gitAvailable ? "Create a worktree" : "Select a Git project to create a worktree";
+    this.updateHeaderAddShortcutLabels();
+  }
+
+  updateHeaderAddShortcutLabels() {
+    const actions = [["header-add-project", "new-project"], ["header-add-worktree", "new-worktree"],
+      ["header-add-terminal", "new-terminal"]];
+    for (const [id, actionId] of actions) {
+      const shortcut = this.$(id)?.querySelector(".header-add-shortcut");
+      if (shortcut) shortcut.textContent = this.bindingToDisplay(this.bindingFor(actionId));
+    }
+  }
+
+  closeHeaderAddMenu() {
+    this.$("header-add-menu")?.classList.add("hidden");
+  }
+
+  positionHeaderAddMenu() {
+    const menu = this.$("header-add-menu");
+    const button = this.$("project-add-btn");
+    const header = this.$("sidebar-header");
+    if (!menu || !button || !header) return;
+    const buttonBounds = button.getBoundingClientRect();
+    const headerBounds = header.getBoundingClientRect();
+    menu.style.left = `${buttonBounds.left - headerBounds.left}px`;
+    menu.style.top = `${buttonBounds.bottom - headerBounds.top + 4}px`;
+  }
+
+  toggleHeaderAddMenu() {
+    const menu = this.$("header-add-menu");
+    if (!menu) return;
+    menu.classList.toggle("hidden");
+    if (!menu.classList.contains("hidden")) {
+      this.updateHeaderAddMenu();
+      this.positionHeaderAddMenu();
+    }
+  }
+
+  runHeaderAddAction(action) {
+    this.closeHeaderAddMenu();
+    if (action === "project") void this.addProjectFromHeader();
+    else if (action === "worktree") this.openWorktreeModal();
+    else if (action === "terminal") this.openModal();
+  }
+
+  openWorktreeModal() {
+    this.closeHeaderAddMenu();
+    if (!this.projectSlug || this.vscodeMode) return;
+    const project = this.projects.find((candidate) => candidate.name === this.projectSlug);
+    if (!project) return;
+    const rootWorktree = this.worktrees.find((worktree) => worktree.is_root);
+    if (rootWorktree && rootWorktree.git_repository === false) {
+      alert(`Project "${project.name}" is not a Git repository. Select the repository folder containing .git first.`);
+      return;
+    }
+    this.$("worktree-modal-project").textContent = `${project.name} · ${this.compactProjectPath(project.root)}`;
+    this.$("worktree-base-ref").value = rootWorktree?.branch || "";
+    this.$("worktree-branch").value = "";
+    this.$("worktree-modal-backdrop").classList.remove("hidden");
+    void this.loadWorktreeBranches();
+    requestAnimationFrame(() => this.$("worktree-base-ref").focus());
+  }
+
+  async loadWorktreeBranches() {
+    const options = this.$("worktree-base-ref-options");
+    if (!options || !this.projectSlug) return;
+    try {
+      const response = await fetch(`/api/worktrees/branches?project=${encodeURIComponent(this.projectSlug)}`);
+      if (!response.ok) return;
+      const payload = await response.json();
+      options.textContent = "";
+      const branches = Array.isArray(payload.branches) ? payload.branches : [];
+      for (const branch of branches.slice(0, 300)) {
+        const option = document.createElement("option");
+        option.value = branch;
+        options.appendChild(option);
+      }
+      const baseRef = this.$("worktree-base-ref");
+      if (!baseRef.value && payload.current) baseRef.value = payload.current;
+    } catch (error) {
+      return;
+    }
+  }
+
+  closeWorktreeModal() {
+    this.$("worktree-modal-backdrop").classList.add("hidden");
+  }
+
+  async createProjectWorktree() {
+    const baseRef = this.$("worktree-base-ref").value.trim();
+    const branch = this.$("worktree-branch").value.trim();
+    const response = await fetch("/api/worktrees", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: this.projectSlug, branch, base_ref: baseRef }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      alert(payload.detail || "worktree creation failed");
+      return;
+    }
+    this.closeWorktreeModal();
+    await this.loadWorktrees();
+    const url = new URL(`/p/${encodeURIComponent(this.projectSlug)}?wt=${encodeURIComponent(payload.id)}`, location.href);
+    this.$("worktree-result-title").textContent = "Worktree created";
+    const link = this.$("worktree-result-link");
+    this.$("worktree-result-name").textContent = `${payload.name || payload.branch} · ${payload.branch || "new branch"}`;
+    link.href = url.href;
+    link.textContent = url.href;
+    link.title = url.href;
+    this.$("worktree-result-hint").textContent = "Click to open here. Command/Ctrl-click or middle-click opens a new tab; right-click can open a new window.";
+    this.$("worktree-result-path").textContent = payload.path || "";
+    this.$("worktree-result-backdrop").classList.remove("hidden");
+    requestAnimationFrame(() => this.$("worktree-result-link").focus());
+  }
+
+  closeWorktreeResult() {
+    this.$("worktree-result-backdrop").classList.add("hidden");
+  }
+
+  async deleteSelectedWorktree() {
+    const selected = this.worktrees.find((worktree) => worktree.id === this.worktreeId);
+    if (!selected || selected.is_root) return;
+    if (!window.confirm(`Remove worktree "${selected.name}"? Terminals in it must be closed first.`)) return;
+    const moveToTrash = window.confirm("Move the worktree folder to the macOS Trash? Cancel keeps the files but detaches the worktree.");
+    const response = await fetch(`/api/worktrees/${encodeURIComponent(selected.id)}`, {
+      method: "DELETE", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: this.projectSlug, move_to_trash: moveToTrash }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      alert(payload.detail || "worktree deletion failed");
+      return;
+    }
+    this.worktreeId = "root";
+    localStorage.setItem(`termdeck.${this.projectSlug}.worktree_id`, "root");
+    await this.loadWorktrees();
+    await this.switchWorktree("root");
   }
 
   projectRoot() {
     const p = this.projects.find((x) => x.name === this.projectSlug);
     return p ? p.root : null;
+  }
+
+  worktreeRoot() {
+    const selectedId = this.worktreeId === ALL_WORKTREES_ID ? this.interactionWorktreeId : (this.worktreeId || "root");
+    const selected = this.worktrees.find((worktree) => worktree.id === selectedId && worktree.available);
+    return selected?.path || this.projectRoot();
   }
 
   fileDeckProjectForRoot(root) {
@@ -1435,19 +1840,25 @@ class TermdeckApp {
   }
 
   openFileDeckViewInNewTab(root, view, relativePath = "", searchQuery = "") {
-    const project = this.fileDeckProjectForRoot(root);
+    const project = this.fileDeckProjectForRoot(root) || this.projects.find((candidate) => candidate.name === this.projectSlug);
     if (!project) return;
     const params = new URLSearchParams();
     params.set("view", view === "tree" ? "project" : view);
     params.set("pinned", "1");
-    if (relativePath) params.set("f", `${project.root}|${this.projectRelativeFilePath(project, root, relativePath)}`);
+    if (this.worktreeId && this.worktreeId !== "root" && this.worktreeId !== ALL_WORKTREES_ID && root === this.worktreeRoot()) params.set("wt", this.worktreeId);
+    if (relativePath) {
+      const fileRoot = this.worktreeId && this.worktreeId !== "root" && this.worktreeId !== ALL_WORKTREES_ID && root === this.worktreeRoot() ? root : project.root;
+      const filePath = fileRoot === root ? relativePath : this.projectRelativeFilePath(project, root, relativePath);
+      params.set("f", `${fileRoot}|${filePath}`);
+    }
     if (searchQuery) params.set("q", searchQuery);
     const query = params.toString() ? `?${params}` : "";
     window.open(`/p/${encodeURIComponent(project.name)}${query}`, "_blank", "noopener,noreferrer");
   }
 
   openFileDeckView(view) {
-    const project = this.fileDeckProjectForRoot(this.projectRoot() || this.sessions.find((session) => session.session_id === this.activeId)?.cwd);
+    const project = this.fileDeckProjectForRoot(this.worktreeRoot() || this.sessions.find((session) => session.session_id === this.activeId)?.cwd) ||
+      this.projects.find((candidate) => candidate.name === this.projectSlug);
     if (!project) return;
     this.setSideView(view === "tree" ? "project" : view, false);
   }
@@ -1456,7 +1867,8 @@ class TermdeckApp {
     const project = this.projects.find((candidate) => candidate.name === session.project) ||
       this.fileDeckProjectForRoot(session.cwd);
     if (!project) return;
-    window.open(`/p/${encodeURIComponent(project.name)}?t=${encodeURIComponent(session.session_id)}`,
+    const worktreeQuery = session.worktree_id && session.worktree_id !== "root" ? `&wt=${encodeURIComponent(session.worktree_id)}` : "";
+    window.open(`/p/${encodeURIComponent(project.name)}?t=${encodeURIComponent(session.session_id)}${worktreeQuery}`,
       "_blank", "noopener,noreferrer");
   }
 
@@ -1498,48 +1910,9 @@ class TermdeckApp {
       .sort((a, b) => String(b.root || "").length - String(a.root || "").length)[0] || null;
   }
 
-  populateModalProjects() {
-    const select = this.$("modal-project");
-    if (!select) return;
-    const cwd = this.resolveVscodeDefaultCwd();
-    const currentProject = this.projects.find((project) => project.name === this.projectSlug);
-    const preferred = currentProject || this.projectForCwd(cwd);
-    select.textContent = "";
-    for (const project of this.projects) {
-      const option = document.createElement("option");
-      option.value = project.name;
-      option.textContent = `${project.name} · ${this.compactProjectPath(project.root)}`;
-      option.title = project.root;
-      select.appendChild(option);
-    }
-    const custom = document.createElement("option");
-    custom.value = "";
-    custom.textContent = "Choose folder…";
-    select.appendChild(custom);
-    select.value = preferred?.name || "";
-    select.disabled = !!this.modalGroupId;
-    this.syncModalProjectCwd();
-  }
-
-  syncModalProjectCwd() {
-    const select = this.$("modal-project");
-    const cwdInput = this.$("modal-cwd");
-    if (!select || !cwdInput) return;
-    const project = this.projects.find((candidate) => candidate.name === select.value);
-    if (project) {
-      cwdInput.value = project.root;
-      cwdInput.readOnly = true;
-      cwdInput.dataset.projectSeeded = "1";
-      return;
-    }
-    if (cwdInput.dataset.projectSeeded === "1") cwdInput.value = this.resolveVscodeDefaultCwd();
-    cwdInput.readOnly = false;
-    cwdInput.dataset.projectSeeded = "0";
-  }
-
   async chooseProjectFolder() {
     if (this.vscodeMode) return;
-    const button = this.$("modal-project-add-btn");
+    const button = this.$("project-add-btn");
     if (button?.disabled) return;
     if (button) button.disabled = true;
     try {
@@ -1555,11 +1928,18 @@ class TermdeckApp {
         alert("native folder selection returned no project");
         return;
       }
-      const cwdInput = this.$("modal-cwd");
-      if (cwdInput) {
-        cwdInput.value = project.root || "";
-        cwdInput.dataset.projectSeeded = "1";
-      }
+      await this.loadProjects();
+      const url = new URL(`/p/${encodeURIComponent(project.name)}`, location.href);
+      this.$("worktree-result-title").textContent = "Project added";
+      this.$("worktree-result-name").textContent = project.name;
+      const link = this.$("worktree-result-link");
+      link.href = url.href;
+      link.textContent = url.href;
+      link.title = url.href;
+      this.$("worktree-result-hint").textContent = "Click to open here. Command/Ctrl-click or middle-click opens a new tab; right-click can open a new window.";
+      this.$("worktree-result-path").textContent = project.root || "";
+      this.$("worktree-result-backdrop").classList.remove("hidden");
+      requestAnimationFrame(() => link.focus());
     } catch (error) {
       alert(error.message || "failed to choose project folder");
     } finally {
@@ -1582,17 +1962,20 @@ class TermdeckApp {
     }, true);
     window.addEventListener("message", this.handleHostMessageBound, false);
     window.addEventListener("pagehide", () => {
+      this.flushPendingSettingsSave();
       this.flushPendingFileSavesOnPageExit();
       this.flushPendingSearchHistoryRecord();
       this.flushClaudeSnapshotSaves();
     });
     window.addEventListener("beforeunload", () => {
+      this.flushPendingSettingsSave();
       this.flushPendingFileSavesOnPageExit();
       this.flushPendingSearchHistoryRecord();
       this.flushClaudeSnapshotSaves();
     });
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") {
+        this.flushPendingSettingsSave();
         this.flushPendingFileSavesOnPageExit();
         this.flushPendingSearchHistoryRecord();
         this.flushClaudeSnapshotSaves();
@@ -1635,7 +2018,8 @@ class TermdeckApp {
           this.openFilesSidePanelView(view);
           return;
         }
-       if (view === "search" && this.searchContentFromSelection()) {
+       if (view === "search") {
+         this.openSearchSidePanelFromNavigation();
          return;
        }
        if (view === "project" && this.searchFileFromSelection()) {
@@ -1655,7 +2039,10 @@ class TermdeckApp {
           this.openFilesSidePanelView(view);
           return;
         }
-        if (view === "search" && this.searchContentFromSelection()) return;
+        if (view === "search") {
+          this.openSearchSidePanelFromNavigation();
+          return;
+        }
         if (view === "project" && this.searchFileFromSelection()) return;
         this.openFilesSidePanelView(view);
       };
@@ -1669,10 +2056,14 @@ class TermdeckApp {
     };
     this.$("view-terminals").classList.add("on");
     this.$("vscode-refresh-btn").onclick = () => this.requestVscodeRefresh(false);
-    this.$("modal-project-add-btn").onclick = () => this.chooseProjectFolder();
-    this.$("modal-cwd").addEventListener("input", () => {
-      this.$("modal-cwd").dataset.projectSeeded = "0";
-    });
+    this.$("project-add-btn").onclick = (event) => {
+      event.stopPropagation();
+      this.toggleHeaderAddMenu();
+    };
+    this.$("header-add-project").onclick = () => this.runHeaderAddAction("project");
+    this.$("header-add-worktree").onclick = () => this.runHeaderAddAction("worktree");
+    this.$("header-add-terminal").onclick = () => this.runHeaderAddAction("terminal");
+    this.updateHeaderAddMenu();
     const queryInput = this.$("search-query");
     queryInput.autocomplete = "off";
     queryInput.autocapitalize = "off";
@@ -1694,19 +2085,6 @@ class TermdeckApp {
     });
     queryInput.addEventListener("input", () => this.debouncedSearch());
     this.syncFileGlobInputs();
-    for (const [id, mode] of [["search-file-glob", "search"]]) {
-      const input = this.$(id);
-      input.autocomplete = "off";
-      input.autocapitalize = "off";
-      input.autocorrect = "off";
-      input.spellcheck = false;
-      input.addEventListener("input", () => {
-        this.settings[mode === "tree" ? "tree_file_glob" : "search_file_glob"] = input.value;
-        this.saveSettings();
-        this.syncLegacySearchGlob();
-        if (mode === "search" && this.sideView === "search" && this.$("search-query").value.trim()) this.debouncedSearch();
-      });
-    }
     this.$("file-type-filter-button").onclick = (event) => this.toggleFileTypeFilterMenu(event.currentTarget);
     this.$("search-file-type-filter-button").onclick = (event) => this.toggleFileTypeFilterMenu(event.currentTarget);
     this.$("minimize-toggle").onclick = () => this.setSideView("terminals");
@@ -1804,6 +2182,7 @@ class TermdeckApp {
         this.updateActiveTerminalAge();
       }, TERMINAL_AGE_REFRESH_MS);
     }
+    this.$("session-list").addEventListener("scroll", () => this.hideTerminalSearchHoverPopup(), { passive: true });
     setInterval(() => this.pollStats(), STATS_POLL_MS);
     this.pollStats();
     document.addEventListener("mousedown", (e) => {
@@ -1815,6 +2194,9 @@ class TermdeckApp {
           if (id === "context-menu") this.contextMenuTarget = null;
         }
       }
+      const headerAddMenu = this.$("header-add-menu");
+      if (headerAddMenu && !headerAddMenu.classList.contains("hidden") && !headerAddMenu.contains(e.target) &&
+          !this.$("project-add-btn")?.contains(e.target)) this.closeHeaderAddMenu();
       const promptHistory = this.$("history-prompt-history");
       const promptHistoryButton = this.$("history-prompt-history-btn");
       if (promptHistory && !promptHistory.classList.contains("hidden") &&
@@ -1830,7 +2212,7 @@ class TermdeckApp {
       }
       const fileTypeMenu = this.$("file-type-filter-menu");
       if (fileTypeMenu && !fileTypeMenu.classList.contains("hidden") && !fileTypeMenu.contains(e.target) &&
-          !e.target.closest("#file-type-filter-button")) this.closeFileTypeFilterMenu();
+          !e.target.closest("#file-type-filter-button, #search-file-type-filter-button")) this.closeFileTypeFilterMenu();
       const notebookPanel = this.$("notebook-panel");
       const notebookToggle = this.$("notebook-toggle");
       if (this.settings.notebook_open && notebookPanel && !notebookPanel.contains(e.target) &&
@@ -1847,7 +2229,16 @@ class TermdeckApp {
     };
     this.$("modal-cancel").onclick = () => this.closeModal();
     this.$("modal-create").onclick = () => this.createSession();
-    this.$("modal-model").onchange = () => this.updateModalPermissions();
+    this.$("modal-model").onchange = () => { this.clearModalError(); this.updateModalPermissions(); };
+    this.$("worktree-modal-cancel").onclick = () => this.closeWorktreeModal();
+    this.$("worktree-modal-create").onclick = () => void this.createProjectWorktree();
+    this.$("worktree-modal-backdrop").addEventListener("mousedown", (event) => {
+      if (event.target === this.$("worktree-modal-backdrop")) this.closeWorktreeModal();
+    });
+    this.$("worktree-result-close").onclick = () => this.closeWorktreeResult();
+    this.$("worktree-result-backdrop").addEventListener("mousedown", (event) => {
+      if (event.target === this.$("worktree-result-backdrop")) this.closeWorktreeResult();
+    });
     for (const id of ["history-btn", "vscode-history-btn"]) {
       const button = this.$(id);
       if (button) button.onclick = () => this.toggleHistory();
@@ -2023,6 +2414,29 @@ class TermdeckApp {
         if (e.key === "Escape") this.$("keys-backdrop").classList.add("hidden");
         return;
       }
+      if (!this.$("worktree-review-backdrop").classList.contains("hidden")) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          this.closeWorktreeReview();
+        }
+        return;
+      }
+      if (e.key === "Escape" && !this.$("header-add-menu").classList.contains("hidden")) {
+        e.preventDefault();
+        this.closeHeaderAddMenu();
+        return;
+      }
+      const worktreeResultOpen = !this.$("worktree-result-backdrop").classList.contains("hidden");
+      if (worktreeResultOpen) {
+        if (e.key === "Escape") this.closeWorktreeResult();
+        return;
+      }
+      const worktreeModalOpen = !this.$("worktree-modal-backdrop").classList.contains("hidden");
+      if (worktreeModalOpen) {
+        if (e.key === "Escape") this.closeWorktreeModal();
+        if (e.key === "Enter") void this.createProjectWorktree();
+        return;
+      }
       const modalOpen = !this.$("modal-backdrop").classList.contains("hidden");
       if (modalOpen) {
         if (e.key === "Escape") this.closeModal();
@@ -2119,6 +2533,7 @@ class TermdeckApp {
 
   navUrl(state) {
     const params = new URLSearchParams();
+    if (this.worktreeId === ALL_WORKTREES_ID || (this.worktreeId && this.worktreeId !== "root")) params.set("wt", this.worktreeId);
     if (state.kind === "term") params.set("t", state.id);
     else if (state.kind === "file") {
       params.set("f", state.key);
@@ -2260,6 +2675,7 @@ class TermdeckApp {
   }
 
   async refresh() {
+    if (!this.initialLoadComplete) this.showInitialLoadingState();
     let sessions, closed;
     try {
       const [sessionsRes, closedRes] = await Promise.all(
@@ -2267,10 +2683,12 @@ class TermdeckApp {
       sessions = await sessionsRes.json();
       closed = await closedRes.json();
     } catch (err) {
+      if (!this.initialLoadComplete) this.showInitialLoadFailure();
       return;
     }
+    this.finishInitialLoadingState();
     const previousSessionListSignature = this.sessionListSignature;
-    this.sessions = this.applySessionOrder(sessions);
+    this.sessions = this.worktreeId === ALL_WORKTREES_ID ? sessions : this.applySessionOrder(sessions);
     this.closedSessions = closed;
     const currentSessionIds = new Set(this.sessions.map((session) => session.session_id));
     const staleUnreadSessionIds = [...this.unreadSessions].filter((sessionId) => !currentSessionIds.has(sessionId));
@@ -2291,6 +2709,10 @@ class TermdeckApp {
       // restored only after a terminal websocket is opened, which made a
       // browser refresh appear idle until the user clicked that tab.
       const spinning = !s.dormant && s.processing === true;
+      const serverNeedsAttention = s.needs_attention === true;
+      const previousServerNeedsAttention = this.attentionServerStates.get(s.session_id);
+      this.attentionServerStates.set(s.session_id, serverNeedsAttention);
+      if (serverNeedsAttention && previousServerNeedsAttention !== true) this.triggerSessionAttention(s.session_id);
       const processingSince = Number(s.processing_since);
       if (processingSince > 0 && !this.processingStates.get(s.session_id) &&
           !this.historyPendingProcessing.has(s.session_id)) {
@@ -2370,10 +2792,34 @@ class TermdeckApp {
     };
   }
 
+  showInitialLoadingState() {
+    const emptyState = this.$("empty-state");
+    emptyState.classList.add("loading");
+    emptyState.textContent = "loading TermDeck…";
+    emptyState.style.display = "flex";
+  }
+
+  showInitialLoadFailure() {
+    const emptyState = this.$("empty-state");
+    emptyState.classList.remove("loading");
+    emptyState.textContent = "unable to load TermDeck — retrying…";
+    emptyState.style.display = "flex";
+  }
+
+  finishInitialLoadingState() {
+    this.initialLoadComplete = true;
+    const emptyState = this.$("empty-state");
+    emptyState.classList.remove("loading");
+    emptyState.textContent = "no terminals — press + to open one";
+  }
+
   applySessionStatus(message) {
     const session = this.session(message.session_id);
     if (!session) return;
     const previousAgentSessionId = session.agent_session_id;
+    const previousExitCode = session.exit_code;
+    const previousNeedsAttention = this.attentionServerStates.has(session.session_id)
+      ? this.attentionServerStates.get(session.session_id) === true : session.needs_attention === true;
     if (Object.prototype.hasOwnProperty.call(message, "title") && message.title) session.title = message.title;
     if (Object.prototype.hasOwnProperty.call(message, "title_user_set")) session.title_user_set = !!message.title_user_set;
     if (Object.prototype.hasOwnProperty.call(message, "cli_title") && message.cli_title) session.cli_title = message.cli_title;
@@ -2397,6 +2843,17 @@ class TermdeckApp {
     if (Object.prototype.hasOwnProperty.call(message, "running")) session.running = !!message.running;
     if (Object.prototype.hasOwnProperty.call(message, "exit_code")) session.exit_code = message.exit_code;
     if (Object.prototype.hasOwnProperty.call(message, "dormant")) session.dormant = !!message.dormant;
+    if (Object.prototype.hasOwnProperty.call(message, "needs_attention")) {
+      session.needs_attention = !!message.needs_attention;
+      this.attentionServerStates.set(session.session_id, session.needs_attention);
+      if (!session.needs_attention) {
+        this.clearSessionAttention(session.session_id);
+        if (previousNeedsAttention) {
+          const view = this.views.get(session.session_id);
+          if (view) view.attentionScreenDetectionSuppressed = true;
+        }
+      }
+    }
     this.cacheSessionModel(session);
     const presentation = this.titlePresentation(session);
     const spinning = !session.dormant && session.processing === true;
@@ -2405,6 +2862,11 @@ class TermdeckApp {
       this.usesTextTerminalStatus() && presentation.spinning);
     this.postVscodeNativeSession(session, session.session_id === this.activeId ? !this.historyOpen : undefined);
     this.updateProcessingState(session.session_id, spinning);
+    if (session.needs_attention && !previousNeedsAttention) {
+      this.triggerSessionAttention(session.session_id);
+    } else if (previousExitCode == null && session.exit_code != null && !session.dormant && session.exit_code !== 0) {
+      this.triggerSessionAttention(session.session_id);
+    }
     // The initial session list is rendered before the status websocket sends
     // its snapshot. Keep the row's running/dormant dot in sync with the
     // session object as soon as that snapshot arrives; selecting the row
@@ -2463,6 +2925,7 @@ class TermdeckApp {
     if (dot) {
       dot.classList.toggle("processing", !!this.processingStates.get(id));
       dot.classList.toggle("unread", this.unreadSessions.has(id) && !this.processingStates.get(id));
+      dot.classList.toggle("attention", this.attentionSessions.has(id));
     }
     this.updateSessionTextStatus(id);
     this.updateTerminalGroupStatus(id);
@@ -2481,7 +2944,9 @@ class TermdeckApp {
     label.classList.remove("group-working", "group-unread");
     const unreadDot = label.querySelector(".group-unread-dot");
     if (unreadDot) {
-      unreadDot.classList.toggle("on", attentionCount > 0);
+      const groupNeedsAttention = memberIds.some((id) => this.attentionSessions.has(id));
+      unreadDot.classList.toggle("on", attentionCount > 0 || groupNeedsAttention);
+      unreadDot.classList.remove("attention");
       unreadDot.title = attentionCount ? `${attentionCount} active or unread terminal${attentionCount === 1 ? "" : "s"}` : "";
     }
     const attentionNumber = label.querySelector(".group-unread-count");
@@ -2537,6 +3002,25 @@ class TermdeckApp {
     icon.classList.toggle("terminal-status-exited", !active && exited);
   }
 
+  triggerSessionAttention(id) {
+    const session = this.session(id);
+    if (!session) return;
+    this.attentionSessions.add(id);
+    clearTimeout(this.attentionTimers.get(id));
+    this.attentionTimers.delete(id);
+    if (!session.needs_attention) {
+      this.attentionTimers.set(id, setTimeout(() => this.clearSessionAttention(id), TERMINAL_ATTENTION_ANIMATION_MS));
+    }
+    this.updateUnreadIndicator(id);
+  }
+
+  clearSessionAttention(id) {
+    clearTimeout(this.attentionTimers.get(id));
+    this.attentionTimers.delete(id);
+    if (!this.attentionSessions.delete(id)) return;
+    this.updateUnreadIndicator(id);
+  }
+
   updateProcessingState(id, spinning) {
     const session = this.session(id);
     const dormant = !!session?.dormant;
@@ -2550,17 +3034,18 @@ class TermdeckApp {
     if (spinning) this.viewedCompletedSessions.delete(id);
     if (spinning && previous !== true && !this.processingSince.has(id)) this.processingSince.set(id, Date.now());
     if (!spinning) this.processingSince.delete(id);
-    if (id !== this.activeId && !dormant && previous === true && !spinning &&
-        !this.viewedCompletedSessions.has(id) && !this.unreadSessions.has(id)) {
-      this.unreadSessions.add(id);
-      this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
-    }
     this.processingStates.set(id, spinning);
     this.updateSessionSpinner(id, spinning);
     this.updateUnreadIndicator(id);
     this.updateHistoryThinkingIndicator();
     this.renderHistoryMeta();
-    if (!spinning) this.dispatchNextMarkdownPrompt(this.views.get(id));
+    const queuedPromptDispatched = !spinning && this.dispatchNextMarkdownPrompt(this.views.get(id));
+    const completed = !dormant && previous === true && !spinning && !queuedPromptDispatched;
+    const userIsViewingSession = id === this.activeId && !document.hidden && document.hasFocus();
+    if (completed && !userIsViewingSession && !this.viewedCompletedSessions.has(id) && !this.unreadSessions.has(id)) {
+      this.unreadSessions.add(id);
+      this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
+    }
   }
 
   markdownPromptQueueForSession(sessionId) {
@@ -2628,7 +3113,8 @@ class TermdeckApp {
       const dot = this.sessionStatusEls.get(s.session_id);
       if (dot) {
         dot.className = "status-dot" + (s.running ? "" : s.dormant ? " dormant" : " exited") +
-          (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "");
+          (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "") +
+          (this.attentionSessions.has(s.session_id) ? " attention" : "");
       }
       const spinner = this.sessionSpinnerEls.get(s.session_id);
       if (spinner) spinner.classList.toggle("on", presentation.spinning);
@@ -2640,6 +3126,21 @@ class TermdeckApp {
           this.updateTerminalIconState(s.session_id);
         }
       }
+    }
+    this.updateWorktreeSectionSummaries();
+  }
+
+  updateWorktreeSectionSummaries() {
+    if (this.worktreeId !== ALL_WORKTREES_ID) return;
+    for (const worktree of this.availableWorktreeSections()) {
+      const sessions = this.sessionsForWorktree(String(worktree.id));
+      const closed = this.closedSessions.filter((session) => this.worktreeIdForSession(session) === String(worktree.id));
+      const activeCount = sessions.filter((session) => this.processingStates.get(session.session_id) ||
+        this.unreadSessions.has(session.session_id)).length;
+      const count = this.$("session-list")?.querySelector(`[data-worktree-id="${CSS.escape(String(worktree.id))}"] .worktree-section-count`);
+      if (!count) continue;
+      count.textContent = `${sessions.length} terminal${sessions.length === 1 ? "" : "s"}${closed.length ? ` · ${closed.length} closed` : ""}`;
+      if (activeCount) count.textContent += ` · ${activeCount} active/unread`;
     }
   }
 
@@ -2732,6 +3233,7 @@ class TermdeckApp {
   makeLayoutDraggable(item, token, kind) {
     item.draggable = true;
     item.ondragstart = (event) => {
+      this.setInteractionWorktreeFromElement(item);
       const sessionId = kind === "session" ? token.slice("session:".length) : null;
       const sessionIds = sessionId ? this.selectedSessionIdsForDrag(sessionId) : [];
       const tokens = kind === "session" ? sessionIds.map((id) => `session:${id}`) : [token];
@@ -2745,14 +3247,16 @@ class TermdeckApp {
       } else {
         item.classList.add("dragging-tab");
       }
-      this.dragItem = { type: "layout", token, kind, tokens };
+      this.dragItem = { type: "layout", token, kind, tokens, worktreeId: this.stateWorktreeId() };
       this.clearDragGroupingTimer();
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("text/plain", tokens.join("\n"));
     };
     item.ondragover = (event) => {
+      this.setInteractionWorktreeFromElement(item);
       const source = this.dragItem;
       if (!source || source.type !== "layout" || source.token === token) return;
+      if (source.worktreeId && source.worktreeId !== this.stateWorktreeId()) return;
       const sourceSessionIds = this.sessionIdsFromDragItem(source);
       const targetId = kind === "session" ? token.slice("session:".length) : null;
       if (targetId && sourceSessionIds.includes(targetId)) return;
@@ -2805,9 +3309,11 @@ class TermdeckApp {
       if (!event.relatedTarget || !item.contains(event.relatedTarget)) this.clearDragLandingIndicator();
     };
     item.ondrop = (event) => {
+      this.setInteractionWorktreeFromElement(item);
       event.preventDefault();
       const source = this.dragItem;
-      if (source?.type === "layout" && source.token !== token) {
+      if (source?.type === "layout" && source.token !== token &&
+          (!source.worktreeId || source.worktreeId === this.stateWorktreeId())) {
         const sourceSessionIds = this.sessionIdsFromDragItem(source);
         const targetId = token.slice(token.indexOf(":") + 1);
         if (kind === "session" && sourceSessionIds.includes(targetId)) {
@@ -2862,7 +3368,7 @@ class TermdeckApp {
   }
 
   reorderSessions(draggedId, targetId, after = false) {
-    const ids = this.sessions.map((s) => s.session_id).filter((id) => id !== draggedId);
+    const ids = this.sessionsForWorktree(this.stateWorktreeId()).map((s) => s.session_id).filter((id) => id !== draggedId);
     const targetIndex = ids.indexOf(targetId);
     if (targetIndex < 0) return;
     ids.splice(targetIndex + (after ? 1 : 0), 0, draggedId);
@@ -2899,14 +3405,14 @@ class TermdeckApp {
       const sort = document.createElement("button");
       sort.id = "active-toggle";
       sort.className = "section-toggle terminals-sort-toggle";
-      sort.classList.toggle("on", this.activitySort);
-      sort.innerHTML = '<span class="codicon codicon-sort-precedence"></span>';
-      sort.setAttribute("aria-pressed", String(this.activitySort));
-      sort.title = this.activitySort ? "Show grouped terminals" : "Sort terminals by recent activity";
+      sort.classList.toggle("on", this.hideInactiveTerminals);
+      sort.innerHTML = `<span class="codicon ${this.hideInactiveTerminals ? "codicon-eye-closed" : "codicon-eye"}"></span>`;
+      sort.setAttribute("aria-pressed", String(this.hideInactiveTerminals));
+      sort.title = this.hideInactiveTerminals ? "Show all terminals" : "Show only active terminals";
       sort.setAttribute("aria-label", sort.title);
       sort.onclick = (event) => {
         event.stopPropagation();
-        this.toggleActivitySort();
+        this.toggleHideInactiveTerminals();
       };
       const group = document.createElement("button");
       group.id = "new-group-btn";
@@ -2924,8 +3430,9 @@ class TermdeckApp {
       search.innerHTML = '<span class="codicon codicon-search"></span>';
       search.title = this.shortcutTitle("Search terminal names and output", "open-terminal-search");
       search.setAttribute("aria-label", search.title);
-      search.setAttribute("aria-pressed", String(this.terminalSearchEditorOpen));
-      search.classList.toggle("on", this.terminalSearchEditorOpen);
+      const globalTerminalSearchOpen = this.terminalSearchEditorOpen && !this.terminalSearchGroupId;
+      search.setAttribute("aria-pressed", String(globalTerminalSearchOpen));
+      search.classList.toggle("on", globalTerminalSearchOpen);
       search.onclick = (event) => {
         event.stopPropagation();
         this.toggleTerminalSearchEditor();
@@ -2946,12 +3453,33 @@ class TermdeckApp {
     return label;
   }
 
-  ensureDesktopTerminalsHeader(list = this.$("session-list")) {
+  ensureDesktopTerminalsHeader(list = this.$("session-list"), terminalSearchEditor = null) {
     if (this.vscodeMode || !list || list.querySelector("#new-session-btn")) return;
     const header = this.sectionLabel("terminals");
     this.attachGroupDropTarget(header, null);
     list.prepend(header);
-    if (this.terminalSearchEditorOpen) header.after(this.createTerminalSearchEditor());
+    if (this.terminalSearchEditorOpen && !this.terminalSearchGroupId) {
+      header.after(terminalSearchEditor || this.createTerminalSearchEditor());
+    }
+  }
+
+  terminalSearchGroupName() {
+    if (!this.terminalSearchGroupId) return "";
+    const worktreeId = this.terminalSearchWorktreeId || this.stateWorktreeId();
+    return this.terminalGroupsForWorktree(worktreeId)
+      .find((group) => group.id === this.terminalSearchGroupId)?.name || "";
+  }
+
+  terminalSearchPlaceholder() {
+    const groupName = this.terminalSearchGroupName();
+    return groupName ? `search ${groupName}` : "search terminal names and conversations";
+  }
+
+  updateTerminalSearchEditorScope() {
+    const input = this.$("terminal-search-input");
+    if (input) input.placeholder = this.terminalSearchPlaceholder();
+    const summary = this.$("terminal-search-summary");
+    if (summary && !this.terminalSearchText.trim()) summary.textContent = this.terminalSearchGroupName();
   }
 
   createTerminalSearchEditor() {
@@ -2962,7 +3490,7 @@ class TermdeckApp {
     const input = document.createElement("input");
     input.id = "terminal-search-input";
     input.type = "text";
-    input.placeholder = "search terminal names and conversations";
+    input.placeholder = this.terminalSearchPlaceholder();
     input.value = this.terminalSearchText;
     input.autocomplete = "off";
     input.autocapitalize = "off";
@@ -2981,7 +3509,7 @@ class TermdeckApp {
       this.terminalSearchText = input.value;
       this.terminalSearchFocusIndex = -1;
       clearTimeout(this.terminalSearchTimer);
-      this.terminalSearchTimer = window.setTimeout(() => this.runTerminalSearch(), 240);
+      this.terminalSearchTimer = window.setTimeout(() => this.runTerminalSearch(), TERMINAL_SEARCH_DEBOUNCE_MS);
     };
     input.onkeydown = (event) => {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -3008,7 +3536,18 @@ class TermdeckApp {
     return bar;
   }
 
-  openTerminalSearchEditor() {
+  openTerminalSearchEditor(groupId = null) {
+    const nextGroupId = groupId && this.terminalGroups().some((group) => group.id === groupId) ? groupId : null;
+    const scopeChanged = nextGroupId !== this.terminalSearchGroupId;
+    this.terminalSearchGroupId = nextGroupId;
+    this.terminalSearchWorktreeId = nextGroupId ? this.stateWorktreeId() : null;
+    if (nextGroupId) {
+      const groups = this.terminalGroups();
+      if (groups.some((group) => group.id === nextGroupId && group.collapsed)) {
+        this.patchProjectState({ terminal_groups: groups.map((group) => group.id === nextGroupId
+          ? { ...group, collapsed: false } : group) });
+      }
+    }
     this.terminalSearchEditorOpen = true;
     this.renderList();
     requestAnimationFrame(() => {
@@ -3016,12 +3555,14 @@ class TermdeckApp {
       if (!input) return;
       input.focus();
       input.select();
+      if (scopeChanged && this.terminalSearchText.trim()) void this.runTerminalSearch();
     });
   }
 
-  toggleTerminalSearchEditor() {
-    if (this.terminalSearchEditorOpen) this.closeTerminalSearchEditor();
-    else this.openTerminalSearchEditor();
+  toggleTerminalSearchEditor(groupId = null) {
+    const nextGroupId = groupId && this.terminalGroups().some((group) => group.id === groupId) ? groupId : null;
+    if (this.terminalSearchEditorOpen && this.terminalSearchGroupId === nextGroupId) this.closeTerminalSearchEditor();
+    else this.openTerminalSearchEditor(nextGroupId);
   }
 
   closeTerminalSearchEditor() {
@@ -3030,6 +3571,8 @@ class TermdeckApp {
     this.terminalSearchAbort = null;
     this.terminalSearchText = "";
     this.terminalSearchEditorOpen = false;
+    this.terminalSearchGroupId = null;
+    this.terminalSearchWorktreeId = null;
     this.terminalSearchFocusIndex = -1;
     this.terminalSearchMatches.clear();
     this.terminalSearchClosedMatches.clear();
@@ -3196,43 +3739,32 @@ class TermdeckApp {
     age.title = `Last terminal activity: ${this.terminalAgeExactTimestamp(session)}`;
   }
 
-  sessionActivitySortBucket(session) {
-    const activity = this.sessionActivityTime(session);
-    return activity > 0 ? Math.floor(activity / ACTIVITY_SORT_BUCKET_MS) : 0;
-  }
-
-  compareRecentActivityForSort(a, b) {
-    return this.sessionActivitySortBucket(b) - this.sessionActivitySortBucket(a);
-  }
-
   touchSessionActivity(sessionId, timestamp = Date.now()) {
     if (!sessionId) return;
     const previous = Number(this.sessionActivityAt.get(sessionId) || 0);
     if (timestamp <= previous) return;
-    const previousBucket = previous > 0 ? Math.floor(previous / ACTIVITY_SORT_BUCKET_MS) : 0;
-    const nextBucket = Math.floor(timestamp / ACTIVITY_SORT_BUCKET_MS);
     this.sessionActivityAt.set(sessionId, timestamp);
-    if (this.activitySort && previousBucket !== nextBucket && !this.activitySortRenderTimer) {
-      this.activitySortRenderTimer = window.setTimeout(() => {
-        this.activitySortRenderTimer = 0;
-        this.renderList();
-      }, 180);
-    }
   }
 
-  updateActivitySortButton() {
+  updateHideInactiveTerminalsButton() {
     const button = this.$("active-toggle");
     if (!button) return;
-    button.classList.toggle("on", this.activitySort);
-    button.setAttribute("aria-pressed", String(this.activitySort));
-    button.title = this.activitySort ? "Show grouped terminals" : "Sort terminals by recent activity";
+    button.classList.toggle("on", this.hideInactiveTerminals);
+    button.innerHTML = `<span class="codicon ${this.hideInactiveTerminals ? "codicon-eye-closed" : "codicon-eye"}"></span>`;
+    button.setAttribute("aria-pressed", String(this.hideInactiveTerminals));
+    button.title = this.hideInactiveTerminals ? "Show all terminals" : "Show only active terminals";
     button.setAttribute("aria-label", button.title);
   }
 
-  toggleActivitySort() {
-    this.activitySort = !this.activitySort;
-    this.updateActivitySortButton();
+  toggleHideInactiveTerminals() {
+    this.hideInactiveTerminals = !this.hideInactiveTerminals;
+    this.updateHideInactiveTerminalsButton();
     this.renderList();
+  }
+
+  isActiveTerminal(session) {
+    return !!session && (this.processingStates.get(session.session_id) === true ||
+      session.processing === true || session.needs_attention === true);
   }
 
   updateTerminalSearchGroupButton() {
@@ -3289,6 +3821,42 @@ class TermdeckApp {
       snippets.appendChild(row);
     }
     return snippets;
+  }
+
+  terminalSearchHoverPopup() {
+    let popup = document.getElementById("terminal-search-hover-popup");
+    if (popup) return popup;
+    popup = document.createElement("div");
+    popup.id = "terminal-search-hover-popup";
+    popup.className = "hidden";
+    document.body.appendChild(popup);
+    return popup;
+  }
+
+  showTerminalSearchHoverPopup(item, match) {
+    if (!item?.isConnected || !match || !this.terminalSearchText.trim()) return;
+    const snippets = this.renderTerminalSearchSnippets(match);
+    if (!snippets.childElementCount) return;
+    const popup = this.terminalSearchHoverPopup();
+    popup.replaceChildren(snippets);
+    popup.classList.remove("hidden");
+    const bounds = item.getBoundingClientRect();
+    const availableWidth = Math.max(280, window.innerWidth - bounds.right - 18);
+    popup.style.width = `${Math.min(560, availableWidth)}px`;
+    popup.style.left = `${Math.min(window.innerWidth - popup.offsetWidth - 8, bounds.right + 7)}px`;
+    popup.style.top = `${Math.max(8, Math.min(bounds.top, window.innerHeight - popup.offsetHeight - 8))}px`;
+  }
+
+  hideTerminalSearchHoverPopup() {
+    document.getElementById("terminal-search-hover-popup")?.classList.add("hidden");
+  }
+
+  bindTerminalSearchHoverPopup(item, match) {
+    if (!match) return;
+    item.addEventListener("mouseenter", () => this.showTerminalSearchHoverPopup(item, match));
+    item.addEventListener("mouseleave", () => this.hideTerminalSearchHoverPopup());
+    item.addEventListener("focus", () => this.showTerminalSearchHoverPopup(item, match));
+    item.addEventListener("blur", () => this.hideTerminalSearchHoverPopup());
   }
 
   terminalSearchRows() {
@@ -3410,10 +3978,12 @@ class TermdeckApp {
 
   clearTerminalSearch() {
     const preserveInputFocus = document.activeElement?.id === "terminal-search-input";
+    const input = this.$("terminal-search-input");
     clearTimeout(this.terminalSearchTimer);
     if (this.terminalSearchAbort) this.terminalSearchAbort.abort();
     this.terminalSearchAbort = null;
     this.terminalSearchText = "";
+    if (input) input.value = "";
     this.terminalSearchFocusIndex = -1;
     this.terminalTitleSearchResults = [];
     this.historySearchResults = [];
@@ -3421,6 +3991,29 @@ class TermdeckApp {
     this.terminalSearchClosedMatches.clear();
     this.renderList();
     if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
+  }
+
+  filterTerminalSearchMatchesToGroup() {
+    if (!this.terminalSearchGroupId) return;
+    const worktreeId = this.terminalSearchWorktreeId || this.stateWorktreeId();
+    const state = this.getProjectStateForWorktree(worktreeId);
+    for (const sessionId of this.terminalSearchMatches.keys()) {
+      if (state.session_groups?.[sessionId] !== this.terminalSearchGroupId) this.terminalSearchMatches.delete(sessionId);
+    }
+    this.terminalSearchClosedMatches.clear();
+  }
+
+  expandGlobalTerminalSearchClosedSections() {
+    if (this.terminalSearchGroupId) return;
+    if (this.worktreeId !== ALL_WORKTREES_ID) {
+      this.closedExpanded = true;
+      return;
+    }
+    for (const worktree of this.availableWorktreeSections()) {
+      const worktreeId = String(worktree.id);
+      this.setWorktreeSectionCollapsed(worktreeId, false);
+      this.setWorktreeClosedExpanded(worktreeId, true);
+    }
   }
 
   async runTerminalSearch() {
@@ -3442,7 +4035,8 @@ class TermdeckApp {
     this.terminalSearchClosedMatches = new Map(this.closedSessions
       .filter((session) => String(session.title || "").toLocaleLowerCase().includes(query.toLocaleLowerCase()))
       .map((session) => [session.session_id, { count: 1, snippets: [{ line: "name", text: session.title }] }]));
-    this.closedExpanded = true;
+    this.filterTerminalSearchMatchesToGroup();
+    this.expandGlobalTerminalSearchClosedSections();
     this.renderList();
     const searchingSummary = this.$("terminal-search-summary");
     if (searchingSummary) searchingSummary.textContent = "searching…";
@@ -3477,16 +4071,19 @@ class TermdeckApp {
         if (openSessionId) this.terminalSearchMatches.set(openSessionId, match);
         else if (closedSessionId) this.terminalSearchClosedMatches.set(closedSessionId, match);
       }
+      this.filterTerminalSearchMatchesToGroup();
       const terminalCount = this.terminalSearchMatches.size + this.terminalSearchClosedMatches.size;
       const matchCount = [...this.terminalSearchMatches.values(), ...this.terminalSearchClosedMatches.values()]
         .reduce((sum, result) => sum + Number(result.count || 0), 0);
       const indexing = historyPayload.indexing ? " · indexing history" : "";
       const scope = this.historySearchOperations ? "all output" : "conversation";
+      const groupScope = this.terminalSearchGroupName();
+      const summaryPrefix = groupScope ? `${groupScope} · ` : "";
       this.renderList();
       const summary = this.$("terminal-search-summary");
       if (summary) summary.textContent = terminalCount
-        ? `${scope} · ${terminalCount} terminal${terminalCount === 1 ? "" : "s"} · ${matchCount} match${matchCount === 1 ? "" : "es"}${indexing}`
-        : `no ${scope} matches${indexing}`;
+        ? `${summaryPrefix}${scope} · ${terminalCount} terminal${terminalCount === 1 ? "" : "s"} · ${matchCount} match${matchCount === 1 ? "" : "es"}${indexing}`
+        : `${summaryPrefix}no ${scope} matches${indexing}`;
       if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
     } catch (error) {
       if (error.name === "AbortError") return;
@@ -3760,6 +4357,7 @@ class TermdeckApp {
   terminalGroupLabel(group, attentionCount = 0, working = false, members = []) {
     const label = document.createElement("div");
     label.className = "side-section-label terminal-group-label";
+    label.dataset.worktreeId = this.stateWorktreeId();
     const chevron = document.createElement("span");
     chevron.className = "codicon " + (group.collapsed ? "codicon-chevron-right" : "codicon-chevron-down");
     const name = document.createElement("span");
@@ -3767,7 +4365,8 @@ class TermdeckApp {
     name.textContent = group.name;
     if (!this.vscodeMode) name.style.color = this.terminalGroupAgeColor(members);
     const unreadDot = document.createElement("span");
-    unreadDot.className = "group-unread-dot" + (attentionCount ? " on" : "");
+    const groupNeedsAttention = members.some((session) => this.attentionSessions.has(session.session_id));
+    unreadDot.className = "group-unread-dot" + (attentionCount || groupNeedsAttention ? " on" : "");
     unreadDot.title = attentionCount ? `${attentionCount} active or unread terminal${attentionCount === 1 ? "" : "s"}` : "";
     const attentionNumber = document.createElement("span");
     attentionNumber.className = "group-unread-count";
@@ -3782,6 +4381,21 @@ class TermdeckApp {
       (working ? " · working" : "") + (attentionCount ? ` · ${attentionCount} active or unread` : "");
     label.append(chevron, name, attention, indicator);
     if (!this.vscodeMode) {
+      const search = document.createElement("button");
+      search.className = "terminal-group-search";
+      search.type = "button";
+      search.innerHTML = '<span class="codicon codicon-search"></span>';
+      search.title = `Search terminals in ${group.name}`;
+      search.setAttribute("aria-label", search.title);
+      search.setAttribute("aria-pressed", String(this.terminalSearchEditorOpen && this.terminalSearchGroupId === group.id));
+      search.classList.toggle("on", this.terminalSearchEditorOpen && this.terminalSearchGroupId === group.id);
+      search.addEventListener("pointerdown", (event) => event.stopPropagation());
+      search.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.setInteractionWorktreeFromElement(label);
+        this.toggleTerminalSearchEditor(group.id);
+      });
       const add = document.createElement("button");
       add.className = "terminal-group-add";
       add.type = "button";
@@ -3792,12 +4406,20 @@ class TermdeckApp {
       add.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
+        this.setInteractionWorktreeFromElement(label);
         this.openModal(group.id);
       });
+      label.insertBefore(search, attention);
       label.appendChild(add);
     }
-    label.onclick = () => this.toggleTerminalGroup(group.id);
-    label.oncontextmenu = (event) => this.openTerminalGroupContextMenu(event, group);
+    label.onclick = () => {
+      this.setInteractionWorktreeFromElement(label);
+      this.toggleTerminalGroup(group.id);
+    };
+    label.oncontextmenu = (event) => {
+      this.setInteractionWorktreeFromElement(label);
+      this.openTerminalGroupContextMenu(event, group);
+    };
     this.makeLayoutDraggable(label, `group:${group.id}`, "group");
     return label;
   }
@@ -3809,11 +4431,11 @@ class TermdeckApp {
       (searchMatch ? " terminal-search-match" : "");
     if (searchMatch) item.tabIndex = 0;
     item.dataset.sessionId = s.session_id;
+    item.dataset.worktreeId = this.worktreeIdForSession(s);
     item.classList.toggle("sidebar-selected", this.sidebarSelectedSessionIds.has(s.session_id));
     item.title = `${s.command || "zsh"}\n${s.cwd}` + (s.agent_session_id ? `\n${s.agent_kind}: ${s.agent_session_id}` : "") + "\nright-click for actions";
     if (searchMatch) {
-      const snippets = (searchMatch.snippets || []).map((snippet) => `${snippet.line}: ${snippet.text}`).join("\n");
-      item.title += `\n${searchMatch.count} terminal match${searchMatch.count === 1 ? "" : "es"}${snippets ? `\n${snippets}` : ""}`;
+      item.title += `\n${searchMatch.count} terminal match${searchMatch.count === 1 ? "" : "es"}`;
     }
     item.dataset.baseTitle = item.title;
     item.style.setProperty("--session-age-color", this.terminalAgeColor(s));
@@ -3823,7 +4445,8 @@ class TermdeckApp {
     if (useTextStatusIndicator) item.classList.add("terminal-icons-hidden");
     const dot = document.createElement("span");
     dot.className = "status-dot" + (s.running ? "" : s.dormant ? " dormant" : " exited") +
-      (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "");
+      (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "") +
+      (this.attentionSessions.has(s.session_id) ? " attention" : "");
     this.sessionStatusEls.set(s.session_id, dot);
     const spinner = document.createElement("span");
     spinner.className = "session-spinner";
@@ -3863,6 +4486,12 @@ class TermdeckApp {
     const iconStatusExited = showDesktopBrandIndicator && !s.running && !s.dormant;
     typeIcon.classList.toggle("terminal-status-active", iconStatusActive);
     typeIcon.classList.toggle("terminal-status-exited", !iconStatusActive && iconStatusExited);
+    const worktreeBadge = document.createElement("span");
+    worktreeBadge.className = "worktree-badge";
+    if (s.worktree_branch) {
+      worktreeBadge.textContent = `⎇ ${s.worktree_branch.split("/").pop()}`;
+      worktreeBadge.title = `Isolated worktree\n${s.worktree_path || ""}`;
+    }
     const close = document.createElement("button");
     close.className = "item-close";
     close.textContent = "✕";
@@ -3872,12 +4501,13 @@ class TermdeckApp {
     groupIndicator.className = "group-drop-indicator";
     groupIndicator.innerHTML = '<span class="codicon codicon-folder-library"></span><span>group</span>';
     groupIndicator.title = "Release to group with this terminal";
-    if (showDesktopBrandIndicator) item.append(spinner, typeIcon, title, groupIndicator, close);
-    else if (useTextStatusIndicator) item.append(dot, typeIcon, title, groupIndicator, close);
-    else item.append(dot, typeIcon, title, groupIndicator, close);
-    if (searchMatch) item.appendChild(this.renderTerminalSearchSnippets(searchMatch));
+    if (showDesktopBrandIndicator) item.append(dot, spinner, typeIcon, title, worktreeBadge, groupIndicator, close);
+    else if (useTextStatusIndicator) item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
+    else item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
+    this.bindTerminalSearchHoverPopup(item, searchMatch);
     item.title = `${item.dataset.baseTitle}\nlast activity ${this.terminalAgeAgoLabel(s)}\n${this.terminalAgeExactTimestamp(s)}`;
     item.onclick = (event) => {
+      this.setInteractionWorktreeFromElement(item, s);
       this.handleSessionRowSelection(event, s.session_id);
     };
     item.onfocus = () => {
@@ -3902,7 +4532,10 @@ class TermdeckApp {
       event.stopPropagation();
       this.openTerminalInNewTab(s);
     };
-    item.oncontextmenu = (event) => this.openSessionContextMenu(event, s);
+    item.oncontextmenu = (event) => {
+      this.setInteractionWorktreeFromElement(item, s);
+      this.openSessionContextMenu(event, s);
+    };
     this.makeLayoutDraggable(item, `session:${s.session_id}`, "session");
     list.appendChild(item);
   }
@@ -3914,6 +4547,7 @@ class TermdeckApp {
     groupBox.className = "terminal-group" + (this.usesTextTerminalStatus()
       ? " terminal-icons-hidden" : "");
     groupBox.dataset.groupId = group.id;
+    groupBox.dataset.worktreeId = this.stateWorktreeId();
     const attentionCount = members.filter((session) => this.processingStates.get(session.session_id) ||
       this.unreadSessions.has(session.session_id)).length;
     const working = members.some((session) => this.processingStates.get(session.session_id));
@@ -3923,15 +4557,136 @@ class TermdeckApp {
     const membersInner = document.createElement("div");
     membersInner.className = "terminal-group-members-inner";
     for (const session of members) this.renderTerminalItem(session, membersInner);
+    if (!members.length && this.terminalSearchText.trim() && this.terminalSearchGroupId === group.id) {
+      const empty = document.createElement("div");
+      empty.className = "terminal-search-empty";
+      empty.textContent = "no terminals in this group match";
+      membersInner.appendChild(empty);
+    }
     membersBox.appendChild(membersInner);
     groupBox.appendChild(membersBox);
     list.appendChild(groupBox);
   }
 
+  renderTerminalEntries(sessions, list, worktreeId) {
+    const previousRenderWorktreeId = this.renderWorktreeId;
+    this.renderWorktreeId = worktreeId;
+    try {
+      const state = this.getProjectState();
+      const groups = this.terminalGroups();
+      const groupsById = new Map(groups.map((group) => [group.id, group]));
+      const sessionGroups = state.session_groups || {};
+      const allVisibleSessions = this.hideInactiveTerminals
+        ? sessions.filter((session) => this.isActiveTerminal(session))
+        : sessions;
+      const terminalSearchQuery = this.terminalSearchText.trim();
+      const visibleSessions = terminalSearchQuery
+        ? allVisibleSessions.filter((session) => this.terminalSearchMatches.has(session.session_id))
+        : allVisibleSessions;
+      const sessionsById = new Map(visibleSessions.map((session) => [session.session_id, session]));
+      const grouped = new Map(groups.map((group) => [group.id, []]));
+      for (const session of visibleSessions) {
+        if (grouped.has(sessionGroups[session.session_id])) grouped.get(sessionGroups[session.session_id]).push(session);
+      }
+      const layout = this.terminalLayout(allVisibleSessions);
+      for (const entry of layout) {
+        const [kind, id] = entry.split(":", 2);
+        if (kind === "group") {
+          const group = groupsById.get(id);
+          if (!group) continue;
+          const members = grouped.get(id) || [];
+          const scopedSearchGroup = this.terminalSearchEditorOpen && this.terminalSearchGroupId === id &&
+            (this.terminalSearchWorktreeId || worktreeId) === worktreeId;
+          if (!members.length && !scopedSearchGroup) continue;
+          this.renderTerminalGroup(group, members, list);
+          continue;
+        }
+        const session = sessionsById.get(id);
+        if (!session || sessionGroups[id]) continue;
+        this.renderTerminalItem(session, list);
+      }
+      if ((terminalSearchQuery || this.hideInactiveTerminals) && !this.terminalSearchGroupId &&
+          !visibleSessions.length && !this.terminalSearchClosedMatches.size) {
+        const empty = document.createElement("div");
+        empty.className = "terminal-search-empty";
+        empty.textContent = terminalSearchQuery ? "no terminals match" : "no active terminals";
+        list.appendChild(empty);
+      }
+    } finally {
+      this.renderWorktreeId = previousRenderWorktreeId;
+    }
+  }
+
+  renderAllWorktreesInto(list) {
+    let renderedSection = false;
+    for (const worktree of this.availableWorktreeSections()) {
+      const worktreeId = String(worktree.id);
+      const sessions = this.sessionsForWorktree(worktreeId);
+      const closed = this.closedSessions.filter((session) => this.worktreeIdForSession(session) === worktreeId);
+      const scopedSearchWorktree = this.terminalSearchEditorOpen && this.terminalSearchGroupId &&
+        this.terminalSearchWorktreeId === worktreeId;
+      if ((this.hideInactiveTerminals && !sessions.some((session) => this.isActiveTerminal(session))) ||
+          (this.terminalSearchText.trim() && !sessions.some((session) => this.terminalSearchMatches.has(session.session_id)) &&
+          !closed.some((session) => this.terminalSearchClosedMatches.has(session.session_id)) && !scopedSearchWorktree)) continue;
+      renderedSection = true;
+      const section = document.createElement("section");
+      section.className = "worktree-section";
+      section.dataset.worktreeId = worktreeId;
+      const header = document.createElement("div");
+      header.className = "worktree-section-header";
+      header.dataset.worktreeId = worktreeId;
+      const chevron = document.createElement("span");
+      const collapsed = this.worktreeSectionCollapsed(worktreeId);
+      chevron.className = `codicon ${collapsed ? "codicon-chevron-right" : "codicon-chevron-down"}`;
+      const title = document.createElement("span");
+      title.className = "worktree-section-title";
+      title.textContent = worktree.branch || worktree.name || worktreeId;
+      const branch = document.createElement("span");
+      branch.className = "worktree-section-branch";
+      branch.textContent = "";
+      const activeCount = sessions.filter((session) => this.processingStates.get(session.session_id) ||
+        this.unreadSessions.has(session.session_id)).length;
+      const count = document.createElement("span");
+      count.className = "worktree-section-count";
+      count.textContent = `${sessions.length} terminal${sessions.length === 1 ? "" : "s"}${closed.length ? ` · ${closed.length} closed` : ""}`;
+      if (activeCount) count.textContent += ` · ${activeCount} active/unread`;
+      header.title = `${worktree.path || worktree.branch || worktreeId}\nclick to collapse or expand`;
+      header.append(chevron, title, branch, count);
+      header.onclick = () => {
+        this.interactionWorktreeId = worktreeId;
+        const nextCollapsed = !this.worktreeSectionCollapsed(worktreeId);
+        this.setWorktreeSectionCollapsed(worktreeId, nextCollapsed);
+        this.renderList();
+      };
+      section.appendChild(header);
+      if (!collapsed) {
+        const body = document.createElement("div");
+        body.className = "worktree-section-body";
+        this.renderTerminalEntries(sessions, body, worktreeId);
+        if (!this.hideInactiveTerminals) this.renderClosedInto(body, closed, worktreeId);
+        section.appendChild(body);
+      }
+      list.appendChild(section);
+    }
+    if (!renderedSection && (this.terminalSearchText.trim() || this.hideInactiveTerminals)) {
+      const empty = document.createElement("div");
+      empty.className = "terminal-search-empty";
+      empty.textContent = this.terminalSearchText.trim() ? "no terminals match" : "no active terminals";
+      list.appendChild(empty);
+    }
+  }
+
   renderList() {
     const list = this.$("session-list");
+    this.hideTerminalSearchHoverPopup();
+    const terminalSearchEditor = this.terminalSearchEditorOpen ? list.querySelector("#terminal-search-inline") : null;
+    const terminalSearchInput = terminalSearchEditor?.querySelector("#terminal-search-input") || null;
+    const terminalSearchHadFocus = document.activeElement === terminalSearchInput;
+    const terminalSearchSelectionStart = terminalSearchInput?.selectionStart;
+    const terminalSearchSelectionEnd = terminalSearchInput?.selectionEnd;
+    if (terminalSearchEditor) terminalSearchEditor.remove();
     list.textContent = "";
-    this.ensureDesktopTerminalsHeader(list);
+    this.ensureDesktopTerminalsHeader(list, terminalSearchEditor);
     this.migrateLegacyPinnedLayout();
     const currentSessionIds = new Set(this.sessions.map((session) => session.session_id));
     this.sidebarSelectedSessionIds = new Set([...this.sidebarSelectedSessionIds]
@@ -3943,60 +4698,17 @@ class TermdeckApp {
     this.sessionSpinnerEls.clear();
     this.sessionStatusEls.clear();
     this.sessionRowEls.clear();
-    const state = this.getProjectState();
-    const groups = this.terminalGroups();
-    const groupsById = new Map(groups.map((group) => [group.id, group]));
-    const sessionGroups = state.session_groups || {};
-    const allVisibleSessions = this.activitySort
-      ? [...this.sessions].sort((a, b) => this.compareRecentActivityForSort(a, b))
-      : this.sessions;
-    const terminalSearchQuery = this.terminalSearchText.trim();
-    const visibleSessions = terminalSearchQuery
-      ? allVisibleSessions.filter((session) => this.terminalSearchMatches.has(session.session_id))
-      : allVisibleSessions;
-    const sessionsById = new Map(visibleSessions.map((session) => [session.session_id, session]));
-    const grouped = new Map(groups.map((group) => [group.id, []]));
-    for (const session of visibleSessions) {
-      if (grouped.has(sessionGroups[session.session_id])) {
-        grouped.get(sessionGroups[session.session_id]).push(session);
-      }
+    if (this.worktreeId === ALL_WORKTREES_ID) this.renderAllWorktreesInto(list);
+    else this.renderTerminalEntries(this.sessions, list, this.worktreeId || "root");
+    if (this.terminalSearchEditorOpen && this.terminalSearchGroupId) {
+      const groupSelector = `.terminal-group[data-group-id="${CSS.escape(this.terminalSearchGroupId)}"]`;
+      const matchingGroups = [...list.querySelectorAll(groupSelector)];
+      const groupBox = matchingGroups.find((group) => !this.terminalSearchWorktreeId ||
+        group.dataset.worktreeId === this.terminalSearchWorktreeId);
+      const groupLabel = groupBox?.querySelector(":scope > .terminal-group-label");
+      if (groupLabel) groupLabel.after(terminalSearchEditor || this.createTerminalSearchEditor());
     }
-    const layout = this.terminalLayout();
-    if (this.activitySort) {
-      for (const members of grouped.values()) {
-        members.sort((a, b) => this.compareRecentActivityForSort(a, b));
-      }
-      const entryActivity = (entry) => {
-        const [kind, id] = entry.split(":", 2);
-        if (kind !== "group") return this.sessionActivitySortBucket(sessionsById.get(id));
-        return Math.max(0, ...(grouped.get(id) || []).map((session) => this.sessionActivitySortBucket(session)));
-      };
-      layout.sort((a, b) => entryActivity(b) - entryActivity(a));
-    }
-    if (this.activitySort) {
-      for (const session of visibleSessions) this.renderTerminalItem(session, list);
-    } else {
-      for (const entry of layout) {
-        const [kind, id] = entry.split(":", 2);
-        if (kind === "group") {
-          const group = groupsById.get(id);
-          if (!group) continue;
-          const members = grouped.get(id) || [];
-          if (terminalSearchQuery && !members.length) continue;
-          this.renderTerminalGroup(group, members, list);
-          continue;
-        }
-        const session = sessionsById.get(id);
-        if (!session || sessionGroups[id]) continue;
-        this.renderTerminalItem(session, list);
-      }
-    }
-    if (terminalSearchQuery && !visibleSessions.length && !this.terminalSearchClosedMatches.size) {
-      const empty = document.createElement("div");
-      empty.className = "terminal-search-empty";
-      empty.textContent = "no terminals match";
-      list.appendChild(empty);
-    }
+    this.updateTerminalSearchEditorScope();
     if (!this.vscodeMode && this.openFiles.size) {
       const collapsed = this.sectionCollapsed("open_files_collapsed");
       list.appendChild(this.collapsibleSectionLabel("open files", "open_files_collapsed"));
@@ -4027,9 +4739,16 @@ class TermdeckApp {
       }
     }
     if (!this.vscodeMode) this.renderRecentFilesInto(list);
-    this.renderClosedInto(list);
-    this.$("empty-state").style.display = this.sessions.length || (!this.vscodeMode && this.openFiles.size) ? "none" : "flex";
+    if (this.worktreeId !== ALL_WORKTREES_ID && !this.hideInactiveTerminals) this.renderClosedInto(list);
+    this.$("empty-state").style.display = this.sessions.length || this.closedSessions.length ||
+      (!this.vscodeMode && this.openFiles.size) ? "none" : "flex";
     this.sessionListSignature = this.sessionListSignatureFor();
+    if (terminalSearchHadFocus && terminalSearchInput) requestAnimationFrame(() => {
+      terminalSearchInput.focus({ preventScroll: true });
+      if (Number.isInteger(terminalSearchSelectionStart) && Number.isInteger(terminalSearchSelectionEnd)) {
+        terminalSearchInput.setSelectionRange(terminalSearchSelectionStart, terminalSearchSelectionEnd);
+      }
+    });
   }
 
   keepActiveSessionVisible() {
@@ -4102,7 +4821,7 @@ class TermdeckApp {
     this.applySideLayout();
     if (view === "project" || view === "search") {
       const session = this.session(this.activeId);
-      const expectedRoot = session ? session.cwd : (this.projectRoot() || "~");
+      const expectedRoot = session ? session.cwd : (this.worktreeRoot() || "~");
       if (this.treeRoot !== expectedRoot || !this.treeDirs.has("")) {
         this.treeReloadPromise = this.reloadTree(expectedRoot);
       } else {
@@ -4157,6 +4876,25 @@ class TermdeckApp {
     setTimeout(() => { input.focus(); input.select(); }, 0);
   }
 
+  openSearchSidePanelFromNavigation() {
+    if (this.sideView === "search") {
+      this.openFilesSidePanelView("search");
+      return;
+    }
+    const selectedText = this.selectedTextSearchQuery();
+    const input = this.$("search-query");
+    if (selectedText) {
+      input.value = "";
+      this.hideSelectionActions();
+    }
+    this.setSideView("search", false);
+    if (selectedText) {
+      input.value = selectedText;
+      void this.runSearch(selectedText);
+      setTimeout(() => { input.focus(); input.select(); }, 0);
+    }
+  }
+
   setExplorerMode(mode) {
     this.$("files-tree").classList.toggle("hidden", mode !== "tree");
     this.$("search-results").classList.toggle("hidden", mode !== "content");
@@ -4172,7 +4910,7 @@ class TermdeckApp {
   async loadGitSidePanel() {
     if (this.sideView !== "git" || this.vscodeMode) return;
     const generation = ++this.gitSideGeneration;
-    const root = this.projectRoot() || this.treeRoot || this.session(this.activeId)?.cwd;
+    const root = this.session(this.activeId)?.cwd || this.treeRoot || this.worktreeRoot();
     const results = this.$("git-results");
     const branch = this.$("git-branch-label");
     if (!root || !results || !branch) return;
@@ -4651,6 +5389,24 @@ class TermdeckApp {
     }
   }
 
+  async copySelectionPayloadToClipboard(text, html, label = "copied") {
+    if (html && navigator.clipboard?.write && window.ClipboardItem) {
+      try {
+        const item = new ClipboardItem({
+          "text/plain": new Blob([text], { type: "text/plain" }),
+          "text/html": new Blob([html], { type: "text/html" }),
+        });
+        await navigator.clipboard.write([item]);
+        this.$("status-name").textContent = label;
+        return;
+      } catch (error) {
+        await this.copyTextToClipboard(text, label);
+        return;
+      }
+    }
+    await this.copyTextToClipboard(text, label);
+  }
+
   shortcutLabel(label, actionId) {
     const binding = this.bindingFor(actionId);
     return binding ? `${label}   ${this.bindingToDisplay(binding)}` : label;
@@ -4670,6 +5426,7 @@ class TermdeckApp {
   }
 
   updateShortcutTitles() {
+    this.updateHeaderAddShortcutLabels();
     const action = this.bindingToDisplay(this.bindingFor("toggle-history"));
     for (const id of ["history-btn", "vscode-history-btn"]) {
       const historyButton = this.$(id);
@@ -4709,6 +5466,14 @@ class TermdeckApp {
     }
     const historyScrollButton = this.$("history-scroll-bottom");
     if (historyScrollButton) historyScrollButton.title = `Scroll transcript to bottom (${scrollBottomAction})`;
+    const resyncAction = this.bindingToDisplay(this.bindingFor("resync-terminal"));
+    for (const id of ["terminal-resync-btn", "vscode-terminal-resync-btn"]) {
+      const resyncButton = this.$(id);
+      if (resyncButton) {
+        resyncButton.title = `Resync terminal content (${resyncAction})`;
+        resyncButton.setAttribute("aria-label", resyncButton.title);
+      }
+    }
     const conversationOutlineButton = this.$("conversation-outline-toggle");
     if (conversationOutlineButton) {
       conversationOutlineButton.title = this.shortcutTitle("Conversation outline", "conversation-outline");
@@ -4720,7 +5485,7 @@ class TermdeckApp {
       newSession.setAttribute("aria-label", newSession.title);
     }
     const emptyState = this.$("empty-state");
-    if (emptyState) emptyState.textContent = "no terminals — press + to open one";
+    if (emptyState && this.initialLoadComplete) emptyState.textContent = "no terminals — press + to open one";
     const selectionButtons = [["selection-copy", "Copy selection"], ["selection-note-new", "Add selection as a new note"],
       ["selection-note-append", "Append selection to note"]];
     for (const [id, label] of selectionButtons) {
@@ -4743,6 +5508,8 @@ class TermdeckApp {
     if (!multiple) {
       this.addContextItem(menu, this.shortcutLabel("Fork", "fork-terminal"),
         () => this.forkSession(session), "repo-forked");
+      this.addContextItem(menu, "New terminal after this",
+        () => this.openModal(null, session.session_id), "add");
       this.addContextItem(menu, this.shortcutLabel("Restart", "restart-terminal"),
         () => this.restartSession(session.session_id), "refresh");
       const permissions = MODEL_PERMISSIONS[session.agent_kind || "none"] || MODEL_PERMISSIONS.none;
@@ -4757,6 +5524,9 @@ class TermdeckApp {
         () => this.renameSession(session), "edit");
       this.addContextItem(menu, this.shortcutLabel("Copy session id", "copy-session-id"),
         () => this.copyTextToClipboard(session.session_id, "session id copied"), "copy");
+      if (session.worktree_branch) {
+        this.addContextItem(menu, "Review isolated worktree", () => this.openWorktreeReview(session.session_id), "git-commit");
+      }
     }
     const selectionLabel = multiple ? `${sessionIds.length} selected` : "";
     this.addContextItem(menu, multiple ? `Mark ${selectionLabel} as unread`
@@ -4813,6 +5583,84 @@ class TermdeckApp {
         () => this.openTerminalInNewTab(session), "new-window");
     }
     this.positionContextMenu(menu, event.clientX, event.clientY);
+  }
+
+  async openWorktreeReview(sessionId) {
+    this.worktreeReviewSessionId = sessionId;
+    this.$("worktree-review-backdrop").classList.remove("hidden");
+    await this.refreshWorktreeReview();
+  }
+
+  closeWorktreeReview() {
+    this.worktreeReviewSessionId = null;
+    this.$("worktree-review-backdrop").classList.add("hidden");
+  }
+
+  async refreshWorktreeReview() {
+    const sessionId = this.worktreeReviewSessionId;
+    if (!sessionId) return;
+    const status = this.$("worktree-review-status");
+    const text = this.$("worktree-review-text");
+    status.className = "";
+    status.textContent = "Loading worktree status…";
+    text.textContent = "";
+    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/worktree/review`);
+    const payload = await response.json().catch(() => ({}));
+    if (sessionId !== this.worktreeReviewSessionId) return;
+    if (!response.ok) {
+      status.className = "warn";
+      status.textContent = payload.detail || "Unable to inspect worktree";
+      return;
+    }
+    const files = Array.isArray(payload.files) ? payload.files : [];
+    const commits = Array.isArray(payload.commits) ? payload.commits : [];
+    status.className = payload.clean ? "good" : "warn";
+    status.textContent = payload.clean ? "Clean worktree: ready to merge or keep." : "Uncommitted changes: commit them in the worktree before merging.";
+    this.$("worktree-review-subtitle").textContent = `${payload.branch || "branch"}  ·  ${payload.path || ""}`;
+    const sections = [
+      `Repository: ${payload.repository || ""}`,
+      `Base: ${payload.base_ref || ""} (${payload.base_commit || ""})`,
+      `Current: ${payload.current_commit || ""}`,
+      "",
+      `Changed files (${files.length})`,
+      files.length ? files.join("\n") : "(none)",
+      "",
+      `Commits (${commits.length})`,
+      commits.length ? commits.join("\n") : "(none)",
+      "",
+      "Diff",
+      payload.diff || "(no tracked diff)",
+    ];
+    if (payload.diff_truncated) sections.push("", "[diff truncated]");
+    text.textContent = sections.join("\n");
+  }
+
+  async finishWorktree(action) {
+    const sessionId = this.worktreeReviewSessionId;
+    if (!sessionId) return;
+    if (action === "discard" && !window.confirm("Discard the worktree and its branch? Uncommitted changes will be lost.")) return;
+    if (action === "merge" && !window.confirm("Merge the worktree branch into its base branch?")) return;
+    const status = this.$("worktree-review-status");
+    status.className = "";
+    status.textContent = action === "keep" ? "Keeping worktree…" : `${action}ing worktree…`;
+    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/worktree/finish`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      status.className = "warn";
+      status.textContent = payload.detail || `Unable to ${action} worktree`;
+      return;
+    }
+    if (action === "keep") {
+      status.className = "good";
+      status.textContent = "Worktree kept and detached from automatic cleanup.";
+      await this.refresh();
+      return;
+    }
+    this.closeWorktreeReview();
+    await this.refresh();
   }
 
   openFileContextMenu(event, key) {
@@ -5106,7 +5954,7 @@ class TermdeckApp {
   async refreshRecentFiles(force = false) {
     if (this.vscodeMode) return;
     if (this.recentFilesBusy) return;
-    const activeRoot = this.session(this.activeId)?.cwd || this.projectRoot();
+    const activeRoot = this.session(this.activeId)?.cwd || this.worktreeRoot();
     const filesVisible = !this.$("files-section").classList.contains("hidden");
     const root = (filesVisible && this.treeRoot) || activeRoot;
     if (!root) return;
@@ -5133,35 +5981,43 @@ class TermdeckApp {
     }
   }
 
-  renderClosedInto(list) {
-    if (!this.closedSessions.length) return;
+  renderClosedInto(list, closedSessions = this.closedSessions, worktreeId = this.worktreeId || "root") {
+    if (!closedSessions.length) return;
     const search = this.terminalSearchText.trim();
     const matchingClosed = search
-      ? this.closedSessions.filter((session) => this.terminalSearchClosedMatches.has(session.session_id))
-      : this.closedSessions;
+      ? closedSessions.filter((session) => this.terminalSearchClosedMatches.has(session.session_id))
+      : closedSessions;
     if (search && !matchingClosed.length) return;
     const header = document.createElement("div");
     header.className = "side-section-label closed-header";
+    header.dataset.worktreeId = worktreeId;
     const chevron = document.createElement("span");
-    chevron.className = "codicon codicon-chevron-right closed-chevron" + (this.closedExpanded ? " open" : "");
+    const expanded = this.worktreeClosedExpanded(worktreeId);
+    chevron.className = "codicon codicon-chevron-right closed-chevron" + (expanded ? " open" : "");
     const title = document.createElement("span");
     title.textContent = search
-      ? `closed terminals (${matchingClosed.length}/${this.closedSessions.length})`
-      : `closed terminals (${this.closedSessions.length})`;
+      ? `closed terminals (${matchingClosed.length}/${closedSessions.length})`
+      : `closed terminals (${closedSessions.length})`;
     header.append(chevron, title);
-    header.onclick = () => { this.closedExpanded = !this.closedExpanded; this.renderList(); };
+    header.onclick = () => {
+      this.setWorktreeClosedExpanded(worktreeId, !this.worktreeClosedExpanded(worktreeId));
+      this.renderList();
+    };
     list.appendChild(header);
-    if (!this.closedExpanded) return;
-    const visibleClosed = matchingClosed.slice(0, Math.min(
-      this.closedDisplayLimit, CLOSED_SESSIONS_MAX_DISPLAY));
+    if (!expanded) return;
+    const visibleClosedLimit = search && !this.terminalSearchGroupId
+      ? CLOSED_SESSIONS_MAX_DISPLAY : Math.min(this.closedDisplayLimit, CLOSED_SESSIONS_MAX_DISPLAY);
+    const visibleClosed = matchingClosed.slice(0, visibleClosedLimit);
     for (const c of visibleClosed) {
       const item = document.createElement("div");
       const searchMatch = search ? this.terminalSearchClosedMatches.get(c.session_id) : null;
       item.className = "closed-item" + (searchMatch ? " terminal-search-match" : "");
+      item.dataset.worktreeId = worktreeId;
       if (searchMatch) item.tabIndex = 0;
-      const groupName = c.group_name || this.terminalGroupNameForSession(c.session_id);
+      const groupName = c.group_name || this.terminalGroupNameForSession(c.session_id, worktreeId);
       item.title = `${c.title}\n${c.command || "zsh"}\n${c.cwd}\nclosed ${c.closed_at_est}` +
         (groupName ? `\ngroup ${groupName}` : "") +
+        (c.worktree_branch ? `\nworktree ${c.worktree_branch}` : "") +
         (c.agent_session_id ? `\nreopens ${c.agent_kind} session ${c.agent_session_id}` : "") + "\nclick to reopen";
       const icon = document.createElement("span");
       icon.className = "codicon codicon-history";
@@ -5172,14 +6028,21 @@ class TermdeckApp {
       const group = document.createElement("span");
       group.className = "closed-group";
       group.textContent = groupName;
+      const worktree = document.createElement("span");
+      worktree.className = "worktree-badge";
+      worktree.textContent = c.worktree_branch ? `⎇ ${c.worktree_branch.split("/").pop()}` : "";
+      worktree.title = c.worktree_path || "";
       const purge = document.createElement("button");
       purge.className = "item-close";
       purge.textContent = "✕";
       purge.title = "Remove from history";
       purge.onclick = (e) => { e.stopPropagation(); this.purgeClosed(c.session_id); };
-      item.append(icon, name, group, purge);
-      if (searchMatch) item.appendChild(this.renderTerminalSearchSnippets(searchMatch));
-      item.onclick = () => this.reopenClosed(c.session_id);
+      item.append(icon, name, worktree, group, purge);
+      this.bindTerminalSearchHoverPopup(item, searchMatch);
+      item.onclick = () => {
+        this.setInteractionWorktreeFromElement(item, c);
+        this.reopenClosed(c.session_id);
+      };
       item.onfocus = () => {
         if (this.terminalSearchText.trim()) this.terminalSearchFocusIndex = this.terminalSearchRows().indexOf(item);
       };
@@ -8045,15 +8908,107 @@ class TermdeckApp {
       const selection = window.getSelection();
       const body = this.$("history-body");
       if (!this.selectionWithinContainer(selection, body)) return null;
-      const text = this.normalizeSelectionText(selection.toString());
+      const range = selection.getRangeAt(0).cloneRange();
+      const rawText = this.normalizeSelectionText(selection.toString());
+      const text = this.markdownSelectionText(range, body, rawText);
+      const html = this.markdownSelectionHtml(range);
       const rect = this.selectionRangeRect(selection);
-      return text && rect ? { kind: "history", text, rect } : null;
+      return text && rect ? { kind: "history", text, rawText, html, rect } : null;
     }
     const view = this.views.get(this.activeId);
     if (!view || !view.container.classList.contains("visible") || !view.term.hasSelection()) return null;
     const text = this.normalizeSelectionText(view.term.getSelection());
     const rect = this.terminalSelectionRect(view);
     return text && rect ? { kind: "terminal", sessionId: view.sessionId, text, rect } : null;
+  }
+
+  markdownSelectionText(range, body, rawText) {
+    const selectedItems = [...body.querySelectorAll(".markdown li")].filter((item) => range.intersectsNode(item));
+    const previousMarkers = selectedItems.map((item) => [item, item.getAttribute("data-termdeck-selection-marker")]);
+    for (const item of selectedItems) {
+      const marker = this.markdownListItemMarker(item);
+      if (marker) item.setAttribute("data-termdeck-selection-marker", marker);
+    }
+    const fragment = range.cloneContents();
+    for (const [item, marker] of previousMarkers) {
+      if (marker === null) item.removeAttribute("data-termdeck-selection-marker");
+      else item.setAttribute("data-termdeck-selection-marker", marker);
+    }
+    const output = [];
+    this.serializeMarkdownSelectionNode(fragment, output);
+    let text = output.join("").replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    const startItem = this.selectionAncestorElement(range.startContainer, "LI");
+    const firstItem = startItem && selectedItems.includes(startItem) ? startItem : selectedItems[0];
+    const firstMarker = firstItem ? this.markdownListItemMarker(firstItem) : "";
+    const startsInListItem = !!startItem;
+    if (startsInListItem && firstMarker && !text.startsWith(firstMarker.trim())) text = `${firstMarker}${text}`;
+    return text || rawText;
+  }
+
+  markdownSelectionHtml(range) {
+    const wrapper = document.createElement("div");
+    wrapper.appendChild(range.cloneContents());
+    return wrapper.innerHTML;
+  }
+
+  markdownListItemMarker(item) {
+    const list = item.parentElement;
+    if (!list || (list.tagName !== "OL" && list.tagName !== "UL")) return "";
+    let depth = 0;
+    let ancestor = list.parentElement;
+    while (ancestor) {
+      if (ancestor.tagName === "OL" || ancestor.tagName === "UL") depth += 1;
+      ancestor = ancestor.parentElement;
+    }
+    const indentation = "  ".repeat(depth);
+    if (list.tagName === "UL") return `${indentation}- `;
+    const listItems = [...list.children].filter((child) => child.tagName === "LI");
+    const index = listItems.indexOf(item);
+    if (index < 0) return "";
+    const explicitValue = Number.parseInt(item.getAttribute("value") || "", 10);
+    const listStart = Number.parseInt(list.getAttribute("start") || "1", 10);
+    const number = Number.isFinite(explicitValue) ? explicitValue : (Number.isFinite(listStart) ? listStart : 1) + index;
+    return `${indentation}${number}. `;
+  }
+
+  selectionAncestorElement(node, tagName) {
+    let current = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    while (current) {
+      if (current.tagName === tagName) return current;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  serializeMarkdownSelectionNode(node, output) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      output.push(node.nodeValue || "");
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) return;
+    const tag = node.nodeType === Node.ELEMENT_NODE ? node.tagName : "";
+    if (tag === "BR") {
+      output.push("\n");
+      return;
+    }
+    if (tag === "HR") {
+      output.push("\n---\n");
+      return;
+    }
+    if (tag === "PRE") {
+      output.push("\n", node.textContent || "", "\n");
+      return;
+    }
+    if (tag === "LI") {
+      output.push("\n", node.getAttribute("data-termdeck-selection-marker") || "");
+      for (const child of node.childNodes) this.serializeMarkdownSelectionNode(child, output);
+      output.push("\n");
+      return;
+    }
+    const blockTags = new Set(["ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DD", "DIV", "DL", "DT", "FIELDSET", "FIGCAPTION", "FIGURE", "FOOTER", "FORM", "H1", "H2", "H3", "H4", "H5", "H6", "HEADER", "HR", "MAIN", "NAV", "OL", "P", "SECTION", "TABLE", "TBODY", "TD", "TFOOT", "TH", "THEAD", "TR", "UL"]);
+    if (blockTags.has(tag)) output.push("\n");
+    for (const child of node.childNodes) this.serializeMarkdownSelectionNode(child, output);
+    if (blockTags.has(tag)) output.push("\n");
   }
 
   selectionWithinContainer(selection, container) {
@@ -8234,7 +9189,7 @@ class TermdeckApp {
     if (!state) return;
     const text = state.text;
     this.recordSelectionCopyHistory(text);
-    void this.copyTextToClipboard(text, "selection copied");
+    void this.copySelectionPayloadToClipboard(text, state.html || "", "selection copied");
     if (keepSelectionActions) {
       this.selectionActionState = state;
       this.scheduleSelectionActions();
@@ -8256,7 +9211,7 @@ class TermdeckApp {
     const state = this.selectionActionState || this.readSelectionActionState();
     if (!state) return "";
     this.selectionActionState = state;
-    const query = this.normalizeSelectionText(state.text);
+    const query = this.normalizeSelectionText(state.rawText || state.text);
     if (!query) return "";
     if (query.length > SELECTION_SEARCH_MAX_CHARS) {
       this.$("status-name").textContent = `selection is too long for search (${SELECTION_SEARCH_MAX_CHARS} characters maximum)`;
@@ -8269,7 +9224,7 @@ class TermdeckApp {
     const state = this.selectionActionState || this.readSelectionActionState();
     if (!state) return "";
     this.selectionActionState = state;
-    const query = this.normalizeSelectionText(state.text);
+    const query = this.normalizeSelectionText(state.rawText || state.text);
     if (!query || query.includes("\n") || query.length > SELECTION_SEARCH_MAX_CHARS) return "";
     return query;
   }
@@ -8886,7 +9841,7 @@ class TermdeckApp {
   shouldReconnectIdleClaudeView(view, session, previousId) {
     if (!view || !session || session.agent_kind !== "claude" || previousId === session.session_id ||
         view.closed || view.replaying || view.scrollMode !== "follow" || !view.hiddenAt || !view.ws ||
-        view.ws.readyState !== WebSocket.OPEN) return false;
+        view.ws.readyState !== WebSocket.OPEN || view.hiddenOutputPending || !session.processing) return false;
     return Date.now() - view.hiddenAt >= TERMINAL_CLAUDE_IDLE_RECONNECT_MS;
   }
 
@@ -8918,6 +9873,9 @@ class TermdeckApp {
     this.closePromptHistory();
     this.hideSelectionActions(true);
     const previousId = this.activeId;
+    const selected = this.session(id);
+    if (this.worktreeId === ALL_WORKTREES_ID && selected) this.interactionWorktreeId = this.worktreeIdForSession(selected);
+    if (!selected?.needs_attention) this.clearSessionAttention(id);
     let unreadChanged = false;
     if (previousId && previousId !== id) {
       unreadChanged = this.unreadSessions.delete(previousId) || unreadChanged;
@@ -8928,7 +9886,6 @@ class TermdeckApp {
       this.updateUnreadIndicator(id);
     }
     if (unreadChanged) this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
-    const selected = this.session(id);
     this.rememberRecentlyOpenedTerminal(id);
     if (selected && !this.titlePresentation(selected).spinning) this.viewedCompletedSessions.add(id);
     else this.viewedCompletedSessions.delete(id);
@@ -9120,7 +10077,7 @@ class TermdeckApp {
                    wasAtBottom: true, scrollMode: "follow", v2Programmatic: false, v2FitFrame: 0,
                    userScrollIntent: false,
                    v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
-                   forceResizeAfterFit: true, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
+                   forceResizeAfterFit: true, initialSnapshotPainted: false, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
                    suppressResizeToServer: false, resyncResizeRepairPending: false,
                    hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
                    tailRepairFrame: 0, tailRepairTimer: 0, tailRepairConfirmTimer: 0,
@@ -9134,9 +10091,11 @@ class TermdeckApp {
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptSubmissionReflowGuardUntil: 0, promptSubmissionReflowGuardTimer: 0,
                    manualRepaintClickCount: 0, manualRepaintClickTimer: 0, manualRepaintLastClickAt: 0,
+                   attentionScreenDetectionSuppressed: false,
                    reconnectAfterClose: false, claudeInitialReplayCheckTimer: 0,
                    claudeInitialReplayRecoveryAttempted: false,
                    claudeSnapshotAddon: null, claudeSnapshotRestoreAttempted: false, claudeSnapshotRestored: false,
+                   claudeSnapshotRequiresRepaint: false,
                    claudeSnapshotSaveTimer: 0, claudeSnapshotSavePromise: null,
                    claudeStatusRowRefreshTimer: 0, historyModelRefreshTimer: 0, lastClaudeStatusRowRefreshAt: 0,
                    codexFocusRefreshFrame: 0,
@@ -9482,25 +10441,49 @@ class TermdeckApp {
       excludeAltBuffer: true, excludeModes: true });
   }
 
+  serializeClaudeSnapshotBuffer(view) {
+    return view.claudeSnapshotAddon.serialize({ scrollback: CLAUDE_SNAPSHOT_MAX_LINES });
+  }
+
+  claudeTerminalBufferHasContent(view) {
+    const buffer = view?.term?.buffer?.normal;
+    if (!buffer) return false;
+    if (Number(buffer.baseY || 0) > 0) return true;
+    for (let row = 0; row < buffer.length; row += 1) {
+      if (buffer.getLine(row)?.translateToString(true).trim()) return true;
+    }
+    return false;
+  }
+
   async restoreClaudeSnapshot(view) {
     if (!this.ensureClaudeSnapshotAddon(view)) return false;
     if (view.container.classList.contains("visible")) view.fit.fit();
     try {
       const record = await this.readClaudeSnapshot(view.sessionId);
-      if (!record || ![2, CLAUDE_SNAPSHOT_FORMAT_VERSION].includes(record.formatVersion) ||
+      if (!record || ![2, 3, CLAUDE_SNAPSHOT_FORMAT_VERSION].includes(record.formatVersion) ||
           typeof record.snapshot !== "string" || !record.snapshot || record.cols !== view.term.cols) return false;
-      let historySnapshot = record.snapshot;
+      let fullSnapshot = record.snapshot;
+      let historySnapshot = typeof record.historySnapshot === "string" ? record.historySnapshot : "";
       if (record.formatVersion === 2) {
         await new Promise((resolve) => view.term.write(record.snapshot, resolve));
         historySnapshot = this.serializeClaudeSnapshotHistory(view);
+        fullSnapshot = this.serializeClaudeSnapshotBuffer(view);
         view.term.reset();
-        if (!historySnapshot) return false;
+        if (!fullSnapshot) return false;
         await this.writeClaudeSnapshot({ sessionId: view.sessionId, formatVersion: CLAUDE_SNAPSHOT_FORMAT_VERSION,
-          cols: view.term.cols, snapshot: historySnapshot, savedAt: Date.now() });
+          cols: view.term.cols, snapshot: fullSnapshot, historySnapshot, savedAt: Date.now() });
       }
-      const emptyScreen = `\x1b[0m${"\r\n".repeat(Math.max(1, view.term.rows))}\x1b[2J\x1b[H`;
-      await new Promise((resolve) => view.term.write(historySnapshot + emptyScreen, resolve));
+      const sessionIsProcessing = !!this.session(view.sessionId)?.processing;
+      const requiresRepaint = record.formatVersion === 3 || sessionIsProcessing;
+      if (record.formatVersion === 3) historySnapshot = record.snapshot;
+      if (requiresRepaint) {
+        const emptyScreen = `\x1b[0m${"\r\n".repeat(Math.max(1, view.term.rows))}\x1b[2J\x1b[H`;
+        await new Promise((resolve) => view.term.write(historySnapshot + emptyScreen, resolve));
+      } else {
+        await new Promise((resolve) => view.term.write(fullSnapshot, resolve));
+      }
       view.claudeSnapshotRestored = true;
+      view.claudeSnapshotRequiresRepaint = requiresRepaint;
       view.claudeSnapshotRestoredCols = record.cols;
       return true;
     } catch (error) {
@@ -9510,7 +10493,7 @@ class TermdeckApp {
   }
 
   scheduleClaudeSnapshotSave(view) {
-    if (!this.ensureClaudeSnapshotAddon(view) || !view.term.buffer.active.baseY) return;
+    if (!this.ensureClaudeSnapshotAddon(view) || !this.claudeTerminalBufferHasContent(view)) return;
     clearTimeout(view.claudeSnapshotSaveTimer);
     view.claudeSnapshotSaveTimer = setTimeout(() => {
       view.claudeSnapshotSaveTimer = 0;
@@ -9519,18 +10502,19 @@ class TermdeckApp {
   }
 
   async persistClaudeSnapshot(view) {
-    if (!this.ensureClaudeSnapshotAddon(view) || !view.term.buffer.active.baseY) return;
+    if (!this.ensureClaudeSnapshotAddon(view) || !this.claudeTerminalBufferHasContent(view)) return;
     if (view.claudeSnapshotSavePromise) return view.claudeSnapshotSavePromise;
-    let snapshot;
+    let snapshot, historySnapshot;
     try {
-      snapshot = this.serializeClaudeSnapshotHistory(view);
+      snapshot = this.serializeClaudeSnapshotBuffer(view);
+      historySnapshot = this.serializeClaudeSnapshotHistory(view);
     } catch (error) {
       view.claudeSnapshotError = error instanceof Error ? error.message : String(error);
       return;
     }
     if (!snapshot) return;
     const record = { sessionId: view.sessionId, formatVersion: CLAUDE_SNAPSHOT_FORMAT_VERSION, cols: view.term.cols,
-      snapshot, savedAt: Date.now() };
+      snapshot, historySnapshot, savedAt: Date.now() };
     view.claudeSnapshotSavePromise = this.writeClaudeSnapshot(record).catch((error) => {
       view.claudeSnapshotError = error instanceof Error ? error.message : String(error);
     }).finally(() => { view.claudeSnapshotSavePromise = null; });
@@ -9579,12 +10563,17 @@ class TermdeckApp {
     }
     view.suppressReconnect = false;
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const hasPopulatedBuffer = (view.everConnected || view.claudeSnapshotRestored) && !view.closed && view.term?.buffer?.active?.baseY > 0;
+    const preservedClaudeBuffer = this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view) &&
+      this.claudeTerminalBufferHasContent(view);
+    const hasPopulatedBuffer = (view.everConnected || view.claudeSnapshotRestored) && !view.closed &&
+      (view.term?.buffer?.active?.baseY > 0 || preservedClaudeBuffer);
     const repaintPreservedBuffer = hasPopulatedBuffer && this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view);
-    const screenRepaint = hasPopulatedBuffer && !repaintPreservedBuffer ? 0 : 1;
+    const shouldRepaintClaudeBuffer = repaintPreservedBuffer &&
+      (view.claudeSnapshotRequiresRepaint || !!this.session(id)?.processing);
+    const screenRepaint = hasPopulatedBuffer && (!repaintPreservedBuffer || !shouldRepaintClaudeBuffer) ? 0 : 1;
     const haveBuffer = hasPopulatedBuffer ? 1 : 0;
     const ws = new WebSocket(`${proto}://${location.host}/ws/${id}?screen_repaint=${screenRepaint}&have_buffer=${haveBuffer}` +
-      `&repaint_preserved_buffer=${repaintPreservedBuffer ? 1 : 0}`);
+      `&repaint_preserved_buffer=${shouldRepaintClaudeBuffer ? 1 : 0}`);
     ws.binaryType = "arraybuffer";
     view.preserveBufferOnReconnect = haveBuffer === 1;
     view.awaitingSnapshot = true;
@@ -9605,6 +10594,7 @@ class TermdeckApp {
         }
       }
       view.everConnected = true;
+      this.detectTerminalAttentionFromBuffer(view);
       if (this.isTerminalScrollV2()) {
         if (id === this.activeId) {
           this.scheduleV2Fit(view);
@@ -9634,6 +10624,7 @@ class TermdeckApp {
       // xterm's public scroll API, rather than a DOM scroll listener or PTY
       // resize/reflow.
       if (!view.container.classList.contains("visible")) view.hiddenOutputPending = true;
+      if (!view.awaitingSnapshot && !view.replaying) view.attentionScreenDetectionSuppressed = false;
       if (!view.awaitingSnapshot && !view.replaying && Date.now() >= (view.attachActivitySuppressedUntil || 0)) {
         this.touchSessionActivity(id);
       }
@@ -9660,7 +10651,9 @@ class TermdeckApp {
             this.scheduleClaudeInitialReplayRecovery(id, view);
           }
           if (v2 && view.container.classList.contains("visible")) {
-            view.forceResizeAfterFit = !(this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view));
+            const firstSnapshot = !view.initialSnapshotPainted;
+            view.initialSnapshotPainted = true;
+            view.forceResizeAfterFit = firstSnapshot ? false : !(this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view));
             this.scheduleV2Fit(view);
           } else if (view.resyncResizeRepairPending && view.container.classList.contains("visible")) {
             // Legacy (non-V2) scroll mode has no equivalent post-snapshot repaint trigger above, so it
@@ -9710,6 +10703,7 @@ class TermdeckApp {
       const followOutput = this.isTerminalScrollV2() ? false : view.keepBottom || Date.now() < view.pinBottomUntil;
       const outputScrollGeneration = view.manualScrollGeneration;
       this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
+        if (shouldRepaintClaudeBuffer && e.data.byteLength > 0) view.claudeSnapshotRequiresRepaint = false;
         if (this.isTerminalScrollV2()) {
           if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
           return;
@@ -9862,6 +10856,13 @@ class TermdeckApp {
   }
 
   sendInput(view, data) {
+    const session = this.session(view.sessionId);
+    if (data) view.attentionScreenDetectionSuppressed = true;
+    if (session?.needs_attention) {
+      session.needs_attention = false;
+      this.attentionServerStates.set(view.sessionId, false);
+      this.clearSessionAttention(view.sessionId);
+    }
     if (data) this.touchSessionActivity(view.sessionId);
     if (view.replaying && QUERY_RESPONSE_RE.test(data)) return;
     if (view.ws && view.ws.readyState === WebSocket.OPEN) {
@@ -10091,6 +11092,14 @@ class TermdeckApp {
     view.manualRepaintClickCount = 0;
     clearTimeout(view.manualRepaintClickTimer);
     view.manualRepaintClickTimer = 0;
+    if (this.terminalTailRenderMismatch(view)) {
+      view.renderRepairArmed = true;
+      if (this.repairTerminalRenderIfStale(view)) {
+        this.$("status-name").textContent = "Codex display repainted";
+        return;
+      }
+    }
+    this.refreshTerminalAppearance(view, true);
     if (!view.ws || view.ws.readyState !== WebSocket.OPEN) return;
     const anchor = this.captureTerminalViewportAnchor(view, { preserveFollow: true, restoreAfterDeadline: true });
     this.beginTerminalViewportRestore(view, anchor);
@@ -10435,7 +11444,9 @@ class TermdeckApp {
       // at its pre-flex width. Refresh after the settled fit so the canvas
       // and text colors are repainted together with the final geometry.
       const suppressExperimentalClaudeReflow = this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view);
-      const forceResizeThisFrame = (forceResize || view.forceResizeAfterFit) && !suppressExperimentalClaudeReflow;
+      const hasPaintedInitialSnapshot = view.initialSnapshotPainted;
+      const forceResizeThisFrame = hasPaintedInitialSnapshot && (forceResize || view.forceResizeAfterFit) && !suppressExperimentalClaudeReflow;
+      if (!hasPaintedInitialSnapshot) view.forceResizeAfterFit = false;
       if (forceResizeThisFrame) {
         view.forceResizeAfterFit = false;
         if (this.forceVisibleTerminalReflow(view)) return;
@@ -10963,12 +11974,14 @@ class TermdeckApp {
           if (view.container.classList.contains("visible")) {
             view.fit.fit();
             this.refreshTerminalAppearance(view, true);
-            if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
             if (follow) this.scrollTerminalV2ToBottom(view);
             else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
           }
         }
         view.suppressResizeToServer = false;
+        if (!view.closed && view.container.classList.contains("visible") && view.term.cols >= 2 && view.term.rows >= 2) {
+          this.sendResize(view, view.term.cols, view.term.rows);
+        }
         queueMicrotask(() => {
           if (!view.closed) view.v2Programmatic = false;
         });
@@ -10981,6 +11994,27 @@ class TermdeckApp {
     if (!view || view.closed) return;
     view.outputQueue.push({ data, afterWrite, generation: view.outputWriteGeneration });
     this.drainTerminalWrites(view);
+  }
+
+  detectTerminalAttentionFromBuffer(view) {
+    if (!view || view.closed || this.session(view.sessionId)?.agent_kind !== "claude" || !view.term) return;
+    if (view.attentionScreenDetectionSuppressed) return;
+    const buffer = view.term.buffer.active;
+    const firstRow = Math.max(0, Number(buffer.baseY || 0) - 2);
+    const lastRow = Math.min(buffer.length, firstRow + view.term.rows + 4);
+    const text = [];
+    for (let row = firstRow; row < lastRow; row += 1) {
+      const line = buffer.getLine(row);
+      if (line) text.push(line.translateToString(true));
+    }
+    const normalized = text.join(" ").replace(/\s+/g, " ").trim().toLowerCase();
+    if (!TERMINAL_ATTENTION_TEXT_MARKERS.every((marker) => normalized.includes(marker))) return;
+    const session = this.session(view.sessionId);
+    if (!session || session.needs_attention) return;
+    session.needs_attention = true;
+    this.attentionServerStates.set(view.sessionId, true);
+    if (this.processingStates.get(view.sessionId)) this.updateProcessingState(view.sessionId, false);
+    this.triggerSessionAttention(view.sessionId);
   }
 
   drainTerminalWrites(view) {
@@ -10996,6 +12030,7 @@ class TermdeckApp {
       if (!view.closed && item.generation === view.outputWriteGeneration && item.afterWrite) {
         item.afterWrite();
       }
+      if (!view.closed && item.generation === view.outputWriteGeneration) this.detectTerminalAttentionFromBuffer(view);
       if (!view.closed && item.generation === view.outputWriteGeneration && view.needsViewportRepair &&
           !view.outputQueue.length && view.container.classList.contains("visible")) {
         view.needsViewportRepair = false;
@@ -11180,6 +12215,7 @@ class TermdeckApp {
       }
       if (migratedExcludeGlob) incoming.excluded_file_glob = legacyExcludeGlob;
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
+      this.persistedSettings = this.copySettings(this.settings);
       if (!this.settings.md_prompt_queues || typeof this.settings.md_prompt_queues !== "object") this.settings.md_prompt_queues = {};
       if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
       this.settings.show_git_status = true;
@@ -11194,6 +12230,7 @@ class TermdeckApp {
       if (migratedFileGlobSettings || migratedExcludeGlob || excludedGlobChanged) this.saveSettings();
     } catch (err) {
       this.settings = { ...SETTINGS_DEFAULTS };
+      this.persistedSettings = this.copySettings(this.settings);
     }
     const storedFilesPinned = localStorage.getItem("termdeck.files_pinned");
     if (storedFilesPinned !== null) this.settings.files_pinned = parseModeFlag(storedFilesPinned);
@@ -11223,7 +12260,7 @@ class TermdeckApp {
       states.__all__ = { active_session_id: this.settings.active_session_id, open_files: this.settings.open_files };
       this.settings.project_state = states;
     }
-    this.unreadSessions = new Set(this.getProjectState().unread_sessions || []);
+    this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
     this.applySettings();
   }
 
@@ -11274,6 +12311,9 @@ class TermdeckApp {
   }
 
   owningProjectKey(root) {
+    const normalized = String(root || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    const worktree = this.worktrees.find((candidate) => String(candidate.path || "").replace(/\\/g, "/").replace(/\/+$/, "") === normalized);
+    if (worktree) return worktree.id === "root" ? worktree.project : `${worktree.project}::worktree:${worktree.id}`;
     return this.projectForCwd(root)?.name || "__all__";
   }
 
@@ -11464,9 +12504,49 @@ class TermdeckApp {
     }
     clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
-      fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" },
-                               body: JSON.stringify(this.settings) }).catch(() => {});
+      this.saveTimer = null;
+      this.queueSettingsPatch();
     }, 400);
+  }
+
+  flushPendingSettingsSave() {
+    if (!this.saveTimer) return;
+    clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    const patch = this.changedSettingsPatch(this.copySettings(this.settings));
+    if (!Object.keys(patch).length) return;
+    const body = JSON.stringify(patch);
+    void fetch("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body,
+      keepalive: body.length < 60000 }).catch((error) => console.error("TermDeck settings exit save failed", error));
+  }
+
+  copySettings(settings) {
+    return JSON.parse(JSON.stringify(settings));
+  }
+
+  changedSettingsPatch(settingsSnapshot) {
+    const patch = {};
+    for (const [key, value] of Object.entries(settingsSnapshot)) {
+      if (key === "project_state") continue;
+      if (JSON.stringify(value) !== JSON.stringify(this.persistedSettings[key])) patch[key] = value;
+    }
+    return patch;
+  }
+
+  queueSettingsPatch() {
+    this.settingsSavePromise = this.settingsSavePromise.catch((error) => {
+      console.error("TermDeck settings save failed", error);
+    }).then(async () => {
+      const settingsSnapshot = this.copySettings(this.settings);
+      const patch = this.changedSettingsPatch(settingsSnapshot);
+      if (!Object.keys(patch).length) return;
+      const response = await fetch("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch) });
+      if (!response.ok) throw new Error(`settings save failed (${response.status})`);
+      const persisted = await response.json();
+      for (const key of Object.keys(patch)) this.persistedSettings[key] = this.copySettings(persisted[key]);
+      if (Object.keys(this.changedSettingsPatch(this.settings)).length) this.saveSettings();
+    });
   }
 
   initInlineSizeControls() {
@@ -11799,7 +12879,7 @@ class TermdeckApp {
       { label: "Terminal process report", buttonText: "view", run: () => { pop.classList.add("hidden"); void this.showTerminalProcessReport(); } },
       { label: "Reclaim orphan terminals", buttonText: "clean", run: () => { pop.classList.add("hidden"); void this.reclaimOrphanTerminals(); } },
       { label: "Kill all running terminals", buttonText: "kill", run: () => { pop.classList.add("hidden"); void this.killAllRunningTerminals(); } },
-    ]));
+    ], anchor));
     this.positionPopover(pop, anchor);
   }
 
@@ -11817,7 +12897,7 @@ class TermdeckApp {
     return row;
   }
 
-  buildSettingsSubmenu(labelText, entries) {
+  buildSettingsSubmenu(labelText, entries, anchor = null) {
     const root = document.createElement("div");
     root.className = "settings-submenu";
     const header = document.createElement("div");
@@ -11836,6 +12916,7 @@ class TermdeckApp {
     toggle.onclick = () => {
       const expanded = root.classList.toggle("expanded");
       toggle.setAttribute("aria-expanded", String(expanded));
+      if (anchor) requestAnimationFrame(() => this.positionPopover(this.$("settings-popover"), anchor));
     };
     header.append(label, toggle);
     root.append(header, items);
@@ -12059,7 +13140,7 @@ class TermdeckApp {
 
   async reloadTree(rootOverride) {
     const s = this.session(this.activeId);
-    this.treeRoot = rootOverride || (s ? s.cwd : (this.projectRoot() || "~"));
+    this.treeRoot = rootOverride || (s ? s.cwd : (this.worktreeRoot() || "~"));
     this.connectFileTreeWatch(this.treeRoot);
     const label = this.$("files-root-label");
     label.textContent = this.vscodeMode ? "files" : this.treeRoot.replace(/^\/Users\/[^/]+/, "~");
@@ -12495,7 +13576,11 @@ class TermdeckApp {
     this.openFilesPersistPromise = this.openFilesPersistPromise.then(async () => {
       for (const update of updates) {
         const params = new URLSearchParams();
-        if (update.projectKey !== "__all__") params.set("project", update.projectKey);
+        if (update.projectKey !== "__all__") {
+          const [projectName, worktreeMarker] = update.projectKey.split("::worktree:");
+          params.set("project", projectName);
+          if (worktreeMarker) params.set("worktree_id", worktreeMarker);
+        }
         const response = await fetch(`/api/terminal-layout?${params}`, { method: "PATCH", keepalive: true,
           headers: { "Content-Type": "application/json" }, body: JSON.stringify({ open_files: update.openFiles }) });
         if (!response.ok) throw new Error(`server returned ${response.status}`);
@@ -13037,9 +14122,72 @@ class TermdeckApp {
     return { title: value, session_ref: "" };
   }
 
-  openModal(groupId = null) {
+  clearModalError() {
+    const error = this.$("modal-error");
+    const install = this.$("modal-error-install");
+    if (error) error.classList.add("hidden");
+    if (install) {
+      install.classList.add("hidden");
+      install.disabled = false;
+      install.onclick = null;
+    }
+  }
+
+  showModalDependencyError(detail) {
+    const error = this.$("modal-error");
+    const message = this.$("modal-error-message");
+    const install = this.$("modal-error-install");
+    if (!error || !message || !install) return;
+    const command = String(detail?.install_command || "").trim();
+    message.textContent = `${detail?.message || "The selected agent is unavailable."}${command ? ` Run ${command} in a new terminal to install it.` : ""}`;
+    error.classList.remove("hidden");
+    if (!command) return;
+    install.classList.remove("hidden");
+    install.onclick = () => void this.openModelInstallTerminal(detail);
+  }
+
+  async openModelInstallTerminal(detail) {
+    const install = this.$("modal-error-install");
+    const command = String(detail?.install_command || "").trim();
+    if (!command || install?.disabled) return;
+    if (install) install.disabled = true;
+    const cwd = this.$("modal-cwd").value.trim() || this.resolveVscodeDefaultCwd();
+    let project = this.projectForCwd(cwd)?.name || "";
+    try {
+      if (cwd) {
+        const projectResponse = await fetch("/api/projects", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ root: cwd }),
+        });
+        const projectPayload = await projectResponse.json().catch(() => ({}));
+        if (!projectResponse.ok) throw new Error(projectPayload.detail || "failed to register project folder");
+        project = projectPayload.name || project;
+      }
+      const response = await fetch("/api/sessions", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command, cwd, title: `Install ${detail.display_name || detail.program}`, project,
+          after: this.activeId ? `session:${this.activeId}` : null }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof payload.detail === "string" ? payload.detail : "failed to open install terminal");
+      const created = payload;
+      this.closeModal();
+      if (!this.vscodeMode && created.project && created.project !== (this.projectSlug || "")) {
+        location.href = `/p/${encodeURIComponent(created.project)}`;
+        return;
+      }
+      await this.refresh();
+      this.activate(created.session_id, { reveal: true });
+    } catch (error) {
+      this.showModalDependencyError({ ...detail, message: error.message || "failed to open install terminal" });
+    } finally {
+      if (install) install.disabled = false;
+    }
+  }
+
+  openModal(groupId = null, afterSessionId = null) {
     this.modalGroupId = !this.vscodeMode && groupId && this.terminalGroups().some((group) => group.id === groupId)
       ? groupId : null;
+    this.modalAfterSessionId = !this.modalGroupId && afterSessionId && this.session(afterSessionId) ? afterSessionId : null;
     const model = this.settings.last_model || DEFAULT_COMMAND;
     this.$("modal-model").value = MODEL_PERMISSIONS[model] ? model : DEFAULT_COMMAND;
     this.updateModalPermissions();
@@ -13048,12 +14196,14 @@ class TermdeckApp {
     this.$("modal-session-title").value = "";
     this.$("modal-cwd").value = this.resolveVscodeDefaultCwd();
     this.$("modal-cwd").dataset.projectSeeded = "0";
+    this.clearModalError();
     this.$("modal-backdrop").classList.remove("hidden");
     this.$("modal-session-title").focus();
   }
 
   closeModal() {
     this.modalGroupId = null;
+    this.modalAfterSessionId = null;
     this.$("modal-backdrop").classList.add("hidden");
   }
 
@@ -13075,42 +14225,29 @@ class TermdeckApp {
   async createSession() {
     if (this.$("modal-backdrop").classList.contains("hidden")) return;
     const targetGroupId = this.modalGroupId;
+    const requestedAfterSessionId = this.modalAfterSessionId;
     const model = this.$("modal-model").value;
     const permission = this.$("modal-permission").value;
     const resolved = this.resolveSessionNameAndReference(model, this.$("modal-session-title").value);
     const { title, session_ref: sessionRef } = resolved;
-    const rawCwd = this.$("modal-cwd").value.trim();
-    const cwd = this.vscodeMode ? rawCwd || this.resolveVscodeDefaultCwd() : rawCwd;
-    let project = "";
-    if (cwd) {
-      const projectResponse = await fetch("/api/projects", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ root: cwd }),
-      });
-      const projectPayload = await projectResponse.json().catch(() => ({}));
-      if (!projectResponse.ok) {
-        alert(projectPayload.detail || "failed to register project folder");
-        return;
-      }
-      if (projectPayload && projectPayload.name) {
-        project = projectPayload.name;
-      }
-    }
-    if (!project) project = this.projectForCwd(cwd)?.name || "";
+    const project = this.projectSlug || "";
+    const cwd = this.worktreeRoot() || this.resolveVscodeDefaultCwd();
     this.settings.last_model = model;
     this.settings.last_permissions = { ...(this.settings.last_permissions || {}), [model]: permission };
     this.saveSettings();
     // Land the new terminal directly below the one in focus rather than at the end of the sidebar.
     // An explicitly chosen group already dictates placement, so it wins.
-    const anchorSessionId = !targetGroupId && this.activeId && this.session(this.activeId) ? this.activeId : null;
+    const anchorSessionId = !targetGroupId && requestedAfterSessionId && this.session(requestedAfterSessionId)
+      ? requestedAfterSessionId : !targetGroupId && this.activeId && this.session(this.activeId) ? this.activeId : null;
     const res = await fetch("/api/sessions", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, permission, session_ref: sessionRef, cwd, title,
-        project }),
+        project, worktree_id: this.stateWorktreeId() }),
     });
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
-      alert(detail.detail || "failed to create session");
+      if (detail.detail?.code === "model_dependency_missing") this.showModalDependencyError(detail.detail);
+      else alert(typeof detail.detail === "string" ? detail.detail : "failed to create session");
       return;
     }
     const created = await res.json();
@@ -13401,19 +14538,30 @@ class TermdeckApp {
 
   bindingMap() {
     const map = {};
-    for (const k of this.keybindingDefinitions()) map[this.bindingFor(k.id)] = k.id;
+    for (const k of this.keybindingDefinitions()) {
+      const binding = this.bindingFor(k.id);
+      map[binding] = k.id;
+      if (!this.vscodeMode && !IS_MAC_KEYBOARD_PLATFORM && binding.includes("Meta")) {
+        const platformBinding = binding.split("+").map((part) => part === "Meta" ? "Ctrl" : part).join("+");
+        if (!map[platformBinding]) map[platformBinding] = k.id;
+      }
+    }
     return map;
   }
 
   tryAppShortcut(e) {
+    const binding = this.eventToBinding(e);
+    const actionId = binding ? this.bindingMap()[binding] : "";
+    if (actionId) {
+      if (["selection-copy", "selection-note-new", "selection-note-append"].includes(actionId) &&
+          !this.readSelectionActionState()) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      this.runAction(actionId);
+      return true;
+    }
     if (!this.vscodeMode && e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey) {
       const key = e.key.toLowerCase();
-      if (key === "e") {
-        e.preventDefault();
-        e.stopPropagation();
-        this.focusFileNameSearch();
-        return true;
-      }
       if (key === "f") {
         e.preventDefault();
         e.stopPropagation();
@@ -13433,16 +14581,7 @@ class TermdeckApp {
       this.runAction("recent-terminals");
       return true;
     }
-    const binding = this.eventToBinding(e);
-    if (!binding) return false;
-    const actionId = this.bindingMap()[binding];
-    if (!actionId) return false;
-    if (["selection-copy", "selection-note-new", "selection-note-append"].includes(actionId) &&
-        !this.readSelectionActionState()) return false;
-    e.preventDefault();
-    e.stopPropagation();
-    this.runAction(actionId);
-    return true;
+    return false;
   }
 
   closeContextMenu() {
@@ -13501,10 +14640,13 @@ class TermdeckApp {
   runAction(actionId) {
     if (this.runContextMenuAction(actionId)) return;
     if (actionId === "new-terminal") this.openModal();
+    else if (actionId === "new-project") void this.addProjectFromHeader();
+    else if (actionId === "new-worktree") this.openWorktreeModal();
     else if (actionId === "new-group") this.createTerminalGroup();
     else if (actionId === "close-item") this.closeActiveItem();
     else if (actionId === "fork-terminal") { const s = this.session(this.activeId); if (s) this.forkSession(s); }
     else if (actionId === "restart-terminal") { if (this.activeId) this.restartSession(this.activeId); }
+    else if (actionId === "resync-terminal") this.resyncActiveTerminal();
     else if (actionId === "rename-terminal") { const s = this.session(this.activeId); if (s) this.renameSession(s); }
     else if (actionId === "copy-session-id") {
       if (this.activeId) this.copyTextToClipboard(this.activeId, "session id copied");
@@ -13538,7 +14680,7 @@ class TermdeckApp {
     else if (actionId === "open-file-search") this.openFilesSidePanelView("search");
     else if (actionId === "open-files-new-tab") this.openFileDeckViewInNewTab(this.treeRoot || this.projectRoot(), "tree");
     else if (actionId === "open-search-new-tab") this.openFileDeckViewInNewTab(this.treeRoot || this.projectRoot(), "search", "", this.$("search-query").value.trim());
-    else if (actionId === "open-terminal-search") this.openTerminalSearchEditor();
+    else if (actionId === "open-terminal-search") this.toggleTerminalSearchEditor();
     else if (actionId === "view-terminals") this.setSideView("terminals");
     else if (actionId === "switch-project") this.openProjectSwitcher();
     else if (actionId === "toggle-notebook") this.toggleNotebook();
@@ -13639,8 +14781,10 @@ class TermdeckApp {
   }
 
   bindingToDisplay(binding) {
-    return binding.split("+").map((p) => ({ Meta: "⌘", Shift: "⇧", Alt: "⌥", Ctrl: "⌃",
-      ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", Backspace: "⌫", Enter: "⏎", Escape: "esc" }[p] || p.toUpperCase())).join("");
+    const symbols = IS_MAC_KEYBOARD_PLATFORM
+      ? { Meta: "⌘", Shift: "⇧", Alt: "⌥", Ctrl: "⌃", ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", Backspace: "⌫", Enter: "⏎", Escape: "esc" }
+      : { Meta: "Ctrl", Shift: "Shift", Alt: "Alt", Ctrl: "Ctrl", ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", Backspace: "Backspace", Enter: "Enter", Escape: "Esc" };
+    return binding.split("+").map((part) => symbols[part] || part.toUpperCase()).join(IS_MAC_KEYBOARD_PLATFORM ? "" : "+");
   }
 
   cycleTerminal(delta) {
@@ -13678,8 +14822,14 @@ class TermdeckApp {
     this.patchProjectState(patch);
   }
 
+  stripTitleStatusPrefixes(title) {
+    let text = String(title || "");
+    while (TITLE_STATUS_PREFIX_RE.test(text)) text = text.replace(TITLE_STATUS_PREFIX_RE, "");
+    return text.trim();
+  }
+
   async forkSession(s) {
-    const baseTitle = this.effectiveTitle(s) || "terminal";
+    const baseTitle = this.stripTitleStatusPrefixes(this.effectiveTitle(s)) || "terminal";
     const rawValue = prompt(`Fork "${baseTitle}": enter a number from 1 to ${MAX_FORK_COUNT}, or enter a name for one fork.`, "1");
     if (rawValue === null || !rawValue.trim()) return;
     const value = rawValue.trim();
@@ -13695,13 +14845,13 @@ class TermdeckApp {
     await this.createForkedSessions(s, Array.from({ length: count }, (_unused, index) => `${baseTitle} ${index + 1}`));
   }
 
-  async createForkedSessions(s, titles) {
+  async createForkedSessions(s, titles, options = {}) {
     const created = [];
     let failedAt = 0;
     for (let index = 0; index < titles.length; index += 1) {
       const res = await fetch(`/api/sessions/${s.session_id}/fork`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: titles[index] }),
+        body: JSON.stringify({ title: titles[index], worktree: !!options.worktree }),
       });
       if (!res.ok) {
         failedAt = index + 1;
@@ -13834,7 +14984,7 @@ class TermdeckApp {
 
   searchRoot() {
     if (this.vscodeMode && this.vscodeWorkspaceRoot) return this.vscodeWorkspaceRoot;
-    const projectRoot = this.projectRoot();
+    const projectRoot = this.worktreeRoot();
     if (projectRoot) return projectRoot;
     const s = this.session(this.activeId);
     return s ? s.cwd : "~";
@@ -13917,6 +15067,13 @@ class TermdeckApp {
     return this.fileTypeFilterTokens().join(", ");
   }
 
+  updateSearchIncludeGlob(raw) {
+    this.settings.search_file_glob = String(raw || "").trim();
+    this.syncLegacySearchGlob();
+    this.saveSettings();
+    if (this.sideView === "search" && this.$("search-query").value.trim()) this.debouncedSearch();
+  }
+
   syncLegacySearchGlob() {
     this.settings.search_glob = this.fileGlobForMode("search");
     const hidden = this.$("search-glob");
@@ -13962,6 +15119,7 @@ class TermdeckApp {
 
   closeFileTypeFilterMenu() {
     this.$("file-type-filter-menu")?.classList.add("hidden");
+    this.fileTypeFilterMenuMode = "name";
     for (const id of ["file-type-filter-button", "search-file-type-filter-button"]) this.$(id)?.setAttribute("aria-expanded", "false");
   }
 
@@ -13972,6 +15130,7 @@ class TermdeckApp {
       return;
     }
     this.closeSearchHistory();
+    this.fileTypeFilterMenuMode = button.id === "search-file-type-filter-button" ? "search" : "name";
     menu.classList.remove("hidden");
     for (const id of ["file-type-filter-button", "search-file-type-filter-button"]) this.$(id)?.setAttribute("aria-expanded", String(id === button.id));
     this.renderFileTypeFilterMenu();
@@ -13992,9 +15151,34 @@ class TermdeckApp {
     head.className = "file-type-filter-head";
     const title = document.createElement("span");
     title.className = "file-type-filter-title";
-    title.textContent = "Exclude file types";
+    title.textContent = this.fileTypeFilterMenuMode === "search" ? "Search file filters" : "Name search filters";
     head.appendChild(title);
     menu.appendChild(head);
+    if (this.fileTypeFilterMenuMode === "search") {
+      const include = document.createElement("div");
+      include.className = "file-type-filter-include";
+      const includeLabel = document.createElement("div");
+      includeLabel.className = "file-type-filter-section";
+      includeLabel.textContent = "Include patterns";
+      const includeInput = document.createElement("input");
+      includeInput.id = "search-file-glob";
+      includeInput.className = "file-include-glob";
+      includeInput.type = "text";
+      includeInput.value = this.fileIncludeGlob("search");
+      includeInput.placeholder = "*.py, src/**";
+      includeInput.title = "Only search these file patterns";
+      includeInput.autocomplete = "off";
+      includeInput.autocapitalize = "off";
+      includeInput.autocorrect = "off";
+      includeInput.spellcheck = false;
+      includeInput.addEventListener("input", () => this.updateSearchIncludeGlob(includeInput.value));
+      include.append(includeLabel, includeInput);
+      menu.appendChild(include);
+    }
+    const excludeLabel = document.createElement("div");
+    excludeLabel.className = "file-type-filter-section";
+    excludeLabel.textContent = "Exclude patterns";
+    menu.appendChild(excludeLabel);
     const list = document.createElement("div");
     list.className = "file-type-filter-chip-list";
     const tokens = this.fileTypeFilterTokens();

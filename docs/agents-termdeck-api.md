@@ -15,8 +15,15 @@ curl -sS -X POST http://127.0.0.1:8530/api/terminals/task \
 | `prompt` | Prompt sent to the child agent. |
 | `origin_session` | leave as env variable |
 | `fork` | `false` starts a new agent; `true` forks from your session/memory. |
+| `worktree_id` | Starts the child in an existing project worktree returned by `GET /api/worktrees`. Omit it for the project root. |
+| `worktree` | `true` starts the child in a separate Git worktree and branch. The response includes its path and branch. |
 
 Response: `session_id`
+
+For isolated work, poll `GET /api/sessions/{session_id}/worktree/review` to inspect the branch and diff. Use
+`POST /api/sessions/{session_id}/worktree/finish` with `{"action":"keep"}`, `{"action":"merge"}`, or
+`{"action":"discard"}` when the review is complete. `merge` requires committed worktree changes and a clean base
+checkout; `discard` is destructive to uncommitted work.
 
 ## Send a follow-up message to them
 

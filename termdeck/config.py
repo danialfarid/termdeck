@@ -32,6 +32,9 @@ class TermdeckConfig:
     UPLOAD_FALLBACK_NAME = "pasted"
     PROJECT_FALLBACK_SLUG = "project"
     API_PROJECTS_ROUTE = "/api/projects"
+    API_WORKTREES_ROUTE = "/api/worktrees"
+    API_WORKTREE_BRANCHES_ROUTE = "/api/worktrees/branches"
+    API_WORKTREE_ROUTE = "/api/worktrees/{worktree_id}"
     API_PROJECT_FOLDER_PICKER_ROUTE = "/api/projects/pick-folder"
     API_STATE_RECOVERY_ROUTE = "/api/state-recovery"
     API_STATE_RECOVERY_RESTORE_ROUTE = "/api/state-recovery/restore"
@@ -58,6 +61,8 @@ class TermdeckConfig:
     API_SESSION_PROMPT_ROUTE = "/api/sessions/{session_id}/prompt"
     API_SESSION_RESTART_ROUTE = "/api/sessions/{session_id}/restart"
     API_SESSION_FORK_ROUTE = "/api/sessions/{session_id}/fork"
+    API_SESSION_WORKTREE_REVIEW_ROUTE = "/api/sessions/{session_id}/worktree/review"
+    API_SESSION_WORKTREE_FINISH_ROUTE = "/api/sessions/{session_id}/worktree/finish"
     API_SESSION_RENAME_ROUTE = "/api/sessions/{session_id}/rename"
     API_SESSION_PROJECT_ROUTE = "/api/sessions/{session_id}/project"
     API_SESSION_HISTORY_ROUTE = "/api/sessions/{session_id}/history"
@@ -68,6 +73,10 @@ class TermdeckConfig:
     API_RECLAIM_ORPHAN_TERMINALS_ROUTE = "/api/terminals/reclaim-orphans"
     API_TERMINAL_LAYOUT_ROUTE = "/api/terminal-layout"
     API_TERMINAL_SEARCH_ROUTE = "/api/terminal-search"
+    # Claude Code hook callback. Claude posts its own hook payload here (see docs/configuration.md);
+    # `state=attention` marks the tab as waiting on the user, `state=clear` releases it.
+    API_AGENT_HOOK_ROUTE = "/api/agent-hook"
+    AGENT_HOOK_ATTENTION_STATE = "attention"
     API_HISTORY_SEARCH_ROUTE = "/api/history-search"
     API_HISTORY_CONTEXT_ROUTE = "/api/history-context"
     API_SETTINGS_ROUTE = "/api/settings"
@@ -112,6 +121,8 @@ class TermdeckConfig:
     FILE_HISTORY_MAX_VERSIONS_PER_FILE = 100
     FILE_HISTORY_MAX_BYTES = 512 * 1024 * 1024
     FILE_HISTORY_COALESCE_SECONDS = 10
+    WORKTREES_DIR = DATA_DIR / "worktrees"
+    WORKTREE_REGISTRY_FILE = DATA_DIR / "worktrees.json"
     PS_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_PS_BIN, "ps")
     FILE_ACCESS_ROOT = PlatformPaths.env_directory(PlatformPaths.ENV_FILE_ROOT, Path.home())
     FILE_READ_MAX_BYTES = 2_000_000

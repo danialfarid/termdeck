@@ -5,6 +5,7 @@ import re
 import signal
 import subprocess
 import time
+from dataclasses import replace
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,7 +14,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from termdeck.config import TermdeckConfig
 from termdeck.file_history_service import FileHistoryService
@@ -28,6 +29,17 @@ from termdeck.settings_store import UiSettingsStore
 from termdeck.state_backup import StateBackupManager
 from termdeck.stats_service import ResourceStatsService
 from termdeck.transcript_service import TranscriptService
+from termdeck.worktree_service import GitWorktreeService, WorktreeMetadata
+from termdeck.worktree_registry import ProjectWorktree, WorktreeRegistry
+
+
+class AgentHookRequest(BaseModel):
+    """Claude Code hook payload, forwarded verbatim. Only session_id is used; the rest of the hook's
+    fields (hook_event_name, cwd, transcript_path, message, ...) are accepted and ignored so a future
+    Claude Code release adding fields cannot start rejecting hook posts."""
+
+    model_config = ConfigDict(extra="ignore")
+    session_id: str = ""
 
 
 class CreateSessionRequest(BaseModel):
@@ -40,6 +52,10 @@ class CreateSessionRequest(BaseModel):
     permission: str = ""
     session_ref: str = ""
     after: str | None = None
+    worktree: bool = False
+    worktree_branch: str = ""
+    worktree_base: str = ""
+    worktree_id: str = "root"
 
 
 class RunTerminalTaskRequest(BaseModel):
@@ -59,11 +75,27 @@ class RunTerminalTaskRequest(BaseModel):
     write_back: bool = False
     bracketed: bool = True
     queue: bool = False
+    worktree: bool = False
+    worktree_branch: str = ""
+    worktree_base: str = ""
+    worktree_id: str = "root"
 
 
 class ProjectRegistrationRequest(BaseModel):
     root: str
     name: str = ""
+
+
+class WorktreeCreateRequest(BaseModel):
+    project: str
+    name: str = ""
+    branch: str = ""
+    base_ref: str = ""
+
+
+class WorktreeDeleteRequest(BaseModel):
+    project: str
+    move_to_trash: bool = False
 
 
 class SubmitPromptRequest(BaseModel):
@@ -89,6 +121,10 @@ class BatchTerminalSpec(BaseModel):
     bracketed: bool | None = None
     queue: bool | None = None
     after: str | None = None
+    worktree: bool | None = None
+    worktree_branch: str | None = None
+    worktree_base: str | None = None
+    worktree_id: str | None = None
 
 
 class BatchTerminalsRequest(BaseModel):
@@ -102,10 +138,27 @@ class BatchTerminalsRequest(BaseModel):
     bracketed: bool = True
     queue: bool = False
     after: str | None = None
+    worktree: bool = False
+    worktree_branch: str = ""
+    worktree_base: str = ""
+    worktree_id: str = "root"
 
 
 class RenameSessionRequest(BaseModel):
     title: str
+
+
+class ForkSessionRequest(BaseModel):
+    title: str
+    worktree: bool = False
+    worktree_branch: str = ""
+    worktree_base: str = ""
+    worktree_id: str = "root"
+
+
+class WorktreeFinishRequest(BaseModel):
+    action: str
+    target_branch: str = ""
 
 
 class MoveSessionProjectRequest(BaseModel):
@@ -247,6 +300,7 @@ class UiSettings(BaseModel):
     history_mode: bool = False
     claude_snapshot_experimental: bool = False
     prompt_history: dict[str, list[str]] = {}
+    md_prompt_queues: dict[str, list[str]] = {}
     selection_copy_history: list[str] = []
     notebook_open: bool = False
     notebook_left: int = -1
@@ -256,6 +310,7 @@ class UiSettings(BaseModel):
     notebook_active_note_id: str = ""
     notebook_notes_initialized: bool = False
     files_pinned: bool = False
+    show_terminal_age: bool = True
     sidebar_text_color: str = "#d5dbe5"
     side_full: bool = False
     side_split: float = 0.55
@@ -280,6 +335,8 @@ class TermdeckServer:
             self.manager = TerminalSessionManager(self.state_backup)
         self.files = ProjectFileService()
         self.filedeck_git = FileDeckGitService()
+        self.worktrees = GitWorktreeService(TermdeckConfig.WORKTREES_DIR)
+        self.worktree_registry = WorktreeRegistry(TermdeckConfig.WORKTREE_REGISTRY_FILE, self.state_backup, self.worktrees)
         self.file_history = FileHistoryService(TermdeckConfig.FILE_HISTORY_DATABASE)
         self.search = ProjectSearchService(self.files)
         self.stats = ResourceStatsService()
@@ -338,6 +395,10 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_STATE_RECOVERY_RESTORE_ROUTE, response_model=None)(self._restore_state_recovery)
         app.get(TermdeckConfig.API_PROJECTS_ROUTE, response_model=None)(self._list_projects)
         app.post(TermdeckConfig.API_PROJECTS_ROUTE, response_model=None)(self._add_project)
+        app.get(TermdeckConfig.API_WORKTREES_ROUTE, response_model=None)(self._list_worktrees)
+        app.get(TermdeckConfig.API_WORKTREE_BRANCHES_ROUTE, response_model=None)(self._list_worktree_branches)
+        app.post(TermdeckConfig.API_WORKTREES_ROUTE, response_model=None)(self._add_worktree)
+        app.delete(TermdeckConfig.API_WORKTREE_ROUTE, response_model=None)(self._delete_worktree)
         app.post(TermdeckConfig.API_PROJECT_FOLDER_PICKER_ROUTE, response_model=None)(self._pick_project_folder)
         app.get(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._list_sessions)
         app.post(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._create_session)
@@ -346,12 +407,15 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_TERMINALS_BATCH_ROUTE, response_model=None)(self._launch_terminal_batch)
         app.post(TermdeckConfig.API_SESSION_RESTART_ROUTE, response_model=None)(self._restart_session)
         app.post(TermdeckConfig.API_SESSION_FORK_ROUTE, response_model=None)(self._fork_session)
+        app.get(TermdeckConfig.API_SESSION_WORKTREE_REVIEW_ROUTE, response_model=None)(self._review_worktree)
+        app.post(TermdeckConfig.API_SESSION_WORKTREE_FINISH_ROUTE, response_model=None)(self._finish_worktree)
         app.post(TermdeckConfig.API_SESSION_RENAME_ROUTE, response_model=None)(self._rename_session)
         app.post(TermdeckConfig.API_SESSION_PROJECT_ROUTE, response_model=None)(self._move_session_to_project)
         app.get(TermdeckConfig.API_SESSION_TASK_STATUS_ROUTE, response_model=None)(self._task_status)
         app.get(TermdeckConfig.API_SESSION_TASK_RESULT_ROUTE, response_model=None)(self._task_result)
         app.get(TermdeckConfig.API_SESSION_LAST_TURN_ROUTE, response_model=None)(self._task_result)
         app.post(TermdeckConfig.API_SESSION_PROMPT_ROUTE, response_model=None)(self._submit_prompt)
+        app.post(TermdeckConfig.API_AGENT_HOOK_ROUTE, response_model=None)(self._agent_hook)
         app.post(TermdeckConfig.API_KILL_ALL_TERMINALS_ROUTE, response_model=None)(self._kill_all_terminals)
         app.post(TermdeckConfig.API_KILL_STALE_TERMINALS_ROUTE, response_model=None)(self._kill_stale_terminals)
         app.get(TermdeckConfig.API_TERMINAL_PROCESSES_ROUTE, response_model=None)(self._terminal_process_report)
@@ -368,7 +432,8 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_CLOSED_REOPEN_ROUTE, response_model=None)(self._reopen_closed)
         app.delete(TermdeckConfig.API_CLOSED_ITEM_ROUTE, response_model=None)(self._purge_closed)
         app.get(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._get_settings)
-        app.put(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._put_settings)
+        app.put(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._replace_settings)
+        app.patch(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._patch_settings)
         app.post(TermdeckConfig.API_NOTEBOOK_TRASH_ROUTE, response_model=None)(self._trash_notebook_note)
         app.get(TermdeckConfig.API_FILE_LIST_ROUTE, response_model=None)(self._list_files)
         app.get(TermdeckConfig.API_FILE_RECENT_ROUTE, response_model=None)(self._recent_files)
@@ -399,8 +464,8 @@ class TermdeckServer:
         app.websocket(TermdeckConfig.WS_ROUTE)(self._ws_terminal)
         return app
 
-    async def _list_closed(self, project: str = "") -> list[dict[str, object]]:
-        return list(self.manager.list_closed_sessions(project or None))
+    async def _list_closed(self, project: str = "", worktree_id: str = "") -> list[dict[str, object]]:
+        return list(self.manager.list_closed_sessions(project or None, worktree_id or None))
 
     async def _reopen_closed(self, session_id: str) -> dict[str, object]:
         try:
@@ -418,6 +483,22 @@ class TermdeckServer:
 
     async def _put_settings(self, settings: UiSettings) -> dict[str, int | str]:
         payload = self._preserve_active_layout_entries(settings.model_dump())
+        self.settings_store.save(payload)
+        return payload
+
+    async def _replace_settings(self, settings: UiSettings, replace: bool = False) -> dict[str, int | str]:
+        if not replace:
+            raise HTTPException(status_code=409, detail="full settings replacement requires ?replace=true")
+        return await self._put_settings(settings)
+
+    async def _patch_settings(self, incoming_settings: dict[str, object]) -> dict[str, object]:
+        unknown_fields = set(incoming_settings) - set(UiSettings.model_fields)
+        if unknown_fields:
+            raise HTTPException(status_code=422, detail=f"unknown settings: {', '.join(sorted(unknown_fields))}")
+        if "project_state" in incoming_settings:
+            raise HTTPException(status_code=409, detail="project state must use /api/terminal-layout")
+        merged_settings = {**self.settings_store.load(), **incoming_settings}
+        payload = self._preserve_active_layout_entries(UiSettings(**merged_settings).model_dump())
         self.settings_store.save(payload)
         return payload
 
@@ -720,6 +801,60 @@ class TermdeckServer:
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
+    async def _list_worktrees(self, project: str = "") -> list[dict[str, str | bool]]:
+        project_name = project.strip()
+        if not project_name:
+            return []
+        root = self.manager.registry.root_for(project_name)
+        if root is None:
+            raise HTTPException(status_code=404, detail=project_name)
+        try:
+            return [record.to_dict() for record in self.worktree_registry.list_for_project(project_name, root)]
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    async def _list_worktree_branches(self, project: str = "") -> dict[str, str | list[str]]:
+        project_name = project.strip()
+        if not project_name:
+            return {"current": "", "branches": []}
+        root = self.manager.registry.root_for(project_name)
+        if root is None:
+            raise HTTPException(status_code=404, detail=project_name)
+        try:
+            current, branches = self.worktrees.list_local_branch_names(root)
+            return {"current": current, "branches": branches}
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    async def _add_worktree(self, request: WorktreeCreateRequest) -> dict[str, str | bool]:
+        project = request.project.strip()
+        root = self.manager.registry.root_for(project)
+        if root is None:
+            raise HTTPException(status_code=404, detail=project)
+        try:
+            self.worktrees.repository_root(root)
+            title = request.branch.strip() or request.base_ref.strip() or request.name.strip() or "worktree"
+            return self.worktree_registry.create(project, root, title, request.branch, request.base_ref).to_dict()
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=409,
+                                detail=f"project '{project}' is not a Git repository; select the folder containing .git") from error
+
+    async def _delete_worktree(self, worktree_id: str, request: WorktreeDeleteRequest) -> dict[str, object]:
+        project = request.project.strip()
+        root = self.manager.registry.root_for(project)
+        if root is None:
+            raise HTTPException(status_code=404, detail=project)
+        open_sessions = [session for session in self.manager.list_sessions(project, worktree_id)
+                         if str(session.get("worktree_id") or "root") == worktree_id]
+        closed_sessions = [session for session in self.manager.list_closed_sessions(project, worktree_id)
+                           if str(session.get("worktree_id") or "root") == worktree_id]
+        if open_sessions or closed_sessions:
+            raise HTTPException(status_code=409, detail="close or purge terminals in this worktree before deleting it")
+        try:
+            return self.worktree_registry.delete(project, root, worktree_id, request.move_to_trash)
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
     async def _pick_project_folder(self) -> dict[str, object]:
         if not PlatformPaths.IS_MACOS:
             raise HTTPException(status_code=501, detail="native folder selection is only available on macOS desktop mode")
@@ -748,30 +883,36 @@ class TermdeckServer:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {"cancelled": False, "project": project}
 
-    async def _list_sessions(self, project: str = "") -> list[dict[str, object]]:
-        return self.manager.list_sessions(project or None)
+    async def _list_sessions(self, project: str = "", worktree_id: str = "") -> list[dict[str, object]]:
+        return self.manager.list_sessions(project or None, worktree_id or None)
 
-    def _terminal_layout_payload(self, project: str, settings: UiSettings) -> dict[str, object]:
-        key = project or "__all__"
+    @staticmethod
+    def _project_state_key(project: str, worktree_id: str) -> str:
+        base = project or "__all__"
+        return f"{base}::worktree:{worktree_id}" if worktree_id and worktree_id != "root" else base
+
+    def _terminal_layout_payload(self, project: str, settings: UiSettings, worktree_id: str = "") -> dict[str, object]:
+        key = self._project_state_key(project, worktree_id)
         state = settings.project_state.get(key, ProjectUiState())
-        return {"project": project, "sessions": self.manager.list_sessions(project or None), **state.model_dump()}
+        return {"project": project, "worktree_id": worktree_id or "root",
+                "sessions": self.manager.list_sessions(project or None, worktree_id or None), **state.model_dump()}
 
-    async def _get_terminal_layout(self, project: str = "") -> dict[str, object]:
+    async def _get_terminal_layout(self, project: str = "", worktree_id: str = "") -> dict[str, object]:
         settings = UiSettings(**self.settings_store.load())
-        return self._terminal_layout_payload(project, settings)
+        return self._terminal_layout_payload(project, settings, worktree_id)
 
-    async def _patch_terminal_layout(self, patch: ProjectStatePatch, project: str = "") -> dict[str, object]:
+    async def _patch_terminal_layout(self, patch: ProjectStatePatch, project: str = "", worktree_id: str = "") -> dict[str, object]:
         settings = UiSettings(**self.settings_store.load())
-        key = project or "__all__"
+        key = self._project_state_key(project, worktree_id)
         current = settings.project_state.get(key, ProjectUiState()).model_dump()
         current.update(patch.model_dump(exclude_none=True))
         settings.project_state[key] = ProjectUiState(**current)
         payload = settings.model_dump()
         self.settings_store.save(payload)
-        return self._terminal_layout_payload(project, UiSettings(**payload))
+        return self._terminal_layout_payload(project, UiSettings(**payload), worktree_id)
 
     def _place_session_after(self, project: str, session_id: str, after: str,
-                             anchor_token: str | None = None) -> dict[str, object]:
+                             anchor_token: str | None = None, worktree_id: str = "root") -> dict[str, object]:
         """Insert a newly-created session after a visible session or group.
 
         The UI persists layout entries as ``session:<id>`` and ``group:<id>``.
@@ -784,9 +925,10 @@ class TermdeckServer:
             return {"after": requested, "token": f"session:{session_id}"}
 
         settings = UiSettings(**self.settings_store.load())
-        key = project or "__all__"
+        selected_worktree_id = worktree_id.strip() or "root"
+        key = self._project_state_key(project, selected_worktree_id)
         state = settings.project_state.get(key, ProjectUiState())
-        sessions = self.manager.list_sessions(project or None)
+        sessions = self.manager.list_sessions(project or None, selected_worktree_id)
         groups = [group for group in state.terminal_groups
                   if str(group.get("id", "")).strip() and str(group.get("name", "")).strip()]
         session_ids = {str(session.get("session_id", "")) for session in sessions}
@@ -921,23 +1063,95 @@ class TermdeckServer:
             return fallback_project
         return projects.pop()
 
+    def _raise_if_model_dependency_missing(self, model: str) -> None:
+        from termdeck.environment_check import EnvironmentCheck
+
+        missing = EnvironmentCheck.missing_model_dependency(model)
+        if not missing:
+            return
+        normalized_model = EnvironmentCheck.normalize_model(model)
+        display_name = {"codex": "Codex", "claude": "Claude", "agy": "AGY"}.get(normalized_model, normalized_model)
+        raise HTTPException(status_code=424, detail={
+            "code": "model_dependency_missing",
+            "program": missing.program,
+            "display_name": display_name,
+            "message": f"{display_name} is not available in the TermDeck server environment.",
+            "install_command": EnvironmentCheck.model_install_command(normalized_model),
+        })
+
+    def _worktree_repository_root(self, cwd: str, project: str) -> str:
+        candidate = Path(cwd).expanduser() if cwd.strip() else None
+        if candidate is None or not candidate.is_dir():
+            registered_root = self.manager.registry.root_for(project)
+            candidate = Path(registered_root).expanduser() if registered_root else None
+        if candidate is None or not candidate.is_dir():
+            raise ValueError("an existing Git project folder is required for an isolated worktree")
+        return str(candidate.resolve())
+
+    @staticmethod
+    def _worktree_metadata_from_summary(summary: dict[str, object]) -> WorktreeMetadata:
+        fields = (summary.get("worktree_path"), summary.get("worktree_repository"),
+                  summary.get("worktree_branch"), summary.get("worktree_base_ref"),
+                  summary.get("worktree_base_commit"))
+        if not all(isinstance(field, str) and field.strip() for field in fields):
+            raise ValueError("session does not have an isolated worktree")
+        return WorktreeMetadata(str(fields[0]), str(fields[1]), str(fields[2]), str(fields[3]), str(fields[4]),
+                                bool(summary.get("worktree_managed", False)), str(summary.get("worktree_id") or ""))
+
+    def _create_worktree(self, cwd: str, project: str, title: str, branch: str, base_ref: str) -> WorktreeMetadata:
+        repository_root = self._worktree_repository_root(cwd, project)
+        metadata = self.worktrees.create(repository_root, title, branch, base_ref)
+        record = self.worktree_registry.register_legacy(project, metadata, title)
+        return replace(metadata, worktree_id=record.worktree_id)
+
+    def _selected_worktree(self, project: str, cwd: str, worktree_id: str) -> tuple[str, ProjectWorktree | None]:
+        project_name = project.strip()
+        if not project_name:
+            candidate = Path(cwd).expanduser() if cwd.strip() else TermdeckConfig.DEFAULT_CWD
+            project_name = self.manager.registry.ensure_project_for_cwd(candidate)
+        root = self.manager.registry.root_for(project_name)
+        if root is None:
+            raise ValueError(f"unknown project: {project_name}")
+        selected_id = worktree_id.strip() or "root"
+        if selected_id == "root":
+            return project_name, None
+        return project_name, self.worktree_registry.get(project_name, root, selected_id)
+
     async def _create_session(self, request: CreateSessionRequest) -> dict[str, object]:
+        worktree: WorktreeMetadata | None = None
+        worktree_id = request.worktree_id.strip() or "root"
         try:
             command = request.command
             if request.model.strip():
                 command = self.manager.command_for_new_session(request.model, request.permission, request.session_ref, request.model_name)
+                self._raise_if_model_dependency_missing(request.model)
+            if request.worktree and request.session_ref.strip():
+                raise ValueError("an existing agent session cannot be resumed in a new worktree")
             project = self._resolve_project_from_after_anchor(request.after, request.project)
+            if request.worktree:
+                worktree = self._create_worktree(request.cwd, project, request.title, request.worktree_branch, request.worktree_base)
+                project = project or self.manager.registry.ensure_project_for_cwd(Path(worktree.repository))
+                worktree_id = worktree.worktree_id
+                cwd = worktree.path
+            else:
+                project, selected = self._selected_worktree(project, request.cwd, request.worktree_id)
+                cwd = selected.path if selected else request.cwd or self.manager.registry.root_for(project) or str(TermdeckConfig.DEFAULT_CWD)
+                worktree = selected.metadata() if selected else None
             ms = self.manager.create_session(
-                command, request.cwd, request.title, project,
+                command, cwd, request.title, project,
                 agent_rename=request.title if not request.session_ref.strip() else None,
+                worktree=worktree,
+                worktree_id=worktree_id,
             )
-        except ValueError as bad_request:
+        except (ValueError, OSError) as bad_request:
+            if worktree is not None:
+                self.worktrees.finish(worktree, "discard")
             raise HTTPException(status_code=400, detail=str(bad_request)) from bad_request
         result = self.manager.session_summary(ms)
         if request.after and request.after.strip():
             try:
                 result["placement"] = self._place_session_after(
-                    ms.record.project, ms.record.session_id, request.after)
+                    ms.record.project, ms.record.session_id, request.after, worktree_id=ms.record.worktree_id)
             except (ValueError, OSError) as placement_error:
                 result["placement_error"] = str(placement_error)
         return result
@@ -946,18 +1160,44 @@ class TermdeckServer:
         prompt = request.prompt.strip() or request.command.strip()
         if not prompt:
             raise HTTPException(status_code=400, detail="prompt is required")
+        worktree: WorktreeMetadata | None = None
+        created_session_id: str | None = None
         try:
-            origin_session_id = self._resolve_origin_session(request.origin_session)
+            origin_session_id = self._resolve_origin_session(request.origin_session) if request.origin_session.strip() else None
             if request.fork and not origin_session_id:
                 raise ValueError("fork requires origin_session")
+            if request.worktree and request.session_ref.strip() and not request.fork:
+                raise ValueError("an existing agent session cannot be resumed in a new worktree")
             placement_after = f"session:{origin_session_id}" if origin_session_id else request.after
             origin_summary = self.manager.session_summary_by_id(origin_session_id) if origin_session_id else {}
             if request.fork:
-                ms = self.manager.fork_session(origin_session_id, request.title)
+                if request.worktree:
+                    worktree = self._create_worktree(str(origin_summary.get("cwd", "")),
+                                                      str(origin_summary.get("project", "")), request.title,
+                                                      request.worktree_branch, request.worktree_base)
+                elif request.worktree_id.strip() and request.worktree_id.strip() != "root":
+                    project = str(origin_summary.get("project", ""))
+                    root = self.manager.registry.root_for(project)
+                    if root is None:
+                        raise ValueError(f"unknown project: {project}")
+                    worktree = self.worktree_registry.get(project, root, request.worktree_id).metadata()
+                ms = self.manager.fork_session(origin_session_id, request.title, worktree)
             else:
+                self._raise_if_model_dependency_missing(request.model)
                 base_command = self.manager.command_for_new_session(request.model, request.permission, request.session_ref, request.model_name)
                 cwd = request.cwd or str(origin_summary.get("cwd", ""))
                 project = self._resolve_project_from_after_anchor(placement_after, request.project or str(origin_summary.get("project", "")))
+                if request.worktree:
+                    worktree = self._create_worktree(cwd, project, request.title, request.worktree_branch, request.worktree_base)
+                    cwd = worktree.path
+                    project = project or self.manager.registry.ensure_project_for_cwd(Path(worktree.repository))
+                    worktree_id = worktree.worktree_id
+                else:
+                    requested_worktree_id = request.worktree_id.strip() or str(origin_summary.get("worktree_id") or "root")
+                    project, selected = self._selected_worktree(project, cwd, requested_worktree_id)
+                    cwd = selected.path if selected else cwd or self.manager.registry.root_for(project) or str(TermdeckConfig.DEFAULT_CWD)
+                    worktree = selected.metadata() if selected else None
+                    worktree_id = requested_worktree_id
                 ms = self.manager.create_session(
                     base_command,
                     cwd,
@@ -965,7 +1205,10 @@ class TermdeckServer:
                     project,
                     output_path=request.output_path,
                     agent_rename=request.title if request.title.strip() and not request.session_ref.strip() else None,
+                    worktree=worktree,
+                    worktree_id=worktree_id,
                 )
+            created_session_id = ms.record.session_id
             summary = self.manager.session_summary(ms)
             self.manager.ensure_session_running(ms.record.session_id)
             if placement_after and placement_after.strip():
@@ -974,6 +1217,7 @@ class TermdeckServer:
                         ms.record.project,
                         ms.record.session_id,
                         placement_after,
+                        worktree_id=ms.record.worktree_id,
                     )
                 except (ValueError, OSError) as placement_error:
                     summary["placement_error"] = str(placement_error)
@@ -987,7 +1231,9 @@ class TermdeckServer:
             if origin_session_id and request.write_back:
                 self._schedule_task_result_delivery(ms.record.session_id, origin_session_id)
             return summary
-        except ValueError as task_error:
+        except (ValueError, OSError) as task_error:
+            if worktree is not None and created_session_id is None:
+                self.worktrees.finish(worktree, "discard")
             raise HTTPException(status_code=400, detail=str(task_error)) from task_error
 
     def _resolve_origin_session(self, reference: str) -> str | None:
@@ -1140,6 +1386,17 @@ class TermdeckServer:
             raise HTTPException(status_code=409, detail=str(prompt_error)) from prompt_error
         return {"session": self.manager.session_summary_by_id(session_id), "prompt_submitted": True, "queued": queued}
 
+    async def _agent_hook(self, request: AgentHookRequest, state: str = "") -> dict[str, object]:
+        """Receive a Claude Code hook payload and flag the matching terminal as waiting on the user.
+
+        Claude posts its own hook JSON verbatim, so the body carries `session_id` (the agent session,
+        not the TermDeck one). Hooks run for every Claude Code session on the machine; one that does not
+        belong to a terminal here is a normal no-op.
+        """
+        attention = state == TermdeckConfig.AGENT_HOOK_ATTENTION_STATE
+        matched = self.manager.apply_agent_attention_hook(request.session_id, attention)
+        return {"matched_session_id": matched, "attention": attention}
+
     async def _follow_up_task_prompt(self, session_id: str, request: FollowUpTaskPromptRequest) -> dict[str, object]:
         return await self._submit_prompt(session_id, SubmitPromptRequest(
             text=request.prompt, bracketed=request.bracketed), automatically_queue_when_busy=False)
@@ -1154,9 +1411,10 @@ class TermdeckServer:
             raise HTTPException(status_code=400, detail="a shared prompt or per-terminal prompt is required")
 
         results: list[dict[str, object]] = []
-        placement_cursors: dict[tuple[str, str], str] = {}
+        placement_cursors: dict[tuple[str, str, str], str] = {}
         for item in request.terminals:
             result: dict[str, object] = {"name": item.name}
+            worktree: WorktreeMetadata | None = None
             try:
                 name = item.name.strip()
                 if not name:
@@ -1173,23 +1431,42 @@ class TermdeckServer:
                 bracketed = request.bracketed if item.bracketed is None else item.bracketed
                 queue = request.queue if item.queue is None else item.queue
                 placement_after = request.after if item.after is None else item.after
+                worktree_enabled = request.worktree if item.worktree is None else item.worktree
+                worktree_branch = request.worktree_branch if item.worktree_branch is None else item.worktree_branch
+                worktree_base = request.worktree_base if item.worktree_base is None else item.worktree_base
+                requested_worktree_id = request.worktree_id if item.worktree_id is None else item.worktree_id
+                if worktree_enabled and session_ref.strip():
+                    raise ValueError("an existing agent session cannot be resumed in a new worktree")
                 project = self._resolve_project_from_after_anchor(placement_after, project)
                 command = self.manager.command_for_new_session(model, permission, session_ref, model_name or "")
+                worktree_id = requested_worktree_id.strip() or "root"
+                if worktree_enabled:
+                    worktree = self._create_worktree(cwd, project, name, worktree_branch, worktree_base)
+                    project = project or self.manager.registry.ensure_project_for_cwd(Path(worktree.repository))
+                    cwd = worktree.path
+                    worktree_id = worktree.worktree_id
+                else:
+                    project, selected = self._selected_worktree(project, cwd, worktree_id)
+                    cwd = selected.path if selected else cwd or self.manager.registry.root_for(project) or str(TermdeckConfig.DEFAULT_CWD)
+                    worktree = selected.metadata() if selected else None
                 ms = self.manager.create_session(
-                    command, cwd, name, project,
+                    command, worktree.path if worktree else cwd, name, project,
                     agent_rename=name if not session_ref.strip() else None,
+                    worktree=worktree,
+                    worktree_id=worktree_id,
                 )
                 result["session"] = self.manager.session_summary(ms)
 
                 if placement_after and placement_after.strip():
                     actual_project = ms.record.project
-                    placement_key = (actual_project, placement_after.strip().casefold())
+                    placement_key = (actual_project, ms.record.worktree_id, placement_after.strip().casefold())
                     try:
                         placement = self._place_session_after(
                             actual_project,
                             ms.record.session_id,
                             placement_after,
                             placement_cursors.get(placement_key),
+                            worktree_id=ms.record.worktree_id,
                         )
                         placement_cursors[placement_key] = placement["token"]
                         result["placement"] = placement
@@ -1202,6 +1479,8 @@ class TermdeckServer:
                 result["queued"] = queue
                 result["session"] = self.manager.session_summary(ms)
             except (ValueError, OSError) as batch_error:
+                if worktree is not None and "session" not in result:
+                    self.worktrees.finish(worktree, "discard")
                 result["error"] = str(batch_error)
             results.append(result)
         created = sum(1 for result in results if "session" in result)
@@ -1293,14 +1572,61 @@ class TermdeckServer:
             raise HTTPException(status_code=400, detail=str(restart_error)) from restart_error
         return self.manager.session_summary_by_id(session_id)
 
-    async def _fork_session(self, session_id: str, request: RenameSessionRequest) -> dict[str, object]:
+    async def _fork_session(self, session_id: str, request: ForkSessionRequest) -> dict[str, object]:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
-        forked = self.manager.fork_session(session_id, request.title)
+        source = self.manager.session_summary_by_id(session_id)
+        worktree = None
+        try:
+            if request.worktree:
+                worktree = self._create_worktree(str(source.get("cwd", "")), str(source.get("project", "")),
+                                                  request.title, request.worktree_branch, request.worktree_base)
+            elif request.worktree_id.strip() and request.worktree_id.strip() != "root":
+                project = str(source.get("project", ""))
+                root = self.manager.registry.root_for(project)
+                if root is None:
+                    raise ValueError(f"unknown project: {project}")
+                worktree = self.worktree_registry.get(project, root, request.worktree_id).metadata()
+            forked = self.manager.fork_session(session_id, request.title, worktree)
+        except (ValueError, OSError) as fork_error:
+            if worktree is not None:
+                self.worktrees.finish(worktree, "discard")
+            raise HTTPException(status_code=400, detail=str(fork_error)) from fork_error
         result = self.manager.session_summary(forked)
         result["placement"] = self._place_session_after(
-            forked.record.project, forked.record.session_id, f"session:{session_id}")
+            forked.record.project, forked.record.session_id, f"session:{session_id}",
+            worktree_id=forked.record.worktree_id)
         return result
+
+    async def _review_worktree(self, session_id: str) -> dict[str, object]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        try:
+            metadata = self._worktree_metadata_from_summary(self.manager.session_summary_by_id(session_id))
+            return self.worktrees.review(metadata)
+        except (ValueError, OSError) as review_error:
+            raise HTTPException(status_code=409, detail=str(review_error)) from review_error
+
+    async def _finish_worktree(self, session_id: str, request: WorktreeFinishRequest) -> dict[str, object]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        try:
+            metadata = self._worktree_metadata_from_summary(self.manager.session_summary_by_id(session_id))
+            action = request.action.strip().lower()
+            if action == "keep":
+                result = self.worktrees.finish(metadata, action, request.target_branch)
+                self.manager.mark_worktree_unmanaged(session_id)
+                result["session"] = self.manager.session_summary_by_id(session_id)
+                return result
+            if not await self.manager.stop_session_process_for_worktree(session_id):
+                raise ValueError("could not stop the terminal before changing its worktree")
+            result = self.worktrees.finish(metadata, action, request.target_branch)
+            if not await self.manager.remove_session_after_worktree_finish(session_id):
+                raise ValueError("worktree finished but the terminal record could not be removed")
+            result["session_id"] = session_id
+            return result
+        except (ValueError, OSError) as finish_error:
+            raise HTTPException(status_code=409, detail=str(finish_error)) from finish_error
 
     async def _rename_session(self, session_id: str, request: RenameSessionRequest) -> dict[str, object]:
         if not self.manager.has_session(session_id):
