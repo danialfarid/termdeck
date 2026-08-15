@@ -57,8 +57,7 @@ class HomebrewFormulaGenerator:
   sha256 "{tarball_sha256}"
   license "Apache-2.0"
 
-  depends_on "{python_formula}"
-{system_dependency_lines}
+{dependency_lines}
   on_macos do
     on_arm do
 {arm_blocks}    end
@@ -69,7 +68,7 @@ class HomebrewFormulaGenerator:
 
 {universal_blocks}  def install
     venv_root = libexec
-    system Formula["{python_formula}"].opt_bin/"python{python_tag}", "-m", "venv", venv_root
+    system formula_opt_bin("{python_formula}")/"python{python_tag}", "-m", "venv", venv_root
     pip = venv_root/"bin/pip"
     system pip, "install", "--no-deps", "--no-index", *resources.map(&:cached_download)
     system pip, "install", "--no-deps", "--no-build-isolation", buildpath
@@ -181,12 +180,14 @@ end
             for wheel in sorted(intel_dir.glob("*.whl")):
                 name = HomebrewFormulaGenerator.package_from_wheel(wheel.name)
                 intel_blocks += HomebrewFormulaGenerator.resource_block(name, wheel.name, "      ")
-        system_dependency_lines = "".join(f'  depends_on "{name}"\n'
-                                          for name in HomebrewFormulaGenerator.SYSTEM_DEPENDENCIES)
+        dependency_lines = "".join(f'  depends_on "{name}"\n'
+                                   for name in sorted((*HomebrewFormulaGenerator.SYSTEM_DEPENDENCIES,
+                                                       HomebrewFormulaGenerator.PYTHON_FORMULA)))
         return HomebrewFormulaGenerator.FORMULA_TEMPLATE.format(
             tarball_url=tarball_url, tarball_sha256=tarball_sha256,
             python_formula=HomebrewFormulaGenerator.PYTHON_FORMULA, python_tag=HomebrewFormulaGenerator.PYTHON_TAG,
-            system_dependency_lines=system_dependency_lines, arm_blocks=arm_blocks, intel_blocks=intel_blocks,
+            dependency_lines=dependency_lines, arm_blocks=arm_blocks.rstrip() + "\n",
+            intel_blocks=intel_blocks.rstrip() + "\n",
             universal_blocks=universal_blocks)
 
     @staticmethod
