@@ -8,6 +8,42 @@ These endpoints start real persistent TermDeck terminals. A successful prompt re
 written to the terminal and submitted; it does not mean the agent has finished processing it. Use
 `GET /api/sessions/{session_id}/last_turn` for the minimal status/result poll.
 
+## Projects and worktrees
+
+The project header can switch between the repository root and every Git worktree discovered for that repository.
+Sessions, closed sessions, terminal layout, files, search, and Git views are scoped to the selected worktree. The
+root worktree always has the stable ID `root`; child IDs are stable across server restarts.
+
+List the worktrees for a registered project:
+
+```sh
+curl -sS 'http://127.0.0.1:8530/api/worktrees?project=stock'
+```
+
+Create a worktree from the current branch, or provide `base_ref` and an explicit `branch`:
+
+```sh
+curl -sS -X POST http://127.0.0.1:8530/api/worktrees \
+  -H 'Content-Type: application/json' \
+  -d '{"project":"stock","name":"review","base_ref":"main"}'
+```
+
+TermDeck creates the branch and a free folder below `.termdeck-worktrees/<repository>/`. Select the returned `id` when
+creating a terminal:
+
+```json
+{"project":"stock","worktree_id":"wt-abc123","model":"codex","title":"reviewer"}
+```
+
+Delete a worktree only after its terminals are closed and purged. Set `move_to_trash` to move its folder to the
+configured trash directory; `false` leaves the files in place and detaches the Git worktree:
+
+```sh
+curl -sS -X DELETE http://127.0.0.1:8530/api/worktrees/wt-abc123 \
+  -H 'Content-Type: application/json' \
+  -d '{"project":"stock","move_to_trash":true}'
+```
+
 ## Start one terminal task (create + run in one call)
 
 `POST /api/terminals/task` creates one terminal, starts it immediately, submits a single prompt, and returns
@@ -59,10 +95,20 @@ process that needs deterministic logs.
 `model_name` is passed as an explicit `--model` argument to Codex, Claude, or AGY.
 The request is not blocking; it returns after prompt submission. Poll `last_turn` for status and the latest turn.
 
+Session IDs are globally unique, so agent callers address a terminal only by `/api/sessions/{session_id}`. A
+`worktree_id` is session metadata supplied in the create/task request or used as a list/layout filter; it is not
+part of the agent session URL.
+
+Set `worktree_id` to run the child in an existing project worktree. The older `worktree: true` option remains available
+for automation callers that want TermDeck to create a worktree for that individual terminal. The optional
+`worktree_branch` and `worktree_base` fields select the branch name and base ref; otherwise TermDeck generates a branch
+under `termdeck/` from the terminal title. The response includes `worktree_path`, `worktree_branch`, and the base
+commit. This does not make the request blocking and it does not commit changes for the agent.
+
 ## Launch several named terminals
 
 `POST /api/terminals/batch` creates up to 32 terminals and submits their prompts. The top-level `prompt`,
-`cwd`, `project`, `model`, `permission`, `bracketed`, `queue`, and `after` values are defaults for every item.
+`cwd`, `project`, `model`, `permission`, `bracketed`, `queue`, `after`, and `worktree` values are defaults for every item.
 An item can override any of them. `after` accepts an existing session name or group name (case-insensitive),
 or the stable `session:<id>` / `group:<id>` layout token. It inserts each new terminal immediately after that
 anchor. If the anchor is a member of a group, the new terminal inherits that group and is inserted immediately
@@ -156,6 +202,28 @@ curl -sS -X POST "http://127.0.0.1:8530/api/sessions/$session_id/prompt" \
 `queue: true` for Codex to place the prompt in its queue with Tab instead of submitting it for immediate
 processing. If a requested placement target is missing or ambiguous, that terminal is still created and its
 prompt is still submitted; the item reports `placement_error` and the response increments `placement_failed`.
+
+## Review an isolated worktree
+
+Every session created with `worktree: true` exposes its branch and worktree folder in the terminal list. Review the
+parent-relative commits, changed files, and diff with:
+
+```sh
+curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/worktree/review"
+```
+
+Finish it with one of these actions:
+
+```sh
+curl -sS -X POST "http://127.0.0.1:8530/api/sessions/$session_id/worktree/finish" \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"keep"}'
+```
+
+`keep` leaves the folder and branch in place and detaches them from TermDeck cleanup. `merge` requires the worktree
+to be clean and merges its branch into the recorded base branch, then removes the worktree and session. `discard`
+force-removes the worktree and branch and removes the session. The finish calls are separate from prompt execution;
+an agent must commit its changes before `merge` can proceed.
 
 ## Other useful calls
 

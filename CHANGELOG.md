@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-15
+
+### Added
+
+- First-class project worktree discovery, creation, selection, review, merge, keep, discard, and cleanup workflows.
+- Managed isolated worktrees for delegated terminal tasks, with branch identity and parent-relative review diffs.
+- AGY/Antigravity terminal, transcript, activity, model, permission, and dependency-install support.
+- Expanded automation APIs for model selection, prompt submission and polling, placement, batching, worktrees, and output paths.
+- Group-scoped terminal search, global open/closed terminal search, matching-line hover previews, and richer recently closed metadata.
+
+### Changed
+
+- Terminal groups, ordering, unread state, open files, and active selection are persisted independently per worktree.
+- Settings and layout writes use scoped patches so concurrent browser tabs do not overwrite unrelated state.
+- Terminal lifecycle, status restoration, prompt history, Claude snapshots, orphan cleanup, and restart behavior are more robust.
+- Sidebar, notes, copied-text history, themes, file search, Git tools, keyboard shortcuts, and terminal maintenance controls were refined.
+
 ## [0.3.0] — 2026-08-14
 
 ### Added
@@ -67,7 +84,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/danialfarid/termdeck/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/danialfarid/termdeck/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/danialfarid/termdeck/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/danialfarid/termdeck/releases/tag/v0.1.0

@@ -224,6 +224,16 @@ class AgentSessionTracker:
             return None
         return self._claude_explicit_session_title(self.claude_project_dir(cwd) / f"{session_id}.jsonl")
 
+    def claude_ai_title(self, cwd: Path, session_id: str | None) -> str | None:
+        if not session_id:
+            return None
+        return self._claude_attention_state_from_path(self.claude_project_dir(cwd) / f"{session_id}.jsonl")[0]
+
+    def claude_attention_state(self, cwd: Path, session_id: str | None) -> tuple[str | None, bool]:
+        if not session_id:
+            return None, False
+        return self._claude_attention_state_from_path(self.claude_project_dir(cwd) / f"{session_id}.jsonl")
+
     def codex_session_id_for_reference(self, reference: str) -> str | None:
         """Resolve a Codex UUID or saved thread name to the UUID accepted by resume."""
         reference = reference.strip()
@@ -522,6 +532,48 @@ class AgentSessionTracker:
             if isinstance(title, str) and title.strip():
                 return title.strip()
         return None
+
+    @staticmethod
+    def _claude_attention_state_from_path(path: Path) -> tuple[str | None, bool]:
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                handle.seek(max(0, handle.tell() - AgentSessionTracker._SUBAGENT_TAIL_BYTES))
+                lines = handle.read().decode(errors="replace").splitlines()
+        except OSError:
+            return None, False
+        ai_title = None
+        ai_title_sequence = -1
+        latest_tool_result_sequence = -1
+        pending_tool_sequences: dict[str, int] = {}
+        for sequence, line in enumerate(lines):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            event_type = event.get("type")
+            if event_type == "ai-title":
+                title = event.get("aiTitle")
+                if isinstance(title, str) and title.strip():
+                    ai_title = title.strip()
+                    ai_title_sequence = sequence
+                continue
+            message = event.get("message") or {}
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                continue
+            if event_type == "assistant":
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use" and isinstance(block.get("id"), str):
+                        pending_tool_sequences[block["id"]] = sequence
+            elif event_type == "user":
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result" and isinstance(block.get("tool_use_id"), str):
+                        pending_tool_sequences.pop(block["tool_use_id"], None)
+                        latest_tool_result_sequence = sequence
+        has_current_pending_tool = ai_title_sequence > latest_tool_result_sequence and any(
+            sequence > ai_title_sequence for sequence in pending_tool_sequences.values())
+        return ai_title, has_current_pending_tool
 
     def snapshot_session_files(self, kind: AgentKind, cwd: Path) -> set[Path]:
         return {path for path, _ in self._candidate_session_files(kind, cwd)}

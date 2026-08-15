@@ -15,7 +15,7 @@ from termdeck.models import AgentKind, SessionRecord
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeUtil
 from termdeck.pty_process import PtyProcess
-from termdeck.server import FollowUpTaskPromptRequest, NotebookNote, ProjectUiState, RenameSessionRequest, RunTerminalTaskRequest, TermdeckServer, UiSettings
+from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, ProjectUiState, RunTerminalTaskRequest, TermdeckServer, UiSettings
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
 from termdeck.transcript_service import TranscriptService
 
@@ -72,7 +72,7 @@ class PlacementNameTest(unittest.TestCase):
 
         class Manager:
             @staticmethod
-            def list_sessions(project: str | None = None) -> list[dict[str, object]]:
+            def list_sessions(project: str | None = None, worktree_id: str | None = None) -> list[dict[str, object]]:
                 return [
                     {"session_id": "termde-id", "title": "codex · stock", "cli_title": "⠦ termde"},
                     {"session_id": "other-id", "title": "other", "cli_title": "other"},
@@ -94,11 +94,14 @@ class PlacementNameTest(unittest.TestCase):
         forked = MagicMock()
         forked.record.project = "stock"
         forked.record.session_id = "fork-id"
+        forked.record.worktree_id = "root"
         server.manager.fork_session.return_value = forked
+        server.manager.session_summary_by_id.return_value = {"session_id": "termde-id", "project": "stock"}
         server.manager.session_summary.return_value = {"session_id": "fork-id"}
         with patch.object(server, "_place_session_after", return_value={"position": "after"}) as place:
-            result = asyncio.run(server._fork_session("termde-id", RenameSessionRequest(title="termde fork")))
-        place.assert_called_once_with("stock", "fork-id", "session:termde-id")
+            result = asyncio.run(server._fork_session("termde-id", ForkSessionRequest(title="termde fork")))
+        server.manager.fork_session.assert_called_once_with("termde-id", "termde fork", None)
+        place.assert_called_once_with("stock", "fork-id", "session:termde-id", worktree_id="root")
         self.assertEqual(result["placement"], {"position": "after"})
 
     def test_settings_put_preserves_new_server_session_missing_from_stale_client_layout(self) -> None:
@@ -143,29 +146,34 @@ class PlacementNameTest(unittest.TestCase):
 
 
 class FileTreeEventTest(unittest.TestCase):
-    def test_file_modification_refreshes_only_its_containing_directory(self) -> None:
+    def test_file_modification_reports_the_changed_file(self) -> None:
         service = ProjectFileService()
         root = Path("/Users/dan/workspace/stock")
         event = FileModifiedEvent(str(root / "trainer" / "model.py"))
-        self.assertEqual(service._file_tree_event_directories(root, event), {"trainer"})
+        self.assertEqual(service._file_tree_event_changes(root, event), [{
+            "path": "trainer/model.py", "parent": "trainer", "operation": "modified", "is_directory": False,
+        }])
 
-    def test_directory_modification_refreshes_that_directory(self) -> None:
+    def test_directory_modification_is_not_forwarded(self) -> None:
         service = ProjectFileService()
         root = Path("/Users/dan/workspace/stock")
         event = DirModifiedEvent(str(root / "trainer"))
-        self.assertEqual(service._file_tree_event_directories(root, event), {"trainer"})
+        self.assertEqual(service._file_tree_event_changes(root, event), [])
 
-    def test_move_refreshes_both_containing_directories(self) -> None:
+    def test_move_reports_the_source_and_destination(self) -> None:
         service = ProjectFileService()
         root = Path("/Users/dan/workspace/stock")
         event = FileMovedEvent(str(root / "trainer" / "old.py"), str(root / "models" / "new.py"))
-        self.assertEqual(service._file_tree_event_directories(root, event), {"trainer", "models"})
+        self.assertEqual(service._file_tree_event_changes(root, event), [
+            {"path": "trainer/old.py", "parent": "trainer", "operation": "deleted", "is_directory": False},
+            {"path": "models/new.py", "parent": "models", "operation": "created", "is_directory": False},
+        ])
 
     def test_ignored_virtual_environment_change_is_not_forwarded(self) -> None:
         service = ProjectFileService()
         root = Path("/Users/dan/workspace/stock")
         event = FileModifiedEvent(str(root / ".venv" / "lib" / "package.py"))
-        self.assertEqual(service._file_tree_event_directories(root, event), set())
+        self.assertEqual(service._file_tree_event_changes(root, event), [])
 
 
 class UiSettingsTest(unittest.TestCase):
@@ -556,7 +564,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(proc.resizes, [(119, 32), (120, 32)])
 
-    async def test_attaching_client_skips_nudge_when_the_screen_already_repainted(self) -> None:
+    async def test_attaching_client_keeps_nudge_when_output_arrives_during_the_delay(self) -> None:
         manager, session, proc = self._session_whose_screen_was_stripped()
 
         with patch.object(TermdeckConfig, "SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS", 0), \
@@ -565,7 +573,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
             session.last_activity_at += 1
             await session.screen_repaint_task
 
-        self.assertEqual(proc.resizes, [])
+        self.assertEqual(proc.resizes, [(119, 32), (120, 32)])
 
     async def test_attaching_client_does_not_nudge_a_shell_whose_scrollback_replays_the_screen(self) -> None:
         manager, session, proc = self._session_whose_screen_was_stripped()
@@ -731,10 +739,10 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
                 prompt="inspect this", title="reviewer", origin_session="origin-01", fork=True,
                 model="claude", model_name="opus", permission="full-access"))
 
-        server.manager.fork_session.assert_called_once_with("origin-01", "reviewer")
+        server.manager.fork_session.assert_called_once_with("origin-01", "reviewer", None)
         server.manager.command_for_new_session.assert_not_called()
         server.manager.create_session.assert_not_called()
-        place.assert_called_once_with("stock", "fork-01", "session:origin-01")
+        place.assert_called_once_with("stock", "fork-01", "session:origin-01", worktree_id=child.record.worktree_id)
         server.manager.submit_prompt.assert_awaited_once_with("fork-01", "inspect this", True, False)
         server._schedule_task_result_delivery.assert_not_called()
         self.assertEqual(response["placement"], {"position": "after"})
@@ -746,7 +754,9 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         ms = MagicMock()
         ms.record.session_id = "task-01"
         ms.record.project = "stock"
+        ms.record.worktree_id = "root"
         server.manager.create_session.return_value = ms
+        server.manager.registry.root_for.return_value = "/tmp"
         server.manager.session_summary.side_effect = [
             {"session_id": "task-01", "project": "stock"},
             {"session_id": "task-01", "project": "stock", "running": True},
@@ -754,17 +764,19 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.ensure_session_running.return_value = None
         server.manager.submit_prompt = AsyncMock()
 
-        request = RunTerminalTaskRequest(command="run checks", output_path="/tmp/task-out.txt")
+        request = RunTerminalTaskRequest(command="run checks", cwd="/tmp", project="stock", output_path="/tmp/task-out.txt")
         response = await server._run_terminal_task(request)
 
         server.manager.command_for_new_session.assert_called_once_with("codex", "default", "", "")
         server.manager.create_session.assert_called_once_with(
             "codex",
+            "/tmp",
             "",
-            "",
-            "",
+            "stock",
             output_path="/tmp/task-out.txt",
             agent_rename=None,
+            worktree=None,
+            worktree_id="root",
         )
         server.manager.ensure_session_running.assert_called_once_with("task-01")
         server.manager.submit_prompt.assert_awaited_once_with("task-01", "run checks", True, False)
@@ -779,8 +791,10 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.list_sessions.return_value = [{"session_id": "ref-01", "title": "termde fork", "project": "stock", "cli_title": "termde fork"}]
         ms = MagicMock()
         ms.record.session_id = "task-02"
-        ms.record.project = ""
+        ms.record.project = "stock"
+        ms.record.worktree_id = "root"
         server.manager.create_session.return_value = ms
+        server.manager.registry.root_for.return_value = "/stock"
         server.manager.session_summary.side_effect = [
             {"session_id": "task-02", "project": ""},
             {"session_id": "task-02", "project": "stock", "running": True},
@@ -789,8 +803,14 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.submit_prompt = AsyncMock()
 
         class Store:
+            def __init__(self) -> None:
+                self.payload = {"project_state": {}}
+
             def load(self) -> dict[str, object]:
-                return {"project_state": {}}
+                return self.payload
+
+            def save(self, payload: dict[str, object]) -> None:
+                self.payload = payload
 
         server.settings_store = Store()
 
@@ -799,11 +819,13 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
 
         server.manager.create_session.assert_called_once_with(
             "codex",
-            "",
+            "/stock",
             "",
             "stock",
             output_path="",
             agent_rename=None,
+            worktree=None,
+            worktree_id="root",
         )
 
     async def test_task_status_marks_done_only_when_terminal_has_exited(self) -> None:
@@ -813,6 +835,9 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.session_summary_by_id.return_value = {
             "running": False, "exit_code": 0, "output_path": "/tmp/task-out.txt"
         }
+        server.manager.session_history_source.return_value = ("codex", "/tmp", "session-xyz")
+        server.transcripts = MagicMock()
+        server.transcripts.history_page.return_value = {"turns": [], "before": None, "has_more": False}
 
         response = await server._task_status("task-02")
 
@@ -961,6 +986,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         child = MagicMock()
         child.record.session_id = "child-01"
         child.record.project = "stock"
+        child.record.worktree_id = "root"
         server.manager.create_session.return_value = child
         server.manager.session_summary.side_effect = [{"session_id": "child-01"}, {"session_id": "child-01"}]
         server.manager.ensure_session_running.return_value = None
@@ -972,7 +998,8 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
                 prompt="hi", title="child", origin_session="termde", write_back=True))
 
         server.manager.create_session.assert_called_once_with(
-            "codex", "/origin", "child", "stock", output_path="", agent_rename="child")
+            "codex", "/origin", "child", "stock", output_path="", agent_rename="child",
+            worktree=None, worktree_id="root")
         server._schedule_task_result_delivery.assert_called_once_with("child-01", "origin-01")
 
     async def test_output_path_defaults_to_absolute_for_session_records(self) -> None:

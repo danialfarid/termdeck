@@ -42,6 +42,14 @@ class SessionRecord:
     cols: int = TermdeckConfig.INITIAL_COLS
     rows: int = TermdeckConfig.INITIAL_ROWS
     cli_title: str | None = None
+    worktree_path: str | None = None
+    worktree_repository: str | None = None
+    worktree_branch: str | None = None
+    worktree_base_ref: str | None = None
+    worktree_base_commit: str | None = None
+    worktree_managed: bool = False
+    worktree_id: str = "root"
+    claude_interrupted: bool = False
 
     def to_dict(self) -> dict[str, str | bool | int | float | None]:
         return asdict(self)
@@ -59,7 +67,15 @@ class SessionRecord:
                              last_activity_at=float(payload.get("last_activity_at") or 0.0),
                              cols=int(payload.get("cols") or TermdeckConfig.INITIAL_COLS),
                              rows=int(payload.get("rows") or TermdeckConfig.INITIAL_ROWS),
-                             cli_title=str(payload["cli_title"]) if payload.get("cli_title") else None)
+                             cli_title=str(payload["cli_title"]) if payload.get("cli_title") else None,
+                             worktree_path=str(payload["worktree_path"]) if payload.get("worktree_path") else None,
+                             worktree_repository=str(payload["worktree_repository"]) if payload.get("worktree_repository") else None,
+                             worktree_branch=str(payload["worktree_branch"]) if payload.get("worktree_branch") else None,
+                             worktree_base_ref=str(payload["worktree_base_ref"]) if payload.get("worktree_base_ref") else None,
+                             worktree_base_commit=str(payload["worktree_base_commit"]) if payload.get("worktree_base_commit") else None,
+                             worktree_managed=bool(payload.get("worktree_managed", False)),
+                             worktree_id=str(payload.get("worktree_id") or "root"),
+                             claude_interrupted=bool(payload.get("claude_interrupted", False)))
 
 
 class WsMessageFields:
@@ -125,4 +141,5 @@ class ApiFields:
     DORMANT = "dormant"
     DETACHED = "detached"
     CLI_TITLE = "cli_title"
+    NEEDS_ATTENTION = "needs_attention"
     DELETED = "deleted"

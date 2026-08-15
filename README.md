@@ -25,13 +25,13 @@ restart, saved Codex and Claude terminals reopen **resumed into the exact agent 
 fresh one.
 
 The terminal deck stays at the center. Around it are tools that shorten the loop around agent work: grouped
-and searchable sessions, activity and unread state, a rendered conversation view, prompt and clipboard
+and searchable sessions, activity and unread state, an MD conversation mode, prompt and clipboard
 history, quick notes, a Monaco file editor, project search, Git history, and an automation API for spawning
 parallel agents.
 
 ```
 ┌──────────────────────────┬────────────────────────────────────────────────────┐
-│ stock ▾                  │ terminal / conversation / file editor              │
+│ stock ▾                  │ terminal / MD conversation / file editor           │
 ├──────────────────────────┤                                                    │
 │ TERMINALS          +  ⋯  │ $ codex resume 4f2a…                              │
 │ ▾ ingestion         2 ●  │                                                    │
@@ -58,8 +58,14 @@ parallel agents.
 - **Agents can delegate through the same UI.** Fork one session or up to 25 copies, or use the local API to
   start named tasks with a model, permission, prompt, placement, and result path. Every child remains a normal,
   inspectable TermDeck terminal.
-- **Read your agent, don't squint at it.** Switch an agent terminal to a rendered conversation with model and
-  status information, collapsible thinking and diffs, prompt history, a composer, and a queue.
+- **Projects have first-class worktrees.** The project header shows the current branch, discovers existing Git
+  worktrees, and creates new branches in free folders. Each worktree has its own terminals, closed-session history,
+  layout, file/search view, and Git context; worktrees can be opened in a separate browser tab or moved to trash.
+- **Agent work can stay isolated.** New sessions and forks can run in managed Git worktrees with a visible branch
+  identity, parent-relative review diff, and explicit keep, merge, or discard actions.
+- **Use the live terminal and MD mode side by side.** Switch any agent session between its interactive terminal
+  and a rendered MD conversation with model and status information, collapsible thinking and diffs, prompt
+  history, a composer, and a queue.
 - **Your input is recoverable.** Unsent drafts are persisted, terminal and Markdown prompts stay in history,
   and clipboard history and quick notes keep useful snippets nearby.
 - **One browser tab per project — or per task.** Projects are URL-addressable at `/p/<name>`, while a terminal,
@@ -69,7 +75,7 @@ parallel agents.
   without turning TermDeck into a full IDE replacement.
 - **Long-running decks are maintainable.** Process inventory, orphan cleanup, recently closed sessions, and an
   explicit kill-all action help reclaim resources without erasing saved history.
-- **It's local.** Binds `127.0.0.1` by default, stores everything in `~/.termdeck`, talks to no network service.
+- **It's local.** Binds `127.0.0.1` by default, keeps server state in `~/.termdeck`, and adds no cloud service.
 
 ---
 
@@ -220,8 +226,7 @@ An empty command gives you an interactive login shell. Any other command runs th
 This is the core feature, so it's worth knowing the mechanics.
 
 For any terminal whose command contains `claude` or `codex`, TermDeck continuously tracks **which CLI session
-that terminal is on right now**. AGY terminals have transcript and activity support, but currently open new
-AGY sessions rather than resuming a saved one.
+that terminal is on right now**.
 
 - **Primarily via open file handles.** It uses `lsof` to see which session file the process group holds open.
   This is exact, and it catches picker-resumes and in-TUI session switches.
@@ -240,8 +245,8 @@ Using `/clear` or switching sessions inside the TUI updates the recorded ID, so 
 on the session you were actually on — not the one you started with.
 
 **Fork** branches the current Codex or Claude session into a new terminal, leaving the original untouched.
-Enter a name for one fork or a number to create up to 25 numbered forks; the copies are inserted beside the
-source terminal rather than disappearing at the end of the deck.
+Enter a name for one fork or a number to create up to 25 numbered forks. New forks are placed beside the
+source terminal.
 
 ### Managing a large terminal deck
 
@@ -279,8 +284,11 @@ is registered as a project (stored in `~/.termdeck/projects.json`).
 Each project is URL-addressable at `/p/<name>` — for example `/p/termdeck`. The intended workflow is **one
 browser tab per project**. `/` shows everything at once. Switching projects from the sidebar dropdown swaps
 terminals, open files, closed history, remembered selection, and the default directory for new terminals.
+The worktree selector can show one worktree or **All worktrees**; the latter keeps each worktree's terminals,
+groups, and closed-session history in its own collapsible section. Selecting a specific worktree filters the panel
+to that worktree and preserves the selection across reloads.
 
-### The conversation view
+### MD conversation mode
 
 Click the **MD** icon in the bottom toolbar (or press **⌥G**) to swap an agent terminal for a rendered
 transcript read directly from the CLI's own session file:
@@ -304,7 +312,7 @@ actual VS Code editor component, vendored locally — with syntax highlighting, 
 navigation, definitions, usages, and a Problems panel.
 
 - **File paths printed in any terminal are clickable.** They resolve against that terminal's directory, and
-  wrapped `path:line` references are reconstructed before jumping to the line.
+  `path:line` references jump straight to the requested line.
 - Open files and navigation history persist across reloads; externally changed content is re-fetched.
 - **⌘S** saves. **⌃R** renames, **⌃M** moves, **⌘⌫** trashes the selected tree file.
 - The file-tree context menu creates, renames, duplicates, moves, refreshes, or trashes files and folders.
@@ -321,7 +329,7 @@ time and click through to the exact line. File-name search ranks exact matches b
 its own search history and filters.
 
 Toggle the replace bar to run a project-wide replace across every matching file (capped at 200 files per
-run). Files, Search, and Git share one panel; **⌘⇧S** cycles through them and closes the panel on the fourth
+run). Files, Search, and Git share one panel; **⌘⇧E** cycles through them and closes the panel on the fourth
 press.
 
 ### Quick notes and copied text
@@ -360,17 +368,28 @@ you want. **Reset to defaults** undoes everything.
 | Action | Default |
 |---|---|
 | New terminal | **⌘B** |
+| Fork active terminal | **⌘⇧B** |
+| Restart active terminal | **⌘⌥R** |
 | Close active terminal / file | **⌘⇧⌫** |
-| Save open file | **⌘S** |
 | Previous / next terminal | **⌘⌥↑** / **⌘⌥↓** |
-| Toggle Files view | **⌘⇧D** |
-| Toggle Search view | **⌘⇧F** |
-| Search terminal output | **⌘⇧S** |
+| Search terminal names and output | **⌘⇧S** |
+| Cycle Files / Search / Git | **⌘⇧E** |
+| Recently opened terminals | **⌘E** |
+| Conversation outline | **⌥O** |
+| Open active terminal in a new tab | **⌘⌥O** |
 | Terminals view | **⌘⇧T** |
+| Switch terminal ⇄ conversation | **⌥G** |
+| Scroll terminal / conversation to bottom | **⌘⇧↓** |
+| Undo terminal composer edit | **⌘Z** |
+| Toggle Files view | **⌘⇧D** |
+| Toggle file-content Search | **⌘⇧F** |
+| Quick Open | **⌥P** |
+| Save open file | **⌘S** |
+| Problems panel | **⌥⇧P** |
 | Switch project | **⌥S** |
-| Switch terminal ⇄ Markdown transcript | **⌥G** |
-| Scroll terminal / transcript to bottom | **⌘⇧↓** |
-| Focus active terminal / editor / Markdown prompt | **⌥F** |
+| Quick notes | **⌥N** |
+| Copied-text history | **⌘⇧V** |
+| Focus active terminal / editor / conversation prompt | **⌥F** |
 | Select active terminal / editor / prompt text | **⌥A** |
 | Select all terminal text | **⌘⇧A** |
 
@@ -379,7 +398,6 @@ Fixed bindings:
 | Action | Keys |
 |---|---|
 | Browser back / forward | **⌘[** / **⌘]** |
-| Focus file-name search | **⌃⇧E** |
 | Focus file-content search | **⌃⇧F** |
 | Open file browser/search modal | **⌃⇧Space** |
 | Delete to line start / delete word *(in terminal)* | **⌘⌫** / **⌥⌫** |
@@ -387,6 +405,9 @@ Fixed bindings:
 | Select active terminal input line | **⌘A** |
 | Rename / move / delete selected tree file | **⌃R** / **⌃M** / **⌘⌫** |
 | Navigate the file tree | **↑ ↓ ← → Enter** |
+
+On macOS the primary modifier is shown as ⌘. On Windows and Linux the same desktop shortcuts use Ctrl and
+are displayed as `Ctrl+Shift+S` and `Ctrl+Shift+E`.
 
 Inside a terminal, the macOS editing keys behave like iTerm — and the draft tracker understands the deletion
 keys, so saved drafts stay accurate.
@@ -399,15 +420,21 @@ Code and Codex want in order to read it.
 
 ### Closed terminals
 
-Closing a terminal doesn't destroy it — it moves to **CLOSED** at the bottom of the sidebar (last 20). Click
-one to reopen it with its agent session resumed.
+Closing a terminal moves it to **RECENTLY CLOSED** instead of deleting its saved history. The first 50 are
+shown, **load more** expands the list up to 100, and name search, group labels, and session-ID tooltips help
+find the right one before reopening it.
 
 ### Settings
 
-Per-panel gear popovers set font sizes independently for the sidebar, terminal, viewer, tree, and diffs;
-panels are drag-resizable; there's a light and a dark theme. Everything persists **server-side** in
-`~/.termdeck/settings.json`, so it follows you across browsers and machines rather than living in one
-browser's local storage.
+Choose from Nord, macOS Terminal, GitHub, One Dark, Monokai, Dracula, Solarized, Gruvbox, Tokyo Night,
+Catppuccin, Rosé Pine, Ayu, and high-contrast themes. Font sizes are independently adjustable for the project
+title, terminal list, terminal, editor, file tree, tabs, diffs, icons, and bottom controls; an in-place editor
+puts the relevant slider over each visible UI region. Panel widths are drag-resizable and remembered.
+
+Interface settings, keybindings, notes, copied-text history, open files, and layout are stored server-side in
+`~/.termdeck/settings.json`. The Maintenance submenu can export settings, show a terminal process report,
+reclaim orphaned `dtach` process trees, or explicitly kill all running terminals without erasing their saved
+session history.
 
 ---
 
@@ -437,21 +464,23 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ### What it writes to disk
 
-Everything lives under `~/.termdeck` (or `$TERMDECK_DATA_DIR`):
+TermDeck's server-managed state lives under `~/.termdeck` (or `$TERMDECK_DATA_DIR`):
 
 ```
 ~/.termdeck/
 ├── sessions.json          terminals: command, cwd, title, agent session id, draft
 ├── closed_sessions.json   the last 100 closed terminals
 ├── projects.json          registered project directories
-├── settings.json          fonts, panel widths, theme, keybindings, open files
+├── settings.json          UI, layout, keybindings, open files, notes, copied text
+├── file-history.sqlite3   bounded local snapshots of files viewed or edited
+├── backups/               rotating backups of TermDeck's state files
 ├── scrollback/            per-terminal ring buffer
 ├── dtach/                 dtach sockets for live terminals
 ├── uploads/               pasted and dropped attachments
 └── termdeck.log           service log (macOS)
 ```
 
-Nothing is written outside this directory and the files you explicitly edit.
+Files you edit and items you move to the system trash naturally live outside the TermDeck data directory.
 
 ---
 
@@ -486,7 +515,8 @@ first message — the CLI creates the session file lazily. Restarting before tha
 and `/clear` are attributed via directory watching. Two Claude terminals in the same directory can, rarely,
 be mis-attributed. Codex attribution is open-file based and exact.
 
-**Search doesn't work.** ripgrep isn't installed or isn't found — `termdeck doctor` will say so.
+**Search is slower than expected.** Run `termdeck doctor` and install ripgrep if it is missing. TermDeck has a
+Python fallback, but ripgrep is substantially faster on large projects.
 
 **The service isn't starting.** `termdeck service status`, then `termdeck service logs`.
 

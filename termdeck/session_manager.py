@@ -21,6 +21,7 @@ from termdeck.pty_process import PtyProcess
 from termdeck.session_store import ClosedSessionStore, SessionStore
 from termdeck.state_backup import StateBackupManager
 from termdeck.util import OscTitleParser, TimeUtil
+from termdeck.worktree_service import WorktreeMetadata
 
 
 class ManagedSession:
@@ -70,6 +71,7 @@ class ManagedSession:
         self.last_activity_at = record.last_activity_at
         self.last_activity_broadcast_monotonic = 0.0
         self.claude_subagent_states: dict[Path, bool] = {}
+        self.claude_activity_signatures: dict[Path, tuple[int, int, int]] = {}
         self.claude_subagents_active = False
         self.claude_main_active = False
         self.codex_transcript_active = False
@@ -78,6 +80,12 @@ class ManagedSession:
         self.agy_transcript_active = False
         self.agy_transcript_active_until = 0.0
         self.processing_started_at: float | None = None
+        self.attention_required = False
+        self.attention_text_carry = ""
+        # Set once a Claude Code hook reports for this session. Hooks are an explicit signal from the
+        # agent itself, so they supersede the terminal-text/title heuristics below, which only guess at
+        # a permission prompt from rendered output and misfire on wrapped or partially repainted screens.
+        self.attention_hook_driven = False
         self.output_path: Path | None = Path(record.output_path).expanduser() if record.output_path else None
         self.output_path_locked = False
 
@@ -105,6 +113,9 @@ class ManagedSession:
 class TerminalSessionManager:
     CODEX_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
     CODEX_ACTIVITY_FALLBACK_CHECK_SECONDS = 1.0
+    ATTENTION_TEXT_CARRY_CHARS = 4096
+    ATTENTION_MARKERS = ("esc to cancel", "tab to amend")
+    ATTENTION_TITLE_MARKERS = ("request permission", "waiting for permission", "permission required", "needs input")
 
     """Creates, respawns, and tears down terminal sessions; broadcasts pty output to attached websocket queues;
     persists session records and resolves claude/codex agent session ids so a server restart can resume them."""
@@ -152,6 +163,7 @@ class TerminalSessionManager:
     async def startup_respawn_saved_sessions(self) -> None:
         for record in self._store.load_all():
             ms = ManagedSession(record)
+            ms.attention_required = self._claude_transcript_requires_attention(ms)
             self._sessions[record.session_id] = ms
             ms.lazy_start_pending = True
             saved = TermdeckConfig.SCROLLBACK_DIR / f"{record.session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
@@ -188,7 +200,8 @@ class TerminalSessionManager:
                 ms.agy_transcript_active_until = time.monotonic() + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
 
     def create_session(self, command: str, cwd: str, title: str, project: str = "", output_path: str = "",
-                       agent_rename: str | None = None) -> ManagedSession:
+                       agent_rename: str | None = None, worktree: WorktreeMetadata | None = None,
+                       worktree_id: str = "root") -> ManagedSession:
         clean_command = command.strip()
         cwd_path = Path(cwd).expanduser() if cwd.strip() else TermdeckConfig.DEFAULT_CWD
         if not cwd_path.is_dir():
@@ -200,7 +213,8 @@ class TerminalSessionManager:
                 expanded_output_path = cwd_path / expanded_output_path
             cleaned_output_path = str(expanded_output_path.resolve())
         return self._create(clean_command, cwd_path, title, initial_command=None, agent_rename=agent_rename,
-                            project=project, output_path=cleaned_output_path)
+                            project=project, output_path=cleaned_output_path, worktree=worktree,
+                            worktree_id=worktree_id)
 
     def command_for_new_session(self, model: str, permission: str, session_ref: str, model_name: str = "") -> str:
         raw_model = model.strip().strip("\"'").lower()
@@ -351,13 +365,21 @@ class TerminalSessionManager:
 
     def _create(self, clean_command: str, cwd_path: Path, title: str, initial_command: str | None,
                 agent_rename: str | None = None, project: str | None = None,
-                output_path: str = "") -> ManagedSession:
+                output_path: str = "", worktree: WorktreeMetadata | None = None,
+                worktree_id: str = "root") -> ManagedSession:
         kind = self._tracker.detect_agent_kind(clean_command)
         project_name = project.strip() if project and project.strip() else self.registry.ensure_project_for_cwd(cwd_path)
         record = SessionRecord(session_id=uuid.uuid4().hex[:12], title=title.strip() or self._auto_title(clean_command, cwd_path),
                                title_user_set=bool(title.strip()), command=clean_command, cwd=str(cwd_path),
                                agent_kind=kind.value, agent_session_id=None, created_at_est=TimeUtil.now_est_naive_iso(),
-                               draft="", project=project_name, output_path=output_path.strip() or None)
+                               draft="", project=project_name, output_path=output_path.strip() or None,
+                               worktree_path=worktree.path if worktree else None,
+                               worktree_repository=worktree.repository if worktree else None,
+                               worktree_branch=worktree.branch if worktree else None,
+                               worktree_base_ref=worktree.base_ref if worktree else None,
+                               worktree_base_commit=worktree.base_commit if worktree else None,
+                               worktree_managed=worktree.managed if worktree else False,
+                               worktree_id=worktree_id or (worktree.worktree_id if worktree else "root"))
         ms = ManagedSession(record)
         if agent_rename and kind in (AgentKind.CODEX, AgentKind.CLAUDE):
             ms.pending_agent_rename = " ".join(agent_rename.splitlines()).strip()
@@ -366,15 +388,21 @@ class TerminalSessionManager:
         self._persist()
         return ms
 
-    def fork_session(self, session_id: str, title: str) -> ManagedSession:
+    def fork_session(self, session_id: str, title: str, worktree: WorktreeMetadata | None = None) -> ManagedSession:
         src = self._sessions[session_id].record
         kind = AgentKind(src.agent_kind)
         if kind is not AgentKind.NONE and src.agent_session_id:
             initial = self._tracker.build_fork_command(kind, src.command, src.agent_session_id, title)
         else:
             initial = None
+        source_worktree = worktree
+        if source_worktree is None and src.worktree_path and src.worktree_repository and src.worktree_branch and src.worktree_base_ref and src.worktree_base_commit:
+            source_worktree = WorktreeMetadata(src.worktree_path, src.worktree_repository, src.worktree_branch,
+                                               src.worktree_base_ref, src.worktree_base_commit, src.worktree_managed,
+                                               src.worktree_id)
         return self._create(src.command, Path(src.cwd), title, initial_command=initial,
-                            agent_rename=title if kind in (AgentKind.CODEX, AgentKind.CLAUDE) else None, project=src.project)
+                            agent_rename=title if kind in (AgentKind.CODEX, AgentKind.CLAUDE) else None, project=src.project,
+                            worktree=source_worktree, worktree_id=source_worktree.worktree_id if source_worktree else src.worktree_id)
 
     @staticmethod
     def _auto_title(command: str, cwd: Path) -> str:
@@ -609,10 +637,46 @@ class TerminalSessionManager:
         if ms.record.agent_kind != AgentKind.CLAUDE.value or not ms.record.agent_session_id:
             return
         parent = self._tracker.claude_project_dir(Path(ms.record.cwd)) / f"{ms.record.agent_session_id}.jsonl"
-        ms.claude_main_active = parent.is_file() and self._tracker.claude_session_is_active(parent)
+        ms.claude_main_active = not ms.record.claude_interrupted and parent.is_file() and self._tracker.claude_session_is_active(parent)
         states = self._tracker.claude_subagent_states(Path(ms.record.cwd), ms.record.agent_session_id)
         ms.claude_subagent_states = states
-        ms.claude_subagents_active = any(states.values())
+        ms.claude_subagents_active = not ms.record.claude_interrupted and any(states.values())
+        ms.claude_activity_signatures = self._claude_activity_signatures(parent, set(states))
+
+    @staticmethod
+    def _claude_file_signature(path: Path) -> tuple[int, int, int] | None:
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return getattr(stat, "st_ino", 0), stat.st_size, stat.st_mtime_ns
+
+    def _claude_activity_signatures(self, parent: Path, subagents: set[Path]) -> dict[Path, tuple[int, int, int]]:
+        signatures: dict[Path, tuple[int, int, int]] = {}
+        candidates = {parent, *subagents}
+        for path in candidates:
+            signature = self._claude_file_signature(path)
+            if signature is not None:
+                signatures[path] = signature
+        return signatures
+
+    def _refresh_claude_activity_if_changed(self, ms: ManagedSession) -> None:
+        if ms.record.agent_kind != AgentKind.CLAUDE.value or not ms.record.agent_session_id:
+            return
+        project_dir = self._tracker.claude_project_dir(Path(ms.record.cwd))
+        parent = project_dir / f"{ms.record.agent_session_id}.jsonl"
+        subagent_dir = project_dir / ms.record.agent_session_id / "subagents"
+        try:
+            subagents = set(subagent_dir.glob("*.jsonl"))
+        except OSError:
+            subagents = set()
+        signatures = self._claude_activity_signatures(parent, subagents)
+        if signatures == ms.claude_activity_signatures:
+            return
+        ms.claude_main_active = not ms.record.claude_interrupted and parent.is_file() and self._tracker.claude_session_is_active(parent)
+        ms.claude_subagent_states = self._tracker.claude_subagent_states(Path(ms.record.cwd), ms.record.agent_session_id)
+        ms.claude_subagents_active = not ms.record.claude_interrupted and any(ms.claude_subagent_states.values())
+        ms.claude_activity_signatures = self._claude_activity_signatures(parent, set(ms.claude_subagent_states))
 
     def _sync_claude_explicit_title(self, ms: ManagedSession) -> bool:
         if ms.record.agent_kind != AgentKind.CLAUDE.value or not ms.record.agent_session_id:
@@ -650,11 +714,84 @@ class TerminalSessionManager:
         return True
 
     def _processing_state(self, ms: ManagedSession) -> bool:
+        if ms.attention_required:
+            return False
         if ms.record.agent_kind == AgentKind.CODEX.value and ms.record.agent_session_id:
             return ms.processing or ms.codex_transcript_active
         if ms.record.agent_kind == AgentKind.CLAUDE.value and ms.record.agent_session_id:
-            return ms.claude_main_active or ms.claude_subagents_active
+            return not ms.record.claude_interrupted and (ms.claude_main_active or ms.claude_subagents_active)
         return ms.processing or ms.codex_transcript_active or ms.agy_transcript_active or ms.claude_main_active or ms.claude_subagents_active
+
+    @classmethod
+    def _title_requires_attention(cls, agent_kind: str, title: str | None) -> bool:
+        if agent_kind != AgentKind.CLAUDE.value or not title:
+            return False
+        normalized = re.sub(r"\s+", " ", title).strip().lower()
+        return any(marker in normalized for marker in cls.ATTENTION_TITLE_MARKERS)
+
+    def _update_attention_from_title(self, ms: ManagedSession, title: str | None) -> bool:
+        if ms.attention_hook_driven:
+            return False
+        if not self._title_requires_attention(ms.record.agent_kind, title) or ms.attention_required:
+            return False
+        if not self._claude_transcript_requires_attention(ms):
+            return False
+        ms.attention_required = True
+        return True
+
+    def _claude_transcript_requires_attention(self, ms: ManagedSession) -> bool:
+        if ms.record.agent_kind != AgentKind.CLAUDE.value or not ms.record.agent_session_id:
+            return False
+        title, has_pending_tool = self._tracker.claude_attention_state(Path(ms.record.cwd), ms.record.agent_session_id)
+        return has_pending_tool and self._title_requires_attention(ms.record.agent_kind, title)
+
+    def _refresh_claude_attention_from_transcript(self, ms: ManagedSession) -> bool:
+        if ms.attention_hook_driven:
+            return False
+        if ms.record.agent_kind != AgentKind.CLAUDE.value or not ms.record.agent_session_id:
+            return False
+        title, has_pending_tool = self._tracker.claude_attention_state(Path(ms.record.cwd), ms.record.agent_session_id)
+        requires_attention = has_pending_tool and self._title_requires_attention(ms.record.agent_kind, title)
+        if ms.attention_required == requires_attention:
+            return False
+        ms.attention_required = requires_attention
+        if not requires_attention:
+            ms.attention_text_carry = ""
+        return True
+
+    def _update_attention_from_output(self, ms: ManagedSession, data: bytes) -> bool:
+        if ms.attention_hook_driven or ms.record.agent_kind != AgentKind.CLAUDE.value:
+            return False
+        text = self._searchable_terminal_text(data)
+        if not text:
+            return False
+        normalized = re.sub(r"\s+", " ", f"{ms.attention_text_carry} {text}").strip().lower()
+        ms.attention_text_carry = normalized[-self.ATTENTION_TEXT_CARRY_CHARS:]
+        if ms.attention_required or not all(marker in normalized for marker in self.ATTENTION_MARKERS):
+            return False
+        ms.attention_required = True
+        return True
+
+    def apply_agent_attention_hook(self, agent_session_id: str, attention: bool) -> str | None:
+        """Apply a Claude Code hook callback, returning the terminal id it matched or None.
+
+        Hooks fire for every Claude Code session on the machine, including ones this server does not
+        own, so an unknown agent session is a normal no-op rather than an error.
+        """
+        if not agent_session_id:
+            return None
+        for ms in self._sessions.values():
+            if ms.record.agent_session_id != agent_session_id:
+                continue
+            changed = ms.attention_required != attention or not ms.attention_hook_driven
+            ms.attention_hook_driven = True
+            ms.attention_required = attention
+            if not attention:
+                ms.attention_text_carry = ""
+            if changed:
+                self._broadcast_status(ms)
+            return ms.record.session_id
+        return None
 
     def _refresh_session_activity(self, ms: ManagedSession) -> None:
         transcript_activity = self._tracker.session_activity_timestamp(AgentKind(ms.record.agent_kind),
@@ -783,6 +920,7 @@ class TerminalSessionManager:
     def _status_payload(self, ms: ManagedSession) -> dict[str, object]:
         self._refresh_session_activity(ms)
         self._refresh_stale_codex_activity(ms)
+        self._refresh_claude_activity_if_changed(ms)
         self._expire_agy_transcript_activity(ms)
         processing = self._sync_processing_started(ms)
         return {
@@ -797,6 +935,7 @@ class TerminalSessionManager:
             ApiFields.DORMANT: ms.dormant,
             ApiFields.DETACHED: ms.detached_live and not ms.attached,
             WsMessageFields.PROCESSING: processing,
+            ApiFields.NEEDS_ATTENTION: ms.attention_required,
             "processing_since": ms.processing_started_at,
             "last_activity_at": ms.last_activity_at,
         }
@@ -862,19 +1001,22 @@ class TerminalSessionManager:
                 continue
             previous_processing = self._processing_state(ms)
             title_changed = False
+            attention_changed = False
             if is_parent:
-                ms.claude_main_active = path.is_file() and self._tracker.claude_session_is_active(path)
+                ms.claude_main_active = not ms.record.claude_interrupted and path.is_file() and self._tracker.claude_session_is_active(path)
                 title_changed = self._sync_claude_explicit_title(ms)
+                attention_changed = self._refresh_claude_attention_from_transcript(ms)
             elif path.is_file():
                 ms.claude_subagent_states[path] = self._tracker.claude_subagent_is_active(path)
             else:
                 ms.claude_subagent_states.pop(path, None)
-            ms.claude_subagents_active = any(ms.claude_subagent_states.values())
+            ms.claude_subagents_active = not ms.record.claude_interrupted and any(ms.claude_subagent_states.values())
+            ms.claude_activity_signatures = self._claude_activity_signatures(parent, set(ms.claude_subagent_states))
             current_processing = self._processing_state(ms)
             if current_processing != previous_processing:
                 self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.PROCESSING,
                                               WsMessageFields.PROCESSING: current_processing})
-            if current_processing != previous_processing or title_changed:
+            if current_processing != previous_processing or title_changed or attention_changed:
                 self._broadcast_status(ms)
 
     def _claimed_agent_ids(self, exclude: ManagedSession) -> set[str]:
@@ -972,9 +1114,11 @@ class TerminalSessionManager:
         previous_processing = self._processing_state(ms)
         cli_title, ms.title_carry = OscTitleParser.extract_latest_title(ms.title_carry, data)
         title_renamed = False
+        attention_changed = False
         if cli_title is not None and cli_title.strip():
             ms.cli_title = cli_title.strip()
             ms.title_updated_monotonic = time.monotonic()
+            attention_changed = self._update_attention_from_title(ms, ms.cli_title)
             title_renamed = self._reconcile_codex_rename(ms, previous_title)
             self._reconcile_stale_claude_session_binding(ms)
             self._schedule_processing_expiry(ms)
@@ -982,11 +1126,12 @@ class TerminalSessionManager:
                 self._schedule_detection(ms, 0.1)
             current_processing = self._processing_state(ms)
             self._remember_cli_title(ms)
-            if title_renamed or self._display_title(ms.cli_title) != self._display_title(previous_title) or current_processing != previous_processing:
+            if attention_changed or title_renamed or self._display_title(ms.cli_title) != self._display_title(previous_title) or current_processing != previous_processing:
                 self._broadcast_status(ms)
         else:
+            attention_changed = self._update_attention_from_output(ms, data)
             title_renamed = self._reconcile_codex_rename(ms, previous_title)
-            if title_renamed:
+            if attention_changed or title_renamed:
                 self._broadcast_status(ms)
         for queue in list(ms.client_queues):
             queue.put_nowait(data)
@@ -1211,14 +1356,20 @@ class TerminalSessionManager:
 
     def write_input(self, session_id: str, text: str) -> None:
         ms = self._sessions[session_id]
+        attention_cleared = ms.attention_required or bool(ms.attention_text_carry)
+        ms.attention_required = False
+        ms.attention_text_carry = ""
         draft_before_input = ms.draft_tracker.draft
         codex_prompt_submitted = False
+        claude_prompt_submitted = False
+        claude_interrupted = ms.record.agent_kind == AgentKind.CLAUDE.value and "\x03" in text
         if ms.record.agent_kind in (AgentKind.CODEX.value, AgentKind.CLAUDE.value) and ("\r" in text or "\n" in text):
             command = draft_before_input.strip()
             if not command:
                 command = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text).splitlines()[0].strip()
             command = command.replace("\x1b[200~", "").replace("\x1b[201~", "").strip()
             codex_prompt_submitted = ms.record.agent_kind == AgentKind.CODEX.value and text in {"\r", "\n"} and bool(command) and not command.startswith("/")
+            claude_prompt_submitted = ms.record.agent_kind == AgentKind.CLAUDE.value and text in {"\r", "\n"} and bool(command)
             if ms.record.agent_kind == AgentKind.CODEX.value and command.lower().startswith("/rename") and \
                     (len(command) == 7 or command[7].isspace()):
                 candidate = command[7:].strip()
@@ -1230,6 +1381,21 @@ class TerminalSessionManager:
             ms.codex_activity_signature = self._codex_activity_signature(ms)
             ms.codex_activity_checked_monotonic = time.monotonic()
             self._broadcast_status(ms)
+        previous_processing = self._processing_state(ms)
+        if claude_interrupted:
+            ms.record.claude_interrupted = True
+            ms.claude_main_active = False
+            ms.claude_subagents_active = False
+            ms.claude_subagent_states = {}
+        elif claude_prompt_submitted:
+            ms.record.claude_interrupted = False
+            ms.claude_main_active = True
+        current_processing = self._processing_state(ms)
+        if current_processing != previous_processing:
+            self._sync_processing_started(ms, current_processing)
+            self._broadcast_status(ms)
+        if claude_interrupted or claude_prompt_submitted:
+            self._persist()
         if ms.record.agent_kind == AgentKind.AGY.value and ("\r" in text or "\n" in text):
             ms.agy_transcript_active = True
             ms.agy_transcript_active_until = time.monotonic() + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
@@ -1239,6 +1405,8 @@ class TerminalSessionManager:
         ms.last_activity_at = time.time()
         ms.record.last_activity_at = ms.last_activity_at
         if ms.record.agent_kind == AgentKind.AGY.value and ("\r" in text or "\n" in text):
+            self._broadcast_status(ms)
+        if attention_cleared:
             self._broadcast_status(ms)
         self._broadcast_activity_if_due(ms)
         if ms.detect_kind is not AgentKind.NONE:
@@ -1405,7 +1573,7 @@ class TerminalSessionManager:
         ms = self._sessions[session_id]
         size_changed = (ms.record.cols, ms.record.rows) != (cols, rows)
         ms.cols, ms.rows = cols, rows
-        if ms.proc is not None:
+        if size_changed and ms.proc is not None:
             ms.proc.resize(cols, rows)
         if size_changed:
             ms.record.cols, ms.record.rows = cols, rows
@@ -1477,11 +1645,32 @@ class TerminalSessionManager:
         self._persist()
         return True
 
-    def list_closed_sessions(self, project: str | None) -> list[dict[str, str | bool | None]]:
+    def mark_worktree_unmanaged(self, session_id: str) -> None:
+        ms = self._sessions[session_id]
+        ms.record.worktree_managed = False
+        self._persist()
+        self._broadcast_status(ms)
+
+    async def stop_session_process_for_worktree(self, session_id: str) -> bool:
+        return await self._terminate_proc(self._sessions[session_id])
+
+    async def remove_session_after_worktree_finish(self, session_id: str) -> bool:
+        ms = self._sessions[session_id]
+        if ms.detect_task is not None:
+            ms.detect_task.cancel()
+        if not await self._terminate_proc(ms):
+            return False
+        self._sessions.pop(session_id)
+        self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DELETED})
+        self._persist()
+        return True
+
+    def list_closed_sessions(self, project: str | None, worktree_id: str | None = None) -> list[dict[str, str | bool | None]]:
         items = self._closed_store.load_all()
-        if project is None:
-            return items
-        return [item for item in items if item["project"] == project]
+        filtered = items if project is None else [item for item in items if item["project"] == project]
+        if worktree_id is None:
+            return filtered
+        return [item for item in filtered if str(item.get("worktree_id") or "root") == worktree_id]
 
     def reopen_closed_session(self, session_id: str) -> ManagedSession:
         record = self._closed_store.pop(session_id)
@@ -1701,13 +1890,15 @@ class TerminalSessionManager:
                 target = TermdeckConfig.SCROLLBACK_DIR / f"{ms.record.session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
                 target.write_bytes(bytes(ms.buffer))
 
-    def list_sessions(self, project: str | None) -> list[dict[str, object]]:
+    def list_sessions(self, project: str | None, worktree_id: str | None = None) -> list[dict[str, object]]:
         return [self.session_summary(ms) for ms in self._sessions.values()
-                if project is None or ms.record.project == project]
+                if (project is None or ms.record.project == project) and
+                (worktree_id is None or ms.record.worktree_id == worktree_id)]
 
     def session_summary(self, ms: ManagedSession) -> dict[str, object]:
         self._refresh_session_activity(ms)
         self._refresh_stale_codex_activity(ms)
+        self._refresh_claude_activity_if_changed(ms)
         processing = self._sync_processing_started(ms)
         summary: dict[str, object] = dict(ms.record.to_dict())
         summary[ApiFields.RUNNING] = ms.running
@@ -1716,6 +1907,7 @@ class TerminalSessionManager:
         summary[ApiFields.DETACHED] = ms.detached_live and not ms.attached
         summary[ApiFields.CLI_TITLE] = ms.cli_title
         summary["processing"] = processing
+        summary[ApiFields.NEEDS_ATTENTION] = ms.attention_required
         summary["processing_since"] = ms.processing_started_at
         summary["last_activity_at"] = ms.last_activity_at
         return summary
