@@ -242,6 +242,34 @@ class SessionSizePersistenceTest(unittest.TestCase):
         self.assertEqual((session.record.cols, session.record.rows), (162, 61))
         self.assertEqual(len(persists), 1)
 
+    def test_transcript_first_geometry_keeps_agent_session_size_authoritative(self) -> None:
+        manager = TerminalSessionManager()
+        saved = record()
+        saved.agent_kind = AgentKind.CODEX.value
+        saved.cols, saved.rows = 120, 32
+        session = ManagedSession(saved)
+        manager._sessions[saved.session_id] = session
+        manager.set_transcript_first_terminal_stability(True)
+
+        manager.resize(saved.session_id, 162, 61)
+        _, queue = manager.attach_client(saved.session_id, screen_repaint=True)
+
+        self.assertEqual((session.cols, session.rows), (120, 32))
+        self.assertEqual((session.record.cols, session.record.rows), (120, 32))
+        self.assertIsNone(session.screen_repaint_task)
+        manager.detach_client(saved.session_id, queue)
+
+    def test_transcript_first_geometry_does_not_freeze_shell_sessions(self) -> None:
+        manager = TerminalSessionManager()
+        session = ManagedSession(record())
+        manager._sessions[session.record.session_id] = session
+        manager._persist = lambda: None  # type: ignore[method-assign]
+        manager.set_transcript_first_terminal_stability(True)
+
+        manager.resize(session.record.session_id, 162, 61)
+
+        self.assertEqual((session.record.cols, session.record.rows), (162, 61))
+
 
 class AgentSessionTrackerResumeCommandTest(unittest.TestCase):
     def test_build_codex_resume_command_keeps_existing_flags(self) -> None:
@@ -678,6 +706,23 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         await server._pump_client_to_pty(websocket, "codex-session")
 
         server.manager.request_screen_repaint.assert_called_once_with("codex-session")
+
+    async def test_transcript_first_websocket_ignores_agent_resize_and_repaint(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.session_supports_transcript_first_geometry.return_value = True
+        server.transcript_first_terminal_stability = True
+        websocket = MagicMock()
+        websocket.receive_text = AsyncMock(side_effect=[
+            json.dumps({"type": "resize", "cols": 180, "rows": 50}),
+            json.dumps({"type": "repaint"}),
+            WebSocketDisconnect(),
+        ])
+
+        await server._pump_client_to_pty(websocket, "codex-session")
+
+        server.manager.resize.assert_not_called()
+        server.manager.request_screen_repaint.assert_not_called()
 
     async def test_follow_up_prompt_directly_steers_busy_task_session(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)

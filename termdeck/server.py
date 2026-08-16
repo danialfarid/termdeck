@@ -301,6 +301,7 @@ class UiSettings(BaseModel):
     prompt_wrap_guard: bool = False
     history_mode: bool = False
     transcript_first_experimental: bool = False
+    transcript_first_surface: str = ""
     claude_snapshot_experimental: bool = False
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
@@ -352,6 +353,11 @@ class TermdeckServer:
         if self.manager is not None:
             self.transcripts.add_file_change_listener(self.manager.notify_agent_transcript_changed)
         self.settings_store = UiSettingsStore(TermdeckConfig.SETTINGS_FILE, self.state_backup)
+        self.transcript_first_terminal_stability = bool(
+            UiSettings(**self.settings_store.load()).transcript_first_experimental
+        )
+        if self.manager is not None:
+            self.manager.set_transcript_first_terminal_stability(self.transcript_first_terminal_stability)
         self._state_backup_task: asyncio.Task | None = None
         self._origin_delivery_locks: dict[str, asyncio.Lock] = {}
         self._task_delivery_jobs: set[asyncio.Task] = set()
@@ -487,6 +493,9 @@ class TermdeckServer:
     async def _put_settings(self, settings: UiSettings) -> dict[str, int | str]:
         payload = self._preserve_active_layout_entries(settings.model_dump())
         self.settings_store.save(payload)
+        self.transcript_first_terminal_stability = bool(payload["transcript_first_experimental"])
+        if self.manager is not None:
+            self.manager.set_transcript_first_terminal_stability(self.transcript_first_terminal_stability)
         return payload
 
     async def _replace_settings(self, settings: UiSettings, replace: bool = False) -> dict[str, int | str]:
@@ -503,6 +512,9 @@ class TermdeckServer:
         merged_settings = {**self.settings_store.load(), **incoming_settings}
         payload = self._preserve_active_layout_entries(UiSettings(**merged_settings).model_dump())
         self.settings_store.save(payload)
+        self.transcript_first_terminal_stability = bool(payload["transcript_first_experimental"])
+        if self.manager is not None:
+            self.manager.set_transcript_first_terminal_stability(self.transcript_first_terminal_stability)
         return payload
 
     def _preserve_active_layout_entries(self, incoming_payload: dict[str, object]) -> dict[str, object]:
@@ -1674,8 +1686,19 @@ class TermdeckServer:
         screen_repaint = websocket.query_params.get("screen_repaint", "1").lower() not in {"0", "false", "no", "off"}
         have_buffer = websocket.query_params.get("have_buffer", "0").lower() not in {"0", "false", "no", "off"}
         repaint_preserved_buffer = websocket.query_params.get("repaint_preserved_buffer", "0").lower() not in {"0", "false", "no", "off"}
+        fixed_geometry_requested = websocket.query_params.get("fixed_geometry", "0").lower() not in {"0", "false", "no", "off"}
+        fixed_geometry = self.manager.session_supports_transcript_first_geometry(session_id) and (
+            fixed_geometry_requested or self.transcript_first_terminal_stability
+        )
+        if fixed_geometry:
+            screen_repaint = False
+            repaint_preserved_buffer = False
         scrollback, queue = self.manager.attach_client(session_id, screen_repaint, have_buffer, repaint_preserved_buffer)
         try:
+            if fixed_geometry:
+                cols, rows = self.manager.session_geometry(session_id)
+                await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.GEOMETRY,
+                                                       WsMessageFields.COLS: cols, WsMessageFields.ROWS: rows}))
             await websocket.send_bytes(scrollback)
             await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.DRAFT,
                                                    WsMessageFields.DRAFT: self.manager.session_draft(session_id)}))
@@ -1820,9 +1843,13 @@ class TermdeckServer:
             if message_type == WsMessageFields.INPUT:
                 self.manager.write_input(session_id, message[WsMessageFields.DATA])
             elif message_type == WsMessageFields.RESIZE:
-                self.manager.resize(session_id, int(message[WsMessageFields.COLS]), int(message[WsMessageFields.ROWS]))
+                if not getattr(self, "transcript_first_terminal_stability", False) or \
+                        not self.manager.session_supports_transcript_first_geometry(session_id):
+                    self.manager.resize(session_id, int(message[WsMessageFields.COLS]), int(message[WsMessageFields.ROWS]))
             elif message_type == WsMessageFields.REPAINT:
-                self.manager.request_screen_repaint(session_id)
+                if not getattr(self, "transcript_first_terminal_stability", False) or \
+                        not self.manager.session_supports_transcript_first_geometry(session_id):
+                    self.manager.request_screen_repaint(session_id)
             elif message_type == WsMessageFields.DRAFT_SYNC:
                 self.manager.set_draft(session_id, message.get(WsMessageFields.DRAFT, ""))
             elif message_type == WsMessageFields.SUBMIT:

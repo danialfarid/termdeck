@@ -86,6 +86,7 @@ class WsMessageFields:
     TEXT = "text"
     COLS = "cols"
     ROWS = "rows"
+    GEOMETRY = "geometry"
     INPUT = "input"
     RESIZE = "resize"
     REPAINT = "repaint"

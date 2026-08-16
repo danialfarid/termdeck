@@ -18,7 +18,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_experimental: false, claude_snapshot_experimental: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_experimental: false, transcript_first_surface: "", claude_snapshot_experimental: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [] };
@@ -408,7 +408,6 @@ class TermdeckApp {
     this.historyTurns = [];
     this.historyLoaded = false;
     this.historyEditsCollapsed = false;
-    this.transcriptTerminalOverrides = new Set();
     this.closedExpanded = false;
     this.closedDisplayLimit = CLOSED_SESSIONS_INITIAL_DISPLAY;
     this.terminalSearchText = "";
@@ -2268,7 +2267,7 @@ class TermdeckApp {
     this.$("history-body").addEventListener("scroll", () => {
       if (this.historyOpen && this.$("history-body").scrollTop < 80) this.loadOlderHistory();
     });
-    this.$("history-body").addEventListener("click", (event) => this.handleVscodeFileLink(event));
+    this.$("history-body").addEventListener("click", (event) => this.handleHistoryFileLink(event));
     for (const id of ["terminal-resync-btn", "vscode-terminal-resync-btn"]) {
       const button = this.$(id);
       if (button) button.onclick = () => this.resyncActiveTerminal();
@@ -7170,17 +7169,45 @@ class TermdeckApp {
     return !!this.settings.transcript_first_experimental && !!session && ["codex", "claude", "agy"].includes(session.agent_kind);
   }
 
-  shouldOpenTranscriptFirst(sessionId) {
-    return this.transcriptFirstSessionEnabled(this.session(sessionId)) && !this.transcriptTerminalOverrides.has(sessionId);
+  selectedHistoryMode(session = this.session(this.activeId)) {
+    if (this.transcriptFirstSessionEnabled(session)) return this.settings.transcript_first_surface !== "terminal";
+    return !!this.settings.history_mode;
+  }
+
+  fixedTerminalGeometryEnabled(view = this.views.get(this.activeId)) {
+    return !!view && this.transcriptFirstSessionEnabled(this.session(view.sessionId));
+  }
+
+  applyAuthoritativeTerminalGeometry(view) {
+    if (!this.fixedTerminalGeometryEnabled(view) || !view.term) return false;
+    const session = this.session(view.sessionId);
+    const cols = Math.max(2, Number(session?.cols) || Number(view.authoritativeCols) || view.term.cols);
+    const rows = Math.max(2, Number(session?.rows) || Number(view.authoritativeRows) || view.term.rows);
+    view.authoritativeCols = cols;
+    view.authoritativeRows = rows;
+    if (view.term.cols !== cols || view.term.rows !== rows) {
+      view.suppressResizeToServer = true;
+      view.term.resize(cols, rows);
+      view.suppressResizeToServer = false;
+    }
+    view.container.classList.remove("initializing");
+    this.refreshTerminal(view);
+    return true;
   }
 
   applyTranscriptFirstSettingChange() {
-    this.transcriptTerminalOverrides.clear();
+    for (const view of this.views.values()) {
+      this.clearActiveTerminalSettleWatchdog(view);
+      if (this.fixedTerminalGeometryEnabled(view)) this.applyAuthoritativeTerminalGeometry(view);
+    }
+    if (!this.settings.transcript_first_experimental) {
+      setTimeout(() => this.fitActive(), 700);
+    }
     if (!this.activeId || this.activeFileKey !== null) {
       this.applyMainLayout();
       return;
     }
-    const historyEnabled = this.shouldOpenTranscriptFirst(this.activeId) || !!this.settings.history_mode;
+    const historyEnabled = this.selectedHistoryMode();
     if (historyEnabled !== this.historyOpen) this.setHistoryMode(historyEnabled);
     else this.applyMainLayout();
   }
@@ -7425,13 +7452,9 @@ class TermdeckApp {
     this.closeTerminalFind();
     this.hideSelectionActions(true);
     if (!enabled) this.closePromptHistory();
-    if (this.transcriptFirstSessionEnabled()) {
-      if (enabled) this.transcriptTerminalOverrides.delete(this.activeId);
-      else this.transcriptTerminalOverrides.add(this.activeId);
-    } else {
-      this.settings.history_mode = !!enabled;
-      this.saveSettings();
-    }
+    if (this.transcriptFirstSessionEnabled()) this.settings.transcript_first_surface = enabled ? "markdown" : "terminal";
+    else this.settings.history_mode = !!enabled;
+    this.saveSettings();
     this.stopHistoryRefresh();
     this.disconnectHistoryStream();
     this.historyFingerprint = "";
@@ -8256,6 +8279,7 @@ class TermdeckApp {
       const text = document.createElement("div");
       text.className = "turn-text markdown";
       text.innerHTML = this.renderMarkdown(turn.text);
+      this.linkHistoryFileReferences(text);
       if (["user", "assistant"].includes(turn.role)) {
         const role = document.createElement("div");
         role.className = "turn-role";
@@ -8443,6 +8467,45 @@ class TermdeckApp {
     const escaped = document.createElement("div");
     escaped.textContent = text;
     return escaped.innerHTML;
+  }
+
+  linkHistoryFileReferences(container) {
+    for (const anchor of container.querySelectorAll("a")) {
+      const linkText = anchor.getAttribute("href") || "";
+      if (!this.parseVscodeFileLink(linkText)) continue;
+      anchor.dataset.terminalFile = linkText;
+      anchor.classList.add("history-file-link");
+      anchor.title = `Open ${linkText}`;
+    }
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.parentElement?.closest("a")) textNodes.push(node);
+    }
+    for (const node of textNodes) {
+      const source = node.nodeValue || "";
+      const matches = [...source.matchAll(new RegExp(PATH_LINK_RE.source, "g"))].filter((match) => {
+        const raw = match[0];
+        const extension = raw.split(":")[0].split(".").pop().toLowerCase();
+        return raw.includes("/") || KNOWN_EXTS.has(extension);
+      });
+      if (!matches.length) continue;
+      const fragment = document.createDocumentFragment();
+      let offset = 0;
+      for (const match of matches) {
+        fragment.appendChild(document.createTextNode(source.slice(offset, match.index)));
+        const anchor = document.createElement("a");
+        anchor.className = "history-file-link";
+        anchor.href = match[0];
+        anchor.dataset.terminalFile = match[0];
+        anchor.title = `Open ${match[0]}`;
+        anchor.textContent = match[0];
+        fragment.appendChild(anchor);
+        offset = match.index + match[0].length;
+      }
+      fragment.appendChild(document.createTextNode(source.slice(offset)));
+      node.replaceWith(fragment);
+    }
   }
 
   initNotebook() {
@@ -10464,7 +10527,7 @@ class TermdeckApp {
     this.historyLoaded = cachedHistory.length > 0;
     const previousView = previousId ? this.views.get(previousId) : null;
     this.activeId = id;
-    this.historyOpen = this.shouldOpenTranscriptFirst(id) || !!this.settings.history_mode;
+    this.historyOpen = this.selectedHistoryMode(selected);
     if (options.history !== false) this.pushNav({ kind: "term", id });
     if (this.getProjectState().active_session_id !== id) {
       this.patchProjectState({ active_session_id: id });
@@ -10643,6 +10706,8 @@ class TermdeckApp {
                    renderRepairArmed: true, renderObserver: null,
                    viewportAnchorRestore: null, viewportAnchorRestoreTimer: 0,
                    lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [], codexReflowFollowupTimers: [],
+                   authoritativeCols: Number(this.session(id)?.cols) || 0,
+                   authoritativeRows: Number(this.session(id)?.rows) || 0,
                    preserveRowsFromBottom: 0, reconnectReset: false,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
@@ -10834,6 +10899,10 @@ class TermdeckApp {
     view.layoutObserver = new ResizeObserver(() => {
       if (!view.container.classList.contains("visible") || view.closed || !this.terminalPageCanResize()) return;
       if (this.sidebarResizeInProgress) return;
+      if (this.fixedTerminalGeometryEnabled(view)) {
+        this.applyAuthoritativeTerminalGeometry(view);
+        return;
+      }
       if (this.isTerminalScrollV2()) {
         this.scheduleV2Fit(view);
         return;
@@ -10857,11 +10926,13 @@ class TermdeckApp {
     }, { threshold: 0 });
     view.visibilityObserver.observe(container);
     this.views.set(id, view);
+    if (this.fixedTerminalGeometryEnabled(view)) this.applyAuthoritativeTerminalGeometry(view);
     return view;
   }
 
   prepareTerminalForFirstPaint(view) {
     if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
+    if (this.fixedTerminalGeometryEnabled(view)) return this.applyAuthoritativeTerminalGeometry(view);
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return false;
     view.fit.fit();
@@ -11049,7 +11120,10 @@ class TermdeckApp {
 
   async restoreClaudeSnapshot(view) {
     if (!this.ensureClaudeSnapshotAddon(view)) return false;
-    if (view.container.classList.contains("visible")) view.fit.fit();
+    if (view.container.classList.contains("visible")) {
+      if (this.fixedTerminalGeometryEnabled(view)) this.applyAuthoritativeTerminalGeometry(view);
+      else view.fit.fit();
+    }
     try {
       const record = await this.readClaudeSnapshot(view.sessionId);
       if (!record || ![2, 3, CLAUDE_SNAPSHOT_FORMAT_VERSION].includes(record.formatVersion) ||
@@ -11148,6 +11222,8 @@ class TermdeckApp {
 
   connect(id, view) {
     if (view.closed) return;
+    const fixedGeometry = this.fixedTerminalGeometryEnabled(view);
+    if (fixedGeometry) this.applyAuthoritativeTerminalGeometry(view);
     if (this.isTerminalScrollV2() && !view.userScrollIntent) {
       view.scrollMode = "follow";
       view.preserveRowsFromBottom = 0;
@@ -11168,10 +11244,10 @@ class TermdeckApp {
     const repaintPreservedBuffer = hasPopulatedBuffer && this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view);
     const shouldRepaintClaudeBuffer = repaintPreservedBuffer &&
       (view.claudeSnapshotRequiresRepaint || !!this.session(id)?.processing);
-    const screenRepaint = hasPopulatedBuffer && (!repaintPreservedBuffer || !shouldRepaintClaudeBuffer) ? 0 : 1;
+    const screenRepaint = fixedGeometry ? 0 : (hasPopulatedBuffer && (!repaintPreservedBuffer || !shouldRepaintClaudeBuffer) ? 0 : 1);
     const haveBuffer = hasPopulatedBuffer ? 1 : 0;
     const ws = new WebSocket(`${proto}://${location.host}/ws/${id}?screen_repaint=${screenRepaint}&have_buffer=${haveBuffer}` +
-      `&repaint_preserved_buffer=${shouldRepaintClaudeBuffer ? 1 : 0}`);
+      `&repaint_preserved_buffer=${shouldRepaintClaudeBuffer ? 1 : 0}&fixed_geometry=${fixedGeometry ? 1 : 0}`);
     ws.binaryType = "arraybuffer";
     view.preserveBufferOnReconnect = haveBuffer === 1;
     view.awaitingSnapshot = true;
@@ -11193,7 +11269,10 @@ class TermdeckApp {
       }
       view.everConnected = true;
       this.detectTerminalAttentionFromBuffer(view);
-      if (this.isTerminalScrollV2()) {
+      if (fixedGeometry) {
+        this.applyAuthoritativeTerminalGeometry(view);
+        if (this.isTerminalScrollV2() && view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+      } else if (this.isTerminalScrollV2()) {
         if (id === this.activeId) {
           this.scheduleV2Fit(view);
           if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
@@ -11208,7 +11287,7 @@ class TermdeckApp {
       // FitAddon may have run before the websocket opened, so xterm's
       // onResize callback could not send the resulting dimensions to the
       // PTY. Always send the currently fitted size once the socket is ready.
-      if (view.term.cols >= 2 && view.term.rows >= 2) {
+      if (!fixedGeometry && view.term.cols >= 2 && view.term.rows >= 2) {
         this.sendResize(view, view.term.cols, view.term.rows);
       }
       this.flushPromptSync(view);
@@ -11398,6 +11477,17 @@ class TermdeckApp {
   }
 
   handleControl(id, view, msg) {
+    if (msg.type === "geometry") {
+      view.authoritativeCols = Math.max(2, Number(msg.cols) || view.term.cols);
+      view.authoritativeRows = Math.max(2, Number(msg.rows) || view.term.rows);
+      const session = this.session(id);
+      if (session) {
+        session.cols = view.authoritativeCols;
+        session.rows = view.authoritativeRows;
+      }
+      this.applyAuthoritativeTerminalGeometry(view);
+      return;
+    }
     if (msg.type === "exit") {
       if (msg.dormant) {
         view.suppressReconnect = true;
@@ -11587,7 +11677,7 @@ class TermdeckApp {
   }
 
   sendResize(view, cols, rows, force = false) {
-    if (this.sidebarResizeInProgress || view.suppressResizeToServer || !this.terminalPageCanResize() ||
+    if (this.fixedTerminalGeometryEnabled(view) || this.sidebarResizeInProgress || view.suppressResizeToServer || !this.terminalPageCanResize() ||
         view.closed || view.sessionId !== this.activeId || !view.container.classList.contains("visible") ||
         this.activeFileKey !== null || this.historyOpen) return;
     if (view.ws && view.ws.readyState === WebSocket.OPEN &&
@@ -11703,6 +11793,10 @@ class TermdeckApp {
       }
     }
     this.refreshTerminalAppearance(view, true);
+    if (this.fixedTerminalGeometryEnabled(view)) {
+      this.$("status-name").textContent = "fixed terminal geometry active";
+      return;
+    }
     if (!view.ws || view.ws.readyState !== WebSocket.OPEN) return;
     const anchor = this.captureTerminalViewportAnchor(view, { preserveFollow: true, restoreAfterDeadline: true });
     this.beginTerminalViewportRestore(view, anchor);
@@ -11997,6 +12091,11 @@ class TermdeckApp {
   scheduleV2Fit(view, options = {}) {
     const forceResize = !!options.force;
     if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return;
+    if (this.fixedTerminalGeometryEnabled(view)) {
+      this.applyAuthoritativeTerminalGeometry(view);
+      if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
+      return;
+    }
     if (this.shouldDeferPromptReflowFit(view)) return;
     if (view.v2FitFrame && forceResize) {
       cancelAnimationFrame(view.v2FitFrame);
@@ -12315,6 +12414,13 @@ class TermdeckApp {
     // activate() and the reconnect restore in connect()'s ws.onmessage).
     const restoreRowsFromBottom = view.term.buffer.active.baseY - restoreLine;
     const follow = view.scrollMode === "follow";
+    if (this.fixedTerminalGeometryEnabled(view)) {
+      this.applyAuthoritativeTerminalGeometry(view);
+      this.refreshTerminalAppearance(view, true);
+      if (follow) this.scrollTerminalV2ToBottom(view);
+      else this.scrollTerminalV2ToLine(view, Math.min(restoreLine, view.term.buffer.active.baseY));
+      return true;
+    }
     const renderService = view.term._core?._renderService;
     if (renderService?._isPaused && typeof renderService._handleIntersectionChange === "function") {
       renderService._handleIntersectionChange({ isIntersecting: true, intersectionRatio: 1 });
@@ -12382,6 +12488,7 @@ class TermdeckApp {
   scheduleActiveTerminalSettleWatchdog(view) {
     this.clearActiveTerminalSettleWatchdog(view);
     if (!view || view.closed || !this.isTerminalScrollV2() || !this.terminalPageCanResize()) return;
+    if (this.fixedTerminalGeometryEnabled(view)) return;
     for (const delay of TERMINAL_ACTIVE_SETTLE_DELAYS_MS) {
       view.settleWatchdogTimers.push(setTimeout(() => {
         if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible") ||
@@ -12472,6 +12579,7 @@ class TermdeckApp {
   // regresses again later, not a real option (it reintroduces the Claude wrap on its own). No UI for it;
   // set/clear it from the browser console.
   forceVisibleTerminalReflow(view) {
+    if (this.fixedTerminalGeometryEnabled(view)) return this.forceVisibleTerminalReflowViaClear(view);
     if (localStorage.getItem("td-debug-reflow-mode") === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     const kind = this.session(view.sessionId)?.agent_kind;
     if (kind !== "codex") return this.forceVisibleTerminalReflowViaClear(view);
@@ -12547,6 +12655,7 @@ class TermdeckApp {
   // column is still enough to unstick a stale codex paint without landing on that boundary.
   //
   forceVisibleTerminalReflowViaResizeNudge(view, nudgeCols = 2) {
+    if (this.fixedTerminalGeometryEnabled(view)) return this.forceVisibleTerminalReflowViaClear(view);
     if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
         !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
     if (this.shouldDeferPromptReflowFit(view)) return false;
@@ -12686,6 +12795,11 @@ class TermdeckApp {
         view.viewportRepairFrame = 0;
         if (view.closed || view.manualScroll || generation !== view.manualScrollGeneration ||
             !view.keepBottom || !view.container.classList.contains("visible") || !this.terminalAtBottom(view)) return;
+        if (this.fixedTerminalGeometryEnabled(view)) {
+          this.applyAuthoritativeTerminalGeometry(view);
+          this.scrollTerminalToBottom(view);
+          return;
+        }
         view.fit.fit();
         this.refreshTerminal(view);
         const { cols, rows } = view.term;
@@ -12740,6 +12854,12 @@ class TermdeckApp {
     if (this.$("terminal-area").classList.contains("hidden")) return;
     const view = this.views.get(this.activeId);
     if (!view || !view.container.classList.contains("visible")) return;
+    if (this.fixedTerminalGeometryEnabled(view)) {
+      this.applyAuthoritativeTerminalGeometry(view);
+      if (this.isTerminalScrollV2()) this.scheduleV2ViewportSync(view);
+      else if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
+      return;
+    }
     if (this.isTerminalScrollV2()) {
       this.scheduleV2Fit(view);
       this.scheduleV2ViewportSync(view);
@@ -12758,7 +12878,6 @@ class TermdeckApp {
 
   destroyView(id, view) {
     view.closed = true;
-    this.transcriptTerminalOverrides.delete(id);
     view.renderObserver?.dispose();
     this.clearActiveTerminalSettleWatchdog(view);
     clearTimeout(view.manualScrollReleaseTimer);
@@ -14715,16 +14834,14 @@ class TermdeckApp {
     window.parent.postMessage({ type: "termdeck-native-close", session_id: sessionId }, "*");
   }
 
-  handleVscodeFileLink(event) {
-    if (!this.vscodeMode) return;
+  handleHistoryFileLink(event) {
     const anchor = event.target.closest?.("a");
     if (!anchor) return;
-    const parsed = this.parseVscodeFileLink(anchor.getAttribute("href"));
-    if (!parsed) return;
+    const linkText = anchor.dataset.terminalFile || anchor.getAttribute("href") || "";
+    if (!this.parseVscodeFileLink(linkText)) return;
     event.preventDefault();
     event.stopPropagation();
-    const session = this.session(this.activeId);
-    this.postVscodeFileOpen(parsed.path, parsed.line, parsed.column, session?.cwd || this.projectRoot() || "");
+    this.openFileFromLink(this.activeId, linkText);
   }
 
   openFileFromLink(sessionId, linkText) {

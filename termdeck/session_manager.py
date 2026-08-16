@@ -132,8 +132,17 @@ class TerminalSessionManager:
         self._agent_activity_refresh_handles: dict[Path, asyncio.TimerHandle] = {}
         self._transcript_service = None
         self._history_index = None
+        self._transcript_first_terminal_stability = False
         self._claude_activity_watcher = ClaudeActivityWatcher(
             TermdeckConfig.CLAUDE_PROJECTS_DIR, self._on_claude_file_change_from_thread)
+
+    def set_transcript_first_terminal_stability(self, enabled: bool) -> None:
+        self._transcript_first_terminal_stability = enabled
+
+    def _session_uses_fixed_terminal_geometry(self, ms: ManagedSession) -> bool:
+        return self._transcript_first_terminal_stability and ms.record.agent_kind in {
+            AgentKind.CODEX.value, AgentKind.CLAUDE.value, AgentKind.AGY.value,
+        }
 
     def attach_transcript_service(self, service) -> None:
         self._transcript_service = service
@@ -455,7 +464,7 @@ class TerminalSessionManager:
             if kind is AgentKind.CLAUDE and ms.record.agent_session_id:
                 self._initialize_claude_subagent_state(ms)
             self._schedule_detection(ms, TermdeckConfig.AGENT_DETECT_INITIAL_DELAY_SECONDS)
-        if reattach and screen_repaint:
+        if reattach and screen_repaint and not self._session_uses_fixed_terminal_geometry(ms):
             self._schedule_screen_repaint(ms, TermdeckConfig.SCREEN_REPAINT_REATTACH_DELAY_SECONDS)
         if resume and not reattach and ms.record.draft:
             asyncio.create_task(self._replay_draft_into_respawn(ms, ms.proc))
@@ -1324,6 +1333,7 @@ class TerminalSessionManager:
     def attach_client(self, session_id: str, screen_repaint: bool = True, have_buffer: bool = False,
                       repaint_preserved_buffer: bool = False) -> tuple[bytes, asyncio.Queue]:
         ms = self._sessions[session_id]
+        screen_repaint = screen_repaint and not self._session_uses_fixed_terminal_geometry(ms)
         self._recover_title_from_buffer(ms)
         preserve_client_buffer = have_buffer
         if ms.lazy_start_pending:
@@ -1571,6 +1581,8 @@ class TerminalSessionManager:
 
     def resize(self, session_id: str, cols: int, rows: int) -> None:
         ms = self._sessions[session_id]
+        if self._session_uses_fixed_terminal_geometry(ms):
+            return
         size_changed = (ms.record.cols, ms.record.rows) != (cols, rows)
         ms.cols, ms.rows = cols, rows
         if size_changed and ms.proc is not None:
@@ -1581,6 +1593,8 @@ class TerminalSessionManager:
 
     def request_screen_repaint(self, session_id: str) -> bool:
         ms = self._sessions[session_id]
+        if self._session_uses_fixed_terminal_geometry(ms):
+            return False
         if ms.record.agent_kind != AgentKind.CODEX.value or ms.proc is None or not ms.proc.alive:
             return False
         self._schedule_screen_repaint(ms, 0)
@@ -1921,6 +1935,15 @@ class TerminalSessionManager:
 
     def session_draft(self, session_id: str) -> str:
         return self._sessions[session_id].record.draft
+
+    def session_geometry(self, session_id: str) -> tuple[int, int]:
+        session = self._sessions[session_id]
+        return session.cols, session.rows
+
+    def session_supports_transcript_first_geometry(self, session_id: str) -> bool:
+        return self._sessions[session_id].record.agent_kind in {
+            AgentKind.CODEX.value, AgentKind.CLAUDE.value, AgentKind.AGY.value,
+        }
 
     def _persist(self) -> None:
         self._store.save_all([ms.record for ms in self._sessions.values()])
