@@ -50,6 +50,7 @@ class SessionRecord:
     worktree_managed: bool = False
     worktree_id: str = "root"
     claude_interrupted: bool = False
+    fork_parent_agent_session_id: str | None = None
 
     def to_dict(self) -> dict[str, str | bool | int | float | None]:
         return asdict(self)
@@ -75,7 +76,9 @@ class SessionRecord:
                              worktree_base_commit=str(payload["worktree_base_commit"]) if payload.get("worktree_base_commit") else None,
                              worktree_managed=bool(payload.get("worktree_managed", False)),
                              worktree_id=str(payload.get("worktree_id") or "root"),
-                             claude_interrupted=bool(payload.get("claude_interrupted", False)))
+                             claude_interrupted=bool(payload.get("claude_interrupted", False)),
+                             fork_parent_agent_session_id=str(payload["fork_parent_agent_session_id"])
+                             if payload.get("fork_parent_agent_session_id") else None)
 
 
 class WsMessageFields:
@@ -86,7 +89,6 @@ class WsMessageFields:
     TEXT = "text"
     COLS = "cols"
     ROWS = "rows"
-    GEOMETRY = "geometry"
     INPUT = "input"
     RESIZE = "resize"
     REPAINT = "repaint"
@@ -103,6 +105,8 @@ class WsMessageFields:
     PROMPT_SUBMITTED = "prompt_submitted"
     PROCESSING = "processing"
     SESSION_STATUS = "session_status"
+    SERVER_INSTANCE = "server_instance"
+    INSTANCE_ID = "instance_id"
     SESSION_ID = "session_id"
     TITLE = "title"
     TITLE_USER_SET = "title_user_set"

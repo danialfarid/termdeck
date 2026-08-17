@@ -5,12 +5,14 @@ import re
 import signal
 import subprocess
 import time
+import uuid
 from dataclasses import replace
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
+import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,6 +25,8 @@ from filedeck.git_service import FileDeckGitService
 from termdeck.history_index import HistorySearchIndex
 from termdeck.models import ApiFields, WsMessageFields
 from termdeck.platform_paths import PlatformPaths
+from termdeck.remote_access import RemoteAccessManager, RemoteAccessStatus
+from termdeck.remote_credentials import RemoteCredentialStore
 from termdeck.search_service import ProjectSearchService
 from termdeck.session_manager import TerminalSessionManager
 from termdeck.settings_store import UiSettingsStore
@@ -300,8 +304,7 @@ class UiSettings(BaseModel):
     inline_size_controls: bool = False
     prompt_wrap_guard: bool = False
     history_mode: bool = False
-    transcript_first_experimental: bool = False
-    transcript_first_surface: str = ""
+    transcript_first_surface: str = "terminal"
     claude_snapshot_experimental: bool = False
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
@@ -329,6 +332,7 @@ class TermdeckServer:
     events as JSON text frames; client sends JSON text frames for input and resize."""
 
     def __init__(self) -> None:
+        self.server_instance_id = uuid.uuid4().hex
         self.state_backup = StateBackupManager(TermdeckConfig.DATA_DIR, TermdeckConfig.STATE_BACKUP_MAX_BYTES,
                                                TermdeckConfig.STATE_BACKUP_INTERVAL_SECONDS,
                                                TermdeckConfig.STATE_BACKUP_PREWRITE_INTERVAL_SECONDS)
@@ -353,11 +357,16 @@ class TermdeckServer:
         if self.manager is not None:
             self.transcripts.add_file_change_listener(self.manager.notify_agent_transcript_changed)
         self.settings_store = UiSettingsStore(TermdeckConfig.SETTINGS_FILE, self.state_backup)
-        self.transcript_first_terminal_stability = bool(
-            UiSettings(**self.settings_store.load()).transcript_first_experimental
-        )
-        if self.manager is not None:
-            self.manager.set_transcript_first_terminal_stability(self.transcript_first_terminal_stability)
+        self.remote_access = RemoteAccessManager(
+            relay_url=TermdeckConfig.REMOTE_SERVICE_URL, public_url=TermdeckConfig.REMOTE_PUBLIC_URL,
+            local_url=f"http://127.0.0.1:{TermdeckConfig.PORT}",
+            credential_store=RemoteCredentialStore(TermdeckConfig.REMOTE_CREDENTIALS_FILE),
+            pair_poll_seconds=TermdeckConfig.REMOTE_PAIR_POLL_SECONDS,
+            pair_timeout_seconds=TermdeckConfig.REMOTE_PAIR_TIMEOUT_SECONDS,
+            reconnect_min_seconds=TermdeckConfig.REMOTE_RECONNECT_MIN_SECONDS,
+            reconnect_max_seconds=TermdeckConfig.REMOTE_RECONNECT_MAX_SECONDS,
+            http_timeout_seconds=TermdeckConfig.REMOTE_HTTP_TIMEOUT_SECONDS,
+            demand_poll_seconds=TermdeckConfig.REMOTE_DEMAND_POLL_SECONDS)
         self._state_backup_task: asyncio.Task | None = None
         self._origin_delivery_locks: dict[str, asyncio.Lock] = {}
         self._task_delivery_jobs: set[asyncio.Task] = set()
@@ -373,9 +382,11 @@ class TermdeckServer:
         self.manager.start_background_tasks()
         self.transcripts.start(asyncio.get_running_loop())
         self.history_index.start()
+        await self.remote_access.start()
         try:
             yield
         finally:
+            await self.remote_access.stop()
             if self._state_backup_task is not None:
                 self._state_backup_task.cancel()
                 try:
@@ -399,6 +410,7 @@ class TermdeckServer:
                   name=TermdeckConfig.FILEBROWSER_STATIC_NAME)
         app.get("/", response_model=None)(self._index)
         app.get(TermdeckConfig.PROJECT_PAGE_ROUTE, response_model=None)(self._project_page)
+        app.get(TermdeckConfig.PROJECT_NAVIGATION_PAGE_ROUTE, response_model=None)(self._project_navigation_page)
         app.get(TermdeckConfig.FILEDECK_PAGE_ROUTE, response_model=None)(self._filedeck_page)
         app.get(TermdeckConfig.API_STATE_RECOVERY_ROUTE, response_model=None)(self._state_recovery_status)
         app.post(TermdeckConfig.API_STATE_RECOVERY_RESTORE_ROUTE, response_model=None)(self._restore_state_recovery)
@@ -443,6 +455,9 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._get_settings)
         app.put(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._replace_settings)
         app.patch(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._patch_settings)
+        app.get(TermdeckConfig.API_REMOTE_STATUS_ROUTE, response_model=None)(self._remote_status)
+        app.post(TermdeckConfig.API_REMOTE_PAIR_ROUTE, response_model=None)(self._remote_pair)
+        app.post(TermdeckConfig.API_REMOTE_DISCONNECT_ROUTE, response_model=None)(self._remote_disconnect)
         app.post(TermdeckConfig.API_NOTEBOOK_TRASH_ROUTE, response_model=None)(self._trash_notebook_note)
         app.get(TermdeckConfig.API_FILE_LIST_ROUTE, response_model=None)(self._list_files)
         app.get(TermdeckConfig.API_FILE_RECENT_ROUTE, response_model=None)(self._recent_files)
@@ -490,12 +505,24 @@ class TermdeckServer:
     async def _get_settings(self) -> dict[str, int | str]:
         return UiSettings(**self.settings_store.load()).model_dump()
 
+    async def _remote_status(self) -> RemoteAccessStatus:
+        return self.remote_access.status()
+
+    async def _remote_pair(self) -> RemoteAccessStatus:
+        try:
+            return await self.remote_access.begin_pairing()
+        except httpx.HTTPError as remote_error:
+            raise HTTPException(status_code=502, detail=str(remote_error)) from remote_error
+
+    async def _remote_disconnect(self) -> RemoteAccessStatus:
+        try:
+            return await self.remote_access.disconnect()
+        except httpx.HTTPError as remote_error:
+            raise HTTPException(status_code=502, detail=str(remote_error)) from remote_error
+
     async def _put_settings(self, settings: UiSettings) -> dict[str, int | str]:
         payload = self._preserve_active_layout_entries(settings.model_dump())
         self.settings_store.save(payload)
-        self.transcript_first_terminal_stability = bool(payload["transcript_first_experimental"])
-        if self.manager is not None:
-            self.manager.set_transcript_first_terminal_stability(self.transcript_first_terminal_stability)
         return payload
 
     async def _replace_settings(self, settings: UiSettings, replace: bool = False) -> dict[str, int | str]:
@@ -512,9 +539,6 @@ class TermdeckServer:
         merged_settings = {**self.settings_store.load(), **incoming_settings}
         payload = self._preserve_active_layout_entries(UiSettings(**merged_settings).model_dump())
         self.settings_store.save(payload)
-        self.transcript_first_terminal_stability = bool(payload["transcript_first_experimental"])
-        if self.manager is not None:
-            self.manager.set_transcript_first_terminal_stability(self.transcript_first_terminal_stability)
         return payload
 
     def _preserve_active_layout_entries(self, incoming_payload: dict[str, object]) -> dict[str, object]:
@@ -781,6 +805,9 @@ class TermdeckServer:
         if self.manager.registry.root_for(project_name) is None:
             raise HTTPException(status_code=404, detail=project_name)
         return FileResponse(TermdeckConfig.STATIC_DIR / TermdeckConfig.INDEX_FILE)
+
+    async def _project_navigation_page(self, project_name: str, navigation_path: str) -> FileResponse:
+        return await self._project_page(project_name)
 
     async def _filedeck_page(self, project_name: str) -> FileResponse:
         if self.recovery_mode:
@@ -1686,19 +1713,8 @@ class TermdeckServer:
         screen_repaint = websocket.query_params.get("screen_repaint", "1").lower() not in {"0", "false", "no", "off"}
         have_buffer = websocket.query_params.get("have_buffer", "0").lower() not in {"0", "false", "no", "off"}
         repaint_preserved_buffer = websocket.query_params.get("repaint_preserved_buffer", "0").lower() not in {"0", "false", "no", "off"}
-        fixed_geometry_requested = websocket.query_params.get("fixed_geometry", "0").lower() not in {"0", "false", "no", "off"}
-        fixed_geometry = self.manager.session_supports_transcript_first_geometry(session_id) and (
-            fixed_geometry_requested or self.transcript_first_terminal_stability
-        )
-        if fixed_geometry:
-            screen_repaint = False
-            repaint_preserved_buffer = False
         scrollback, queue = self.manager.attach_client(session_id, screen_repaint, have_buffer, repaint_preserved_buffer)
         try:
-            if fixed_geometry:
-                cols, rows = self.manager.session_geometry(session_id)
-                await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.GEOMETRY,
-                                                       WsMessageFields.COLS: cols, WsMessageFields.ROWS: rows}))
             await websocket.send_bytes(scrollback)
             await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.DRAFT,
                                                    WsMessageFields.DRAFT: self.manager.session_draft(session_id)}))
@@ -1718,6 +1734,8 @@ class TermdeckServer:
         await websocket.accept()
         queue = self.manager.attach_status_client()
         try:
+            await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.SERVER_INSTANCE,
+                                                  WsMessageFields.INSTANCE_ID: self.server_instance_id}))
             for status in self.manager.status_snapshot():
                 await websocket.send_text(json.dumps(status))
             while True:
@@ -1843,13 +1861,9 @@ class TermdeckServer:
             if message_type == WsMessageFields.INPUT:
                 self.manager.write_input(session_id, message[WsMessageFields.DATA])
             elif message_type == WsMessageFields.RESIZE:
-                if not getattr(self, "transcript_first_terminal_stability", False) or \
-                        not self.manager.session_supports_transcript_first_geometry(session_id):
-                    self.manager.resize(session_id, int(message[WsMessageFields.COLS]), int(message[WsMessageFields.ROWS]))
+                self.manager.resize(session_id, int(message[WsMessageFields.COLS]), int(message[WsMessageFields.ROWS]))
             elif message_type == WsMessageFields.REPAINT:
-                if not getattr(self, "transcript_first_terminal_stability", False) or \
-                        not self.manager.session_supports_transcript_first_geometry(session_id):
-                    self.manager.request_screen_repaint(session_id)
+                self.manager.request_screen_repaint(session_id)
             elif message_type == WsMessageFields.DRAFT_SYNC:
                 self.manager.set_draft(session_id, message.get(WsMessageFields.DRAFT, ""))
             elif message_type == WsMessageFields.SUBMIT:

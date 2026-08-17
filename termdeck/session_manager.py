@@ -32,6 +32,11 @@ class ManagedSession:
         self.proc: PtyProcess | None = None
         self.buffer = bytearray()
         self.client_queues: set[asyncio.Queue] = set()
+        # Whether the pty produced output while nothing was attached to receive it. A reconnecting client
+        # claiming have_buffer is only safe to trust when it missed nothing: a TUI paints at absolute
+        # cursor positions, so landing new writes on a screen that skipped an update composites the two
+        # into garbage rather than merely lagging behind.
+        self.output_missed_while_detached = False
         self.processing_expiry_task: asyncio.Task | None = None
         self.exit_code: int | None = None
         self.lazy_start_pending = False
@@ -68,6 +73,7 @@ class ManagedSession:
         self.detect_attempts = 0
         self.detect_deadline_monotonic = 0.0
         self.last_input_monotonic = 0.0
+        self.last_agent_submit_monotonic = 0.0
         self.last_activity_at = record.last_activity_at
         self.last_activity_broadcast_monotonic = 0.0
         self.claude_subagent_states: dict[Path, bool] = {}
@@ -132,17 +138,8 @@ class TerminalSessionManager:
         self._agent_activity_refresh_handles: dict[Path, asyncio.TimerHandle] = {}
         self._transcript_service = None
         self._history_index = None
-        self._transcript_first_terminal_stability = False
         self._claude_activity_watcher = ClaudeActivityWatcher(
             TermdeckConfig.CLAUDE_PROJECTS_DIR, self._on_claude_file_change_from_thread)
-
-    def set_transcript_first_terminal_stability(self, enabled: bool) -> None:
-        self._transcript_first_terminal_stability = enabled
-
-    def _session_uses_fixed_terminal_geometry(self, ms: ManagedSession) -> bool:
-        return self._transcript_first_terminal_stability and ms.record.agent_kind in {
-            AgentKind.CODEX.value, AgentKind.CLAUDE.value, AgentKind.AGY.value,
-        }
 
     def attach_transcript_service(self, service) -> None:
         self._transcript_service = service
@@ -184,6 +181,7 @@ class TerminalSessionManager:
         # and are attached lazily when opened; dead sockets are safe to clear.
         for ms in self._sessions.values():
             await self._reconcile_session_socket(ms)
+            await self._reconcile_live_claude_session_binding(ms)
             self._reconcile_stale_claude_session_binding(ms)
             self._sync_claude_explicit_title(ms)
             self._refresh_session_activity(ms)
@@ -207,6 +205,23 @@ class TerminalSessionManager:
             ms.agy_transcript_active = self._tracker.agy_session_is_active(ms.record.agent_session_id)
             if ms.agy_transcript_active:
                 ms.agy_transcript_active_until = time.monotonic() + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
+
+    async def _reconcile_live_claude_session_binding(self, ms: ManagedSession) -> bool:
+        if not ms.detached_live or ms.record.agent_kind != AgentKind.CLAUDE.value:
+            return False
+        candidate = await self._tracker.claude_resume_session_id_from_process_arguments(
+            self._dtach_socket(ms.record.session_id))
+        if not candidate or candidate == ms.record.agent_session_id or candidate in self._claimed_agent_ids(ms):
+            return False
+        cwd = Path(ms.record.cwd)
+        candidate_activity = self._tracker.session_activity_timestamp(AgentKind.CLAUDE, cwd, candidate)
+        current_activity = self._tracker.session_activity_timestamp(
+            AgentKind.CLAUDE, cwd, ms.record.agent_session_id)
+        if candidate_activity <= current_activity:
+            return False
+        ms.record.agent_session_id = candidate
+        self._initialize_claude_subagent_state(ms)
+        return True
 
     def create_session(self, command: str, cwd: str, title: str, project: str = "", output_path: str = "",
                        agent_rename: str | None = None, worktree: WorktreeMetadata | None = None,
@@ -375,7 +390,7 @@ class TerminalSessionManager:
     def _create(self, clean_command: str, cwd_path: Path, title: str, initial_command: str | None,
                 agent_rename: str | None = None, project: str | None = None,
                 output_path: str = "", worktree: WorktreeMetadata | None = None,
-                worktree_id: str = "root") -> ManagedSession:
+                worktree_id: str = "root", fork_parent_agent_session_id: str | None = None) -> ManagedSession:
         kind = self._tracker.detect_agent_kind(clean_command)
         project_name = project.strip() if project and project.strip() else self.registry.ensure_project_for_cwd(cwd_path)
         record = SessionRecord(session_id=uuid.uuid4().hex[:12], title=title.strip() or self._auto_title(clean_command, cwd_path),
@@ -388,7 +403,8 @@ class TerminalSessionManager:
                                worktree_base_ref=worktree.base_ref if worktree else None,
                                worktree_base_commit=worktree.base_commit if worktree else None,
                                worktree_managed=worktree.managed if worktree else False,
-                               worktree_id=worktree_id or (worktree.worktree_id if worktree else "root"))
+                               worktree_id=worktree_id or (worktree.worktree_id if worktree else "root"),
+                               fork_parent_agent_session_id=fork_parent_agent_session_id)
         ms = ManagedSession(record)
         if agent_rename and kind in (AgentKind.CODEX, AgentKind.CLAUDE):
             ms.pending_agent_rename = " ".join(agent_rename.splitlines()).strip()
@@ -411,7 +427,8 @@ class TerminalSessionManager:
                                                src.worktree_id)
         return self._create(src.command, Path(src.cwd), title, initial_command=initial,
                             agent_rename=title if kind in (AgentKind.CODEX, AgentKind.CLAUDE) else None, project=src.project,
-                            worktree=source_worktree, worktree_id=source_worktree.worktree_id if source_worktree else src.worktree_id)
+                            worktree=source_worktree, worktree_id=source_worktree.worktree_id if source_worktree else src.worktree_id,
+                            fork_parent_agent_session_id=src.agent_session_id if kind is AgentKind.CLAUDE else None)
 
     @staticmethod
     def _auto_title(command: str, cwd: Path) -> str:
@@ -464,7 +481,7 @@ class TerminalSessionManager:
             if kind is AgentKind.CLAUDE and ms.record.agent_session_id:
                 self._initialize_claude_subagent_state(ms)
             self._schedule_detection(ms, TermdeckConfig.AGENT_DETECT_INITIAL_DELAY_SECONDS)
-        if reattach and screen_repaint and not self._session_uses_fixed_terminal_geometry(ms):
+        if reattach and screen_repaint:
             self._schedule_screen_repaint(ms, TermdeckConfig.SCREEN_REPAINT_REATTACH_DELAY_SECONDS)
         if resume and not reattach and ms.record.draft:
             asyncio.create_task(self._replay_draft_into_respawn(ms, ms.proc))
@@ -543,6 +560,12 @@ class TerminalSessionManager:
             kind, Path(ms.record.cwd), ms.detect_baseline, self._claimed_agent_ids(ms), claim_allowed=claim_allowed)
         if found is None:
             found = dir_found
+        recent_claude_submit = kind is AgentKind.CLAUDE and ms.last_agent_submit_monotonic > 0 and \
+            time.monotonic() - ms.last_agent_submit_monotonic < TermdeckConfig.AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS
+        if found is None and recent_claude_submit:
+            submitted_at = time.time() - (time.monotonic() - ms.last_agent_submit_monotonic)
+            found = self._tracker.claude_session_id_from_recent_file_activity(
+                Path(ms.record.cwd), submitted_at, self._claimed_agent_ids(ms))
         if found is None:
             if kind is AgentKind.AGY and ms.detect_attempts < 20:
                 ms.detect_task = asyncio.create_task(self._detect_after(ms, 1.0))
@@ -1142,8 +1165,11 @@ class TerminalSessionManager:
             title_renamed = self._reconcile_codex_rename(ms, previous_title)
             if attention_changed or title_renamed:
                 self._broadcast_status(ms)
-        for queue in list(ms.client_queues):
-            queue.put_nowait(data)
+        if ms.client_queues:
+            for queue in list(ms.client_queues):
+                queue.put_nowait(data)
+        else:
+            ms.output_missed_while_detached = True
         self._broadcast_activity_if_due(ms)
 
     def _reconcile_codex_rename(self, ms: ManagedSession, previous_title: str | None) -> bool:
@@ -1333,16 +1359,20 @@ class TerminalSessionManager:
     def attach_client(self, session_id: str, screen_repaint: bool = True, have_buffer: bool = False,
                       repaint_preserved_buffer: bool = False) -> tuple[bytes, asyncio.Queue]:
         ms = self._sessions[session_id]
-        screen_repaint = screen_repaint and not self._session_uses_fixed_terminal_geometry(ms)
         self._recover_title_from_buffer(ms)
         preserve_client_buffer = have_buffer
+        # Output missed while detached does not make the client's scrollback worthless, only its bottom
+        # screen wrong, so keep the buffer (resetting here would discard history the client still holds)
+        # and force the repaint instead, which is what makes the visible screen authoritative again.
+        client_buffer_is_stale = ms.output_missed_while_detached
+        ms.output_missed_while_detached = False
         if ms.lazy_start_pending:
             self._spawn(ms, resume=True, screen_repaint=screen_repaint and not preserve_client_buffer)
             self._broadcast_status(ms)
         queue: asyncio.Queue = asyncio.Queue()
         ms.client_queues.add(queue)
         if preserve_client_buffer:
-            if screen_repaint and repaint_preserved_buffer:
+            if client_buffer_is_stale or (screen_repaint and repaint_preserved_buffer):
                 self._schedule_screen_repaint(ms, TermdeckConfig.SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS)
             return b"", queue
         needs_repaint = ms.screen_lives_only_in_stripped_sync_frames or not ms.buffer
@@ -1400,6 +1430,7 @@ class TerminalSessionManager:
         elif claude_prompt_submitted:
             ms.record.claude_interrupted = False
             ms.claude_main_active = True
+            ms.last_agent_submit_monotonic = time.monotonic()
         current_processing = self._processing_state(ms)
         if current_processing != previous_processing:
             self._sync_processing_started(ms, current_processing)
@@ -1581,8 +1612,6 @@ class TerminalSessionManager:
 
     def resize(self, session_id: str, cols: int, rows: int) -> None:
         ms = self._sessions[session_id]
-        if self._session_uses_fixed_terminal_geometry(ms):
-            return
         size_changed = (ms.record.cols, ms.record.rows) != (cols, rows)
         ms.cols, ms.rows = cols, rows
         if size_changed and ms.proc is not None:
@@ -1593,8 +1622,6 @@ class TerminalSessionManager:
 
     def request_screen_repaint(self, session_id: str) -> bool:
         ms = self._sessions[session_id]
-        if self._session_uses_fixed_terminal_geometry(ms):
-            return False
         if ms.record.agent_kind != AgentKind.CODEX.value or ms.proc is None or not ms.proc.alive:
             return False
         self._schedule_screen_repaint(ms, 0)
@@ -1931,19 +1958,11 @@ class TerminalSessionManager:
 
     def session_history_source(self, session_id: str) -> tuple[str, str, str | None]:
         record = self._sessions[session_id].record
-        return record.agent_kind, record.cwd, record.agent_session_id
+        transcript_session_id = record.agent_session_id or record.fork_parent_agent_session_id
+        return record.agent_kind, record.cwd, transcript_session_id
 
     def session_draft(self, session_id: str) -> str:
         return self._sessions[session_id].record.draft
-
-    def session_geometry(self, session_id: str) -> tuple[int, int]:
-        session = self._sessions[session_id]
-        return session.cols, session.rows
-
-    def session_supports_transcript_first_geometry(self, session_id: str) -> bool:
-        return self._sessions[session_id].record.agent_kind in {
-            AgentKind.CODEX.value, AgentKind.CLAUDE.value, AgentKind.AGY.value,
-        }
 
     def _persist(self) -> None:
         self._store.save_all([ms.record for ms in self._sessions.values()])

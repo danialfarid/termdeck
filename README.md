@@ -27,7 +27,7 @@ fresh one.
 The terminal deck stays at the center. Around it are tools that shorten the loop around agent work: grouped
 and searchable sessions, activity and unread state, an MD conversation mode, prompt and clipboard
 history, quick notes, a Monaco file editor, project search, Git history, and an automation API for spawning
-parallel agents.
+parallel agents and coordinating work between them.
 
 ```
 ┌──────────────────────────┬────────────────────────────────────────────────────┐
@@ -58,6 +58,10 @@ parallel agents.
 - **Agents can delegate through the same UI.** Fork one session or up to 25 copies, or use the local API to
   start named tasks with a model, permission, prompt, placement, and result path. Every child remains a normal,
   inspectable TermDeck terminal.
+- **Useful context can move directly between agents.** Select text in a terminal, MD conversation, file, or note
+  and choose **Ask an agent** to hand it to a new agent without rebuilding the prompt. Agents and scripts can also
+  use the API to start another agent, send follow-up prompts, monitor completion, and read its response, enabling
+  review, delegation, and cross-agent workflows while every participant remains visible in the deck.
 - **Projects have first-class worktrees.** The project header shows the current branch, discovers existing Git
   worktrees, and creates new branches in free folders. Each worktree has its own terminals, closed-session history,
   layout, file/search view, and Git context; worktrees can be opened in a separate browser tab or moved to trash.
@@ -68,8 +72,8 @@ parallel agents.
   history, a composer, and a queue.
 - **Your input is recoverable.** Unsent drafts are persisted, terminal and Markdown prompts stay in history,
   and clipboard history and quick notes keep useful snippets nearby.
-- **One browser tab per project — or per task.** Projects are URL-addressable at `/p/<name>`, while a terminal,
-  file browser, or search view can also open in its own browser tab.
+- **One browser tab per project — or per task.** Project worktrees are URL-addressable at `/p/<project>/<worktree>`,
+  while a terminal or file can append its stable session ID or repo-relative path and open in its own browser tab.
 - **The supporting tools understand the terminal workflow.** Printed paths are clickable, files open in
   Monaco, and file-name search, content search, Git history, blame, definitions, usages, and Problems are close
   without turning TermDeck into a full IDE replacement.
@@ -118,7 +122,7 @@ sudo pacman -S dtach ripgrep               # Arch
 then TermDeck itself:
 
 ```sh
-uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.3.0"
+uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.5.0"
 termdeck --open
 ```
 
@@ -127,7 +131,7 @@ Upgrade to a newer release by re-running the same command with the new tag.
 ### pipx
 
 ```sh
-pipx install "git+https://github.com/danialfarid/termdeck.git@v0.3.0"
+pipx install "git+https://github.com/danialfarid/termdeck.git@v0.5.0"
 ```
 
 ### From source
@@ -281,8 +285,10 @@ So if you were three sentences into a prompt when your laptop rebooted, you get 
 A project is just a named base directory. The first time you open a terminal in a directory, that directory
 is registered as a project (stored in `~/.termdeck/projects.json`).
 
-Each project is URL-addressable at `/p/<name>` — for example `/p/termdeck`. The intended workflow is **one
-browser tab per project**. `/` shows everything at once. Switching projects from the sidebar dropdown swaps
+Each selected worktree is URL-addressable at `/p/<project>/<worktree>` — for example `/p/termdeck/main`.
+Terminal URLs append the stable session ID and show the terminal name in the fragment; file URLs append the
+repo-relative file path. The intended workflow is **one browser tab per project**. `/` shows everything at once.
+Switching projects from the sidebar dropdown swaps
 terminals, open files, closed history, remembered selection, and the default directory for new terminals.
 The worktree selector can show one worktree or **All worktrees**; the latter keeps each worktree's terminals,
 groups, and closed-session history in its own collapsible section. Selecting a specific worktree filters the panel
@@ -504,6 +510,13 @@ TermDeck runs terminals on your machine. Treat it as exactly that.
 - Environment variables starting with `CLAUDE` are scrubbed from spawned terminals.
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+### Remote access
+
+TermDeck Remote uses Google login and an outbound, on-demand connector so the server remains bound to localhost.
+The hosted relay can be deployed from `remote_service/`, and the local pairing flow is available under Settings →
+Remote access. See [docs/remote-access.md](docs/remote-access.md) for the security model, deployment requirements,
+and current single-instance limit.
 
 ---
 

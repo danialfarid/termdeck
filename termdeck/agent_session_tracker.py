@@ -13,12 +13,10 @@ from termdeck.util import TimeUtil
 
 
 class AgentSessionTracker:
-    """Resolves which claude/codex CLI session a terminal is CURRENTLY on. Two signals, in order of authority:
-    (1) session files held open by the terminal's process group (lsof — exact attribution; catches picker-resumes
-    and in-TUI session switches); (2) session files NEWLY CREATED since the terminal spawned (covers CLIs that
-    only open their file briefly per turn, e.g. claude). Grown existing files are deliberately NOT claimed:
-    concurrent external sessions in the same cwd (another claude in another app) grow their files constantly and
-    would be hijacked; the caller additionally gates (2) on recent terminal input for the same reason."""
+    """Resolves which claude/codex CLI session a terminal is CURRENTLY on. Open process files are authoritative.
+    New files are claimable only after local input. An existing Claude file is claimable only when it changed after
+    this terminal submitted a prompt and no other terminal owns it, which supports in-process resume switches without
+    attributing unrelated concurrent Claude activity in the same cwd."""
 
     _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     _CODEX_ROLLOUT_UUID_RE = re.compile(
@@ -361,6 +359,21 @@ class AgentSessionTracker:
         return any(marker in text for text in texts for marker in AgentSessionTracker._CLAUDE_LOCAL_COMMAND_MARKERS)
 
     @staticmethod
+    def _claude_user_event_is_non_prompt_metadata(message: dict) -> bool:
+        content = message.get("content")
+        if isinstance(content, str):
+            texts = [content]
+            blocks = []
+        else:
+            blocks = [part for part in content or [] if isinstance(part, dict)]
+            texts = [part.get("text") or "" for part in blocks]
+        if any(part.get("type") == "tool_result" for part in blocks):
+            return True
+        if not any(text.strip() for text in texts):
+            return True
+        return any(text.lstrip().startswith("<system-reminder>") for text in texts)
+
+    @staticmethod
     def _claude_subagent_is_active(path: Path) -> bool:
         """Infer active work from the last meaningful Claude subagent event."""
         try:
@@ -379,8 +392,8 @@ class AgentSessionTracker:
                 continue
             message = event.get("message") or {}
             if event.get("type") == "user":
-                # Claude injects system reminders as isMeta user events; they say nothing about progress.
-                if event.get("isMeta") or AgentSessionTracker._claude_user_event_is_local_command(message):
+                if event.get("isMeta") or AgentSessionTracker._claude_user_event_is_local_command(message) or \
+                        AgentSessionTracker._claude_user_event_is_non_prompt_metadata(message):
                     continue
                 if AgentSessionTracker._claude_user_event_is_interruption(message):
                     return False
@@ -599,6 +612,32 @@ class AgentSessionTracker:
             if mtime >= best_mtime:
                 best_mtime, best_id = mtime, session_id
         return best_id
+
+    async def claude_resume_session_id_from_process_arguments(self, socket_path: Path) -> str | None:
+        tree_pids = await ProcTreeUtil.tree_pids_for_socket(str(socket_path))
+        found: set[str] = set()
+        for process in await ProcTreeUtil.process_details(tree_pids):
+            parts = self._command_parts(str(process["command"]))
+            for index, part in enumerate(parts):
+                candidate = parts[index + 1] if part == TermdeckConfig.CLAUDE_RESUME_FLAG and index + 1 < len(parts) else \
+                    part.removeprefix(f"{TermdeckConfig.CLAUDE_RESUME_FLAG}=") if part.startswith(f"{TermdeckConfig.CLAUDE_RESUME_FLAG}=") else ""
+                if self._UUID_RE.fullmatch(candidate):
+                    found.add(candidate)
+        return next(iter(found)) if len(found) == 1 else None
+
+    def claude_session_id_from_recent_file_activity(self, cwd: Path, after_timestamp: float,
+                                                     claimed_ids: set[str]) -> str | None:
+        candidates: list[tuple[float, str]] = []
+        for path, session_id in self._candidate_session_files(AgentKind.CLAUDE, cwd):
+            if session_id in claimed_ids:
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if mtime >= after_timestamp:
+                candidates.append((mtime, session_id))
+        return max(candidates, default=(0.0, None))[1]
 
     def _session_id_for_path(self, kind: AgentKind, path: Path) -> str | None:
         if kind is AgentKind.CODEX and path.is_relative_to(TermdeckConfig.CODEX_SESSIONS_DIR):

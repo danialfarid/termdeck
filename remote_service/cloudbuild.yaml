@@ -1,0 +1,9 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: [build, -f, remote_service/Dockerfile, -t, us-central1-docker.pkg.dev/$PROJECT_ID/termdeck-remote/relay:latest, .]
+  - name: gcr.io/cloud-builders/docker
+    args: [push, us-central1-docker.pkg.dev/$PROJECT_ID/termdeck-remote/relay:latest]
+images:
+  - us-central1-docker.pkg.dev/$PROJECT_ID/termdeck-remote/relay:latest
+options:
+  logging: CLOUD_LOGGING_ONLY

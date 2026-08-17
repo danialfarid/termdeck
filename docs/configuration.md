@@ -16,6 +16,7 @@ no effect — restart instead.
 | `TERMDECK_HOST` | `--host` | `127.0.0.1` | See [binding to other interfaces](#binding-to-other-interfaces) before changing this |
 | `TERMDECK_PORT` | `--port` | `8530` | |
 | `TERMDECK_LOG_LEVEL` | `--log-level` | `info` | `critical`, `error`, `warning`, `info`, `debug`, `trace` |
+| `TERMDECK_REMOTE_URL` | | TermDeck hosted relay | Hosted relay used by Settings → Remote access |
 
 ## Storage
 

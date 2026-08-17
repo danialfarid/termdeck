@@ -66,7 +66,7 @@ cpu/rss.
 |---|---|
 | `session_store.py` | `SessionStore` (atomic JSON rewrite of all terminals) and `ClosedSessionStore` (capped history of closed ones). |
 | `settings_store.py` | UI settings, stored server-side so they follow you across browsers. |
-| `project_registry.py` | Named base directories addressable as `/p/<name>`; auto-registered on first terminal in a directory. |
+| `project_registry.py` | Named base directories used by canonical `/p/<project>/<worktree>/...` routes; auto-registered on first terminal in a directory. |
 
 ### Agent integration
 

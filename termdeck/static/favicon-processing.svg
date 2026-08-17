@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#24103f"/>
+      <stop offset="1" stop-color="#0f081c"/>
+    </linearGradient>
+    <linearGradient id="letters" x1="18" y1="19" x2="48" y2="46" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#c084fc"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#bg)" stroke="#4c1d95" stroke-width="2"/>
+  <text x="32" y="44" fill="url(#letters)" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="800" letter-spacing="-2" text-anchor="middle">TD</text>
+  <circle cx="49" cy="15" r="12" fill="#64d8c1" opacity=".22"/>
+  <circle cx="49" cy="15" r="8" fill="#64d8c1"/>
+</svg>

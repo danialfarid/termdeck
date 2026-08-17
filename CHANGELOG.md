@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-17
+
+### Added
+
+- TermDeck Remote with Google sign-in, an outbound on-demand connector, hosted relay service, pairing controls, and deployment documentation.
+- Cross-agent delegation from selected terminal, transcript, file, or note text to new or recently active agents.
+- Stable project, worktree, terminal, and file navigation URLs for focused browser tabs and shared links.
+- Processing and unread favicon states for the selected terminal.
+
+### Changed
+
+- Transcript-first is the standard Codex, Claude, and AGY conversation architecture, with terminal view remaining the default surface.
+- Terminal reconnect and repaint behavior preserves usable client scrollback while repairing screens that missed detached output.
+- Claude session tracking recognizes resume switches, excludes non-prompt metadata from activity, and retains parent transcript context for forks.
+- Closing and reopening terminals restores focus and navigation more consistently.
+
+### Fixed
+
+- Reduced stale or blank terminal surfaces after reconnects and background-tab returns without disabling genuine terminal resizing.
+- Corrected false Claude processing indicators caused by metadata-only transcript events.
+
 ## [0.4.0] — 2026-08-15
 
 ### Added
@@ -84,7 +105,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/danialfarid/termdeck/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/danialfarid/termdeck/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/danialfarid/termdeck/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/danialfarid/termdeck/compare/v0.1.0...v0.2.0

@@ -26,7 +26,8 @@ class ServiceInstaller:
     MODULE_ARGS = ("-m", "termdeck")
     FORWARDED_ENV_KEYS = (PlatformPaths.ENV_HOST, PlatformPaths.ENV_PORT, PlatformPaths.ENV_DATA_DIR,
                           PlatformPaths.ENV_DEFAULT_CWD, PlatformPaths.ENV_FILE_ROOT, PlatformPaths.ENV_SHELL,
-                          PlatformPaths.ENV_DTACH_BIN, PlatformPaths.ENV_RG_BIN, PlatformPaths.ENV_LOG_LEVEL)
+                          PlatformPaths.ENV_DTACH_BIN, PlatformPaths.ENV_RG_BIN, PlatformPaths.ENV_LOG_LEVEL,
+                          PlatformPaths.ENV_REMOTE_URL)
     SYSTEMD_UNIT_TEMPLATE = """[Unit]
 Description=TermDeck - browser terminal deck with agent session resume
 After=default.target

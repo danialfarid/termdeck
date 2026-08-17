@@ -6,8 +6,8 @@ from termdeck.state_backup import StateBackupManager
 
 
 class ProjectRegistry:
-    """Named base directories addressable in the UI url (/p/<name>). A project is auto-registered the first
-    time a terminal is created inside its root; session records store the project slug for filtering."""
+    """Named base directories used by project/worktree UI URLs. A project is auto-registered the first time a
+    terminal is created inside its root; session records store the project slug for filtering."""
 
     TMP_SUFFIX = ".tmp"
 

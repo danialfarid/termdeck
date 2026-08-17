@@ -30,6 +30,8 @@ class PlatformPaths:
     ENV_PS_BIN = "TERMDECK_PS_BIN"
     ENV_PGREP_BIN = "TERMDECK_PGREP_BIN"
     ENV_LOG_LEVEL = "TERMDECK_LOG_LEVEL"
+    ENV_REMOTE_URL = "TERMDECK_REMOTE_URL"
+    ENV_REMOTE_PUBLIC_URL = "TERMDECK_REMOTE_PUBLIC_URL"
 
     @staticmethod
     def env_text(name: str, default: str) -> str:

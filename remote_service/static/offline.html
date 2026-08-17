@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Connecting to TermDeck</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100dvh; display: grid; place-items: center; background: #090b10; color: #e8edf5; padding: 24px; }
+    main { width: min(480px, 100%); padding: 32px; border: 1px solid #293140; border-radius: 16px; background: #11151d; box-shadow: 0 24px 80px #0009; }
+    h1 { margin: 0 0 12px; font-size: 24px; }
+    p { margin: 0 0 12px; color: #9ca9bb; line-height: 1.5; }
+    .status { display: flex; align-items: center; gap: 12px; margin-top: 22px; color: #c9d5e6; }
+    .spinner { width: 18px; height: 18px; border: 2px solid #334155; border-top-color: #64b5f6; border-radius: 50%; animation: spin 0.8s linear infinite; }
+    .email { color: #c7d2e2; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Connecting to TermDeck</h1>
+    <p>Your computer is waking its secure remote connection. This normally takes a few seconds.</p>
+    <p>Signed in as <span class="email" id="email"></span>.</p>
+    <div class="status"><span class="spinner"></span><span>Waiting for your computer</span></div>
+  </main>
+  <script>
+    const remoteOffline = __TERMDECK_REMOTE_OFFLINE_CONFIG__;
+    document.getElementById("email").textContent = remoteOffline.email;
+    async function waitForConnector() {
+      try {
+        const response = await fetch("/_remote/status", { cache: "no-store" });
+        if (response.ok && (await response.json()).connected) {
+          location.reload();
+          return;
+        }
+      } catch (error) {
+        if (!(error instanceof TypeError)) throw error;
+      }
+      setTimeout(waitForConnector, 500);
+    }
+    waitForConnector();
+  </script>
+</body>
+</html>

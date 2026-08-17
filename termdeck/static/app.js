@@ -18,7 +18,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_experimental: false, transcript_first_surface: "", claude_snapshot_experimental: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", claude_snapshot_experimental: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [] };
@@ -58,6 +58,11 @@ const CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME = "manifest";
 const CLAUDE_SNAPSHOT_FORMAT_VERSION = 4;
 const CLAUDE_SNAPSHOT_IDLE_SAVE_MS = 3000;
 const CLAUDE_SNAPSHOT_MAX_LINES = 4000;
+// A snapshot is hard-wrapped at the width it was taken at, and cannot be rewrapped once written into the
+// buffer. A container that has not been laid out yet fits to a handful of columns, and saving then
+// poisons the record: the width is stored with it, so a later restore at that same bogus width passes the
+// equality check and paints history as an unreadable narrow column beside a full-width screen.
+const CLAUDE_SNAPSHOT_MIN_COLS = 40;
 const CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES = 100 * 1024 * 1024;
 const CLAUDE_SNAPSHOT_RECORD_OVERHEAD_BYTES = 1024;
 const TERMINAL_AGE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -214,7 +219,8 @@ const PATH_HINT = String(location.pathname || "").toLowerCase();
 const LOCATION_HINT = String(location.href || "").toLowerCase();
 const LOCATION_PARAMS = new URLSearchParams(location.search);
 const WORKSPACE_ROOT_QUERY = LOCATION_PARAMS.get("workspace_root") || "";
-if (location.hash) {
+const IS_PROJECT_NAVIGATION_PATH = /^\/p\/[^/]+\/[^/]+\/.+/.test(location.pathname);
+if (location.hash && !IS_PROJECT_NAVIGATION_PATH) {
   const hash = location.hash.replace(/^#/, "");
   for (const [key, value] of new URLSearchParams(hash)) {
     LOCATION_PARAMS.set(key, value);
@@ -298,6 +304,9 @@ const THEME_DEFINITIONS = [
   makeTheme("dark", "Nord dark", "dark",
     { bg: "#0b0e12", panel: "#12161c", panel2: "#1a2029", border: "#232a35", text: "#d5dbe5", terminalForeground: "#d8dee9", dim: "#7a8494", accent: "#5ccfe6", working: "#83e6ff", green: "#9fe8a2", red: "#f28779", term: "#0a0c10", monacoBg: "#101418", cursor: "#8fbcbb", selection: "#3b4252", scroll: "#2b3440", scrollHover: "#3d4856", activeBg: "rgba(92, 207, 230, 0.13)", activeBorder: "rgba(92, 207, 230, 0.4)", activeText: "#eaf6f9", treeSelectedBg: "rgba(4, 57, 94, 0.55)", treeSelectedBorder: "rgba(0, 122, 204, 0.45)" },
     ["#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0", "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"]),
+  makeTheme("nord-vivid", "Nord dark vivid", "dark",
+    { bg: "#0b0e12", panel: "#12161c", panel2: "#1a2029", border: "#2c3441", text: "#e2e8f0", terminalForeground: "#e5e9f0", dim: "#929fb3", accent: "#67e8f9", working: "#8befff", green: "#7ee787", red: "#ff6b81", term: "#0a0c10", monacoBg: "#101418", cursor: "#8befff", selection: "#3b4961", scroll: "#344052", scrollHover: "#4b5b72", activeBg: "rgba(103, 232, 249, 0.15)", activeBorder: "rgba(103, 232, 249, 0.48)", activeText: "#f3fbff", treeSelectedBg: "rgba(71, 148, 255, 0.22)", treeSelectedBorder: "rgba(103, 232, 249, 0.52)" },
+    ["#3b4252", "#ff6b81", "#7ee787", "#f6c85f", "#82aaff", "#c792ea", "#67e8f9", "#e5e9f0", "#6272a4", "#ff8296", "#9bf6a5", "#ffe08a", "#9bbcff", "#d8a8ff", "#8befff", "#ffffff"]),
   makeTheme("light", "GitHub light", "light",
     { bg: "#f2f4f7", panel: "#ffffff", panel2: "#e9edf2", border: "#d4dbe3", text: "#24292f", terminalForeground: "#1f2328", dim: "#6b7580", accent: "#0969da", green: "#1a7f37", red: "#cf222e", term: "#ffffff", cursor: "#0969da", selection: "#b6d7fb", scroll: "#c7cfd8", scrollHover: "#aab2c0", activeBg: "rgba(9, 105, 218, 0.1)", activeBorder: "rgba(9, 105, 218, 0.35)", activeText: "#0a3069", treeSelectedBg: "rgba(9, 105, 218, 0.12)", treeSelectedBorder: "rgba(9, 105, 218, 0.3)" },
     ["#24292f", "#cf222e", "#116329", "#4d2d00", "#0969da", "#8250df", "#1b7c83", "#6e7781", "#57606a", "#a40e26", "#1a7f37", "#633c01", "#218bff", "#a475f9", "#3192aa", "#8c959f"]),
@@ -395,6 +404,7 @@ class TermdeckApp {
     this.historyStreamSessionId = null;
     this.historySnapshotBuffers = new Map();
     this.historyTurnsBySession = new Map();
+    this.historyScrollBySession = new Map();
     this.historyLiveTurnsBySession = new Map();
     this.historyOlderTurnsBySession = new Map();
     this.historyBeforeBySession = new Map();
@@ -439,6 +449,7 @@ class TermdeckApp {
     this.recentFilesBusy = false;
     this.recentFilesFetchedAt = 0;
     this.recentFilesExpanded = false;
+    this.recentFilesRefreshTimer = 0;
     this.sideView = "terminals";
     this.filesSidePanelCycleView = null;
     this.filesSidePanelCycleTransition = false;
@@ -507,6 +518,10 @@ class TermdeckApp {
     // processing=true. Keep that hand-off visible in Markdown mode.
     this.historyPendingProcessing = new Map();
     this.processingTimer = 0;
+    this.pageTitleFaviconState = "plain";
+    this.pageFavicon = document.querySelector('link[rel~="icon"]');
+    this.pageFaviconHref = this.pageFavicon?.getAttribute("href") || "/static/favicon.svg";
+    this.pageFaviconType = this.pageFavicon?.getAttribute("type") || "image/svg+xml";
     this.viewedCompletedSessions = new Set();
     this.unreadSessions = new Set();
     this.statHistory = [];
@@ -548,6 +563,15 @@ class TermdeckApp {
     this.lastValidNavState = null;
     this.statusWs = null;
     this.statusWsReconnectTimer = 0;
+    this.serverInstanceId = "";
+    this.serverRestartReloading = false;
+    this.remoteIdleTimeoutMs = 0;
+    this.remoteIdleLastInteractionAt = 0;
+    this.remoteIdleTimer = 0;
+    this.remoteIdleTransitioning = false;
+    this.remoteBrowserEmail = "";
+    this.remoteIdleActivityHandler = () => this.recordRemoteBrowserActivity();
+    this.remoteIdleVisibilityHandler = () => this.handleRemoteBrowserVisibilityChange();
     this.layoutFitSettleTimer = 0;
     this.sidebarResizeInProgress = false;
     this.sidebarResizeFinalFitFrame = 0;
@@ -557,9 +581,12 @@ class TermdeckApp {
     this.worktreeId = "root";
     this.interactionWorktreeId = "root";
     this.renderWorktreeId = null;
-    const projectMatch = location.pathname.match(/^\/p\/([^/]+)/);
+    const projectMatch = location.pathname.match(/^\/p\/([^/]+)(?:\/([^/]+))?(?:\/(.*))?$/);
     this.projectSlug = projectMatch ? decodeURIComponent(projectMatch[1])
       : this.vscodeEditorMode ? (LOCATION_PARAMS.get("project") || null) : null;
+    this.requestedWorktreeUrlSegment = projectMatch?.[2] ? decodeURIComponent(projectMatch[2]) : "";
+    this.requestedNavigationPath = projectMatch?.[3]
+      ? projectMatch[3].split("/").map((segment) => decodeURIComponent(segment)).join("/") : "";
     const urlParams = new URLSearchParams(location.search);
     this.worktreeId = String(urlParams.get("wt") || "root").trim() || "root";
     const requestedFileView = ["project", "search", "git"].includes(urlParams.get("view")) ? urlParams.get("view") : "project";
@@ -579,7 +606,7 @@ class TermdeckApp {
       this.initialNav = { kind: "search", q: urlParams.get("q"), glob: urlParams.get("glob") || "",
                           word: urlParams.get("w") === "1", case_sensitive: urlParams.get("c") === "1",
                           regex: urlParams.get("re") === "1" };
-    } else this.initialNav = null;
+    } else this.initialNav = this.requestedNavigationPath ? { kind: "path", selector: this.requestedNavigationPath } : null;
     this.$ = (id) => document.getElementById(id);
     this.ensureDesktopTerminalsHeader();
     this.applyVscodeModeLayout();
@@ -590,6 +617,52 @@ class TermdeckApp {
     const params = new URLSearchParams({ project: this.projectSlug });
     if (this.worktreeId !== ALL_WORKTREES_ID) params.set("worktree_id", this.worktreeId || "root");
     return `?${params}`;
+  }
+
+  worktreeForUrlSegment(segment) {
+    const value = String(segment || "").trim();
+    if (!value) return null;
+    if (value === ALL_WORKTREES_ID) {
+      return this.worktrees.filter((worktree) => worktree.available).length > 1
+        ? { id: ALL_WORKTREES_ID, branch: ALL_WORKTREES_ID, name: ALL_WORKTREES_ID } : null;
+    }
+    const exactId = this.worktrees.find((worktree) => worktree.available && worktree.id === value);
+    if (exactId) return exactId;
+    const branchMatches = this.worktrees.filter((worktree) => worktree.available && String(worktree.branch || "") === value);
+    if (branchMatches.length) return branchMatches.length === 1 ? branchMatches[0] : null;
+    const nameMatches = this.worktrees.filter((worktree) => worktree.available && String(worktree.name || "") === value);
+    return nameMatches.length === 1 ? nameMatches[0] : null;
+  }
+
+  worktreeUrlSegment(worktreeId = this.stateWorktreeId()) {
+    if (worktreeId === ALL_WORKTREES_ID) return ALL_WORKTREES_ID;
+    const worktree = this.worktrees.find((candidate) => candidate.id === (worktreeId || "root"));
+    return String(worktree?.branch || worktree?.name || worktreeId || "root");
+  }
+
+  encodedProjectWorktreePath(project = this.projectSlug, worktreeId = this.stateWorktreeId()) {
+    if (!project) return location.pathname;
+    return `/p/${encodeURIComponent(project)}/${encodeURIComponent(this.worktreeUrlSegment(worktreeId))}`;
+  }
+
+  encodedRelativeFilePath(path) {
+    return String(path || "").split("/").filter(Boolean).map((segment) => encodeURIComponent(segment)).join("/");
+  }
+
+  normalizedFileSystemPath(path) {
+    const normalized = String(path || "").replaceAll("\\", "/").replace(/\/{2,}/g, "/");
+    return normalized.length > 1 ? normalized.replace(/\/$/, "") : normalized;
+  }
+
+  relativeNavigationPathForFileKey(key) {
+    const separator = String(key || "").indexOf("|");
+    if (separator <= 0) return "";
+    const worktreeRoot = this.normalizedFileSystemPath(this.worktreeRoot());
+    const fileRoot = this.normalizedFileSystemPath(String(key).slice(0, separator));
+    const filePath = this.normalizedFileSystemPath(String(key).slice(separator + 1));
+    const absoluteFilePath = filePath.startsWith("/") ? filePath : this.normalizedFileSystemPath(`${fileRoot}/${filePath}`);
+    if (!worktreeRoot || absoluteFilePath === worktreeRoot || !absoluteFilePath.startsWith(`${worktreeRoot}/`)) return "";
+    return this.encodedRelativeFilePath(absoluteFilePath.slice(worktreeRoot.length + 1));
   }
 
   applyVscodeModeLayout() {
@@ -810,7 +883,10 @@ class TermdeckApp {
   setInteractionWorktreeFromElement(element, fallbackSession = null) {
     if (this.worktreeId !== ALL_WORKTREES_ID) return;
     const worktreeId = String(element?.dataset?.worktreeId || this.worktreeIdForSession(fallbackSession)).trim();
-    if (worktreeId && worktreeId !== ALL_WORKTREES_ID) this.interactionWorktreeId = worktreeId;
+    if (worktreeId && worktreeId !== ALL_WORKTREES_ID && this.interactionWorktreeId !== worktreeId) {
+      this.interactionWorktreeId = worktreeId;
+      this.updateRecentFilesPolling();
+    }
   }
 
   availableWorktreeSections() {
@@ -876,6 +952,14 @@ class TermdeckApp {
     this.patchProjectState({ recently_opened_terminal_ids: next });
   }
 
+  previouslyOpenedTerminalId(excludedSessionIds) {
+    const excluded = excludedSessionIds instanceof Set ? excludedSessionIds : new Set(excludedSessionIds || []);
+    for (const sessionId of this.getProjectState().recently_opened_terminal_ids || []) {
+      if (!excluded.has(sessionId) && this.session(sessionId)) return sessionId;
+    }
+    return "";
+  }
+
   sectionCollapsed(field) {
     const storageKey = `termdeck.${this.projectStateKey()}.${field}`;
     try {
@@ -897,8 +981,23 @@ class TermdeckApp {
   }
 
   toggleSectionCollapsed(field) {
-    this.setSectionCollapsed(field, !this.sectionCollapsed(field));
+    const collapsed = !this.sectionCollapsed(field);
+    this.setSectionCollapsed(field, collapsed);
     this.renderList();
+    if (field !== "recent_files_collapsed") return;
+    this.updateRecentFilesPolling();
+    if (!collapsed) void this.refreshRecentFiles(true);
+  }
+
+  updateRecentFilesPolling() {
+    if (this.vscodeMode || this.sectionCollapsed("recent_files_collapsed")) {
+      clearInterval(this.recentFilesRefreshTimer);
+      this.recentFilesRefreshTimer = 0;
+      return;
+    }
+    if (!this.recentFilesRefreshTimer) {
+      this.recentFilesRefreshTimer = window.setInterval(() => void this.refreshRecentFiles(), RECENT_FILES_REFRESH_MS);
+    }
   }
 
   terminalGroups() {
@@ -1627,6 +1726,13 @@ class TermdeckApp {
       }
       select.appendChild(option);
     }
+    const requestedWorktreeUrlSegment = this.requestedWorktreeUrlSegment;
+    const requestedWorktree = this.worktreeForUrlSegment(requestedWorktreeUrlSegment);
+    if (requestedWorktreeUrlSegment && !requestedWorktree) {
+      throw new Error(`unknown or ambiguous worktree URL segment: ${requestedWorktreeUrlSegment}`);
+    }
+    if (requestedWorktree) this.worktreeId = requestedWorktree.id;
+    this.requestedWorktreeUrlSegment = "";
     if (!this.worktrees.length) {
       row.classList.add("hidden");
       this.updateHeaderAddMenu();
@@ -1652,16 +1758,10 @@ class TermdeckApp {
       this.worktreeId = selected.id;
     }
     this.interactionWorktreeId = this.worktreeId === ALL_WORKTREES_ID ? this.interactionWorktreeId : this.worktreeId;
+    this.updateRecentFilesPolling();
     this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
     localStorage.setItem(`termdeck.${this.projectSlug}.worktree_id`, this.worktreeId);
-    const params = new URLSearchParams(location.search);
-    if (this.worktreeId === "root") params.delete("wt");
-    else params.set("wt", this.worktreeId);
-    params.delete("t");
-    params.delete("f");
-    params.delete("view");
-    params.delete("q");
-    history.pushState({ kind: "init" }, "", `${location.pathname}${params.toString() ? `?${params}` : ""}`);
+    history.pushState({ kind: "init" }, "", this.navUrl({ kind: "init" }));
     this.activeId = null;
     this.activeFileKey = null;
     this.openFiles.clear();
@@ -1782,7 +1882,8 @@ class TermdeckApp {
     }
     this.closeWorktreeModal();
     await this.loadWorktrees();
-    const url = new URL(`/p/${encodeURIComponent(this.projectSlug)}?wt=${encodeURIComponent(payload.id)}`, location.href);
+    const worktreeSegment = payload.branch || payload.name || payload.id;
+    const url = new URL(`/p/${encodeURIComponent(this.projectSlug)}/${encodeURIComponent(worktreeSegment)}`, location.href);
     this.$("worktree-result-title").textContent = "Worktree created";
     const link = this.$("worktree-result-link");
     this.$("worktree-result-name").textContent = `${payload.name || payload.branch} · ${payload.branch || "new branch"}`;
@@ -1858,15 +1959,21 @@ class TermdeckApp {
     const params = new URLSearchParams();
     params.set("view", view === "tree" ? "project" : view);
     params.set("pinned", "1");
-    if (this.worktreeId && this.worktreeId !== "root" && this.worktreeId !== ALL_WORKTREES_ID && root === this.worktreeRoot()) params.set("wt", this.worktreeId);
+    const selectedWorktreeId = this.worktreeId && this.worktreeId !== ALL_WORKTREES_ID && root === this.worktreeRoot()
+      ? this.worktreeId : "root";
+    const basePath = project.name === this.projectSlug
+      ? this.encodedProjectWorktreePath(project.name, selectedWorktreeId)
+      : `/p/${encodeURIComponent(project.name)}/${encodeURIComponent(selectedWorktreeId)}`;
+    let navigationPath = "";
     if (relativePath) {
       const fileRoot = this.worktreeId && this.worktreeId !== "root" && this.worktreeId !== ALL_WORKTREES_ID && root === this.worktreeRoot() ? root : project.root;
       const filePath = fileRoot === root ? relativePath : this.projectRelativeFilePath(project, root, relativePath);
-      params.set("f", `${fileRoot}|${filePath}`);
+      if (fileRoot === root) navigationPath = this.encodedRelativeFilePath(filePath);
+      else params.set("f", `${fileRoot}|${filePath}`);
     }
     if (searchQuery) params.set("q", searchQuery);
     const query = params.toString() ? `?${params}` : "";
-    window.open(`/p/${encodeURIComponent(project.name)}${query}`, "_blank", "noopener,noreferrer");
+    window.open(`${basePath}${navigationPath ? `/${navigationPath}` : ""}${query}`, "_blank", "noopener,noreferrer");
   }
 
   openFileDeckView(view) {
@@ -1880,8 +1987,12 @@ class TermdeckApp {
     const project = this.projects.find((candidate) => candidate.name === session.project) ||
       this.fileDeckProjectForRoot(session.cwd);
     if (!project) return;
-    const worktreeQuery = session.worktree_id && session.worktree_id !== "root" ? `&wt=${encodeURIComponent(session.worktree_id)}` : "";
-    window.open(`/p/${encodeURIComponent(project.name)}?t=${encodeURIComponent(session.session_id)}${worktreeQuery}`,
+    const worktreeSegment = project.name === this.projectSlug
+      ? this.worktreeUrlSegment(session.worktree_id || "root")
+      : String(session.worktree_branch || session.worktree_id || "root");
+    const sessionName = this.titlePresentation(session).text.trim();
+    const fragment = sessionName ? `#${encodeURIComponent(sessionName)}` : "";
+    window.open(`/p/${encodeURIComponent(project.name)}/${encodeURIComponent(worktreeSegment)}/${encodeURIComponent(session.session_id)}${fragment}`,
       "_blank", "noopener,noreferrer");
   }
 
@@ -2189,7 +2300,7 @@ class TermdeckApp {
     }
     this.initSideSplit();
     if (!this.vscodeMode) {
-      setInterval(() => this.refreshRecentFiles(), RECENT_FILES_REFRESH_MS);
+      this.updateRecentFilesPolling();
       this.terminalAgeRefreshTimer = window.setInterval(() => {
         this.updateSessionAgeStyles();
         this.updateActiveTerminalAge();
@@ -2536,11 +2647,11 @@ class TermdeckApp {
       if (key === "r") { e.preventDefault(); this.renameTreePath(selectedRel); }
       else if (key === "m") { e.preventDefault(); this.moveTreePath(selectedRel); }
     });
-    window.addEventListener("popstate", (e) => this.applyNavState(e.state));
+    window.addEventListener("popstate", (e) => this.applyBrowserNavigationState(e.state));
     const startupNav = this.initialNav && this.initialNav.kind !== "file" ? this.initialNav : { kind: "init" };
     this.lastValidNavState = startupNav;
     this.lastNavJson = JSON.stringify(startupNav);
-    history.replaceState(startupNav, "", location.pathname + location.search);
+    history.replaceState(startupNav, "", this.navUrl(startupNav));
     const scheduleLayoutFit = () => {
       this.positionFloatingFilesPanel();
       this.scheduleTerminalLayoutFit();
@@ -2568,19 +2679,35 @@ class TermdeckApp {
     window.addEventListener("focus", revalidateActiveTerminalOnReturn);
     window.addEventListener("pageshow", revalidateActiveTerminalOnReturn);
     this.installTerminalSizeDebugOverlay();
+    void this.initializeRemoteIdleMode();
     this.refresh().finally(() => this.connectStatusStream());
     setInterval(() => this.refresh(), SESSION_LIST_REFRESH_MS);
   }
 
   navUrl(state) {
     const params = new URLSearchParams();
-    if (this.worktreeId === ALL_WORKTREES_ID || (this.worktreeId && this.worktreeId !== "root")) params.set("wt", this.worktreeId);
-    if (state.kind === "term") params.set("t", state.id);
-    else if (state.kind === "file") {
-      params.set("f", state.key);
-      if (state.return_to) params.set("rt", String(state.return_to));
-    }
-    else if (state.kind === "search") {
+    const basePath = this.encodedProjectWorktreePath();
+    let navigationPath = "";
+    let fragment = "";
+    if (state.kind === "term") {
+      navigationPath = encodeURIComponent(state.id);
+      const session = this.session(state.id);
+      const sessionName = session ? this.titlePresentation(session).text.trim() : "";
+      if (sessionName) fragment = `#${encodeURIComponent(sessionName)}`;
+    } else if (state.kind === "file" || state.kind === "open-file") {
+      navigationPath = this.relativeNavigationPathForFileKey(state.key);
+      if (!navigationPath && state.key) params.set("f", state.key);
+      if (state.kind === "open-file") {
+        if (state.view) params.set("view", state.view);
+        if (state.pinned) params.set("pinned", "1");
+      }
+    } else if (state.kind === "path") {
+      navigationPath = this.encodedRelativeFilePath(state.selector);
+    } else if (state.kind === "files") {
+      if (state.view) params.set("view", state.view);
+      if (state.pinned) params.set("pinned", "1");
+      if (state.q) params.set("q", state.q);
+    } else if (state.kind === "search") {
       params.set("q", state.q);
       if (state.glob) params.set("glob", state.glob);
       if (state.word) params.set("w", "1");
@@ -2588,7 +2715,7 @@ class TermdeckApp {
       if (state.regex) params.set("re", "1");
     }
     const qs = params.toString();
-    return location.pathname + (qs ? "?" + qs : "");
+    return `${basePath}${navigationPath ? `/${navigationPath}` : ""}${qs ? `?${qs}` : ""}${fragment}`;
   }
 
   pushNav(state) {
@@ -2619,8 +2746,35 @@ class TermdeckApp {
     }
   }
 
+  applyBrowserNavigationState(state) {
+    const projectMatch = location.pathname.match(/^\/p\/[^/]+\/([^/]+)/);
+    const targetWorktreeUrlSegment = projectMatch?.[1] ? decodeURIComponent(projectMatch[1]) : "";
+    const targetWorktree = this.worktreeForUrlSegment(targetWorktreeUrlSegment);
+    if (targetWorktreeUrlSegment && !targetWorktree) throw new Error(`unknown or ambiguous worktree URL segment: ${targetWorktreeUrlSegment}`);
+    if (targetWorktree && targetWorktree.id !== this.stateWorktreeId()) {
+      location.reload();
+      return;
+    }
+    this.applyNavState(state);
+  }
+
   applyNavState(state) {
     if (!state || state.kind === "init") return;
+    if (state.kind === "path") {
+      const selector = String(state.selector || "");
+      if (!selector) return;
+      if (this.session(selector)) {
+        this.replaceNav({ kind: "term", id: selector });
+        this.activate(selector, { history: false });
+      } else {
+        const root = this.worktreeRoot();
+        if (root) {
+          this.replaceNav({ kind: "file", key: `${root}|${selector}` });
+          void this.openFile(root, selector, null, null, { pinned: true, history: false });
+        }
+      }
+      return;
+    }
     if (state.kind === "open-file") {
       const separator = String(state.key || "").indexOf("|");
       if (separator <= 0) return;
@@ -2656,6 +2810,9 @@ class TermdeckApp {
     this.lastValidNavState = state;
     try {
       if (state.kind === "term" && this.session(state.id)) {
+        if (state.history_scroll && typeof state.history_scroll === "object") {
+          this.historyScrollBySession.set(state.id, state.history_scroll);
+        }
         this.activate(state.id, { history: false });
       } else if (state.kind === "file" && this.openFiles.has(state.key)) {
         this.activateFile(state.key, null, { history: false });
@@ -2820,6 +2977,17 @@ class TermdeckApp {
       if (typeof event.data !== "string") return;
       try {
         const message = JSON.parse(event.data);
+        if (message.type === "server_instance") {
+          const instanceId = String(message.instance_id || "");
+          if (!instanceId) return;
+          if (this.serverInstanceId && this.serverInstanceId !== instanceId && !this.serverRestartReloading) {
+            this.serverRestartReloading = true;
+            location.reload();
+            return;
+          }
+          this.serverInstanceId = instanceId;
+          return;
+        }
         if (message.type === "session_status") this.applySessionStatus(message);
       } catch (error) {
         console.warn("invalid session status event", error);
@@ -2831,6 +2999,86 @@ class TermdeckApp {
       clearTimeout(this.statusWsReconnectTimer);
       this.statusWsReconnectTimer = setTimeout(() => this.connectStatusStream(), RECONNECT_MS);
     };
+  }
+
+  async initializeRemoteIdleMode() {
+    if (this.vscodeMode || location.pathname.startsWith("/_remote/")) return;
+    let payload;
+    try {
+      const response = await fetch("/_remote/status", { headers: { Accept: "application/json" } });
+      if (!response.ok || !String(response.headers.get("content-type") || "").includes("application/json")) return;
+      payload = await response.json();
+    } catch (error) {
+      return;
+    }
+    if (typeof payload?.email !== "string" || !payload.email) return;
+    this.remoteBrowserEmail = payload.email;
+    const remoteAccessRow = document.querySelector(".remote-access-settings-row");
+    if (remoteAccessRow) void this.refreshRemoteAccessRow(remoteAccessRow);
+    const idleSeconds = Number(payload?.idle_seconds || 0);
+    if (!Number.isFinite(idleSeconds) || idleSeconds <= 0) return;
+    this.remoteIdleTimeoutMs = Math.max(60000, idleSeconds * 1000);
+    this.remoteIdleLastInteractionAt = Date.now();
+    window.addEventListener("keydown", this.remoteIdleActivityHandler, { capture: true });
+    window.addEventListener("pointerdown", this.remoteIdleActivityHandler, { capture: true });
+    window.addEventListener("touchstart", this.remoteIdleActivityHandler, { capture: true, passive: true });
+    window.addEventListener("wheel", this.remoteIdleActivityHandler, { capture: true, passive: true });
+    document.addEventListener("visibilitychange", this.remoteIdleVisibilityHandler);
+    this.scheduleRemoteBrowserIdleTransition();
+  }
+
+  async logoutRemoteBrowser(button) {
+    button.disabled = true;
+    try {
+      const response = await fetch("/_remote/logout", { method: "POST" });
+      if (!response.ok) throw new Error(`remote logout failed (${response.status})`);
+      this.remoteIdleTransitioning = true;
+      clearTimeout(this.remoteIdleTimer);
+      const loginUrl = new URL("/_remote/login", location.origin);
+      loginUrl.searchParams.set("return_to", `${location.pathname}${location.search}${location.hash}`);
+      location.replace(loginUrl.href);
+    } catch (error) {
+      button.disabled = false;
+      window.alert(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  recordRemoteBrowserActivity() {
+    if (!this.remoteIdleTimeoutMs || this.remoteIdleTransitioning) return;
+    this.remoteIdleLastInteractionAt = Date.now();
+    this.scheduleRemoteBrowserIdleTransition();
+  }
+
+  handleRemoteBrowserVisibilityChange() {
+    if (!this.remoteIdleTimeoutMs || this.remoteIdleTransitioning) return;
+    if (document.hidden) {
+      this.scheduleRemoteBrowserIdleTransition();
+      return;
+    }
+    if (Date.now() - this.remoteIdleLastInteractionAt >= this.remoteIdleTimeoutMs) {
+      this.transitionRemoteBrowserToIdle();
+      return;
+    }
+    this.recordRemoteBrowserActivity();
+  }
+
+  scheduleRemoteBrowserIdleTransition() {
+    clearTimeout(this.remoteIdleTimer);
+    if (!this.remoteIdleTimeoutMs || this.remoteIdleTransitioning) return;
+    const elapsed = Date.now() - this.remoteIdleLastInteractionAt;
+    this.remoteIdleTimer = window.setTimeout(() => this.transitionRemoteBrowserToIdle(),
+      Math.max(0, this.remoteIdleTimeoutMs - elapsed));
+  }
+
+  transitionRemoteBrowserToIdle() {
+    if (!this.remoteIdleTimeoutMs || this.remoteIdleTransitioning) return;
+    this.remoteIdleTransitioning = true;
+    clearTimeout(this.remoteIdleTimer);
+    this.remoteIdleTimer = 0;
+    const returnTo = `${location.pathname}${location.search}${location.hash}`;
+    const idleUrl = new URL("/_remote/idle", location.origin);
+    idleUrl.searchParams.set("return_to", returnTo);
+    location.replace(idleUrl.href);
   }
 
   showInitialLoadingState() {
@@ -2942,7 +3190,7 @@ class TermdeckApp {
     const textOnly = this.usesTextTerminalStatus(this.session(id)?.agent_kind);
     const working = textOnly && !!spinning;
     title.classList.toggle("session-title-working", working);
-    title.classList.toggle("session-title-unread", textOnly && !working && this.unreadSessions.has(id));
+    title.classList.toggle("session-title-unread", !this.vscodeMode && !working && this.unreadSessions.has(id));
     const session = this.session(id);
     if (!this.vscodeMode && session && !working) title.style.color = this.terminalAgeColor(session);
     else title.style.removeProperty("color");
@@ -3468,7 +3716,7 @@ class TermdeckApp {
       sort.classList.toggle("on", this.hideInactiveTerminals);
       sort.innerHTML = `<span class="codicon ${this.hideInactiveTerminals ? "codicon-eye-closed" : "codicon-eye"}"></span>`;
       sort.setAttribute("aria-pressed", String(this.hideInactiveTerminals));
-      sort.title = this.hideInactiveTerminals ? "Show all terminals" : "Show only active terminals";
+      sort.title = this.hideInactiveTerminals ? "Show all terminals" : "Show active and unread terminals";
       sort.setAttribute("aria-label", sort.title);
       sort.onclick = (event) => {
         event.stopPropagation();
@@ -3813,7 +4061,7 @@ class TermdeckApp {
     button.classList.toggle("on", this.hideInactiveTerminals);
     button.innerHTML = `<span class="codicon ${this.hideInactiveTerminals ? "codicon-eye-closed" : "codicon-eye"}"></span>`;
     button.setAttribute("aria-pressed", String(this.hideInactiveTerminals));
-    button.title = this.hideInactiveTerminals ? "Show all terminals" : "Show only active terminals";
+    button.title = this.hideInactiveTerminals ? "Show all terminals" : "Show active and unread terminals";
     button.setAttribute("aria-label", button.title);
   }
 
@@ -3825,7 +4073,7 @@ class TermdeckApp {
 
   isActiveTerminal(session) {
     return !!session && (this.processingStates.get(session.session_id) === true ||
-      session.processing === true || session.needs_attention === true);
+      session.processing === true || session.needs_attention === true || this.unreadSessions.has(session.session_id));
   }
 
   updateTerminalSearchGroupButton() {
@@ -4771,7 +5019,7 @@ class TermdeckApp {
     title.className = "session-title";
     title.classList.toggle("session-title-working", useTextStatusIndicator && presentation.spinning);
     title.classList.toggle("session-title-unread",
-      useTextStatusIndicator && !presentation.spinning && this.unreadSessions.has(s.session_id));
+      !this.vscodeMode && !presentation.spinning && this.unreadSessions.has(s.session_id));
     this.setSessionTitleText(title, presentation.text, useTextStatusIndicator && presentation.spinning);
     if (!this.vscodeMode && !presentation.spinning) title.style.color = this.terminalAgeColor(s);
     this.sessionTitleEls.set(s.session_id, title);
@@ -4946,6 +5194,7 @@ class TermdeckApp {
       header.append(chevron, title, branch, count);
       header.onclick = () => {
         this.interactionWorktreeId = worktreeId;
+        this.updateRecentFilesPolling();
         const nextCollapsed = !this.worktreeSectionCollapsed(worktreeId);
         this.setWorktreeSectionCollapsed(worktreeId, nextCollapsed);
         this.renderList();
@@ -6259,6 +6508,10 @@ class TermdeckApp {
 
   async refreshRecentFiles(force = false) {
     if (this.vscodeMode) return;
+    if (this.sectionCollapsed("recent_files_collapsed")) {
+      this.updateRecentFilesPolling();
+      return;
+    }
     if (this.recentFilesBusy) return;
     const activeRoot = this.session(this.activeId)?.cwd || this.worktreeRoot();
     const filesVisible = !this.$("files-section").classList.contains("hidden");
@@ -6406,11 +6659,39 @@ class TermdeckApp {
     this.refresh();
   }
 
+  restorePageFavicon() {
+    if (!this.pageFavicon) return;
+    this.pageFavicon.type = this.pageFaviconType;
+    this.pageFavicon.href = this.pageFaviconHref;
+  }
+
+  showPageTitleFaviconState(faviconState) {
+    if (!this.pageFavicon) return;
+    if (faviconState === "plain") {
+      this.restorePageFavicon();
+      return;
+    }
+    this.pageFavicon.type = "image/svg+xml";
+    this.pageFavicon.href = faviconState === "processing"
+      ? "/static/favicon-processing.svg"
+      : "/static/favicon-unread.svg";
+  }
+
+  updateDocumentTitle(pageTitle, faviconState) {
+    document.title = pageTitle;
+    if (this.pageTitleFaviconState === faviconState) return;
+    this.pageTitleFaviconState = faviconState;
+    this.showPageTitleFaviconState(faviconState);
+  }
+
   renderTopbar() {
     const s = this.session(this.activeId);
     const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
     const tabTitle = entry ? entry.name : (s ? this.titlePresentation(s).text : null);
-    document.title = this.vscodeMode ? "TermDeck" : (tabTitle ? `${tabTitle} — TermDeck` : "TermDeck");
+    const pageTitle = this.vscodeMode ? "TermDeck" : (tabTitle ? `${tabTitle} — TermDeck` : "TermDeck");
+    const processing = !entry && !!s && this.titlePresentation(s).spinning;
+    const unread = !entry && !!s && !processing && this.unreadSessions.has(s.session_id);
+    this.updateDocumentTitle(pageTitle, processing ? "processing" : unread ? "unread" : "plain");
     const statusEl = this.$("status-name");
     if (entry) {
       statusEl.textContent = this.vscodeMode ? entry.name : (entry.fullPath || `${entry.root}/${entry.path}`);
@@ -6437,6 +6718,10 @@ class TermdeckApp {
       fileHistoryGitToggle.title = this.fileHistoryMode === "git" ? "Show local history" : "Show Git history";
       fileHistoryGitToggle.setAttribute("aria-label", fileHistoryGitToggle.title);
       fileHistoryGitToggle.setAttribute("aria-pressed", String(this.fileHistoryMode === "git"));
+    }
+    const navigationState = this.parseNavState(this.lastNavJson);
+    if (!entry && s && navigationState?.kind === "term" && navigationState.id === s.session_id) {
+      history.replaceState(navigationState, "", this.navUrl(navigationState));
     }
     this.renderHistoryMeta();
     this.renderFileEditorChrome();
@@ -7165,58 +7450,20 @@ class TermdeckApp {
     modelEl.title = modelEl.textContent;
   }
 
-  transcriptFirstSessionEnabled(session = this.session(this.activeId)) {
-    return !!this.settings.transcript_first_experimental && !!session && ["codex", "claude", "agy"].includes(session.agent_kind);
+  usesTranscriptFirstSession(session = this.session(this.activeId)) {
+    return !!session && ["codex", "claude", "agy"].includes(session.agent_kind);
   }
 
   selectedHistoryMode(session = this.session(this.activeId)) {
-    if (this.transcriptFirstSessionEnabled(session)) return this.settings.transcript_first_surface !== "terminal";
+    if (this.usesTranscriptFirstSession(session)) return this.settings.transcript_first_surface === "markdown";
     return !!this.settings.history_mode;
-  }
-
-  fixedTerminalGeometryEnabled(view = this.views.get(this.activeId)) {
-    return !!view && this.transcriptFirstSessionEnabled(this.session(view.sessionId));
-  }
-
-  applyAuthoritativeTerminalGeometry(view) {
-    if (!this.fixedTerminalGeometryEnabled(view) || !view.term) return false;
-    const session = this.session(view.sessionId);
-    const cols = Math.max(2, Number(session?.cols) || Number(view.authoritativeCols) || view.term.cols);
-    const rows = Math.max(2, Number(session?.rows) || Number(view.authoritativeRows) || view.term.rows);
-    view.authoritativeCols = cols;
-    view.authoritativeRows = rows;
-    if (view.term.cols !== cols || view.term.rows !== rows) {
-      view.suppressResizeToServer = true;
-      view.term.resize(cols, rows);
-      view.suppressResizeToServer = false;
-    }
-    view.container.classList.remove("initializing");
-    this.refreshTerminal(view);
-    return true;
-  }
-
-  applyTranscriptFirstSettingChange() {
-    for (const view of this.views.values()) {
-      this.clearActiveTerminalSettleWatchdog(view);
-      if (this.fixedTerminalGeometryEnabled(view)) this.applyAuthoritativeTerminalGeometry(view);
-    }
-    if (!this.settings.transcript_first_experimental) {
-      setTimeout(() => this.fitActive(), 700);
-    }
-    if (!this.activeId || this.activeFileKey !== null) {
-      this.applyMainLayout();
-      return;
-    }
-    const historyEnabled = this.selectedHistoryMode();
-    if (historyEnabled !== this.historyOpen) this.setHistoryMode(historyEnabled);
-    else this.applyMainLayout();
   }
 
   applyMainLayout() {
     const fileMode = this.activeFileKey !== null;
     if (!fileMode && this.fileHistoryOpen) this.closeFileHistory();
     const historyMode = this.historyOpen && !fileMode;
-    const transcriptFirstMode = historyMode && this.transcriptFirstSessionEnabled();
+    const transcriptFirstMode = historyMode && this.usesTranscriptFirstSession();
     this.$("editor-area").classList.toggle("hidden", !fileMode);
     this.$("history-area").classList.toggle("hidden", !historyMode);
     this.$("history-area").classList.toggle("transcript-first", transcriptFirstMode);
@@ -7430,12 +7677,13 @@ class TermdeckApp {
 
   scheduleActiveEditorFocus(sessionId) {
     clearTimeout(this.activeEditorFocusTimer);
+    if (this.historyOpen) return;
     this.activeEditorFocusTimer = window.setTimeout(this.runScheduledActiveEditorFocus.bind(this, sessionId), 80);
   }
 
   runScheduledActiveEditorFocus(sessionId) {
     this.activeEditorFocusTimer = 0;
-    if (sessionId !== this.activeId) return;
+    if (sessionId !== this.activeId || this.historyOpen) return;
     this.focusActiveEditor();
   }
 
@@ -7449,10 +7697,11 @@ class TermdeckApp {
   }
 
   setHistoryMode(enabled) {
+    if (this.historyOpen && !enabled) this.rememberHistoryScrollPosition(this.activeId);
     this.closeTerminalFind();
     this.hideSelectionActions(true);
     if (!enabled) this.closePromptHistory();
-    if (this.transcriptFirstSessionEnabled()) this.settings.transcript_first_surface = enabled ? "markdown" : "terminal";
+    if (this.usesTranscriptFirstSession()) this.settings.transcript_first_surface = enabled ? "markdown" : "terminal";
     else this.settings.history_mode = !!enabled;
     this.saveSettings();
     this.stopHistoryRefresh();
@@ -8322,6 +8571,12 @@ class TermdeckApp {
     return snapshot;
   }
 
+  rememberHistoryScrollPosition(sessionId) {
+    const body = this.$("history-body");
+    if (!sessionId || !body || !this.historyOpen || !this.historyLoaded || this.activeFileKey !== null) return;
+    this.historyScrollBySession.set(sessionId, this.captureHistoryScroll(body, this.historyTurns));
+  }
+
   restoreHistoryScroll(body, snapshot, turns = this.historyTurns, settling = false) {
     if (!snapshot) {
       body.scrollTop = body.scrollHeight;
@@ -8399,7 +8654,9 @@ class TermdeckApp {
     this.cacheSessionModelFromHistory(sessionId, turns);
     // Capture this after the request completes so scrolling while the refresh
     // is in flight is never overwritten by an older scroll position.
-    const scrollSnapshot = preserveScroll ? this.captureHistoryScroll(body, this.historyTurns) : null;
+    const scrollSnapshot = preserveScroll
+      ? this.captureHistoryScroll(body, this.historyTurns)
+      : (this.historyScrollBySession.get(sessionId) || null);
     const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length, turn.diff_files, turn.plan, turn.items]))}`;
     if (preserveScroll && fingerprint === this.historyFingerprint) return;
     let commonPrefix = 0;
@@ -10493,7 +10750,10 @@ class TermdeckApp {
     this.hideSelectionActions(true);
     const previousId = this.activeId;
     const selected = this.session(id);
-    if (this.worktreeId === ALL_WORKTREES_ID && selected) this.interactionWorktreeId = this.worktreeIdForSession(selected);
+    if (this.worktreeId === ALL_WORKTREES_ID && selected) {
+      this.interactionWorktreeId = this.worktreeIdForSession(selected);
+      this.updateRecentFilesPolling();
+    }
     if (!selected?.needs_attention) this.clearSessionAttention(id);
     let unreadChanged = false;
     if (previousId && previousId !== id) {
@@ -10516,6 +10776,7 @@ class TermdeckApp {
       if (spinning && !this.processingSince.has(id)) this.processingSince.set(id, Date.now());
       if (!spinning) this.processingSince.delete(id);
     }
+    if (this.historyOpen && previousId) this.rememberHistoryScrollPosition(previousId);
     this.saveActiveFileViewState();
     this.activeFileKey = null;
     this.stopHistoryRefresh();
@@ -10706,8 +10967,6 @@ class TermdeckApp {
                    renderRepairArmed: true, renderObserver: null,
                    viewportAnchorRestore: null, viewportAnchorRestoreTimer: 0,
                    lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [], codexReflowFollowupTimers: [],
-                   authoritativeCols: Number(this.session(id)?.cols) || 0,
-                   authoritativeRows: Number(this.session(id)?.rows) || 0,
                    preserveRowsFromBottom: 0, reconnectReset: false,
                    promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
@@ -10899,10 +11158,6 @@ class TermdeckApp {
     view.layoutObserver = new ResizeObserver(() => {
       if (!view.container.classList.contains("visible") || view.closed || !this.terminalPageCanResize()) return;
       if (this.sidebarResizeInProgress) return;
-      if (this.fixedTerminalGeometryEnabled(view)) {
-        this.applyAuthoritativeTerminalGeometry(view);
-        return;
-      }
       if (this.isTerminalScrollV2()) {
         this.scheduleV2Fit(view);
         return;
@@ -10926,13 +11181,11 @@ class TermdeckApp {
     }, { threshold: 0 });
     view.visibilityObserver.observe(container);
     this.views.set(id, view);
-    if (this.fixedTerminalGeometryEnabled(view)) this.applyAuthoritativeTerminalGeometry(view);
     return view;
   }
 
   prepareTerminalForFirstPaint(view) {
     if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
-    if (this.fixedTerminalGeometryEnabled(view)) return this.applyAuthoritativeTerminalGeometry(view);
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return false;
     view.fit.fit();
@@ -11120,14 +11373,12 @@ class TermdeckApp {
 
   async restoreClaudeSnapshot(view) {
     if (!this.ensureClaudeSnapshotAddon(view)) return false;
-    if (view.container.classList.contains("visible")) {
-      if (this.fixedTerminalGeometryEnabled(view)) this.applyAuthoritativeTerminalGeometry(view);
-      else view.fit.fit();
-    }
+    if (view.container.classList.contains("visible")) view.fit.fit();
     try {
       const record = await this.readClaudeSnapshot(view.sessionId);
       if (!record || ![2, 3, CLAUDE_SNAPSHOT_FORMAT_VERSION].includes(record.formatVersion) ||
-          typeof record.snapshot !== "string" || !record.snapshot || record.cols !== view.term.cols) return false;
+          typeof record.snapshot !== "string" || !record.snapshot || record.cols !== view.term.cols ||
+          record.cols < CLAUDE_SNAPSHOT_MIN_COLS || view.term.cols < CLAUDE_SNAPSHOT_MIN_COLS) return false;
       let fullSnapshot = record.snapshot;
       let historySnapshot = typeof record.historySnapshot === "string" ? record.historySnapshot : "";
       if (record.formatVersion === 2) {
@@ -11175,6 +11426,7 @@ class TermdeckApp {
   async persistClaudeSnapshot(view) {
     if (!this.ensureClaudeSnapshotAddon(view) || view.claudeSnapshotBlankScreenPending ||
         !this.claudeTerminalBufferHasContent(view)) return;
+    if (view.term.cols < CLAUDE_SNAPSHOT_MIN_COLS) return;
     if (view.claudeSnapshotSavePromise) return view.claudeSnapshotSavePromise;
     let snapshot, historySnapshot;
     try {
@@ -11222,8 +11474,6 @@ class TermdeckApp {
 
   connect(id, view) {
     if (view.closed) return;
-    const fixedGeometry = this.fixedTerminalGeometryEnabled(view);
-    if (fixedGeometry) this.applyAuthoritativeTerminalGeometry(view);
     if (this.isTerminalScrollV2() && !view.userScrollIntent) {
       view.scrollMode = "follow";
       view.preserveRowsFromBottom = 0;
@@ -11244,10 +11494,10 @@ class TermdeckApp {
     const repaintPreservedBuffer = hasPopulatedBuffer && this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view);
     const shouldRepaintClaudeBuffer = repaintPreservedBuffer &&
       (view.claudeSnapshotRequiresRepaint || !!this.session(id)?.processing);
-    const screenRepaint = fixedGeometry ? 0 : (hasPopulatedBuffer && (!repaintPreservedBuffer || !shouldRepaintClaudeBuffer) ? 0 : 1);
+    const screenRepaint = hasPopulatedBuffer && (!repaintPreservedBuffer || !shouldRepaintClaudeBuffer) ? 0 : 1;
     const haveBuffer = hasPopulatedBuffer ? 1 : 0;
     const ws = new WebSocket(`${proto}://${location.host}/ws/${id}?screen_repaint=${screenRepaint}&have_buffer=${haveBuffer}` +
-      `&repaint_preserved_buffer=${shouldRepaintClaudeBuffer ? 1 : 0}&fixed_geometry=${fixedGeometry ? 1 : 0}`);
+      `&repaint_preserved_buffer=${shouldRepaintClaudeBuffer ? 1 : 0}`);
     ws.binaryType = "arraybuffer";
     view.preserveBufferOnReconnect = haveBuffer === 1;
     view.awaitingSnapshot = true;
@@ -11269,10 +11519,7 @@ class TermdeckApp {
       }
       view.everConnected = true;
       this.detectTerminalAttentionFromBuffer(view);
-      if (fixedGeometry) {
-        this.applyAuthoritativeTerminalGeometry(view);
-        if (this.isTerminalScrollV2() && view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
-      } else if (this.isTerminalScrollV2()) {
+      if (this.isTerminalScrollV2()) {
         if (id === this.activeId) {
           this.scheduleV2Fit(view);
           if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
@@ -11287,7 +11534,7 @@ class TermdeckApp {
       // FitAddon may have run before the websocket opened, so xterm's
       // onResize callback could not send the resulting dimensions to the
       // PTY. Always send the currently fitted size once the socket is ready.
-      if (!fixedGeometry && view.term.cols >= 2 && view.term.rows >= 2) {
+      if (view.term.cols >= 2 && view.term.rows >= 2) {
         this.sendResize(view, view.term.cols, view.term.rows);
       }
       this.flushPromptSync(view);
@@ -11477,17 +11724,6 @@ class TermdeckApp {
   }
 
   handleControl(id, view, msg) {
-    if (msg.type === "geometry") {
-      view.authoritativeCols = Math.max(2, Number(msg.cols) || view.term.cols);
-      view.authoritativeRows = Math.max(2, Number(msg.rows) || view.term.rows);
-      const session = this.session(id);
-      if (session) {
-        session.cols = view.authoritativeCols;
-        session.rows = view.authoritativeRows;
-      }
-      this.applyAuthoritativeTerminalGeometry(view);
-      return;
-    }
     if (msg.type === "exit") {
       if (msg.dormant) {
         view.suppressReconnect = true;
@@ -11677,7 +11913,7 @@ class TermdeckApp {
   }
 
   sendResize(view, cols, rows, force = false) {
-    if (this.fixedTerminalGeometryEnabled(view) || this.sidebarResizeInProgress || view.suppressResizeToServer || !this.terminalPageCanResize() ||
+    if (this.sidebarResizeInProgress || view.suppressResizeToServer || !this.terminalPageCanResize() ||
         view.closed || view.sessionId !== this.activeId || !view.container.classList.contains("visible") ||
         this.activeFileKey !== null || this.historyOpen) return;
     if (view.ws && view.ws.readyState === WebSocket.OPEN &&
@@ -11793,10 +12029,6 @@ class TermdeckApp {
       }
     }
     this.refreshTerminalAppearance(view, true);
-    if (this.fixedTerminalGeometryEnabled(view)) {
-      this.$("status-name").textContent = "fixed terminal geometry active";
-      return;
-    }
     if (!view.ws || view.ws.readyState !== WebSocket.OPEN) return;
     const anchor = this.captureTerminalViewportAnchor(view, { preserveFollow: true, restoreAfterDeadline: true });
     this.beginTerminalViewportRestore(view, anchor);
@@ -12091,11 +12323,6 @@ class TermdeckApp {
   scheduleV2Fit(view, options = {}) {
     const forceResize = !!options.force;
     if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return;
-    if (this.fixedTerminalGeometryEnabled(view)) {
-      this.applyAuthoritativeTerminalGeometry(view);
-      if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
-      return;
-    }
     if (this.shouldDeferPromptReflowFit(view)) return;
     if (view.v2FitFrame && forceResize) {
       cancelAnimationFrame(view.v2FitFrame);
@@ -12414,13 +12641,6 @@ class TermdeckApp {
     // activate() and the reconnect restore in connect()'s ws.onmessage).
     const restoreRowsFromBottom = view.term.buffer.active.baseY - restoreLine;
     const follow = view.scrollMode === "follow";
-    if (this.fixedTerminalGeometryEnabled(view)) {
-      this.applyAuthoritativeTerminalGeometry(view);
-      this.refreshTerminalAppearance(view, true);
-      if (follow) this.scrollTerminalV2ToBottom(view);
-      else this.scrollTerminalV2ToLine(view, Math.min(restoreLine, view.term.buffer.active.baseY));
-      return true;
-    }
     const renderService = view.term._core?._renderService;
     if (renderService?._isPaused && typeof renderService._handleIntersectionChange === "function") {
       renderService._handleIntersectionChange({ isIntersecting: true, intersectionRatio: 1 });
@@ -12488,7 +12708,6 @@ class TermdeckApp {
   scheduleActiveTerminalSettleWatchdog(view) {
     this.clearActiveTerminalSettleWatchdog(view);
     if (!view || view.closed || !this.isTerminalScrollV2() || !this.terminalPageCanResize()) return;
-    if (this.fixedTerminalGeometryEnabled(view)) return;
     for (const delay of TERMINAL_ACTIVE_SETTLE_DELAYS_MS) {
       view.settleWatchdogTimers.push(setTimeout(() => {
         if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible") ||
@@ -12579,7 +12798,6 @@ class TermdeckApp {
   // regresses again later, not a real option (it reintroduces the Claude wrap on its own). No UI for it;
   // set/clear it from the browser console.
   forceVisibleTerminalReflow(view) {
-    if (this.fixedTerminalGeometryEnabled(view)) return this.forceVisibleTerminalReflowViaClear(view);
     if (localStorage.getItem("td-debug-reflow-mode") === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     const kind = this.session(view.sessionId)?.agent_kind;
     if (kind !== "codex") return this.forceVisibleTerminalReflowViaClear(view);
@@ -12655,7 +12873,6 @@ class TermdeckApp {
   // column is still enough to unstick a stale codex paint without landing on that boundary.
   //
   forceVisibleTerminalReflowViaResizeNudge(view, nudgeCols = 2) {
-    if (this.fixedTerminalGeometryEnabled(view)) return this.forceVisibleTerminalReflowViaClear(view);
     if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
         !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
     if (this.shouldDeferPromptReflowFit(view)) return false;
@@ -12795,11 +13012,6 @@ class TermdeckApp {
         view.viewportRepairFrame = 0;
         if (view.closed || view.manualScroll || generation !== view.manualScrollGeneration ||
             !view.keepBottom || !view.container.classList.contains("visible") || !this.terminalAtBottom(view)) return;
-        if (this.fixedTerminalGeometryEnabled(view)) {
-          this.applyAuthoritativeTerminalGeometry(view);
-          this.scrollTerminalToBottom(view);
-          return;
-        }
         view.fit.fit();
         this.refreshTerminal(view);
         const { cols, rows } = view.term;
@@ -12854,12 +13066,6 @@ class TermdeckApp {
     if (this.$("terminal-area").classList.contains("hidden")) return;
     const view = this.views.get(this.activeId);
     if (!view || !view.container.classList.contains("visible")) return;
-    if (this.fixedTerminalGeometryEnabled(view)) {
-      this.applyAuthoritativeTerminalGeometry(view);
-      if (this.isTerminalScrollV2()) this.scheduleV2ViewportSync(view);
-      else if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
-      return;
-    }
     if (this.isTerminalScrollV2()) {
       this.scheduleV2Fit(view);
       this.scheduleV2ViewportSync(view);
@@ -12980,7 +13186,12 @@ class TermdeckApp {
     }
     this.settings.sidebar_text_color = SETTINGS_DEFAULTS.sidebar_text_color;
     this.settings.show_terminal_age = true;
-    this.settings.claude_snapshot_experimental = true;
+    // Kill-switch; this line force-enabled the experiment, overriding both the default and any saved
+    // preference. The restore writes a serialized snapshot into an xterm that is concurrently receiving
+    // live output, so the two interleave mid-row and corrupt the screen, and a fresh tab reports
+    // have_buffer=1 with no real buffer, which suppresses the repaint and leaves it blank. Set back to
+    // true to resume work on the feature.
+    this.settings.claude_snapshot_experimental = false;
     if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
     if (this.normalizeNotebookNotes()) this.saveSettings();
     // V2 is now the only desktop terminal scroll controller. Remove the old
@@ -13548,10 +13759,7 @@ class TermdeckApp {
       anchor.focus();
     };
     pop.appendChild(this.buildThemeSelectRow());
-    pop.appendChild(this.buildToggleRow("Transcript-first experiment",
-      () => (this.settings.transcript_first_experimental ? "on" : "off"),
-      () => { this.settings.transcript_first_experimental = !this.settings.transcript_first_experimental; },
-      () => this.applyTranscriptFirstSettingChange()));
+    pop.appendChild(this.buildRemoteAccessRow());
     pop.appendChild(this.buildTerminalIconSettingsRow());
     pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));
@@ -14416,11 +14624,119 @@ class TermdeckApp {
     pop.style.left = Math.min(rect.left, window.innerWidth - pop.offsetWidth - 12) + "px";
   }
 
+  buildRemoteAccessRow() {
+    const row = document.createElement("div");
+    row.className = "settings-row remote-access-settings-row";
+    const heading = document.createElement("span");
+    heading.className = "remote-access-heading";
+    const label = document.createElement("span");
+    label.className = "settings-label";
+    label.textContent = "Remote access";
+    const status = document.createElement("span");
+    status.className = "remote-access-status";
+    status.textContent = "checking…";
+    heading.append(label, status);
+    const controls = document.createElement("span");
+    controls.className = "settings-controls";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "remote-access-open hidden";
+    open.textContent = "↗";
+    open.title = "Open TermDeck Remote";
+    const action = document.createElement("button");
+    action.type = "button";
+    action.className = "remote-access-action";
+    action.textContent = "Sign in";
+    controls.append(open, action);
+    row.append(heading, controls);
+    row.remoteAccessElements = { status, open, action };
+    action.onclick = () => this.handleRemoteAccessAction(row);
+    open.onclick = () => {
+      const relayUrl = row.dataset.relayUrl;
+      if (relayUrl) window.open(relayUrl, "_blank", "noopener");
+    };
+    void this.refreshRemoteAccessRow(row);
+    return row;
+  }
+
+  async refreshRemoteAccessRow(row) {
+    if (!row) return;
+    const { status, open, action } = row.remoteAccessElements;
+    try {
+      const response = await fetch("/api/remote/status");
+      if (!response.ok) throw new Error(`remote status failed (${response.status})`);
+      const remote = await response.json();
+      if (!row.isConnected) return;
+      row.dataset.remoteState = remote.state;
+      row.dataset.relayUrl = remote.public_url || remote.relay_url || "";
+      row.dataset.loginUrl = remote.login_url || "";
+      const labels = {
+        disconnected: "off",
+        pairing: "finish Google sign-in",
+        ready: remote.email ? `${remote.email} · ready` : "ready",
+        connected: remote.email ? `${remote.email} · connected` : "connected",
+        error: remote.error || "connection failed",
+      };
+      status.textContent = labels[remote.state] || remote.state;
+      status.title = remote.error || remote.relay_url || "";
+      open.classList.toggle("hidden", !!this.remoteBrowserEmail || remote.state !== "connected");
+      action.textContent = this.remoteBrowserEmail ? "Log out" :
+        ["connected", "ready"].includes(remote.state) ? "Disconnect" :
+          remote.state === "pairing" ? "Open login" : "Sign in";
+      if (remote.state === "pairing") {
+        clearTimeout(row.remoteStatusTimer);
+        row.remoteStatusTimer = setTimeout(() => this.refreshRemoteAccessRow(row), 1800);
+      }
+    } catch (error) {
+      status.textContent = "unavailable";
+      status.title = error instanceof Error ? error.message : String(error);
+      action.textContent = "Retry";
+    }
+  }
+
+  async handleRemoteAccessAction(row) {
+    if (this.remoteBrowserEmail) {
+      await this.logoutRemoteBrowser(row.remoteAccessElements.action);
+      return;
+    }
+    const state = row.dataset.remoteState || "disconnected";
+    if (["connected", "ready"].includes(state)) {
+      if (!window.confirm("Disconnect this computer from TermDeck Remote?")) return;
+      const response = await fetch("/api/remote/disconnect", { method: "POST" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        window.alert(payload.detail || `remote disconnect failed (${response.status})`);
+      }
+      await this.refreshRemoteAccessRow(row);
+      return;
+    }
+    if (state === "pairing" && row.dataset.loginUrl) {
+      window.open(row.dataset.loginUrl, "_blank", "noopener");
+      return;
+    }
+    const loginWindow = window.open("about:blank", "termdeck-remote-login");
+    try {
+      const response = await fetch("/api/remote/pair", { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || `remote pairing failed (${response.status})`);
+      if (payload.login_url && loginWindow) loginWindow.location.replace(payload.login_url);
+      else if (payload.login_url) window.open(payload.login_url, "_blank", "noopener");
+      await this.refreshRemoteAccessRow(row);
+    } catch (error) {
+      if (loginWindow) loginWindow.close();
+      window.alert(error instanceof Error ? error.message : String(error));
+      await this.refreshRemoteAccessRow(row);
+    }
+  }
+
   async activateFile(key, line, options = {}) {
     const entry = this.openFiles.get(key);
     if (!entry) return;
     this.closeTerminalFind();
     this.closePromptHistory();
+    if (this.activeFileKey === null && this.historyOpen && this.activeId) {
+      this.rememberHistoryScrollPosition(this.activeId);
+    }
     if (this.activeFileKey !== key) this.saveActiveFileViewState();
     this.activeFileKey = key;
     if (options.history !== false && !this.vscodeMode) {
@@ -14432,7 +14748,11 @@ class TermdeckApp {
       const returnTo = (this.session(fallback) ? fallback : fallbackFromFile && this.session(fallbackFromFile) ? fallbackFromFile : "");
       const fromCurrentFile = current?.kind === "file" && String(current.return_to || "") === returnTo;
       if (returnTo && !fromCurrentFile) {
-        this.pushNav({ kind: "term", id: returnTo });
+        const returnState = { kind: "term", id: returnTo };
+        const historyScroll = this.historyScrollBySession.get(returnTo);
+        if (historyScroll) returnState.history_scroll = historyScroll;
+        if (current?.kind === "term" && String(current.id || "") === returnTo) this.replaceNav(returnState);
+        else this.pushNav(returnState);
       }
       if (returnTo) {
         this.pushNav({ kind: "file", key, return_to: returnTo });
@@ -15716,8 +16036,10 @@ class TermdeckApp {
     const wasActive = this.activeId === sessionId;
     const closeOrder = this.sessions.map((session) => session.session_id);
     const closeIndex = closeOrder.indexOf(sessionId);
-    const nextOnClose = closeIndex >= 0 && closeIndex + 1 < closeOrder.length ? closeOrder[closeIndex + 1]
+    const previouslyOpened = this.previouslyOpenedTerminalId(new Set([sessionId]));
+    const adjacentSession = closeIndex >= 0 && closeIndex + 1 < closeOrder.length ? closeOrder[closeIndex + 1]
       : closeIndex > 0 ? closeOrder[closeIndex - 1] : null;
+    const nextOnClose = previouslyOpened || adjacentSession;
     const response = await fetch(`/api/sessions/${sessionId}`, {
       method: "DELETE", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ group_name: this.terminalGroupNameForSession(sessionId) }),
@@ -15728,6 +16050,10 @@ class TermdeckApp {
       return;
     }
     this.postVscodeNativeClose(sessionId);
+    if (wasActive && nextOnClose && this.session(nextOnClose)) {
+      this.activate(nextOnClose, { history: false, reveal: true });
+      this.replaceNav({ kind: "term", id: nextOnClose });
+    }
     await this.refresh();
     if (wasActive && nextOnClose) {
       const nextSession = this.session(nextOnClose);
@@ -15744,7 +16070,9 @@ class TermdeckApp {
     const selectedIds = new Set(selectedSessions.map((session) => session.session_id));
     const activeWasSelected = selectedIds.has(this.activeId);
     const activeIndex = this.sessions.findIndex((session) => session.session_id === this.activeId);
-    const nextSession = this.sessions.slice(activeIndex + 1).find((session) => !selectedIds.has(session.session_id)) ||
+    const previouslyOpenedId = this.previouslyOpenedTerminalId(selectedIds);
+    const nextSession = this.session(previouslyOpenedId) ||
+      this.sessions.slice(activeIndex + 1).find((session) => !selectedIds.has(session.session_id)) ||
       this.sessions.slice(0, Math.max(activeIndex, 0)).reverse().find((session) => !selectedIds.has(session.session_id)) || null;
     const results = await Promise.all(selectedSessions.map(async (session) => ({ session,
       response: await fetch(`/api/sessions/${session.session_id}`, {
@@ -15755,8 +16083,12 @@ class TermdeckApp {
     for (const sessionId of closedIds) this.postVscodeNativeClose(sessionId);
     this.sidebarSelectedSessionIds = new Set([...this.sidebarSelectedSessionIds]
       .filter((sessionId) => !closedIds.includes(sessionId)));
-    await this.refresh();
     if (activeWasSelected && nextSession && this.session(nextSession.session_id)) {
+      this.activate(nextSession.session_id, { history: false, reveal: true });
+      this.replaceNav({ kind: "term", id: nextSession.session_id });
+    }
+    await this.refresh();
+    if (activeWasSelected && nextSession && this.session(nextSession.session_id) && this.activeId !== nextSession.session_id) {
       this.activate(nextSession.session_id, { history: false, reveal: true });
     }
     const failedCount = results.length - closedIds.length;

@@ -16,6 +16,7 @@ class TermdeckConfig:
     DATA_DIR = PlatformPaths.env_directory(PlatformPaths.ENV_DATA_DIR, PlatformPaths.default_data_dir())
     SESSIONS_FILE = DATA_DIR / "sessions.json"
     SETTINGS_FILE = DATA_DIR / "settings.json"
+    REMOTE_CREDENTIALS_FILE = DATA_DIR / "remote-credentials.json"
     CLOSED_SESSIONS_FILE = DATA_DIR / "closed_sessions.json"
     CLOSED_HISTORY_MAX = 100
     PROJECTS_FILE = DATA_DIR / "projects.json"
@@ -39,6 +40,7 @@ class TermdeckConfig:
     API_STATE_RECOVERY_ROUTE = "/api/state-recovery"
     API_STATE_RECOVERY_RESTORE_ROUTE = "/api/state-recovery/restore"
     PROJECT_PAGE_ROUTE = "/p/{project_name}"
+    PROJECT_NAVIGATION_PAGE_ROUTE = "/p/{project_name}/{navigation_path:path}"
     FILEDECK_PAGE_ROUTE = "/f/{project_name}"
     STATIC_DIR = Path(__file__).resolve().parent / "static"
     FILEDECK_STATIC_DIR = Path(__file__).resolve().parent.parent / "filedeck" / "static"
@@ -80,6 +82,9 @@ class TermdeckConfig:
     API_HISTORY_SEARCH_ROUTE = "/api/history-search"
     API_HISTORY_CONTEXT_ROUTE = "/api/history-context"
     API_SETTINGS_ROUTE = "/api/settings"
+    API_REMOTE_STATUS_ROUTE = "/api/remote/status"
+    API_REMOTE_PAIR_ROUTE = "/api/remote/pair"
+    API_REMOTE_DISCONNECT_ROUTE = "/api/remote/disconnect"
     API_NOTEBOOK_TRASH_ROUTE = "/api/notebook/trash"
     API_CLOSED_ROUTE = "/api/closed"
     API_CLOSED_ITEM_ROUTE = "/api/closed/{session_id}"
@@ -218,3 +223,13 @@ class TermdeckConfig:
     REATTACH_DIVIDER = "\x1b[2m──────────── reconnected (kept running) ────────────\x1b[0m"
     SPAWN_ERROR_TEMPLATE = "\x1b[31m[termdeck] spawn failed: {error}\x1b[0m\r\n"
     UVICORN_LOG_LEVEL = PlatformPaths.env_text(PlatformPaths.ENV_LOG_LEVEL, "info")
+    REMOTE_SERVICE_URL = PlatformPaths.env_text(
+        PlatformPaths.ENV_REMOTE_URL, "https://termdeck-remote-298065490746.us-central1.run.app")
+    REMOTE_PUBLIC_URL = PlatformPaths.env_text(
+        PlatformPaths.ENV_REMOTE_PUBLIC_URL, "https://remote.termdeck.workers.dev")
+    REMOTE_PAIR_POLL_SECONDS = 2.0
+    REMOTE_PAIR_TIMEOUT_SECONDS = 600.0
+    REMOTE_RECONNECT_MIN_SECONDS = 1.0
+    REMOTE_RECONNECT_MAX_SECONDS = 20.0
+    REMOTE_HTTP_TIMEOUT_SECONDS = 60.0
+    REMOTE_DEMAND_POLL_SECONDS = 5.0

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>TermDeck Remote</title>
+  <script src="https://accounts.google.com/gsi/client" async></script>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100dvh; display: grid; place-items: center; background: #090b10; color: #e8edf5; padding: 24px; }
+    main { width: min(420px, 100%); padding: 32px; border: 0; border-radius: 16px; background: #11151d; box-shadow: 0 24px 80px #0009; }
+    h1 { margin: 0 0 10px; font-size: 25px; }
+    p { margin: 0 0 24px; color: #9ca9bb; line-height: 1.5; }
+    #google-button { min-height: 44px; }
+    #login-error { min-height: 20px; margin-top: 16px; color: #ff8f8f; font-size: 14px; }
+    .mark { color: #64b5f6; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1><span class="mark">◉</span> TermDeck Remote</h1>
+    <p>Sign in with the same Google account used to connect TermDeck on your computer.</p>
+    <div id="google-button"></div>
+    <div id="login-error" role="alert"></div>
+  </main>
+  <script>
+    const remoteLogin = __TERMDECK_REMOTE_LOGIN_CONFIG__;
+    async function completeGoogleLogin(response) {
+      const result = await fetch("/_remote/auth/google", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credential: response.credential, csrf_token: remoteLogin.csrfToken,
+          pairing_id: remoteLogin.pairingId, return_to: remoteLogin.returnTo })
+      });
+      const payload = await result.json();
+      if (!result.ok) {
+        document.getElementById("login-error").textContent = payload.detail || "Google sign-in failed";
+        return;
+      }
+      location.replace(payload.redirect);
+    }
+    window.onload = () => {
+      google.accounts.id.disableAutoSelect();
+      google.accounts.id.initialize({ client_id: remoteLogin.googleClientId, callback: completeGoogleLogin,
+        auto_select: false, use_fedcm_for_button: false, button_auto_select: false });
+      google.accounts.id.renderButton(document.getElementById("google-button"), {
+        theme: "filled_blue", size: "large", shape: "rectangular", width: 320
+      });
+    };
+  </script>
+</body>
+</html>
