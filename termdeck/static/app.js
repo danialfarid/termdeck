@@ -93,12 +93,6 @@ const TALL_PROGRAMMATIC_ECHO_MS = 48;
 // waiting for the scroll event to say so. Several rows: the browser's own focus scroll-into-view nudges
 // by a pixel or two, which must NOT count, while any real gesture clears this immediately.
 const TALL_FOLLOW_BREAK_PX = 60;
-// Quiet gap that ends a view's initial fill: the batches of a fill arrive far closer together than this,
-// so the first real pause means the screen is finished and can be settled once.
-const TALL_FILL_QUIET_MS = 120;
-// Ceiling on how long a fill may suppress per-batch following. A session that never stops writing would
-// otherwise stay in fill mode for as long as it kept talking, and stop following while it did.
-const TALL_FILL_MAX_MS = 2000;
 // Overshoot small enough to simply leave alone. The scrollable area is a fixed 1000 rows while the
 // content usually ends short of that, so a drag can reach a little past the last line -- on a full canvas
 // that is the couple of blank rows below it. Correcting such a small overshoot is worse than allowing it:
@@ -11502,7 +11496,6 @@ class TermdeckApp {
           // Nothing to do: no fit, no reflow, no repair, no watchdog.
         } else {
           const forceFit = previousId !== id || this.shouldForceTerminalActivationReflow(view, switchedViews);
-          if (previousId !== id) this.tallArmAttachSettle(view);
           this.scheduleV2Fit(view, { force: forceFit });
           this.scheduleInitialV2Fit(view);
           if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
@@ -13663,34 +13656,6 @@ class TermdeckApp {
     this.tallSetScrollTop(view, 0);
   }
 
-  // A view with no ceiling yet is about to be filled from its saved buffer, and that fill arrives as many
-  // batches whose intermediate cursor positions describe nothing the user should be shown. Suppresses the
-  // per-batch follow (see drainTerminalWrites) for a moment and does it once at the end instead. Armed
-  // only for a view that has not been filled yet: an already-established one settles in a step or two,
-  // and making it wait would be a delay in exchange for nothing.
-  tallArmAttachSettle(view) {
-    if (!view || view.closed || view.tallMaxScrollTop != null) return;
-    view.tallAwaitingFill = true;
-    view.tallFillFollows = 0;
-    view.tallFillArmedAt = Date.now();
-  }
-
-  // Debounced on the writes themselves, not on a window from activation: the fill does not begin until
-  // the socket has connected and the server has sent the buffer -- measured at ~890ms after the switch,
-  // by which time any fixed window armed at activation has long expired (that version cut the walk from
-  // 19 steps to 8 and no further). Each batch pushes the settle out; the first quiet gap performs it.
-  tallScheduleFillSettle(view) {
-    clearTimeout(view.tallFillSettleTimer);
-    view.tallFillSettleTimer = setTimeout(() => {
-      view.tallFillSettleTimer = 0;
-      view.tallAwaitingFill = false;
-      if (view.closed || view.tallFollowing === false) return;
-      // From the finished screen, the same way the replay completion handler settles its own.
-      this.tallUpdateMaxScrollTop(view);
-      this.scrollTallContainerToCursor(view);
-    }, TALL_FILL_QUIET_MS);
-  }
-
   // Markers live in the terminal's buffer and are updated on every trim, so a stale one is both a leak
   // and a wrong answer. Released everywhere the anchor it belongs to is dropped.
   tallReleaseAnchorMarker(view) {
@@ -13994,32 +13959,7 @@ class TermdeckApp {
           view.tallFollowing = false;
           this.tallCaptureAnchorRow(view);
         } else if (following) {
-          // While a view is still filling from its saved buffer, every batch leaves the cursor somewhere
-          // different, and following each one is what walks the view down the screen on a tab switch:
-          // traced on a real one the cursor went 0 -> 125 -> 253 -> 381 -> 509 -> 637 -> 893 before
-          // resetting, and the view took 14 separate steps over 440ms to arrive. The ceiling still
-          // tracks all of it (above); only the scrolling waits, and the settle armed at activation does
-          // it once, from the finished screen.
-          //
-          // Deliberately NOT keyed on "more output is already queued", which was the first attempt:
-          // measured, the queue is non-empty for 0.4% of an attach (max depth 4) but 28% of a steady
-          // flood, so that test skips the scroll almost only while streaming -- where following is what
-          // the user wants -- and almost never during the fill it was meant to collapse.
-          //
-          // The FIRST batch of a fill still scrolls, so the view lands on content immediately rather than
-          // leaving the reader looking at the top of the buffer while it settles; the ones after it are
-          // what walk the screen, and they wait for the quiet gap. The cap is there so a session that
-          // simply never stops writing cannot be held in this state.
-          const filling = view.tallAwaitingFill &&
-            Date.now() - (view.tallFillArmedAt || 0) < TALL_FILL_MAX_MS;
-          if (!filling) {
-            view.tallAwaitingFill = false;
-            this.scrollTallContainerToCursor(view);
-          } else {
-            if (!view.tallFillFollows) this.scrollTallContainerToCursor(view);
-            view.tallFillFollows = (view.tallFillFollows || 0) + 1;
-            this.tallScheduleFillSettle(view);
-          }
+          this.scrollTallContainerToCursor(view);
         } else {
           // Holds the anchored LINE still (see tallHoldAnchorRow), which also absorbs the browser's own
           // scroll-into-view drift -- the user should never see the view move while they have deliberately
