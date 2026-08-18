@@ -18,11 +18,12 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_terminal_mode: "webgl", inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
-  files_side_panel_last_tab: "project", file_search_history: [], files_panel_width_initialized: false };
+  files_side_panel_last_tab: "project", file_search_history: [], files_panel_width_initialized: false,
+  file_tab_max_visible: 20, file_tab_order: "opened" };
 const MODEL_PERMISSIONS = {
   codex: [
     { value: "default", label: "Default (Codex config)" },
@@ -68,7 +69,40 @@ const TERMINAL_FIND_SELECTION_FOREGROUND = "#ffffff";
 // in front of us can actually back, instead of hardcoding a guess -- and it degrades to DOM by itself on
 // a GPU too small to matter.
 const TALL_ROWS_DOM = 1000;
+// Renderer choice for the tall terminal, deliberately a code flag rather than a setting: DOM is good
+// enough today and the settings surface is already crowded. WebGL is not a straight upgrade here -- it
+// backs the terminal with one drawing buffer sized to the FULL terminal in device pixels, so
+// MAX_TEXTURE_SIZE caps it near 390 rows on this hardware, against 1000 for DOM, which has no such
+// limit. Flip to true to explore that trade again; tallRowPlan then sizes the terminal to whatever the
+// GPU can actually back.
+const TALL_WEBGL_ENABLED = false;
 const TALL_ROWS_MIN_FOR_WEBGL = 120;
+// How close to the ceiling still counts as "at the bottom". Deliberately tiny: a row's worth of slack
+// was enough to swallow a slow scroll whole -- nudging up a few pixels still measured as "at the bottom",
+// so the settle handler turned following back on and pulled the view straight back down, and only a fast
+// gesture (one that cleared the slack in a single step) could escape. Nothing needs the slack: every way
+// of arriving at the bottom lands on the ceiling exactly, because the clamp puts it there.
+const TALL_BOTTOM_TOLERANCE_PX = 2;
+// How long after the last scroll event a gesture is still considered in progress, and how long of a
+// quiet period settles it. Both cover a scrollbar drag pausing mid-gesture without ending it.
+const TALL_SCROLL_ACTIVE_MS = 250;
+const TALL_SCROLL_SETTLE_MS = 150;
+// A scroll event caused by our own write lands within a frame or two of it.
+const TALL_PROGRAMMATIC_ECHO_MS = 48;
+// How far the view may sit below the ceiling before a write treats it as "the user moved this", without
+// waiting for the scroll event to say so. Several rows: the browser's own focus scroll-into-view nudges
+// by a pixel or two, which must NOT count, while any real gesture clears this immediately.
+const TALL_FOLLOW_BREAK_PX = 60;
+// Overshoot small enough to simply leave alone. The scrollable area is a fixed 1000 rows while the
+// content usually ends short of that, so a drag can reach a little past the last line -- on a full canvas
+// that is the couple of blank rows below it. Correcting such a small overshoot is worse than allowing it:
+// the correction is what the user sees as the view jumping back a line or two after the drag lands.
+// Larger overshoots (a sparse terminal, where the empty area is enormous) are still pulled back.
+const TALL_OVERSHOOT_DEADZONE_PX = 72;
+// How long a smaller content height must persist before the scrollable box actually shrinks. A composer
+// redrawing itself reports one row fewer for a frame at a time, and reacting to each dip makes the box
+// oscillate; growth is always applied immediately, so nothing is ever unreachable while this waits.
+const TALL_SHRINK_SETTLE_MS = 400;
 const TALL_ROWS_MAX = 1000;
 const HISTORY_BACKGROUND_TARGET_TURNS = 320;
 const HISTORY_BACKGROUND_PAGE_TURNS = 160;
@@ -459,7 +493,6 @@ class TermdeckApp {
     this.saveTimer = null;
     this.settingsSavePromise = Promise.resolve();
     this.projectStateSavePromise = Promise.resolve();
-    this.claudeSnapshotStorageLimitPromise = null;
     this.treeRoot = null;
     this.treeDirs = new Map();
     this.treeReloadPromise = null;
@@ -2381,7 +2414,10 @@ class TermdeckApp {
        { label: "Tree/search font", key: "tree_font_size" }, { label: "Files / Search tabs font", key: "files_tab_font_size" },
        { label: "Diff font", key: "diff_font_size" }, { label: "System / status font", key: "ui_font_size" },
        { label: "UI icons / spacing", key: "bottom_font_size", type: "scale" }]);
-    this.$("file-view-close").onclick = () => this.navigateBackFromActiveFile();
+    // Null-safe: #file-view-close is not in index.html yet. This runs during setup, so the throw
+    // aborted the rest of this initialisation rather than just failing one button.
+    const fileViewClose = this.$("file-view-close");
+    if (fileViewClose) fileViewClose.onclick = () => this.navigateBackFromActiveFile();
     this.$("file-history-toggle").onclick = () => this.toggleFileHistory();
     this.$("file-history-close").onclick = () => this.closeFileHistory();
     this.$("file-history-git-toggle").onclick = () => this.toggleFileHistoryMode();
@@ -2837,7 +2873,10 @@ class TermdeckApp {
         if (e.key === "Escape") this.$("keys-backdrop").classList.add("hidden");
         return;
       }
-      if (!this.$("worktree-review-backdrop").classList.contains("hidden")) {
+      // Null-safe because #worktree-review-backdrop is not in index.html yet: without this the throw
+      // lands on EVERY keydown and kills every global shortcut below. Compared against false rather than
+      // negated -- `!undefined` would be true and swallow all keys when the element is absent.
+      if (this.$("worktree-review-backdrop")?.classList.contains("hidden") === false) {
         if (e.key === "Escape") {
           e.preventDefault();
           this.closeWorktreeReview();
@@ -4769,7 +4808,7 @@ class TermdeckApp {
     // Honor the same content ceiling the scroll listener enforces, so centering a match near the end
     // cannot park the view in the blank rows past the content.
     const ceiling = view.tallMaxScrollTop == null ? nativeMax : Math.min(nativeMax, view.tallMaxScrollTop);
-    view.container.scrollTop = Math.max(0, Math.min(centered, ceiling));
+    this.tallSetScrollTop(view, Math.min(centered, ceiling));
     // Searching is the user asking to look at something specific, so stop following new output -- other-
     // wise the next write scrolls straight back to the prompt and the match they just navigated to is
     // gone. Typing resumes following (see the key handler in ensureView). Anchoring to the match's row
@@ -9414,7 +9453,10 @@ class TermdeckApp {
       this.quickOpenTimer = setTimeout(() => void this.renderQuickOpen(quickInput.value), 140);
     });
     quickInput.addEventListener("keydown", (event) => this.handleQuickOpenKey(event));
-    this.$("file-outline-toggle").onclick = () => this.toggleFileInspector("outline");
+    // Null-safe: #file-outline-toggle is not in index.html yet. This sits mid-way through
+    // initIdeFeatures, so the throw skipped every listener wired after it, not just this one.
+    const fileOutlineToggle = this.$("file-outline-toggle");
+    if (fileOutlineToggle) fileOutlineToggle.onclick = () => this.toggleFileInspector("outline");
     this.$("file-inspector-close").onclick = () => this.closeFileInspector();
     this.$("file-inspector-refresh").onclick = () => this.refreshFileInspector();
     this.$("file-split-toggle").onclick = () => this.toggleSplitEditor();
@@ -11520,13 +11562,80 @@ class TermdeckApp {
     }, { passive: true });
     // A hard ceiling, not an intent signal -- unlike the "wheel" listener above, this one never decides
     // anything about the user, it just enforces tallMaxScrollTop (see its own comment) whenever a scroll
-    // lands past it, however that scroll happened. Native or programmatic, deliberate or the browser's own
-    // focus-driven auto-scroll -- all land here, and all get clamped the same idempotent way, which is why
-    // this one doesn't need the wheel listener's debounce or its care about which events can be trusted.
+    // lands past it, however that scroll happened: native or programmatic, deliberate or the browser's own
+    // focus-driven auto-scroll.
+    //
+    // Deferred until scrolling stops, though, because clamping cannot win an argument with a scroll source
+    // that is still running. Dragging the scrollbar thumb is one: the browser re-derives scrollTop from the
+    // held pointer every frame, so an immediate clamp was overwritten and re-clamped frame after frame,
+    // which reads as the text tearing between two positions at once. Waiting for a short quiet period
+    // means the drag simply wins while it lasts and gets clamped once, cleanly, on release. Nothing is
+    // lost by waiting: the wheel handler below already refuses to overshoot in the first place, so this
+    // path only ever sees drags and programmatic jumps.
+    let tallClampTimer = 0;
+    const scheduleTallSettle = () => {
+      const watching = this.views.get(id);
+      if (!watching || watching.closed) return;
+      // Remember where the settle was scheduled from, so the callback can tell whether the view is
+      // actually still. Events alone are not enough to know that: our own writes are skipped as echoes
+      // below, and the browser coalesces bursts, so a gesture can keep moving while this listener hears
+      // nothing -- and a settle that fires mid-gesture is exactly the clamp that tears the view.
+      watching.tallSettleWatchTop = container.scrollTop;
+      clearTimeout(tallClampTimer);
+      tallClampTimer = setTimeout(() => {
+        const settled = this.views.get(id);
+        if (!settled || settled.closed) return;
+        // A held pointer is the one case a quiet period cannot detect: holding the thumb still IS quiet,
+        // right up until a clamp perturbs it, and then the browser re-derives scrollTop from the pointer
+        // that is still down and undoes the clamp -- which fires another settle, forever. Measured as a
+        // steady ~150ms pulse while the thumb was held at the bottom. So while any pointer is down on
+        // this terminal, nothing here moves the view; release re-runs this once.
+        if (settled.tallPointerHeld) return;
+        if (Math.abs(container.scrollTop - (settled.tallSettleWatchTop || 0)) > 2) {
+          scheduleTallSettle();   // moved since scheduling: still in flight, wait for real quiet
+          return;
+        }
+        settled.tallScrollActiveUntil = 0;
+        if (settled.tallMaxScrollTop != null &&
+            container.scrollTop > settled.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
+          this.tallSetScrollTop(settled, settled.tallMaxScrollTop);
+        }
+        this.tallApplySettledScroll(settled);
+      }, TALL_SCROLL_SETTLE_MS);
+    };
+    // Pointer-held tracking. Registered on the container in capture so a scrollbar interaction counts,
+    // and released from the window because the pointerup can land anywhere once a drag is under way.
+    const releaseTallPointer = () => {
+      const view = this.views.get(id);
+      window.removeEventListener("pointerup", releaseTallPointer, true);
+      window.removeEventListener("pointercancel", releaseTallPointer, true);
+      if (!view || view.closed) return;
+      view.tallPointerHeld = false;
+      scheduleTallSettle();       // now that it is released, let it settle exactly once
+    };
+    container.addEventListener("pointerdown", () => {
+      const view = this.views.get(id);
+      if (!view || view.closed) return;
+      view.tallPointerHeld = true;
+      window.addEventListener("pointerup", releaseTallPointer, true);
+      window.addEventListener("pointercancel", releaseTallPointer, true);
+    }, { capture: true, passive: true });
     container.addEventListener("scroll", () => {
       const view = this.views.get(id);
-      if (!view || view.tallMaxScrollTop == null) return;
-      if (container.scrollTop > view.tallMaxScrollTop) container.scrollTop = view.tallMaxScrollTop;
+      if (!view || view.closed) return;
+      // Our own scrolls must not read as the user scrolling, or following would flip on every write.
+      // Matching on value ALONE is wrong: the user scrolling to the bottom lands on exactly the ceiling
+      // we last set ourselves, so a real gesture was being discarded as an echo -- which is what left the
+      // pinned viewport stale and the newest lines unreachable. The echo of our own write arrives within
+      // a frame or two, so requiring it to be recent as well tells the two apart.
+      const echoOfOurOwnWrite = container.scrollTop === view.tallLastProgrammaticTop &&
+        performance.now() - (view.tallProgrammaticAt || 0) < TALL_PROGRAMMATIC_ECHO_MS;
+      if (echoOfOurOwnWrite) return;
+      // Marks a gesture as in progress. Writes check this and leave the view completely alone while it is
+      // set: a scrollbar drag or an autoscroll keeps producing scroll events, and a write that re-asserts
+      // the follow position in the middle of one is what tears the text between two positions.
+      view.tallScrollActiveUntil = Date.now() + TALL_SCROLL_ACTIVE_MS;
+      scheduleTallSettle();
     }, { passive: true });
     // The scrollback bridge for the CSS's overflow-y:hidden on .xterm-viewport (see style.css). That rule
     // takes xterm's own viewport out of the scroll chain so there's a single scroll surface, but the
@@ -11543,6 +11652,19 @@ class TermdeckApp {
       if (!view || view.closed || !event.deltaY) return;
       const buffer = view.term.buffer.active;
       const up = event.deltaY < 0;
+      // Absorb downward overscroll rather than letting the browser take it and correcting afterwards.
+      // .term-inner is a fixed FORCE_ROWS tall no matter how little content exists, so the browser's own
+      // max scroll sits thousands of pixels below the last line, and a scroll past the end used to be
+      // painted out there and then yanked back by the "scroll" listener's clamp -- the visible bounce at
+      // the bottom. Worst on a nearly empty terminal, where the ceiling can be 0 and the overshoot is the
+      // full canvas. Clamping the gesture here means the overshoot is never painted at all. Trackpad
+      // momentum keeps firing wheel events, so this has to absorb those too, which it does by staying on
+      // the clamp branch once scrollTop has reached the ceiling.
+      if (!up && view.tallMaxScrollTop != null && container.scrollTop + event.deltaY > view.tallMaxScrollTop) {
+        event.preventDefault();
+        if (container.scrollTop !== view.tallMaxScrollTop) this.tallSetScrollTop(view, view.tallMaxScrollTop);
+        return;
+      }
       // The container is the outer surface in both directions: going up, it has to bottom out at 0 before
       // scrollback is in play; going down, any pending scrollback has to be spent BEFORE the container
       // moves again, or the two would run in the wrong order and the content would jump.
@@ -11597,10 +11719,12 @@ class TermdeckApp {
     // is what buys the full 1000 rows.
     const cellHeight = term._core?._renderService?.dimensions?.css?.cell?.height || 17;
     const rowPlan = this.tallRowPlan(cellHeight);
+
     inner.style.height = `${Math.round(rowPlan.rows * cellHeight)}px`;
     if (rowPlan.webgl) this.enableWebglRenderer(term);
     term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
-    const view = { sessionId: id, container, term, fit, terminalFindAddon, terminalFindResultIndex: -1,
+    const view = { sessionId: id, container, term, fit, terminalFindAddon, tallRows: rowPlan.rows,
+                   terminalFindResultIndex: -1,
                    terminalFindResultCount: 0, terminalFindResultListener: null,
                    ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
                    replaying: false, pasting: false, suppressReconnect: false, cliTitle: null, pinBottomUntil: 0,
@@ -11712,6 +11836,10 @@ class TermdeckApp {
       if (files.length) { this.uploadAndInsert(view, files); return; }
       const text = cd && (cd.getData("text/plain") || cd.getData("text"));
       if (!text || !view.ws || view.ws.readyState !== WebSocket.OPEN) return;
+      // Pasting is real input, so it returns to the prompt the way typing does -- the Cmd+V chord itself
+      // is ignored by the key handler above (it cannot tell paste from copy), so this is where it lands.
+      view.tallFollowing = true;
+      this.scrollTallContainerToCursor(view);
       this.sendTrackedInput(view, this.terminalPastePayload(view, text));
     }, true);
     container.addEventListener("dragover", (e) => { e.preventDefault(); container.classList.add("drag-over"); });
@@ -11756,7 +11884,17 @@ class TermdeckApp {
       // output streamed, making it impossible to read anything scrolled back. This handler only ever
       // sees genuine key events. PageUp/Home above are deliberately excluded by ordering: they browse
       // rather than type, and the block above has already marked them as such.
-      if (e.type === "keydown" && !["PageUp", "PageDown", "Home", "End"].includes(e.key)) {
+      //
+      // "Typing" excludes Cmd chords and bare modifier presses. Cmd+C is the case that matters: copying
+      // means the user has scrolled back, selected something, and is reading it -- scrolling to the prompt
+      // there throws away the very thing they are copying. Cmd never reaches the shell anyway, so a Cmd
+      // chord is never terminal input. Ctrl and Alt deliberately still count: on this platform those DO
+      // produce terminal input (Ctrl+C interrupts, Alt+B/F move by word), so they are real typing.
+      // Pasting is real input too, but arrives on the paste listener rather than here.
+      const tallTypingKey = e.type === "keydown" && !e.metaKey &&
+        !["PageUp", "PageDown", "Home", "End"].includes(e.key) &&
+        !["Shift", "Meta", "Control", "Alt", "CapsLock"].includes(e.key);
+      if (tallTypingKey) {
         const tallView = this.views.get(id);
         if (tallView) {
           tallView.tallFollowing = true;
@@ -11837,7 +11975,7 @@ class TermdeckApp {
       }
       const rect = view.container.getBoundingClientRect();
       if (rect.width < 40 || rect.height < 40) return;
-      view.fit.fit();
+      this.tallFit(view);
       const { cols, rows } = view.term;
       if (cols >= 2 && rows >= 2) this.sendResize(view, cols, rows);
       if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
@@ -11861,7 +11999,7 @@ class TermdeckApp {
     if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return false;
-    view.fit.fit();
+    this.tallFit(view);
     this.refreshTerminalAppearance(view);
     view.container.classList.remove("initializing");
     return true;
@@ -11881,8 +12019,10 @@ class TermdeckApp {
     // already holds a populated buffer asks it to skip; an empty one always wants the repaint.
     const screenRepaint = hasPopulatedBuffer ? 0 : 1;
     const haveBuffer = hasPopulatedBuffer ? 1 : 0;
-    const ws = new WebSocket(`${proto}://${location.host}/ws/${id}?screen_repaint=${screenRepaint}&have_buffer=${haveBuffer}` +
-      `&repaint_preserved_buffer=${shouldRepaintClaudeBuffer ? 1 : 0}`);
+    // repaint_preserved_buffer is deliberately not sent: it only ever meant "this client restored a
+    // client-side snapshot, so make the agent repaint over it", and that snapshot path is gone. The
+    // server defaults the flag to false when the parameter is absent.
+    const ws = new WebSocket(`${proto}://${location.host}/ws/${id}?screen_repaint=${screenRepaint}&have_buffer=${haveBuffer}`);
     ws.binaryType = "arraybuffer";
     view.preserveBufferOnReconnect = haveBuffer === 1;
     view.awaitingSnapshot = true;
@@ -12376,6 +12516,11 @@ class TermdeckApp {
     if (this.isTerminalScrollV2()) {
       view.scrollMode = "follow";
       this.scrollTerminalV2ToBottom(view);
+      // Also drive the tall container: scrollTerminalV2ToBottom only moves xterm's own viewport, which is
+      // no longer the surface being scrolled, so on its own this button did nothing at all here.
+      view.tallFollowing = true;
+      if (view.tallMaxScrollTop != null) this.scrollTallContainerToCursor(view);
+      else this.tallSetScrollTop(view, view.container.scrollHeight);
       this.scheduleV2Fit(view);
       view.term.focus();
       return;
@@ -12741,7 +12886,7 @@ class TermdeckApp {
       // FitAddon is the public xterm sizing mechanism. v2 never writes to
       // .xterm-viewport or .xterm-scroll-area; xterm owns its scrollbar.
       const viewportAnchor = this.captureTerminalViewportAnchor(view);
-      view.fit.fit();
+      this.tallFit(view);
       view.container.classList.remove("initializing");
       const terminalSizeChanged = view.term.cols !== beforeCols || view.term.rows !== beforeRows;
       if (terminalSizeChanged) this.beginTerminalViewportRestore(view, viewportAnchor);
@@ -12751,7 +12896,8 @@ class TermdeckApp {
       // A terminal may have been painted while its container was hidden or
       // at its pre-flex width. Refresh after the settled fit so the canvas
       // and text colors are repainted together with the final geometry.
-      const forceResizeThisFrame = view.initialSnapshotPainted && (forceResize || view.forceResizeAfterFit);
+      const hasPaintedInitialSnapshot = view.initialSnapshotPainted;
+      const forceResizeThisFrame = hasPaintedInitialSnapshot && (forceResize || view.forceResizeAfterFit);
       if (!hasPaintedInitialSnapshot) view.forceResizeAfterFit = false;
       if (forceResizeThisFrame) {
         view.forceResizeAfterFit = false;
@@ -13032,7 +13178,7 @@ class TermdeckApp {
     // paint glitch (fit is a no-op) still needs the appearance refresh below.
     const beforeCols = view.term.cols, beforeRows = view.term.rows;
     const viewportAnchor = this.captureTerminalViewportAnchor(view);
-    view.fit.fit();
+    this.tallFit(view);
     if (view.term.cols !== beforeCols || view.term.rows !== beforeRows) {
       this.beginTerminalViewportRestore(view, viewportAnchor);
       if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
@@ -13091,7 +13237,7 @@ class TermdeckApp {
         if (this.shouldDeferPromptReflowFit(view)) return;
         const beforeCols = view.term.cols, beforeRows = view.term.rows;
         const viewportAnchor = this.captureTerminalViewportAnchor(view);
-        view.fit.fit();
+        this.tallFit(view);
         const colsChanged = view.term.cols !== beforeCols || view.term.rows !== beforeRows;
         if (colsChanged) this.beginTerminalViewportRestore(view, viewportAnchor);
         if (colsChanged && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows);
@@ -13285,14 +13431,14 @@ class TermdeckApp {
         return;
       }
       view.container.style.right = `${nudgeRight}px`;
-      view.fit.fit();
+      this.tallFit(view);
       this.refreshTerminalAppearance(view, true);
       view.v2ForcedReflowRestoreFrame = requestAnimationFrame(() => {
         view.v2ForcedReflowRestoreFrame = 0;
         if (!view.closed) {
           view.container.style.right = originalRight;
           if (view.container.classList.contains("visible")) {
-            view.fit.fit();
+            this.tallFit(view);
             this.refreshTerminalAppearance(view, true);
             if (follow) this.scrollTerminalV2ToBottom(view);
             else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
@@ -13396,7 +13542,11 @@ class TermdeckApp {
     if (Number(buffer.viewportY || 0) < Number(buffer.baseY || 0)) view.term.scrollToBottom();
     view.tallPinnedViewportY = null;
     view.tallAnchorRow = null;
-    view.container.scrollTop = view.tallMaxScrollTop;
+    // Move down to the bottom when behind it, but do not drag the view back up out of a small overshoot
+    // (see TALL_OVERSHOOT_DEADZONE_PX) -- that correction is itself the visible snap.
+    const target = view.tallMaxScrollTop;
+    const top = view.container.scrollTop;
+    if (top < target || top > target + TALL_OVERSHOOT_DEADZONE_PX) this.tallSetScrollTop(view, target);
   }
 
   // Every piece of tall-scroll state is derived from buffer contents, so all of it is meaningless the
@@ -13413,7 +13563,38 @@ class TermdeckApp {
     view.tallAnchorRow = null;
     view.tallPinnedViewportY = null;
     view.tallFollowing = true;
-    view.container.scrollTop = 0;
+    this.tallSetScrollTop(view, 0);
+  }
+
+  // Every scroll this code performs goes through here so the "scroll" listener can tell our own moves
+  // from the user's. Timing cannot do it: scroll events are delivered asynchronously, so any time window
+  // either misses our own move or swallows a real one landing in the same frame. Remembering the exact
+  // value we asked for is precise.
+  tallSetScrollTop(view, value) {
+    if (!view || view.closed) return;
+    const target = Math.max(0, Math.round(value));
+    view.tallLastProgrammaticTop = target;
+    view.tallProgrammaticAt = performance.now();
+    // Skip a write that changes nothing: it only adds scroll-event noise for the listener to sort out.
+    if (Math.abs(view.container.scrollTop - target) > 1) view.container.scrollTop = target;
+  }
+
+  // The single place that decides "parked, or following the output?" -- for a scroll from ANY source.
+  // This used to be wheel-only, which silently excluded the two ways of scrolling that emit no wheel
+  // events: dragging the scrollbar thumb, and middle-click autoscroll. Neither ever cleared
+  // tallFollowing, so every write snapped the view back to the prompt underneath the gesture (the
+  // tearing), and neither ever restored xterm's pinned viewport on the way back down, which left the
+  // newest lines unreachable with the container already sitting at its ceiling.
+  tallApplySettledScroll(view) {
+    if (!view || view.closed) return;
+    const atBottom = view.tallMaxScrollTop == null ||
+      view.container.scrollTop >= view.tallMaxScrollTop - TALL_BOTTOM_TOLERANCE_PX;
+    view.tallFollowing = atBottom;
+    // Reaching the bottom has to undo the parked state completely, xterm's viewport included: while
+    // parked it sits deliberately short of baseY, and a stale pin there is precisely what made the last
+    // lines unreachable. scrollTallContainerToCursor restores it and clears the pin.
+    if (atBottom) this.scrollTallContainerToCursor(view);
+    else this.tallCaptureAnchorRow(view);
   }
 
   // What the user is reading is a LINE, not a pixel offset, and in this layout those are not the same
@@ -13458,8 +13639,7 @@ class TermdeckApp {
     // that no longer exists.
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
     if (cellHeight) {
-      view.container.scrollTop =
-        Math.max(0, view.container.scrollTop - (settled - view.tallPinnedViewportY) * cellHeight);
+      this.tallSetScrollTop(view, view.container.scrollTop - (settled - view.tallPinnedViewportY) * cellHeight);
     }
     view.tallPinnedViewportY = settled;
     view.tallAnchorRow = settled + Math.round(view.container.scrollTop / (cellHeight || 21));
@@ -13500,6 +13680,7 @@ class TermdeckApp {
     // clipping them out of view.
     const bottomPx = (this.tallEffectiveBottomRow(view) + 1) * cellHeight;
     view.tallMaxScrollTop = Math.max(0, bottomPx - view.container.clientHeight);
+    this.tallApplyGeometry(view);
   }
 
   // A snapshot/session-attach redraw pushes "rows" blank rows past the cursor before clearing and
@@ -13587,17 +13768,32 @@ class TermdeckApp {
         // of following a bogus position: the very next write (the real redraw) fires this callback again
         // with a trustworthy cursor.
         this.tallUpdateMaxScrollTop(view);
-        if (following) {
+        // Any gesture in flight -- wheel, scrollbar drag, autoscroll -- owns the view until it settles.
+        const userScrolling = view.tallPointerHeld ||
+          Date.now() < Math.max(view.tallWheelActiveUntil || 0, view.tallScrollActiveUntil || 0);
+        if (userScrolling) {
+          // Deliberately nothing: the settle handler decides where this lands.
+        } else if (following && view.tallLastProgrammaticTop != null &&
+                   Math.abs(view.container.scrollTop - view.tallLastProgrammaticTop) > TALL_FOLLOW_BREAK_PX) {
+          // Following, but the view is no longer where this code last put it: something moved it and the
+          // scroll event saying so has not been delivered yet. Scroll events are asynchronous, so a
+          // gesture's first frames land before any suppression is in place -- measured as a 3-frame burst
+          // that yanked the view from the top back to the bottom the instant a drag began.
+          //
+          // Compared against our own last position, NOT against the ceiling: the ceiling moves down as
+          // output arrives, so on a fresh terminal (container at 0, ceiling jumping to thousands) a
+          // ceiling comparison reads ordinary growth as "the user scrolled away" and parks the terminal
+          // at the top, never following again. Measured exactly that way. The distance from where we put
+          // it only changes when something else moves it.
+          view.tallFollowing = false;
+          this.tallCaptureAnchorRow(view);
+        } else if (following) {
           this.scrollTallContainerToCursor(view);
-        } else if (Date.now() >= (view.tallWheelActiveUntil || 0)) {
+        } else {
           // Holds the anchored LINE still (see tallHoldAnchorRow), which also absorbs the browser's own
           // scroll-into-view drift -- the user should never see the view move while they have deliberately
-          // scrolled away to read something.
-          //
-          // Skipped entirely while a wheel gesture is still in flight: the anchor this defends was
-          // captured before that gesture began, so re-asserting it mid-gesture actively drags the view
-          // back against the user. The settle handler captures a fresh anchor 150ms after the gesture
-          // ends, and this resumes holding that one.
+          // scrolled away to read something. The anchor it defends is captured by the settle handler once
+          // the gesture ends, which is why the branch above yields while one is still running.
           this.tallHoldAnchorRow(view);
         }
       }
@@ -13652,7 +13848,7 @@ class TermdeckApp {
         view.viewportRepairFrame = 0;
         if (view.closed || view.manualScroll || generation !== view.manualScrollGeneration ||
             !view.keepBottom || !view.container.classList.contains("visible") || !this.terminalAtBottom(view)) return;
-        view.fit.fit();
+        this.tallFit(view);
         this.refreshTerminal(view);
         const { cols, rows } = view.term;
         if (cols >= 2 && rows >= 2) this.sendResize(view, cols, rows);
@@ -13713,7 +13909,7 @@ class TermdeckApp {
     }
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return;
-    view.fit.fit();
+    this.tallFit(view);
     view.container.classList.remove("initializing");
     this.refreshTerminal(view);
     const { cols, rows } = view.term;
@@ -14681,10 +14877,6 @@ class TermdeckApp {
   // terminal (measured: JS 92% idle while the tab burned ~30%, i.e. the cost is paint, not script). The
   // WebGL renderer draws to a canvas instead. Must be attached after term.open() so a context exists, and
   // must fall back to the DOM renderer on context loss, which browsers do trigger under memory pressure.
-  tallTerminalMode() {
-    return this.settings.tall_terminal_mode === "dom" ? "dom" : "webgl";
-  }
-
   // The largest terminal this machine's GPU can actually back, in rows. Returns 0 when WebGL is
   // unavailable, which callers read as "use DOM".
   maxWebglSafeRows(cellHeight) {
@@ -14705,8 +14897,66 @@ class TermdeckApp {
   // survive that height. They cannot be chosen independently -- asking for more rows than the GPU can
   // back does not fail loudly, it silently corrupts (see the WebGL note in ensureView) -- so this is the
   // single place that picks both.
+  // Fit for the tall layout. FitAddon derives BOTH dimensions from the element it renders into, which is
+  // why .term-inner had to stay a full 1000 rows tall -- and that fixed height is the entire reason the
+  // scrollable area extends past the last line. Taking the row count out of the measurement frees the
+  // element's height to track the content instead. Columns still come from xterm's own math (it accounts
+  // for padding and scrollbar width), only the rows are overridden.
+  tallFit(view) {
+    if (!view || view.closed || !view.term) return;
+    if (this.nativeVscodeMode) { view.fit.fit(); return; }
+    let dims = null;
+    try { dims = view.fit.proposeDimensions(); } catch (fitError) { dims = null; }
+    if (!dims || !Number.isFinite(dims.cols) || dims.cols < 2) return;
+    const rows = view.tallRows || TALL_ROWS_DOM;
+    if (view.term.cols !== dims.cols || view.term.rows !== rows) view.term.resize(dims.cols, rows);
+    this.tallApplyGeometry(view);
+  }
+
+  // Keeps the two heights that must differ in sync: the terminal element stays its full forced height so
+  // xterm renders every row, while the scrollable box is only as tall as the content. The container then
+  // cannot scroll past the last line, because there is nothing past it -- no clamp, nothing to correct,
+  // and the scrollbar thumb is sized to the real content.
+  tallApplyGeometry(view) {
+    if (!view || view.closed) return;
+    const inner = view.container.querySelector(".term-inner");
+    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+    if (!inner || !cellHeight) return;
+    const fullPx = Math.round((view.term.rows || TALL_ROWS_DOM) * cellHeight);
+    if (view.term.element && view.term.element.style.height !== `${fullPx}px`) {
+      view.term.element.style.height = `${fullPx}px`;
+    }
+    const contentPx = Math.round((this.tallEffectiveBottomRow(view) + 1) * cellHeight);
+    // Never shorter than the viewport, never taller than the terminal itself.
+    const desired = Math.max(view.container.clientHeight || 0, Math.min(fullPx, contentPx));
+    const current = view.tallInnerHeight || 0;
+    let height = desired;
+    if (desired < current) {
+      // Shrinking is the only direction that can move the view: the browser has to pull scrollTop back
+      // inside the smaller box, and that pull is exactly the jump. Measured while a composer redrew
+      // itself: the content height flickered by one row 19 times in a few seconds, and the view jumped
+      // up to 63px with it. Two rules make that impossible -- ignore a dip until it has held for a
+      // moment, and never shrink past what the current scroll position needs to stay valid. Following
+      // moves the view down to the real bottom first, which then lets the box shrink on a later pass,
+      // so this converges without ever yanking anything.
+      if (view.tallShrinkTarget !== desired) {
+        view.tallShrinkTarget = desired;
+        view.tallShrinkSince = Date.now();
+      }
+      const settled = Date.now() - (view.tallShrinkSince || 0) >= TALL_SHRINK_SETTLE_MS;
+      const keepScrollValid = Math.ceil(view.container.scrollTop + (view.container.clientHeight || 0));
+      height = settled ? Math.max(desired, Math.min(current, keepScrollValid)) : current;
+    } else {
+      view.tallShrinkTarget = null;
+    }
+    if (view.tallInnerHeight !== height) {
+      view.tallInnerHeight = height;
+      inner.style.height = `${height}px`;
+    }
+  }
+
   tallRowPlan(cellHeight) {
-    if (this.tallTerminalMode() === "dom") return { rows: TALL_ROWS_DOM, webgl: false };
+    if (!TALL_WEBGL_ENABLED) return { rows: TALL_ROWS_DOM, webgl: false };
     const safeRows = this.maxWebglSafeRows(cellHeight);
     if (safeRows < TALL_ROWS_MIN_FOR_WEBGL) return { rows: TALL_ROWS_DOM, webgl: false };
     return { rows: Math.min(TALL_ROWS_MAX, safeRows), webgl: true };
@@ -14727,20 +14977,6 @@ class TermdeckApp {
     }
   }
 
-  buildTallTerminalToggleRow() {
-    // Reports the resolved row count, not just the mode: the WebGL height is computed from this machine's
-    // own texture limit and pixel ratio, so the only way to know what it actually settled on is to show it.
-    return this.buildToggleRow("Tall terminal (reload)",
-      () => {
-        const cellHeight = this.views.get(this.activeId)?.term?._core?._renderService?.dimensions?.css?.cell?.height;
-        const plan = this.tallRowPlan(cellHeight || 21);
-        return plan.webgl ? `${plan.rows} WebGL` : `${plan.rows} DOM`;
-      },
-      () => {
-        this.settings.tall_terminal_mode = this.tallTerminalMode() === "dom" ? "webgl" : "dom";
-        this.saveSettings();
-      });
-  }
 
   buildTerminalIconSettingsRow() {
     const rows = document.createDocumentFragment();
