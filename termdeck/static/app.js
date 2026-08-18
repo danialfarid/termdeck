@@ -103,6 +103,9 @@ const TALL_OVERSHOOT_DEADZONE_PX = 72;
 // redrawing itself reports one row fewer for a frame at a time, and reacting to each dip makes the box
 // oscillate; growth is always applied immediately, so nothing is ever unreachable while this waits.
 const TALL_SHRINK_SETTLE_MS = 400;
+// How long to wait after attaching before deciding the terminal really has nothing to show. Long enough
+// for a replay to arrive and paint, short enough that a genuinely blank pane is not left sitting there.
+const TALL_BLANK_REPAINT_MS = 900;
 const TALL_ROWS_MAX = 1000;
 const HISTORY_BACKGROUND_TARGET_TURNS = 320;
 const HISTORY_BACKGROUND_PAGE_TURNS = 160;
@@ -12053,6 +12056,11 @@ class TermdeckApp {
     ws.onopen = () => {
       view.reconnectReset = view.everConnected;
       view.attachActivitySuppressedUntil = Date.now() + TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS;
+      // Ask for a repaint if nothing shows up. This cannot hang off a message: when the server has no
+      // saved scrollback -- exactly the case after it restarts -- there is no message at all, so a check
+      // driven by incoming data never runs and the pane stays blank forever. A timer fires either way.
+      clearTimeout(view.blankRepaintTimer);
+      view.blankRepaintTimer = setTimeout(() => this.requestRepaintIfBlank(view), TALL_BLANK_REPAINT_MS);
       if (view.everConnected) {
         view.replaying = true;
         if (!this.isTerminalScrollV2()) {
@@ -12122,6 +12130,11 @@ class TermdeckApp {
           // follow position from it once, rather than from every intermediate frame.
           this.tallUpdateMaxScrollTop(view);
           if (view.tallFollowing !== false) this.scrollTallContainerToCursor(view);
+          // An empty screen is the one case that genuinely needs the agent to repaint: after a server
+          // restart there is no saved scrollback to replay, so nothing arrives and the pane would just
+          // stay blank. Asking only here keeps the attach-time repaint off in the common case, where the
+          // buffer already holds the screen and repainting is what causes the flicker.
+          this.requestRepaintIfBlank(view);
           this.schedulePendingAgentPaste(view);
           if (!view.reconnectReset && this.session(id)?.agent_kind === "claude") {
             this.scheduleClaudeInitialReplayRecovery(id, view);
@@ -15023,6 +15036,19 @@ class TermdeckApp {
   //
   // Kept as a switch rather than a deletion because the answer differs per agent and per state, and the
   // failure it originally fixed (a blank pane) is worse than the flicker it causes.
+  // Repaint only if the terminal has nothing to show. Deliberately checked after the replay rather than
+  // before connecting: whether anything exists to replay is only knowable once it has arrived, and a
+  // server restart is exactly the case where the answer is "nothing".
+  requestRepaintIfBlank(view) {
+    if (!view || view.closed || !view.ws || view.ws.readyState !== WebSocket.OPEN) return;
+    const buffer = view.term.buffer.active;
+    if (Number(buffer.baseY || 0) > 0) return;
+    for (let row = 0; row < buffer.length; row += 1) {
+      if (buffer.getLine(row)?.translateToString(true).trim()) return;
+    }
+    view.ws.send(JSON.stringify({ type: "repaint" }));
+  }
+
   attachRepaintEnabled() {
     return this.settings.attach_repaint !== false;
   }

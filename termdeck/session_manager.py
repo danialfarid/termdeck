@@ -1621,8 +1621,16 @@ class TerminalSessionManager:
             self._persist()
 
     def request_screen_repaint(self, session_id: str) -> bool:
+        """Nudge the pty size so a full-screen app redraws itself.
+
+        Not restricted to Codex: this began as a manual Codex-only workaround, but the client now also
+        asks for a repaint when a terminal attaches to nothing to show -- which happens to any agent after
+        the server restarts, because there is no saved scrollback left to replay. Refusing the request for
+        Claude left those panes blank with no way back. Any live pty can be nudged; one that has nothing
+        to redraw simply ignores it.
+        """
         ms = self._sessions[session_id]
-        if ms.record.agent_kind != AgentKind.CODEX.value or ms.proc is None or not ms.proc.alive:
+        if ms.proc is None or not ms.proc.alive:
             return False
         self._schedule_screen_repaint(ms, 0)
         return ms.screen_repaint_task is not None
