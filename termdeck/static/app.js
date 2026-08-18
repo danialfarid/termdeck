@@ -3051,15 +3051,23 @@ class TermdeckApp {
     const json = JSON.stringify(state);
     if (json === this.lastNavJson) return;
     this.lastNavJson = json;
+    this.lastNavUrl = this.navUrl(state);
     this.lastValidNavState = state;
-    history.pushState(state, "", this.navUrl(state));
+    history.pushState(state, "", this.lastNavUrl);
   }
 
   replaceNav(state) {
     const json = JSON.stringify(state);
+    // Skip a write that changes nothing, the way pushNav already does. This computed the same key but
+    // never consulted it, so sitting still on one terminal rewrote the identical URL about once a second
+    // -- measured at 15 writes in 15s. Harmless in isolation, but history writes are a rate-limited
+    // resource in WebKit, and spending them on no-ops is what leaves no headroom for real navigation.
+    const url = this.navUrl(state);
+    if (json === this.lastNavJson && url === this.lastNavUrl) return;
     this.lastNavJson = json;
+    this.lastNavUrl = url;
     this.lastValidNavState = state;
-    history.replaceState(state, "", this.navUrl(state));
+    history.replaceState(state, "", url);
   }
 
   parseNavState(rawState) {
@@ -7216,7 +7224,10 @@ class TermdeckApp {
     }
     const navigationState = this.parseNavState(this.lastNavJson);
     if (!entry && s && navigationState?.kind === "term" && navigationState.id === s.session_id) {
-      history.replaceState(navigationState, "", this.navUrl(navigationState));
+      // Through replaceNav, not history directly: this runs on every chrome render, so calling history
+      // itself rewrote the identical URL about once a second and skipped the identical-state guard that
+      // exists to prevent exactly that. History writes are rate limited in WebKit, so no-ops are not free.
+      this.replaceNav(navigationState);
     }
     this.renderHistoryMeta();
     this.renderFileEditorChrome();
