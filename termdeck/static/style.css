@@ -139,17 +139,19 @@ body:not(.vscode-mode) .session-item:has(.terminal-type-icon.on) .status-dot.att
 .session-spinner { position: absolute; left: 7px; top: 50%; width: 8px; height: 8px; margin-top: -4px; opacity: 0; pointer-events: none; color: var(--accent); }
 .session-spinner svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .session-spinner-circle-backup { display: none; }
-.session-spinner-orbit { transform-box: view-box; transform-origin: center; animation: termdeck-session-orbit 3.2s linear infinite; }
+.session-spinner-orbit { transform-box: view-box; transform-origin: center; }
 .session-spinner-tail { fill: none; stroke: currentColor; stroke-linecap: round; }
 .session-spinner-tail.faint { stroke-width: 4.4; opacity: 0.5; }
 .session-spinner-tail.bright { stroke-width: 2.4; opacity: 0.95; }
 .session-spinner-head { fill: currentColor; filter: drop-shadow(0 0 2px currentColor); }
 .session-spinner-rect-motion { fill: none; stroke: none; }
-.session-spinner-rect-tail { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 26 74; animation: termdeck-session-rectangle 1.7s linear infinite; }
+.session-spinner-rect-tail { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 26 74; }
 .session-spinner-rect-tail.faint { stroke-width: 5.8; opacity: 0.42; }
 .session-spinner-rect-tail.bright { stroke-width: 3; opacity: 0.95; animation-delay: -0.05s; }
 .session-spinner-rect-head { fill: currentColor; filter: drop-shadow(0 0 2px currentColor); }
 .session-spinner.on { opacity: 1; }
+.session-spinner.on .session-spinner-orbit { animation: termdeck-session-orbit 3.2s linear infinite; }
+.session-spinner.on .session-spinner-rect-tail { animation: termdeck-session-rectangle 1.7s linear infinite; }
 .terminal-type-icon { position: absolute; left: 2px; top: 50%; display: none; align-items: center; justify-content: center; width: var(--terminal-icon-size, 14px); height: var(--terminal-icon-size, 14px); margin: 0; color: var(--text); opacity: 0.82; overflow: visible; pointer-events: none; transform: translateY(-50%); }
 .terminal-type-icon.on { display: inline-flex; }
 .terminal-type-icon svg { display: block; width: calc(var(--terminal-icon-size, 14px) - 1px); height: calc(var(--terminal-icon-size, 14px) - 1px); }
@@ -162,17 +164,19 @@ body:not(.vscode-mode) .session-item:has(.terminal-type-icon.on) .status-dot.att
 .terminal-type-icon.terminal-status-active { color: var(--accent); opacity: 1; }
 .terminal-type-icon.terminal-status-exited { color: var(--red); opacity: 1; }
 .terminal-type-icon .codicon { font-size: calc(var(--terminal-icon-size, 14px) - 1px); }
-.session-item:has(.session-spinner.on) .terminal-type-icon.on {
+.session-item:has(.status-dot.processing) .terminal-type-icon.on {
   animation: termdeck-agent-icon-pulse 3.4s ease-in-out infinite;
 }
-.session-item:has(.session-spinner.on) .terminal-type-icon.on svg,
-.session-item:has(.session-spinner.on) .terminal-type-icon.on img { animation: termdeck-agent-icon-rotate 1.7s linear infinite; }
+.session-item:has(.status-dot.processing) .terminal-type-icon.on svg,
+.session-item:has(.status-dot.processing) .terminal-type-icon.on img { animation: termdeck-agent-icon-rotate 1.7s linear infinite; }
 .session-item:has(.terminal-type-icon.on) .session-spinner.on { opacity: 0; }
-body:not(.vscode-mode) .session-item:has(.session-spinner.on) .terminal-type-icon.on {
+.session-item:has(.terminal-type-icon.on) .session-spinner.on .session-spinner-orbit,
+.session-item:has(.terminal-type-icon.on) .session-spinner.on .session-spinner-rect-tail { animation: none; }
+body:not(.vscode-mode) .session-item:has(.status-dot.processing) .terminal-type-icon.on {
   animation: none;
 }
 body:not(.vscode-mode) .terminal-type-icon { margin: 0; }
-body:not(.vscode-mode) .session-item:has(.session-spinner.on) .terminal-type-icon.on::after {
+body:not(.vscode-mode) .session-item:has(.status-dot.processing) .terminal-type-icon.on::after {
   content: "";
   position: absolute;
   left: 50%;
@@ -208,9 +212,14 @@ body:not(.vscode-mode) .session-item:has(.session-spinner.on) .terminal-type-ico
   60% { opacity: 0.95; }
   100% { opacity: 0; transform: translate(-50%, -50%) scale(2.2); }
 }
+/* Only opacity/transform animate: both are compositor-only (no repaint per frame). filter was previously
+   keyframed here too, a drop-shadow that faded in/out with the pulse -- unlike opacity/transform,
+   animating filter forces the browser to rasterize the element's backing store on every frame, for as
+   long as any session is processing (i.e. continuously, not a one-time cost). Dropped rather than made
+   static, since a static glow on a 6px dot is not a loss worth the per-frame repaint. */
 @keyframes termdeck-status-beacon {
-  0%, 100% { opacity: 0.55; transform: scale(0.78); filter: drop-shadow(0 0 0 transparent); }
-  50% { opacity: 1; transform: scale(1.18); filter: drop-shadow(0 0 3px var(--accent)); }
+  0%, 100% { opacity: 0.55; transform: scale(0.78); }
+  50% { opacity: 1; transform: scale(1.18); }
 }
 @keyframes termdeck-attention-cycle {
   0%, 45%, 50%, 52%, 60%, 68%, 76%, 100% { opacity: 1; transform: scale(1); }
@@ -230,6 +239,18 @@ body:not(.vscode-mode) .session-item:has(.session-spinner.on) .terminal-type-ico
 body:not(.vscode-mode) .session-item.active .session-title.session-title-working { color: transparent; background-image: linear-gradient(90deg, var(--sidebar-text-color) 0%, var(--sidebar-text-color) 47%, var(--dim) 49%, var(--dim) 51%, var(--sidebar-text-color) 53%, var(--sidebar-text-color) 100%); background-image: linear-gradient(90deg, var(--sidebar-text-color) 0%, var(--sidebar-text-color) 47%, color-mix(in srgb, var(--sidebar-text-color) 28%, transparent) 49%, color-mix(in srgb, var(--sidebar-text-color) 28%, transparent) 51%, var(--sidebar-text-color) 53%, var(--sidebar-text-color) 100%); }
 .session-title.session-title-unread { color: var(--sidebar-text-color); }
 body:not(.vscode-mode) .session-item .session-title:not(.session-title-working) { color: var(--session-age-color, var(--sidebar-text-color)); }
+body.perf-disable-sidebar-motion .session-title.session-title-working { color: var(--sidebar-text-color); background: none; animation: none; }
+body.perf-disable-sidebar-motion .status-dot.processing,
+body.perf-disable-sidebar-motion .status-dot.attention,
+body.perf-disable-sidebar-motion .group-unread-dot.attention,
+body.perf-disable-sidebar-motion .session-spinner.on .session-spinner-orbit,
+body.perf-disable-sidebar-motion .session-spinner.on .session-spinner-rect-tail,
+body.perf-disable-sidebar-motion .session-item:has(.status-dot.processing) .terminal-type-icon.on,
+body.perf-disable-sidebar-motion .session-item:has(.status-dot.processing) .terminal-type-icon.on svg,
+body.perf-disable-sidebar-motion .session-item:has(.status-dot.processing) .terminal-type-icon.on img { animation: none; }
+body.perf-disable-sidebar-motion .status-dot.attention::after,
+body.perf-disable-sidebar-motion .group-unread-dot.attention::after,
+body.perf-disable-sidebar-motion .session-item:has(.status-dot.processing) .terminal-type-icon.on::after { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .session-title.session-title-working { color: var(--sidebar-text-color); background: none; animation: none; }
   .status-dot.processing { animation: none; }
@@ -1205,7 +1226,11 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
 #keys-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; z-index: 12; }
 #keys-backdrop.hidden { display: none; }
 #keys-modal { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; width: 560px; max-height: 74vh; overflow-y: auto; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5); }
+#keys-search-row { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; padding: 0 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--dim); }
+#keys-search { flex: 1; min-width: 0; height: 34px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: 13px/1.2 Menlo, monospace; }
+#keys-search::-webkit-search-cancel-button { display: none; }
 #keys-list { display: flex; flex-direction: column; gap: 10px; }
+.keys-empty { padding: 18px 8px; color: var(--dim); text-align: center; font: 13px/1.3 Menlo, monospace; }
 .keys-section-title { margin-bottom: 3px; color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .keys-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 1px 4px; border-bottom: 1px solid var(--border); }
 .keys-section .keys-row:last-child { border-bottom: 0; }

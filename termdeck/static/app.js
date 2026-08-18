@@ -7,6 +7,24 @@ const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
 // so one surviving glyph per generation compounds into names like "✳ ✳ ◐ ✳ ✳ name fork 1 1 1". Display
 // keeps using TITLE_STATUS_RE so a rendered name still matches the title the session is stored under.
 const TITLE_STATUS_PREFIX_RE = /^(?:[⠀-⣿○-◗⏳⚡✳]|\.\.\.|…)\s*/;
+// Per-write work and xterm addons that can be switched off individually from Settings to bisect a CPU
+// problem. `reload` marks entries that only take effect on a fresh terminal, since they are decided when
+// the xterm instance is constructed.
+const PERF_TOGGLES = [
+  { key: "attention_detect", label: "Attention text scan" },
+  { key: "snapshot_save", label: "Claude snapshot save" },
+  { key: "history_refresh", label: "History model refresh" },
+  { key: "status_row_refresh", label: "Claude status row refresh" },
+  { key: "tail_repair", label: "Terminal tail repair" },
+  { key: "viewport_restore", label: "Viewport restore" },
+  { key: "sidebar_motion", label: "Sidebar status motion" },
+  { key: "stats_poll", label: "Stats polling" },
+  { key: "terminal_age_refresh", label: "Terminal age refresh" },
+  { key: "cursor_blink", label: "Cursor blink", reload: true },
+  { key: "webgl_renderer", label: "WebGL renderer", reload: true },
+  { key: "search_addon", label: "Search addon", reload: true },
+  { key: "serialize_addon", label: "Serialize addon", reload: true },
+];
 const RECONNECT_MS = 1500;
 const TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS = 1800;
 const DEFAULT_COMMAND = "codex";
@@ -16,10 +34,10 @@ const TERMINAL_ICON_AGENT_LABELS = { codex: "Codex", claude: "Claude", agy: "AGY
 const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 18, project_font_size: 18, terminal_font_size: 18,
   ui_font_size: 11, files_tab_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
-  show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
+  show_mtime: true, show_git_status: true, editor_no_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", claude_snapshot_experimental: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
-  notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false,
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", claude_snapshot_experimental: true, perf_disabled: {}, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [] };
 const MODEL_PERMISSIONS = {
@@ -43,6 +61,14 @@ const MODEL_PERMISSIONS = {
 };
 const SEARCH_DEBOUNCE_MS = 500;
 const TERMINAL_SEARCH_DEBOUNCE_MS = 700;
+const TERMINAL_FIND_HIGHLIGHT_LIMIT = 2000;
+const TERMINAL_FIND_DECORATIONS = Object.freeze({
+  matchBackground: "#665000", matchBorder: "#d8ae00", matchOverviewRuler: "#d8ae00",
+  activeMatchBackground: "#b85c00", activeMatchBorder: "#ffd166", activeMatchColorOverviewRuler: "#ff9f1c",
+});
+const HISTORY_BACKGROUND_TARGET_TURNS = 320;
+const HISTORY_BACKGROUND_PAGE_TURNS = 160;
+const HISTORY_BACKGROUND_LOAD_DELAY_MS = 180;
 const SEARCH_HISTORY_STORAGE_KEY = "termdeck.search_history";
 const SEARCH_HISTORY_RECORD_DELAY_MS = 3000;
 const PROMPT_DRAFT_SYNC_PASTE_DELAY_MS = 250;
@@ -87,6 +113,9 @@ const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
 // Three checks, well spread out, not five packed inside the first 600ms: only a genuine geometry change
 // sends a pty resize, so a tight burst cannot interrupt an agent CLI's multi-line composer redraw.
 const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [150, 800, 2000];
+const CODEX_REFLOW_FOLLOWUP_DELAYS_MS = [1500, 3500, 6000];
+const CODEX_REFLOW_FOLLOWUP_BUSY_RETRY_MS = 500;
+const CODEX_REFLOW_FOLLOWUP_BUSY_RETRIES = 8;
 const TERMINAL_DEBUG_SNAPSHOT_LIMIT = 50;
 const SELECTION_SEARCH_MAX_CHARS = 1000;
 const SELECTION_ACTION_DELAY_MS = 500;
@@ -119,6 +148,7 @@ const DESKTOP_KEYBINDINGS = [
   { id: "close-item", label: "Close active terminal / file", def: "Meta+Shift+Backspace", section: "General" },
   { id: "fork-terminal", label: "Fork active terminal", def: "Meta+Shift+b", section: "Terminal" },
   { id: "restart-terminal", label: "Restart active terminal", def: "Meta+Alt+r", section: "Terminal" },
+  { id: "restore-last-closed-terminal", label: "Restore last closed terminal", def: "Alt+Shift+t", section: "Terminal" },
   { id: "resync-terminal", label: "Resync active terminal content", def: "Alt+Shift+r", section: "Terminal" },
   { id: "rename-terminal", label: "Rename active terminal", def: "Alt+r", section: "Terminal" },
   { id: "copy-session-id", label: "Copy active session id", def: "Alt+i", section: "Terminal" },
@@ -159,6 +189,7 @@ const VSCODE_KEYBINDINGS = [
   { id: "close-item", label: "Close active terminal", def: "Ctrl+Alt+Backspace", section: "Terminal" },
   { id: "fork-terminal", label: "Fork active terminal", def: "Ctrl+Alt+Shift+b", section: "Terminal" },
   { id: "restart-terminal", label: "Restart active terminal", def: "Ctrl+Alt+Shift+r", section: "Terminal" },
+  { id: "restore-last-closed-terminal", label: "Restore last closed terminal", def: "Ctrl+Alt+Shift+t", section: "Terminal" },
   { id: "resync-terminal", label: "Resync active terminal content", def: "Ctrl+Alt+r", section: "Terminal" },
   { id: "prev-terminal", label: "Previous terminal", def: "Ctrl+Alt+ArrowUp", section: "Terminal" },
   { id: "next-terminal", label: "Next terminal", def: "Ctrl+Alt+ArrowDown", section: "Terminal" },
@@ -201,7 +232,8 @@ const INLINE_SIZE_SETTING_DEFINITIONS = [
   { key: "bottom_font_size", label: "UI icons / spacing" }, { key: "diff_font_size", label: "Diff" },
   { key: "tree_font_size", label: "Tree / search" },
 ];
-const RECENT_FILES_REFRESH_MS = 5000;
+const RECENT_FILES_MIN_REFRESH_MS = 5000;
+const RECENT_FILES_EVENT_DEBOUNCE_MS = 2000;
 const FILE_TREE_WS_ROUTE = "/ws/files";
 const FILE_TREE_CHANGED = "file_tree_changed";
 const QUERY_RESPONSE_RE = /^\x1b\[[?>]?[\d;]*[Rc]$/;
@@ -410,6 +442,8 @@ class TermdeckApp {
     this.historyBeforeBySession = new Map();
     this.historyHasMoreBySession = new Map();
     this.historyOlderLoadBusy = false;
+    this.historyBackgroundLoadTimer = 0;
+    this.historyBackgroundLoadSessionId = "";
     this.historyStreamFresh = false;
     this.historyRevisions = new Map();
     this.historyPendingPrompts = new Map();
@@ -419,6 +453,8 @@ class TermdeckApp {
     this.historyLoaded = false;
     this.historyEditsCollapsed = false;
     this.closedExpanded = false;
+    this.restoreLastClosedTerminalBusy = false;
+    this.restoreLastClosedTerminalNeedsConfirmation = false;
     this.closedDisplayLimit = CLOSED_SESSIONS_INITIAL_DISPLAY;
     this.terminalSearchText = "";
     this.terminalSearchEditorOpen = false;
@@ -449,7 +485,10 @@ class TermdeckApp {
     this.recentFilesBusy = false;
     this.recentFilesFetchedAt = 0;
     this.recentFilesExpanded = false;
-    this.recentFilesRefreshTimer = 0;
+    this.recentFilesWs = null;
+    this.recentFilesWsRoot = "";
+    this.recentFilesWsReconnectTimer = 0;
+    this.recentFilesEventRefreshTimer = 0;
     this.sideView = "terminals";
     this.filesSidePanelCycleView = null;
     this.filesSidePanelCycleTransition = false;
@@ -484,10 +523,10 @@ class TermdeckApp {
     this.terminalSearchHoverHideTimer = 0;
     this.pendingHistorySearchNavigation = null;
     this.historySearchNavigationBusy = false;
-    this.terminalFindMatches = [];
-    this.terminalFindIndex = -1;
     this.terminalFindSessionId = "";
     this.terminalFindQuery = "";
+    this.terminalFindFallbackMatches = [];
+    this.terminalFindFallbackIndex = -1;
     this.nameSearchGeneration = 0;
     this.applyingHistory = false;
     this.lastNavJson = "";
@@ -885,7 +924,7 @@ class TermdeckApp {
     const worktreeId = String(element?.dataset?.worktreeId || this.worktreeIdForSession(fallbackSession)).trim();
     if (worktreeId && worktreeId !== ALL_WORKTREES_ID && this.interactionWorktreeId !== worktreeId) {
       this.interactionWorktreeId = worktreeId;
-      this.updateRecentFilesPolling();
+      this.updateRecentFilesWatch();
     }
   }
 
@@ -985,19 +1024,71 @@ class TermdeckApp {
     this.setSectionCollapsed(field, collapsed);
     this.renderList();
     if (field !== "recent_files_collapsed") return;
-    this.updateRecentFilesPolling();
+    this.updateRecentFilesWatch();
     if (!collapsed) void this.refreshRecentFiles(true);
   }
 
-  updateRecentFilesPolling() {
-    if (this.vscodeMode || this.sectionCollapsed("recent_files_collapsed")) {
-      clearInterval(this.recentFilesRefreshTimer);
-      this.recentFilesRefreshTimer = 0;
+  recentFilesVisibleRoot() {
+    const activeRoot = this.session(this.activeId)?.cwd || this.worktreeRoot();
+    const filesVisible = !this.$("files-section").classList.contains("hidden");
+    return (filesVisible && this.treeRoot) || activeRoot || "";
+  }
+
+  updateRecentFilesWatch() {
+    const root = this.recentFilesVisibleRoot();
+    if (this.vscodeMode || document.hidden || this.sectionCollapsed("recent_files_collapsed") || !root) {
+      this.disconnectRecentFilesWatch();
       return;
     }
-    if (!this.recentFilesRefreshTimer) {
-      this.recentFilesRefreshTimer = window.setInterval(() => void this.refreshRecentFiles(), RECENT_FILES_REFRESH_MS);
-    }
+    if (this.recentFilesWs && this.recentFilesWsRoot === root &&
+        (this.recentFilesWs.readyState === WebSocket.CONNECTING || this.recentFilesWs.readyState === WebSocket.OPEN)) return;
+    this.disconnectRecentFilesWatch();
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(`${protocol}//${location.host}${FILE_TREE_WS_ROUTE}?root=${encodeURIComponent(root)}`);
+    this.recentFilesWs = socket;
+    this.recentFilesWsRoot = root;
+    socket.onmessage = (event) => {
+      if (this.recentFilesWs !== socket) return;
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch (error) {
+        if (error instanceof SyntaxError) return;
+        throw error;
+      }
+      if (message.type === FILE_TREE_CHANGED) this.queueRecentFilesEventRefresh();
+    };
+    socket.onclose = () => {
+      if (this.recentFilesWs !== socket) return;
+      this.recentFilesWs = null;
+      this.recentFilesWsRoot = "";
+      if (document.hidden || this.sectionCollapsed("recent_files_collapsed")) return;
+      clearTimeout(this.recentFilesWsReconnectTimer);
+      this.recentFilesWsReconnectTimer = window.setTimeout(() => {
+        this.recentFilesWsReconnectTimer = 0;
+        this.updateRecentFilesWatch();
+      }, 5000);
+    };
+  }
+
+  disconnectRecentFilesWatch() {
+    clearTimeout(this.recentFilesWsReconnectTimer);
+    this.recentFilesWsReconnectTimer = 0;
+    clearTimeout(this.recentFilesEventRefreshTimer);
+    this.recentFilesEventRefreshTimer = 0;
+    const socket = this.recentFilesWs;
+    this.recentFilesWs = null;
+    this.recentFilesWsRoot = "";
+    if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+  }
+
+  queueRecentFilesEventRefresh() {
+    if (this.sectionCollapsed("recent_files_collapsed") || document.hidden) return;
+    clearTimeout(this.recentFilesEventRefreshTimer);
+    this.recentFilesEventRefreshTimer = window.setTimeout(() => {
+      this.recentFilesEventRefreshTimer = 0;
+      void this.refreshRecentFiles();
+    }, RECENT_FILES_EVENT_DEBOUNCE_MS);
   }
 
   terminalGroups() {
@@ -1597,7 +1688,8 @@ class TermdeckApp {
     const label = group?.name || "this group";
     if (!confirm(`Close all ${sessions.length} terminals in "${label}"?`)) return;
     if (!confirm(`Confirm closing all terminals in "${label}". Running agents will be stopped.`)) return;
-    await Promise.all(sessions.map((session) => fetch(`/api/sessions/${session.session_id}`, { method: "DELETE" })));
+    const responses = await Promise.all(sessions.map((session) => fetch(`/api/sessions/${session.session_id}`, { method: "DELETE" })));
+    if (responses.some((response) => response.ok)) this.restoreLastClosedTerminalNeedsConfirmation = false;
     this.refresh();
   }
 
@@ -1758,7 +1850,7 @@ class TermdeckApp {
       this.worktreeId = selected.id;
     }
     this.interactionWorktreeId = this.worktreeId === ALL_WORKTREES_ID ? this.interactionWorktreeId : this.worktreeId;
-    this.updateRecentFilesPolling();
+    this.disconnectRecentFilesWatch();
     this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
     localStorage.setItem(`termdeck.${this.projectSlug}.worktree_id`, this.worktreeId);
     history.pushState({ kind: "init" }, "", this.navUrl({ kind: "init" }));
@@ -2086,6 +2178,7 @@ class TermdeckApp {
     }, true);
     window.addEventListener("message", this.handleHostMessageBound, false);
     window.addEventListener("pagehide", () => {
+      this.disconnectRecentFilesWatch();
       this.flushPendingSettingsSave();
       this.flushPendingFileSavesOnPageExit();
       this.flushPendingSearchHistoryRecord();
@@ -2099,10 +2192,14 @@ class TermdeckApp {
     });
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") {
+        this.disconnectRecentFilesWatch();
         this.flushPendingSettingsSave();
         this.flushPendingFileSavesOnPageExit();
         this.flushPendingSearchHistoryRecord();
         this.flushClaudeSnapshotSaves();
+      } else {
+        this.updateRecentFilesWatch();
+        if (!this.sectionCollapsed("recent_files_collapsed")) void this.refreshRecentFiles(true);
       }
     });
     await this.loadSettings();
@@ -2300,8 +2397,9 @@ class TermdeckApp {
     }
     this.initSideSplit();
     if (!this.vscodeMode) {
-      this.updateRecentFilesPolling();
+      this.updateRecentFilesWatch();
       this.terminalAgeRefreshTimer = window.setInterval(() => {
+        if (this.perfDisabled("terminal_age_refresh")) return;
         this.updateSessionAgeStyles();
         this.updateActiveTerminalAge();
       }, TERMINAL_AGE_REFRESH_MS);
@@ -2370,21 +2468,36 @@ class TermdeckApp {
     });
     for (const id of ["history-btn", "vscode-history-btn"]) {
       const button = this.$(id);
-      if (button) button.onclick = () => this.toggleHistory();
+      if (button) {
+        button.onmousedown = (event) => event.preventDefault();
+        button.onclick = () => {
+          void this.toggleHistory().finally(() => this.refocusActiveInputAfterToolbarAction());
+        };
+      }
     }
     this.updateShortcutTitles();
     this.$("history-edits-toggle").onclick = () => this.toggleHistoryEdits();
-    this.$("history-scroll-bottom").onclick = () => this.scrollHistoryToBottom();
+    this.$("history-scroll-bottom").onmousedown = (event) => event.preventDefault();
+    this.$("history-scroll-bottom").onclick = () => {
+      this.scrollHistoryToBottom();
+      this.refocusActiveInputAfterToolbarAction();
+    };
     this.$("history-body").addEventListener("scroll", () => {
       if (this.historyOpen && this.$("history-body").scrollTop < 80) this.loadOlderHistory();
     });
     this.$("history-body").addEventListener("click", (event) => this.handleHistoryFileLink(event));
     for (const id of ["terminal-resync-btn", "vscode-terminal-resync-btn"]) {
       const button = this.$(id);
-      if (button) button.onclick = () => this.resyncActiveTerminal();
+      if (button) {
+        button.onmousedown = (event) => event.preventDefault();
+        button.onclick = () => {
+          this.resyncActiveTerminal();
+          this.refocusActiveInputAfterToolbarAction();
+        };
+      }
     }
     this.$("editor-wrap-toggle").onclick = () => {
-      this.settings.word_wrap = !this.settings.word_wrap;
+      this.settings.editor_no_wrap = !this.settings.editor_no_wrap;
       this.applySettings({ fitTerminals: false });
       this.saveSettings();
     };
@@ -2481,24 +2594,25 @@ class TermdeckApp {
     historyPrompt.addEventListener("input", () => {
       const view = this.views.get(this.activeId);
       if (!view) return;
-      view.promptSubmitEntered = false;
-      view.promptSubmitting = false;
-      clearTimeout(view.promptSubmitTimer);
-      view.promptEditing = true;
-      view.promptEditVersion += 1;
-      view.promptDraft = this.$("history-prompt").value;
-      this.syncPromptToTerminal(view, { writeToTerminal: false });
+      this.persistMarkdownPromptDraft(view, this.$("history-prompt").value);
       this.resizeHistoryPrompt();
     });
     this.$("attach-btn").onclick = () => this.historyOpen ? this.attachToHistory() : this.attachToActive();
     this.$("reveal-session-btn").onclick = () => this.revealAndFocusActiveTerminalInSidebar();
     for (const id of ["scroll-bottom-btn", "vscode-scroll-bottom-btn"]) {
       const button = this.$(id);
-      if (button) button.onclick = () => this.scrollActiveToBottom();
+      if (button) {
+        button.onmousedown = (event) => event.preventDefault();
+        button.onclick = () => {
+          this.scrollActiveToBottom();
+          this.refocusActiveInputAfterToolbarAction();
+        };
+      }
     }
     this.$("keys-btn").onclick = () => this.openKeybindings();
     this.$("keys-done").onclick = () => this.$("keys-backdrop").classList.add("hidden");
     this.$("keys-reset").onclick = () => this.resetKeybindings();
+    this.$("keys-search").addEventListener("input", () => this.renderKeybindingsList());
     this.$("keys-backdrop").addEventListener("mousedown", (e) => { if (e.target.id === "keys-backdrop") this.$("keys-backdrop").classList.add("hidden"); });
     this.$("terminal-process-report-close").onclick = () => this.closeTerminalProcessReport();
     this.$("terminal-process-report-backdrop").addEventListener("mousedown", (e) => {
@@ -2951,7 +3065,7 @@ class TermdeckApp {
       this.updateSessionRows();
     }
     // Recently modified files are a standalone-only sidebar section.
-    if (!this.vscodeMode) this.refreshRecentFiles();
+    if (!this.vscodeMode) this.updateRecentFilesWatch();
     if (this.revealActiveSessionOnLoad) {
       this.revealActiveSessionOnLoad = false;
       this.keepActiveSessionVisible();
@@ -3105,8 +3219,13 @@ class TermdeckApp {
   applySessionStatus(message) {
     const session = this.session(message.session_id);
     if (!session) return;
+    const previousPresentation = this.titlePresentation(session);
     const previousAgentSessionId = session.agent_session_id;
+    const previousAgentKind = session.agent_kind;
     const previousExitCode = session.exit_code;
+    const previousRunning = !!session.running;
+    const previousDormant = !!session.dormant;
+    const previousModel = this.sessionModelById.get(session.session_id) || "";
     const previousNeedsAttention = this.attentionServerStates.has(session.session_id)
       ? this.attentionServerStates.get(session.session_id) === true : session.needs_attention === true;
     if (Object.prototype.hasOwnProperty.call(message, "title") && message.title) session.title = message.title;
@@ -3144,28 +3263,31 @@ class TermdeckApp {
       }
     }
     this.cacheSessionModel(session);
-    const presentation = this.titlePresentation(session);
     const spinning = !session.dormant && session.processing === true;
-    const titleEl = this.sessionTitleEls.get(session.session_id);
-    if (titleEl) this.setSessionTitleText(titleEl, presentation.text,
-      this.usesTextTerminalStatus(session.agent_kind) && presentation.spinning);
-    this.postVscodeNativeSession(session, session.session_id === this.activeId ? !this.historyOpen : undefined);
-    this.updateProcessingState(session.session_id, spinning);
+    const presentation = this.titlePresentation(session);
+    const processingChanged = this.processingStates.get(session.session_id) !== spinning;
+    const displayedTitleChanged = previousPresentation.text !== presentation.text;
+    const modelChanged = previousModel !== (this.sessionModelById.get(session.session_id) || "");
+    const rowStateChanged = displayedTitleChanged || processingChanged || previousAgentKind !== session.agent_kind ||
+      previousExitCode !== session.exit_code || previousRunning !== !!session.running || previousDormant !== !!session.dormant ||
+      previousNeedsAttention !== !!session.needs_attention;
+    if (displayedTitleChanged) {
+      this.postVscodeNativeSession(session, session.session_id === this.activeId ? !this.historyOpen : undefined);
+    }
+    if (processingChanged || (spinning && this.historyPendingProcessing.has(session.session_id))) {
+      this.updateProcessingState(session.session_id, spinning);
+    }
     if (session.needs_attention && !previousNeedsAttention) {
       this.triggerSessionAttention(session.session_id);
     } else if (previousExitCode == null && session.exit_code != null && !session.dormant && session.exit_code !== 0) {
       this.triggerSessionAttention(session.session_id);
     }
-    // The initial session list is rendered before the status websocket sends
-    // its snapshot. Keep the row's running/dormant dot in sync with the
-    // session object as soon as that snapshot arrives; selecting the row
-    // should not be required to repaint it.
-    this.updateSessionRows();
+    if (rowStateChanged) this.updateSessionRows(session.session_id);
     if (session.session_id === this.activeId) {
       if (this.historyOpen && previousAgentSessionId !== session.agent_session_id) {
         this.connectHistoryStream(session.session_id, { fresh: true });
       }
-      this.renderTopbar();
+      if (rowStateChanged || modelChanged) this.renderTopbar();
     }
   }
 
@@ -3363,6 +3485,25 @@ class TermdeckApp {
     return saved.map((text) => ({ text: String(text || "") })).filter((item) => item.text.trim());
   }
 
+  markdownPromptDraftForSession(sessionId) {
+    const drafts = this.settings.md_prompt_drafts && typeof this.settings.md_prompt_drafts === "object"
+      ? this.settings.md_prompt_drafts : {};
+    return String(drafts[sessionId] || "");
+  }
+
+  persistMarkdownPromptDraft(view, text = view?.markdownPromptDraft || "") {
+    if (!view) return;
+    const drafts = this.settings.md_prompt_drafts && typeof this.settings.md_prompt_drafts === "object"
+      ? this.settings.md_prompt_drafts : {};
+    const nextDrafts = { ...drafts };
+    const normalized = String(text || "").slice(0, 20000);
+    if (normalized) nextDrafts[view.sessionId] = normalized;
+    else delete nextDrafts[view.sessionId];
+    this.settings.md_prompt_drafts = nextDrafts;
+    view.markdownPromptDraft = normalized;
+    this.saveSettings();
+  }
+
   persistMarkdownPromptQueue(view) {
     if (!view) return;
     const queues = this.settings.md_prompt_queues && typeof this.settings.md_prompt_queues === "object"
@@ -3412,8 +3553,15 @@ class TermdeckApp {
     return sessions.map((s) => s.session_id).join("|");
   }
 
-  updateSessionRows() {
-    for (const s of this.sessions) {
+  // onlySessionId scopes the DOM writes below to a single row. A status-websocket message already knows
+  // exactly which session changed (applySessionStatus targets that row directly for title/processing);
+  // calling this unscoped on every message meant one processing session's spinner-frame update rewrote
+  // all N rows' className/text/icon state on every frame, and that ran per status message -- with several
+  // sessions processing simultaneously this measured as the dominant, sustained cost of the whole page,
+  // independent of how many terminal views were open. The unscoped 30s full-refresh caller is unaffected.
+  updateSessionRows(onlySessionId = null) {
+    const targets = onlySessionId ? this.sessions.filter((s) => s.session_id === onlySessionId) : this.sessions;
+    for (const s of targets) {
       const presentation = this.titlePresentation(s);
       const title = this.sessionTitleEls.get(s.session_id);
       if (title) this.setSessionTitleText(title, presentation.text,
@@ -4328,14 +4476,96 @@ class TermdeckApp {
   closeTerminalFind() {
     this.$("terminal-find")?.classList.add("hidden");
     this.$("terminal-find-count").textContent = "";
-    this.terminalFindMatches = [];
-    this.terminalFindIndex = -1;
     this.terminalFindQuery = "";
+    this.terminalFindSessionId = "";
+    this.terminalFindFallbackMatches = [];
+    this.terminalFindFallbackIndex = -1;
     const view = this.views.get(this.activeId);
     if (view) {
-      view.term.clearSelection();
+      view.terminalFindAddon?.clearDecorations();
       view.term.focus();
     }
+  }
+
+  terminalFindOptions(incremental = false) {
+    return { caseSensitive: false, incremental, decorations: TERMINAL_FIND_DECORATIONS };
+  }
+
+  prepareTerminalFindNavigation(view) {
+    view.userScrollIntent = true;
+    view.scrollMode = "preserve";
+    this.cancelTerminalViewportRestore(view);
+    this.clearActiveTerminalSettleWatchdog(view);
+    clearTimeout(view.tailRepairTimer);
+    clearTimeout(view.tailRepairConfirmTimer);
+    view.tailRepairTimer = 0;
+    view.tailRepairConfirmTimer = 0;
+  }
+
+  updateTerminalFindResultCount(view, result) {
+    view.terminalFindResultIndex = Number(result.resultIndex);
+    view.terminalFindResultCount = Number(result.resultCount);
+    if (view.sessionId !== this.activeId || view.sessionId !== this.terminalFindSessionId ||
+        this.$("terminal-find")?.classList.contains("hidden")) return;
+    const count = this.$("terminal-find-count");
+    if (!count) return;
+    if (view.terminalFindResultCount <= 0) {
+      count.textContent = "no matches";
+    } else if (view.terminalFindResultIndex < 0) {
+      count.textContent = `${view.terminalFindResultCount}${view.terminalFindResultCount >= TERMINAL_FIND_HIGHLIGHT_LIMIT ? "+" : ""} matches`;
+    } else {
+      count.textContent = `${view.terminalFindResultIndex + 1}/${view.terminalFindResultCount}`;
+    }
+  }
+
+  terminalBufferFindMatches(view, query) {
+    const matches = [];
+    const needle = query.toLocaleLowerCase();
+    const buffer = view.term.buffer.active;
+    for (let row = 0; row < buffer.length; row += 1) {
+      const line = buffer.getLine(row);
+      const searchable = (line?.translateToString(true) || "").toLocaleLowerCase();
+      let column = searchable.indexOf(needle);
+      while (column >= 0) {
+        matches.push({ row, column });
+        column = searchable.indexOf(needle, column + Math.max(1, needle.length));
+      }
+    }
+    return matches;
+  }
+
+  revealTerminalBufferFindMatch(view, query) {
+    const count = this.$("terminal-find-count");
+    const match = this.terminalFindFallbackMatches[this.terminalFindFallbackIndex];
+    if (!match) {
+      if (count) count.textContent = "no matches";
+      return false;
+    }
+    view.v2Programmatic = true;
+    const buffer = view.term.buffer.active;
+    const viewportStart = Math.max(0, Number(buffer.viewportY || 0));
+    const viewportRows = Math.max(1, Number(view.term.rows || 1));
+    if (match.row < viewportStart || match.row >= viewportStart + viewportRows) {
+      const centeredLine = match.row - Math.floor(viewportRows / 2);
+      view.term.scrollToLine(Math.max(0, Math.min(centeredLine, Number(buffer.baseY || 0))));
+    }
+    view.term.select(match.column, match.row, query.length);
+    requestAnimationFrame(() => { view.v2Programmatic = false; });
+    if (count) count.textContent = `${this.terminalFindFallbackIndex + 1}/${this.terminalFindFallbackMatches.length}`;
+    return true;
+  }
+
+  useTerminalBufferFindFallback(view, query, direction = 0) {
+    const reusable = this.terminalFindSessionId === view.sessionId && this.terminalFindQuery === query &&
+      this.terminalFindFallbackMatches.length > 0;
+    if (!reusable) {
+      this.terminalFindFallbackMatches = this.terminalBufferFindMatches(view, query);
+      this.terminalFindFallbackIndex = direction < 0 ? this.terminalFindFallbackMatches.length - 1 : 0;
+    } else if (direction) {
+      this.terminalFindFallbackIndex = (this.terminalFindFallbackIndex + direction + this.terminalFindFallbackMatches.length) %
+        this.terminalFindFallbackMatches.length;
+    }
+    return this.revealTerminalBufferFindMatch(view, query);
   }
 
   updateTerminalFindMatches() {
@@ -4343,75 +4573,41 @@ class TermdeckApp {
     const view = this.views.get(this.activeId);
     if (!input || !view || view.closed || this.activeFileKey !== null || this.historyOpen) return;
     const query = input.value;
-    const queryChanged = query !== this.terminalFindQuery || this.terminalFindSessionId !== view.sessionId;
+    if (this.terminalFindSessionId && this.terminalFindSessionId !== view.sessionId) {
+      this.views.get(this.terminalFindSessionId)?.terminalFindAddon?.clearDecorations();
+    }
+    view.terminalFindAddon?.clearDecorations();
     this.terminalFindSessionId = view.sessionId;
     this.terminalFindQuery = query;
-    this.terminalFindMatches = [];
-    this.terminalFindIndex = -1;
-    view.term.clearSelection();
+    this.terminalFindFallbackMatches = [];
+    this.terminalFindFallbackIndex = -1;
     if (!query) {
       this.$("terminal-find-count").textContent = "";
       return;
     }
-    const needle = query.toLocaleLowerCase();
-    const buffer = view.term.buffer.active;
-    for (let row = 0; row < buffer.length; row += 1) {
-      const line = buffer.getLine(row);
-      const text = line ? line.translateToString(true) : "";
-      const searchable = text.toLocaleLowerCase();
-      let column = searchable.indexOf(needle);
-      while (column >= 0) {
-        this.terminalFindMatches.push({ row, column });
-        column = searchable.indexOf(needle, column + Math.max(1, needle.length));
-      }
-    }
-    if (!this.terminalFindMatches.length) {
-      this.$("terminal-find-count").textContent = "no matches";
-      return;
-    }
-    this.terminalFindIndex = queryChanged ? 0 : Math.max(0, Math.min(this.terminalFindIndex, this.terminalFindMatches.length - 1));
-    this.revealTerminalFindMatch();
+    this.prepareTerminalFindNavigation(view);
+    this.terminalFindFallbackMatches = this.terminalBufferFindMatches(view, query);
+    this.terminalFindFallbackIndex = 0;
+    this.revealTerminalBufferFindMatch(view, query);
   }
 
   moveTerminalFindMatch(direction) {
     const input = this.$("terminal-find-input");
-    if (!input?.value) return;
-    const previousQuery = this.terminalFindQuery;
-    const previousSessionId = this.terminalFindSessionId;
-    const previousIndex = this.terminalFindIndex;
-    this.updateTerminalFindMatches();
-    if (!this.terminalFindMatches.length) return;
-    if (previousQuery === this.terminalFindQuery && previousSessionId === this.terminalFindSessionId) {
-      this.terminalFindIndex = (previousIndex + direction + this.terminalFindMatches.length) % this.terminalFindMatches.length;
-    } else if (direction < 0) {
-      this.terminalFindIndex = this.terminalFindMatches.length - 1;
-    }
-    this.revealTerminalFindMatch();
-  }
-
-  revealTerminalFindMatch() {
     const view = this.views.get(this.activeId);
-    const input = this.$("terminal-find-input");
-    const count = this.$("terminal-find-count");
-    const match = this.terminalFindMatches[this.terminalFindIndex];
-    if (!view || !input?.value || !match) {
-      if (count) count.textContent = this.terminalFindMatches.length ? "0 matches" : "no matches";
+    const query = input?.value || "";
+    if (!view || !query) return;
+    if (this.terminalFindSessionId !== view.sessionId || this.terminalFindQuery !== query ||
+        !this.terminalFindFallbackMatches.length) {
+      this.updateTerminalFindMatches();
+      if (!this.terminalFindFallbackMatches.length) return;
+      if (direction < 0) this.terminalFindFallbackIndex = this.terminalFindFallbackMatches.length - 1;
+      this.revealTerminalBufferFindMatch(view, query);
       return;
     }
-    view.userScrollIntent = true;
-    view.scrollMode = "preserve";
-    view.v2Programmatic = true;
-    const buffer = view.term.buffer.active;
-    const viewportStart = Math.max(0, Number(buffer.viewportY || 0));
-    const viewportRows = Math.max(1, Number(view.term.rows || 1));
-    const matchIsVisible = match.row >= viewportStart && match.row < viewportStart + viewportRows;
-    if (!matchIsVisible) {
-      const centeredLine = match.row - Math.floor(viewportRows / 2);
-      view.term.scrollToLine(Math.max(0, Math.min(centeredLine, Number(buffer.baseY || 0))));
-    }
-    view.term.select(match.column, match.row, input.value.length);
-    requestAnimationFrame(() => { view.v2Programmatic = false; });
-    if (count) count.textContent = `${this.terminalFindIndex + 1}/${this.terminalFindMatches.length}`;
+    this.prepareTerminalFindNavigation(view);
+    this.terminalFindFallbackIndex = (this.terminalFindFallbackIndex + direction + this.terminalFindFallbackMatches.length) %
+      this.terminalFindFallbackMatches.length;
+    this.revealTerminalBufferFindMatch(view, query);
   }
 
   clearTerminalSearch() {
@@ -4992,29 +5188,6 @@ class TermdeckApp {
       (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "") +
       (this.attentionSessions.has(s.session_id) ? " attention" : "");
     this.sessionStatusEls.set(s.session_id, dot);
-    const spinner = document.createElement("span");
-    spinner.className = "session-spinner";
-    const rectPathId = `session-spinner-path-${s.session_id}`;
-    const rectPath = "M8 2.2 H12 Q13.8 2.2 13.8 4 V12 Q13.8 13.8 12 13.8 H4 Q2.2 13.8 2.2 12 V4 Q2.2 2.2 4 2.2 H8";
-    spinner.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">
-      <g class="session-spinner-circle-backup session-spinner-orbit">
-        <path class="session-spinner-tail faint" d="M2.6 6.1 C2.7 4.5 5 3.4 8 3.4 C9.5 3.4 10.2 4.5 10.7 5.3"/>
-        <path class="session-spinner-tail bright" d="M5 4 C7 3.3 9.6 4 10.7 5.3"/>
-        <circle class="session-spinner-head" cx="10.7" cy="5.3" r="4.3"/>
-      </g>
-      <g class="session-spinner-rectangle-current">
-        <path id="${rectPathId}" class="session-spinner-rect-motion" d="${rectPath}" pathLength="100"/>
-        <path class="session-spinner-rect-tail faint" d="${rectPath}" pathLength="100"/>
-        <path class="session-spinner-rect-tail bright" d="${rectPath}" pathLength="100"/>
-        <circle class="session-spinner-rect-head" cx="8" cy="2.2" r="1.65">
-          <animateMotion dur="1.7s" repeatCount="indefinite" rotate="auto"><mpath href="#${rectPathId}"/></animateMotion>
-        </circle>
-      </g>
-    </svg>`;
-    const backupOrbit = spinner.querySelector(".session-spinner-circle-backup");
-    if (backupOrbit) backupOrbit.style.animationDelay = `-${Date.now() % 3200}ms`;
-    spinner.classList.toggle("on", !useTextStatusIndicator && presentation.spinning);
-    this.sessionSpinnerEls.set(s.session_id, spinner);
     const title = document.createElement("span");
     title.className = "session-title";
     title.classList.toggle("session-title-working", useTextStatusIndicator && presentation.spinning);
@@ -5044,7 +5217,7 @@ class TermdeckApp {
     groupIndicator.className = "group-drop-indicator";
     groupIndicator.innerHTML = '<span class="codicon codicon-folder-library"></span><span>group</span>';
     groupIndicator.title = "Release to group with this terminal";
-    if (showDesktopBrandIndicator) item.append(dot, spinner, typeIcon, title, worktreeBadge, groupIndicator, close);
+    if (showDesktopBrandIndicator) item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
     else if (useTextStatusIndicator) item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
     else item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
     this.bindTerminalSearchHoverPopup(item, searchMatch);
@@ -5194,7 +5367,7 @@ class TermdeckApp {
       header.append(chevron, title, branch, count);
       header.onclick = () => {
         this.interactionWorktreeId = worktreeId;
-        this.updateRecentFilesPolling();
+        this.updateRecentFilesWatch();
         const nextCollapsed = !this.worktreeSectionCollapsed(worktreeId);
         this.setWorktreeSectionCollapsed(worktreeId, nextCollapsed);
         this.renderList();
@@ -6509,7 +6682,7 @@ class TermdeckApp {
   async refreshRecentFiles(force = false) {
     if (this.vscodeMode) return;
     if (this.sectionCollapsed("recent_files_collapsed")) {
-      this.updateRecentFilesPolling();
+      this.updateRecentFilesWatch();
       return;
     }
     if (this.recentFilesBusy) return;
@@ -6517,7 +6690,7 @@ class TermdeckApp {
     const filesVisible = !this.$("files-section").classList.contains("hidden");
     const root = (filesVisible && this.treeRoot) || activeRoot;
     if (!root) return;
-    if (!force && this.recentFilesRoot === root && Date.now() - this.recentFilesFetchedAt < RECENT_FILES_REFRESH_MS) return;
+    if (!force && this.recentFilesRoot === root && Date.now() - this.recentFilesFetchedAt < RECENT_FILES_MIN_REFRESH_MS) return;
     this.recentFilesBusy = true;
     try {
       const res = await fetch(`/api/files/recent?root=${encodeURIComponent(root)}&limit=40`);
@@ -6639,11 +6812,11 @@ class TermdeckApp {
 
   async reopenClosed(sessionId) {
     const res = await fetch(`/api/closed/${sessionId}/reopen`, { method: "POST" });
-    if (!res.ok) return;
+    if (!res.ok) return false;
     const reopened = await res.json();
     const reopenedSessionId = reopened.session_id || sessionId;
     await this.refresh();
-    if (!this.session(reopenedSessionId)) return;
+    if (!this.session(reopenedSessionId)) return false;
     this.activate(reopenedSessionId, { reveal: true });
     const view = this.views.get(reopenedSessionId);
     if (view) view.pinBottomUntil = Date.now() + 6000;
@@ -6652,6 +6825,24 @@ class TermdeckApp {
       this.keepActiveSessionVisible();
       this.focusActiveEditor();
     });
+    return true;
+  }
+
+  async restoreLastClosedTerminal() {
+    if (this.restoreLastClosedTerminalBusy) return;
+    const lastClosed = this.closedSessions[0];
+    if (!lastClosed) {
+      this.$("status-name").textContent = "no recently closed terminal";
+      return;
+    }
+    if (this.restoreLastClosedTerminalNeedsConfirmation &&
+        !window.confirm("You already restored the last closed terminal. Restore another older terminal?")) return;
+    this.restoreLastClosedTerminalBusy = true;
+    try {
+      if (await this.reopenClosed(lastClosed.session_id)) this.restoreLastClosedTerminalNeedsConfirmation = true;
+    } finally {
+      this.restoreLastClosedTerminalBusy = false;
+    }
   }
 
   async purgeClosed(sessionId) {
@@ -7085,7 +7276,7 @@ class TermdeckApp {
   fileHistoryEditorOptions() {
     return { automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
       fontSize: this.settings.code_font_size, lineNumbersMinChars: 4, renderLineHighlight: "all", folding: true,
-      wordWrap: this.settings.word_wrap ? "on" : "off", fixedOverflowWidgets: true };
+      wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true };
   }
 
   renderFileHistoryCurrentEditor(entry) {
@@ -7675,6 +7866,10 @@ class TermdeckApp {
     }
   }
 
+  refocusActiveInputAfterToolbarAction() {
+    requestAnimationFrame(() => requestAnimationFrame(() => this.focusActiveEditor()));
+  }
+
   scheduleActiveEditorFocus(sessionId) {
     clearTimeout(this.activeEditorFocusTimer);
     if (this.historyOpen) return;
@@ -7722,7 +7917,6 @@ class TermdeckApp {
     } else {
       const view = this.views.get(this.activeId);
       if (view) {
-        this.syncPromptToTerminal(view);
         if (this.nativeVscodeMode) this.postVscodeNativeSession(this.session(this.activeId), true);
         else view.term.focus();
       }
@@ -7741,6 +7935,7 @@ class TermdeckApp {
   }
 
   disconnectHistoryStream() {
+    this.cancelHistoryBackgroundLoad();
     clearTimeout(this.historyWsReconnectTimer);
     this.historyWsReconnectTimer = 0;
     const ws = this.historyWs;
@@ -7860,6 +8055,34 @@ class TermdeckApp {
     return older.concat(liveTurns);
   }
 
+  cancelHistoryBackgroundLoad() {
+    clearTimeout(this.historyBackgroundLoadTimer);
+    this.historyBackgroundLoadTimer = 0;
+    this.historyBackgroundLoadSessionId = "";
+  }
+
+  scheduleHistoryBackgroundLoad(sessionId, delay = HISTORY_BACKGROUND_LOAD_DELAY_MS) {
+    this.cancelHistoryBackgroundLoad();
+    if (!sessionId || sessionId !== this.activeId || !this.historyOpen || this.activeFileKey !== null ||
+        !this.historyHasMoreBySession.get(sessionId)) return;
+    const loadedTurns = this.historyTurnsBySession.get(sessionId) || [];
+    if (loadedTurns.length >= HISTORY_BACKGROUND_TARGET_TURNS) return;
+    this.historyBackgroundLoadSessionId = sessionId;
+    this.historyBackgroundLoadTimer = window.setTimeout(() => void this.continueHistoryBackgroundLoad(sessionId), delay);
+  }
+
+  async continueHistoryBackgroundLoad(sessionId) {
+    this.historyBackgroundLoadTimer = 0;
+    if (sessionId !== this.historyBackgroundLoadSessionId || sessionId !== this.activeId || !this.historyOpen ||
+        this.activeFileKey !== null) return;
+    if (this.historyOlderLoadBusy) {
+      this.scheduleHistoryBackgroundLoad(sessionId);
+      return;
+    }
+    const advanced = await this.loadOlderHistory({ sessionId, limit: HISTORY_BACKGROUND_PAGE_TURNS });
+    if (advanced) this.scheduleHistoryBackgroundLoad(sessionId);
+  }
+
   applyHistoryWindow(sessionId, liveTurns, metadata = {}, options = {}) {
     if (options.resetOlder) {
       this.historyOlderTurnsBySession.set(sessionId, []);
@@ -7870,11 +8093,13 @@ class TermdeckApp {
     this.historyHasMoreBySession.set(sessionId, !!metadata.hasMore);
     const turns = this.combineHistoryWindow(sessionId, live);
     this.applyHistoryTurns(sessionId, turns, { preserveScroll: options.preserveScroll === true });
+    this.scheduleHistoryBackgroundLoad(sessionId);
   }
 
-  async loadOlderHistory() {
+  async loadOlderHistory(options = {}) {
     if (this.historyOlderLoadBusy || !this.historyOpen || !this.activeId || this.activeFileKey !== null) return false;
-    const sessionId = this.activeId;
+    const sessionId = String(options.sessionId || this.activeId);
+    if (sessionId !== this.activeId) return false;
     if (!this.historyHasMoreBySession.get(sessionId)) return false;
     const before = this.historyBeforeBySession.get(sessionId);
     if (before == null) return false;
@@ -7882,10 +8107,12 @@ class TermdeckApp {
     const body = this.$("history-body");
     const previousHeight = body.scrollHeight;
     try {
-      const params = new URLSearchParams({ before: String(before), limit: "160" });
+      const requestedLimit = Math.max(20, Math.min(HISTORY_BACKGROUND_PAGE_TURNS, Number(options.limit) || HISTORY_BACKGROUND_PAGE_TURNS));
+      const params = new URLSearchParams({ before: String(before), limit: String(requestedLimit) });
       const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/history-page?${params}`);
       if (!response.ok) throw new Error(`history page failed: ${response.status}`);
       const page = await response.json();
+      if (sessionId !== this.activeId || !this.historyOpen || this.activeFileKey !== null) return false;
       if (page.reset) {
         this.historyOlderTurnsBySession.set(sessionId, []);
         this.historyBeforeBySession.set(sessionId, null);
@@ -7896,7 +8123,8 @@ class TermdeckApp {
       const olderPage = Array.isArray(page.turns) ? page.turns : [];
       const existingOlder = this.historyOlderTurnsBySession.get(sessionId) || [];
       this.historyOlderTurnsBySession.set(sessionId, olderPage.concat(existingOlder));
-      this.historyBeforeBySession.set(sessionId, page.before == null ? null : Number(page.before));
+      const nextBefore = page.before == null ? null : Number(page.before);
+      this.historyBeforeBySession.set(sessionId, nextBefore);
       this.historyHasMoreBySession.set(sessionId, !!page.has_more);
       const live = this.historyLiveTurnsBySession.get(sessionId) || [];
       const combined = this.combineHistoryWindow(sessionId, live);
@@ -7913,7 +8141,7 @@ class TermdeckApp {
           resolve();
         }));
       }
-      return olderPage.length > 0;
+      return olderPage.length > 0 || nextBefore !== before;
     } catch (error) {
       console.warn("unable to load older transcript history", error);
       return false;
@@ -7930,7 +8158,9 @@ class TermdeckApp {
     for (const item of pending) {
       const pendingId = item.pending_id || `${Date.now()}-${this.historyPendingPromptSequence++}`;
       item.pending_id = pendingId;
-      const authoritativeCount = merged.filter((turn) => turn.role === "user" && turn.text === item.text && !turn.pending_id).length;
+      const comparisonText = this.historyPromptComparisonText(item.text);
+      const authoritativeCount = merged.filter((turn) => turn.role === "user" && !turn.pending_id &&
+        this.historyPromptComparisonText(turn.text) === comparisonText).length;
       const optimisticIndex = merged.findIndex((turn) => turn.pending_id === pendingId);
       if (authoritativeCount > item.beforeCount) {
         if (optimisticIndex >= 0) merged.splice(optimisticIndex, 1);
@@ -7942,6 +8172,10 @@ class TermdeckApp {
     if (remaining.length) this.historyPendingPrompts.set(sessionId, remaining);
     else this.historyPendingPrompts.delete(sessionId);
     return merged;
+  }
+
+  historyPromptComparisonText(text) {
+    return String(text || "").replace(/\r\n?/g, "\n").trim();
   }
 
   sendHistoryPrompt(options = {}) {
@@ -7957,7 +8191,7 @@ class TermdeckApp {
       this.persistMarkdownPromptQueue(view);
       this.renderHistoryQueue(view);
       this.recordPromptHistory(view.sessionId, text);
-      view.promptDraft = "";
+      this.persistMarkdownPromptDraft(view, "");
       this.showPromptDraft(view);
       prompt.focus();
       this.$("status-name").textContent = "prompt queued";
@@ -7975,7 +8209,6 @@ class TermdeckApp {
     if (!view || !view.ws || view.ws.readyState !== WebSocket.OPEN || !String(text || "").trim()) return false;
     const promptText = String(text);
     const prompt = this.$("history-prompt");
-    view.promptDraft = promptText;
     view.promptSubmitting = true;
     view.promptSubmitEntered = false;
     view.promptEditing = false;
@@ -7988,12 +8221,15 @@ class TermdeckApp {
     if (this.historyOpen && this.activeId === sessionId) {
       const turns = this.historyTurnsBySession.get(sessionId) || this.historyTurns;
       const pending = this.historyPendingPrompts.get(sessionId) || [];
-      const authoritativeCount = turns.filter((turn) => turn.role === "user" && turn.text === promptText && !turn.pending_id).length;
-      const beforeCount = authoritativeCount + pending.filter((item) => item.text === promptText).length;
+      const live = this.historyLiveTurnsBySession.get(sessionId) || turns;
+      const comparisonText = this.historyPromptComparisonText(promptText);
+      const authoritativeCount = live.filter((turn) => turn.role === "user" && !turn.pending_id &&
+        this.historyPromptComparisonText(turn.text) === comparisonText).length;
+      const beforeCount = authoritativeCount + pending.filter((item) =>
+        this.historyPromptComparisonText(item.text) === comparisonText).length;
       const pendingId = `${Date.now()}-${this.historyPendingPromptSequence++}`;
       pending.push({ text: promptText, beforeCount, pending_id: pendingId });
       this.historyPendingPrompts.set(sessionId, pending);
-      const live = this.historyLiveTurnsBySession.get(sessionId) || turns;
       const optimisticLive = this.mergePendingHistoryPrompts(sessionId, live);
       this.historyLiveTurnsBySession.set(sessionId, optimisticLive);
       const optimisticTurns = this.combineHistoryWindow(sessionId, optimisticLive);
@@ -8010,7 +8246,7 @@ class TermdeckApp {
       return false;
     }
     if (!options.fromQueue) this.recordPromptHistory(sessionId, promptText);
-    view.promptDraft = "";
+    if (!options.fromQueue) this.persistMarkdownPromptDraft(view, "");
     if (this.historyOpen && this.activeId === sessionId) {
       this.showPromptDraft(view);
       prompt.focus();
@@ -8106,13 +8342,13 @@ class TermdeckApp {
     if (!this.historyOpen || view !== this.views.get(this.activeId)) return;
     const prompt = this.$("history-prompt");
     if (!prompt) return;
-    prompt.value = view.promptDraft || "";
+    prompt.value = view.markdownPromptDraft || "";
     this.resizeHistoryPrompt();
     requestAnimationFrame(() => {
-      if (prompt.value !== (view.promptDraft || "")) return;
+      if (prompt.value !== (view.markdownPromptDraft || "")) return;
       this.resizeHistoryPrompt();
       requestAnimationFrame(() => {
-        if (prompt.value === (view.promptDraft || "")) this.resizeHistoryPrompt();
+        if (prompt.value === (view.markdownPromptDraft || "")) this.resizeHistoryPrompt();
       });
     });
   }
@@ -8729,9 +8965,22 @@ class TermdeckApp {
   linkHistoryFileReferences(container) {
     for (const anchor of container.querySelectorAll("a")) {
       const linkText = anchor.getAttribute("href") || "";
-      if (!this.parseVscodeFileLink(linkText)) continue;
-      anchor.dataset.terminalFile = linkText;
-      anchor.classList.add("history-file-link");
+      if (this.parseVscodeFileLink(linkText)) {
+        anchor.dataset.terminalFile = linkText;
+        anchor.classList.add("history-file-link");
+        anchor.title = `Open ${linkText}`;
+        continue;
+      }
+      let url;
+      try {
+        url = new URL(linkText, location.href);
+      } catch (_error) {
+        continue;
+      }
+      if (!["http:", "https:", "mailto:"].includes(url.protocol)) continue;
+      anchor.classList.add("history-external-link");
+      anchor.target = "_blank";
+      anchor.rel = "noopener noreferrer";
       anchor.title = `Open ${linkText}`;
     }
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
@@ -9386,7 +9635,7 @@ class TermdeckApp {
     const host = this.$("secondary-editor-host");
     host.textContent = "";
     const options = { automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
-      fontSize: this.settings.code_font_size, wordWrap: this.settings.word_wrap ? "on" : "off", fixedOverflowWidgets: true };
+      fontSize: this.settings.code_font_size, wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true };
     if (diff) {
       this.secondaryDiffEditor = monaco.editor.createDiffEditor(host, { ...options, readOnly: true, renderSideBySide: false });
       this.secondaryDiffEditor.setModel({ original: activeEntry.model, modified: secondaryEntry.model });
@@ -10142,12 +10391,9 @@ class TermdeckApp {
     const view = this.views.get(this.activeId);
     const prompt = this.$("history-prompt");
     if (!view || !prompt || !this.historyOpen) return;
-    const current = String(prompt.value || view.promptDraft || "").trimEnd();
-    view.promptDraft = current ? `${current}\n\n${value}\n\n` : `${value}\n\n`;
-    view.promptEditing = true;
-    view.promptEditVersion += 1;
+    const current = String(prompt.value || view.markdownPromptDraft || "").trimEnd();
+    this.persistMarkdownPromptDraft(view, current ? `${current}\n\n${value}\n\n` : `${value}\n\n`);
     this.showPromptDraft(view);
-    this.syncPromptToTerminal(view, { writeToTerminal: false });
     prompt.focus();
     prompt.setSelectionRange(prompt.value.length, prompt.value.length);
   }
@@ -10752,7 +10998,6 @@ class TermdeckApp {
     const selected = this.session(id);
     if (this.worktreeId === ALL_WORKTREES_ID && selected) {
       this.interactionWorktreeId = this.worktreeIdForSession(selected);
-      this.updateRecentFilesPolling();
     }
     if (!selected?.needs_attention) this.clearSessionAttention(id);
     let unreadChanged = false;
@@ -10788,6 +11033,7 @@ class TermdeckApp {
     this.historyLoaded = cachedHistory.length > 0;
     const previousView = previousId ? this.views.get(previousId) : null;
     this.activeId = id;
+    this.updateRecentFilesWatch();
     this.historyOpen = this.selectedHistoryMode(selected);
     if (options.history !== false) this.pushNav({ kind: "term", id });
     if (this.getProjectState().active_session_id !== id) {
@@ -10941,13 +11187,19 @@ class TermdeckApp {
     this.$("terminal-area").appendChild(container);
     const term = new Terminal({
       fontSize: this.settings.terminal_font_size, fontFamily: '"SF Mono", Menlo, monospace', letterSpacing: -0.2, theme: this.termTheme(),
-      scrollback: 20000, cursorBlink: true, macOptionIsMeta: true, allowProposedApi: true,
+      scrollback: 20000, cursorBlink: !this.perfDisabled("cursor_blink"), macOptionIsMeta: true, allowProposedApi: true,
     });
     const fit = new FitAddon.FitAddon();
+    const terminalFindAddon = this.perfDisabled("search_addon")
+      ? null : new SearchAddon.SearchAddon({ highlightLimit: TERMINAL_FIND_HIGHLIGHT_LIMIT });
     term.loadAddon(fit);
+    if (terminalFindAddon) term.loadAddon(terminalFindAddon);
     term.open(container);
+    this.enableWebglRenderer(term);
     term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
-    const view = { sessionId: id, container, term, fit, ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
+    const view = { sessionId: id, container, term, fit, terminalFindAddon, terminalFindResultIndex: -1,
+                   terminalFindResultCount: 0, terminalFindResultListener: null,
+                   ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
                    replaying: false, pasting: false, suppressReconnect: false, cliTitle: null, pinBottomUntil: 0,
                    programmaticScrollUntil: 0, programmaticScrollGeneration: 0, scrollSettleTimer: 0,
                    reconnectTimer: 0, settleFrame: 0, viewportRepairFrame: 0, needsViewportRepair: false,
@@ -10968,7 +11220,8 @@ class TermdeckApp {
                    viewportAnchorRestore: null, viewportAnchorRestoreTimer: 0,
                    lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [], codexReflowFollowupTimers: [],
                    preserveRowsFromBottom: 0, reconnectReset: false,
-                   promptDraft: this.session(id)?.draft || "", promptPaste: false, promptEscape: "", promptEditing: false,
+                   promptDraft: this.session(id)?.draft || "", markdownPromptDraft: this.markdownPromptDraftForSession(id),
+                   promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptSubmissionReflowGuardUntil: 0, promptSubmissionReflowGuardTimer: 0,
                    manualRepaintClickCount: 0, manualRepaintClickTimer: 0, manualRepaintLastClickAt: 0,
@@ -10976,6 +11229,7 @@ class TermdeckApp {
                    reconnectAfterClose: false, claudeInitialReplayCheckTimer: 0,
                    claudeInitialReplayRecoveryAttempted: false,
                    claudeSnapshotAddon: null, claudeSnapshotRestoreAttempted: false, claudeSnapshotRestored: false,
+                   claudeSnapshotThinRetryDone: false,
                    claudeSnapshotRequiresRepaint: false, claudeSnapshotBlankScreenPending: false,
                    claudeSnapshotSaveTimer: 0, claudeSnapshotSavePromise: null,
                    claudeStatusRowRefreshTimer: 0, historyModelRefreshTimer: 0, lastClaudeStatusRowRefreshAt: 0,
@@ -10985,6 +11239,7 @@ class TermdeckApp {
                    pendingDraftSync: null, pendingTerminalDraft: null, pendingAgentPaste: "", pendingAgentPasteTimer: 0,
                    pendingAgentPasteStartedAt: 0, pendingAgentPasteReadyAt: 0,
                    promptEditVersion: 0, promptSubmitVersion: -1 };
+    view.terminalFindResultListener = terminalFindAddon?.onDidChangeResults((result) => this.updateTerminalFindResultCount(view, result)) || null;
     const releaseManualScrollWhenStable = () => {
       clearTimeout(view.manualScrollReleaseTimer);
       const generation = view.manualScrollGeneration;
@@ -11194,6 +11449,21 @@ class TermdeckApp {
     return true;
   }
 
+  // Bisection switches for the work that runs once per terminal write. At ~50 websocket frames/sec on a
+  // streaming tab each of these fires 50x/sec, so toggling one off and watching CPU isolates a culprit
+  // without editing code. PERF_TOGGLES is the catalogue rendered into the settings popover.
+  perfDisabled(key) {
+    const disabled = this.settings.perf_disabled;
+    return !!(disabled && disabled[key]);
+  }
+
+  setPerfDisabled(key, disabled) {
+    if (!this.settings.perf_disabled || typeof this.settings.perf_disabled !== "object") {
+      this.settings.perf_disabled = {};
+    }
+    this.settings.perf_disabled[key] = !!disabled;
+  }
+
   claudeSnapshotExperimentEnabled() {
     return !!this.settings.claude_snapshot_experimental && !!window.indexedDB && !!window.SerializeAddon?.SerializeAddon;
   }
@@ -11203,6 +11473,7 @@ class TermdeckApp {
   }
 
   ensureClaudeSnapshotAddon(view) {
+    if (this.perfDisabled("serialize_addon")) return false;
     if (!this.claudeSnapshotExperimentEnabled() || !this.isClaudeSnapshotView(view)) return false;
     if (view.claudeSnapshotAddon) return true;
     const Addon = window.SerializeAddon.SerializeAddon;
@@ -11327,6 +11598,13 @@ class TermdeckApp {
     return view.claudeSnapshotAddon.serialize({ scrollback: CLAUDE_SNAPSHOT_MAX_LINES });
   }
 
+  claudeSnapshotLineCount(snapshot) {
+    if (typeof snapshot !== "string" || !snapshot) return 0;
+    let lines = 0;
+    for (let index = snapshot.indexOf("\n"); index >= 0; index = snapshot.indexOf("\n", index + 1)) lines += 1;
+    return lines;
+  }
+
   claudeTerminalBufferHasContent(view) {
     const buffer = view?.term?.buffer?.normal;
     if (!buffer) return false;
@@ -11437,6 +11715,19 @@ class TermdeckApp {
       return;
     }
     if (!snapshot) return;
+    // Never let a save shrink the stored history. A restart that leaves the tab showing a single repainted
+    // screen would otherwise have its 3-second idle save overwrite a full snapshot with that one screen,
+    // destroying the history permanently -- the reason this kept "going back to one page" and staying
+    // there. One screen of slack absorbs normal churn; a genuine geometry change makes the stored record
+    // unusable anyway, so a differing cols is always allowed through.
+    try {
+      const previous = await this.readClaudeSnapshot(view.sessionId);
+      if (previous && previous.cols === view.term.cols &&
+          this.claudeSnapshotLineCount(snapshot) + view.term.rows <
+            this.claudeSnapshotLineCount(previous.snapshot)) return;
+    } catch (_error) {
+      // An unreadable previous record is not a reason to skip persisting the current one.
+    }
     const record = { sessionId: view.sessionId, formatVersion: CLAUDE_SNAPSHOT_FORMAT_VERSION, cols: view.term.cols,
       snapshot, historySnapshot, savedAt: Date.now() };
     view.claudeSnapshotSavePromise = this.writeClaudeSnapshot(record).catch((error) => {
@@ -11478,7 +11769,15 @@ class TermdeckApp {
       view.scrollMode = "follow";
       view.preserveRowsFromBottom = 0;
     }
-    if (this.isClaudeSnapshotView(view) && this.claudeSnapshotExperimentEnabled() && !view.claudeSnapshotRestoreAttempted) {
+    // A reconnect that lands with less than a screen of scrollback gets one more chance to restore: the
+    // attempt flag is otherwise set once per view, so a tab left thin by a server restart never reconsulted
+    // IndexedDB. Capped at a single retry because restore re-enters connect(), and a snapshot that legitimately
+    // has nothing to give would otherwise spin here forever.
+    const claudeBufferIsThin = Number(view.term?.buffer?.active?.baseY || 0) < Number(view.term?.rows || 0);
+    const claudeWantsThinRetry = claudeBufferIsThin && !view.claudeSnapshotRestored && !view.claudeSnapshotThinRetryDone;
+    if (this.isClaudeSnapshotView(view) && this.claudeSnapshotExperimentEnabled() &&
+        (!view.claudeSnapshotRestoreAttempted || claudeWantsThinRetry)) {
+      if (view.claudeSnapshotRestoreAttempted) view.claudeSnapshotThinRetryDone = true;
       view.claudeSnapshotRestoreAttempted = true;
       void this.restoreClaudeSnapshot(view).then(() => {
         if (!view.closed) this.connect(id, view);
@@ -11833,10 +12132,8 @@ class TermdeckApp {
     const after = value.slice(end);
     const prefix = before && !/\s$/.test(before) ? " " : "";
     const suffix = after && /^\s/.test(after) ? "" : " ";
-    view.promptDraft = `${before}${prefix}${text}${suffix}${after}`;
-    view.promptEditing = true;
+    this.persistMarkdownPromptDraft(view, `${before}${prefix}${text}${suffix}${after}`);
     this.showPromptDraft(view);
-    this.syncPromptToTerminal(view, { writeToTerminal: false });
     prompt.focus();
     const cursor = before.length + prefix.length + text.length + suffix.length;
     prompt.setSelectionRange(cursor, cursor);
@@ -12079,6 +12376,7 @@ class TermdeckApp {
     if (this.isClaudeSnapshotView(view) && this.claudeSnapshotExperimentEnabled()) {
       view.claudeSnapshotRestored = false;
       view.claudeSnapshotRestoreAttempted = false;
+      view.claudeSnapshotThinRetryDone = false;
     }
     view.term.reset();
     // V2 mode gets its repaint trigger for free once the forced reconnect below actually delivers a
@@ -12824,11 +13122,25 @@ class TermdeckApp {
   scheduleCodexReflowFollowup(view) {
     if (!view || view.closed) return;
     for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
-    view.codexReflowFollowupTimers = [1500, 3500, 6000].map((delay) => setTimeout(() => {
-      if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
-      if (!this.terminalTailRenderMismatch(view)) return;
-      this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
-    }, delay));
+    view.codexReflowFollowupTimers = CODEX_REFLOW_FOLLOWUP_DELAYS_MS.map((delay) => setTimeout(
+      () => this.runCodexReflowFollowup(view, CODEX_REFLOW_FOLLOWUP_BUSY_RETRIES), delay));
+  }
+
+  // Deferred while output is still arriving. terminalTailRenderMismatch compares xterm's buffer tail to
+  // the painted DOM tail, and those legitimately differ for a frame or two mid-stream, so acting on that
+  // difference nudges the terminal's width in the middle of a synchronized-update frame and leaves
+  // exactly the half-painted screen this repair exists to remove -- a greyed status line with a couple of
+  // stray glyphs, which then heals on the CLI's next full redraw. Retry once output settles instead.
+  runCodexReflowFollowup(view, busyRetriesLeft) {
+    if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
+    if (view.outputWriteInFlight || view.outputQueue.length) {
+      if (busyRetriesLeft <= 0) return;
+      view.codexReflowFollowupTimers.push(setTimeout(
+        () => this.runCodexReflowFollowup(view, busyRetriesLeft - 1), CODEX_REFLOW_FOLLOWUP_BUSY_RETRY_MS));
+      return;
+    }
+    if (!this.terminalTailRenderMismatch(view)) return;
+    this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
   }
 
   forceVisibleTerminalReflowViaClear(view) {
@@ -12949,28 +13261,51 @@ class TermdeckApp {
 
   drainTerminalWrites(view) {
     if (!view || view.closed || view.outputWriteInFlight) return;
-    const item = view.outputQueue.shift();
-    if (!item) return;
+    if (!view.outputQueue.length) return;
+    // One write per batch, not per websocket frame. A streaming agent delivers ~50 frames/sec, and each
+    // write schedules its own xterm refresh plus the follow-up chain below, so writing frame-by-frame paid
+    // that cost ~50x/sec. Only consecutive same-generation items are merged: a reconnect bumps the
+    // generation and its output must not be fused with the previous connection's.
+    const generation = view.outputQueue[0].generation;
+    const batch = [];
+    while (view.outputQueue.length && view.outputQueue[0].generation === generation) {
+      batch.push(view.outputQueue.shift());
+    }
     view.outputWriteInFlight = true;
-    this.noteTerminalViewportRestoreOutput(view, item.data);
-    view.term.write(item.data, () => {
+    let total = 0;
+    for (const item of batch) {
+      if (!this.perfDisabled("viewport_restore")) this.noteTerminalViewportRestoreOutput(view, item.data);
+      total += item.data.length;
+    }
+    let payload;
+    if (batch.length === 1) {
+      payload = batch[0].data;
+    } else {
+      payload = new Uint8Array(total);
+      let offset = 0;
+      for (const item of batch) { payload.set(item.data, offset); offset += item.data.length; }
+    }
+    view.term.write(payload, () => {
       // Always release the writer. A reconnect invalidates the old callback's
       // UI work but must not strand the new connection's queued output.
       view.outputWriteInFlight = false;
-      if (!view.closed && item.generation === view.outputWriteGeneration && item.afterWrite) {
-        item.afterWrite();
+      const live = !view.closed && generation === view.outputWriteGeneration;
+      if (live) {
+        for (const item of batch) {
+          if (item.afterWrite) item.afterWrite();
+        }
       }
-      if (!view.closed && item.generation === view.outputWriteGeneration) this.detectTerminalAttentionFromBuffer(view);
-      if (!view.closed && item.generation === view.outputWriteGeneration && view.needsViewportRepair &&
-          !view.outputQueue.length && view.container.classList.contains("visible")) {
+      if (live && !this.perfDisabled("attention_detect")) this.detectTerminalAttentionFromBuffer(view);
+      if (live && view.needsViewportRepair && !view.outputQueue.length &&
+          view.container.classList.contains("visible")) {
         view.needsViewportRepair = false;
         this.repairTerminalViewport(view);
       }
-      if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleClaudeSnapshotSave(view);
-      if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleHistoryTerminalModelRefresh(view);
-      if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleClaudeStatusRowRefresh(view);
-      if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleTerminalTailRepair(view);
-      if (!view.closed && item.generation === view.outputWriteGeneration) this.scheduleTerminalViewportRestore(view);
+      if (live && !this.perfDisabled("snapshot_save")) this.scheduleClaudeSnapshotSave(view);
+      if (live && !this.perfDisabled("history_refresh")) this.scheduleHistoryTerminalModelRefresh(view);
+      if (live && !this.perfDisabled("status_row_refresh")) this.scheduleClaudeStatusRowRefresh(view);
+      if (live && !this.perfDisabled("tail_repair")) this.scheduleTerminalTailRepair(view);
+      if (live && !this.perfDisabled("viewport_restore")) this.scheduleTerminalViewportRestore(view);
       this.drainTerminalWrites(view);
     });
   }
@@ -13116,6 +13451,7 @@ class TermdeckApp {
     if (view.scrollObserver) view.scrollObserver.disconnect();
     if (view.visibilityObserver) view.visibilityObserver.disconnect();
     if (view.ws) view.ws.close();
+    view.terminalFindResultListener?.dispose();
     view.term.dispose();
     view.container.remove();
     this.views.delete(id);
@@ -13154,6 +13490,7 @@ class TermdeckApp {
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
       this.persistedSettings = this.copySettings(this.settings);
       if (!this.settings.md_prompt_queues || typeof this.settings.md_prompt_queues !== "object") this.settings.md_prompt_queues = {};
+      if (!this.settings.md_prompt_drafts || typeof this.settings.md_prompt_drafts !== "object") this.settings.md_prompt_drafts = {};
       if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
       this.settings.show_git_status = true;
       const excludedTokens = this.fileTypeFilterTokens();
@@ -13296,6 +13633,7 @@ class TermdeckApp {
 
   applySettings({ fitTerminals = true } = {}) {
     const s = this.settings;
+    document.body.classList.toggle("perf-disable-sidebar-motion", this.perfDisabled("sidebar_motion"));
     const sidebar = this.$("sidebar");
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
     const normalWidth = Number(s.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
@@ -13351,31 +13689,31 @@ class TermdeckApp {
       this.refreshTerminalAppearance(view);
     }
     if (this.editor) {
-      this.editor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.word_wrap ? "on" : "off" });
+      this.editor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
       this.defineMonacoTheme();
     }
     if (this.notebookEditor) {
-      this.notebookEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.word_wrap ? "on" : "off" });
+      this.notebookEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
       this.notebookEditor.layout();
     }
     if (this.fileHistoryCurrentEditor) {
-      this.fileHistoryCurrentEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.word_wrap ? "on" : "off" });
+      this.fileHistoryCurrentEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
       this.fileHistoryCurrentEditor.layout();
     }
     if (this.fileHistoryDiffEditor) {
-      this.fileHistoryDiffEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.word_wrap ? "on" : "off" });
-      this.fileHistoryDiffEditor.getOriginalEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.word_wrap ? "on" : "off" });
-      this.fileHistoryDiffEditor.getModifiedEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.word_wrap ? "on" : "off" });
+      this.fileHistoryDiffEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.fileHistoryDiffEditor.getOriginalEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.fileHistoryDiffEditor.getModifiedEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
       this.fileHistoryDiffEditor.layout();
     }
     this.$("stat-text").classList.toggle("hidden", !s.show_stats);
     this.$("stat-spark").classList.toggle("hidden", !s.show_stats);
     const editorWrapToggle = this.$("editor-wrap-toggle");
     if (editorWrapToggle) {
-      const editorWrapEnabled = !!s.word_wrap;
-      editorWrapToggle.classList.toggle("on", editorWrapEnabled);
-      editorWrapToggle.setAttribute("aria-pressed", String(editorWrapEnabled));
-      editorWrapToggle.title = `Editor wrap: ${editorWrapEnabled ? "on" : "off"}`;
+      const editorNoWrapEnabled = !!s.editor_no_wrap;
+      editorWrapToggle.classList.toggle("on", editorNoWrapEnabled);
+      editorWrapToggle.setAttribute("aria-pressed", String(editorNoWrapEnabled));
+      editorWrapToggle.title = `Editor no wrap: ${editorNoWrapEnabled ? "on" : "off"}`;
     }
     this.renderInlineSizeControls();
     if (fitTerminals) this.fitActive();
@@ -13390,7 +13728,7 @@ class TermdeckApp {
           readOnly: false, theme: this.monacoThemeName(),
           automaticLayout: true, minimap: { enabled: false },
           scrollBeyondLastLine: false, fontSize: this.settings.code_font_size, lineNumbersMinChars: 4,
-          renderLineHighlight: "all", folding: true, wordWrap: this.settings.word_wrap ? "on" : "off", fixedOverflowWidgets: true,
+          renderLineHighlight: "all", folding: true, wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true,
         });
         monaco.editor.onDidChangeMarkers(() => this.scheduleProblemsRefresh());
         this.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => this.saveActiveFile());
@@ -13419,7 +13757,7 @@ class TermdeckApp {
             readOnly: false, theme: this.monacoThemeName(),
             automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
             fontSize: this.settings.code_font_size, lineNumbersMinChars: 2, lineDecorationsWidth: 8, glyphMargin: false,
-            renderLineHighlight: "all", folding: true, wordWrap: this.settings.word_wrap ? "on" : "off",
+            renderLineHighlight: "all", folding: true, wordWrap: this.settings.editor_no_wrap ? "off" : "on",
             fixedOverflowWidgets: true, padding: { top: 10, bottom: 10 },
           });
           this.notebookEditor.onDidChangeModelContent(() => {
@@ -13763,6 +14101,7 @@ class TermdeckApp {
     pop.appendChild(this.buildTerminalIconSettingsRow());
     pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));
+    pop.appendChild(this.buildPerfToggleRows());
     for (const item of items) {
       if (!showFontSizeEditor || (this.settings.inline_size_controls && item.type !== "color")) continue;
       const row = document.createElement("div");
@@ -14007,6 +14346,48 @@ class TermdeckApp {
     return row;
   }
 
+  // xterm's default DOM renderer rebuilds row spans on every refresh, which dominated CPU on a busy
+  // terminal (measured: JS 92% idle while the tab burned ~30%, i.e. the cost is paint, not script). The
+  // WebGL renderer draws to a canvas instead. Must be attached after term.open() so a context exists, and
+  // must fall back to the DOM renderer on context loss, which browsers do trigger under memory pressure.
+  enableWebglRenderer(term) {
+    if (this.perfDisabled("webgl_renderer")) return false;
+    const Addon = window.WebglAddon?.WebglAddon;
+    if (!Addon) return false;
+    try {
+      const addon = new Addon();
+      addon.onContextLoss(() => {
+        try { addon.dispose(); } catch (disposeError) { /* already gone; DOM renderer takes over */ }
+      });
+      term.loadAddon(addon);
+      return true;
+    } catch (webglError) {
+      return false;
+    }
+  }
+
+  buildPerfToggleRows() {
+    const rows = document.createDocumentFragment();
+    // Master switch on the heading row: an "all off" makes it one click to establish the floor before
+    // walking individual switches, instead of nine clicks each way.
+    const allDisabled = () => PERF_TOGGLES.every((toggle) => this.perfDisabled(toggle.key));
+    rows.appendChild(this.buildToggleRow("Disable for CPU bisect",
+      () => (allDisabled() ? "all off" : "all on"),
+      () => {
+        const disable = !allDisabled();
+        for (const toggle of PERF_TOGGLES) this.setPerfDisabled(toggle.key, disable);
+      },
+      () => this.openSettingsPopover(this.$("settings-gear"), [], this.fontSizeEditorOpen)));
+    for (const toggle of PERF_TOGGLES) {
+      rows.appendChild(this.buildToggleRow(
+        toggle.reload ? `${toggle.label} (reload)` : toggle.label,
+        () => (this.perfDisabled(toggle.key) ? "off" : "on"),
+        () => this.setPerfDisabled(toggle.key, !this.perfDisabled(toggle.key)),
+      ));
+    }
+    return rows;
+  }
+
   buildTerminalIconSettingsRow() {
     const rows = document.createDocumentFragment();
     const heading = document.createElement("div");
@@ -14152,6 +14533,7 @@ class TermdeckApp {
     const tree = this.$("files-tree");
     tree.textContent = "";
     await this.renderDirInto(tree, "");
+    this.updateRecentFilesWatch();
     this.refreshRecentFiles(true);
   }
 
@@ -14393,7 +14775,7 @@ class TermdeckApp {
     const openEntryChanges = entries.filter((change) => !openDirectories.includes(change.parent) && this.treeRowForPath(change.path));
     if (openEntryChanges.length) await this.refreshChangedFileTreeEntries(openEntryChanges);
     await this.refreshOpenFilesFromDisk(entries);
-    this.refreshRecentFiles();
+    this.queueRecentFilesEventRefresh();
     if (this.shouldRefreshActiveFileSearch(entries)) await this.refreshActiveFileSearch();
   }
 
@@ -15432,26 +15814,59 @@ class TermdeckApp {
     section.appendChild(row);
   }
 
-  openKeybindings() {
+  shortcutMatchesSearch(shortcut, builtin, query) {
+    if (!query) return true;
+    const binding = builtin ? shortcut.keys : this.bindingFor(shortcut.id);
+    const aliasBindings = [String(binding).replaceAll("Meta", "Cmd").replaceAll("Alt", "Option").replaceAll("Ctrl", "Control"),
+      String(binding).replaceAll("Meta", "Command")];
+    const keyQuery = /(?:meta|cmd|command|ctrl|control|alt|option|shift|[⌘⌥⇧⌃+])/i.test(query);
+    if (keyQuery) {
+      const compactQuery = query.replace(/[\s+_-]/g, "");
+      return [binding, builtin ? shortcut.keys : this.bindingToDisplay(binding), ...aliasBindings]
+        .some((value) => String(value).toLowerCase().replace(/[\s+_-]/g, "").includes(compactQuery));
+    }
+    const searchable = [shortcut.label, shortcut.id || "", shortcut.section, binding,
+      builtin ? shortcut.keys : this.bindingToDisplay(binding), ...aliasBindings].join(" ").toLowerCase();
+    return query.split(/\s+/).filter(Boolean).every((term) => searchable.includes(term));
+  }
+
+  renderKeybindingsList() {
     const list = this.$("keys-list");
     list.textContent = "";
+    const query = String(this.$("keys-search")?.value || "").trim().toLowerCase();
     const references = this.vscodeMode ? VSCODE_REFERENCE_KEYS : REFERENCE_KEYS;
+    let visibleRows = 0;
     for (const sectionName of KEYBOARD_SHORTCUT_SECTIONS) {
       const section = this.createShortcutSection(sectionName);
       let hasRows = false;
       for (const shortcut of this.keybindingDefinitions()) {
-        if (shortcut.section !== sectionName) continue;
+        if (shortcut.section !== sectionName || !this.shortcutMatchesSearch(shortcut, false, query)) continue;
         this.appendShortcutRow(section, shortcut);
         hasRows = true;
+        visibleRows += 1;
       }
       for (const shortcut of references) {
-        if (shortcut.section !== sectionName) continue;
+        if (shortcut.section !== sectionName || !this.shortcutMatchesSearch(shortcut, true, query)) continue;
         this.appendShortcutRow(section, shortcut, true);
         hasRows = true;
+        visibleRows += 1;
       }
       if (hasRows) list.appendChild(section);
     }
+    if (!visibleRows) {
+      const empty = document.createElement("div");
+      empty.className = "keys-empty";
+      empty.textContent = "No matching shortcuts";
+      list.appendChild(empty);
+    }
+  }
+
+  openKeybindings() {
+    const search = this.$("keys-search");
+    search.value = "";
+    this.renderKeybindingsList();
     this.$("keys-backdrop").classList.remove("hidden");
+    requestAnimationFrame(() => search.focus());
   }
 
   captureBinding(actionId, bindEl) {
@@ -15778,6 +16193,7 @@ class TermdeckApp {
     else if (actionId === "close-item") this.closeActiveItem();
     else if (actionId === "fork-terminal") { const s = this.session(this.activeId); if (s) this.forkSession(s); }
     else if (actionId === "restart-terminal") { if (this.activeId) this.restartSession(this.activeId); }
+    else if (actionId === "restore-last-closed-terminal") void this.restoreLastClosedTerminal();
     else if (actionId === "resync-terminal") this.resyncActiveTerminal();
     else if (actionId === "rename-terminal") { const s = this.session(this.activeId); if (s) this.renameSession(s); }
     else if (actionId === "copy-session-id") {
@@ -16049,6 +16465,7 @@ class TermdeckApp {
       this.$("status-name").textContent = detail.detail || "terminal process cleanup did not complete";
       return;
     }
+    this.restoreLastClosedTerminalNeedsConfirmation = false;
     this.postVscodeNativeClose(sessionId);
     if (wasActive && nextOnClose && this.session(nextOnClose)) {
       this.activate(nextOnClose, { history: false, reveal: true });
@@ -16080,6 +16497,7 @@ class TermdeckApp {
         body: JSON.stringify({ group_name: this.terminalGroupNameForSession(session.session_id) }),
       }) })));
     const closedIds = results.filter((result) => result.response.ok).map((result) => result.session.session_id);
+    if (closedIds.length) this.restoreLastClosedTerminalNeedsConfirmation = false;
     for (const sessionId of closedIds) this.postVscodeNativeClose(sessionId);
     this.sidebarSelectedSessionIds = new Set([...this.sidebarSelectedSessionIds]
       .filter((sessionId) => !closedIds.includes(sessionId)));
@@ -17207,7 +17625,7 @@ class TermdeckApp {
   }
 
   async pollStats() {
-    if (!this.settings.show_stats) return;
+    if (!this.settings.show_stats || this.perfDisabled("stats_poll")) return;
     let data;
     try {
       const query = this.activeId ? `?session_id=${encodeURIComponent(this.activeId)}` : "";

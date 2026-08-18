@@ -289,7 +289,7 @@ class UiSettings(BaseModel):
     show_stats: bool = True
     show_mtime: bool = True
     show_git_status: bool = True
-    word_wrap: bool = False
+    editor_no_wrap: bool = False
     search_glob: str = "!*.json, !*.csv, !*.log"
     tree_file_glob: str = ""
     search_file_glob: str = ""
@@ -306,8 +306,12 @@ class UiSettings(BaseModel):
     history_mode: bool = False
     transcript_first_surface: str = "terminal"
     claude_snapshot_experimental: bool = False
+    # Per-write/addon bisection switches (PERF_TOGGLES in app.js). Kept open-ended so adding a switch does
+    # not need a matching field here — an unlisted key is silently dropped when settings are saved.
+    perf_disabled: dict[str, bool] = {}
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
+    md_prompt_drafts: dict[str, str] = {}
     selection_copy_history: list[str] = []
     notebook_open: bool = False
     notebook_left: int = -1

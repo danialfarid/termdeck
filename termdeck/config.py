@@ -196,8 +196,9 @@ class TermdeckConfig:
     CLAUDE_RESUME_FLAG = "--resume"
     CLAUDE_FORK_FLAG = "--fork-session"
     CLAUDE_NAME_FLAG = "--name"
-    CODEX_RESUME_TEMPLATE = "codex resume {agent_session_id}"
-    CODEX_FORK_TEMPLATE = "codex fork {agent_session_id}"
+    CODEX_NO_ALT_SCREEN_FLAG = "--no-alt-screen"
+    CODEX_RESUME_TEMPLATE = "codex --no-alt-screen resume {agent_session_id}"
+    CODEX_FORK_TEMPLATE = "codex --no-alt-screen fork {agent_session_id}"
     CODEX_SESSION_INDEX_FILE = Path.home() / ".codex" / "session_index.jsonl"
     DRAFT_MAX_CHARS = 20000
     TERMINAL_BATCH_MAX_ITEMS = 32

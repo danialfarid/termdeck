@@ -99,6 +99,7 @@
 <div id="keys-backdrop" class="hidden">
   <div id="keys-modal">
     <div class="modal-title">Keyboard shortcuts</div>
+    <div id="keys-search-row"><span class="codicon codicon-search"></span><input id="keys-search" type="search" placeholder="Search by action or keys…" autocomplete="off" spellcheck="false"></div>
     <div id="keys-list"></div>
     <div class="modal-actions">
       <button id="keys-reset">Reset to defaults</button>
@@ -212,7 +213,7 @@
       <span class="codicon codicon-collapse-all"></span>
     </button>
     <button id="reveal-session-btn" title="Select current terminal in terminal list" aria-label="Select current terminal in terminal list"><span class="codicon codicon-target"></span></button>
-    <button id="editor-wrap-toggle" title="Editor wrap: off" aria-label="Toggle editor wrap" aria-pressed="false"><span class="codicon codicon-word-wrap"></span></button>
+    <button id="editor-wrap-toggle" title="Editor no wrap: off" aria-label="Toggle editor no wrap" aria-pressed="false"><span class="codicon codicon-word-wrap"></span></button>
     <button id="attach-btn" title="Attach file/image → inserts its path (also paste or drag-drop onto the terminal)"><span class="codicon codicon-cloud-upload"></span></button>
     <button id="problems-toggle" title="Problems" aria-label="Problems"><span class="codicon codicon-warning"></span></button>
     <button id="conversation-outline-toggle" title="Conversation outline" aria-label="Conversation outline"><span class="codicon codicon-list-tree"></span></button>
@@ -382,6 +383,8 @@
 </div>
 <script src="/static/vendor/xterm.js"></script>
 <script src="/static/vendor/addon-fit.js"></script>
+<script src="/static/vendor/addon-webgl.js"></script>
+<script src="/static/vendor/addon-search.js"></script>
 <script src="/static/vendor/addon-serialize.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/monaco/vs/loader.js"></script>

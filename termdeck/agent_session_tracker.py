@@ -725,6 +725,7 @@ class AgentSessionTracker:
             if not parts:
                 return TermdeckConfig.CODEX_RESUME_TEMPLATE.format(agent_session_id=agent_session_id)
             cleaned = self._strip_codex_session_arguments(parts)
+            cleaned = self._ensure_codex_searchable_scrollback(cleaned)
             return f"{shlex.join(cleaned)} resume {agent_session_id}"
         return original_command
 
@@ -786,6 +787,15 @@ class AgentSessionTracker:
             cleaned.append(token)
         return cleaned
 
+    @staticmethod
+    def _ensure_codex_searchable_scrollback(parts: list[str]) -> list[str]:
+        if TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG in parts:
+            return parts
+        command_index = next((index for index, token in enumerate(parts) if Path(token).name == AgentKind.CODEX.value), None)
+        if command_index is None:
+            return parts
+        return [*parts[:command_index + 1], TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG, *parts[command_index + 1:]]
+
     def build_fork_command(self, kind: AgentKind, original_command: str, agent_session_id: str,
                            session_name: str = "") -> str:
         if kind is AgentKind.CLAUDE:
@@ -799,5 +809,9 @@ class AgentSessionTracker:
                 cleaned.extend((TermdeckConfig.CLAUDE_NAME_FLAG, " ".join(session_name.splitlines()).strip()))
             return shlex.join(cleaned)
         if kind is AgentKind.CODEX:
-            return TermdeckConfig.CODEX_FORK_TEMPLATE.format(agent_session_id=agent_session_id)
+            parts = self._command_parts(original_command)
+            cleaned = self._strip_codex_session_arguments(parts) if parts else [AgentKind.CODEX.value]
+            cleaned = self._ensure_codex_searchable_scrollback(cleaned)
+            cleaned.extend(("fork", agent_session_id))
+            return shlex.join(cleaned)
         return original_command

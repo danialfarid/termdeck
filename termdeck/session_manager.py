@@ -283,7 +283,7 @@ class TerminalSessionManager:
             }
             if selected_permission not in permission_flags:
                 raise ValueError(f"unknown codex permission: {permission}")
-            parts = ["codex", *permission_flags[selected_permission]]
+            parts = ["codex", TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG, *permission_flags[selected_permission]]
             if normalized_model_name:
                 model_id, reasoning_effort = self._codex_model_parts(normalized_model_name)
                 if reasoning_effort:
