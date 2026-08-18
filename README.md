@@ -91,6 +91,7 @@ parallel agents and coordinating work between them.
 | **Python** | 3.11 or newer |
 | **Required** | [`dtach`](https://github.com/crigler/dtach) — keeps terminals alive across restarts |
 | **Recommended** | [`ripgrep`](https://github.com/BurntSushi/ripgrep) — powers project search and replace |
+| **Optional** | A language server for IDE navigation, diagnostics, refactoring, code actions, and hover information |
 | **Optional** | [`claude`](https://claude.com/claude-code), [`codex`](https://github.com/openai/codex), and/or the `agy` Antigravity CLI |
 | **Browser** | Any current Chrome, Safari, Firefox, or Edge |
 
@@ -315,7 +316,9 @@ Press **⌥G** again, or hit **TERM**, to go back to the live terminal.
 The **Files** view (**⌘⇧D**) is a lazy VS Code–style tree rooted at the active project. It can float over the
 terminal, stay pinned, or open in its own browser tab. Selecting a file swaps the main area to Monaco — the
 actual VS Code editor component, vendored locally — with syntax highlighting, folding, find/replace, symbol
-navigation, definitions, usages, and a Problems panel.
+navigation, definitions, usages, and a Problems panel. Install a matching language server to add precise
+definitions and references, workspace symbols, rename refactoring, diagnostics, code actions, and hover types
+and documentation. See [Language servers](docs/language-servers.md) for supported commands and setup.
 
 - **File paths printed in any terminal are clickable.** They resolve against that terminal's directory, and
   `path:line` references jump straight to the requested line.

@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import time
@@ -23,6 +24,9 @@ from termdeck.file_history_service import FileHistoryService
 from termdeck.file_service import ProjectFileService
 from filedeck.git_service import FileDeckGitService
 from termdeck.history_index import HistorySearchIndex
+from termdeck.lsp_protocol import LanguageServerConnection, LanguageServerProtocolError, LanguageServerRequestError
+from termdeck.lsp_service import LanguageServerManager, LanguageServerRegistry, LanguageServerUnavailableError
+from termdeck.lsp_workspace_edit import LspWorkspaceEditService
 from termdeck.models import ApiFields, WsMessageFields
 from termdeck.platform_paths import PlatformPaths
 from termdeck.remote_access import RemoteAccessManager, RemoteAccessStatus
@@ -293,6 +297,21 @@ class NotebookTrashRequest(BaseModel):
     content: str
 
 
+class LspWorkspaceEditRequest(BaseModel):
+    root: str
+    edit: dict[str, object]
+
+
+class LspCommandOverrideRequest(BaseModel):
+    root: str = ""
+    language: str
+    command: str = ""
+
+
+class LspEnabledRequest(BaseModel):
+    enabled: bool
+
+
 class ProjectUiState(BaseModel):
     active_session_id: str = ""
     open_files: list[dict[str, str]] = []
@@ -383,6 +402,8 @@ class UiSettings(BaseModel):
     files_panel_width_initialized: bool = False
     file_tab_max_visible: int = 20
     file_tab_order: str = "opened"
+    lsp_enabled: bool = True
+    lsp_command_overrides: dict[str, dict[str, str]] = {}
 
 
 class TermdeckServer:
@@ -416,6 +437,9 @@ class TermdeckServer:
         if self.manager is not None:
             self.transcripts.add_file_change_listener(self.manager.notify_agent_transcript_changed)
         self.settings_store = UiSettingsStore(TermdeckConfig.SETTINGS_FILE, self.state_backup)
+        self.lsp_workspace_edits = LspWorkspaceEditService(self.files, self.file_history)
+        self.language_servers = LanguageServerManager(
+            self.files, self.lsp_workspace_edits, self._lsp_command_overrides, self._lsp_enabled)
         self.remote_access = RemoteAccessManager(
             relay_url=TermdeckConfig.REMOTE_SERVICE_URL, public_url=TermdeckConfig.REMOTE_PUBLIC_URL,
             local_url=f"http://127.0.0.1:{TermdeckConfig.PORT}",
@@ -456,6 +480,7 @@ class TermdeckServer:
             self.transcripts.stop()
             self.manager.stop_background_tasks()
             self.manager.detach_for_shutdown()
+            await self.language_servers.shutdown()
             self.state_backup.create_snapshot("shutdown", True)
             self.files.close()
 
@@ -561,10 +586,15 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_FILE_RENAME_ROUTE, response_model=None)(self._rename_file)
         app.post(TermdeckConfig.API_FILE_MOVE_ROUTE, response_model=None)(self._move_file)
         app.post(TermdeckConfig.API_FILE_DELETE_ROUTE, response_model=None)(self._delete_file)
+        app.get(TermdeckConfig.API_LSP_STATUS_ROUTE, response_model=None)(self._lsp_status)
+        app.put(TermdeckConfig.API_LSP_CONFIG_ROUTE, response_model=None)(self._put_lsp_config)
+        app.put(TermdeckConfig.API_LSP_ENABLED_ROUTE, response_model=None)(self._put_lsp_enabled)
+        app.post(TermdeckConfig.API_LSP_APPLY_WORKSPACE_EDIT_ROUTE, response_model=None)(self._apply_lsp_workspace_edit)
         app.get(TermdeckConfig.API_STATS_ROUTE, response_model=None)(self._resource_stats)
         app.websocket(TermdeckConfig.STATUS_WS_ROUTE)(self._ws_status)
         app.websocket(TermdeckConfig.FILE_TREE_WS_ROUTE)(self._ws_file_tree)
         app.websocket(TermdeckConfig.TRANSCRIPT_WS_ROUTE)(self._ws_transcript)
+        app.websocket(TermdeckConfig.LSP_WS_ROUTE)(self._ws_lsp)
         app.websocket(TermdeckConfig.WS_ROUTE)(self._ws_terminal)
         return app
 
@@ -687,6 +717,8 @@ class TermdeckServer:
     def _preserve_active_layout_entries(self, incoming_payload: dict[str, object]) -> dict[str, object]:
         current_settings = UiSettings(**self.settings_store.load())
         incoming_settings = UiSettings(**incoming_payload)
+        incoming_settings.lsp_enabled = current_settings.lsp_enabled
+        incoming_settings.lsp_command_overrides = current_settings.lsp_command_overrides
         active_sessions = self.manager.list_sessions(None)
         active_session_ids_by_project: dict[str, set[str]] = {}
         for session in active_sessions:
@@ -811,6 +843,60 @@ class TermdeckServer:
             socket = sockets.get(session_id)
             sockets = {session_id: socket} if socket else {}
         return await self.stats.sample(sockets)
+
+    def _lsp_enabled(self) -> bool:
+        return UiSettings(**self.settings_store.load()).lsp_enabled
+
+    def _lsp_command_overrides(self) -> dict[str, dict[str, str]]:
+        return UiSettings(**self.settings_store.load()).lsp_command_overrides
+
+    async def _lsp_status(self, root: str = "") -> dict[str, object]:
+        return self.language_servers.status(root)
+
+    async def _put_lsp_enabled(self, request: LspEnabledRequest) -> dict[str, object]:
+        settings = UiSettings(**self.settings_store.load())
+        settings.lsp_enabled = request.enabled
+        self.settings_store.save(settings.model_dump())
+        if not request.enabled:
+            await self.language_servers.shutdown()
+        return self.language_servers.status()
+
+    async def _put_lsp_config(self, request: LspCommandOverrideRequest) -> dict[str, object]:
+        spec = LanguageServerRegistry.spec_for_setting_key(request.language)
+        if spec is None:
+            raise HTTPException(status_code=400, detail=f"unsupported language server: {request.language}")
+        try:
+            root = str(self.files.resolve_confined(request.root, "")) if request.root.strip() else ""
+            if request.command.strip() and not shlex.split(request.command):
+                raise ValueError("language server command cannot be empty")
+        except (ValueError, FileNotFoundError, PermissionError, OSError) as config_error:
+            raise HTTPException(status_code=400, detail=str(config_error)) from config_error
+        settings = UiSettings(**self.settings_store.load())
+        scope = root or LanguageServerRegistry.DEFAULT_OVERRIDE_SCOPE
+        overrides = {key: dict(value) for key, value in settings.lsp_command_overrides.items()}
+        scoped = dict(overrides.get(scope, {}))
+        setting_key = LanguageServerRegistry.setting_key(spec)
+        if request.command.strip():
+            scoped[setting_key] = request.command.strip()
+        else:
+            scoped.pop(setting_key, None)
+        if scoped:
+            overrides[scope] = scoped
+        else:
+            overrides.pop(scope, None)
+        settings.lsp_command_overrides = overrides
+        self.settings_store.save(settings.model_dump())
+        await self.language_servers.reload(root)
+        return self.language_servers.status(root)
+
+    async def _apply_lsp_workspace_edit(self, request: LspWorkspaceEditRequest) -> dict[str, object]:
+        if not self._lsp_enabled():
+            raise HTTPException(status_code=409, detail="language servers are disabled in settings")
+        try:
+            changed = self.lsp_workspace_edits.apply(request.root, request.edit)
+            return {"changed": changed}
+        except (ValueError, FileNotFoundError, IsADirectoryError, PermissionError, OSError, UnicodeDecodeError) as edit_error:
+            raise HTTPException(status_code=400, detail=str(edit_error)) from edit_error
 
     async def _write_file(self, request: FileWriteRequest) -> dict[str, int]:
         try:
@@ -2175,6 +2261,101 @@ class TermdeckServer:
                     raise pump_error
         finally:
             self.manager.detach_client(session_id, queue)
+
+    async def _ws_lsp(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        send_lock = asyncio.Lock()
+        root = websocket.query_params.get("root", "")
+        path = websocket.query_params.get("path", "")
+        language = websocket.query_params.get("language", "")
+        uri = ""
+        connection: LanguageServerConnection | None = None
+        events: asyncio.Queue[dict[str, object]] | None = None
+        event_pump: asyncio.Task[None] | None = None
+        try:
+            open_message = json.loads(await websocket.receive_text())
+            if not isinstance(open_message, dict) or open_message.get("type") != "open" or not isinstance(open_message.get("text"), str):
+                await self._send_lsp_message(websocket, send_lock, {"type": "status", "available": False,
+                                                                    "error": "first language-server message must open a document"})
+                return
+            connection, uri = await self.language_servers.open_document(root, path, language, open_message["text"])
+            events = connection.subscribe()
+            await self._send_lsp_message(websocket, send_lock, {"type": "status", "available": True,
+                                                                "server": connection.server_name, "uri": uri,
+                                                                "capabilities": connection.capabilities})
+            event_pump = asyncio.create_task(self._pump_lsp_events(websocket, send_lock, events))
+            while True:
+                message = json.loads(await websocket.receive_text())
+                if not isinstance(message, dict):
+                    raise ValueError("language-server client message must be an object")
+                message_type = message.get("type")
+                if message_type == "change":
+                    text = message.get("text")
+                    if not isinstance(text, str):
+                        raise ValueError("language-server change has no text")
+                    await connection.open_document(uri, language, text)
+                    continue
+                if message_type == "save":
+                    text = message.get("text")
+                    if not isinstance(text, str):
+                        raise ValueError("language-server save has no text")
+                    await connection.save_document(uri, text)
+                    continue
+                if message_type != "request":
+                    raise ValueError(f"unsupported language-server client message: {message_type}")
+                request_id = message.get("requestId")
+                method = message.get("method")
+                params = message.get("params", {})
+                if not isinstance(request_id, int) or not isinstance(method, str) or not isinstance(params, dict):
+                    raise ValueError("invalid language-server request")
+                try:
+                    result = await connection.request(method, params)
+                    response = {"type": "response", "requestId": request_id, "result": result}
+                except LanguageServerRequestError as request_error:
+                    response = {"type": "response", "requestId": request_id, "error": request_error.error}
+                except LanguageServerProtocolError as protocol_error:
+                    response = {"type": "response", "requestId": request_id, "error": {"message": str(protocol_error)}}
+                await self._send_lsp_message(websocket, send_lock, response)
+        except LanguageServerUnavailableError as unavailable_error:
+            unavailable_status: dict[str, object] = {"type": "status", "available": False,
+                                                     "error": str(unavailable_error),
+                                                     "disabled": not self.language_servers.enabled()}
+            if self.language_servers.enabled():
+                installation_status = self.language_servers.installation_status(language, root)
+                if installation_status is not None:
+                    unavailable_status.update(installation_status)
+            await self._send_lsp_message(websocket, send_lock, unavailable_status)
+        except WebSocketDisconnect:
+            return
+        except (ValueError, TypeError, json.JSONDecodeError, FileNotFoundError, PermissionError, OSError,
+                LanguageServerProtocolError) as lsp_error:
+            try:
+                await self._send_lsp_message(websocket, send_lock, {"type": "status", "available": False,
+                                                                    "error": str(lsp_error)})
+            except (RuntimeError, WebSocketDisconnect):
+                pass
+        finally:
+            if event_pump is not None:
+                event_pump.cancel()
+                try:
+                    await event_pump
+                except (asyncio.CancelledError, RuntimeError, WebSocketDisconnect):
+                    pass
+            if connection is not None and events is not None:
+                connection.unsubscribe(events)
+            if connection is not None and uri:
+                await self.language_servers.close_document(connection, uri)
+
+    @staticmethod
+    async def _send_lsp_message(websocket: WebSocket, send_lock: asyncio.Lock, message: dict[str, object]) -> None:
+        async with send_lock:
+            await websocket.send_text(json.dumps(message))
+
+    @classmethod
+    async def _pump_lsp_events(cls, websocket: WebSocket, send_lock: asyncio.Lock,
+                               events: asyncio.Queue[dict[str, object]]) -> None:
+        while True:
+            await cls._send_lsp_message(websocket, send_lock, await events.get())
 
     async def _ws_status(self, websocket: WebSocket) -> None:
         await websocket.accept()

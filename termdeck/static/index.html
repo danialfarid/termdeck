@@ -123,6 +123,12 @@
     <div id="file-tabs" role="tablist" aria-label="Open files"></div>
     <button id="file-tabs-more" title="File tab settings" aria-label="File tab settings"><span class="codicon codicon-settings-gear"></span></button>
   </div>
+  <div id="lsp-install-banner" class="hidden" role="status">
+    <span class="codicon codicon-lightbulb"></span>
+    <span id="lsp-install-message"></span>
+    <button id="lsp-install-open-terminal" type="button">Open install terminal</button>
+    <button id="lsp-install-dismiss" type="button" title="Dismiss" aria-label="Dismiss language server installation"><span class="codicon codicon-close"></span></button>
+  </div>
   <div id="editor-area" class="hidden">
     <div id="file-editor-toolbar">
       <div id="file-breadcrumbs" aria-label="File breadcrumbs"></div>
@@ -217,6 +223,7 @@
     <button id="conversation-outline-toggle" title="Conversation outline" aria-label="Conversation outline"><span class="codicon codicon-list-tree"></span></button>
     <button id="problems-toggle" title="Problems" aria-label="Problems"><span class="codicon codicon-warning"></span></button>
     <span id="status-name"></span>
+    <span id="lsp-status" class="hidden"></span>
     <span id="terminal-age" class="hidden"></span>
     <span id="history-meta" class="hidden"></span>
     <span class="footer-spacer"></span>
@@ -378,6 +385,9 @@
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/monaco/vs/loader.js"></script>
 <script src="/filebrowser/static/file_browser_shared.js"></script>
+<script src="/static/lsp_transport.js"></script>
+<script src="/static/lsp_conversions.js"></script>
+<script src="/static/lsp_client.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

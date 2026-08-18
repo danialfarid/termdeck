@@ -126,6 +126,11 @@ class TermdeckConfig:
     API_FILE_RENAME_ROUTE = "/api/files/rename"
     API_FILE_MOVE_ROUTE = "/api/files/move"
     API_FILE_DELETE_ROUTE = "/api/files/delete"
+    API_LSP_STATUS_ROUTE = "/api/lsp/status"
+    API_LSP_CONFIG_ROUTE = "/api/lsp/config"
+    API_LSP_ENABLED_ROUTE = "/api/lsp/enabled"
+    API_LSP_APPLY_WORKSPACE_EDIT_ROUTE = "/api/lsp/apply-workspace-edit"
+    LSP_WS_ROUTE = "/ws/lsp"
     TRASH_DIR = PlatformPaths.user_trash_dir()
     API_STATS_ROUTE = "/api/stats"
     RG_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_RG_BIN, "rg")

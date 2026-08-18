@@ -103,6 +103,18 @@ services with a minimal `PATH`.
 
 `termdeck doctor` prints what each one resolved to.
 
+## Language servers
+
+Language-server commands are optional and start lazily when a matching file is opened. TermDeck checks the
+default executable names unless the corresponding complete command is supplied through
+`TERMDECK_LSP_PYTHON`, `TERMDECK_LSP_TYPESCRIPT`, `TERMDECK_LSP_GO`, `TERMDECK_LSP_RUST`,
+`TERMDECK_LSP_CLANGD`, `TERMDECK_LSP_JAVA`, `TERMDECK_LSP_RUBY`, `TERMDECK_LSP_PHP`,
+`TERMDECK_LSP_BASH`, `TERMDECK_LSP_YAML`, `TERMDECK_LSP_JSON`, `TERMDECK_LSP_HTML`, or
+`TERMDECK_LSP_CSS`. See [Language servers](language-servers.md) for the command and installation table.
+The Language servers section in the UI settings can disable LSP entirely, assign a complete command globally
+or for one project, and takes precedence over these environment defaults. TypeScript projects automatically
+select the native TypeScript 7 LSP or the TypeScript 6 legacy server from their project-local version.
+
 ---
 
 ## Examples

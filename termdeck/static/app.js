@@ -23,7 +23,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
   files_side_panel_last_tab: "project", file_search_history: [], files_panel_width_initialized: false,
-  file_tab_max_visible: 20, file_tab_order: "opened" };
+  file_tab_max_visible: 20, file_tab_order: "opened", lsp_enabled: true, lsp_command_overrides: {} };
 const MODEL_PERMISSIONS = {
   codex: [
     { value: "default", label: "Default (Codex config)" },
@@ -438,6 +438,7 @@ class TermdeckApp {
     this.initialLoadComplete = false;
     this.views = new Map();
     this.openFiles = new Map();
+    this.lspClient = null;
     this.openFilesPersistPromise = Promise.resolve();
     this.sidebarSelectedFileKeys = new Set();
     this.sidebarFileSelectionAnchorKey = null;
@@ -9627,6 +9628,19 @@ class TermdeckApp {
         results.push({ kind: "Symbols", title: symbol.name, detail: `${symbol.kind} · line ${symbol.line}`, icon: symbol.icon,
           run: () => this.revealEditorLine(symbol.line) });
       }
+      if (searchQuery && this.lspClient?.transport.available) {
+        try {
+          const workspaceSymbols = await this.lspClient.workspaceSymbols(searchQuery);
+          if (generation !== this.quickOpenGeneration) return;
+          for (const symbol of workspaceSymbols) {
+            results.push({ kind: "Workspace symbols", title: symbol.name,
+              detail: symbol.containerName || monaco.Uri.parse(symbol.location.uri).path,
+              icon: "symbol-method", run: () => void this.lspClient.openLocation(symbol.location) });
+          }
+        } catch (error) {
+          this.$("stat-text").textContent = error.message || "workspace symbol search failed";
+        }
+      }
     }
     this.paintQuickOpenResults(results);
     if (!commandOnly && !symbolOnly && searchQuery) {
@@ -11333,6 +11347,7 @@ class TermdeckApp {
     }
     if (this.historyOpen && previousId) this.rememberHistoryScrollPosition(previousId);
     this.saveActiveFileViewState();
+    this.lspClient?.deactivate();
     this.activeFileKey = null;
     this.stopHistoryRefresh();
     this.disconnectHistoryStream();
@@ -12100,6 +12115,10 @@ class TermdeckApp {
         this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
           this.refreshTerminal(view);
           view.replaying = false;
+          // Replay finished, so the cursor finally describes the real screen: take the geometry and the
+          // follow position from it once, rather than from every intermediate frame.
+          this.tallUpdateMaxScrollTop(view);
+          if (view.tallFollowing !== false) this.scrollTallContainerToCursor(view);
           this.schedulePendingAgentPaste(view);
           if (!view.reconnectReset && this.session(id)?.agent_kind === "claude") {
             this.scheduleClaudeInitialReplayRecovery(id, view);
@@ -13657,6 +13676,14 @@ class TermdeckApp {
   // the user has scrolled away to read history, and the ceiling has to grow with it, or scrolling back down
   // later would stop short of the actual new bottom.
   tallUpdateMaxScrollTop(view) {
+    // A replay is not a stream of finished screens. Reattaching replays the saved buffer and the agent
+    // repaints over it, so the cursor lands wherever each escape sequence leaves it -- and deriving the
+    // content bottom from that cursor makes the bottom, and the view chasing it, lurch. Measured on a
+    // real tab switch into a busy Codex session: the ceiling went 5386 -> 10804 -> 16831 -> 3769 -> 9901
+    // -> 1669 -> 20212 within about 350ms, eight visible positions, two of them backwards. None of those
+    // intermediate values described the screen the user was about to see; the replay's completion handler
+    // settles it once from the finished screen, which is the only value that means anything.
+    if (view.replaying) return;
     // Switching between the normal and alternate screens replaces the entire visible surface, so any
     // "the user scrolled away to read something" state from the old one is meaningless against the new
     // one -- without this reset, opening a pager after having scrolled up would inherit tallFollowing
@@ -13679,7 +13706,23 @@ class TermdeckApp {
     // draw below the input box (see that function's comment), so the boundary lands past them instead of
     // clipping them out of view.
     const bottomPx = (this.tallEffectiveBottomRow(view) + 1) * cellHeight;
-    view.tallMaxScrollTop = Math.max(0, bottomPx - view.container.clientHeight);
+    const next = Math.max(0, bottomPx - view.container.clientHeight);
+    const current = view.tallMaxScrollTop;
+    // Growing is applied at once; shrinking has to hold first, for the same reason the scrollable height
+    // does (see tallApplyGeometry). While following, the view is driven to this value, so a bottom that
+    // dips for a frame during an agent's repaint drags the view backwards -- the residual upward jump
+    // still visible on a tab switch after the replay guard above. Real shrinkage still lands, just after
+    // it has proved itself rather than on the first frame that suggests it.
+    if (current == null || next >= current) {
+      view.tallMaxScrollTop = next;
+      view.tallCeilingShrinkTarget = null;
+    } else {
+      if (view.tallCeilingShrinkTarget !== next) {
+        view.tallCeilingShrinkTarget = next;
+        view.tallCeilingShrinkSince = Date.now();
+      }
+      if (Date.now() - (view.tallCeilingShrinkSince || 0) >= TALL_SHRINK_SETTLE_MS) view.tallMaxScrollTop = next;
+    }
     this.tallApplyGeometry(view);
   }
 
@@ -14049,6 +14092,7 @@ class TermdeckApp {
     clearTimeout(entry.autosaveTimer);
     entry.autosaveTimer = 0;
     if (entry.model) {
+      if (this.lspClient?.model === entry.model) this.lspClient.deactivate();
       entry.model.dispose();
       entry.model = null;
     }
@@ -14216,6 +14260,8 @@ class TermdeckApp {
           scrollBeyondLastLine: false, fontSize: this.settings.code_font_size, lineNumbersMinChars: 4,
           renderLineHighlight: "all", folding: true, wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true,
         });
+        this.lspClient = new TermdeckLspClient(this);
+        this.lspClient.registerProviders();
         monaco.editor.onDidChangeMarkers(() => this.scheduleProblemsRefresh());
         this.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => this.saveActiveFile());
         this.editor.addAction({
@@ -14616,6 +14662,7 @@ class TermdeckApp {
   openSettingsPopover(anchor, items, showFontSizeEditor = false) {
     const pop = this.$("settings-popover");
     this.fontSizeEditorOpen = showFontSizeEditor;
+    pop.classList.remove("lsp-settings-expanded");
     pop.textContent = "";
     pop.onkeydown = (event) => {
       if (event.key !== "Escape") return;
@@ -14689,6 +14736,7 @@ class TermdeckApp {
     }
     if (!showFontSizeEditor) {
       pop.appendChild(this.buildFontSizeEditRow(anchor, items));
+      if (this.lspClient) pop.appendChild(this.lspClient.buildSettingsSection(anchor));
     }
     pop.appendChild(this.buildSettingsSubmenu("Maintenance", [
       { label: "Export settings", buttonText: "download", run: () => { pop.classList.add("hidden"); this.exportSettings(); } },
@@ -15739,6 +15787,7 @@ class TermdeckApp {
     }
     if (this.activeFileKey !== key) return;
     this.editor.setModel(entry.model);
+    void this.lspClient?.activate(entry, entry.model);
     if (line) {
       this.editor.revealLineInCenter(line);
       this.editor.setPosition({ lineNumber: line, column: 1 });
@@ -15762,6 +15811,7 @@ class TermdeckApp {
     }
     const activeId = this.activeId;
     this.saveActiveFileViewState();
+    this.lspClient?.deactivate();
     this.activeFileKey = null;
     this.applyMainLayout();
     this.renderList();
@@ -15889,6 +15939,7 @@ class TermdeckApp {
           void this.loadFileHistory();
         }
         if (this.enforceOpenFilesLimit()) this.persistOpenFiles();
+        this.lspClient?.didSave(entry, model, content);
         return true;
       } catch (error) {
         const message = error.message || "autosave failed";
@@ -15908,6 +15959,28 @@ class TermdeckApp {
   async saveActiveFile() {
     const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
     if (entry) await this.saveFileEntry(entry, true);
+  }
+
+  async saveOpenFilesForLsp(root) {
+    for (const entry of this.openFiles.values()) {
+      if (entry.root !== root) continue;
+      if (!entry.dirty && !entry.savePromise) continue;
+      if (!await this.saveFileEntry(entry, true)) return false;
+    }
+    return true;
+  }
+
+  async refreshFilesChangedByLsp(changedFiles, root) {
+    const changedPaths = new Set(changedFiles.map((file) => String(file.path || "")));
+    for (const entry of this.openFiles.values()) {
+      if (entry.root !== root || !changedPaths.has(entry.path)) continue;
+      entry.dirty = false;
+      await this.refreshFileModelFromDisk(entry);
+    }
+    this.renderList();
+    this.renderTopbar();
+    this.scheduleProblemsRefresh();
+    requestAnimationFrame(() => this.editor?.focus());
   }
 
   async closeFile(key, options = {}) {
@@ -15941,6 +16014,7 @@ class TermdeckApp {
         this.saveSettings();
         return;
       }
+      this.lspClient?.deactivate();
       this.activeFileKey = null;
       this.applyMainLayout();
       const view = this.views.get(this.activeId);
@@ -16369,6 +16443,40 @@ class TermdeckApp {
     this.activate(created.session_id, { reveal: true });
     const createdView = this.views.get(created.session_id);
     if (createdView && pendingAgentText) this.queuePendingAgentPaste(createdView, pendingAgentText);
+  }
+
+  async openLanguageServerInstallTerminal(details) {
+    const project = this.projectForCwd(details.root)?.name || this.projectSlug || "";
+    const languageName = this.lspClient?.languageDisplayName(details.language) || details.language;
+    const response = await fetch("/api/sessions", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "none", permission: "default", cwd: details.root, project,
+        title: `Install ${languageName} language server` }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      this.$("status-name").textContent = error.detail || "could not open install terminal";
+      return;
+    }
+    const session = await response.json();
+    await this.refresh();
+    this.activate(session.session_id, { reveal: true });
+    this.prefillTerminalWhenConnected(session.session_id, details.installHint, 0);
+  }
+
+  prefillTerminalWhenConnected(sessionId, command, attempt) {
+    const view = this.views.get(sessionId);
+    if (view?.ws?.readyState === WebSocket.OPEN) {
+      this.sendTrackedInput(view, this.terminalPastePayload(view, command));
+      view.term.focus();
+      this.$("status-name").textContent = "install command ready — press Enter to run";
+      return;
+    }
+    if (attempt >= 80) {
+      this.$("status-name").textContent = "install terminal did not become ready";
+      return;
+    }
+    setTimeout(() => this.prefillTerminalWhenConnected(sessionId, command, attempt + 1), 100);
   }
 
   createShortcutSection(title) {
@@ -17523,6 +17631,10 @@ class TermdeckApp {
     const position = this.editor.getPosition();
     const selectedWord = word || model?.getWordAtPosition(position)?.word || "";
     if (!selectedWord) return;
+    if (this.lspClient?.handlesModel(model)) {
+      void this.editor.getAction("editor.action.referenceSearch.trigger")?.run();
+      return;
+    }
     if (this.sideView !== "search") {
       this.sideView = "terminals";
       this.setSideView("search");
@@ -17571,6 +17683,9 @@ class TermdeckApp {
     const word = model?.getWordAtPosition(position);
     if (!entry || !model || !word) return;
     const key = this.activeFileKey;
+    const lspDefinition = await this.lspClient?.definitionAt(position);
+    if (this.activeFileKey !== key) return;
+    if (lspDefinition && await this.lspClient.openLocation(lspDefinition)) return;
     const definition = await this.findEditorSymbolDefinition(entry, word.word);
     if (this.activeFileKey !== key) return;
     if (!definition) {
