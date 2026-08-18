@@ -18,7 +18,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", attach_repaint: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
@@ -11297,6 +11297,7 @@ class TermdeckApp {
   }
 
   scheduleClaudeInitialReplayRecovery(id, view) {
+    if (!this.attachRepaintEnabled()) return;
     if (!view || view.closed || view.claudeInitialReplayRecoveryAttempted || view.claudeInitialReplayCheckTimer) return;
     clearTimeout(view.claudeInitialReplayCheckTimer);
     view.claudeInitialReplayCheckTimer = setTimeout(this.recoverClaudeInitialReplay.bind(this, id, view), 900);
@@ -12032,7 +12033,9 @@ class TermdeckApp {
     const hasPopulatedBuffer = view.everConnected && !view.closed && view.term?.buffer?.active?.baseY > 0;
     // The server's SIGWINCH repaint is what rebuilds an agent's screen on reattach, so a client that
     // already holds a populated buffer asks it to skip; an empty one always wants the repaint.
-    const screenRepaint = hasPopulatedBuffer ? 0 : 1;
+    // screen_repaint=0 tells the server to skip its SIGWINCH nudge, which is the repaint that actually
+    // makes an agent redraw. With the switch off we never ask for it.
+    const screenRepaint = this.attachRepaintEnabled() ? (hasPopulatedBuffer ? 0 : 1) : 0;
     const haveBuffer = hasPopulatedBuffer ? 1 : 0;
     // repaint_preserved_buffer is deliberately not sent: it only ever meant "this client restored a
     // client-side snapshot, so make the agent repaint over it", and that snapshot path is gone. The
@@ -12596,6 +12599,7 @@ class TermdeckApp {
   }
 
   scheduleTerminalResizeRepair(view) {
+    if (!this.attachRepaintEnabled()) return;
     if (!view || view.closed || !view.container.classList.contains("visible")) return;
     view.forceResizeAfterFit = true;
     this.scheduleTerminalLayoutFit();
@@ -13274,6 +13278,7 @@ class TermdeckApp {
   }
 
   scheduleTerminalTailRepair(view) {
+    if (!this.attachRepaintEnabled()) return;
     if (!view || view.closed || view.tailRepairTimer || view.tailRepairConfirmTimer ||
         !view.container.classList.contains("visible") || !this.isTerminalScrollV2() ||
         this.session(view.sessionId)?.agent_kind !== "codex" || !this.terminalPageCanResize()) return;
@@ -13339,6 +13344,7 @@ class TermdeckApp {
   // regresses again later, not a real option (it reintroduces the Claude wrap on its own). No UI for it;
   // set/clear it from the browser console.
   forceVisibleTerminalReflow(view) {
+    if (!this.attachRepaintEnabled()) return false;
     if (localStorage.getItem("td-debug-reflow-mode") === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     const kind = this.session(view.sessionId)?.agent_kind;
     if (kind !== "codex") return this.forceVisibleTerminalReflowViaClear(view);
@@ -13880,6 +13886,7 @@ class TermdeckApp {
   }
 
   repairTerminalViewport(view) {
+    if (!this.attachRepaintEnabled()) return;
     // Do this only after an initial replay has drained and only while output
     // following is active. The older generic viewport scroll listener caused
     // this same repair to race a user's first wheel gesture after tab switch.
@@ -14675,6 +14682,11 @@ class TermdeckApp {
     pop.appendChild(this.buildTerminalIconSettingsRow());
     pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));
+    // Experiment switch: see attachRepaintEnabled(). Off means a terminal is shown exactly as its buffer
+    // already holds it, with nothing forced to redraw on attach.
+    pop.appendChild(this.buildToggleRow("Repaint on attach (reload)",
+      () => (this.attachRepaintEnabled() ? "on" : "off"),
+      () => { this.settings.attach_repaint = !this.attachRepaintEnabled(); }));
     pop.appendChild(this.buildTallTerminalToggleRow());
     for (const item of items) {
       if (!showFontSizeEditor || (this.settings.inline_size_controls && item.type !== "color")) continue;
@@ -15001,6 +15013,19 @@ class TermdeckApp {
       view.tallInnerHeight = height;
       inner.style.height = `${height}px`;
     }
+  }
+
+  // Whether attaching to a terminal forces it to repaint itself. Every one of these mechanisms exists
+  // because a normal-height terminal cannot hold the agent's screen: reattaching replays scrollback that
+  // cannot reconstruct a synchronized-update frame, so the screen had to be forced to redraw. A terminal
+  // taller than the whole conversation keeps that screen in its buffer, so the redraw may now be
+  // redundant -- and it is not free: the repaint is what flickers on the first visit to a tab and can
+  // leave the view somewhere above the prompt once it settles.
+  //
+  // Kept as a switch rather than a deletion because the answer differs per agent and per state, and the
+  // failure it originally fixed (a blank pane) is worse than the flicker it causes.
+  attachRepaintEnabled() {
+    return this.settings.attach_repaint !== false;
   }
 
   tallRowPlan(cellHeight) {

@@ -376,6 +376,8 @@ class UiSettings(BaseModel):
     prompt_wrap_guard: bool = False
     history_mode: bool = False
     transcript_first_surface: str = "terminal"
+    # Declared explicitly or it is silently dropped when settings are saved.
+    attach_repaint: bool = True
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
     md_prompt_drafts: dict[str, str] = {}
