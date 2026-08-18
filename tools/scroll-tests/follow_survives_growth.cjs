@@ -32,8 +32,10 @@ const RUN = ({ scrollTop, ceiling, followTop, following }) => {
     tallMaxScrollTop: ceiling, tallFollowTop: followTop, tallFollowing: following,
     tallPinnedViewportY: null, tallAnchorRow: null,
     term: {
-      buffer: { active: { viewportY: 500, baseY: 500 } },
+      buffer: { active: { viewportY: 500, baseY: 500, cursorY: 0 } },
       scrollToBottom() {},
+      // Real terminals always have this; the anchor uses it to follow a line through scrollback trimming.
+      registerMarker() { return null; },
       _core: { _renderService: { dimensions: { css: { cell: { height: 21 } } } } },
     },
   };
