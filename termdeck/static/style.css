@@ -1388,3 +1388,14 @@ body:not(.vscode-mode) .terminal-type-icon { margin: 0; }
 .inline-size-control-step, .inline-size-control-reset { flex: none; width: 24px; height: 22px; padding: 0; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); border-radius: 5px; background: color-mix(in srgb, var(--panel2) 28%, transparent); color: var(--dim); cursor: pointer; font: 14px/20px Menlo, monospace; }
 .inline-size-control-step:hover, .inline-size-control-reset:hover { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--active-bg) 45%, transparent); }
 .inline-size-control-reset:hover { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--active-bg) 55%, transparent); }
+
+/* The resync control doubles as the warning that another window owns this terminal's size: a status-bar
+   message alone is overwritten by other activity within moments, so it could never be read. */
+#terminal-resync-btn.size-owned-elsewhere,
+#vscode-terminal-resync-btn.size-owned-elsewhere { color: var(--warn, #d8ae00); }
+#terminal-resync-btn.size-owned-elsewhere::after,
+#vscode-terminal-resync-btn.size-owned-elsewhere::after {
+  content: ""; position: absolute; top: 2px; right: 2px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--warn, #d8ae00);
+}
+#terminal-resync-btn { position: relative; }

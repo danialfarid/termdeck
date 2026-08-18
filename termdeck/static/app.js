@@ -3013,7 +3013,14 @@ class TermdeckApp {
     if (state.kind === "term") {
       navigationPath = encodeURIComponent(state.id);
       const session = this.session(state.id);
-      const sessionName = session ? this.titlePresentation(session).text.trim() : "";
+      // The stable name, not the presented one. A working agent animates a spinner glyph into its title,
+      // and titlePresentation only strips one leading glyph while codex writes two ("⠇ ⠙ name"), so the
+      // fragment changed on every spinner frame. That defeats the identical-state guard in pushNav and
+      // turns navigation into a history write several times a second. Chrome absorbs it; WebKit enforces
+      // a limit of 100 history writes per 10 seconds and THROWS, which aborts whatever called it --
+      // measured in Safari as the terminal not scrolling at all.
+      const sessionName = session
+        ? this.stripTitleStatusPrefixes(this.titlePresentation(session).text).trim() : "";
       if (sessionName) fragment = `#${encodeURIComponent(sessionName)}`;
     } else if (state.kind === "file" || state.kind === "open-file") {
       navigationPath = this.relativeNavigationPathForFileKey(state.key);
@@ -6476,7 +6483,12 @@ class TermdeckApp {
     for (const id of ["terminal-resync-btn", "vscode-terminal-resync-btn"]) {
       const resyncButton = this.$(id);
       if (resyncButton) {
-        resyncButton.title = `Resync terminal content (${resyncAction})`;
+        // Keep the size-ownership explanation if it is showing: this pass runs on every shortcut refresh
+        // and would otherwise replace the only text that says why the button is marked.
+        const owned = this.views.get(this.activeId)?.sizeOwnedElsewhere;
+        resyncButton.title = owned
+          ? `Another window is using this terminal at ${owned.cols} columns. Click to resize it to this window. (${resyncAction})`
+          : `Resync terminal content (${resyncAction})`;
         resyncButton.setAttribute("aria-label", resyncButton.title);
       }
     }
@@ -11367,6 +11379,7 @@ class TermdeckApp {
     this.updateRecentFilesWatch();
     this.historyOpen = this.selectedHistoryMode(selected);
     if (options.history !== false) this.pushNav({ kind: "term", id });
+    this.updateSizeOwnershipIndicator(this.views.get(id));
     if (this.getProjectState().active_session_id !== id) {
       this.patchProjectState({ active_session_id: id });
     }
@@ -12295,10 +12308,7 @@ class TermdeckApp {
       if (view.term.cols !== msg.cols || view.term.rows !== msg.rows) {
         try { view.term.resize(msg.cols, msg.rows); } catch (resizeError) { /* geometry not ready yet */ }
       }
-      if (this.activeId === id) {
-        this.$("status-name").textContent =
-          `terminal is ${msg.cols} cols in another window — click the resync button to use this one`;
-      }
+      this.updateSizeOwnershipIndicator(view);
       return;
     }
     if (msg.type === "exit") {
@@ -12673,6 +12683,7 @@ class TermdeckApp {
     // Explicit user action, so this is the one place allowed to take the size from another window.
     view.suppressResizeToServer = false;
     view.sizeOwnedElsewhere = null;
+    this.updateSizeOwnershipIndicator(view);
     if (view.ws && view.ws.readyState === WebSocket.OPEN && view.term.cols >= 2) {
       view.ws.send(JSON.stringify({ type: "resize", cols: view.term.cols, rows: view.term.rows, force: true }));
     }
@@ -15105,6 +15116,27 @@ class TermdeckApp {
       if (buffer.getLine(row)?.translateToString(true).trim()) return;
     }
     view.ws.send(JSON.stringify({ type: "repaint" }));
+  }
+
+  // A status-bar line is not enough on its own: the status text is rewritten constantly by other
+  // activity, so the warning was gone before it could be read -- which is why opening a second window at
+  // a different width appeared to warn about nothing. Marking the resync control keeps it visible for as
+  // long as the condition lasts, and points at the thing that resolves it.
+  updateSizeOwnershipIndicator(view) {
+    const owned = view && !view.closed ? view.sizeOwnedElsewhere : null;
+    const active = !!owned && this.activeId === view.sessionId;
+    for (const buttonId of ["terminal-resync-btn", "vscode-terminal-resync-btn"]) {
+      const button = this.$(buttonId);
+      if (!button) continue;
+      button.classList.toggle("size-owned-elsewhere", active);
+      if (active) {
+        button.title = `Another window is using this terminal at ${owned.cols} columns. Click to resize it to this window.`;
+        button.setAttribute("aria-label", button.title);
+      }
+    }
+    if (active) {
+      this.$("status-name").textContent = `${owned.cols} cols — another window owns this terminal's size`;
+    }
   }
 
   attachRepaintEnabled() {
