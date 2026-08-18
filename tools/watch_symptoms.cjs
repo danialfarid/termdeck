@@ -109,6 +109,45 @@ const RECORDER = ({ ring, before, after }) => {
     return null;
   };
 
+  // Wheel accounting. Sampling at 10Hz is far too coarse to catch a gesture running fast: what matters is
+  // how far the content travelled against how far the wheel actually pushed it, summed over one gesture.
+  // Listening only -- passive, and it records rather than acting, so it cannot change what it measures.
+  const rowNow = () => {
+    const app = window.__td;
+    const view = app && app.activeId ? app.views.get(app.activeId) : null;
+    if (!view || !view.container || !view.term) return null;
+    const buffer = view.term.buffer.active;
+    const cell = view.term._core?._renderService?.dimensions?.css?.cell?.height || 21;
+    return { row: buffer.viewportY + view.container.scrollTop / cell, cell };
+  };
+  let gesture = null;
+  window.addEventListener('wheel', (event) => {
+    const at = rowNow();
+    if (!at) return;
+    if (!gesture) gesture = { startRow: at.row, cell: at.cell, delta: 0, id: window.__td.activeId };
+    gesture.delta += event.deltaY;
+    gesture.last = Date.now();
+  }, { capture: true, passive: true });
+  setInterval(() => {
+    if (!gesture || Date.now() - gesture.last < 350) return;
+    const finished = gesture;
+    gesture = null;
+    const at = rowNow();
+    if (!at || window.__td.activeId !== finished.id) return;
+    const travelled = at.row - finished.startRow;
+    const pushed = finished.delta / finished.cell;
+    // Two rows of slack: a clamp at either end legitimately absorbs travel, and so does a row of rounding.
+    if (Math.abs(travelled - pushed) > 2 && Math.abs(pushed) > 2) {
+      state.events.push({
+        seq: state.seq++, kind: 'overtravel', t: Date.now(),
+        detail: `wheel pushed ${pushed.toFixed(1)} rows, content moved ${travelled.toFixed(1)} ` +
+                `(${(travelled - pushed).toFixed(1)} too ${travelled > pushed ? 'far' : 'little'})`,
+        window: state.samples.slice(-before),
+      });
+      if (state.events.length > 200) state.events.shift();
+    }
+  }, 100);
+
   setInterval(() => {
     const s = sample();
     if (!s) return;
