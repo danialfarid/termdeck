@@ -13626,6 +13626,7 @@ class TermdeckApp {
     if (Number(buffer.viewportY || 0) < Number(buffer.baseY || 0)) view.term.scrollToBottom();
     view.tallPinnedViewportY = null;
     view.tallAnchorRow = null;
+    this.tallReleaseAnchorMarker(view);
     // Move down to the bottom when behind it, but do not drag the view back up out of a small overshoot
     // (see TALL_OVERSHOOT_DEADZONE_PX) -- that correction is itself the visible snap.
     const target = view.tallMaxScrollTop;
@@ -13651,7 +13652,17 @@ class TermdeckApp {
     view.tallPinnedViewportY = null;
     view.tallFollowTop = null;
     view.tallFollowing = true;
+    this.tallReleaseAnchorMarker(view);
     this.tallSetScrollTop(view, 0);
+  }
+
+  // Markers live in the terminal's buffer and are updated on every trim, so a stale one is both a leak
+  // and a wrong answer. Released everywhere the anchor it belongs to is dropped.
+  tallReleaseAnchorMarker(view) {
+    if (!view || !view.tallAnchorMarker) return;
+    try { view.tallAnchorMarker.dispose(); } catch { /* already gone with its buffer */ }
+    view.tallAnchorMarker = null;
+    view.tallAnchorGap = null;
   }
 
   // Every scroll this code performs goes through here so the "scroll" listener can tell our own moves
@@ -13710,9 +13721,22 @@ class TermdeckApp {
     if (!view || view.closed) return;
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
     if (!cellHeight) { view.tallAnchorRow = null; view.tallPinnedViewportY = null; return; }
-    const viewportY = Number(view.term.buffer.active.viewportY || 0);
-    view.tallAnchorRow = viewportY + Math.round(view.container.scrollTop / cellHeight);
+    const buffer = view.term.buffer.active;
+    const viewportY = Number(buffer.viewportY || 0);
+    const anchorRow = viewportY + Math.round(view.container.scrollTop / cellHeight);
+    view.tallAnchorRow = anchorRow;
     view.tallPinnedViewportY = viewportY;
+    // A row index only means something until the scrollback fills. From then on every new line trims one
+    // off the start and renumbers the entire buffer, so an index quietly begins pointing at newer and
+    // newer content -- reproduced with a reader parked three pages up, scrollTop never moving, and the
+    // line under them travelling from "history 3793" all the way to "chunk 394". It never showed up with
+    // line-at-a-time output because that takes far longer to reach the cap, which is exactly why it read
+    // as "only when it prints big chunks". A marker is xterm's own handle on a LINE rather than an index:
+    // it is carried along by trimming, and disposes itself if the line is finally dropped.
+    this.tallReleaseAnchorMarker(view);
+    const fromCursor = anchorRow - (Number(buffer.baseY || 0) + Number(buffer.cursorY || 0));
+    view.tallAnchorMarker = view.term.registerMarker(fromCursor) || null;
+    view.tallAnchorGap = anchorRow - viewportY;
   }
 
   // Holds the anchored line by keeping xterm's viewport where it was, rather than letting it slide and
@@ -13730,19 +13754,31 @@ class TermdeckApp {
   // so there is nothing to repaint at all. The steady state costs one integer comparison per write.
   tallHoldAnchorRow(view) {
     if (!view || view.closed || view.tallPinnedViewportY == null) return;
+    const marker = view.tallAnchorMarker;
+    if (marker && marker.isDisposed) {
+      // The anchored line has finally fallen out of the scrollback: there is no longer a line to hold, so
+      // adopt wherever the view is now rather than chasing content that no longer exists.
+      this.tallCaptureAnchorRow(view);
+      return;
+    }
+    // Where the viewport has to sit for the anchored LINE to stay on the same screen row. Trimming moves
+    // the marker, so this target moves with it; without a marker (registerMarker can decline) it falls
+    // back to the fixed index, which is right up until the buffer fills.
+    const desired = marker && view.tallAnchorGap != null
+      ? Math.max(0, marker.line - view.tallAnchorGap)
+      : view.tallPinnedViewportY;
     const current = Number(view.term.buffer.active.viewportY || 0);
-    if (current === view.tallPinnedViewportY) return;
-    view.term.scrollLines(view.tallPinnedViewportY - current);
+    if (current === desired) { view.tallPinnedViewportY = desired; return; }
+    view.term.scrollLines(desired - current);
     const settled = Number(view.term.buffer.active.viewportY || 0);
-    if (settled === view.tallPinnedViewportY) return;
-    // xterm could not go back that far -- the anchored line has aged out of the scrollback entirely.
-    // Absorb whatever it could not give us with the container and re-pin, so we stop asking for a row
-    // that no longer exists.
+    view.tallPinnedViewportY = settled;
+    if (settled === desired) return;
+    // xterm could not go back that far. Absorb whatever it could not give us with the container, so the
+    // line still lands where the reader left it.
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
     if (cellHeight) {
-      this.tallSetScrollTop(view, view.container.scrollTop - (settled - view.tallPinnedViewportY) * cellHeight);
+      this.tallSetScrollTop(view, view.container.scrollTop - (settled - desired) * cellHeight);
     }
-    view.tallPinnedViewportY = settled;
     view.tallAnchorRow = settled + Math.round(view.container.scrollTop / (cellHeight || 21));
   }
 
