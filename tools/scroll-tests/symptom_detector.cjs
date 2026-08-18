@@ -59,6 +59,18 @@ const s = (over) => ({ ...base, ...over });
     return detect(s({ t: 1100, ...stuck }), s({ t: 2800, ...stuck, gesture: true }));
   });
 
+  // Self-park: following one moment, not the next, with nobody touching it.
+  await check('parked itself, no gesture', 'selfpark', async () => {
+    await reset();
+    return detect(s({ t: 1000, following: true }), s({ t: 1100, following: false, top: 17798, ceiling: 17970 }));
+  });
+
+  // The same transition right after a gesture is the user scrolling away, which is the point of it.
+  await check('parked right after a gesture', null, async () => {
+    await reset();
+    return detect(s({ t: 1000, following: true, gesture: true }), s({ t: 1100, following: false, top: 12000 }));
+  });
+
   // Drift: parked, hands off, and the line under the reader is no longer the same line.
   await check('parked and the line changed', 'drift', async () => {
     await reset();

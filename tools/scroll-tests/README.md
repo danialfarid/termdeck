@@ -30,6 +30,7 @@ Run a TermDeck instance on 8536 with a throwaway data dir, then run any file wit
 | `history_write_rate.cjs` | no-op history writes stay at zero (WebKit throws past 100 per 10s) |
 | `nav_still_works.cjs` | that dedupe did not cost real navigation: distinct URLs, working Back |
 | `settings_popover_opens.cjs` | the settings popover renders its rows |
+| `follow_survives_growth.cjs` | a still view is not parked just because the ceiling grew under it |
 | `symptom_detector.cjs` | the live fault recorder can fire, and does not fire on look-alike states |
 
 Two faults only ever appear in real use -- a view that cannot reach its own bottom, and a parked view

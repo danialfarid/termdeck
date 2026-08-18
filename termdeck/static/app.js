@@ -13630,6 +13630,9 @@ class TermdeckApp {
     // (see TALL_OVERSHOOT_DEADZONE_PX) -- that correction is itself the visible snap.
     const target = view.tallMaxScrollTop;
     const top = view.container.scrollTop;
+    // Where a following view belongs as of this placement. The settle handler needs it kept, because the
+    // ceiling keeps moving afterwards -- see tallApplySettledScroll.
+    view.tallFollowTop = target;
     if (top < target || top > target + TALL_OVERSHOOT_DEADZONE_PX) this.tallSetScrollTop(view, target);
   }
 
@@ -13646,6 +13649,7 @@ class TermdeckApp {
     view.tallMaxScrollTop = null;
     view.tallAnchorRow = null;
     view.tallPinnedViewportY = null;
+    view.tallFollowTop = null;
     view.tallFollowing = true;
     this.tallSetScrollTop(view, 0);
   }
@@ -13671,8 +13675,21 @@ class TermdeckApp {
   // newest lines unreachable with the container already sitting at its ceiling.
   tallApplySettledScroll(view) {
     if (!view || view.closed) return;
-    const atBottom = view.tallMaxScrollTop == null ||
-      view.container.scrollTop >= view.tallMaxScrollTop - TALL_BOTTOM_TOLERANCE_PX;
+    // Two ways to count as at the bottom, and the second is not optional: at the ceiling as it stands, OR
+    // still exactly where the last follow placed the view, with only the ceiling having moved since. A
+    // working agent grows the ceiling every few frames, so a view nobody has touched falls "behind" it
+    // through no action of the user's -- captured live on a tab switch into a streaming session at 172px
+    // (8 rows) short, which parked the view and left it stuck behind the output until something else
+    // happened to set following again (typing does, which is why typing appeared to fix it). The grace
+    // applies only while the view still believes it is following: a real scroll-up clears that on the spot
+    // in the wheel handler, and a scrollbar drag lands nowhere near the last follow position, so neither
+    // can be mistaken for this.
+    const ceiling = view.tallMaxScrollTop;
+    const scrollTop = view.container.scrollTop;
+    const atBottom = ceiling == null ||
+      scrollTop >= ceiling - TALL_BOTTOM_TOLERANCE_PX ||
+      (view.tallFollowing !== false && view.tallFollowTop != null &&
+        scrollTop >= view.tallFollowTop - TALL_BOTTOM_TOLERANCE_PX);
     view.tallFollowing = atBottom;
     // Reaching the bottom has to undo the parked state completely, xterm's viewport included: while
     // parked it sits deliberately short of baseY, and a stale pin there is precisely what made the last

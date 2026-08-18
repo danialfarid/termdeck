@@ -95,6 +95,13 @@ const RECORDER = ({ ring, before, after }) => {
       }
     } else { state.stuckSince = 0; state.stuckFlagged = false; }
 
+    // The app parked a view the user never touched. This is the signature of the tab-switch fault: the
+    // ceiling grows under a still view, the settle handler reads the gap as a scroll-away, and the view
+    // stops following output it was following a moment ago.
+    if (prev.following !== false && s.following === false && !prev.gesture) {
+      return { kind: 'selfpark', detail: `stopped following with no gesture, ${Math.round(s.ceiling - s.top)}px short of the ceiling` };
+    }
+
     // Parked, hands off, and the line the reader was looking at is no longer there.
     if (s.following === false && prev.following === false && s.topRow && prev.topRow && s.topRow !== prev.topRow) {
       return { kind: 'drift', detail: `line under the reader changed: "${prev.topRow}" -> "${s.topRow}"` };
