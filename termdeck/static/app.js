@@ -14687,7 +14687,6 @@ class TermdeckApp {
     pop.appendChild(this.buildToggleRow("Repaint on attach (reload)",
       () => (this.attachRepaintEnabled() ? "on" : "off"),
       () => { this.settings.attach_repaint = !this.attachRepaintEnabled(); }));
-    pop.appendChild(this.buildTallTerminalToggleRow());
     for (const item of items) {
       if (!showFontSizeEditor || (this.settings.inline_size_controls && item.type !== "color")) continue;
       const row = document.createElement("div");
