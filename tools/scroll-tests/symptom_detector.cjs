@@ -19,7 +19,7 @@ const s = (over) => ({ ...base, ...over });
 (async () => {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
-  await page.evaluate(RECORDER, { ring: 400 });
+  await page.evaluate(RECORDER, { ring: 400, before: 20, after: 6 });
 
   const detect = (prev, next) => page.evaluate(([p, n]) => window.__tdWatch.detect(p, n), [prev, next]);
   const reset = () => page.evaluate(() => { window.__tdWatch.stuckSince = 0; window.__tdWatch.stuckFlagged = false; });

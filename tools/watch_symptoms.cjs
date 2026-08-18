@@ -31,7 +31,7 @@ const BEFORE = 20, AFTER = 6;
 
 // Runs in the page. Bounded work only: the last-content scan covers the tail of the buffer rather than
 // all of it, so the cost does not grow with scrollback.
-const RECORDER = ({ ring }) => {
+const RECORDER = ({ ring, before, after }) => {
   if (window.__tdWatch) return 'already installed';
   const state = { samples: [], events: [], seq: 0 };
   window.__tdWatch = state;
@@ -109,7 +109,14 @@ const RECORDER = ({ ring }) => {
     state.samples.push(s);
     if (state.samples.length > ring) state.samples.shift();
     const found = state.detect(prev, s);
-    if (found) state.events.push({ seq: state.seq++, ...found, at: state.samples.length - 1, t: s.t });
+    if (!found) return;
+    // The window is copied out now, not referenced by index: the ring is full within 40s and shifts on
+    // every sample, so an index recorded here would point somewhere else by the time it is read. What
+    // happened just after matters as much as what led up to it, so that half is filled in a beat later.
+    const event = { seq: state.seq++, ...found, t: s.t, window: state.samples.slice(-before) };
+    state.events.push(event);
+    if (state.events.length > 200) state.events.shift();
+    setTimeout(() => { event.window = event.window.concat(state.samples.slice(-after)); }, after * 100);
   }, 100);
   return 'installed';
 };
@@ -127,7 +134,7 @@ if (require.main !== module) return;
 
   let seen = 0;
   const install = async () => {
-    const status = await page.evaluate(RECORDER, { ring: RING }).catch(() => 'page busy');
+    const status = await page.evaluate(RECORDER, { ring: RING, before: BEFORE, after: AFTER }).catch(() => 'page busy');
     if (status === 'installed') { seen = 0; console.log(`${new Date().toLocaleTimeString()}  recorder installed`); }
   };
   await install();
@@ -137,10 +144,11 @@ if (require.main !== module) return;
     await new Promise((r) => setTimeout(r, 1000));
     const live = await page.evaluate(() => !!window.__tdWatch).catch(() => false);
     if (!live) { await install(); continue; }
-    const fresh = await page.evaluate((from) => {
-      const w = window.__tdWatch;
-      return w.events.filter((e) => e.seq >= from).map((e) => ({ ...e, window: w.samples.slice(Math.max(0, e.at - 20), e.at + 7) }));
-    }, seen).catch(() => []);
+    // Anything too fresh to have its trailing half yet is left for the next pass, complete.
+    const fresh = await page.evaluate(({ from, settle }) => {
+      const now = Date.now();
+      return window.__tdWatch.events.filter((e) => e.seq >= from && now - e.t > settle);
+    }, { from: seen, settle: AFTER * 100 + 200 }).catch(() => []);
     for (const event of fresh) {
       seen = event.seq + 1;
       console.log(`\n${new Date(event.t).toLocaleTimeString()}  ${event.kind.toUpperCase()}  ${event.detail}`);
