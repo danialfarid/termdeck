@@ -119,17 +119,13 @@
 </div>
 <div id="sidebar-resizer"></div>
 <div id="main">
+  <div id="file-tabs-bar" class="hidden">
+    <div id="file-tabs" role="tablist" aria-label="Open files"></div>
+    <button id="file-tabs-more" title="File tab settings" aria-label="File tab settings"><span class="codicon codicon-settings-gear"></span></button>
+  </div>
   <div id="editor-area" class="hidden">
-    <div id="file-tabs-bar">
-      <div id="file-tabs" role="tablist" aria-label="Open files"></div>
-      <button id="file-tabs-more" title="File actions" aria-label="File actions"><span class="codicon codicon-ellipsis"></span></button>
-    </div>
     <div id="file-editor-toolbar">
       <div id="file-breadcrumbs" aria-label="File breadcrumbs"></div>
-      <div id="file-editor-actions">
-        <button id="file-outline-toggle" title="Outline" aria-label="Outline"><span class="codicon codicon-symbol-class"></span></button>
-        <button id="file-split-toggle" title="Split editor" aria-label="Split editor"><span class="codicon codicon-split-horizontal"></span></button>
-      </div>
     </div>
     <div id="file-editor-workspace">
       <div id="monaco-host"></div>
@@ -213,10 +209,13 @@
       <span class="codicon codicon-collapse-all"></span>
     </button>
     <button id="reveal-session-btn" title="Select current terminal in terminal list" aria-label="Select current terminal in terminal list"><span class="codicon codicon-target"></span></button>
+    <button id="file-history-toggle" class="hidden" title="File history" aria-label="File history" aria-pressed="false"><span class="codicon codicon-history"></span></button>
     <button id="editor-wrap-toggle" title="Editor no wrap: off" aria-label="Toggle editor no wrap" aria-pressed="false"><span class="codicon codicon-word-wrap"></span></button>
+    <button id="file-split-toggle" class="hidden" title="Compare / split editor" aria-label="Compare / split editor"><span class="codicon codicon-split-horizontal"></span></button>
+    <button id="notebook-toggle" title="Quick notebook (&#8997;N)" aria-label="Quick notebook"><span class="codicon codicon-notebook"></span></button>
     <button id="attach-btn" title="Attach file/image → inserts its path (also paste or drag-drop onto the terminal)"><span class="codicon codicon-cloud-upload"></span></button>
-    <button id="problems-toggle" title="Problems" aria-label="Problems"><span class="codicon codicon-warning"></span></button>
     <button id="conversation-outline-toggle" title="Conversation outline" aria-label="Conversation outline"><span class="codicon codicon-list-tree"></span></button>
+    <button id="problems-toggle" title="Problems" aria-label="Problems"><span class="codicon codicon-warning"></span></button>
     <span id="status-name"></span>
     <span id="terminal-age" class="hidden"></span>
     <span id="history-meta" class="hidden"></span>
@@ -226,15 +225,6 @@
     <button id="kill-stale-terminals-btn" title="Kill terminals older than 24 hours; keep tabs for reattach" aria-label="Kill terminals older than 24 hours; keep tabs for reattach"><span class="codicon codicon-trash"></span></button>
   </div>
 </div>
-<button id="file-view-close" class="hidden" title="Return to terminal (Esc)" aria-label="Return to terminal">
-  <span class="codicon codicon-close"></span>
-</button>
-<button id="file-history-toggle" class="hidden" title="File history" aria-label="File history" aria-pressed="false">
-  <span class="codicon codicon-history"></span>
-</button>
-<button id="notebook-toggle" title="Quick notebook (&#8997;N)" aria-label="Quick notebook">
-  <span class="codicon codicon-notebook"></span>
-</button>
 <div id="notebook-panel" class="hidden">
   <div id="notebook-resizer" role="separator" aria-orientation="vertical" aria-label="Resize notebook"></div>
   <div id="notebook-head">
@@ -385,7 +375,6 @@
 <script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/vendor/addon-webgl.js"></script>
 <script src="/static/vendor/addon-search.js"></script>
-<script src="/static/vendor/addon-serialize.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/monaco/vs/loader.js"></script>
 <script src="/filebrowser/static/file_browser_shared.js"></script>

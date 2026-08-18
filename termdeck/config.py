@@ -42,6 +42,7 @@ class TermdeckConfig:
     PROJECT_PAGE_ROUTE = "/p/{project_name}"
     PROJECT_NAVIGATION_PAGE_ROUTE = "/p/{project_name}/{navigation_path:path}"
     FILEDECK_PAGE_ROUTE = "/f/{project_name}"
+    FILEDECK_NAVIGATION_PAGE_ROUTE = "/f/{project_name}/{navigation_path:path}"
     STATIC_DIR = Path(__file__).resolve().parent / "static"
     FILEDECK_STATIC_DIR = Path(__file__).resolve().parent.parent / "filedeck" / "static"
     INDEX_FILE = "index.html"
@@ -74,6 +75,16 @@ class TermdeckConfig:
     API_TERMINAL_PROCESSES_ROUTE = "/api/terminals/processes"
     API_RECLAIM_ORPHAN_TERMINALS_ROUTE = "/api/terminals/reclaim-orphans"
     API_TERMINAL_LAYOUT_ROUTE = "/api/terminal-layout"
+    API_TERMINAL_GROUPS_ROUTE = "/api/terminal-groups"
+    API_TERMINAL_GROUP_ROUTE = "/api/terminal-groups/{group_id}"
+    API_TERMINAL_GROUP_MERGE_ROUTE = "/api/terminal-groups/{group_id}/merge"
+    API_SESSION_GROUP_ASSIGNMENTS_ROUTE = "/api/session-group-assignments"
+    API_TERMINAL_LAYOUT_MOVE_ROUTE = "/api/terminal-layout/move"
+    API_SESSION_ORDER_MOVE_ROUTE = "/api/session-order/move"
+    API_SESSION_UNREAD_ROUTE = "/api/session-unread"
+    API_RECENTLY_OPENED_TERMINAL_ROUTE = "/api/recently-opened-terminals/{session_id}"
+    API_SESSION_VIEW_MODE_ROUTE = "/api/session-view-modes/{session_id}"
+    API_PROJECT_STATE_FIELD_ROUTE = "/api/project-state/{field_name}"
     API_TERMINAL_SEARCH_ROUTE = "/api/terminal-search"
     # Claude Code hook callback. Claude posts its own hook payload here (see docs/configuration.md);
     # `state=attention` marks the tab as waiting on the user, `state=clear` releases it.
@@ -82,6 +93,8 @@ class TermdeckConfig:
     API_HISTORY_SEARCH_ROUTE = "/api/history-search"
     API_HISTORY_CONTEXT_ROUTE = "/api/history-context"
     API_SETTINGS_ROUTE = "/api/settings"
+    API_SETTING_ROUTE = "/api/settings/{setting_name}"
+    API_SETTING_ENTRY_ROUTE = "/api/settings/{setting_name}/{entry_key}"
     API_REMOTE_STATUS_ROUTE = "/api/remote/status"
     API_REMOTE_PAIR_ROUTE = "/api/remote/pair"
     API_REMOTE_DISCONNECT_ROUTE = "/api/remote/disconnect"
@@ -92,6 +105,7 @@ class TermdeckConfig:
     API_FILE_LIST_ROUTE = "/api/files/list"
     API_FILE_RECENT_ROUTE = "/api/files/recent"
     API_FILE_READ_ROUTE = "/api/files/read"
+    API_FILE_EXISTS_ROUTE = "/api/files/exists"
     API_FILE_SEARCH_ROUTE = "/api/files/search"
     API_FILE_FIND_ROUTE = "/api/files/find"
     API_FILE_WRITE_ROUTE = "/api/files/write"
@@ -165,7 +179,11 @@ class TermdeckConfig:
     SESSION_CWD_ENV_KEY = "TERMDECK_CWD"
     SCRUBBED_ENV_PREFIX = "CLAUDE"
     INITIAL_COLS = 120
-    INITIAL_ROWS = 32
+    # Tall-terminal-probe worktree only: real TermDeck uses 32. Every new claude/codex/zsh session in
+    # THIS worktree spawns at this height from the very first byte (see the matching FitAddon override
+    # near the top of app.js), so there is no window where the pty is briefly the normal fitted height
+    # before something resizes it -- the CLI never sees anything but tall.
+    INITIAL_ROWS = 1000
     SCROLLBACK_BYTES = 12_000_000
     SYNC_UPDATE_START = b"\x1b[?2026h"
     SYNC_UPDATE_END = b"\x1b[?2026l"

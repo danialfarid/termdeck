@@ -7,24 +7,6 @@ const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
 // so one surviving glyph per generation compounds into names like "✳ ✳ ◐ ✳ ✳ name fork 1 1 1". Display
 // keeps using TITLE_STATUS_RE so a rendered name still matches the title the session is stored under.
 const TITLE_STATUS_PREFIX_RE = /^(?:[⠀-⣿○-◗⏳⚡✳]|\.\.\.|…)\s*/;
-// Per-write work and xterm addons that can be switched off individually from Settings to bisect a CPU
-// problem. `reload` marks entries that only take effect on a fresh terminal, since they are decided when
-// the xterm instance is constructed.
-const PERF_TOGGLES = [
-  { key: "attention_detect", label: "Attention text scan" },
-  { key: "snapshot_save", label: "Claude snapshot save" },
-  { key: "history_refresh", label: "History model refresh" },
-  { key: "status_row_refresh", label: "Claude status row refresh" },
-  { key: "tail_repair", label: "Terminal tail repair" },
-  { key: "viewport_restore", label: "Viewport restore" },
-  { key: "sidebar_motion", label: "Sidebar status motion" },
-  { key: "stats_poll", label: "Stats polling" },
-  { key: "terminal_age_refresh", label: "Terminal age refresh" },
-  { key: "cursor_blink", label: "Cursor blink", reload: true },
-  { key: "webgl_renderer", label: "WebGL renderer", reload: true },
-  { key: "search_addon", label: "Search addon", reload: true },
-  { key: "serialize_addon", label: "Serialize addon", reload: true },
-];
 const RECONNECT_MS = 1500;
 const TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS = 1800;
 const DEFAULT_COMMAND = "codex";
@@ -34,12 +16,13 @@ const TERMINAL_ICON_AGENT_LABELS = { codex: "Codex", claude: "Claude", agy: "AGY
 const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 18, project_font_size: 18, terminal_font_size: 18,
   ui_font_size: 11, files_tab_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
-  show_mtime: true, show_git_status: true, editor_no_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
+  show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", claude_snapshot_experimental: true, perf_disabled: {}, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_terminal_mode: "webgl", inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
-  search_scope: "project", recent_closed_files: [] };
+  search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
+  files_side_panel_last_tab: "project", file_search_history: [], files_panel_width_initialized: false };
 const MODEL_PERMISSIONS = {
   codex: [
     { value: "default", label: "Default (Codex config)" },
@@ -66,6 +49,27 @@ const TERMINAL_FIND_DECORATIONS = Object.freeze({
   matchBackground: "#665000", matchBorder: "#d8ae00", matchOverviewRuler: "#d8ae00",
   activeMatchBackground: "#b85c00", activeMatchBorder: "#ffd166", activeMatchColorOverviewRuler: "#ff9f1c",
 });
+// Find reveals its hit with term.select(), so what the user actually sees is the ordinary SELECTION
+// color -- theme selectionBackground, #3b4252, a dark slate barely a shade off the terminal background
+// (confirmed by reading the painted .xterm-selection divs: rgb(59,66,82)). The decoration palette above
+// never reaches the screen at all here, because nothing calls the search addon's own find methods
+// (measured: zero .xterm-decoration elements while a match was highlighted). Borrowing the active-match
+// orange from that palette for the selection keeps one consistent find color, and it is applied as a
+// THEME override rather than CSS so it survives refreshTerminalAppearance and works under the WebGL
+// renderer too (CSS could only ever style the DOM renderer's selection layer).
+const TERMINAL_FIND_SELECTION_BACKGROUND = TERMINAL_FIND_DECORATIONS.activeMatchBackground;
+const TERMINAL_FIND_SELECTION_FOREGROUND = "#ffffff";
+// Tall-terminal row budget. WebGL backs the terminal with one drawing buffer sized to the FULL terminal
+// in DEVICE pixels, so the real ceiling is MAX_TEXTURE_SIZE / (cellHeight * devicePixelRatio). That dpr
+// term is why a row count measured safe on one machine is wrong on another: a retina display needs twice
+// the pixels for the same rows. Measured under headless SwiftShader (MAX_TEXTURE_SIZE 8192, 21px cell,
+// dpr 1) the ceiling is 390 rows; a real GPU usually reports 16384, which lands at ~390 again at dpr 2
+// and ~780 at dpr 1. Querying both at runtime is the only way to claim the tallest terminal the machine
+// in front of us can actually back, instead of hardcoding a guess -- and it degrades to DOM by itself on
+// a GPU too small to matter.
+const TALL_ROWS_DOM = 1000;
+const TALL_ROWS_MIN_FOR_WEBGL = 120;
+const TALL_ROWS_MAX = 1000;
 const HISTORY_BACKGROUND_TARGET_TURNS = 320;
 const HISTORY_BACKGROUND_PAGE_TURNS = 160;
 const HISTORY_BACKGROUND_LOAD_DELAY_MS = 180;
@@ -77,20 +81,10 @@ const SESSION_GROUP_HOVER_DELAY_MS = 700;
 const CLOSED_SESSIONS_INITIAL_DISPLAY = 50;
 const CLOSED_SESSIONS_MAX_DISPLAY = 100;
 const TERMINAL_AGE_REFRESH_MS = 30000;
-const CLAUDE_SNAPSHOT_DB_NAME = "termdeck.claude-snapshots";
-const CLAUDE_SNAPSHOT_DB_VERSION = 2;
-const CLAUDE_SNAPSHOT_STORE_NAME = "sessions";
-const CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME = "manifest";
-const CLAUDE_SNAPSHOT_FORMAT_VERSION = 4;
-const CLAUDE_SNAPSHOT_IDLE_SAVE_MS = 3000;
-const CLAUDE_SNAPSHOT_MAX_LINES = 4000;
 // A snapshot is hard-wrapped at the width it was taken at, and cannot be rewrapped once written into the
 // buffer. A container that has not been laid out yet fits to a handful of columns, and saving then
 // poisons the record: the width is stored with it, so a later restore at that same bogus width passes the
 // equality check and paints history as an unreadable narrow column beside a full-width screen.
-const CLAUDE_SNAPSHOT_MIN_COLS = 40;
-const CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES = 100 * 1024 * 1024;
-const CLAUDE_SNAPSHOT_RECORD_OVERHEAD_BYTES = 1024;
 const TERMINAL_AGE_DAY_MS = 24 * 60 * 60 * 1000;
 const TERMINAL_AGE_WEEK_MS = 7 * TERMINAL_AGE_DAY_MS;
 const TERMINAL_AGE_INTERMEDIATE_FADE = 0.48;
@@ -459,12 +453,12 @@ class TermdeckApp {
     this.terminalSearchText = "";
     this.terminalSearchEditorOpen = false;
     this.terminalSearchFocusIndex = -1;
+    this.sidebarAnimationVisibilityObserver = null;
     this.settings = { ...SETTINGS_DEFAULTS };
     this.persistedSettings = { ...SETTINGS_DEFAULTS };
     this.saveTimer = null;
     this.settingsSavePromise = Promise.resolve();
     this.projectStateSavePromise = Promise.resolve();
-    this.claudeSnapshotDatabasePromise = null;
     this.claudeSnapshotStorageLimitPromise = null;
     this.treeRoot = null;
     this.treeDirs = new Map();
@@ -493,7 +487,7 @@ class TermdeckApp {
     this.filesSidePanelCycleView = null;
     this.filesSidePanelCycleTransition = false;
     this.fileTypeFilterMenuMode = "name";
-    this.filesPanelWidthInitialized = localStorage.getItem("termdeck.files_panel_width_v2") === "1";
+    this.filesPanelWidthInitialized = false;
     const savedFilesTab = localStorage.getItem(FILES_SIDE_PANEL_LAST_TAB_KEY);
     this.lastFilesSidePanelTab = FILES_SIDE_PANEL_TABS.includes(savedFilesTab) ? savedFilesTab : "project";
     this.searchWord = false;
@@ -859,7 +853,7 @@ class TermdeckApp {
       active_session_id: "", open_files: [], open_files_collapsed: false, recent_files_collapsed: true,
       recent_file_exclude_glob: "!*.json, !*.log, !*.csv",
       recently_opened_terminal_ids: [], unread_sessions: [],
-      terminal_groups: [], session_groups: {},
+      terminal_groups: [], session_groups: {}, session_view_modes: {},
       ...state,
       recent_files_collapsed: state.recent_files_collapsed ?? true,
     };
@@ -874,6 +868,8 @@ class TermdeckApp {
   }
 
   worktreeSectionCollapsed(worktreeId) {
+    const saved = this.settings.worktree_ui_state?.[this.worktreeSectionStorageKey(worktreeId, "state")];
+    if (saved && typeof saved.collapsed === "boolean") return saved.collapsed;
     try {
       return window.localStorage.getItem(this.worktreeSectionStorageKey(worktreeId, "collapsed")) === "1";
     } catch (error) {
@@ -882,6 +878,11 @@ class TermdeckApp {
   }
 
   setWorktreeSectionCollapsed(worktreeId, collapsed) {
+    const key = this.worktreeSectionStorageKey(worktreeId, "state");
+    const current = this.settings.worktree_ui_state?.[key] || {};
+    this.settings.worktree_ui_state = { ...(this.settings.worktree_ui_state || {}),
+      [key]: { ...current, collapsed: !!collapsed } };
+    this.saveSettings();
     try {
       window.localStorage.setItem(this.worktreeSectionStorageKey(worktreeId, "collapsed"), collapsed ? "1" : "0");
     } catch (error) {
@@ -891,6 +892,8 @@ class TermdeckApp {
 
   worktreeClosedExpanded(worktreeId) {
     if (this.worktreeId !== ALL_WORKTREES_ID) return this.closedExpanded;
+    const saved = this.settings.worktree_ui_state?.[this.worktreeSectionStorageKey(worktreeId, "state")];
+    if (saved && typeof saved.closed_expanded === "boolean") return saved.closed_expanded;
     try {
       const stored = window.localStorage.getItem(this.worktreeSectionStorageKey(worktreeId, "closed-expanded"));
       return stored === null ? false : stored === "1";
@@ -902,8 +905,12 @@ class TermdeckApp {
   setWorktreeClosedExpanded(worktreeId, expanded) {
     if (this.worktreeId !== ALL_WORKTREES_ID) {
       this.closedExpanded = expanded;
-      return;
     }
+    const key = this.worktreeSectionStorageKey(worktreeId, "state");
+    const current = this.settings.worktree_ui_state?.[key] || {};
+    this.settings.worktree_ui_state = { ...(this.settings.worktree_ui_state || {}),
+      [key]: { ...current, closed_expanded: !!expanded } };
+    this.saveSettings();
     try {
       window.localStorage.setItem(this.worktreeSectionStorageKey(worktreeId, "closed-expanded"), expanded ? "1" : "0");
     } catch (error) {
@@ -957,6 +964,10 @@ class TermdeckApp {
   }
 
   patchProjectState(patch) {
+    const resourceFields = new Set(["terminal_groups", "session_groups", "terminal_layout", "session_order",
+      "unread_sessions", "recently_opened_terminal_ids", "session_view_modes"]);
+    const invalidFields = Object.keys(patch).filter((field) => resourceFields.has(field));
+    if (invalidFields.length) throw new Error(`project resources require targeted APIs: ${invalidFields.join(", ")}`);
     const states = this.settings.project_state || {};
     const stateKey = this.projectStateKey();
     states[stateKey] = { ...this.getProjectState(), ...patch };
@@ -964,23 +975,150 @@ class TermdeckApp {
     this.queueProjectStatePatch(stateKey, patch);
   }
 
-  queueProjectStatePatch(stateKey, patch) {
+  projectStateSearchParams(stateKey) {
     const params = new URLSearchParams();
     if (stateKey !== "__all__") {
       const [projectName, worktreeId] = stateKey.split("::worktree:");
       params.set("project", projectName);
-      if (worktreeId) params.set("worktree_id", worktreeId);
+      params.set("worktree_id", worktreeId || "root");
     }
-    const payload = JSON.stringify(this.copySettings(patch));
-    this.projectStateSavePromise = this.projectStateSavePromise.then(async () => {
-      const response = await fetch(`/api/terminal-layout?${params}`, { method: "PATCH", keepalive: payload.length < 60000,
-        headers: { "Content-Type": "application/json" }, body: payload });
-      if (!response.ok) throw new Error(`project state save failed (${response.status})`);
+    return params;
+  }
+
+  applyLocalProjectStatePatch(patch, stateKey = this.projectStateKey()) {
+    const states = this.settings.project_state || {};
+    const current = states[stateKey] || {};
+    states[stateKey] = { ...current, ...patch };
+    this.settings.project_state = states;
+  }
+
+  async refreshCurrentProjectState() {
+    const stateKey = this.projectStateKey();
+    await this.projectStateSavePromise;
+    const params = this.projectStateSearchParams(stateKey);
+    let response;
+    try {
+      response = await fetch(`/api/terminal-layout?${params}`);
+    } catch (error) {
+      return;
+    }
+    if (!response.ok || stateKey !== this.projectStateKey()) return;
+    const payload = await response.json();
+    const nextState = {};
+    for (const field of ["active_session_id", "open_files", "open_files_collapsed", "recent_files_collapsed",
+      "recent_file_exclude_glob", "recently_opened_terminal_ids", "session_order", "pinned_sessions", "pinned_groups",
+      "unread_sessions", "terminal_groups", "session_groups", "terminal_layout", "session_view_modes"]) {
+      if (Object.prototype.hasOwnProperty.call(payload, field)) nextState[field] = payload[field];
+    }
+    const previous = this.settings.project_state?.[stateKey] || {};
+    if (JSON.stringify(previous) === JSON.stringify(nextState)) {
+      this.reconcileActiveSessionViewMode();
+      return;
+    }
+    this.applyLocalProjectStatePatch(nextState, stateKey);
+    this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
+    this.renderList();
+    this.reconcileActiveSessionViewMode();
+  }
+
+  queueProjectResourceRequest(stateKey, path, method, body = null) {
+    const params = this.projectStateSearchParams(stateKey);
+    const separator = path.includes("?") ? "&" : "?";
+    const query = params.toString();
+    const url = query ? `${path}${separator}${query}` : path;
+    const payload = body === null ? "" : JSON.stringify(this.copySettings(body));
+    this.projectStateSavePromise = this.projectStateSavePromise.catch((error) => {
+      console.error("TermDeck project resource save failed", error);
+    }).then(async () => {
+      let response;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          response = await fetch(url, { method, keepalive: payload.length < 60000,
+            headers: payload ? { "Content-Type": "application/json" } : {}, body: payload || undefined });
+          if (response.ok || response.status < 500) break;
+        } catch (error) {
+          if (attempt === 1) throw error;
+        }
+      }
+      if (!response?.ok) throw new Error(`project resource save failed (${response?.status || "network"})`);
     }).catch((error) => {
-      console.error("TermDeck project state save failed", error);
+      console.error("TermDeck project resource save failed", error);
       const status = this.$("stat-text");
       if (status) status.textContent = error.message;
+      void this.refreshCurrentProjectState();
     });
+  }
+
+  queueProjectStatePatch(stateKey, patch) {
+    for (const [field, value] of Object.entries(patch)) {
+      this.queueProjectResourceRequest(stateKey, `/api/project-state/${encodeURIComponent(field)}`, "PUT", { value });
+    }
+  }
+
+  queueTerminalGroupCreate(group, sessionIds = [], anchorToken = "", after = false, stateKey = this.projectStateKey()) {
+    this.queueProjectResourceRequest(stateKey, "/api/terminal-groups", "POST", {
+      group_id: group.id, name: group.name, collapsed: !!group.collapsed,
+      session_ids: sessionIds, anchor_token: anchorToken, after,
+    });
+  }
+
+  queueTerminalGroupUpdate(groupId, patch, stateKey = this.projectStateKey()) {
+    this.queueProjectResourceRequest(stateKey, `/api/terminal-groups/${encodeURIComponent(groupId)}`, "PATCH", patch);
+  }
+
+  queueTerminalGroupDelete(groupId, stateKey = this.projectStateKey()) {
+    this.queueProjectResourceRequest(stateKey, `/api/terminal-groups/${encodeURIComponent(groupId)}`, "DELETE");
+  }
+
+  queueTerminalGroupMerge(sourceGroupId, targetGroupId, stateKey = this.projectStateKey()) {
+    this.queueProjectResourceRequest(stateKey, `/api/terminal-groups/${encodeURIComponent(sourceGroupId)}/merge`, "POST",
+      { target_group_id: targetGroupId });
+  }
+
+  queueSessionGroupAssignments(assignments, targetSessionId = "", after = false, stateKey = this.projectStateKey()) {
+    this.queueProjectResourceRequest(stateKey, "/api/session-group-assignments", "PUT",
+      { assignments, target_session_id: targetSessionId || "", after });
+  }
+
+  queueTerminalLayoutMove(token, targetToken = "", after = false, toTop = false, stateKey = this.projectStateKey()) {
+    this.queueProjectResourceRequest(stateKey, "/api/terminal-layout/move", "PATCH",
+      { token, target_token: targetToken, after, to_top: toTop });
+  }
+
+  queueSessionOrderMove(sessionIds, targetSessionId = "", after = false, stateKey = this.projectStateKey()) {
+    this.queueProjectResourceRequest(stateKey, "/api/session-order/move", "PATCH",
+      { session_ids: sessionIds, target_session_id: targetSessionId, after });
+  }
+
+  persistUnreadSessionDelta(sessionIds, unread) {
+    const idsByStateKey = new Map();
+    const project = this.projectSlug || "__all__";
+    const prefix = `${project}::worktree:`;
+    for (const sessionId of [...new Set(sessionIds)].filter(Boolean)) {
+      const session = this.session(sessionId);
+      let stateKeys = session ? [this.projectStateKeyFor(this.worktreeIdForSession(session))] : [];
+      if (!stateKeys.length) {
+        stateKeys = Object.entries(this.settings.project_state || {})
+          .filter(([key, state]) => (key === project || key.startsWith(prefix)) &&
+            (state.unread_sessions || []).includes(sessionId))
+          .map(([key]) => key);
+      }
+      if (!stateKeys.length) stateKeys = [this.projectStateKey()];
+      for (const stateKey of stateKeys) {
+        if (!idsByStateKey.has(stateKey)) idsByStateKey.set(stateKey, []);
+        idsByStateKey.get(stateKey).push(sessionId);
+      }
+    }
+    for (const [stateKey, ids] of idsByStateKey) {
+      const current = this.settings.project_state?.[stateKey] || {};
+      const unreadIds = new Set(current.unread_sessions || []);
+      for (const sessionId of ids) {
+        if (unread) unreadIds.add(sessionId);
+        else unreadIds.delete(sessionId);
+      }
+      this.applyLocalProjectStatePatch({ unread_sessions: [...unreadIds] }, stateKey);
+      this.queueProjectResourceRequest(stateKey, "/api/session-unread", "PUT", { session_ids: ids, unread });
+    }
   }
 
   rememberRecentlyOpenedTerminal(sessionId) {
@@ -988,7 +1126,9 @@ class TermdeckApp {
     const current = this.getProjectState().recently_opened_terminal_ids || [];
     const next = [sessionId, ...current.filter((id) => id !== sessionId)].slice(0, RECENTLY_OPENED_TERMINALS_MAX_ENTRIES);
     if (next.length === current.length && next.every((id, index) => id === current[index])) return;
-    this.patchProjectState({ recently_opened_terminal_ids: next });
+    this.applyLocalProjectStatePatch({ recently_opened_terminal_ids: next });
+    this.queueProjectResourceRequest(this.projectStateKey(),
+      `/api/recently-opened-terminals/${encodeURIComponent(sessionId)}`, "POST");
   }
 
   previouslyOpenedTerminalId(excludedSessionIds) {
@@ -1000,13 +1140,6 @@ class TermdeckApp {
   }
 
   sectionCollapsed(field) {
-    const storageKey = `termdeck.${this.projectStateKey()}.${field}`;
-    try {
-      const stored = window.localStorage.getItem(storageKey);
-      if (stored === "1" || stored === "0") return stored === "1";
-    } catch (error) {
-      // localStorage can be unavailable in restricted webviews; use settings below.
-    }
     return !!this.getProjectState()[field];
   }
 
@@ -1111,7 +1244,8 @@ class TermdeckApp {
     if (!name || !name.trim()) return;
     const groups = this.terminalGroups();
     const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
-    this.patchProjectState({ terminal_groups: [...groups, group] });
+    this.applyLocalProjectStatePatch({ terminal_groups: [...groups, group] });
+    this.queueTerminalGroupCreate(group);
     this.renderList();
   }
 
@@ -1122,23 +1256,43 @@ class TermdeckApp {
     if (!name || !name.trim() || name.trim() === group.name) return;
     const groups = this.terminalGroups().map((candidate) => candidate.id === groupId
       ? { ...candidate, name: name.trim() } : candidate);
-    this.patchProjectState({ terminal_groups: groups });
+    this.applyLocalProjectStatePatch({ terminal_groups: groups });
+    this.queueTerminalGroupUpdate(groupId, { name: name.trim() });
     this.renderList();
   }
 
   deleteTerminalGroup(groupId) {
     const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
     if (!group || !confirm(`Delete group "${group.name}"? Terminals will remain ungrouped.`)) return;
+    this.applyLocalProjectStatePatch(this.terminalGroupDeletionPatch(groupId));
+    this.queueTerminalGroupDelete(groupId);
+    this.renderList();
+  }
+
+  terminalGroupDeletionPatch(groupId) {
     const state = this.getProjectState();
     const sessionGroups = { ...(state.session_groups || {}) };
+    const availableIds = new Set(this.sessionsForWorktree(this.stateWorktreeId()).map((session) => session.session_id));
+    const memberIds = (state.session_order || [])
+      .filter((sessionId) => availableIds.has(sessionId) && sessionGroups[sessionId] === groupId);
+    memberIds.push(...Object.entries(sessionGroups)
+      .filter(([sessionId, assignedGroupId]) => assignedGroupId === groupId && availableIds.has(sessionId) &&
+        !memberIds.includes(sessionId))
+      .map(([sessionId]) => sessionId));
     for (const [sessionId, assignedGroupId] of Object.entries(sessionGroups)) {
       if (assignedGroupId === groupId) delete sessionGroups[sessionId];
     }
-    this.patchProjectState({
+    const groupToken = `group:${groupId}`;
+    const layout = this.terminalLayout();
+    const groupIndex = layout.includes(groupToken) ? layout.indexOf(groupToken) : layout.length;
+    const terminalLayout = layout.filter((entry) => entry !== groupToken);
+    terminalLayout.splice(groupIndex, 0, ...memberIds.map((sessionId) => `session:${sessionId}`)
+      .filter((entry) => !terminalLayout.includes(entry)));
+    return {
       terminal_groups: this.terminalGroups().filter((candidate) => candidate.id !== groupId),
       session_groups: sessionGroups,
-    });
-    this.renderList();
+      terminal_layout: terminalLayout,
+    };
   }
 
   toggleTerminalGroup(groupId) {
@@ -1147,7 +1301,8 @@ class TermdeckApp {
     const collapsed = !current.collapsed;
     const groups = this.terminalGroups().map((group) => group.id === groupId
       ? { ...group, collapsed } : group);
-    this.patchProjectState({ terminal_groups: groups });
+    this.applyLocalProjectStatePatch({ terminal_groups: groups });
+    this.queueTerminalGroupUpdate(groupId, { collapsed });
     const groupBox = this.$("session-list").querySelector(`[data-group-id="${CSS.escape(groupId)}"]`);
     const members = groupBox?.querySelector(".terminal-group-members");
     if (!members) {
@@ -1183,7 +1338,8 @@ class TermdeckApp {
       layout.splice(insertAt, 0, `session:${sessionId}`);
       patch.terminal_layout = layout;
     }
-    this.patchProjectState(patch);
+    this.applyLocalProjectStatePatch(patch);
+    this.queueSessionGroupAssignments({ [sessionId]: groupId || null });
     this.renderList();
   }
 
@@ -1345,7 +1501,8 @@ class TermdeckApp {
       patch.session_order = this.sessionOrderWithSelectedIdsAroundTarget(
         ids.filter((id) => id !== targetId), targetId, after);
     }
-    this.patchProjectState(patch);
+    this.applyLocalProjectStatePatch(patch);
+    this.queueSessionGroupAssignments(Object.fromEntries(ids.map((id) => [id, groupId || null])), targetId || "", after);
     this.sessions = this.applySessionOrder(this.sessions);
     this.renderList();
   }
@@ -1389,11 +1546,12 @@ class TermdeckApp {
     const targetIndex = layout.indexOf(`session:${targetId}`);
     if (targetIndex < 0) return;
     layout.splice(targetIndex + (after ? 1 : 0), 0, ...ids.map((id) => `session:${id}`));
-    this.patchProjectState({
+    this.applyLocalProjectStatePatch({
       session_groups: sessionGroups,
       terminal_layout: layout,
       session_order: this.sessionOrderWithSelectedIdsAroundTarget(ids, targetId, after),
     });
+    this.queueSessionGroupAssignments(Object.fromEntries(ids.map((id) => [id, null])), targetId, after);
     this.sessions = this.applySessionOrder(this.sessions);
     this.renderList();
   }
@@ -1427,12 +1585,13 @@ class TermdeckApp {
     layout.splice(targetIndex < 0 ? layout.length : Math.min(targetIndex, layout.length), 0, `group:${group.id}`);
     const nextSessionGroups = { ...sessionGroups };
     for (const id of allIds) nextSessionGroups[id] = group.id;
-    this.patchProjectState({
+    this.applyLocalProjectStatePatch({
       terminal_groups: [...this.terminalGroups(), group],
       session_groups: nextSessionGroups,
       terminal_layout: layout,
       session_order: this.sessionOrderWithSelectedIdsAroundTarget(ids, targetId, after),
     });
+    this.queueTerminalGroupCreate(group, allIds, `session:${targetId}`, after);
     this.sessions = this.applySessionOrder(this.sessions);
     this.renderList();
   }
@@ -1466,7 +1625,8 @@ class TermdeckApp {
       if (targetIndex >= 0) order.splice(targetIndex + (after ? 1 : 0), 0, sessionId);
       patch.session_order = order;
     }
-    this.patchProjectState(patch);
+    this.applyLocalProjectStatePatch(patch);
+    this.queueSessionGroupAssignments({ [sessionId]: groupId || null }, targetId || "", after);
     this.sessions = this.applySessionOrder(this.sessions);
     this.renderList();
   }
@@ -1533,11 +1693,10 @@ class TermdeckApp {
     ]);
     const layout = this.terminalLayout();
     const top = layout.filter((entry) => legacyTokens.has(entry));
-    this.patchProjectState({
-      terminal_layout: [...top, ...layout.filter((entry) => !legacyTokens.has(entry))],
-      pinned_sessions: [],
-      pinned_groups: [],
-    });
+    const nextLayout = [...top, ...layout.filter((entry) => !legacyTokens.has(entry))];
+    this.applyLocalProjectStatePatch({ terminal_layout: nextLayout, pinned_sessions: [], pinned_groups: [] });
+    for (const token of [...top].reverse()) this.queueTerminalLayoutMove(token, "", false, true);
+    this.patchProjectState({ pinned_sessions: [], pinned_groups: [] });
   }
 
   moveTerminalLayoutToTop(token) {
@@ -1545,7 +1704,8 @@ class TermdeckApp {
     if (!current.includes(token)) return;
     const layout = current.filter((entry) => entry !== token);
     layout.unshift(token);
-    this.patchProjectState({ terminal_layout: layout });
+    this.applyLocalProjectStatePatch({ terminal_layout: layout });
+    this.queueTerminalLayoutMove(token, "", false, true);
     this.renderList();
   }
 
@@ -1563,7 +1723,9 @@ class TermdeckApp {
       delete sessionGroups[id];
       patch.session_groups = sessionGroups;
     }
-    this.patchProjectState(patch);
+    this.applyLocalProjectStatePatch(patch);
+    if (kind === "session" && state.session_groups?.[id]) this.queueSessionGroupAssignments({ [id]: null });
+    this.queueTerminalLayoutMove(draggedToken, targetToken, after);
     this.renderList();
   }
 
@@ -1572,7 +1734,8 @@ class TermdeckApp {
     const targetIndex = ids.indexOf(targetId);
     if (targetIndex < 0) return;
     ids.splice(targetIndex + (after ? 1 : 0), 0, draggedId);
-    this.patchProjectState({ session_order: ids });
+    this.applyLocalProjectStatePatch({ session_order: ids });
+    this.queueSessionOrderMove([draggedId], targetId, after);
     this.sessions = this.applySessionOrder(this.sessions);
     this.renderList();
   }
@@ -1586,11 +1749,12 @@ class TermdeckApp {
     for (const [sessionId, groupId] of Object.entries(sessionGroups)) {
       if (groupId === sourceId) sessionGroups[sessionId] = targetId;
     }
-    this.patchProjectState({
+    this.applyLocalProjectStatePatch({
       terminal_groups: groups.filter((group) => group.id !== sourceId),
       session_groups: sessionGroups,
       terminal_layout: this.terminalLayout().filter((entry) => entry !== `group:${sourceId}`),
     });
+    this.queueTerminalGroupMerge(sourceId, targetId);
     this.renderList();
   }
 
@@ -1626,8 +1790,9 @@ class TermdeckApp {
     layout.splice(targetIndex < 0 ? layout.length : Math.min(targetIndex, layout.length), 0, `group:${group.id}`);
     sessionGroups[draggedId] = group.id;
     sessionGroups[targetId] = group.id;
-    this.patchProjectState({ terminal_groups: [...this.terminalGroups(), group], session_groups: sessionGroups,
+    this.applyLocalProjectStatePatch({ terminal_groups: [...this.terminalGroups(), group], session_groups: sessionGroups,
       terminal_layout: layout });
+    this.queueTerminalGroupCreate(group, [draggedId, targetId], `session:${targetId}`, after);
     this.reorderGroupedSessions(draggedId, targetId, after);
   }
 
@@ -1657,26 +1822,21 @@ class TermdeckApp {
     const nextLayout = layout.filter((entry) => !selectedTokens.has(entry));
     nextLayout.splice(index < 0 ? nextLayout.length : Math.min(index, nextLayout.length), 0, `group:${group.id}`);
     for (const id of ids) sessionGroups[id] = group.id;
-    this.patchProjectState({
+    const anchorToken = index < 0 ? "" : layout[index];
+    this.applyLocalProjectStatePatch({
       terminal_groups: [...this.terminalGroups(), group],
       session_groups: sessionGroups,
       terminal_layout: nextLayout,
     });
+    this.queueTerminalGroupCreate(group, ids, anchorToken);
     this.renderList();
   }
 
   removeTerminalGroup(groupId) {
     const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
     if (!group) return;
-    const state = this.getProjectState();
-    const sessionGroups = { ...(state.session_groups || {}) };
-    for (const [sessionId, assignedGroupId] of Object.entries(sessionGroups)) {
-      if (assignedGroupId === groupId) delete sessionGroups[sessionId];
-    }
-    this.patchProjectState({
-      terminal_groups: this.terminalGroups().filter((candidate) => candidate.id !== groupId),
-      session_groups: sessionGroups,
-    });
+    this.applyLocalProjectStatePatch(this.terminalGroupDeletionPatch(groupId));
+    this.queueTerminalGroupDelete(groupId);
     this.renderList();
   }
 
@@ -1830,7 +1990,8 @@ class TermdeckApp {
       this.updateHeaderAddMenu();
       return;
     }
-    const saved = localStorage.getItem(`termdeck.${this.projectSlug}.worktree_id`) || "";
+    const saved = this.settings.selected_worktrees?.[this.projectSlug] ||
+      localStorage.getItem(`termdeck.${this.projectSlug}.worktree_id`) || "";
     const availableIds = new Set(availableWorktrees.map((worktree) => worktree.id));
     if (availableWorktrees.length > 1) availableIds.add(ALL_WORKTREES_ID);
     if (!availableIds.has(this.worktreeId)) this.worktreeId = availableIds.has(saved) ? saved : "root";
@@ -1852,6 +2013,8 @@ class TermdeckApp {
     this.interactionWorktreeId = this.worktreeId === ALL_WORKTREES_ID ? this.interactionWorktreeId : this.worktreeId;
     this.disconnectRecentFilesWatch();
     this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
+    this.settings.selected_worktrees = { ...(this.settings.selected_worktrees || {}), [this.projectSlug]: this.worktreeId };
+    this.saveSettings();
     localStorage.setItem(`termdeck.${this.projectSlug}.worktree_id`, this.worktreeId);
     history.pushState({ kind: "init" }, "", this.navUrl({ kind: "init" }));
     this.activeId = null;
@@ -2182,23 +2345,23 @@ class TermdeckApp {
       this.flushPendingSettingsSave();
       this.flushPendingFileSavesOnPageExit();
       this.flushPendingSearchHistoryRecord();
-      this.flushClaudeSnapshotSaves();
     });
     window.addEventListener("beforeunload", () => {
       this.flushPendingSettingsSave();
       this.flushPendingFileSavesOnPageExit();
       this.flushPendingSearchHistoryRecord();
-      this.flushClaudeSnapshotSaves();
     });
+    document.body.classList.toggle("termdeck-page-hidden", document.hidden);
     document.addEventListener("visibilitychange", () => {
+      document.body.classList.toggle("termdeck-page-hidden", document.hidden);
       if (document.visibilityState === "hidden") {
         this.disconnectRecentFilesWatch();
         this.flushPendingSettingsSave();
         this.flushPendingFileSavesOnPageExit();
         this.flushPendingSearchHistoryRecord();
-        this.flushClaudeSnapshotSaves();
-      } else {
+        } else {
         this.updateRecentFilesWatch();
+        void this.refreshCurrentProjectState();
         if (!this.sectionCollapsed("recent_files_collapsed")) void this.refreshRecentFiles(true);
       }
     });
@@ -2399,7 +2562,6 @@ class TermdeckApp {
     if (!this.vscodeMode) {
       this.updateRecentFilesWatch();
       this.terminalAgeRefreshTimer = window.setInterval(() => {
-        if (this.perfDisabled("terminal_age_refresh")) return;
         this.updateSessionAgeStyles();
         this.updateActiveTerminalAge();
       }, TERMINAL_AGE_REFRESH_MS);
@@ -3006,7 +3168,7 @@ class TermdeckApp {
     const staleUnreadSessionIds = [...this.unreadSessions].filter((sessionId) => !currentSessionIds.has(sessionId));
     if (staleUnreadSessionIds.length) {
       for (const sessionId of staleUnreadSessionIds) this.unreadSessions.delete(sessionId);
-      this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
+      this.persistUnreadSessionDelta(staleUnreadSessionIds, false);
     }
     for (const s of this.sessions) {
       this.cacheSessionModel(s);
@@ -3319,12 +3481,23 @@ class TermdeckApp {
   }
 
   setSessionTitleText(title, text) {
+    const value = String(text || "");
     const row = title.closest(".session-item");
+    const base = document.createElement("span");
+    base.className = "session-title-base";
     if (row?.classList.contains("terminal-search-match") && this.terminalSearchText.trim()) {
-      this.appendTerminalSearchHighlightedText(title, text, this.terminalSearchText);
-      return;
+      this.appendTerminalSearchHighlightedText(base, value, this.terminalSearchText);
+    } else {
+      base.textContent = value;
     }
-    title.textContent = text;
+    const waveWindow = document.createElement("span");
+    waveWindow.className = "session-title-wave-window";
+    waveWindow.setAttribute("aria-hidden", "true");
+    const waveText = document.createElement("span");
+    waveText.className = "session-title-wave-text";
+    waveText.dataset.waveText = value;
+    waveWindow.appendChild(waveText);
+    title.replaceChildren(base, waveWindow);
   }
 
   terminalIconAgentKind(agentKind) {
@@ -3406,7 +3579,7 @@ class TermdeckApp {
       }
       this.updateUnreadIndicator(id);
     }
-    this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
+    this.persistUnreadSessionDelta(ids, unread);
   }
 
   markTerminalGroupUnread(groupId) {
@@ -3474,7 +3647,7 @@ class TermdeckApp {
     const userIsViewingSession = id === this.activeId && !document.hidden && document.hasFocus();
     if (completed && !userIsViewingSession && !this.viewedCompletedSessions.has(id) && !this.unreadSessions.has(id)) {
       this.unreadSessions.add(id);
-      this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
+      this.persistUnreadSessionDelta([id], true);
     }
   }
 
@@ -3828,7 +4001,8 @@ class TermdeckApp {
     const targetIndex = ids.indexOf(targetId);
     if (targetIndex < 0) return;
     ids.splice(targetIndex + (after ? 1 : 0), 0, draggedId);
-    this.patchProjectState({ session_order: ids });
+    this.applyLocalProjectStatePatch({ session_order: ids });
+    this.queueSessionOrderMove([draggedId], targetId, after);
     this.sessions = this.applySessionOrder(this.sessions);
     this.renderList();
   }
@@ -4000,8 +4174,9 @@ class TermdeckApp {
     if (nextGroupId) {
       const groups = this.terminalGroups();
       if (groups.some((group) => group.id === nextGroupId && group.collapsed)) {
-        this.patchProjectState({ terminal_groups: groups.map((group) => group.id === nextGroupId
+        this.applyLocalProjectStatePatch({ terminal_groups: groups.map((group) => group.id === nextGroupId
           ? { ...group, collapsed: false } : group) });
+        this.queueTerminalGroupUpdate(nextGroupId, { collapsed: false });
       }
     }
     this.terminalSearchEditorOpen = true;
@@ -4483,12 +4658,30 @@ class TermdeckApp {
     const view = this.views.get(this.activeId);
     if (view) {
       view.terminalFindAddon?.clearDecorations();
+      // After the state above is cleared, so the override resolves to null and the normal selection
+      // color comes back for ordinary selections.
+      this.applyTerminalFindHighlight(view);
       view.term.focus();
     }
   }
 
   terminalFindOptions(incremental = false) {
     return { caseSensitive: false, incremental, decorations: TERMINAL_FIND_DECORATIONS };
+  }
+
+  // Only the session actually being searched gets the override, and only while a query is live, so an
+  // ordinary mouse selection anywhere (including in this same terminal once find closes) keeps the normal,
+  // deliberately unobtrusive selection color.
+  terminalFindThemeOverride(view) {
+    if (!view || view.sessionId !== this.terminalFindSessionId || !this.terminalFindQuery) return null;
+    return { selectionBackground: TERMINAL_FIND_SELECTION_BACKGROUND,
+             selectionInactiveBackground: TERMINAL_FIND_SELECTION_BACKGROUND,
+             selectionForeground: TERMINAL_FIND_SELECTION_FOREGROUND };
+  }
+
+  applyTerminalFindHighlight(view) {
+    if (!view || view.closed || !view.term) return;
+    view.term.options.theme = { ...this.termTheme(), ...(this.terminalFindThemeOverride(view) || {}) };
   }
 
   prepareTerminalFindNavigation(view) {
@@ -4550,9 +4743,39 @@ class TermdeckApp {
       view.term.scrollToLine(Math.max(0, Math.min(centeredLine, Number(buffer.baseY || 0))));
     }
     view.term.select(match.column, match.row, query.length);
+    this.scrollTallContainerToRow(view, match.row);
     requestAnimationFrame(() => { view.v2Programmatic = false; });
     if (count) count.textContent = `${this.terminalFindFallbackIndex + 1}/${this.terminalFindFallbackMatches.length}`;
     return true;
+  }
+
+  // Find highlights the match but cannot bring it into view on its own here. Both mechanisms above are
+  // no-ops against the tall container: term.scrollToLine moves xterm's viewport, which is not the surface
+  // being scrolled any more, and the guard that decides whether to call it compares against term.rows --
+  // 1000 here -- so a match almost always looks "already visible" and it is never even called. The result
+  // is a highlighted, selected match somewhere outside the ~37 rows actually on screen. Centering is
+  // deliberate rather than a minimal scroll-into-view: a match found mid-search usually wants its
+  // surrounding context readable, and centering also keeps repeat presses of the same direction moving a
+  // predictable distance instead of pinning the match to whichever edge it entered from.
+  scrollTallContainerToRow(view, absoluteRow) {
+    if (!view || view.closed) return;
+    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+    if (!cellHeight || !view.container.clientHeight) return;
+    // Read viewportY now, not before: the scrollToLine above may have just moved it to reach a match
+    // that was sitting in real scrollback, and this row is in absolute buffer coordinates.
+    const canvasRow = absoluteRow - Number(view.term.buffer.active.viewportY || 0);
+    const centered = canvasRow * cellHeight - Math.max(0, (view.container.clientHeight - cellHeight) / 2);
+    const nativeMax = Math.max(0, view.container.scrollHeight - view.container.clientHeight);
+    // Honor the same content ceiling the scroll listener enforces, so centering a match near the end
+    // cannot park the view in the blank rows past the content.
+    const ceiling = view.tallMaxScrollTop == null ? nativeMax : Math.min(nativeMax, view.tallMaxScrollTop);
+    view.container.scrollTop = Math.max(0, Math.min(centered, ceiling));
+    // Searching is the user asking to look at something specific, so stop following new output -- other-
+    // wise the next write scrolls straight back to the prompt and the match they just navigated to is
+    // gone. Typing resumes following (see the key handler in ensureView). Anchoring to the match's row
+    // keeps it pinned even as new output pushes lines into scrollback underneath it.
+    view.tallFollowing = false;
+    this.tallCaptureAnchorRow(view);
   }
 
   useTerminalBufferFindFallback(view, query, direction = 0) {
@@ -4581,6 +4804,7 @@ class TermdeckApp {
     this.terminalFindQuery = query;
     this.terminalFindFallbackMatches = [];
     this.terminalFindFallbackIndex = -1;
+    this.applyTerminalFindHighlight(view);
     if (!query) {
       this.$("terminal-find-count").textContent = "";
       return;
@@ -5310,7 +5534,7 @@ class TermdeckApp {
           const members = grouped.get(id) || [];
           const scopedSearchGroup = this.terminalSearchEditorOpen && this.terminalSearchGroupId === id &&
             (this.terminalSearchWorktreeId || worktreeId) === worktreeId;
-          if (!members.length && !scopedSearchGroup) continue;
+          if (!members.length && (terminalSearchQuery || this.hideInactiveTerminals) && !scopedSearchGroup) continue;
           this.renderTerminalGroup(group, members, list);
           continue;
         }
@@ -5457,12 +5681,29 @@ class TermdeckApp {
     this.$("empty-state").style.display = this.sessions.length || this.closedSessions.length ||
       (!this.vscodeMode && this.openFiles.size) ? "none" : "flex";
     this.sessionListSignature = this.sessionListSignatureFor();
+    this.updateSidebarAnimationVisibilityObserver();
     if (terminalSearchHadFocus && terminalSearchInput) requestAnimationFrame(() => {
       terminalSearchInput.focus({ preventScroll: true });
       if (Number.isInteger(terminalSearchSelectionStart) && Number.isInteger(terminalSearchSelectionEnd)) {
         terminalSearchInput.setSelectionRange(terminalSearchSelectionStart, terminalSearchSelectionEnd);
       }
     });
+  }
+
+  updateSidebarAnimationVisibilityObserver() {
+    const list = this.$("session-list");
+    if (!list || typeof IntersectionObserver !== "function") return;
+    if (!this.sidebarAnimationVisibilityObserver) {
+      this.sidebarAnimationVisibilityObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          entry.target.classList.toggle("termdeck-sidebar-offscreen", !entry.isIntersecting);
+        }
+      }, { root: list, threshold: 0.01 });
+    }
+    this.sidebarAnimationVisibilityObserver.disconnect();
+    for (const element of list.querySelectorAll(".session-item, .terminal-group-label")) {
+      this.sidebarAnimationVisibilityObserver.observe(element);
+    }
   }
 
   keepActiveSessionVisible() {
@@ -5480,8 +5721,9 @@ class TermdeckApp {
     const groupId = this.getProjectState().session_groups?.[sessionId] || "";
     const group = groupId ? this.terminalGroups().find((candidate) => candidate.id === groupId) : null;
     if (group?.collapsed) {
-      this.patchProjectState({ terminal_groups: this.terminalGroups().map((candidate) => candidate.id === groupId
+      this.applyLocalProjectStatePatch({ terminal_groups: this.terminalGroups().map((candidate) => candidate.id === groupId
         ? { ...candidate, collapsed: false } : candidate) });
+      this.queueTerminalGroupUpdate(groupId, { collapsed: false });
     }
     this.sidebarSelectedFileKeys.clear();
     this.sidebarSelectedSessionIds = new Set([sessionId]);
@@ -5505,6 +5747,10 @@ class TermdeckApp {
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(view);
     if (filesVisible) {
       this.lastFilesSidePanelTab = view;
+      if (this.settings.files_side_panel_last_tab !== view) {
+        this.settings.files_side_panel_last_tab = view;
+        this.saveSettings();
+      }
       localStorage.setItem(FILES_SIDE_PANEL_LAST_TAB_KEY, view);
     }
     if (!filesVisible || view === "git") this.closeFileTypeFilterMenu();
@@ -5741,6 +5987,7 @@ class TermdeckApp {
     if (nextPinned && !this.filesPanelWidthInitialized) {
       this.settings.files_width = FILEDECK_DEFAULT_SIDEBAR_WIDTH;
       this.filesPanelWidthInitialized = true;
+      this.settings.files_panel_width_initialized = true;
       localStorage.setItem("termdeck.files_panel_width_v2", "1");
     }
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
@@ -7646,8 +7893,17 @@ class TermdeckApp {
   }
 
   selectedHistoryMode(session = this.session(this.activeId)) {
+    if (!session) return false;
+    const savedMode = this.getProjectState().session_view_modes?.[session.session_id];
+    if (savedMode === "markdown" || savedMode === "terminal") return savedMode === "markdown";
     if (this.usesTranscriptFirstSession(session)) return this.settings.transcript_first_surface === "markdown";
     return !!this.settings.history_mode;
+  }
+
+  reconcileActiveSessionViewMode() {
+    if (!this.activeId || this.activeFileKey !== null || !this.session(this.activeId)) return;
+    const enabled = this.selectedHistoryMode();
+    if (this.historyOpen !== enabled) this.setHistoryMode(enabled, { persist: false });
   }
 
   applyMainLayout() {
@@ -7891,14 +8147,19 @@ class TermdeckApp {
     this.setHistoryMode(!this.historyOpen);
   }
 
-  setHistoryMode(enabled) {
+  setHistoryMode(enabled, options = {}) {
+    if (!this.activeId) return;
     if (this.historyOpen && !enabled) this.rememberHistoryScrollPosition(this.activeId);
     this.closeTerminalFind();
     this.hideSelectionActions(true);
     if (!enabled) this.closePromptHistory();
-    if (this.usesTranscriptFirstSession()) this.settings.transcript_first_surface = enabled ? "markdown" : "terminal";
-    else this.settings.history_mode = !!enabled;
-    this.saveSettings();
+    const mode = enabled ? "markdown" : "terminal";
+    if (options.persist !== false) {
+      const sessionViewModes = { ...(this.getProjectState().session_view_modes || {}), [this.activeId]: mode };
+      this.applyLocalProjectStatePatch({ session_view_modes: sessionViewModes });
+      this.queueProjectResourceRequest(this.projectStateKey(),
+        `/api/session-view-modes/${encodeURIComponent(this.activeId)}`, "PUT", { mode });
+    }
     this.stopHistoryRefresh();
     this.disconnectHistoryStream();
     this.historyFingerprint = "";
@@ -8235,6 +8496,11 @@ class TermdeckApp {
       const optimisticTurns = this.combineHistoryWindow(sessionId, optimisticLive);
       this.applyHistoryTurns(sessionId, optimisticTurns, { preserveScroll: true });
     }
+    // Submitting from TermDeck's own composer never touches the terminal's key handler (it goes straight
+    // out over the websocket), so it needs to resume following on its own -- sending a prompt is an
+    // unambiguous request to watch what comes back.
+    view.tallFollowing = true;
+    this.scrollTallContainerToCursor(view);
     try {
       view.ws.send(JSON.stringify({ type: "submit", text: promptText, bracketed, queue: false }));
     } catch (error) {
@@ -11009,7 +11275,9 @@ class TermdeckApp {
       unreadChanged = this.unreadSessions.delete(id) || unreadChanged;
       this.updateUnreadIndicator(id);
     }
-    if (unreadChanged) this.patchProjectState({ unread_sessions: [...this.unreadSessions] });
+    if (unreadChanged) {
+      this.persistUnreadSessionDelta([previousId, id].filter(Boolean), false);
+    }
     this.rememberRecentlyOpenedTerminal(id);
     if (selected && !this.titlePresentation(selected).spinning) this.viewedCompletedSessions.add(id);
     else this.viewedCompletedSessions.delete(id);
@@ -11184,18 +11452,153 @@ class TermdeckApp {
     if (this.views.has(id)) return this.views.get(id);
     const container = document.createElement("div");
     container.className = "term-container initializing";
+    // Tall-terminal-probe worktree only: xterm.js has no concept of scrolling within an oversized
+    // "current screen" -- its own viewport only becomes scrollable once content has genuinely scrolled
+    // into real backscroll (baseY > 0). Confirmed directly: with rows forced to 1000, term.scrollToBottom()
+    // and term.scrollLines(200) both left viewportY pinned at 0, and .xterm-viewport measured
+    // maxScrollTop=0 even with the cursor 200+ rows below the visible fold. Real TermDeck never hits this
+    // (sessions stay around 30-50 rows, matching the visible area exactly, so there's nothing to scroll).
+    // The fix used here sidesteps xterm's scroll model entirely instead of fighting it: `inner` (not
+    // `container`) is what gets passed to term.open() and is what FitAddon measures, and its height is set
+    // to the real pixel height of FORCE_ROWS rows. xterm therefore just sees an ordinary, fully-fitting,
+    // very tall terminal -- nothing about its rendering or internal scroll logic is unusual. `container`
+    // stays the normal small visible area (unchanged everywhere else in this file: layout, visibility
+    // checks, resize observers) but now has native CSS overflow-y scrolling, so the browser's own
+    // scrollbar/wheel/trackpad handling -- not xterm's -- is what moves through the tall inner content.
+    const inner = document.createElement("div");
+    inner.className = "term-inner";
+    container.appendChild(inner);
     this.$("terminal-area").appendChild(container);
+    // "wheel" specifically, not "scroll": confirmed live that a generic "scroll" event cannot be trusted
+    // to mean the user acted -- xterm repositions its hidden input textarea to track the cursor (for IME
+    // candidate-window placement), and while that textarea stays focused, the browser's own "keep the
+    // focused element in view" behavior fires ordinary "scroll" events on this container with no user
+    // input and no code of TermDeck's involved. Traced live: that contamination created a feedback loop --
+    // one write's post-check reads a scrollTop the browser had already nudged, concludes the user must be
+    // following, and every write after that keeps genuinely following, silently overriding a deliberate
+    // scroll-away. A wheel/trackpad gesture is a real user action the browser's own auto-scroll can never
+    // synthesize, so it's the only signal trusted here.
+    //
+    // Debounced, not a single deferred frame: a single rAF was tried first and was still too early for a
+    // large wheel delta, which Chrome answers with a multi-frame smooth-scroll animation -- confirmed
+    // live, that one-frame check read scrollTop before the animation had gone anywhere, computed "still
+    // near the cursor", and never re-checked once the animation actually finished moving it away.
+    // Debouncing on "no further wheel events for 150ms" is correct regardless of whether a given browser
+    // animates the scroll or applies it instantly.
+    let tallWheelSettleTimer = 0;
+    container.addEventListener("wheel", (event) => {
+      const wheelView = this.views.get(id);
+      if (wheelView) {
+        // Stopping the follow has to be IMMEDIATE, and cannot wait for the debounce below. A streaming
+        // agent delivers a write every ~20-50ms, and each write while following snaps back to the bottom
+        // -- so a scroll-up was being undone within a frame or two, long before the 150ms settle fired,
+        // and the settle then measured a position already dragged back to the bottom and concluded the
+        // user still wanted to follow. Measured: scrolling up during active output left following=true
+        // with scrollTop pinned to the ceiling across 12 consecutive samples, i.e. it was impossible to
+        // read anything while the agent worked. Scrolling UP is unambiguous on its own, so it takes
+        // effect on the spot; only the decision to RESUME following needs the settled position, which is
+        // what the debounce below still handles.
+        if (event.deltaY < 0) wheelView.tallFollowing = false;
+        // Writes must not fight an in-progress gesture either: while the wheel is still moving, the
+        // not-following branch of drainTerminalWrites would keep restoring an anchor captured before
+        // this gesture started, which reads as the view refusing to scroll.
+        wheelView.tallWheelActiveUntil = Date.now() + 250;
+      }
+      clearTimeout(tallWheelSettleTimer);
+      tallWheelSettleTimer = setTimeout(() => {
+        const view = this.views.get(id);
+        if (!view) return;
+        view.tallWheelActiveUntil = 0;
+        view.tallFollowing = this.tallContainerNearCursor(view);
+        // Captured once here, at the settled position, rather than re-sampled per write: each write used
+        // to snapshot "wherever scrollTop happens to be right now" as its own restore target, so small
+        // incremental drift between rapid keystroke-batches (the browser's scroll-into-view nudge,
+        // individually too small to flip tallFollowing) could still accumulate write over write even while
+        // tallFollowing correctly stayed false throughout -- confirmed live.
+        if (!view.tallFollowing) this.tallCaptureAnchorRow(view);
+      }, 150);
+    }, { passive: true });
+    // A hard ceiling, not an intent signal -- unlike the "wheel" listener above, this one never decides
+    // anything about the user, it just enforces tallMaxScrollTop (see its own comment) whenever a scroll
+    // lands past it, however that scroll happened. Native or programmatic, deliberate or the browser's own
+    // focus-driven auto-scroll -- all land here, and all get clamped the same idempotent way, which is why
+    // this one doesn't need the wheel listener's debounce or its care about which events can be trusted.
+    container.addEventListener("scroll", () => {
+      const view = this.views.get(id);
+      if (!view || view.tallMaxScrollTop == null) return;
+      if (container.scrollTop > view.tallMaxScrollTop) container.scrollTop = view.tallMaxScrollTop;
+    }, { passive: true });
+    // The scrollback bridge for the CSS's overflow-y:hidden on .xterm-viewport (see style.css). That rule
+    // takes xterm's own viewport out of the scroll chain so there's a single scroll surface, but the
+    // scrollback it used to scroll through is still real content that has to stay reachable -- this hands
+    // it whatever delta the container can't absorb, so one continuous gesture runs container-first and
+    // then into scrollback, rather than the reverse order the browser's chaining used to impose.
+    //
+    // Deliberately edge-only, and non-passive only where it actually acts: while the container still has
+    // room in the direction being scrolled, this returns without touching the event, leaving the browser's
+    // native scrolling (and its trackpad momentum, which a manual scrollTop-per-event implementation
+    // cannot reproduce) to handle the common case untouched.
+    container.addEventListener("wheel", (event) => {
+      const view = this.views.get(id);
+      if (!view || view.closed || !event.deltaY) return;
+      const buffer = view.term.buffer.active;
+      const up = event.deltaY < 0;
+      // The container is the outer surface in both directions: going up, it has to bottom out at 0 before
+      // scrollback is in play; going down, any pending scrollback has to be spent BEFORE the container
+      // moves again, or the two would run in the wrong order and the content would jump.
+      if (up ? container.scrollTop > 0 : buffer.viewportY >= buffer.baseY) return;
+      if (up && buffer.viewportY <= 0) return;
+      const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+      if (!cellHeight) return;
+      event.preventDefault();
+      const lines = event.deltaY / cellHeight;
+      view.term.scrollLines(lines < 0 ? Math.floor(lines) : Math.ceil(lines));
+    }, { passive: false });
     const term = new Terminal({
       fontSize: this.settings.terminal_font_size, fontFamily: '"SF Mono", Menlo, monospace', letterSpacing: -0.2, theme: this.termTheme(),
-      scrollback: 20000, cursorBlink: !this.perfDisabled("cursor_blink"), macOptionIsMeta: true, allowProposedApi: true,
+      scrollback: 20000, cursorBlink: true, macOptionIsMeta: true, allowProposedApi: true,
     });
     const fit = new FitAddon.FitAddon();
-    const terminalFindAddon = this.perfDisabled("search_addon")
-      ? null : new SearchAddon.SearchAddon({ highlightLimit: TERMINAL_FIND_HIGHLIGHT_LIMIT });
+    const terminalFindAddon = new SearchAddon.SearchAddon({ highlightLimit: TERMINAL_FIND_HIGHLIGHT_LIMIT });
     term.loadAddon(fit);
     if (terminalFindAddon) term.loadAddon(terminalFindAddon);
-    term.open(container);
-    this.enableWebglRenderer(term);
+    // The other half of taking xterm out of the scroll chain (style.css's overflow-y:hidden on
+    // .xterm-viewport is the first half, and on its own does nothing here). xterm does not rely on that
+    // element's CSS overflow to scroll -- it registers its own non-passive "wheel" listener and drives the
+    // buffer directly, so the CSS rule alone left the measured two-stage behavior completely unchanged.
+    // Returning false from this hook is xterm's supported way to say "ignore this wheel event", which
+    // leaves the browser to scroll the one remaining scrollable ancestor: .term-container.
+    //
+    // Unconditional, including on the alternate screen. In a normal terminal xterm translates wheel into
+    // arrow keys there, which is right because the alt screen is exactly one screenful with nothing to
+    // scroll over -- but that premise does not survive 1000 forced rows. A full-screen app here paints a
+    // 1000-row UI of which .term-container shows ~37, so the wheel's first job is moving the viewport
+    // over what the app already painted, which only the container can do. Measured: `seq 1 500 | less`
+    // painted all 500 lines at once into rows 499-998; letting xterm keep the wheel would have left ~963
+    // painted rows unreachable by mouse.
+    //
+    // Known tradeoff, not an oversight: for content that overflows even 1000 rows (`seq 1 5000 | less`),
+    // the app does still have somewhere to scroll, and the wheel no longer tells it so -- paging past the
+    // painted rows needs the keyboard. Bridging the container's bottom edge back into arrow keys the way
+    // the normal screen bridges into scrollback would fix that, but it needs the app-cursor-keys mode off
+    // xterm's private coreService to pick the right escape sequence, so it is left alone here.
+    term.attachCustomWheelEventHandler(() => false);
+    term.open(inner);
+    // Real cell height is only known once xterm has measured the font, which happens synchronously inside
+    // open(). The row count is an explicit pixel height rather than something derived from the container
+    // (the FitAddon-based approach tried earlier) because it has to stay fixed across every later resize
+    // -- if it tracked the container's height the way a normal terminal does, this collapses straight back
+    // to the problem being solved.
+    //
+    // Height and renderer are chosen together by tallRowPlan (see it for the arithmetic). WebGL backs the
+    // terminal with one drawing buffer sized to the FULL terminal, so an over-tall terminal does not fail
+    // loudly -- it silently corrupts, which is what the solid-black screen at 1000 rows was. So the WebGL
+    // mode takes the tallest height the GPU can back and the DOM mode, which has no texture limit at all,
+    // is what buys the full 1000 rows.
+    const cellHeight = term._core?._renderService?.dimensions?.css?.cell?.height || 17;
+    const rowPlan = this.tallRowPlan(cellHeight);
+    inner.style.height = `${Math.round(rowPlan.rows * cellHeight)}px`;
+    if (rowPlan.webgl) this.enableWebglRenderer(term);
     term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
     const view = { sessionId: id, container, term, fit, terminalFindAddon, terminalFindResultIndex: -1,
                    terminalFindResultCount: 0, terminalFindResultListener: null,
@@ -11228,10 +11631,6 @@ class TermdeckApp {
                    attentionScreenDetectionSuppressed: false,
                    reconnectAfterClose: false, claudeInitialReplayCheckTimer: 0,
                    claudeInitialReplayRecoveryAttempted: false,
-                   claudeSnapshotAddon: null, claudeSnapshotRestoreAttempted: false, claudeSnapshotRestored: false,
-                   claudeSnapshotThinRetryDone: false,
-                   claudeSnapshotRequiresRepaint: false, claudeSnapshotBlankScreenPending: false,
-                   claudeSnapshotSaveTimer: 0, claudeSnapshotSavePromise: null,
                    claudeStatusRowRefreshTimer: 0, historyModelRefreshTimer: 0, lastClaudeStatusRowRefreshAt: 0,
                    codexFocusRefreshFrame: 0,
                    promptQueue: this.markdownPromptQueueForSession(id), promptQueueEditIndex: null, promptQueueDispatching: false,
@@ -11345,6 +11744,25 @@ class TermdeckApp {
         if (this.isTerminalScrollV2()) markV2Preserve();
         else markManualScroll();
       }
+      // Typing means the user is done reading whatever they scrolled up to look at, so resume following
+      // -- otherwise they type blind into a prompt that is somewhere off-screen. xterm's own
+      // scrollOnUserInput cannot do this here: it scrolls xterm's viewport, which is not the surface
+      // being scrolled any more (see the tall-container comments above).
+      //
+      // A real KeyboardEvent is the signal, NOT sendInput/onData. onData carries far more than typing:
+      // xterm answers terminal queries (DSR/DA) through it, and with the modes an agent CLI enables it
+      // also emits focus-in/out and mouse reports there. An agent working produces a steady stream of
+      // those, so resuming follow from onData meant the view snapped to the bottom continuously while
+      // output streamed, making it impossible to read anything scrolled back. This handler only ever
+      // sees genuine key events. PageUp/Home above are deliberately excluded by ordering: they browse
+      // rather than type, and the block above has already marked them as such.
+      if (e.type === "keydown" && !["PageUp", "PageDown", "Home", "End"].includes(e.key)) {
+        const tallView = this.views.get(id);
+        if (tallView) {
+          tallView.tallFollowing = true;
+          this.scrollTallContainerToCursor(tallView);
+        }
+      }
       return this.handleTerminalEditingKeys(view, e);
     });
     term.onData((data) => this.sendTrackedInput(view, data));
@@ -11449,320 +11867,6 @@ class TermdeckApp {
     return true;
   }
 
-  // Bisection switches for the work that runs once per terminal write. At ~50 websocket frames/sec on a
-  // streaming tab each of these fires 50x/sec, so toggling one off and watching CPU isolates a culprit
-  // without editing code. PERF_TOGGLES is the catalogue rendered into the settings popover.
-  perfDisabled(key) {
-    const disabled = this.settings.perf_disabled;
-    return !!(disabled && disabled[key]);
-  }
-
-  setPerfDisabled(key, disabled) {
-    if (!this.settings.perf_disabled || typeof this.settings.perf_disabled !== "object") {
-      this.settings.perf_disabled = {};
-    }
-    this.settings.perf_disabled[key] = !!disabled;
-  }
-
-  claudeSnapshotExperimentEnabled() {
-    return !!this.settings.claude_snapshot_experimental && !!window.indexedDB && !!window.SerializeAddon?.SerializeAddon;
-  }
-
-  isClaudeSnapshotView(view) {
-    return !!view && this.session(view.sessionId)?.agent_kind === "claude";
-  }
-
-  ensureClaudeSnapshotAddon(view) {
-    if (this.perfDisabled("serialize_addon")) return false;
-    if (!this.claudeSnapshotExperimentEnabled() || !this.isClaudeSnapshotView(view)) return false;
-    if (view.claudeSnapshotAddon) return true;
-    const Addon = window.SerializeAddon.SerializeAddon;
-    view.claudeSnapshotAddon = new Addon();
-    view.term.loadAddon(view.claudeSnapshotAddon);
-    return true;
-  }
-
-  openClaudeSnapshotDatabase() {
-    if (this.claudeSnapshotDatabasePromise) return this.claudeSnapshotDatabasePromise;
-    this.claudeSnapshotDatabasePromise = new Promise((resolve, reject) => {
-      const request = window.indexedDB.open(CLAUDE_SNAPSHOT_DB_NAME, CLAUDE_SNAPSHOT_DB_VERSION);
-      request.onupgradeneeded = () => {
-        const database = request.result;
-        if (!database.objectStoreNames.contains(CLAUDE_SNAPSHOT_STORE_NAME)) {
-          database.createObjectStore(CLAUDE_SNAPSHOT_STORE_NAME, { keyPath: "sessionId" });
-        }
-        if (!database.objectStoreNames.contains(CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME)) {
-          database.createObjectStore(CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME, { keyPath: "sessionId" });
-        }
-      };
-      request.onsuccess = () => {
-        const database = request.result;
-        database.onversionchange = () => database.close();
-        resolve(database);
-      };
-      request.onerror = () => reject(request.error || new Error("Claude snapshot database could not be opened"));
-      request.onblocked = () => reject(new Error("Claude snapshot database is blocked"));
-    });
-    return this.claudeSnapshotDatabasePromise;
-  }
-
-  claudeSnapshotRecordByteSize(record) {
-    const sizedRecord = { ...record, byteSize: CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES };
-    return new TextEncoder().encode(JSON.stringify(sizedRecord)).byteLength + CLAUDE_SNAPSHOT_RECORD_OVERHEAD_BYTES;
-  }
-
-  ensureClaudeSnapshotStorageLimit() {
-    if (this.claudeSnapshotStorageLimitPromise) return this.claudeSnapshotStorageLimitPromise;
-    this.claudeSnapshotStorageLimitPromise = this.openClaudeSnapshotDatabase().then((database) => new Promise((resolve, reject) => {
-      const transaction = database.transaction(
-        [CLAUDE_SNAPSHOT_STORE_NAME, CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME], "readwrite");
-      const snapshotStore = transaction.objectStore(CLAUDE_SNAPSHOT_STORE_NAME);
-      const manifestStore = transaction.objectStore(CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME);
-      const request = snapshotStore.getAll();
-      manifestStore.clear();
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error || new Error("Claude snapshot storage could not be reconciled"));
-      request.onerror = () => reject(request.error || new Error("Claude snapshots could not be enumerated"));
-      request.onsuccess = () => {
-        const records = request.result.sort((left, right) => Number(right.savedAt || 0) - Number(left.savedAt || 0));
-        let retainedBytes = 0;
-        for (const record of records) {
-          const byteSize = this.claudeSnapshotRecordByteSize(record);
-          if (byteSize > CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES || retainedBytes + byteSize > CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES) {
-            snapshotStore.delete(record.sessionId);
-            continue;
-          }
-          const sizedRecord = { ...record, byteSize };
-          retainedBytes += byteSize;
-          snapshotStore.put(sizedRecord);
-          manifestStore.put({ sessionId: record.sessionId, byteSize, savedAt: Number(record.savedAt || 0) });
-        }
-      };
-    }));
-    return this.claudeSnapshotStorageLimitPromise;
-  }
-
-  async readClaudeSnapshot(sessionId) {
-    const database = await this.openClaudeSnapshotDatabase();
-    await this.ensureClaudeSnapshotStorageLimit();
-    return new Promise((resolve, reject) => {
-      const transaction = database.transaction(CLAUDE_SNAPSHOT_STORE_NAME, "readonly");
-      const request = transaction.objectStore(CLAUDE_SNAPSHOT_STORE_NAME).get(sessionId);
-      request.onsuccess = () => resolve(request.result || null);
-      request.onerror = () => reject(request.error || new Error("Claude snapshot could not be read"));
-    });
-  }
-
-  async writeClaudeSnapshot(record) {
-    const database = await this.openClaudeSnapshotDatabase();
-    await this.ensureClaudeSnapshotStorageLimit();
-    const byteSize = this.claudeSnapshotRecordByteSize(record);
-    if (byteSize > CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES) {
-      throw new Error("Claude snapshot exceeds the 100 MiB storage limit");
-    }
-    const sizedRecord = { ...record, byteSize };
-    return new Promise((resolve, reject) => {
-      const transaction = database.transaction(
-        [CLAUDE_SNAPSHOT_STORE_NAME, CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME], "readwrite");
-      const snapshotStore = transaction.objectStore(CLAUDE_SNAPSHOT_STORE_NAME);
-      const manifestStore = transaction.objectStore(CLAUDE_SNAPSHOT_MANIFEST_STORE_NAME);
-      const request = manifestStore.getAll();
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error || new Error("Claude snapshot could not be saved"));
-      request.onerror = () => reject(request.error || new Error("Claude snapshot manifest could not be read"));
-      request.onsuccess = () => {
-        const existing = request.result.filter((entry) => entry.sessionId !== record.sessionId);
-        existing.sort((left, right) => Number(left.savedAt || 0) - Number(right.savedAt || 0));
-        let retainedBytes = byteSize + existing.reduce((total, entry) => total + Number(entry.byteSize || 0), 0);
-        for (const entry of existing) {
-          if (retainedBytes <= CLAUDE_SNAPSHOT_MAX_STORAGE_BYTES) break;
-          snapshotStore.delete(entry.sessionId);
-          manifestStore.delete(entry.sessionId);
-          retainedBytes -= Number(entry.byteSize || 0);
-        }
-        snapshotStore.put(sizedRecord);
-        manifestStore.put({ sessionId: record.sessionId, byteSize, savedAt: Number(record.savedAt || 0) });
-      };
-    });
-  }
-
-  serializeClaudeSnapshotHistory(view) {
-    const historyEnd = Math.max(0, Number(view.term.buffer.normal.baseY || 0)) - 1;
-    if (historyEnd < 0) return "";
-    const historyStart = Math.max(0, historyEnd - CLAUDE_SNAPSHOT_MAX_LINES + 1);
-    return view.claudeSnapshotAddon.serialize({ range: { start: historyStart, end: historyEnd },
-      excludeAltBuffer: true, excludeModes: true });
-  }
-
-  serializeClaudeSnapshotBuffer(view) {
-    return view.claudeSnapshotAddon.serialize({ scrollback: CLAUDE_SNAPSHOT_MAX_LINES });
-  }
-
-  claudeSnapshotLineCount(snapshot) {
-    if (typeof snapshot !== "string" || !snapshot) return 0;
-    let lines = 0;
-    for (let index = snapshot.indexOf("\n"); index >= 0; index = snapshot.indexOf("\n", index + 1)) lines += 1;
-    return lines;
-  }
-
-  claudeTerminalBufferHasContent(view) {
-    const buffer = view?.term?.buffer?.normal;
-    if (!buffer) return false;
-    if (Number(buffer.baseY || 0) > 0) return true;
-    for (let row = 0; row < buffer.length; row += 1) {
-      if (buffer.getLine(row)?.translateToString(true).trim()) return true;
-    }
-    return false;
-  }
-
-  claudeBottomViewportHasVisibleContent(view) {
-    const buffer = view?.term?.buffer?.active;
-    if (!buffer) return false;
-    const start = Math.max(0, Number(buffer.baseY || 0));
-    const end = Math.min(buffer.length, start + Math.max(1, view.term.rows));
-    for (let row = start; row < end; row += 1) {
-      if (buffer.getLine(row)?.translateToString(true).trim()) return true;
-    }
-    return false;
-  }
-
-  claudeLastContentLineAboveBottomViewport(view) {
-    const buffer = view?.term?.buffer?.active;
-    if (!buffer) return -1;
-    const searchStart = Math.max(0, Number(buffer.baseY || 0) - 1);
-    const searchEnd = Math.max(0, searchStart - Math.max(view.term.rows * 4, 120));
-    for (let row = searchStart; row >= searchEnd; row -= 1) {
-      if (buffer.getLine(row)?.translateToString(true).trim()) return row;
-    }
-    return -1;
-  }
-
-  revealClaudeContentAbovePendingBlankScreen(view) {
-    if (!view?.claudeSnapshotBlankScreenPending || !this.isClaudeSnapshotView(view)) return false;
-    if (this.claudeBottomViewportHasVisibleContent(view)) {
-      view.claudeSnapshotBlankScreenPending = false;
-      return false;
-    }
-    const contentLine = this.claudeLastContentLineAboveBottomViewport(view);
-    if (contentLine < 0) return false;
-    this.scrollTerminalV2ToLine(view, Math.max(0, contentLine - view.term.rows + 1));
-    return true;
-  }
-
-  async restoreClaudeSnapshot(view) {
-    if (!this.ensureClaudeSnapshotAddon(view)) return false;
-    if (view.container.classList.contains("visible")) view.fit.fit();
-    try {
-      const record = await this.readClaudeSnapshot(view.sessionId);
-      if (!record || ![2, 3, CLAUDE_SNAPSHOT_FORMAT_VERSION].includes(record.formatVersion) ||
-          typeof record.snapshot !== "string" || !record.snapshot || record.cols !== view.term.cols ||
-          record.cols < CLAUDE_SNAPSHOT_MIN_COLS || view.term.cols < CLAUDE_SNAPSHOT_MIN_COLS) return false;
-      let fullSnapshot = record.snapshot;
-      let historySnapshot = typeof record.historySnapshot === "string" ? record.historySnapshot : "";
-      if (record.formatVersion === 2) {
-        await new Promise((resolve) => view.term.write(record.snapshot, resolve));
-        historySnapshot = this.serializeClaudeSnapshotHistory(view);
-        fullSnapshot = this.serializeClaudeSnapshotBuffer(view);
-        view.term.reset();
-        if (!fullSnapshot) return false;
-        await this.writeClaudeSnapshot({ sessionId: view.sessionId, formatVersion: CLAUDE_SNAPSHOT_FORMAT_VERSION,
-          cols: view.term.cols, snapshot: fullSnapshot, historySnapshot, savedAt: Date.now() });
-      }
-      const sessionIsProcessing = !!this.session(view.sessionId)?.processing;
-      const requiresRepaint = record.formatVersion === 3 || sessionIsProcessing;
-      const legacyHistoryOnlySnapshot = record.formatVersion === 3;
-      if (legacyHistoryOnlySnapshot) {
-        historySnapshot = record.snapshot;
-        const emptyScreen = `\x1b[0m${"\r\n".repeat(Math.max(1, view.term.rows))}\x1b[2J\x1b[H`;
-        await new Promise((resolve) => view.term.write(historySnapshot + emptyScreen, resolve));
-      } else {
-        await new Promise((resolve) => view.term.write(fullSnapshot, resolve));
-      }
-      view.claudeSnapshotRestored = true;
-      const restoredWithBlankTail = !this.claudeBottomViewportHasVisibleContent(view) &&
-        this.claudeLastContentLineAboveBottomViewport(view) >= 0;
-      view.claudeSnapshotRequiresRepaint = requiresRepaint || restoredWithBlankTail;
-      view.claudeSnapshotBlankScreenPending = restoredWithBlankTail;
-      view.claudeSnapshotRestoredCols = record.cols;
-      return true;
-    } catch (error) {
-      view.claudeSnapshotError = error instanceof Error ? error.message : String(error);
-      return false;
-    }
-  }
-
-  scheduleClaudeSnapshotSave(view) {
-    if (!this.ensureClaudeSnapshotAddon(view) || view.claudeSnapshotBlankScreenPending ||
-        !this.claudeTerminalBufferHasContent(view)) return;
-    clearTimeout(view.claudeSnapshotSaveTimer);
-    view.claudeSnapshotSaveTimer = setTimeout(() => {
-      view.claudeSnapshotSaveTimer = 0;
-      void this.persistClaudeSnapshot(view);
-    }, CLAUDE_SNAPSHOT_IDLE_SAVE_MS);
-  }
-
-  async persistClaudeSnapshot(view) {
-    if (!this.ensureClaudeSnapshotAddon(view) || view.claudeSnapshotBlankScreenPending ||
-        !this.claudeTerminalBufferHasContent(view)) return;
-    if (view.term.cols < CLAUDE_SNAPSHOT_MIN_COLS) return;
-    if (view.claudeSnapshotSavePromise) return view.claudeSnapshotSavePromise;
-    let snapshot, historySnapshot;
-    try {
-      snapshot = this.serializeClaudeSnapshotBuffer(view);
-      historySnapshot = this.serializeClaudeSnapshotHistory(view);
-    } catch (error) {
-      view.claudeSnapshotError = error instanceof Error ? error.message : String(error);
-      return;
-    }
-    if (!snapshot) return;
-    // Never let a save shrink the stored history. A restart that leaves the tab showing a single repainted
-    // screen would otherwise have its 3-second idle save overwrite a full snapshot with that one screen,
-    // destroying the history permanently -- the reason this kept "going back to one page" and staying
-    // there. One screen of slack absorbs normal churn; a genuine geometry change makes the stored record
-    // unusable anyway, so a differing cols is always allowed through.
-    try {
-      const previous = await this.readClaudeSnapshot(view.sessionId);
-      if (previous && previous.cols === view.term.cols &&
-          this.claudeSnapshotLineCount(snapshot) + view.term.rows <
-            this.claudeSnapshotLineCount(previous.snapshot)) return;
-    } catch (_error) {
-      // An unreadable previous record is not a reason to skip persisting the current one.
-    }
-    const record = { sessionId: view.sessionId, formatVersion: CLAUDE_SNAPSHOT_FORMAT_VERSION, cols: view.term.cols,
-      snapshot, historySnapshot, savedAt: Date.now() };
-    view.claudeSnapshotSavePromise = this.writeClaudeSnapshot(record).catch((error) => {
-      view.claudeSnapshotError = error instanceof Error ? error.message : String(error);
-    }).finally(() => { view.claudeSnapshotSavePromise = null; });
-    return view.claudeSnapshotSavePromise;
-  }
-
-  flushClaudeSnapshotSaves() {
-    if (!this.claudeSnapshotExperimentEnabled()) return;
-    for (const view of this.views.values()) {
-      clearTimeout(view.claudeSnapshotSaveTimer);
-      view.claudeSnapshotSaveTimer = 0;
-      void this.persistClaudeSnapshot(view);
-    }
-  }
-
-  configureClaudeSnapshotExperiment() {
-    for (const view of this.views.values()) {
-      if (!this.isClaudeSnapshotView(view)) continue;
-      if (!this.claudeSnapshotExperimentEnabled()) {
-        clearTimeout(view.claudeSnapshotSaveTimer);
-        view.claudeSnapshotSaveTimer = 0;
-        if (view.claudeSnapshotAddon) {
-          view.claudeSnapshotAddon.dispose();
-          view.claudeSnapshotAddon = null;
-        }
-        continue;
-      }
-      this.ensureClaudeSnapshotAddon(view);
-      if (view.everConnected) view.claudeSnapshotRestoreAttempted = true;
-      this.scheduleClaudeSnapshotSave(view);
-    }
-  }
-
   connect(id, view) {
     if (view.closed) return;
     if (this.isTerminalScrollV2() && !view.userScrollIntent) {
@@ -11770,30 +11874,12 @@ class TermdeckApp {
       view.preserveRowsFromBottom = 0;
     }
     // A reconnect that lands with less than a screen of scrollback gets one more chance to restore: the
-    // attempt flag is otherwise set once per view, so a tab left thin by a server restart never reconsulted
-    // IndexedDB. Capped at a single retry because restore re-enters connect(), and a snapshot that legitimately
-    // has nothing to give would otherwise spin here forever.
-    const claudeBufferIsThin = Number(view.term?.buffer?.active?.baseY || 0) < Number(view.term?.rows || 0);
-    const claudeWantsThinRetry = claudeBufferIsThin && !view.claudeSnapshotRestored && !view.claudeSnapshotThinRetryDone;
-    if (this.isClaudeSnapshotView(view) && this.claudeSnapshotExperimentEnabled() &&
-        (!view.claudeSnapshotRestoreAttempted || claudeWantsThinRetry)) {
-      if (view.claudeSnapshotRestoreAttempted) view.claudeSnapshotThinRetryDone = true;
-      view.claudeSnapshotRestoreAttempted = true;
-      void this.restoreClaudeSnapshot(view).then(() => {
-        if (!view.closed) this.connect(id, view);
-      });
-      return;
-    }
     view.suppressReconnect = false;
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const preservedClaudeBuffer = this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view) &&
-      this.claudeTerminalBufferHasContent(view);
-    const hasPopulatedBuffer = (view.everConnected || view.claudeSnapshotRestored) && !view.closed &&
-      (view.term?.buffer?.active?.baseY > 0 || preservedClaudeBuffer);
-    const repaintPreservedBuffer = hasPopulatedBuffer && this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view);
-    const shouldRepaintClaudeBuffer = repaintPreservedBuffer &&
-      (view.claudeSnapshotRequiresRepaint || !!this.session(id)?.processing);
-    const screenRepaint = hasPopulatedBuffer && (!repaintPreservedBuffer || !shouldRepaintClaudeBuffer) ? 0 : 1;
+    const hasPopulatedBuffer = view.everConnected && !view.closed && view.term?.buffer?.active?.baseY > 0;
+    // The server's SIGWINCH repaint is what rebuilds an agent's screen on reattach, so a client that
+    // already holds a populated buffer asks it to skip; an empty one always wants the repaint.
+    const screenRepaint = hasPopulatedBuffer ? 0 : 1;
     const haveBuffer = hasPopulatedBuffer ? 1 : 0;
     const ws = new WebSocket(`${proto}://${location.host}/ws/${id}?screen_repaint=${screenRepaint}&have_buffer=${haveBuffer}` +
       `&repaint_preserved_buffer=${shouldRepaintClaudeBuffer ? 1 : 0}`);
@@ -11853,7 +11939,10 @@ class TermdeckApp {
         this.touchSessionActivity(id);
       }
       if (view.awaitingSnapshot) {
-        if (view.reconnectReset && e.data.byteLength > 0 && !view.preserveBufferOnReconnect) view.term.reset();
+        if (view.reconnectReset && e.data.byteLength > 0 && !view.preserveBufferOnReconnect) {
+          view.term.reset();
+          this.tallResetScrollState(view);
+        }
         const snapshotScrollGeneration = view.manualScrollGeneration;
         const v2 = this.isTerminalScrollV2();
         const followSnapshot = v2 ? view.scrollMode === "follow" : view.keepBottom && !view.manualScroll;
@@ -11878,7 +11967,7 @@ class TermdeckApp {
           if (v2 && view.container.classList.contains("visible")) {
             const firstSnapshot = !view.initialSnapshotPainted;
             view.initialSnapshotPainted = true;
-            view.forceResizeAfterFit = firstSnapshot ? false : !(this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view));
+            view.forceResizeAfterFit = !firstSnapshot;
             this.scheduleV2Fit(view);
           } else if (view.resyncResizeRepairPending && view.container.classList.contains("visible")) {
             // Legacy (non-V2) scroll mode has no equivalent post-snapshot repaint trigger above, so it
@@ -11928,10 +12017,6 @@ class TermdeckApp {
       const followOutput = this.isTerminalScrollV2() ? false : view.keepBottom || Date.now() < view.pinBottomUntil;
       const outputScrollGeneration = view.manualScrollGeneration;
       this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
-        if (shouldRepaintClaudeBuffer && e.data.byteLength > 0 && this.claudeBottomViewportHasVisibleContent(view)) {
-          view.claudeSnapshotRequiresRepaint = false;
-          view.claudeSnapshotBlankScreenPending = false;
-        }
         if (this.isTerminalScrollV2()) {
           if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
           return;
@@ -12373,12 +12458,8 @@ class TermdeckApp {
       view.keepBottom = true;
       view.pinBottomUntil = Date.now() + 8000;
     }
-    if (this.isClaudeSnapshotView(view) && this.claudeSnapshotExperimentEnabled()) {
-      view.claudeSnapshotRestored = false;
-      view.claudeSnapshotRestoreAttempted = false;
-      view.claudeSnapshotThinRetryDone = false;
-    }
     view.term.reset();
+    this.tallResetScrollState(view);
     // V2 mode gets its repaint trigger for free once the forced reconnect below actually delivers a
     // snapshot (connect()'s post-replay callback), the same path a plain page refresh goes through --
     // scheduling it again here, before that reconnect has even started, used to race it and could nudge
@@ -12431,7 +12512,6 @@ class TermdeckApp {
     if (!view || view.closed) return;
     view.userScrollIntent = false;
     view.scrollMode = "follow";
-    if (this.revealClaudeContentAbovePendingBlankScreen(view)) return;
     view.v2Programmatic = true;
     view.term.scrollToBottom();
     queueMicrotask(() => {
@@ -12671,9 +12751,7 @@ class TermdeckApp {
       // A terminal may have been painted while its container was hidden or
       // at its pre-flex width. Refresh after the settled fit so the canvas
       // and text colors are repainted together with the final geometry.
-      const suppressExperimentalClaudeReflow = this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view);
-      const hasPaintedInitialSnapshot = view.initialSnapshotPainted;
-      const forceResizeThisFrame = hasPaintedInitialSnapshot && (forceResize || view.forceResizeAfterFit) && !suppressExperimentalClaudeReflow;
+      const forceResizeThisFrame = view.initialSnapshotPainted && (forceResize || view.forceResizeAfterFit);
       if (!hasPaintedInitialSnapshot) view.forceResizeAfterFit = false;
       if (forceResizeThisFrame) {
         view.forceResizeAfterFit = false;
@@ -13259,6 +13337,207 @@ class TermdeckApp {
     this.triggerSessionAttention(view.sessionId);
   }
 
+  // Tall-terminal-probe worktree only: xterm's own "follow" scroll mode is driven by baseY (how much has
+  // scrolled into real backscroll), which stays 0 here since nothing ever scrolls off a 1000-row screen in
+  // normal use. Cursor row is the equivalent signal in this model. Mirrors the standard terminal UX every
+  // other terminal already has: auto-follow new output, but stop the moment the user scrolls away to read
+  // something earlier, and resume once they scroll back near the bottom themselves.
+  //
+  // Deliberately NOT a "scroll" event listener tracking a persistent follow flag: xterm repositions its
+  // hidden input textarea to track the cursor (for IME candidate-window placement), and while focused that
+  // can itself trigger the browser's own "keep the focused element in view" auto-scroll -- confirmed live,
+  // that fired a real "scroll" event with no code of mine involved, which corrupted a flag-based follow
+  // state (traced: it silently flipped follow back on after the user had deliberately scrolled away, so
+  // the very next line of output yanked them back down). Comparing scroll position against the cursor
+  // FRESH, at both ends of each write, is immune to that: it only reacts to what changed within the write.
+  // The cursor itself sits inside the input box, but Claude/Codex both draw a closing border plus a
+  // status line (model/cost, "shift+tab to cycle", token counts, ...) below it -- real content the
+  // cursor's own row doesn't account for, so following cursorY alone clips those rows out of view.
+  // Bounded to a fixed 12-row lookahead below the cursor rather than a full-buffer scan: real trailing
+  // decoration is always a handful of rows, never hundreds, so this stays O(12) per write regardless of
+  // how tall the forced buffer is -- no scan of the other ~988 rows that can't matter here.
+  //
+  // buffer.getLine(y) takes an ABSOLUTE row index (0 = the very first row ever written, scrollback
+  // included), but cursorY is relative to the current viewport top (viewportY, which tracks baseY here --
+  // see the earlier scroll note above term.open()). They only coincide while baseY is still 0. Confirmed
+  // live on a long-running session: at baseY=1584, getLine(cursorY) landed on unrelated leftover content
+  // ("  526") while getLine(baseY+cursorY) landed on the real prompt row ("❯ ") -- every getLine() call
+  // here has to add baseY back in, or this silently reads the wrong rows the moment a session outlives
+  // one screenful of real scrollback. The returned row stays viewport-relative (i.e. still in cursorY's
+  // frame), because that's what the pixel math both callers do needs.
+  tallEffectiveBottomRow(view) {
+    const buffer = view.term.buffer.active;
+    const baseY = buffer.baseY || 0;
+    const cursorY = buffer.cursorY;
+    let last = cursorY;
+    const limit = Math.min(buffer.length - 1 - baseY, cursorY + 12);
+    for (let row = cursorY + 1; row <= limit; row += 1) {
+      if (buffer.getLine(baseY + row)?.translateToString(true).trim()) last = row;
+    }
+    return last;
+  }
+
+  tallContainerNearCursor(view) {
+    const inner = view.container.querySelector(".term-inner");
+    if (!inner) return true;
+    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+    if (!cellHeight) return true;
+    const target = Math.max(0, (this.tallEffectiveBottomRow(view) + 1) * cellHeight - view.container.clientHeight);
+    return Math.abs(view.container.scrollTop - target) <= 24;
+  }
+
+  scrollTallContainerToCursor(view) {
+    if (!view || view.closed || view.tallMaxScrollTop == null) return;
+    // Following means showing the newest output, so xterm's own viewport has to be back at the bottom.
+    // While parked it is deliberately left short of baseY (see tallHoldAnchorRow) -- that is what stops
+    // it auto-scrolling -- and leaving it there would pin the canvas to stale rows no matter where the
+    // container scrolls. Clearing the pin matters just as much: it is the flag that says "parked".
+    const buffer = view.term.buffer.active;
+    if (Number(buffer.viewportY || 0) < Number(buffer.baseY || 0)) view.term.scrollToBottom();
+    view.tallPinnedViewportY = null;
+    view.tallAnchorRow = null;
+    view.container.scrollTop = view.tallMaxScrollTop;
+  }
+
+  // Every piece of tall-scroll state is derived from buffer contents, so all of it is meaningless the
+  // moment term.reset() throws that buffer away -- and none of it resets itself. tallMaxScrollTop is the
+  // damaging one: a restarted session repaints maybe 30 rows, but the ceiling left over from the previous
+  // (much longer) session still points hundreds of rows down, and since the follow logic drives straight
+  // to that ceiling, the view opens parked in blank space far below the new content with the composer out
+  // of sight. container.scrollTop needs clearing for the same reason -- a DOM scroll offset survives
+  // term.reset() untouched -- and tallFollowing goes back to true because a rebuilt buffer has no "the
+  // user scrolled away to read something" to preserve.
+  tallResetScrollState(view) {
+    if (!view) return;
+    view.tallMaxScrollTop = null;
+    view.tallAnchorRow = null;
+    view.tallPinnedViewportY = null;
+    view.tallFollowing = true;
+    view.container.scrollTop = 0;
+  }
+
+  // What the user is reading is a LINE, not a pixel offset, and in this layout those are not the same
+  // thing. Canvas row N renders buffer row viewportY + N, and xterm keeps viewportY pinned to baseY here
+  // (its own viewport never moves, ours does), so every line that overflows the forced row count and
+  // pushes into scrollback slides the entire canvas up underneath a fixed scrollTop. Measured while
+  // parked mid-history with output streaming: scrollTop held at exactly 17212 the whole time while
+  // viewportY went 401 -> 1603, so the line under the viewport drifted from "1222" to "3022" -- the view
+  // never jumped, but 1200 lines scrolled past under it. Anchoring to an absolute buffer row and
+  // recomputing scrollTop from it each write is what actually holds a line still.
+  tallCaptureAnchorRow(view) {
+    if (!view || view.closed) return;
+    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+    if (!cellHeight) { view.tallAnchorRow = null; view.tallPinnedViewportY = null; return; }
+    const viewportY = Number(view.term.buffer.active.viewportY || 0);
+    view.tallAnchorRow = viewportY + Math.round(view.container.scrollTop / cellHeight);
+    view.tallPinnedViewportY = viewportY;
+  }
+
+  // Holds the anchored line by keeping xterm's viewport where it was, rather than letting it slide and
+  // then correcting scrollTop to compensate. Correcting after the fact was accurate -- the anchored line
+  // sat on the same pixel row in 871 of 872 sampled frames -- but ruinously expensive: xterm only leaves
+  // its viewport alone while it believes it is scrolled up, and here it never was (our container did the
+  // scrolling, so viewportY stayed glued to baseY). Every line of new output therefore advanced viewportY,
+  // which remaps every rendered row to a different buffer row and forces the DOM renderer to rebuild all
+  // 1000 of them, plus a compensating scrollTop write. Measured over 9s of line-by-line output while
+  // parked: 107 viewport shifts and 221 scrollTop writes -- the source of the visible jitter.
+  //
+  // Putting the viewport back once is all it takes, because that leaves viewportY < baseY, which is
+  // exactly xterm's own "the user has scrolled up" state -- from then on xterm declines to auto-scroll
+  // and holds the position itself, for free, and the new output lands on rows outside the rendered window
+  // so there is nothing to repaint at all. The steady state costs one integer comparison per write.
+  tallHoldAnchorRow(view) {
+    if (!view || view.closed || view.tallPinnedViewportY == null) return;
+    const current = Number(view.term.buffer.active.viewportY || 0);
+    if (current === view.tallPinnedViewportY) return;
+    view.term.scrollLines(view.tallPinnedViewportY - current);
+    const settled = Number(view.term.buffer.active.viewportY || 0);
+    if (settled === view.tallPinnedViewportY) return;
+    // xterm could not go back that far -- the anchored line has aged out of the scrollback entirely.
+    // Absorb whatever it could not give us with the container and re-pin, so we stop asking for a row
+    // that no longer exists.
+    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+    if (cellHeight) {
+      view.container.scrollTop =
+        Math.max(0, view.container.scrollTop - (settled - view.tallPinnedViewportY) * cellHeight);
+    }
+    view.tallPinnedViewportY = settled;
+    view.tallAnchorRow = settled + Math.round(view.container.scrollTop / (cellHeight || 21));
+  }
+
+  // `inner` (see term.open() below) is always a full FORCE_ROWS tall in CSS regardless of how much of it
+  // actually has content -- that's what lets xterm treat it as an ordinary, fully-fitting terminal (see
+  // that comment). But it means the browser's own native max-scroll lets the user wheel/trackpad straight
+  // past the real content into however many hundred rows of permanently blank space remain below the
+  // prompt, with nothing to stop them -- unlike a normal terminal, where there's simply nothing past the
+  // prompt to scroll into. tallMaxScrollTop tracks where the real content currently ends (reusing
+  // tallCursorRegionMostlyBlank's gate, so it never latches onto a mid-padding position either -- see that
+  // comment) and the "scroll" listener below enforces it as a hard ceiling, independent of whether the
+  // view is currently following. Updating it even while not following matters: content keeps growing while
+  // the user has scrolled away to read history, and the ceiling has to grow with it, or scrolling back down
+  // later would stop short of the actual new bottom.
+  tallUpdateMaxScrollTop(view) {
+    // Switching between the normal and alternate screens replaces the entire visible surface, so any
+    // "the user scrolled away to read something" state from the old one is meaningless against the new
+    // one -- without this reset, opening a pager after having scrolled up would inherit tallFollowing
+    // false and strand the view. Note this deliberately does NOT special-case where to scroll on the
+    // alternate screen: following the cursor turns out to be right there too, because a full-screen app
+    // leaves its cursor where its content is. Measured live, `seq 1 500 | less` bottom-aligns -- it
+    // paints lines 1-500 into rows 499-998 with "(END)" on row 999 and parks the cursor there, so rows
+    // 0-498 are genuinely blank and following the cursor to the bottom is exactly right. (An earlier
+    // pass here forced row 0 on entering the alternate screen, on the strength of a probe that read rows
+    // 0-39 and saw blanks; the probe was reading a region the viewport was never showing.)
+    const alternate = view.term.buffer.active.type === "alternate";
+    if (alternate !== view.tallOnAlternateScreen) {
+      view.tallOnAlternateScreen = alternate;
+      view.tallFollowing = true;
+    }
+    if (this.tallCursorRegionMostlyBlank(view)) return;
+    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+    if (!cellHeight || !view.container.clientHeight) return;
+    // tallEffectiveBottomRow, not raw cursorY: picks up the closing border + status line Claude/Codex
+    // draw below the input box (see that function's comment), so the boundary lands past them instead of
+    // clipping them out of view.
+    const bottomPx = (this.tallEffectiveBottomRow(view) + 1) * cellHeight;
+    view.tallMaxScrollTop = Math.max(0, bottomPx - view.container.clientHeight);
+  }
+
+  // A snapshot/session-attach redraw pushes "rows" blank rows past the cursor before clearing and
+  // repainting -- invisible on a normal ~40-row terminal. Forced to 1000 rows, that same trick walks the
+  // cursor through up to 1000 blank rows before the redraw actually lands, and dtach/websocket framing
+  // splits it across many writes, so a write's callback can fire with the cursor sitting wherever this
+  // particular chunk's blank run happened to end, well before the matching clear+redraw chunk arrives.
+  // Confirmed live (instrumented scrollTallContainerToCursor across a real reconnect): a mid-sequence
+  // write landed at cursorY=995, and naively following it scrolled the container there for over a
+  // second before the next write (real content, cursorY=161) corrected it -- a real, visible "scrolled
+  // past the bottom, prompt pushed far up" glitch.
+  //
+  // Two things this can't be detected from: the escape sequence isn't consistent (confirmed live: one
+  // reconnect used bare "\r\n" pairs, another used repeated "\x1b[2K\x1b[1B" erase-line+cursor-down --
+  // whatever a given TUI's redraw path happens to use to advance a blank row), and the buffer row at the
+  // cursor isn't reliably blank either -- it can carry a stray glyph ghosted there from an earlier,
+  // differently-sized frame that a later redraw never revisited (confirmed live: row 995 held a lone
+  // "❯ " left over from a prior render). What's reliable is the shape of the neighborhood: real settled
+  // content is dense (a live conversation has text on most nearby rows); a cursor mid-blank-run sits in a
+  // stretch that's almost entirely empty except for whatever stale ghosts happen to be scattered through
+  // it. Requiring most of a screenful above the cursor to be blank catches this regardless of which
+  // escape sequence produced it, and a false trigger costs nothing -- it just skips one write's follow,
+  // and the very next write (arriving momentarily) reliably has a trustworthy cursor to follow instead.
+  tallCursorRegionMostlyBlank(view) {
+    const buffer = view.term.buffer.active;
+    const baseY = buffer.baseY || 0;
+    const row = buffer.cursorY;
+    const start = Math.max(0, row - 20);
+    let blank = 0;
+    let total = 0;
+    for (let r = start; r <= row; r += 1) {
+      total += 1;
+      // getLine() is absolute, cursorY is viewport-relative -- see tallEffectiveBottomRow's comment.
+      if (!buffer.getLine(baseY + r)?.translateToString(true).trim()) blank += 1;
+    }
+    return total > 0 && blank / total >= 0.7;
+  }
+
   drainTerminalWrites(view) {
     if (!view || view.closed || view.outputWriteInFlight) return;
     if (!view.outputQueue.length) return;
@@ -13272,9 +13551,15 @@ class TermdeckApp {
       batch.push(view.outputQueue.shift());
     }
     view.outputWriteInFlight = true;
+    // view.tallFollowing (default true; only ever changed by the "wheel" listener in ensureView) is the
+    // sole source of truth for whether to follow -- NOT a fresh per-write scrollTop comparison, which was
+    // tried first and had a real feedback-loop bug: the browser's own scroll-into-view drift (see that
+    // listener's comment) could make one write's check read a contaminated position, which then locked
+    // "following" on for every write after it.
+    const following = view.tallFollowing !== false;
     let total = 0;
     for (const item of batch) {
-      if (!this.perfDisabled("viewport_restore")) this.noteTerminalViewportRestoreOutput(view, item.data);
+      this.noteTerminalViewportRestoreOutput(view, item.data);
       total += item.data.length;
     }
     let payload;
@@ -13295,17 +13580,37 @@ class TermdeckApp {
           if (item.afterWrite) item.afterWrite();
         }
       }
-      if (live && !this.perfDisabled("attention_detect")) this.detectTerminalAttentionFromBuffer(view);
+      if (live) {
+        // Kept up to date regardless of following (see tallUpdateMaxScrollTop's comment) -- it no-ops on
+        // a mid-padding write (see tallCursorRegionMostlyBlank's comment), which also means
+        // scrollTallContainerToCursor below correctly leaves scrollTop alone for that one cycle instead
+        // of following a bogus position: the very next write (the real redraw) fires this callback again
+        // with a trustworthy cursor.
+        this.tallUpdateMaxScrollTop(view);
+        if (following) {
+          this.scrollTallContainerToCursor(view);
+        } else if (Date.now() >= (view.tallWheelActiveUntil || 0)) {
+          // Holds the anchored LINE still (see tallHoldAnchorRow), which also absorbs the browser's own
+          // scroll-into-view drift -- the user should never see the view move while they have deliberately
+          // scrolled away to read something.
+          //
+          // Skipped entirely while a wheel gesture is still in flight: the anchor this defends was
+          // captured before that gesture began, so re-asserting it mid-gesture actively drags the view
+          // back against the user. The settle handler captures a fresh anchor 150ms after the gesture
+          // ends, and this resumes holding that one.
+          this.tallHoldAnchorRow(view);
+        }
+      }
+      if (live) this.detectTerminalAttentionFromBuffer(view);
       if (live && view.needsViewportRepair && !view.outputQueue.length &&
           view.container.classList.contains("visible")) {
         view.needsViewportRepair = false;
         this.repairTerminalViewport(view);
       }
-      if (live && !this.perfDisabled("snapshot_save")) this.scheduleClaudeSnapshotSave(view);
-      if (live && !this.perfDisabled("history_refresh")) this.scheduleHistoryTerminalModelRefresh(view);
-      if (live && !this.perfDisabled("status_row_refresh")) this.scheduleClaudeStatusRowRefresh(view);
-      if (live && !this.perfDisabled("tail_repair")) this.scheduleTerminalTailRepair(view);
-      if (live && !this.perfDisabled("viewport_restore")) this.scheduleTerminalViewportRestore(view);
+      if (live) this.scheduleHistoryTerminalModelRefresh(view);
+      if (live) this.scheduleClaudeStatusRowRefresh(view);
+      if (live) this.scheduleTerminalTailRepair(view);
+      if (live) this.scheduleTerminalViewportRestore(view);
       this.drainTerminalWrites(view);
     });
   }
@@ -13358,10 +13663,10 @@ class TermdeckApp {
 
   refreshTerminalAppearance(view, forceResize = false) {
     if (!view || !view.term) return;
-    view.term.options.theme = { ...this.termTheme() };
+    view.term.options.theme = { ...this.termTheme(), ...(this.terminalFindThemeOverride(view) || {}) };
     if (typeof view.term.clearTextureAtlas === "function") view.term.clearTextureAtlas();
     const renderService = view.term._core?._renderService;
-    const allowForcedRendererReset = forceResize && !(this.claudeSnapshotExperimentEnabled() && this.isClaudeSnapshotView(view));
+    const allowForcedRendererReset = forceResize;
     if (allowForcedRendererReset && renderService) {
       if (typeof renderService.clear === "function") renderService.clear();
       if (typeof renderService.handleResize === "function") renderService.handleResize(view.term.cols, view.term.rows);
@@ -13489,6 +13794,9 @@ class TermdeckApp {
       if (migratedExcludeGlob) incoming.excluded_file_glob = legacyExcludeGlob;
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
       this.persistedSettings = this.copySettings(this.settings);
+      this.filesPanelWidthInitialized = !!this.settings.files_panel_width_initialized;
+      this.lastFilesSidePanelTab = FILES_SIDE_PANEL_TABS.includes(this.settings.files_side_panel_last_tab)
+        ? this.settings.files_side_panel_last_tab : "project";
       if (!this.settings.md_prompt_queues || typeof this.settings.md_prompt_queues !== "object") this.settings.md_prompt_queues = {};
       if (!this.settings.md_prompt_drafts || typeof this.settings.md_prompt_drafts !== "object") this.settings.md_prompt_drafts = {};
       if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
@@ -13506,29 +13814,10 @@ class TermdeckApp {
       this.settings = { ...SETTINGS_DEFAULTS };
       this.persistedSettings = this.copySettings(this.settings);
     }
-    const storedFilesPinned = localStorage.getItem("termdeck.files_pinned");
-    if (storedFilesPinned !== null) this.settings.files_pinned = parseModeFlag(storedFilesPinned);
-    const storedSidebarColor = localStorage.getItem("termdeck.sidebar_text_color");
-    const storedLegacyColor = localStorage.getItem("termdeck.sidebar_status_color") ||
-      localStorage.getItem("termdeck.wave_color");
-    if (/^#[0-9a-f]{6}$/i.test(storedSidebarColor || "")) this.settings.sidebar_text_color = storedSidebarColor;
-    else if (/^#[0-9a-f]{6}$/i.test(storedLegacyColor || "") &&
-             storedLegacyColor.toLowerCase() !== "#a5e5f0") this.settings.sidebar_text_color = storedLegacyColor;
-    if (!localStorage.getItem("termdeck.sidebar_text_color") &&
-        String(this.settings.sidebar_text_color || "").toLowerCase() === "#a5e5f0") {
-      this.settings.sidebar_text_color = SETTINGS_DEFAULTS.sidebar_text_color;
-    }
     if (!/^#[0-9a-f]{6}$/i.test(String(this.settings.sidebar_text_color || ""))) {
       this.settings.sidebar_text_color = SETTINGS_DEFAULTS.sidebar_text_color;
     }
-    this.settings.sidebar_text_color = SETTINGS_DEFAULTS.sidebar_text_color;
     this.settings.show_terminal_age = true;
-    // Kill-switch; this line force-enabled the experiment, overriding both the default and any saved
-    // preference. The restore writes a serialized snapshot into an xterm that is concurrently receiving
-    // live output, so the two interleave mid-row and corrupt the screen, and a fresh tab reports
-    // have_buffer=1 with no real buffer, which suppresses the repaint and leaves it blank. Set back to
-    // true to resume work on the feature.
-    this.settings.claude_snapshot_experimental = false;
     if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
     if (this.normalizeNotebookNotes()) this.saveSettings();
     // V2 is now the only desktop terminal scroll controller. Remove the old
@@ -13633,14 +13922,15 @@ class TermdeckApp {
 
   applySettings({ fitTerminals = true } = {}) {
     const s = this.settings;
-    document.body.classList.toggle("perf-disable-sidebar-motion", this.perfDisabled("sidebar_motion"));
     const sidebar = this.$("sidebar");
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
     const normalWidth = Number(s.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
     if (filesVisible && s.files_pinned && !this.filesPanelWidthInitialized) {
       s.files_width = FILEDECK_DEFAULT_SIDEBAR_WIDTH;
       this.filesPanelWidthInitialized = true;
+      s.files_panel_width_initialized = true;
       localStorage.setItem("termdeck.files_panel_width_v2", "1");
+      this.saveSettings();
     }
     const pinnedFileWidth = Math.max(Number(s.files_width) || 0, FILEDECK_DEFAULT_SIDEBAR_WIDTH);
     const floatingFileWidth = Math.max(Number(s.files_width) || 0, normalWidth * 2);
@@ -13803,9 +14093,11 @@ class TermdeckApp {
     this.saveTimer = null;
     const patch = this.changedSettingsPatch(this.copySettings(this.settings));
     if (!Object.keys(patch).length) return;
-    const body = JSON.stringify(patch);
-    void fetch("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body,
-      keepalive: body.length < 60000 }).catch((error) => console.error("TermDeck settings exit save failed", error));
+    for (const operation of this.settingWriteOperations(patch)) {
+      const body = operation.method === "PUT" ? JSON.stringify({ value: operation.value }) : undefined;
+      void fetch(operation.path, { method: operation.method, headers: body ? { "Content-Type": "application/json" } : {},
+        body, keepalive: !body || body.length < 60000 }).catch((error) => console.error("TermDeck settings exit save failed", error));
+    }
   }
 
   copySettings(settings) {
@@ -13821,6 +14113,42 @@ class TermdeckApp {
     return patch;
   }
 
+  settingWriteOperations(patch) {
+    const operations = [];
+    for (const [key, value] of Object.entries(patch)) {
+      const previous = this.persistedSettings[key];
+      const keyed = value && previous && typeof value === "object" && typeof previous === "object" &&
+        !Array.isArray(value) && !Array.isArray(previous);
+      if (!keyed) {
+        operations.push({ key, method: "PUT", path: `/api/settings/${encodeURIComponent(key)}`, value });
+        continue;
+      }
+      const entryKeys = new Set([...Object.keys(previous), ...Object.keys(value)]);
+      for (const entryKey of entryKeys) {
+        if (!Object.prototype.hasOwnProperty.call(value, entryKey)) {
+          operations.push({ key, entryKey, method: "DELETE",
+            path: `/api/settings/${encodeURIComponent(key)}/${encodeURIComponent(entryKey)}` });
+        } else if (JSON.stringify(value[entryKey]) !== JSON.stringify(previous[entryKey])) {
+          operations.push({ key, entryKey, method: "PUT",
+            path: `/api/settings/${encodeURIComponent(key)}/${encodeURIComponent(entryKey)}`, value: value[entryKey] });
+        }
+      }
+    }
+    return operations;
+  }
+
+  applyPersistedSettingOperation(operation, value) {
+    if (operation.entryKey === undefined) {
+      this.persistedSettings[operation.key] = this.copySettings(value);
+      return;
+    }
+    const current = this.persistedSettings[operation.key] && typeof this.persistedSettings[operation.key] === "object"
+      ? this.copySettings(this.persistedSettings[operation.key]) : {};
+    if (operation.method === "DELETE") delete current[operation.entryKey];
+    else current[operation.entryKey] = this.copySettings(value);
+    this.persistedSettings[operation.key] = current;
+  }
+
   queueSettingsPatch() {
     this.settingsSavePromise = this.settingsSavePromise.catch((error) => {
       console.error("TermDeck settings save failed", error);
@@ -13828,11 +14156,14 @@ class TermdeckApp {
       const settingsSnapshot = this.copySettings(this.settings);
       const patch = this.changedSettingsPatch(settingsSnapshot);
       if (!Object.keys(patch).length) return;
-      const response = await fetch("/api/settings", { method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch) });
-      if (!response.ok) throw new Error(`settings save failed (${response.status})`);
-      const persisted = await response.json();
-      for (const key of Object.keys(patch)) this.persistedSettings[key] = this.copySettings(persisted[key]);
+      for (const operation of this.settingWriteOperations(patch)) {
+        const body = operation.method === "PUT" ? JSON.stringify({ value: operation.value }) : undefined;
+        const response = await fetch(operation.path, { method: operation.method,
+          headers: body ? { "Content-Type": "application/json" } : {}, body });
+        if (!response.ok) throw new Error(`setting save failed for ${operation.key} (${response.status})`);
+        const persisted = await response.json();
+        this.applyPersistedSettingOperation(operation, persisted.value);
+      }
       if (Object.keys(this.changedSettingsPatch(this.settings)).length) this.saveSettings();
     });
   }
@@ -14101,7 +14432,7 @@ class TermdeckApp {
     pop.appendChild(this.buildTerminalIconSettingsRow());
     pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));
-    pop.appendChild(this.buildPerfToggleRows());
+    pop.appendChild(this.buildTallTerminalToggleRow());
     for (const item of items) {
       if (!showFontSizeEditor || (this.settings.inline_size_controls && item.type !== "color")) continue;
       const row = document.createElement("div");
@@ -14350,8 +14681,38 @@ class TermdeckApp {
   // terminal (measured: JS 92% idle while the tab burned ~30%, i.e. the cost is paint, not script). The
   // WebGL renderer draws to a canvas instead. Must be attached after term.open() so a context exists, and
   // must fall back to the DOM renderer on context loss, which browsers do trigger under memory pressure.
+  tallTerminalMode() {
+    return this.settings.tall_terminal_mode === "dom" ? "dom" : "webgl";
+  }
+
+  // The largest terminal this machine's GPU can actually back, in rows. Returns 0 when WebGL is
+  // unavailable, which callers read as "use DOM".
+  maxWebglSafeRows(cellHeight) {
+    if (!cellHeight) return 0;
+    try {
+      const probe = document.createElement("canvas");
+      const gl = probe.getContext("webgl2") || probe.getContext("webgl");
+      if (!gl) return 0;
+      const limit = Number(gl.getParameter(gl.MAX_TEXTURE_SIZE)) || 0;
+      const deviceCellHeight = Math.max(1, cellHeight * (window.devicePixelRatio || 1));
+      return Math.floor(limit / deviceCellHeight);
+    } catch (webglProbeError) {
+      return 0;
+    }
+  }
+
+  // Decides the two things that have to agree: how tall to make the terminal, and which renderer can
+  // survive that height. They cannot be chosen independently -- asking for more rows than the GPU can
+  // back does not fail loudly, it silently corrupts (see the WebGL note in ensureView) -- so this is the
+  // single place that picks both.
+  tallRowPlan(cellHeight) {
+    if (this.tallTerminalMode() === "dom") return { rows: TALL_ROWS_DOM, webgl: false };
+    const safeRows = this.maxWebglSafeRows(cellHeight);
+    if (safeRows < TALL_ROWS_MIN_FOR_WEBGL) return { rows: TALL_ROWS_DOM, webgl: false };
+    return { rows: Math.min(TALL_ROWS_MAX, safeRows), webgl: true };
+  }
+
   enableWebglRenderer(term) {
-    if (this.perfDisabled("webgl_renderer")) return false;
     const Addon = window.WebglAddon?.WebglAddon;
     if (!Addon) return false;
     try {
@@ -14366,26 +14727,19 @@ class TermdeckApp {
     }
   }
 
-  buildPerfToggleRows() {
-    const rows = document.createDocumentFragment();
-    // Master switch on the heading row: an "all off" makes it one click to establish the floor before
-    // walking individual switches, instead of nine clicks each way.
-    const allDisabled = () => PERF_TOGGLES.every((toggle) => this.perfDisabled(toggle.key));
-    rows.appendChild(this.buildToggleRow("Disable for CPU bisect",
-      () => (allDisabled() ? "all off" : "all on"),
+  buildTallTerminalToggleRow() {
+    // Reports the resolved row count, not just the mode: the WebGL height is computed from this machine's
+    // own texture limit and pixel ratio, so the only way to know what it actually settled on is to show it.
+    return this.buildToggleRow("Tall terminal (reload)",
       () => {
-        const disable = !allDisabled();
-        for (const toggle of PERF_TOGGLES) this.setPerfDisabled(toggle.key, disable);
+        const cellHeight = this.views.get(this.activeId)?.term?._core?._renderService?.dimensions?.css?.cell?.height;
+        const plan = this.tallRowPlan(cellHeight || 21);
+        return plan.webgl ? `${plan.rows} WebGL` : `${plan.rows} DOM`;
       },
-      () => this.openSettingsPopover(this.$("settings-gear"), [], this.fontSizeEditorOpen)));
-    for (const toggle of PERF_TOGGLES) {
-      rows.appendChild(this.buildToggleRow(
-        toggle.reload ? `${toggle.label} (reload)` : toggle.label,
-        () => (this.perfDisabled(toggle.key) ? "off" : "on"),
-        () => this.setPerfDisabled(toggle.key, !this.perfDisabled(toggle.key)),
-      ));
-    }
-    return rows;
+      () => {
+        this.settings.tall_terminal_mode = this.tallTerminalMode() === "dom" ? "webgl" : "dom";
+        this.saveSettings();
+      });
   }
 
   buildTerminalIconSettingsRow() {
@@ -14954,14 +15308,9 @@ class TermdeckApp {
     const updates = projectKeys.map((projectKey) => ({ projectKey, openFiles: [...(states[projectKey]?.open_files || [])] }));
     this.openFilesPersistPromise = this.openFilesPersistPromise.then(async () => {
       for (const update of updates) {
-        const params = new URLSearchParams();
-        if (update.projectKey !== "__all__") {
-          const [projectName, worktreeMarker] = update.projectKey.split("::worktree:");
-          params.set("project", projectName);
-          if (worktreeMarker) params.set("worktree_id", worktreeMarker);
-        }
-        const response = await fetch(`/api/terminal-layout?${params}`, { method: "PATCH", keepalive: true,
-          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ open_files: update.openFiles }) });
+        const params = this.projectStateSearchParams(update.projectKey);
+        const response = await fetch(`/api/project-state/open_files?${params}`, { method: "PUT", keepalive: true,
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ value: update.openFiles }) });
         if (!response.ok) throw new Error(`server returned ${response.status}`);
       }
     }).catch((error) => { this.$("stat-text").textContent = `Could not persist open files: ${error.message}`; });
@@ -15772,10 +16121,11 @@ class TermdeckApp {
     await this.refresh();
     if (targetGroupId && this.terminalGroups().some((group) => group.id === targetGroupId)) {
       const state = this.getProjectState();
-      this.patchProjectState({
+      this.applyLocalProjectStatePatch({
         session_groups: { ...(state.session_groups || {}), [created.session_id]: targetGroupId },
         terminal_layout: this.terminalLayout().filter((entry) => entry !== `session:${created.session_id}`),
       });
+      this.queueSessionGroupAssignments({ [created.session_id]: targetGroupId });
       this.renderList();
     } else if (anchorSessionId && this.session(anchorSessionId) && this.session(created.session_id)) {
       this.repositionSelectedSessions([created.session_id], anchorSessionId, true);
@@ -16367,7 +16717,18 @@ class TermdeckApp {
         ...createdIds.map((id) => `session:${id}`));
       patch.terminal_layout = layout;
     }
-    this.patchProjectState(patch);
+    this.applyLocalProjectStatePatch(patch);
+    this.queueSessionOrderMove(createdIds, sourceSessionId, true);
+    if (sourceGroupId) this.queueSessionGroupAssignments(
+      Object.fromEntries(createdIds.map((id) => [id, sourceGroupId])), sourceSessionId, true);
+    else {
+      let previousToken = `session:${sourceSessionId}`;
+      for (const createdId of createdIds) {
+        const token = `session:${createdId}`;
+        this.queueTerminalLayoutMove(token, previousToken, true);
+        previousToken = token;
+      }
+    }
   }
 
   stripTitleStatusPrefixes(title) {
@@ -16553,15 +16914,23 @@ class TermdeckApp {
   }
 
   loadSearchHistory() {
+    if (Array.isArray(this.settings.file_search_history) && this.settings.file_search_history.length) {
+      this.searchHistory = this.settings.file_search_history.filter((entry) => entry && typeof entry.q === "string" &&
+        (entry.mode === "content" || entry.mode === "name")).slice(-30);
+      return;
+    }
     const raw = localStorage.getItem(SEARCH_HISTORY_STORAGE_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return;
     this.searchHistory = parsed.filter((entry) => entry && typeof entry.q === "string" &&
       (entry.mode === "content" || entry.mode === "name")).slice(-30);
+    if (this.searchHistory.length) this.saveSearchHistory();
   }
 
   saveSearchHistory() {
+    this.settings.file_search_history = this.searchHistory.slice(-30);
+    this.saveSettings();
     localStorage.setItem(SEARCH_HISTORY_STORAGE_KEY, JSON.stringify(this.searchHistory.slice(-30)));
   }
 
@@ -17625,7 +17994,7 @@ class TermdeckApp {
   }
 
   async pollStats() {
-    if (!this.settings.show_stats || this.perfDisabled("stats_poll")) return;
+    if (!this.settings.show_stats) return;
     let data;
     try {
       const query = this.activeId ? `?session_id=${encodeURIComponent(this.activeId)}` : "";

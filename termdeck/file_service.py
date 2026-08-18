@@ -495,10 +495,14 @@ class ProjectFileService:
         target = self.resolve_confined(root, rel)
         if not target.is_file():
             raise FileNotFoundError(str(target))
-        size = target.stat().st_size
+        stat = target.stat()
+        size = stat.st_size
         with target.open("rb") as handle:
             raw = handle.read(TermdeckConfig.FILE_READ_MAX_BYTES)
         if b"\x00" in raw[:8192]:
             raise ValueError(f"binary file: {target.name}")
-        return {"path": str(target), "size": size, "truncated": size > len(raw),
+        return {"path": str(target), "size": size, "mtime": int(stat.st_mtime), "truncated": size > len(raw),
                 "content": raw.decode("utf-8", errors="replace")}
+
+    def file_exists(self, root: str, rel: str) -> bool:
+        return self.resolve_confined(root, rel).is_file()
