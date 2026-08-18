@@ -2490,7 +2490,13 @@ class TermdeckServer:
             if message_type == WsMessageFields.INPUT:
                 self.manager.write_input(session_id, message[WsMessageFields.DATA])
             elif message_type == WsMessageFields.RESIZE:
-                self.manager.resize(session_id, int(message[WsMessageFields.COLS]), int(message[WsMessageFields.ROWS]))
+                applied, live_cols, live_rows = self.manager.resize(
+                    session_id, int(message[WsMessageFields.COLS]), int(message[WsMessageFields.ROWS]),
+                    force=bool(message.get("force", False)))
+                if not applied:
+                    # Another window owns this terminal's size. Tell this client what it actually is so it
+                    # can render at the real width instead of its own, and offer to take it over.
+                    await websocket.send_json({"type": "resize_rejected", "cols": live_cols, "rows": live_rows})
             elif message_type == WsMessageFields.REPAINT:
                 self.manager.request_screen_repaint(session_id)
             elif message_type == WsMessageFields.DRAFT_SYNC:

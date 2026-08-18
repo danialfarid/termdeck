@@ -1610,15 +1610,28 @@ class TerminalSessionManager:
             return
         proc.write(TermdeckConfig.BRACKETED_PASTE_START + ms.record.draft.encode() + TermdeckConfig.BRACKETED_PASTE_END)
 
-    def resize(self, session_id: str, cols: int, rows: int) -> None:
+    def resize(self, session_id: str, cols: int, rows: int, force: bool = False) -> tuple[bool, int, int]:
+        """Apply a client's terminal size, unless another client already owns it.
+
+        A pty has one size, so with two browsers attached the last one to connect used to silently
+        reshape the terminal for everyone -- the other window then wraps its lines at a width its screen
+        does not have, and the agent's redraw lands on top of itself. Whoever is already attached keeps
+        the size; a later client is told what the size actually is (see the return value) and can ask for
+        it explicitly, which is what force is for.
+
+        Returns (applied, cols, rows) where the returned size is the one now in effect.
+        """
         ms = self._sessions[session_id]
         size_changed = (ms.record.cols, ms.record.rows) != (cols, rows)
+        if size_changed and not force and len(ms.client_queues) > 1:
+            return False, ms.record.cols, ms.record.rows
         ms.cols, ms.rows = cols, rows
         if size_changed and ms.proc is not None:
             ms.proc.resize(cols, rows)
         if size_changed:
             ms.record.cols, ms.record.rows = cols, rows
             self._persist()
+        return True, cols, rows
 
     def request_screen_repaint(self, session_id: str) -> bool:
         """Nudge the pty size so a full-screen app redraws itself.

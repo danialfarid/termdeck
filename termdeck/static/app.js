@@ -106,6 +106,8 @@ const TALL_SHRINK_SETTLE_MS = 400;
 // How long to wait after attaching before deciding the terminal really has nothing to show. Long enough
 // for a replay to arrive and paint, short enough that a genuinely blank pane is not left sitting there.
 const TALL_BLANK_REPAINT_MS = 900;
+// How many consecutive "looks mid-redraw" frames may be skipped before the measurement is taken anyway.
+const TALL_MAX_BLANK_SKIPS = 4;
 const TALL_ROWS_MAX = 1000;
 const HISTORY_BACKGROUND_TARGET_TURNS = 320;
 const HISTORY_BACKGROUND_PAGE_TURNS = 160;
@@ -12283,6 +12285,22 @@ class TermdeckApp {
   }
 
   handleControl(id, view, msg) {
+    if (msg.type === "resize_rejected") {
+      // Another window already owns this terminal's size. Stop pushing ours -- a pty has one size, and
+      // two windows disagreeing means one of them renders at a width its screen does not have, wrapping
+      // lines and painting redraws over themselves. Adopt the real size so this window renders correctly
+      // too, and offer the swap explicitly rather than taking it.
+      view.suppressResizeToServer = true;
+      view.sizeOwnedElsewhere = { cols: msg.cols, rows: msg.rows };
+      if (view.term.cols !== msg.cols || view.term.rows !== msg.rows) {
+        try { view.term.resize(msg.cols, msg.rows); } catch (resizeError) { /* geometry not ready yet */ }
+      }
+      if (this.activeId === id) {
+        this.$("status-name").textContent =
+          `terminal is ${msg.cols} cols in another window — click the resync button to use this one`;
+      }
+      return;
+    }
     if (msg.type === "exit") {
       if (msg.dormant) {
         view.suppressReconnect = true;
@@ -12652,6 +12670,12 @@ class TermdeckApp {
     }
     this.applySettings();
     this.$("status-name").textContent = "resyncing terminal…";
+    // Explicit user action, so this is the one place allowed to take the size from another window.
+    view.suppressResizeToServer = false;
+    view.sizeOwnedElsewhere = null;
+    if (view.ws && view.ws.readyState === WebSocket.OPEN && view.term.cols >= 2) {
+      view.ws.send(JSON.stringify({ type: "resize", cols: view.term.cols, rows: view.term.rows, force: true }));
+    }
     const ws = view.ws;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       ws.close();
@@ -13718,7 +13742,17 @@ class TermdeckApp {
       view.tallOnAlternateScreen = alternate;
       view.tallFollowing = true;
     }
-    if (this.tallCursorRegionMostlyBlank(view)) return;
+    // The blank-region guard skips a frame caught mid-redraw, but it must never be able to block this
+    // permanently: an agent's own UI legitimately leaves blank rows above its composer, and how many
+    // depends on the window height, so at some sizes every frame looks "mid-redraw". Measured at
+    // 1728x1080: all 446 attempts were skipped, the ceiling was never established at all, and the view
+    // sat at the very top with ~950 rows below the fold. So it may delay an update, never the first
+    // value, and never more than a few in a row.
+    if (this.tallCursorRegionMostlyBlank(view)) {
+      view.tallBlankSkips = (view.tallBlankSkips || 0) + 1;
+      if (view.tallMaxScrollTop != null && view.tallBlankSkips <= TALL_MAX_BLANK_SKIPS) return;
+    }
+    view.tallBlankSkips = 0;
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
     if (!cellHeight || !view.container.clientHeight) return;
     // tallEffectiveBottomRow, not raw cursorY: picks up the closing border + status line Claude/Codex
@@ -15041,6 +15075,14 @@ class TermdeckApp {
   // server restart is exactly the case where the answer is "nothing".
   requestRepaintIfBlank(view) {
     if (!view || view.closed || !view.ws || view.ws.readyState !== WebSocket.OPEN) return;
+    // A reconnect clears the buffer before replaying it, so "empty" during that window means "not filled
+    // yet", not "nothing to show". Asking then forces a redraw of content that was about to arrive
+    // anyway, which is the flicker on switching to an already-loaded tab. Try again once it has landed.
+    if (view.replaying || view.awaitingSnapshot) {
+      clearTimeout(view.blankRepaintTimer);
+      view.blankRepaintTimer = setTimeout(() => this.requestRepaintIfBlank(view), TALL_BLANK_REPAINT_MS);
+      return;
+    }
     const buffer = view.term.buffer.active;
     if (Number(buffer.baseY || 0) > 0) return;
     for (let row = 0; row < buffer.length; row += 1) {
