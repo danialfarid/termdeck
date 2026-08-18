@@ -46,6 +46,12 @@ ordinary use instead of asking for them to be caught in the act:
 It attaches to the testing Chrome, never drives it, prints nothing while things are healthy, and dumps
 the four seconds either side of a fault when one appears. `symptom_detector.cjs` is what keeps it honest.
 
+Not everything here can be a test. The tab-switch walk (a view stepping down the screen instead of
+settling once) only reproduces against a real agent session, because the fill is the agent's TUI
+repainting rather than a buffer replay. Two synthetic versions were written and both passed with the fix
+disabled, so they were deleted instead of kept: `tools/measure_switch.cjs` measures it against real
+sessions before and after a change.
+
 Two lessons the tests themselves taught, both of which produced false PASSes:
 
 - Sample the thing the user sees, not a proxy. Counting `scrollTop` writes flags writes that change
