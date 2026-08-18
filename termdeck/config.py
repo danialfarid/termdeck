@@ -247,6 +247,12 @@ class TermdeckConfig:
     REATTACH_DIVIDER = "\x1b[2m──────────── reconnected (kept running) ────────────\x1b[0m"
     SPAWN_ERROR_TEMPLATE = "\x1b[31m[termdeck] spawn failed: {error}\x1b[0m\r\n"
     UVICORN_LOG_LEVEL = PlatformPaths.env_text(PlatformPaths.ENV_LOG_LEVEL, "info")
+    # Without a bound, uvicorn's graceful shutdown waits forever for connections that never end -- every
+    # terminal stream is an open websocket, and _pump_queue_to_client awaits its queue in a `while True`.
+    # The result is a server that answers SIGTERM by releasing its port and then living on indefinitely:
+    # `kill <pid>` leaves an orphan holding its memory, and the state-recovery restart (which signals
+    # itself with SIGTERM) never comes back up.
+    UVICORN_GRACEFUL_SHUTDOWN_SECONDS = 5
     REMOTE_SERVICE_URL = PlatformPaths.env_text(
         PlatformPaths.ENV_REMOTE_URL, "https://termdeck-remote-298065490746.us-central1.run.app")
     REMOTE_PUBLIC_URL = PlatformPaths.env_text(

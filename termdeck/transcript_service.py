@@ -2,6 +2,7 @@ import asyncio
 import datetime as dt
 import json
 import re
+import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -128,17 +129,32 @@ class TranscriptService:
                 leaf_observer.start()
                 self._codex_leaf_observer = leaf_observer
 
+    # Bounded on the stop() call itself, not just the join. An observer that will not come down blocks
+    # here forever, and this runs inside the app's shutdown: measured with SIGTERM, the server logged
+    # "Waiting for application shutdown", released its port, and then lived on indefinitely holding its
+    # memory -- so `kill <pid>` produced an orphan rather than a stopped server, and the state-recovery
+    # restart (which signals itself with SIGTERM) could never come back up. These watchers hold nothing
+    # that has to be flushed, so abandoning a stuck one costs nothing: the process is on its way out, and
+    # a daemon thread does not hold it back.
     def stop(self) -> None:
         observer, self._observer = self._observer, None
         leaf_observer, self._codex_leaf_observer = self._codex_leaf_observer, None
-        if leaf_observer is not None:
-            leaf_observer.stop()
-            leaf_observer.join(timeout=2)
-        if observer is not None:
-            observer.stop()
-            observer.join(timeout=2)
+        for watcher in (leaf_observer, observer):
+            if watcher is None:
+                continue
+            closer = threading.Thread(target=self._close_observer, args=(watcher,), daemon=True)
+            closer.start()
+            closer.join(timeout=2)
         self._loop = None
         self._subscribers.clear()
+
+    @staticmethod
+    def _close_observer(watcher) -> None:
+        try:
+            watcher.stop()
+            watcher.join(timeout=2)
+        except Exception:
+            pass
 
     def subscribe(self, agent_kind: str, cwd: str, agent_session_id: str | None) -> tuple[Path | None, list[dict[str, object]], int, asyncio.Queue]:
         path = self.source_path(agent_kind, cwd, agent_session_id)

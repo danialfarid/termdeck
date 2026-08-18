@@ -2526,4 +2526,5 @@ class TermdeckServer:
     def run(self) -> None:
         TermdeckConfig.DATA_DIR.mkdir(parents=True, exist_ok=True)
         uvicorn.run(self.build_app(), host=TermdeckConfig.HOST, port=TermdeckConfig.PORT,
-                    log_level=TermdeckConfig.UVICORN_LOG_LEVEL, access_log=False)
+                    log_level=TermdeckConfig.UVICORN_LOG_LEVEL, access_log=False,
+                    timeout_graceful_shutdown=TermdeckConfig.UVICORN_GRACEFUL_SHUTDOWN_SECONDS)
