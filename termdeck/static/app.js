@@ -15013,9 +15013,25 @@ class TermdeckApp {
     if (this.nativeVscodeMode) { view.fit.fit(); return; }
     let dims = null;
     try { dims = view.fit.proposeDimensions(); } catch (fitError) { dims = null; }
-    if (!dims || !Number.isFinite(dims.cols) || dims.cols < 2) return;
     const rows = view.tallRows || TALL_ROWS_DOM;
-    if (view.term.cols !== dims.cols || view.term.rows !== rows) view.term.resize(dims.cols, rows);
+    // Width can be unmeasurable -- a container that is hidden or not laid out yet reports nothing. The
+    // height must still be applied in that case: returning early here left the terminal sitting at
+    // xterm's construction default of 80x24, which the old fit could never do because it always set both
+    // dimensions. Keep whatever width is in effect and fix the height; a later fit corrects the width.
+    if (!dims || !Number.isFinite(dims.cols) || dims.cols < 2) {
+      if (view.term.rows !== rows && view.term.cols >= 2) {
+        view.term.resize(view.term.cols, rows);
+        this.tallApplyGeometry(view);
+      }
+      return;
+    }
+    // While another window owns the size, render at ITS width rather than the one this window measures.
+    // Measuring wins otherwise: the pty stays at the owner's width while xterm reflows to this window's,
+    // and every line then wraps at a column the pty never used -- the corruption this whole ownership
+    // rule exists to prevent, reintroduced one step later.
+    const owned = view.sizeOwnedElsewhere;
+    const cols = owned && owned.cols >= 2 ? owned.cols : dims.cols;
+    if (view.term.cols !== cols || view.term.rows !== rows) view.term.resize(cols, rows);
     this.tallApplyGeometry(view);
   }
 
