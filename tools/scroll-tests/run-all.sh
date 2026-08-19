@@ -61,6 +61,7 @@ TESTS=(
   scroll_sources
   wheel_travel
   scrollback_wheel_travel
+  composer_cap
   scroll_round_trip
   short_session_scrollback
   parked_under_chunks

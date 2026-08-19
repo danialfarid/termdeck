@@ -21,8 +21,10 @@ const READ = (i) => {
   const cell = v.term._core?._renderService?.dimensions?.css?.cell?.height || 21;
   return { cell, viewportY: b.viewportY, baseY: b.baseY, top: Math.round(v.container.scrollTop),
            // Absolute buffer row at the top of the pane: the only position that means anything when the
-           // gesture can move either the container or the buffer viewport.
-           row: b.viewportY + v.container.scrollTop / cell };
+           // gesture can move either the container or the buffer viewport. Anchored at the rendered
+           // window's offset so it is right in whole-buffer mode too, where scrollTop already spans the
+           // scrollback and adding viewportY on top would double-count it.
+           row: b.viewportY + (v.container.scrollTop - v.term.element.offsetTop) / cell };
 };
 
 (async () => {

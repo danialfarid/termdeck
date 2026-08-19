@@ -1141,3 +1141,36 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             manager._persist = lambda: None
             ms = manager.create_session("bash", directory, "task", output_path="logs/task.out")
             self.assertEqual(ms.record.output_path, str(Path(directory, "logs", "task.out").resolve()))
+
+
+class ReplayTitleCollapseTest(unittest.TestCase):
+    """The attach replay collapses OSC title churn to the final title (a spinner rewrites the title
+    thousands of times; replaying each one made the client apply each in turn -- measured as 5.9s of a
+    6s load on a real training session)."""
+
+    @staticmethod
+    def _replay(buffer: bytes) -> bytes:
+        ms = MagicMock()
+        ms.buffer = bytearray(buffer)
+        return TerminalSessionManager._replay_bytes(TerminalSessionManager, ms)
+
+    def test_title_spam_collapses_to_the_final_title(self) -> None:
+        spam = b"".join(b"\x1b]0;spin %d\x07" % n for n in range(500))
+        replay = self._replay(b"line one\n" + spam + b"line two\n")
+        self.assertEqual(replay.count(b"\x1b]0;"), 1)
+        self.assertTrue(replay.endswith(b"\x1b]0;spin 499\x07"))
+        self.assertIn(b"line one\n", replay)
+        self.assertIn(b"line two\n", replay)
+
+    def test_st_terminated_and_icon_titles_collapse_too(self) -> None:
+        replay = self._replay(b"\x1b]2;a\x1b\\middle\x1b]1;b\x07\x1b]0;last\x1b\\")
+        self.assertEqual(replay, b"middle\x1b]0;last\x1b\\")
+
+    def test_stream_without_titles_is_untouched(self) -> None:
+        data = b"plain output\x1b[31mcolored\x1b[0m\n"
+        self.assertEqual(self._replay(data), data)
+
+    def test_unterminated_tail_title_is_left_for_the_live_stream(self) -> None:
+        replay = self._replay(b"\x1b]0;done\x07content\x1b]0;partial")
+        self.assertTrue(replay.startswith(b"content\x1b]0;partial"))
+        self.assertTrue(replay.endswith(b"\x1b]0;done\x07"))

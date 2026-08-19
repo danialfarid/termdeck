@@ -15064,9 +15064,20 @@ class TermdeckApp {
     const baseY = buffer.baseY || 0;
     const cursorY = buffer.cursorY;
     let last = cursorY;
-    const limit = Math.min(buffer.length - 1 - baseY, cursorY + 12);
-    for (let row = cursorY + 1; row <= limit; row += 1) {
-      if (buffer.getLine(baseY + row)?.translateToString(true).trim()) last = row;
+    // Follows DENSE content below the cursor however far it extends -- a popup like Claude's slash menu
+    // paints its whole option list there, well past any fixed window -- but stops at a run of blank rows.
+    // The gap allowance is what still protects against a mid-repaint cursor: a blank-walk leaves nothing
+    // dense below the cursor, so the scan ends immediately, while a menu has no blank runs at all. The
+    // cost is bounded by the content itself: one gap's worth of rows past the last real line.
+    const limit = buffer.length - 1 - baseY;
+    let blankRun = 0;
+    for (let row = cursorY + 1; row <= limit && blankRun <= 12; row += 1) {
+      if (buffer.getLine(baseY + row)?.translateToString(true).trim()) {
+        last = row;
+        blankRun = 0;
+      } else {
+        blankRun += 1;
+      }
     }
     return last;
   }
@@ -15104,7 +15115,12 @@ class TermdeckApp {
   }
 
 
-  scrollTallContainerToCursor(view) {
+  // `userSettled` marks a placement that ends a user gesture rather than reacting to output. The
+  // difference matters only between the cursor cap and the ceiling -- a popup's overflow: a user who
+  // scrolled down there chose that position and a settle must not drag them back up to the cap, while a
+  // write means the TUI changed under an open popup (filtered, closed, printed) and snapping back to
+  // the capped position is exactly the behavior that keeps the composer in view.
+  scrollTallContainerToCursor(view, userSettled = false) {
     if (!view || view.closed || view.tallMaxScrollTop == null) return;
     if (this.wholeBufferScrollEnabled()) {
       // The newest line is the bottom of the box. The buffer viewport is derived from the scroll
@@ -15121,8 +15137,16 @@ class TermdeckApp {
       const wholeTarget = wholeCell
         ? Math.min(view.tallMaxScrollTop, Math.max(0, this.tallFollowCursorCap(view, wholeCell)))
         : view.tallMaxScrollTop;
-      view.tallFollowTop = wholeTarget;
-      this.tallSetScrollTop(view, wholeTarget);
+      const wholeTop = view.container.scrollTop;
+      if (userSettled) {
+        if (wholeTop < wholeTarget) this.tallSetScrollTop(view, wholeTarget);
+        else if (wholeTop > view.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
+          this.tallSetScrollTop(view, view.tallMaxScrollTop);
+        }
+      } else if (wholeTop < wholeTarget || wholeTop > wholeTarget + TALL_OVERSHOOT_DEADZONE_PX) {
+        this.tallSetScrollTop(view, wholeTarget);
+      }
+      view.tallFollowTop = Math.max(wholeTarget, Math.min(view.container.scrollTop, view.tallMaxScrollTop));
       this.tallSyncBufferToScroll(view);
       return;
     }
@@ -15143,10 +15167,17 @@ class TermdeckApp {
       ? Math.min(view.tallMaxScrollTop, this.tallFollowCursorCap(view, domCell))
       : view.tallMaxScrollTop;
     const top = view.container.scrollTop;
+    if (userSettled) {
+      if (top < target) this.tallSetScrollTop(view, target);
+      else if (top > view.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
+        this.tallSetScrollTop(view, view.tallMaxScrollTop);
+      }
+    } else if (top < target || top > target + TALL_OVERSHOOT_DEADZONE_PX) {
+      this.tallSetScrollTop(view, target);
+    }
     // Where a following view belongs as of this placement. The settle handler needs it kept, because the
     // ceiling keeps moving afterwards -- see tallApplySettledScroll.
-    view.tallFollowTop = target;
-    if (top < target || top > target + TALL_OVERSHOOT_DEADZONE_PX) this.tallSetScrollTop(view, target);
+    view.tallFollowTop = Math.max(target, Math.min(view.container.scrollTop, view.tallMaxScrollTop));
   }
 
   // Every piece of tall-scroll state is derived from buffer contents, so all of it is meaningless the
@@ -15219,7 +15250,7 @@ class TermdeckApp {
     // Reaching the bottom has to undo the parked state completely, xterm's viewport included: while
     // parked it sits deliberately short of baseY, and a stale pin there is precisely what made the last
     // lines unreachable. scrollTallContainerToCursor restores it and clears the pin.
-    if (atBottom) this.scrollTallContainerToCursor(view);
+    if (atBottom) this.scrollTallContainerToCursor(view, true);
     else this.tallCaptureAnchorRow(view);
   }
 
@@ -16558,10 +16589,6 @@ class TermdeckApp {
     pop.appendChild(this.buildToggleRow("Repaint on attach (reload)",
       () => (this.attachRepaintEnabled() ? "on" : "off"),
       () => { this.settings.attach_repaint = !this.attachRepaintEnabled(); }));
-    // Experiment switch: see wholeBufferScrollEnabled().
-    pop.appendChild(this.buildToggleRow("Scroll through full history (reload)",
-      () => (this.wholeBufferScrollEnabled() ? "on" : "off"),
-      () => { this.settings.scroll_whole_buffer = !this.wholeBufferScrollEnabled(); }));
     // Experiment switch: see tallRowPlan(). GPU rendering, at the cost of a much shorter scrollable
     // canvas -- the whole trade is explained there.
     pop.appendChild(this.buildToggleRow("WebGL renderer (reload)",
@@ -17003,16 +17030,15 @@ class TermdeckApp {
     return this.settings.tall_webgl === true;
   }
 
-  // Experiment switch, default off. The scrollbar has never represented history -- it represents the
-  // rendered canvas, which is why the thumb stops resizing once you pass it, dragging to the bottom lands
-  // mid-content, and releasing snaps. Measured on a 1641-line buffer with 1000 rendered rows, the bar
-  // covered 60.9% of the session; against a full 20,000-line scrollback it is 5%, and under WebGL's
-  // ~300-row canvas about 2%. On, the scroll box is the whole buffer and the rendered rows are positioned
-  // inside it, so the thumb means what it looks like it means -- and the canvas row count stops governing
-  // how far you can scroll, which is what puts WebGL and a long history back on speaking terms.
-
+  // Permanent, formerly the scroll_whole_buffer experiment. The scrollbar used to represent the rendered
+  // canvas rather than history -- the thumb stopped resizing once you passed it, dragging to the bottom
+  // landed mid-content, and releasing snapped. With the scroll box spanning the whole buffer and the
+  // rendered rows positioned inside it, the thumb means what it looks like it means, and the canvas row
+  // count stops governing how far you can scroll -- which is also what puts WebGL and a long history on
+  // speaking terms. Kept as a function because every branch point still reads it, and the other arm of
+  // each of those branches is now dead code awaiting a dedicated removal pass.
   wholeBufferScrollEnabled() {
-    return this.settings.scroll_whole_buffer === true;
+    return true;
   }
 
   // Rows of history the scroll box spans. Everything above the rendered window plus the window itself.

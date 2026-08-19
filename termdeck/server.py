@@ -453,7 +453,6 @@ class UiSettings(BaseModel):
     # Declared explicitly or it is silently dropped when settings are saved.
     attach_repaint: bool = True
     tall_webgl: bool = False
-    scroll_whole_buffer: bool = False
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
     md_prompt_drafts: dict[str, str] = {}
