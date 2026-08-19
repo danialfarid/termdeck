@@ -68,7 +68,10 @@ const TERMINAL_FIND_SELECTION_FOREGROUND = "#ffffff";
 // and ~780 at dpr 1. Querying both at runtime is the only way to claim the tallest terminal the machine
 // in front of us can actually back, instead of hardcoding a guess -- and it degrades to DOM by itself on
 // a GPU too small to matter.
-const TALL_ROWS_DOM = 1000;
+// 4000 rows, up from the original 1000: the DOM renderer has no texture limit, only content rows
+// materialize as DOM nodes, and the attach replay is cheap since title churn stopped being replayed --
+// so the extra height just moves the point where the scrollback bridge has to take over.
+const TALL_ROWS_DOM = 4000;
 // Renderer choice for the tall terminal, deliberately a code flag rather than a setting: DOM is good
 // enough today and the settings surface is already crowded. WebGL is not a straight upgrade here -- it
 // backs the terminal with one drawing buffer sized to the FULL terminal in device pixels, so
@@ -88,6 +91,9 @@ const TALL_WEBGL_TEXTURE_HEADROOM = 0.65;
 // gesture (one that cleared the slack in a single step) could escape. Nothing needs the slack: every way
 // of arriving at the bottom lands on the ceiling exactly, because the clamp puts it there.
 const TALL_BOTTOM_TOLERANCE_PX = 2;
+// How far below the top edge the cursor's row is held when following is capped (see tallFollowTarget):
+// enough rows for the composer's own top border to stay on screen above the cursor line.
+const TALL_FOLLOW_CURSOR_TOP_MARGIN_ROWS = 3;
 // How long after the last scroll event a gesture is still considered in progress, and how long of a
 // quiet period settles it. Both cover a scrollbar drag pausing mid-gesture without ending it.
 const TALL_SCROLL_ACTIVE_MS = 250;
@@ -14468,8 +14474,14 @@ class TermdeckApp {
       view.v2ViewportSyncFrame = 0;
       if (view.closed || !view.hiddenOutputPending || !view.container.classList.contains("visible")) return;
       view.hiddenOutputPending = false;
+      // The tall container needs its own catch-up: the ceiling cannot move while the pane is hidden (a
+      // hidden pane has no height to measure against, so writes deliberately decide nothing), which
+      // leaves it describing the content as of when the tab was left. Refreshing it here is what lets a
+      // following view reach output that arrived meanwhile, and a parked reader scroll down to it.
+      this.tallUpdateMaxScrollTop(view);
       if (view.scrollMode === "follow") {
         this.scrollTerminalV2ToBottom(view);
+        if (view.tallFollowing !== false) this.scrollTallContainerToCursor(view);
         return;
       }
       const buffer = view.term.buffer.active;
@@ -15059,16 +15071,36 @@ class TermdeckApp {
     return last;
   }
 
+  // Where a following view belongs: the content bottom at the bottom edge -- unless that would push the
+  // cursor's row off the top of the screen. Claude's slash menu is the case that needs the cap: on this
+  // forced-height terminal it paints its full command list, well over a hundred rows below the composer,
+  // and following the content bottom put the composer ~90 rows above the fold with nothing to bring it
+  // back on an idle tab (the ceiling only shrinks on writes, and an open menu writes nothing). The
+  // composer may ride up to the top of the screen, never past it; the menu rows that do not fit are cut
+  // at the bottom and stay reachable by scrolling, because the CEILING is deliberately not capped.
+  tallFollowCursorCap(view, cellHeight) {
+    const buffer = view.term.buffer.active;
+    const baseRows = this.wholeBufferScrollEnabled() ? Number(buffer.baseY || 0) : 0;
+    return Math.max(0, (baseRows + Number(buffer.cursorY || 0) - TALL_FOLLOW_CURSOR_TOP_MARGIN_ROWS) *
+      cellHeight);
+  }
+
+  tallFollowTarget(view, cellHeight) {
+    // Same frame as the ceiling: absolute over the buffer when the scroll box spans it, rendered-window
+    // relative otherwise -- see tallUpdateMaxScrollTop.
+    const buffer = view.term.buffer.active;
+    const baseRows = this.wholeBufferScrollEnabled() ? Number(buffer.baseY || 0) : 0;
+    const bottomTarget = Math.max(0, (baseRows + this.tallEffectiveBottomRow(view) + 1) * cellHeight -
+      view.container.clientHeight);
+    return Math.min(bottomTarget, this.tallFollowCursorCap(view, cellHeight));
+  }
+
   tallContainerNearCursor(view) {
     const inner = view.container.querySelector(".term-inner");
     if (!inner) return true;
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
     if (!cellHeight) return true;
-    // Same frame as the ceiling: absolute over the buffer when the scroll box spans it, rendered-window
-    // relative otherwise -- see tallUpdateMaxScrollTop.
-    const baseRows = this.wholeBufferScrollEnabled() ? Number(view.term.buffer.active.baseY || 0) : 0;
-    const target = Math.max(0, (baseRows + this.tallEffectiveBottomRow(view) + 1) * cellHeight - view.container.clientHeight);
-    return Math.abs(view.container.scrollTop - target) <= 24;
+    return Math.abs(view.container.scrollTop - this.tallFollowTarget(view, cellHeight)) <= 24;
   }
 
 
@@ -15084,8 +15116,13 @@ class TermdeckApp {
       view.tallPinnedViewportY = null;
       view.tallAnchorRow = null;
       this.tallReleaseAnchorMarker(view);
-      view.tallFollowTop = view.tallMaxScrollTop;
-      this.tallSetScrollTop(view, view.tallMaxScrollTop);
+      const wholeCell = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+      // Capped so the cursor's row stays on screen -- see tallFollowTarget.
+      const wholeTarget = wholeCell
+        ? Math.min(view.tallMaxScrollTop, Math.max(0, this.tallFollowCursorCap(view, wholeCell)))
+        : view.tallMaxScrollTop;
+      view.tallFollowTop = wholeTarget;
+      this.tallSetScrollTop(view, wholeTarget);
       this.tallSyncBufferToScroll(view);
       return;
     }
@@ -15099,8 +15136,12 @@ class TermdeckApp {
     view.tallAnchorRow = null;
     this.tallReleaseAnchorMarker(view);
     // Move down to the bottom when behind it, but do not drag the view back up out of a small overshoot
-    // (see TALL_OVERSHOOT_DEADZONE_PX) -- that correction is itself the visible snap.
-    const target = view.tallMaxScrollTop;
+    // (see TALL_OVERSHOOT_DEADZONE_PX) -- that correction is itself the visible snap. Capped so the
+    // cursor's row stays on screen -- see tallFollowTarget.
+    const domCell = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+    const target = domCell
+      ? Math.min(view.tallMaxScrollTop, this.tallFollowCursorCap(view, domCell))
+      : view.tallMaxScrollTop;
     const top = view.container.scrollTop;
     // Where a following view belongs as of this placement. The settle handler needs it kept, because the
     // ceiling keeps moving afterwards -- see tallApplySettledScroll.

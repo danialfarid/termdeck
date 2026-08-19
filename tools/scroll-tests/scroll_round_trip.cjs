@@ -41,11 +41,11 @@ const READ = (i) => {
   await p.evaluate((i) => window.__td.activate(i), ID);
   await p.waitForTimeout(3000);
   if (!GIVEN_ID) {
-    // Enough to push past the 1000-row screen, so both halves of the test have somewhere to travel: the
+    // Enough to push past the 4000-row screen, so both halves of the test have somewhere to travel: the
     // container for the shallow round trip, real scrollback for the deep one.
     await p.evaluate(({ i, s }) => window.__td.sendInput(window.__td.views.get(i), s),
-      { i: ID, s: 'clear; seq 1 3000 | sed "s/^/line /"\n' });
-    await p.waitForTimeout(7000);
+      { i: ID, s: 'clear; seq 1 4800 | sed "s/^/line /"\n' });
+    await p.waitForTimeout(12000);
   }
 
   const box = await p.evaluate((i) => {
@@ -56,10 +56,13 @@ const READ = (i) => {
 
   const roundTrip = async (label, notches, settleIntoScrollback) => {
     // Detach from the bottom first; optionally go all the way into scrollback, which is the path that
-    // splits across two surfaces and where the asymmetry lives.
+    // splits across two surfaces and where the asymmetry lives. In whole-buffer mode scrollTop 0 IS the
+    // absolute top of everything -- no headroom left for the up-notches, which made the trip asymmetric
+    // by construction -- so the deep start sits a little below it there instead.
     await p.evaluate(({ i, deep }) => {
       const v = window.__td.views.get(i);
-      v.container.scrollTop = deep ? 0 : Math.max(0, (v.tallMaxScrollTop || 0) / 2);
+      const whole = window.__td.wholeBufferScrollEnabled && window.__td.wholeBufferScrollEnabled();
+      v.container.scrollTop = deep ? (whole ? 1600 : 0) : Math.max(0, (v.tallMaxScrollTop || 0) / 2);
     }, { i: ID, deep: settleIntoScrollback });
     await p.waitForTimeout(700);
     if (settleIntoScrollback) {

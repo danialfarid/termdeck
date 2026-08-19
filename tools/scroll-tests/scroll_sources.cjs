@@ -35,7 +35,7 @@ const state = (p, id, label) => p.evaluate((i) => {
   await p.waitForTimeout(3000);
   await p.evaluate((i) => window.__td.activate(i), id);
   await p.waitForTimeout(2500);
-  await p.evaluate((i) => window.__td.sendInput(window.__td.views.get(i), 'clear; seq 1 2000\n'), id);
+  await p.evaluate((i) => window.__td.sendInput(window.__td.views.get(i), 'clear; seq 1 4400\n'), id);
   await p.waitForTimeout(7000);
 
   // ---- A: scrollbar-style drag to the bottom WHILE output streams ----

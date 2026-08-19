@@ -14,7 +14,9 @@ const READ = (i) => {
   const v = window.__td.views.get(i);
   const b = v.term.buffer.active;
   const cell = v.term._core?._renderService?.dimensions?.css?.cell?.height || 21;
-  const first = b.viewportY + Math.floor(v.container.scrollTop / cell);
+  // Anchored at the rendered window's offset so the row is right in both scroll modes -- offsetTop is 0
+  // in the default mode, viewportY*cell in whole-buffer mode where scrollTop already spans scrollback.
+  const first = b.viewportY + Math.floor((v.container.scrollTop - v.term.element.offsetTop) / cell);
   return { top: Math.round(v.container.scrollTop), ceiling: v.tallMaxScrollTop,
            viewportY: b.viewportY, baseY: b.baseY,
            firstVisibleRow: first,
@@ -41,9 +43,11 @@ const READ = (i) => {
   // agent that prints a lot and then clears lands exactly here -- output past the 1000-row screen leaves
   // lines in scrollback, and the clear puts the cursor back on row 0.
   await p.evaluate(({ i, s }) => window.__td.sendInput(window.__td.views.get(i), s),
-    { i: id, s: 'seq 1 1040 | sed "s/^/line /"\n' });
-  await p.waitForTimeout(6000);
-  await p.evaluate(({ i, s }) => window.__td.sendInput(window.__td.views.get(i), s), { i: id, s: 'clear\n' });
+    { i: id, s: 'seq 1 4100 | sed "s/^/line /"\n' });
+  await p.waitForTimeout(11000);
+  // ED2+home, NOT `clear`: zsh's clear also sends ED3, which erases the scrollback -- the very history
+  // this test needs to scroll into. An agent's own screen-clear is ED2, which keeps it.
+  await p.evaluate(({ i, s }) => window.__td.sendInput(window.__td.views.get(i), s), { i: id, s: "printf '\\033[2J\\033[H'\n" });
   await p.waitForTimeout(3000);
 
   const start = await p.evaluate(READ, id);
@@ -66,9 +70,12 @@ const READ = (i) => {
   console.log('after down:', JSON.stringify(down));
 
   const wentUp = up.firstVisibleRow < start.firstVisibleRow;
-  const cameBack = down.firstVisibleRow >= start.firstVisibleRow;
+  // "Returns from history" means the bottom is reachable again -- measured against the CURRENT ceiling,
+  // not the starting row: the at-rest position can sit in stale blank space that a gesture-time ceiling
+  // refresh then legitimately reclaims, so the exact starting row is not a stable reference.
+  const cameBack = down.ceiling != null && down.top >= down.ceiling - 50;
   console.log(`\n  scrolling up reaches history:     ${wentUp ? 'PASS' : `FAIL (${start.firstVisibleRow} -> ${up.firstVisibleRow})`}`);
-  console.log(`  scrolling down returns from it:   ${cameBack ? 'PASS' : `FAIL (stuck at row ${down.firstVisibleRow}, started at ${start.firstVisibleRow})`}`);
+  console.log(`  scrolling down returns from it:   ${cameBack ? 'PASS' : `FAIL (stopped at ${down.top}, ceiling ${down.ceiling})`}`);
   await br.close();
   await fetch(`${BASE}/api/sessions/${id}`, { method: 'DELETE' }).catch(() => {});
   process.exit(wentUp && cameBack ? 0 : 1);

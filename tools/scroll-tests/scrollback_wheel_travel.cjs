@@ -39,9 +39,9 @@ const READ = (i) => {
   await p.waitForTimeout(1500);
   await p.evaluate((i) => window.__td.activate(i), id);
   await p.waitForTimeout(2500);
-  // More than the 1000-row screen, so there is real scrollback to travel through.
+  // More than the 4000-row screen, so there is real scrollback to travel through.
   await p.evaluate(({ i, s }) => window.__td.sendInput(window.__td.views.get(i), s),
-    { i: id, s: 'clear; seq 1 3000 | sed "s/^/line /"\n' });
+    { i: id, s: 'clear; seq 1 4800 | sed "s/^/line /"\n' });
   await p.waitForTimeout(7000);
 
   const box = await p.evaluate((i) => {

@@ -71,7 +71,7 @@ const BASE = 'http://127.0.0.1:8536';
   // WebGL mode deliberately runs fewer rows (the GPU texture limit -- see tallRowPlan); what must hold
   // in every mode is that the terminal kept the height the plan chose for it.
   const rowsOk = a.termRows === a.plannedRows && b.termRows === b.plannedRows &&
-                 (a.webgl || (a.termRows === 1000 && b.termRows === 1000));
+                 (a.webgl || (a.termRows === 4000 && b.termRows === 4000));
   const ok = Math.abs(a.extraPastLastLine) <= 2 && Math.abs(b.extraPastLastLine) <= 2 && rowsOk;
   console.log(`\n  sparse extra space: ${a.extraPastLastLine}px  (was ~19000)`);
   console.log(`  full extra space:   ${b.extraPastLastLine}px  (was ~10-40)`);
