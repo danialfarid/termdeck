@@ -35,13 +35,16 @@
   <div id="side-split" class="hidden"></div>
   <div id="files-section" class="side-view hidden">
     <div id="files-section-tabs">
-      <button id="files-tab-project" class="files-section-tab" title="Open files · middle-click opens in a new TermDeck tab" aria-label="Files"><span class="codicon codicon-files"></span><span class="files-tab-label">Files</span></button>
-      <button id="files-tab-search" class="files-section-tab" title="Search files · middle-click opens in a new TermDeck tab" aria-label="Search files"><span class="codicon codicon-search"></span><span class="files-tab-label">Search</span></button>
-      <button id="files-tab-git" class="files-section-tab" title="Git changes and history · middle-click opens in a new TermDeck tab" aria-label="Git changes and history"><span class="codicon codicon-git-branch"></span><span class="files-tab-label">Git</span></button>
+      <button id="files-tab-project" class="files-section-tab" title="Open files · middle/right-click opens file mode in a new tab" aria-label="Files"><span class="codicon codicon-files"></span><span class="files-tab-label">Files</span></button>
+      <button id="files-tab-search" class="files-section-tab" title="Search files · middle/right-click opens file mode in a new tab" aria-label="Search files"><span class="codicon codicon-search"></span><span class="files-tab-label">Search</span></button>
+      <button id="files-tab-git" class="files-section-tab" title="Git changes and history · middle/right-click opens file mode in a new tab" aria-label="Git changes and history"><span class="codicon codicon-git-branch"></span><span class="files-tab-label">Git</span></button>
     </div>
     <div id="files-section-header">
       <span class="side-section-label" id="files-root-label">files</span>
-      <span id="git-branch-label" class="branch-label hidden"></span>
+      <div id="git-branch-controls" class="hidden">
+        <button id="git-new-branch" title="Create branch" aria-label="Create branch"><span class="codicon codicon-add"></span></button>
+        <select id="git-header-branch-select" title="Switch branch" aria-label="Switch branch"></select>
+      </div>
       <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
       <button id="tree-sort-toggle" title="Sort files alphabetically"><span class="codicon codicon-sort-precedence"></span></button>
       <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-filter"></span></button>
@@ -88,9 +91,9 @@
   </div>
   <div id="sidebar-footer">
     <button id="view-terminals" title="Terminals · click to close this section; middle-click opens this terminal in a new browser tab" aria-label="Terminals"><span class="codicon codicon-terminal"></span></button>
-    <button id="view-project" title="Files · middle-click opens in a new TermDeck tab" aria-label="Files"><span class="codicon codicon-files"></span></button>
-    <button id="view-search" title="Search &amp; replace · middle-click opens in a new TermDeck tab" aria-label="Search and replace"><span class="codicon codicon-search"></span></button>
-    <button id="view-git" title="Git · middle-click opens in a new TermDeck tab" aria-label="Git"><span class="codicon codicon-git-branch"></span></button>
+    <button id="view-project" title="Files · middle/right-click opens file mode in a new tab" aria-label="Files"><span class="codicon codicon-files"></span></button>
+    <button id="view-search" title="Search &amp; replace · middle/right-click opens file mode in a new tab" aria-label="Search and replace"><span class="codicon codicon-search"></span></button>
+    <button id="view-git" title="Git · middle/right-click opens file mode in a new tab" aria-label="Git"><span class="codicon codicon-git-branch"></span></button>
     <span class="footer-spacer"></span>
     <button id="keys-btn" title="Keyboard shortcuts"><span class="codicon codicon-keyboard"></span></button>
     <button id="settings-gear" title="Settings"><span class="codicon codicon-settings-gear"></span></button>
@@ -104,6 +107,27 @@
     <div class="modal-actions">
       <button id="keys-reset">Reset to defaults</button>
       <button id="keys-done">Done</button>
+    </div>
+  </div>
+</div>
+<div id="lsp-backdrop" class="hidden">
+  <div id="lsp-modal" role="dialog" aria-modal="true" aria-labelledby="lsp-modal-title">
+    <div id="lsp-modal-head">
+      <div>
+        <div id="lsp-modal-title">Language servers</div>
+        <div id="lsp-modal-summary">Detecting installed servers…</div>
+      </div>
+      <div id="lsp-modal-head-actions">
+        <select id="lsp-project-scope" aria-label="Language server project scope"></select>
+        <button id="lsp-enabled-toggle" type="button" aria-label="Enable or disable language servers">on</button>
+        <button id="lsp-panel-close" type="button" title="Close" aria-label="Close language servers"><span class="codicon codicon-close"></span></button>
+      </div>
+    </div>
+    <div id="lsp-panel-status" class="hidden"></div>
+    <div id="lsp-server-list"></div>
+    <div id="lsp-panel-actions">
+      <button id="lsp-install-all" type="button">Install all missing</button>
+      <button id="lsp-panel-done" type="button">Done</button>
     </div>
   </div>
 </div>
@@ -121,18 +145,12 @@
 <div id="main">
   <div id="file-tabs-bar" class="hidden">
     <div id="file-tabs" role="tablist" aria-label="Open files"></div>
-    <button id="file-tabs-more" title="File tab settings" aria-label="File tab settings"><span class="codicon codicon-settings-gear"></span></button>
-  </div>
-  <div id="lsp-install-banner" class="hidden" role="status">
-    <span class="codicon codicon-lightbulb"></span>
-    <span id="lsp-install-message"></span>
-    <button id="lsp-install-open-terminal" type="button">Open install terminal</button>
-    <button id="lsp-install-dismiss" type="button" title="Dismiss" aria-label="Dismiss language server installation"><span class="codicon codicon-close"></span></button>
+    <div id="file-tabs-actions">
+      <button id="file-tabs-more" title="File tab settings" aria-label="File tab settings"><span class="codicon codicon-settings-gear"></span></button>
+      <button id="file-tabs-notebook" title="Quick notebook" aria-label="Quick notebook"><span class="codicon codicon-notebook"></span></button>
+    </div>
   </div>
   <div id="editor-area" class="hidden">
-    <div id="file-editor-toolbar">
-      <div id="file-breadcrumbs" aria-label="File breadcrumbs"></div>
-    </div>
     <div id="file-editor-workspace">
       <div id="monaco-host"></div>
       <div id="secondary-editor-pane" class="hidden">
@@ -152,6 +170,23 @@
         <div id="file-inspector-body"></div>
       </aside>
     </div>
+  </div>
+  <div id="git-review-area" class="hidden">
+    <div id="git-review-head">
+      <div id="git-review-title-group">
+        <span id="git-review-title"></span>
+        <span id="git-review-scope"></span>
+      </div>
+      <div id="git-review-actions">
+        <button id="git-review-previous" title="Previous changed section" aria-label="Previous changed section"><span class="codicon codicon-chevron-up"></span></button>
+        <span id="git-review-position">0/0</span>
+        <button id="git-review-next" title="Next changed section" aria-label="Next changed section"><span class="codicon codicon-chevron-down"></span></button>
+        <button id="git-review-layout" title="Toggle inline/side-by-side diff" aria-label="Toggle inline or side-by-side diff"><span class="codicon codicon-split-horizontal"></span></button>
+        <button id="git-review-open-file" title="Open working file" aria-label="Open working file"><span class="codicon codicon-go-to-file"></span></button>
+        <button id="git-review-close" title="Close Git diff" aria-label="Close Git diff"><span class="codicon codicon-close"></span></button>
+      </div>
+    </div>
+    <div id="git-review-editor-host"></div>
   </div>
   <div id="history-area" class="hidden">
       <div id="history-head">
@@ -186,7 +221,7 @@
   <div id="terminal-area">
       <div id="terminal-actions" class="vscode-terminal-actions">
       <button id="vscode-terminal-resync-btn" title="Resync terminal content" aria-label="Resync terminal content"><span class="codicon codicon-refresh"></span></button>
-      <button id="vscode-history-btn" title="Open Markdown transcript" aria-label="Open Markdown transcript"><span class="codicon codicon-markdown"></span></button>
+      <button id="vscode-history-btn" class="transcript-unavailable" title="Open Markdown transcript" aria-label="Open Markdown transcript"><span class="codicon codicon-markdown"></span></button>
       <button id="vscode-scroll-bottom-btn" title="Scroll terminal to bottom" aria-label="Scroll terminal to bottom"><span class="codicon codicon-fold-down"></span></button>
       </div>
   <div id="terminal-find" class="hidden" role="search" aria-label="Search terminal output">
@@ -207,7 +242,7 @@
     <div id="conversation-outline-list"></div>
   </aside>
   <div id="bottombar">
-    <button id="history-btn" title="Open Markdown transcript" aria-label="Open Markdown transcript"><span class="codicon codicon-markdown"></span></button>
+    <button id="history-btn" class="transcript-unavailable" title="Open Markdown transcript" aria-label="Open Markdown transcript"><span class="codicon codicon-markdown"></span></button>
     <button id="terminal-resync-btn" title="Resync terminal content" aria-label="Resync terminal content"><span class="codicon codicon-refresh"></span></button>
     <button id="scroll-bottom-btn" title="Scroll terminal to bottom" aria-label="Scroll terminal to bottom"><span class="codicon codicon-fold-down"></span></button>
     <button id="history-scroll-bottom" class="hidden" title="Scroll transcript to bottom" aria-label="Scroll transcript to bottom"><span class="codicon codicon-fold-down"></span></button>
@@ -220,8 +255,9 @@
     <button id="file-split-toggle" class="hidden" title="Compare / split editor" aria-label="Compare / split editor"><span class="codicon codicon-split-horizontal"></span></button>
     <button id="notebook-toggle" title="Quick notebook (&#8997;N)" aria-label="Quick notebook"><span class="codicon codicon-notebook"></span></button>
     <button id="attach-btn" title="Attach file/image → inserts its path (also paste or drag-drop onto the terminal)"><span class="codicon codicon-cloud-upload"></span></button>
-    <button id="conversation-outline-toggle" title="Conversation outline" aria-label="Conversation outline"><span class="codicon codicon-list-tree"></span></button>
+    <button id="conversation-outline-toggle" class="transcript-unavailable" title="Conversation outline" aria-label="Conversation outline"><span class="codicon codicon-list-tree"></span></button>
     <button id="problems-toggle" title="Problems" aria-label="Problems"><span class="codicon codicon-warning"></span></button>
+    <div id="file-breadcrumbs" class="hidden" aria-label="Active file breadcrumbs"></div>
     <span id="status-name"></span>
     <span id="lsp-status" class="hidden"></span>
     <span id="terminal-age" class="hidden"></span>
@@ -268,11 +304,15 @@
   <div id="file-history-head">
     <div id="file-history-title">File history</div>
     <div id="file-history-path"></div>
-    <button id="file-history-git-toggle" title="Show Git history" aria-label="Show Git history" aria-pressed="false"><span class="codicon codicon-git-branch"></span></button>
+    <div id="file-history-filters" role="group" aria-label="History source filter">
+      <button id="file-history-filter-all" data-mode="all" title="Show local and Git history" aria-pressed="true">All</button>
+      <button id="file-history-filter-local" data-mode="local" title="Show local history" aria-pressed="false">Local</button>
+      <button id="file-history-filter-git" data-mode="git" title="Show Git history" aria-pressed="false">Git</button>
+    </div>
     <button id="file-history-close" title="Close file history" aria-label="Close file history"><span class="codicon codicon-close"></span></button>
   </div>
   <div id="file-history-sidebar">
-    <div id="file-history-sidebar-title">Versions</div>
+    <div id="file-history-sidebar-title">Timeline</div>
     <div id="file-history-list"></div>
   </div>
   <div id="file-history-diff-pane">
@@ -281,8 +321,8 @@
       <span id="file-history-diff-position"></span>
       <button id="file-history-diff-next" type="button" title="Next change" aria-label="Next change"><span class="codicon codicon-chevron-down"></span></button>
       <span id="file-history-diff-spacer"></span>
-      <button id="file-history-diff-undo-block" type="button" title="Undo this whole change block in the current file"><span class="codicon codicon-discard"></span> Undo block</button>
-      <button id="file-history-diff-undo-line" type="button" title="Undo the selected change line in the current file"><span class="codicon codicon-arrow-left"></span> Undo line</button>
+      <button id="file-history-diff-undo-block" type="button" title="Apply this change from the selected history version into the current file"><span class="codicon codicon-arrow-right"></span> Apply change to current</button>
+      <button id="file-history-diff-undo-line" type="button" title="Apply the selected history line into the current file"><span class="codicon codicon-arrow-right"></span> Apply line</button>
     </div>
     <div id="file-history-preview-empty">Select a version to preview it.</div>
     <div id="file-history-editor-host" class="hidden"></div>

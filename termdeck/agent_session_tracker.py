@@ -29,6 +29,8 @@ class AgentSessionTracker:
     _SUBAGENT_TAIL_BYTES = 256 * 1024
     _AGY_ACTIVITY_TAIL_BYTES = 256 * 1024
     _CODEX_ACTIVITY_TAIL_BYTES = 8 * 1024 * 1024
+    _CLAUDE_PERMISSION_TAIL_BYTES = 256 * 1024
+    _CLAUDE_PERMISSION_MODES = {"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
     _CLAUDE_INTERRUPT_TEXT_PREFIX = "[Request interrupted by user"
     _CLAUDE_LOCAL_COMMAND_MARKERS = ("<command-name>", "<local-command-")
     _CLI_TITLE_CACHE_SIZE = 120
@@ -231,6 +233,26 @@ class AgentSessionTracker:
         if not session_id:
             return None, False
         return self._claude_attention_state_from_path(self.claude_project_dir(cwd) / f"{session_id}.jsonl")
+
+    def claude_session_permission_mode(self, cwd: Path, session_id: str | None) -> str | None:
+        if not session_id:
+            return None
+        path = self.claude_project_dir(cwd) / f"{session_id}.jsonl"
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                handle.seek(max(0, handle.tell() - self._CLAUDE_PERMISSION_TAIL_BYTES))
+                lines = handle.read().decode(errors="replace").splitlines()
+        except OSError:
+            return None
+        for line in reversed(lines):
+            try:
+                mode = json.loads(line).get("permissionMode")
+            except json.JSONDecodeError:
+                continue
+            if mode in self._CLAUDE_PERMISSION_MODES:
+                return mode
+        return None
 
     def codex_session_id_for_reference(self, reference: str) -> str | None:
         """Resolve a Codex UUID or saved thread name to the UUID accepted by resume."""

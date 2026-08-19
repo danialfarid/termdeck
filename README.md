@@ -326,7 +326,10 @@ and documentation. See [Language servers](docs/language-servers.md) for supporte
 - **⌘S** saves. **⌃R** renames, **⌃M** moves, **⌘⌫** trashes the selected tree file.
 - The file-tree context menu creates, renames, duplicates, moves, refreshes, or trashes files and folders.
 - Local snapshots and Git history show earlier versions of an open file, with diffs and targeted restore.
-- Git view lists branch changes; file tools include history and blame.
+- Git view stages and unstages files, commits staged work, creates and switches branches, manages stashes and
+  worktrees, resolves conflicts with ours/theirs/manual choices, attributes changes to agent terminals, and
+  renders the commit graph. Remotes can be fetched, fast-forward pulled, pushed over SSH or HTTPS, and cloned
+  directly into a registered TermDeck project. File tools also include history and blame.
 - Access is confined to your home directory, files over 2 MB are refused, and binaries are refused.
 - Deletes go to the system trash (`~/.Trash` on macOS, the XDG trash on Linux), never `rm`.
 

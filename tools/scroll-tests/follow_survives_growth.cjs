@@ -32,8 +32,11 @@ const RUN = ({ scrollTop, ceiling, followTop, following }) => {
     tallMaxScrollTop: ceiling, tallFollowTop: followTop, tallFollowing: following,
     tallPinnedViewportY: null, tallAnchorRow: null,
     term: {
-      buffer: { active: { viewportY: 500, baseY: 500, cursorY: 0 } },
+      // A real Terminal has all of these; the stand-in needs them because filling the pane from the
+      // bottom reads the buffer and can scroll the viewport.
+      buffer: { active: { viewportY: 500, baseY: 500, cursorY: 0, length: 1500, getLine: () => null } },
       scrollToBottom() {},
+      scrollLines() {},
       // Real terminals always have this; the anchor uses it to follow a line through scrollback trimming.
       registerMarker() { return null; },
       _core: { _renderService: { dimensions: { css: { cell: { height: 21 } } } } },

@@ -22,7 +22,9 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from termdeck.config import TermdeckConfig
 from termdeck.file_history_service import FileHistoryService
 from termdeck.file_service import ProjectFileService
+from filedeck.git_remote_service import GitRemoteService
 from filedeck.git_service import FileDeckGitService
+from filedeck.git_workflow_service import GitWorkflowService
 from termdeck.history_index import HistorySearchIndex
 from termdeck.lsp_protocol import LanguageServerConnection, LanguageServerProtocolError, LanguageServerRequestError
 from termdeck.lsp_service import LanguageServerManager, LanguageServerRegistry, LanguageServerUnavailableError
@@ -279,6 +281,77 @@ class FileHistoryRestoreRequest(BaseModel):
     version_id: int
 
 
+class GitPathsRequest(BaseModel):
+    root: str
+    paths: list[str]
+
+
+class GitGraphRequest(BaseModel):
+    root: str
+    paths: list[str] = []
+    limit: int = 100
+
+
+class GitCommitRequest(BaseModel):
+    root: str
+    message: str
+
+
+class GitBranchRequest(BaseModel):
+    root: str
+    name: str
+    start_point: str = "HEAD"
+    switch: bool = True
+
+
+class GitSwitchRequest(BaseModel):
+    root: str
+    name: str
+
+
+class GitStashRequest(BaseModel):
+    root: str
+    message: str = ""
+    include_untracked: bool = True
+
+
+class GitStashActionRequest(BaseModel):
+    root: str
+    reference: str
+    action: str
+
+
+class GitConflictRequest(BaseModel):
+    root: str
+    path: str
+    resolution: str
+
+
+class GitWorktreeRequest(BaseModel):
+    root: str
+    action: str
+    path: str = ""
+    branch: str = ""
+    create_branch: bool = True
+    start_point: str = "HEAD"
+
+
+class GitRemoteRequest(BaseModel):
+    root: str
+    action: str
+    name: str = "origin"
+    url: str = ""
+    branch: str = ""
+    set_upstream: bool = False
+
+
+class GitCloneProjectRequest(BaseModel):
+    url: str
+    path: str
+    branch: str = ""
+    name: str = ""
+
+
 class ReplaceRequest(BaseModel):
     root: str
     q: str
@@ -342,6 +415,7 @@ class UiSettings(BaseModel):
     project_font_size: int = 18
     terminal_font_size: int = 18
     ui_font_size: int = 11
+    system_font_size: int = 13
     files_tab_font_size: int = 11
     viewer_font_size: int = 12
     code_font_size: int = 12
@@ -378,6 +452,8 @@ class UiSettings(BaseModel):
     transcript_first_surface: str = "terminal"
     # Declared explicitly or it is silently dropped when settings are saved.
     attach_repaint: bool = True
+    tall_webgl: bool = False
+    scroll_whole_buffer: bool = False
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
     md_prompt_drafts: dict[str, str] = {}
@@ -425,6 +501,8 @@ class TermdeckServer:
             self.manager = TerminalSessionManager(self.state_backup)
         self.files = ProjectFileService()
         self.filedeck_git = FileDeckGitService()
+        self.git_remotes = GitRemoteService()
+        self.git_workflow = GitWorkflowService(self.filedeck_git, self.git_remotes)
         self.worktrees = GitWorktreeService(TermdeckConfig.WORKTREES_DIR)
         self.worktree_registry = WorktreeRegistry(TermdeckConfig.WORKTREE_REGISTRY_FILE, self.state_backup, self.worktrees)
         self.file_history = FileHistoryService(TermdeckConfig.FILE_HISTORY_DATABASE)
@@ -499,6 +577,8 @@ class TermdeckServer:
         app.get(TermdeckConfig.PROJECT_NAVIGATION_PAGE_ROUTE, response_model=None)(self._project_navigation_page)
         app.get(TermdeckConfig.FILEDECK_PAGE_ROUTE, response_model=None)(self._filedeck_page)
         app.get(TermdeckConfig.FILEDECK_NAVIGATION_PAGE_ROUTE, response_model=None)(self._filedeck_navigation_page)
+        app.get(TermdeckConfig.GIT_PAGE_ROUTE, response_model=None)(self._filedeck_page)
+        app.get(TermdeckConfig.GIT_NAVIGATION_PAGE_ROUTE, response_model=None)(self._filedeck_navigation_page)
         app.get(TermdeckConfig.API_STATE_RECOVERY_ROUTE, response_model=None)(self._state_recovery_status)
         app.post(TermdeckConfig.API_STATE_RECOVERY_RESTORE_ROUTE, response_model=None)(self._restore_state_recovery)
         app.get(TermdeckConfig.API_PROJECTS_ROUTE, response_model=None)(self._list_projects)
@@ -513,6 +593,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_TERMINAL_TASK_ROUTE, response_model=None)(self._run_terminal_task)
         app.post(TermdeckConfig.API_TERMINAL_TASK_PROMPT_ROUTE, response_model=None)(self._follow_up_task_prompt)
         app.post(TermdeckConfig.API_TERMINALS_BATCH_ROUTE, response_model=None)(self._launch_terminal_batch)
+        app.post(TermdeckConfig.API_SESSION_STOP_ROUTE, response_model=None)(self._stop_session)
         app.post(TermdeckConfig.API_SESSION_RESTART_ROUTE, response_model=None)(self._restart_session)
         app.post(TermdeckConfig.API_SESSION_FORK_ROUTE, response_model=None)(self._fork_session)
         app.get(TermdeckConfig.API_SESSION_WORKTREE_REVIEW_ROUTE, response_model=None)(self._review_worktree)
@@ -580,6 +661,22 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_FILE_GIT_BRANCH_ROUTE, response_model=None)(self._git_branch_state)
         app.get(TermdeckConfig.API_FILE_GIT_BLAME_ROUTE, response_model=None)(self._git_blame)
         app.get(TermdeckConfig.API_FILE_GIT_DIFF_ROUTE, response_model=None)(self._git_diff)
+        app.get(TermdeckConfig.API_GIT_WORKFLOW_STATE_ROUTE, response_model=None)(self._git_workflow_state)
+        app.post(TermdeckConfig.API_GIT_STAGE_ROUTE, response_model=None)(self._git_stage)
+        app.post(TermdeckConfig.API_GIT_UNSTAGE_ROUTE, response_model=None)(self._git_unstage)
+        app.post(TermdeckConfig.API_GIT_REVERT_ROUTE, response_model=None)(self._git_revert)
+        app.get(TermdeckConfig.API_GIT_REVIEW_ROUTE, response_model=None)(self._git_review)
+        app.post(TermdeckConfig.API_GIT_GRAPH_ROUTE, response_model=None)(self._git_graph)
+        app.get(TermdeckConfig.API_GIT_COMMIT_DETAIL_ROUTE, response_model=None)(self._git_commit_detail)
+        app.post(TermdeckConfig.API_GIT_COMMIT_ROUTE, response_model=None)(self._git_commit)
+        app.post(TermdeckConfig.API_GIT_BRANCH_ROUTE, response_model=None)(self._git_create_branch)
+        app.post(TermdeckConfig.API_GIT_SWITCH_ROUTE, response_model=None)(self._git_switch_branch)
+        app.post(TermdeckConfig.API_GIT_STASH_ROUTE, response_model=None)(self._git_create_stash)
+        app.post(TermdeckConfig.API_GIT_STASH_ACTION_ROUTE, response_model=None)(self._git_stash_action)
+        app.post(TermdeckConfig.API_GIT_CONFLICT_ROUTE, response_model=None)(self._git_resolve_conflict)
+        app.post(TermdeckConfig.API_GIT_WORKTREE_ROUTE, response_model=None)(self._git_worktree_action)
+        app.post(TermdeckConfig.API_GIT_REMOTE_ROUTE, response_model=None)(self._git_remote_action)
+        app.post(TermdeckConfig.API_GIT_CLONE_ROUTE, response_model=None)(self._git_clone_project)
         app.post(TermdeckConfig.API_UPLOAD_ROUTE, response_model=None)(self._upload_file)
         app.post(TermdeckConfig.API_FILE_WRITE_ROUTE, response_model=None)(self._write_file)
         app.post(TermdeckConfig.API_FILE_CREATE_ROUTE, response_model=None)(self._create_file)
@@ -782,9 +879,9 @@ class TermdeckServer:
         except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError, OSError) as recent_error:
             raise HTTPException(status_code=404, detail=str(recent_error)) from recent_error
 
-    async def _git_status(self, root: str) -> dict[str, str]:
+    async def _git_status(self, root: str, refresh: bool = False) -> dict[str, str]:
         try:
-            return await asyncio.to_thread(self.files.git_statuses, root)
+            return await asyncio.to_thread(self.files.git_statuses, root, refresh)
         except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError, OSError) as git_error:
             raise HTTPException(status_code=404, detail=str(git_error)) from git_error
 
@@ -808,6 +905,153 @@ class TermdeckServer:
             return await asyncio.to_thread(self.filedeck_git.get_diff, base, path, commit)
         except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as diff_error:
             raise HTTPException(status_code=404, detail=str(diff_error)) from diff_error
+
+    async def _git_workflow_state(self, root: str, limit: int = 100) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            sessions = list(self.manager.list_sessions(None))
+            return await asyncio.to_thread(self.git_workflow.get_state, base, sessions, limit)
+        except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError, OSError,
+                subprocess.SubprocessError) as git_error:
+            raise HTTPException(status_code=404, detail=str(git_error)) from git_error
+
+    async def _git_stage(self, request: GitPathsRequest) -> dict[str, bool]:
+        await self._run_git_workflow_mutation(self.git_workflow.stage, request.root, request.paths)
+        return {"staged": True}
+
+    async def _git_unstage(self, request: GitPathsRequest) -> dict[str, bool]:
+        await self._run_git_workflow_mutation(self.git_workflow.unstage, request.root, request.paths)
+        return {"unstaged": True}
+
+    async def _git_revert(self, request: GitPathsRequest) -> dict[str, object]:
+        trashed_paths = await self._run_git_workflow_mutation(self.git_workflow.revert_paths_to_head, request.root,
+                                                              request.paths, self.files.move_to_trash)
+        return {"reverted": True, "trashed_paths": trashed_paths}
+
+    async def _git_review(self, root: str, path: str, scope: str, revision: str = "", previous_path: str = "") -> dict[str, str]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            if scope == "commit":
+                return await asyncio.to_thread(self.git_workflow.review_commit_file, base, path, revision, previous_path)
+            return await asyncio.to_thread(self.git_workflow.review_file, base, path, scope)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as review_error:
+            raise HTTPException(status_code=404, detail=str(review_error)) from review_error
+
+    async def _git_graph(self, request: GitGraphRequest) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(request.root, "")
+            repository_root = await asyncio.to_thread(self.git_workflow.repository_root, base)
+            graph = await asyncio.to_thread(self.git_workflow.commit_graph, repository_root, request.limit,
+                                            request.paths or None)
+            scope = "worktree" if not request.paths else "file" if len(request.paths) == 1 else "files"
+            return {"scope": scope, "paths": request.paths, "graph": graph}
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as graph_error:
+            raise HTTPException(status_code=404, detail=str(graph_error)) from graph_error
+
+    async def _git_commit_detail(self, root: str, commit_id: str) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.git_workflow.commit_detail, base, commit_id)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as detail_error:
+            raise HTTPException(status_code=404, detail=str(detail_error)) from detail_error
+
+    async def _git_commit(self, request: GitCommitRequest) -> dict[str, str]:
+        commit_id = await self._run_git_workflow_mutation(self.git_workflow.commit, request.root, request.message)
+        return {"commit_id": str(commit_id)}
+
+    async def _git_create_branch(self, request: GitBranchRequest) -> dict[str, str]:
+        branch = await self._run_git_workflow_mutation(self.git_workflow.create_branch, request.root, request.name,
+                                                       request.start_point, request.switch)
+        return {"branch": str(branch)}
+
+    async def _git_switch_branch(self, request: GitSwitchRequest) -> dict[str, str]:
+        branch = await self._run_git_workflow_mutation(self.git_workflow.switch_branch, request.root, request.name)
+        return {"branch": str(branch)}
+
+    async def _git_create_stash(self, request: GitStashRequest) -> dict[str, str]:
+        result = await self._run_git_workflow_mutation(self.git_workflow.create_stash, request.root, request.message,
+                                                       request.include_untracked)
+        return {"result": str(result)}
+
+    async def _git_stash_action(self, request: GitStashActionRequest) -> dict[str, bool]:
+        if request.action in {"apply", "pop"}:
+            await self._run_git_workflow_mutation(self.git_workflow.apply_stash, request.root, request.reference,
+                                                  request.action == "pop")
+        elif request.action == "drop":
+            await self._run_git_workflow_mutation(self.git_workflow.drop_stash, request.root, request.reference)
+        else:
+            raise HTTPException(status_code=400, detail=f"unknown stash action: {request.action}")
+        return {"updated": True}
+
+    async def _git_resolve_conflict(self, request: GitConflictRequest) -> dict[str, bool]:
+        await self._run_git_workflow_mutation(self.git_workflow.resolve_conflict, request.root, request.path,
+                                              request.resolution)
+        return {"resolved": True}
+
+    async def _git_worktree_action(self, request: GitWorktreeRequest) -> dict[str, object]:
+        if request.action == "create":
+            if not request.path or not request.branch:
+                raise HTTPException(status_code=400, detail="worktree path and branch are required")
+            worktree_path = self.files.resolve_confined(str(TermdeckConfig.FILE_ACCESS_ROOT), request.path)
+            worktree = await self._run_git_workflow_mutation(self.git_workflow.create_worktree, request.root,
+                                                             worktree_path, request.branch, request.create_branch,
+                                                             request.start_point)
+            repository_root = await asyncio.to_thread(self.git_workflow.repository_root,
+                                                       self.files.resolve_confined(request.root, ""))
+            project_entry = next((entry for entry in self.manager.registry.list_projects()
+                                  if Path(entry["root"]).expanduser().resolve() == repository_root), None)
+            if project_entry is not None:
+                await asyncio.to_thread(self.worktree_registry.list_for_project, project_entry["name"],
+                                        str(repository_root))
+            return {"worktree": worktree}
+        if request.action == "remove":
+            worktree_path = self.files.resolve_confined(str(TermdeckConfig.FILE_ACCESS_ROOT), request.path)
+            await self._run_git_workflow_mutation(self.git_workflow.remove_worktree, request.root, worktree_path)
+            return {"removed": True}
+        if request.action == "prune":
+            await self._run_git_workflow_mutation(self.git_workflow.prune_worktrees, request.root)
+            return {"pruned": True}
+        raise HTTPException(status_code=400, detail=f"unknown worktree action: {request.action}")
+
+    async def _git_remote_action(self, request: GitRemoteRequest) -> dict[str, bool | str | object]:
+        if request.action == "add":
+            remote = await self._run_git_workflow_mutation(self.git_remotes.add_remote, request.root,
+                                                           request.name, request.url)
+            return {"updated": True, "remote": remote}
+        if request.action == "remove":
+            await self._run_git_workflow_mutation(self.git_remotes.remove_remote, request.root, request.name)
+        elif request.action == "fetch":
+            await self._run_git_workflow_mutation(self.git_remotes.fetch_remote, request.root, request.name)
+        elif request.action == "pull":
+            await self._run_git_workflow_mutation(self.git_remotes.pull_remote, request.root, request.name,
+                                                  request.branch)
+        elif request.action == "push":
+            await self._run_git_workflow_mutation(self.git_remotes.push_remote, request.root, request.name,
+                                                  request.branch, request.set_upstream)
+        else:
+            raise HTTPException(status_code=400, detail=f"unknown remote action: {request.action}")
+        return {"updated": True}
+
+    async def _git_clone_project(self, request: GitCloneProjectRequest) -> dict[str, object]:
+        try:
+            destination = self.files.resolve_confined(str(TermdeckConfig.FILE_ACCESS_ROOT), request.path)
+            cloned_path = await asyncio.to_thread(self.git_remotes.clone_remote_project, request.url, destination,
+                                                  request.branch)
+            project = self.manager.registry.add_project(cloned_path, request.name)
+            return {"project": project, "path": str(cloned_path)}
+        except (ValueError, FileNotFoundError, FileExistsError, NotADirectoryError, PermissionError, OSError,
+                subprocess.SubprocessError) as clone_error:
+            raise HTTPException(status_code=409, detail=str(clone_error)) from clone_error
+
+    async def _run_git_workflow_mutation(self, operation: Callable[..., object], *arguments: object) -> object:
+        try:
+            base = self.files.resolve_confined(str(arguments[0]), "")
+            result = await asyncio.to_thread(operation, base, *arguments[1:])
+            self.files.invalidate_git_status(str(base))
+            return result
+        except (ValueError, FileNotFoundError, FileExistsError, NotADirectoryError, PermissionError, OSError,
+                subprocess.SubprocessError) as git_error:
+            raise HTTPException(status_code=409, detail=str(git_error)) from git_error
 
     async def _read_file(self, root: str, path: str) -> dict[str, object]:
         try:
@@ -2146,6 +2390,13 @@ class TermdeckServer:
             raise HTTPException(status_code=409, detail=str(restart_error)) from restart_error
         except ValueError as restart_error:
             raise HTTPException(status_code=400, detail=str(restart_error)) from restart_error
+        return self.manager.session_summary_by_id(session_id)
+
+    async def _stop_session(self, session_id: str) -> dict[str, object]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        if not await self.manager.stop_session(session_id):
+            raise HTTPException(status_code=409, detail="could not terminate the detached terminal process tree")
         return self.manager.session_summary_by_id(session_id)
 
     async def _fork_session(self, session_id: str, request: ForkSessionRequest) -> dict[str, object]:

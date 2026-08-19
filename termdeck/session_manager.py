@@ -183,6 +183,7 @@ class TerminalSessionManager:
             await self._reconcile_session_socket(ms)
             await self._reconcile_live_claude_session_binding(ms)
             self._reconcile_stale_claude_session_binding(ms)
+            self._canonicalize_agent_resume_command(ms.record)
             self._sync_claude_explicit_title(ms)
             self._refresh_session_activity(ms)
             self._refresh_persisted_agent_activity(ms)
@@ -219,7 +220,7 @@ class TerminalSessionManager:
             AgentKind.CLAUDE, cwd, ms.record.agent_session_id)
         if candidate_activity <= current_activity:
             return False
-        ms.record.agent_session_id = candidate
+        self._set_agent_session_binding(ms, candidate)
         self._initialize_claude_subagent_state(ms)
         return True
 
@@ -333,8 +334,14 @@ class TerminalSessionManager:
             options = {
                 "default": (),
                 "accept-edits": ("--permission-mode", "acceptEdits"),
+                "acceptedits": ("--permission-mode", "acceptEdits"),
                 "auto": ("--permission-mode", "auto"),
                 "full-access": ("--dangerously-skip-permissions",),
+                "bypasspermissions": ("--dangerously-skip-permissions",),
+                "manual": ("--permission-mode", "manual"),
+                "dontask": ("--permission-mode", "dontAsk"),
+                "dont-ask": ("--permission-mode", "dontAsk"),
+                "plan": ("--permission-mode", "plan"),
             }
         elif kind is AgentKind.CODEX:
             options = {
@@ -386,6 +393,18 @@ class TerminalSessionManager:
             filtered.append(token)
         updated = preamble + list(permissions) + filtered
         record.command = shlex.join(updated)
+
+    def _canonicalize_agent_resume_command(self, record: SessionRecord) -> None:
+        if not record.agent_session_id:
+            return
+        kind = AgentKind(record.agent_kind)
+        if kind not in (AgentKind.CODEX, AgentKind.CLAUDE):
+            return
+        record.command = self._tracker.build_resume_command(kind, record.command, record.agent_session_id)
+
+    def _set_agent_session_binding(self, ms: ManagedSession, agent_session_id: str) -> None:
+        ms.record.agent_session_id = agent_session_id
+        self._canonicalize_agent_resume_command(ms.record)
 
     def _create(self, clean_command: str, cwd_path: Path, title: str, initial_command: str | None,
                 agent_rename: str | None = None, project: str | None = None,
@@ -441,6 +460,7 @@ class TerminalSessionManager:
         kind = AgentKind(ms.record.agent_kind)
         if kind is AgentKind.CLAUDE:
             self._reconcile_stale_claude_session_binding(ms)
+        self._canonicalize_agent_resume_command(ms.record)
         socket = self._dtach_socket(ms.record.session_id)
         reattach = resume and self._dtach_socket_live(socket)
         ms.detached_live = reattach
@@ -450,6 +470,12 @@ class TerminalSessionManager:
         elif resume and not reattach and kind is not AgentKind.NONE and ms.record.agent_session_id:
             command = self._tracker.build_resume_command(kind, ms.record.command, ms.record.agent_session_id)
         baseline = self._tracker.snapshot_session_files(kind, Path(ms.record.cwd)) if kind is not AgentKind.NONE else set()
+        if reattach and screen_repaint:
+            ms.repaint_activity_suppressed_until_monotonic = max(
+                ms.repaint_activity_suppressed_until_monotonic,
+                time.monotonic() + TermdeckConfig.SCREEN_REPAINT_REATTACH_DELAY_SECONDS +
+                TermdeckConfig.SCREEN_REPAINT_ACTIVITY_SUPPRESSION_SECONDS,
+            )
         if ms.buffer:
             divider = TermdeckConfig.REATTACH_DIVIDER if reattach else TermdeckConfig.RESPAWN_DIVIDER
             self._handle_output(ms, ("\r\n" * ms.rows + divider + "\r\n").encode(), mark_activity=False)
@@ -574,7 +600,7 @@ class TerminalSessionManager:
             return
         if found is not None and found != ms.record.agent_session_id:
             ms.detect_deadline_monotonic = 0.0
-            ms.record.agent_session_id = found
+            self._set_agent_session_binding(ms, found)
             if kind is AgentKind.CLAUDE:
                 self._initialize_claude_subagent_state(ms)
                 if ms.cli_title is None:
@@ -740,7 +766,7 @@ class TerminalSessionManager:
             cwd, self._display_title(ms.cli_title), created_at, self._claimed_agent_ids(ms))
         if replacement is None or replacement == ms.record.agent_session_id:
             return False
-        ms.record.agent_session_id = replacement
+        self._set_agent_session_binding(ms, replacement)
         self._initialize_claude_subagent_state(ms)
         self._persist()
         return True
@@ -1652,9 +1678,17 @@ class TerminalSessionManager:
         ms = self._sessions[session_id]
         if ms.detect_task is not None:
             ms.detect_task.cancel()
+        if ms.record.agent_kind != AgentKind.NONE.value and not ms.record.agent_session_id:
+            raise RuntimeError(f"agent session identity is still resolving; wait before restarting: {session_id}")
+        self._canonicalize_agent_resume_command(ms.record)
         if permission:
             self._set_restart_permission(ms.record, permission)
-            self._persist()
+        elif ms.record.agent_kind == AgentKind.CLAUDE.value:
+            current_permission_mode = self._tracker.claude_session_permission_mode(
+                Path(ms.record.cwd), ms.record.agent_session_id)
+            if current_permission_mode:
+                self._set_restart_permission(ms.record, current_permission_mode)
+        self._persist()
         if not await self._terminate_proc(ms):
             raise RuntimeError(f"could not stop dtach session before restart: {session_id}")
         self._spawn(ms, resume=True)
@@ -1715,6 +1749,33 @@ class TerminalSessionManager:
 
     async def stop_session_process_for_worktree(self, session_id: str) -> bool:
         return await self._terminate_proc(self._sessions[session_id])
+
+    async def stop_session(self, session_id: str) -> bool:
+        ms = self._sessions[session_id]
+        if not ms.running:
+            return True
+        previous_activity_at = ms.last_activity_at
+        ms.lazy_start_pending = True
+        if ms.detect_task is not None:
+            ms.detect_task.cancel()
+        if not await self._terminate_proc(ms):
+            ms.lazy_start_pending = False
+            self._broadcast_status(ms)
+            return False
+        ms.proc = None
+        ms.detached_live = False
+        ms.exit_code = None
+        ms.processing_started_at = None
+        ms.codex_transcript_active = False
+        ms.claude_main_active = False
+        ms.claude_subagents_active = False
+        ms.claude_subagent_states = {}
+        ms.agy_transcript_active = False
+        ms.last_activity_at = previous_activity_at
+        ms.record.last_activity_at = previous_activity_at
+        self._broadcast_status(ms)
+        self._persist()
+        return True
 
     async def remove_session_after_worktree_finish(self, session_id: str) -> bool:
         ms = self._sessions[session_id]

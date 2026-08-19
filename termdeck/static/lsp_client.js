@@ -18,13 +18,18 @@ class TermdeckLspClient {
     this.activationGeneration = 0;
     this.providerDisposables = [];
     this.installDetails = null;
-    this.dismissedInstallLanguages = new Set();
     this.settingsStatus = [];
     this.settingsProjectRoot = "";
     this.settingsLanguageKey = "";
     this.settingsElements = null;
-    this.app.$("lsp-install-open-terminal").onclick = () => void this.openInstallTerminal();
-    this.app.$("lsp-install-dismiss").onclick = () => this.dismissInstallBanner();
+    const status = this.app.$("lsp-status");
+    status.onclick = () => { if (status.classList.contains("installable")) void this.openSettingsPanel(); };
+    status.onkeydown = (event) => {
+      if (!status.classList.contains("installable") || !["Enter", " "].includes(event.key)) return;
+      event.preventDefault();
+      void this.openSettingsPanel();
+    };
+    this.initializeSettingsPanel();
   }
 
   registerProviders() {
@@ -58,10 +63,10 @@ class TermdeckLspClient {
   async activate(entry, model) {
     if (this.entry === entry && this.model === model && this.transport.available) return;
     this.deactivate();
-    if (this.app.settings.lsp_enabled === false) return;
     const language = model.getLanguageId();
-    if (!this.supportedLanguages.has(language)) {
-      this.setStatus("", "");
+    if (!this.supportedLanguages.has(language)) return;
+    if (this.app.settings.lsp_enabled === false) {
+      this.setStatus("Language tools off · Enable", "Enable language tools for diagnostics, definitions, references, rename, hover help, and code actions.", true);
       return;
     }
     const generation = ++this.activationGeneration;
@@ -69,6 +74,7 @@ class TermdeckLspClient {
     this.model = model;
     const openingText = model.getValue();
     this.modelSubscription = model.onDidChangeContent(() => this.scheduleDocumentChange());
+    this.installDetails = null;
     this.setStatus("LSP", "Connecting language server");
     try {
       const status = await this.transport.connect(entry.root, entry.path, language, openingText,
@@ -77,13 +83,13 @@ class TermdeckLspClient {
       if (!status.available) {
         this.modelSubscription?.dispose();
         this.modelSubscription = null;
-        this.setStatus("LSP unavailable", status.error || "Language server unavailable");
-        this.showInstallBanner(status, entry);
+        this.showInstallStatus(status, entry);
         return;
       }
       this.uri = status.uri;
       this.serverName = status.server || "Language server";
       this.capabilities = status.capabilities || {};
+      this.installDetails = null;
       this.setStatus(this.serverName, `${this.serverName} connected`);
       this.schedulePullDiagnostics(0);
       if (model.getValue() !== openingText) this.transport.notify("change", model.getValue());
@@ -91,7 +97,8 @@ class TermdeckLspClient {
       if (generation === this.activationGeneration) {
         this.modelSubscription?.dispose();
         this.modelSubscription = null;
-        this.setStatus("LSP unavailable", error.message);
+        this.installDetails = null;
+        this.setStatus("Language tools need setup", `${error.message}. Click to configure language tools for this project.`, true);
       }
     }
   }
@@ -112,8 +119,8 @@ class TermdeckLspClient {
     this.uri = "";
     this.serverName = "";
     this.capabilities = {};
+    this.installDetails = null;
     this.setStatus("", "");
-    this.hideInstallBanner();
   }
 
   languageDisplayName(language) {
@@ -125,37 +132,82 @@ class TermdeckLspClient {
     return names[language] || language;
   }
 
-  showInstallBanner(status, entry) {
+  showInstallStatus(status, entry) {
     const language = String(status.language || "");
     const installHint = String(status.install_hint || "").trim();
     const server = String(status.server || "Language server").trim();
-    if (this.app.settings.lsp_enabled === false || status.disabled || !language || !installHint ||
-        this.dismissedInstallLanguages.has(language)) return;
-    this.installDetails = { language, installHint, server, root: entry.root };
-    this.app.$("lsp-install-message").textContent = `${server} is not installed. Add ${this.languageDisplayName(language)} diagnostics, navigation, rename, and hover.`;
-    const button = this.app.$("lsp-install-open-terminal");
-    button.title = installHint;
-    this.app.$("lsp-install-banner").classList.remove("hidden");
+    const installOptions = Array.isArray(status.install_options) ? status.install_options
+      .map((option) => ({ label: String(option.label || "Install"), command: String(option.command || "").trim() }))
+      .filter((option) => option.command) : [];
+    if (!installOptions.length && installHint) installOptions.push({ label: `Install ${server}`, command: installHint });
+    this.installDetails = this.app.settings.lsp_enabled === false || status.disabled || !language || !installOptions.length
+      ? null : { language, installHint: installOptions[0].command, installOptions, server, root: entry.root };
+    const languageName = this.languageDisplayName(language);
+    const title = status.error
+      ? `${status.error}. Click to configure ${languageName} language tools.`
+      : `Install or configure ${server} for ${languageName} diagnostics, definitions, references, rename, hover help, and code actions.`;
+    this.setStatus(`Set up ${languageName} tools`, title, true);
   }
 
-  hideInstallBanner() {
-    this.installDetails = null;
-    this.app.$("lsp-install-banner")?.classList.add("hidden");
-  }
-
-  dismissInstallBanner() {
-    if (this.installDetails?.language) this.dismissedInstallLanguages.add(this.installDetails.language);
-    this.hideInstallBanner();
-  }
-
-  async openInstallTerminal() {
+  openInstallOptionsPopover() {
     const details = this.installDetails;
     if (!details) return;
-    this.hideInstallBanner();
-    await this.app.openLanguageServerInstallTerminal(details);
+    const pop = this.app.$("settings-popover");
+    pop.classList.remove("lsp-settings-expanded");
+    pop.classList.add("lsp-install-options-popover");
+    pop.textContent = "";
+    const heading = document.createElement("div");
+    heading.className = "lsp-install-options-heading";
+    heading.textContent = `Install ${details.server}`;
+    pop.appendChild(heading);
+    for (const option of details.installOptions) {
+      const row = document.createElement("div");
+      row.className = "lsp-install-option";
+      const text = document.createElement("span");
+      text.className = "lsp-install-option-text";
+      const label = document.createElement("strong");
+      label.textContent = option.label;
+      const command = document.createElement("code");
+      command.textContent = option.command;
+      text.append(label, command);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "install";
+      button.onclick = () => {
+        pop.classList.add("hidden");
+        void this.app.openLanguageServerInstallTerminal({ ...details, installHint: option.command });
+      };
+      row.append(text, button);
+      pop.appendChild(row);
+    }
+    pop.onkeydown = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      pop.classList.add("hidden");
+      this.app.$("lsp-status").focus();
+    };
+    this.app.positionPopover(pop, this.app.$("lsp-status"));
   }
 
-  buildSettingsSection(anchor) {
+  buildSettingsSection() {
+    const row = document.createElement("div");
+    row.className = "settings-row";
+    const rowLabel = document.createElement("span");
+    rowLabel.className = "settings-label";
+    rowLabel.textContent = "Language servers";
+    const manage = document.createElement("button");
+    manage.type = "button";
+    manage.className = "theme-toggle";
+    manage.textContent = "manage";
+    manage.onclick = () => {
+      this.app.$("settings-popover").classList.add("hidden");
+      void this.openSettingsPanel();
+    };
+    row.append(rowLabel, manage);
+    return row;
+  }
+
+  buildLegacySettingsSection(anchor) {
     const root = document.createElement("div");
     root.className = "settings-submenu lsp-settings-submenu";
     const header = document.createElement("div");
@@ -225,6 +277,12 @@ class TermdeckLspClient {
     const installButton = document.createElement("button");
     installButton.type = "button";
     installButton.textContent = "install";
+    installButton.disabled = true;
+    const installAll = document.createElement("button");
+    installAll.type = "button";
+    installAll.textContent = "install all";
+    installAll.title = "Install every missing language server";
+    installAll.disabled = true;
     const actions = document.createElement("div");
     actions.className = "lsp-settings-actions";
     const save = document.createElement("button");
@@ -233,14 +291,14 @@ class TermdeckLspClient {
     const automatic = document.createElement("button");
     automatic.type = "button";
     automatic.textContent = "use automatic";
-    installRow.append(install, installButton);
+    installRow.append(install, installButton, installAll);
     actions.append(automatic, save);
     content.append(projectLabel, languageLabel, status, commandLabel, installRow, actions);
     headerControls.append(enabledToggle, toggle);
     header.append(label, headerControls);
     root.append(header, content);
-    this.settingsElements = { root, anchor, project, language, status, command, install, installButton, save, automatic,
-      enabledToggle };
+    this.settingsElements = { root, anchor, project, language, status, command, install, installButton, installAll, save,
+      automatic, enabledToggle };
     this.renderEnabledControl();
     toggle.onclick = () => {
       const expanded = root.classList.toggle("expanded");
@@ -261,6 +319,7 @@ class TermdeckLspClient {
     save.onclick = () => void this.saveSettingsOverride(command.value);
     automatic.onclick = () => void this.saveSettingsOverride("");
     installButton.onclick = () => void this.openSettingsInstallTerminal();
+    installAll.onclick = () => void this.openSettingsInstallAllTerminal();
     command.onkeydown = (event) => {
       if (event.key !== "Enter") return;
       event.preventDefault();
@@ -326,7 +385,11 @@ class TermdeckLspClient {
     elements.enabledToggle.classList.toggle("on", enabled);
     elements.enabledToggle.setAttribute("aria-pressed", String(enabled));
     for (const element of [elements.project, elements.language, elements.command, elements.install,
-      elements.installButton, elements.save, elements.automatic]) element.disabled = !enabled;
+      elements.save, elements.automatic]) element.disabled = !enabled;
+    if (!enabled) {
+      elements.installButton.disabled = true;
+      elements.installAll.disabled = true;
+    }
     if (!enabled) {
       elements.status.classList.remove("error");
       elements.status.textContent = "Disabled — no language-server processes will start.";
@@ -393,6 +456,8 @@ class TermdeckLspClient {
       elements.install.appendChild(option);
     }
     elements.installButton.disabled = !elements.install.options.length;
+    elements.installAll.disabled = !this.settingsStatus.some((status) => !status.available &&
+      (status.install_options || []).some((option) => String(option.command || "").trim()));
     elements.automatic.disabled = !server.override;
   }
 
@@ -443,6 +508,313 @@ class TermdeckLspClient {
       server: server.name });
   }
 
+  async openSettingsInstallAllTerminal() {
+    const elements = this.settingsElements;
+    if (this.app.settings.lsp_enabled === false || !elements) return;
+    const commands = [];
+    const seenCommands = new Set();
+    for (const server of this.settingsStatus) {
+      if (server.available) continue;
+      const command = String(server.install_options?.[0]?.command || server.install_hint || "").trim();
+      if (!command || seenCommands.has(command)) continue;
+      seenCommands.add(command);
+      commands.push(command);
+    }
+    if (!commands.length) {
+      elements.status.classList.remove("error");
+      elements.status.textContent = "All language servers are available.";
+      return;
+    }
+    const root = elements.project.value || this.app.projectRoot() || this.app.session(this.app.activeId)?.cwd || "~";
+    this.app.$("settings-popover").classList.add("hidden");
+    await this.app.openLanguageServerInstallTerminal({ root, installHint: commands.join(" ; "), language: "all",
+      server: "Language servers", title: "Install language servers" });
+  }
+
+  initializeSettingsPanel() {
+    this.app.$("lsp-panel-close").onclick = () => this.closeSettingsPanel();
+    this.app.$("lsp-panel-done").onclick = () => this.closeSettingsPanel();
+    this.app.$("lsp-backdrop").addEventListener("mousedown", (event) => {
+      if (event.target.id === "lsp-backdrop") this.closeSettingsPanel();
+    });
+    this.app.$("lsp-project-scope").onchange = () => {
+      this.settingsProjectRoot = this.app.$("lsp-project-scope").value;
+      void this.loadSettingsPanelStatus();
+    };
+    this.app.$("lsp-enabled-toggle").onclick = () => void this.setSettingsPanelEnabled(
+      this.app.settings.lsp_enabled === false);
+    this.app.$("lsp-install-all").onclick = () => void this.installAllMissingFromSettingsPanel();
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || this.app.$("lsp-backdrop").classList.contains("hidden")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      this.closeSettingsPanel();
+    }, true);
+  }
+
+  populateSettingsPanelProjects() {
+    const project = this.app.$("lsp-project-scope");
+    const requestedRoot = this.settingsProjectRoot || this.app.projectRoot() || "";
+    project.textContent = "";
+    const defaultOption = document.createElement("option");
+    defaultOption.value = "";
+    defaultOption.textContent = "All projects (default)";
+    project.appendChild(defaultOption);
+    for (const registeredProject of this.app.projects) {
+      const option = document.createElement("option");
+      option.value = registeredProject.root;
+      option.textContent = registeredProject.name;
+      option.title = registeredProject.root;
+      project.appendChild(option);
+    }
+    project.value = [...project.options].some((option) => option.value === requestedRoot) ? requestedRoot : "";
+    this.settingsProjectRoot = project.value;
+  }
+
+  async openSettingsPanel() {
+    this.populateSettingsPanelProjects();
+    this.app.$("lsp-backdrop").classList.remove("hidden");
+    this.app.$("lsp-modal-summary").textContent = "Detecting installed servers…";
+    this.app.$("lsp-server-list").textContent = "";
+    this.setSettingsPanelError("");
+    await this.loadSettingsPanelStatus();
+  }
+
+  closeSettingsPanel() {
+    this.app.$("lsp-backdrop").classList.add("hidden");
+    requestAnimationFrame(() => this.app.focusActiveEditor());
+  }
+
+  setSettingsPanelError(message) {
+    const status = this.app.$("lsp-panel-status");
+    status.textContent = message;
+    status.classList.toggle("hidden", !message);
+  }
+
+  async loadSettingsPanelStatus() {
+    const project = this.app.$("lsp-project-scope");
+    const params = new URLSearchParams();
+    if (project.value) params.set("root", project.value);
+    this.app.$("lsp-modal-summary").textContent = "Detecting installed servers…";
+    this.setSettingsPanelError("");
+    try {
+      const response = await fetch(`/api/lsp/status${params.size ? `?${params}` : ""}`);
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || "could not load language servers");
+      }
+      const payload = await response.json();
+      this.app.settings.lsp_enabled = payload.enabled !== false;
+      this.settingsStatus = payload.servers || [];
+      this.app.settings.lsp_command_overrides = payload.overrides || {};
+      this.app.persistedSettings.lsp_enabled = this.app.settings.lsp_enabled;
+      this.app.persistedSettings.lsp_command_overrides = JSON.parse(JSON.stringify(this.app.settings.lsp_command_overrides));
+      this.renderSettingsPanel();
+    } catch (error) {
+      this.app.$("lsp-modal-summary").textContent = "Language-server status unavailable";
+      this.setSettingsPanelError(error.message || "could not load language servers");
+    }
+  }
+
+  renderSettingsPanel() {
+    const enabled = this.app.settings.lsp_enabled !== false;
+    const enabledToggle = this.app.$("lsp-enabled-toggle");
+    enabledToggle.textContent = enabled ? "on" : "off";
+    enabledToggle.classList.toggle("on", enabled);
+    enabledToggle.setAttribute("aria-pressed", String(enabled));
+    const installed = this.settingsStatus.filter((server) => server.available).length;
+    this.app.$("lsp-modal-summary").textContent = enabled
+      ? `${installed} of ${this.settingsStatus.length} installed`
+      : `Disabled · ${installed} of ${this.settingsStatus.length} installed`;
+    const list = this.app.$("lsp-server-list");
+    list.textContent = "";
+    for (const server of this.settingsStatus) list.appendChild(this.createSettingsPanelServerRow(server, enabled));
+    const hasMissingInstaller = this.settingsStatus.some((server) => !server.available &&
+      (server.install_options || []).some((option) => String(option.command || "").trim()));
+    this.app.$("lsp-install-all").disabled = !enabled || !hasMissingInstaller;
+    this.app.$("lsp-project-scope").disabled = false;
+  }
+
+  createSettingsPanelServerRow(server, enabled) {
+    const row = document.createElement("div");
+    row.className = "lsp-server-row";
+    const main = document.createElement("div");
+    main.className = "lsp-server-main";
+    const identity = document.createElement("div");
+    identity.className = "lsp-server-name";
+    identity.textContent = server.name;
+    identity.title = server.command_text || server.install_hint || server.name;
+    const languages = document.createElement("span");
+    languages.className = "lsp-server-languages";
+    languages.textContent = (server.languages || []).map((language) => this.languageDisplayName(language)).join(", ");
+    identity.appendChild(languages);
+    const state = document.createElement("span");
+    state.className = `lsp-server-state${server.available ? " available" : ""}`;
+    state.textContent = server.available ? `installed${server.version ? ` · ${server.version}` : ""}` : "not installed";
+    state.title = server.source || "";
+    const controls = document.createElement("div");
+    controls.className = "lsp-server-controls";
+    if (!server.available) {
+      const installOptions = document.createElement("select");
+      installOptions.setAttribute("aria-label", `${server.name} installation option`);
+      for (const installOption of server.install_options || []) {
+        const option = document.createElement("option");
+        option.value = String(installOption.command || "");
+        option.textContent = String(installOption.label || "Install");
+        installOptions.appendChild(option);
+      }
+      const install = document.createElement("button");
+      install.type = "button";
+      install.textContent = "install";
+      install.disabled = !enabled || !installOptions.options.length;
+      install.onclick = () => void this.installServerFromSettingsPanel(server, installOptions.value);
+      controls.append(installOptions, install);
+    }
+    const configure = document.createElement("button");
+    configure.type = "button";
+    configure.className = "lsp-server-configure";
+    configure.title = "Command override";
+    configure.setAttribute("aria-label", `Configure ${server.name}`);
+    configure.innerHTML = '<span class="codicon codicon-settings-gear"></span>';
+    controls.appendChild(configure);
+    const override = document.createElement("div");
+    override.className = "lsp-server-override hidden";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.value = server.override || "";
+    input.placeholder = server.effective_override && !server.override
+      ? `Inherited project command: ${server.effective_override}` : `Detected command: ${server.command_text || "not detected"}`;
+    input.setAttribute("aria-label", `${server.name} command override`);
+    input.disabled = !enabled;
+    const overrideActions = document.createElement("div");
+    overrideActions.className = "lsp-override-actions";
+    const automatic = document.createElement("button");
+    automatic.type = "button";
+    automatic.textContent = "automatic";
+    automatic.title = "Remove this project override and use TermDeck's detected/default command";
+    automatic.disabled = !enabled || !server.override;
+    automatic.onclick = () => void this.saveSettingsPanelOverride(server, "", automatic);
+    const save = document.createElement("button");
+    save.type = "button";
+    save.textContent = "save";
+    save.title = "Save this command as the selected project's language-server override";
+    save.disabled = !enabled;
+    save.onclick = () => void this.saveSettingsPanelOverride(server, input.value, save);
+    input.onkeydown = (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      void this.saveSettingsPanelOverride(server, input.value, save);
+    };
+    configure.onclick = () => {
+      override.classList.toggle("hidden");
+      if (!override.classList.contains("hidden")) requestAnimationFrame(() => input.focus());
+    };
+    const help = document.createElement("div");
+    help.className = "lsp-override-help";
+    help.textContent = "Automatic uses TermDeck's detected/default command. Save stores the typed command for this project.";
+    overrideActions.append(automatic, save);
+    override.append(input, overrideActions, help);
+    main.append(identity, state, controls);
+    row.append(main, override);
+    return row;
+  }
+
+  async setSettingsPanelEnabled(enabled) {
+    const button = this.app.$("lsp-enabled-toggle");
+    if (button.disabled) return;
+    const activeEntry = this.entry;
+    const activeModel = this.model;
+    button.disabled = true;
+    if (!enabled) this.deactivate();
+    try {
+      const response = await fetch("/api/lsp/enabled", { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }) });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || "could not update language servers");
+      }
+      const payload = await response.json();
+      this.app.settings.lsp_enabled = payload.enabled !== false;
+      this.settingsStatus = payload.servers || [];
+      this.app.settings.lsp_command_overrides = payload.overrides || {};
+      this.app.persistedSettings.lsp_enabled = this.app.settings.lsp_enabled;
+      this.app.persistedSettings.lsp_command_overrides = JSON.parse(JSON.stringify(this.app.settings.lsp_command_overrides));
+      this.renderSettingsPanel();
+      if (enabled) {
+        const entry = activeEntry || (this.app.activeFileKey !== null ? this.app.openFiles.get(this.app.activeFileKey) : null);
+        const model = activeModel || entry?.model;
+        if (entry && model) void this.activate(entry, model);
+      }
+    } catch (error) {
+      this.app.settings.lsp_enabled = !enabled;
+      this.setSettingsPanelError(error.message || "could not update language servers");
+      this.renderSettingsPanel();
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async saveSettingsPanelOverride(server, command, button) {
+    if (!server || button.disabled) return;
+    button.disabled = true;
+    const activeEntry = this.entry;
+    const activeModel = this.model;
+    try {
+      const response = await fetch("/api/lsp/config", { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ root: this.app.$("lsp-project-scope").value, language: server.key,
+          command: String(command || "").trim() }) });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || "could not save language server configuration");
+      }
+      const payload = await response.json();
+      this.settingsStatus = payload.servers || [];
+      this.app.settings.lsp_command_overrides = payload.overrides || {};
+      this.app.persistedSettings.lsp_command_overrides = JSON.parse(JSON.stringify(this.app.settings.lsp_command_overrides));
+      this.renderSettingsPanel();
+      if (activeEntry && activeModel) {
+        this.deactivate();
+        void this.activate(activeEntry, activeModel);
+      }
+    } catch (error) {
+      this.setSettingsPanelError(error.message || "could not save language server configuration");
+      button.disabled = false;
+    }
+  }
+
+  settingsPanelRoot() {
+    return this.app.$("lsp-project-scope").value || this.app.projectRoot() ||
+      this.app.session(this.app.activeId)?.cwd || "~";
+  }
+
+  async installServerFromSettingsPanel(server, installHint) {
+    if (this.app.settings.lsp_enabled === false || !installHint) return;
+    const root = this.settingsPanelRoot();
+    this.closeSettingsPanel();
+    await this.app.openLanguageServerInstallTerminal({ root, installHint, language: server.languages?.[0] || server.key,
+      server: server.name });
+  }
+
+  async installAllMissingFromSettingsPanel() {
+    if (this.app.settings.lsp_enabled === false) return;
+    const commands = [];
+    const seenCommands = new Set();
+    for (const server of this.settingsStatus) {
+      if (server.available) continue;
+      const command = String(server.install_options?.[0]?.command || server.install_hint || "").trim();
+      if (!command || seenCommands.has(command)) continue;
+      seenCommands.add(command);
+      commands.push(command);
+    }
+    if (!commands.length) return;
+    const root = this.settingsPanelRoot();
+    this.closeSettingsPanel();
+    await this.app.openLanguageServerInstallTerminal({ root, installHint: commands.join(" ; "), language: "all",
+      server: "Language servers", title: "Install language servers" });
+  }
+
   scheduleDocumentChange() {
     clearTimeout(this.changeTimer);
     this.changeTimer = setTimeout(() => {
@@ -487,12 +859,17 @@ class TermdeckLspClient {
     }
   }
 
-  setStatus(text, title) {
+  setStatus(text, title, unavailable = false) {
     const element = this.app.$("lsp-status");
     if (!element) return;
     element.textContent = text;
     element.title = title;
     element.classList.toggle("hidden", !text);
+    element.classList.toggle("unavailable", unavailable);
+    element.classList.toggle("installable", unavailable);
+    element.tabIndex = unavailable ? 0 : -1;
+    element.setAttribute("role", unavailable ? "button" : "status");
+    element.setAttribute("aria-label", unavailable ? `${title} Open language-server settings` : title);
   }
 
   handlesModel(model) {

@@ -32,6 +32,7 @@ window.TermDeckFileBrowser = (() => {
     const status = String(entry.git_status || "").trim().toUpperCase();
     if (!status) return;
     const statusClass = status === "?" ? "untracked" : status.toLowerCase();
+    row.dataset.gitStatus = status;
     row.classList.add("git-row", `git-row-${statusClass}`);
     const badge = document.createElement("span");
     badge.className = "git-status";

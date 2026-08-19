@@ -201,8 +201,18 @@ class ProjectFileService:
         statuses = self._git_statuses(root)
         return {relative_path: statuses.get(relative_path, "") for relative_path in relative_paths}
 
-    def git_statuses(self, root: str) -> dict[str, str]:
+    def git_statuses(self, root: str, refresh: bool = False) -> dict[str, str]:
+        if refresh:
+            key = str(self.resolve_confined(root, ""))
+            with self._recent_lock:
+                self._git_status_cache.pop(key, None)
         return dict(self._git_statuses(root))
+
+    def invalidate_git_status(self, root: str) -> None:
+        base = self.resolve_confined(root, "")
+        with self._recent_lock:
+            self._git_status_cache.pop(str(base), None)
+            self._recent_dirty.add(str(base))
 
     @staticmethod
     def _git_status_for_path(statuses: dict[str, str], relative: str, is_dir: bool) -> str:
@@ -470,7 +480,7 @@ class ProjectFileService:
             raise ValueError("refusing to trash the root")
         target = TermdeckConfig.TRASH_DIR / source.name
         if target.exists():
-            stamp = TimeUtil.now_est_naive().strftime("%Y%m%d-%H%M%S")
+            stamp = TimeUtil.now_est_naive().strftime("%Y%m%d-%H%M%S-%f")
             target = TermdeckConfig.TRASH_DIR / f"{source.name}-{stamp}"
         source.rename(target)
         return str(target)

@@ -248,14 +248,14 @@ class AgentSessionTrackerResumeCommandTest(unittest.TestCase):
         command = "codex --sandbox workspace-write resume aa11 --foo"
         self.assertEqual(tracker.build_resume_command(
             AgentKind.CODEX, command, "bb22"),
-            "codex --sandbox workspace-write --foo resume bb22")
+            "codex --no-alt-screen --sandbox workspace-write --foo resume bb22")
 
     def test_build_codex_resume_command_with_path_keeps_flags(self) -> None:
         tracker = AgentSessionTracker()
         command = "/usr/bin/codex --dangerously-bypass-approvals-and-sandbox resume aa11"
         self.assertEqual(tracker.build_resume_command(
             AgentKind.CODEX, command, "bb22"),
-            "/usr/bin/codex --dangerously-bypass-approvals-and-sandbox resume bb22")
+            "/usr/bin/codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume bb22")
 
     def test_build_claude_resume_command_strips_old_resume_flag(self) -> None:
         tracker = AgentSessionTracker()
@@ -264,11 +264,82 @@ class AgentSessionTrackerResumeCommandTest(unittest.TestCase):
             AgentKind.CLAUDE, command, "bb22"),
             "claude --permission-mode auto --resume bb22")
 
+    def test_latest_claude_permission_mode_comes_from_transcript(self) -> None:
+        tracker = AgentSessionTracker()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "resolved-child.jsonl"
+            path.write_text('\n'.join((
+                json.dumps({"type": "permission-mode", "permissionMode": "dontAsk"}),
+                json.dumps({"type": "permission-mode", "permissionMode": "auto"}),
+            )))
+            with patch.object(tracker, "claude_project_dir", return_value=Path(temp_dir)):
+                self.assertEqual(tracker.claude_session_permission_mode(Path("/tmp"), "resolved-child"), "auto")
+
+
+class TerminalRestartIdentityTest(unittest.TestCase):
+    @staticmethod
+    def claude_session(agent_session_id: str | None) -> ManagedSession:
+        session_record = record("claude-tab")
+        session_record.agent_kind = AgentKind.CLAUDE.value
+        session_record.agent_session_id = agent_session_id
+        session_record.command = "claude --permission-mode auto --resume stale-parent"
+        return ManagedSession(session_record)
+
+    def test_binding_detected_fork_session_replaces_stale_parent_resume_command(self) -> None:
+        manager = TerminalSessionManager()
+        session = self.claude_session(None)
+
+        manager._set_agent_session_binding(session, "resolved-child")
+
+        self.assertEqual(session.record.agent_session_id, "resolved-child")
+        self.assertEqual(session.record.command, "claude --permission-mode auto --resume resolved-child")
+
+    def test_restart_with_permission_resumes_resolved_child_session(self) -> None:
+        manager = TerminalSessionManager()
+        session = self.claude_session("resolved-child")
+        manager._sessions = {session.record.session_id: session}
+        manager._persist = MagicMock()
+        manager._terminate_proc = AsyncMock(return_value=True)
+        manager._spawn = MagicMock()
+
+        asyncio.run(manager.restart_session(session.record.session_id, "full-access"))
+
+        self.assertEqual(session.record.command,
+                         "claude --dangerously-skip-permissions --resume resolved-child")
+        manager._terminate_proc.assert_awaited_once_with(session)
+        manager._spawn.assert_called_once_with(session, resume=True)
+
+    def test_restart_preserves_latest_claude_transcript_permission(self) -> None:
+        manager = TerminalSessionManager()
+        session = self.claude_session("resolved-child")
+        session.record.command = "claude --dangerously-skip-permissions --resume resolved-child"
+        manager._sessions = {session.record.session_id: session}
+        manager._tracker.claude_session_permission_mode = MagicMock(return_value="auto")
+        manager._persist = MagicMock()
+        manager._terminate_proc = AsyncMock(return_value=True)
+        manager._spawn = MagicMock()
+
+        asyncio.run(manager.restart_session(session.record.session_id))
+
+        self.assertEqual(session.record.command, "claude --permission-mode auto --resume resolved-child")
+        manager._spawn.assert_called_once_with(session, resume=True)
+
+    def test_restart_refuses_agent_before_child_session_identity_is_resolved(self) -> None:
+        manager = TerminalSessionManager()
+        session = self.claude_session(None)
+        manager._sessions = {session.record.session_id: session}
+        manager._terminate_proc = AsyncMock(return_value=True)
+
+        with self.assertRaisesRegex(RuntimeError, "identity is still resolving"):
+            asyncio.run(manager.restart_session(session.record.session_id, "full-access"))
+
+        manager._terminate_proc.assert_not_awaited()
+
 
 class NewAgentCommandModelTest(unittest.TestCase):
     def test_codex_model_name_separates_model_from_reasoning_effort(self) -> None:
         command = TerminalSessionManager().command_for_new_session("codex", "default", "", "gpt-5.6-luna xhigh")
-        self.assertEqual(command, "codex -c 'model_reasoning_effort=\"xhigh\"' --model gpt-5.6-luna")
+        self.assertEqual(command, "codex --no-alt-screen -c 'model_reasoning_effort=\"xhigh\"' --model gpt-5.6-luna")
 
     def test_model_name_is_forwarded_to_claude(self) -> None:
         command = TerminalSessionManager().command_for_new_session("claude", "default", "", "opus")

@@ -9,6 +9,22 @@ by Playwright):
 
     npm install
 
+Then run the whole set against a throwaway instance it starts and tears down itself:
+
+    tools/scroll-tests/run-all.sh
+
+Roughly 10-15 minutes. These drive a real pty through a real websocket in a real browser and lean on
+fixed waits, so they belong before a release rather than on every commit -- on a shared CI runner those
+waits drift and the suite goes flaky. Each test makes and deletes its own sessions, and the instance gets
+its own data dir, so nothing touches a real workspace.
+
+Known failure: `scroll_sources` (middle-click autoscroll from deep scrollback on a streaming session).
+The container ends at its limit with the buffer viewport a few rows short of the newest line, because a
+scroll that emits no wheel events can land on exactly the position this code last set and be discarded as
+an echo of its own write, so no settle runs. Forcing "at the ceiling means following" fixes it and breaks
+short sessions, where the ceiling is 0 and that test is true at every position -- measured, do not retry
+without a case that covers both.
+
 Run a TermDeck instance on 8536 with a throwaway data dir, then run any file with `node`:
 
     TERMDECK_PORT=8536 TERMDECK_DATA_DIR=/tmp/td-test \
