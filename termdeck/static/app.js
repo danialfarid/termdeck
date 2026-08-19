@@ -13056,6 +13056,13 @@ class TermdeckApp {
           return;
         }
         settled.tallScrollActiveUntil = 0;
+        // Refresh the ceiling from the buffer as it is NOW, before enforcing it. It is otherwise only
+        // recomputed on writes, so a value latched from a mid-repaint cursor on a session that then goes
+        // idle is permanent -- and the clamp below enforces the stale number against every attempt to
+        // scroll to content that sits beyond it ("the bottom of the screen is in the middle, and it
+        // keeps bringing me back up"). A user gesture is exactly the moment a stale ceiling must not
+        // win; the update's own guards (replay, blank-region, shrink hold) still apply.
+        this.tallUpdateMaxScrollTop(settled);
         if (settled.tallMaxScrollTop != null &&
             container.scrollTop > settled.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
           this.tallSetScrollTop(settled, settled.tallMaxScrollTop);
