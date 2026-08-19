@@ -110,6 +110,33 @@
     </div>
   </div>
 </div>
+<div id="font-samples-backdrop" class="hidden">
+  <section id="font-samples-modal" role="dialog" aria-modal="true" aria-labelledby="font-samples-title">
+    <header id="font-samples-head">
+      <div>
+        <div id="font-samples-title">Font size samples</div>
+        <div id="font-samples-hint">Up / Down selects · Left / Right resizes</div>
+      </div>
+      <button id="font-samples-close" type="button" title="Close font size samples" aria-label="Close font size samples"><span class="codicon codicon-close"></span></button>
+    </header>
+    <div id="font-samples-body">
+      <nav id="font-samples-list" role="listbox" aria-label="Font size categories"></nav>
+      <main id="font-samples-workspace">
+        <div id="font-samples-selection-head">
+          <span id="font-samples-selection-label"></span>
+          <span id="font-samples-selection-value"></span>
+        </div>
+        <div id="font-samples-preview" aria-live="polite"></div>
+        <div id="font-samples-controls">
+          <button id="font-samples-minus" type="button" title="Decrease size" aria-label="Decrease size">−</button>
+          <input id="font-samples-range" type="range" min="8" max="32" step="1" aria-label="Selected font size">
+          <button id="font-samples-plus" type="button" title="Increase size" aria-label="Increase size">+</button>
+          <button id="font-samples-reset" type="button">Reset</button>
+        </div>
+      </main>
+    </div>
+  </section>
+</div>
 <div id="lsp-backdrop" class="hidden">
   <div id="lsp-modal" role="dialog" aria-modal="true" aria-labelledby="lsp-modal-title">
     <div id="lsp-modal-head">
@@ -223,6 +250,7 @@
       <button id="vscode-terminal-resync-btn" title="Resync terminal content" aria-label="Resync terminal content"><span class="codicon codicon-refresh"></span></button>
       <button id="vscode-history-btn" class="transcript-unavailable" title="Open Markdown transcript" aria-label="Open Markdown transcript"><span class="codicon codicon-markdown"></span></button>
       <button id="vscode-scroll-bottom-btn" title="Scroll terminal to bottom" aria-label="Scroll terminal to bottom"><span class="codicon codicon-fold-down"></span></button>
+      <button id="notebook-toggle" title="Quick notebook (&#8997;N)" aria-label="Quick notebook"><span class="codicon codicon-notebook"></span></button>
       </div>
   <div id="terminal-find" class="hidden" role="search" aria-label="Search terminal output">
     <input id="terminal-find-input" placeholder="Find in terminal" autocomplete="off" spellcheck="false">
@@ -253,7 +281,6 @@
     <button id="file-history-toggle" class="hidden" title="File history" aria-label="File history" aria-pressed="false"><span class="codicon codicon-history"></span></button>
     <button id="editor-wrap-toggle" title="Editor no wrap: off" aria-label="Toggle editor no wrap" aria-pressed="false"><span class="codicon codicon-word-wrap"></span></button>
     <button id="file-split-toggle" class="hidden" title="Compare / split editor" aria-label="Compare / split editor"><span class="codicon codicon-split-horizontal"></span></button>
-    <button id="notebook-toggle" title="Quick notebook (&#8997;N)" aria-label="Quick notebook"><span class="codicon codicon-notebook"></span></button>
     <button id="attach-btn" title="Attach file/image → inserts its path (also paste or drag-drop onto the terminal)"><span class="codicon codicon-cloud-upload"></span></button>
     <button id="conversation-outline-toggle" class="transcript-unavailable" title="Conversation outline" aria-label="Conversation outline"><span class="codicon codicon-list-tree"></span></button>
     <button id="problems-toggle" title="Problems" aria-label="Problems"><span class="codicon codicon-warning"></span></button>

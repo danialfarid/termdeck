@@ -498,6 +498,8 @@ class TermdeckApp {
     this.sidebarAnimationVisibilityObserver = null;
     this.settings = { ...SETTINGS_DEFAULTS };
     this.persistedSettings = { ...SETTINGS_DEFAULTS };
+    this.fontSampleSelectionIndex = 0;
+    this.fontSampleReturnFocus = null;
     this.saveTimer = null;
     this.settingsSavePromise = Promise.resolve();
     this.projectStateSavePromise = Promise.resolve();
@@ -2431,6 +2433,7 @@ class TermdeckApp {
 
   async init() {
     this.initInlineSizeControls();
+    this.initFontSampleEditor();
     window.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       if (!this.settings.inline_size_controls && !this.fontSizeEditorOpen) return;
@@ -2663,6 +2666,7 @@ class TermdeckApp {
     setInterval(() => this.pollStats(), STATS_POLL_MS);
     this.pollStats();
     document.addEventListener("mousedown", (e) => {
+      if (e.target.closest?.(".inline-size-controls, #inline-size-done, #font-samples-backdrop")) return;
       for (const id of ["settings-popover", "context-menu"]) {
         const pop = this.$(id);
         if (!pop.classList.contains("hidden") && !pop.contains(e.target)) {
@@ -9205,9 +9209,11 @@ class TermdeckApp {
     const historyMode = this.historyOpen && !fileMode && !gitReviewMode;
     const transcriptSupported = this.sessionSupportsTranscript();
     const transcriptFirstMode = historyMode && this.usesTranscriptFirstSession();
+    const fileWorkspaceMode = fileMode || FILES_SIDE_PANEL_TABS.includes(this.sideView);
     this.$("file-tabs-bar").classList.toggle("hidden",
       this.vscodeMode || (!fileMode && !FILES_SIDE_PANEL_TABS.includes(this.sideView)));
     this.$("notebook-toggle").classList.toggle("hidden", fileMode || gitReviewMode || FILES_SIDE_PANEL_TABS.includes(this.sideView));
+    this.$("editor-wrap-toggle").classList.toggle("hidden", !fileWorkspaceMode);
     this.$("editor-area").classList.toggle("hidden", !fileMode);
     this.$("git-review-area").classList.toggle("hidden", !gitReviewMode);
     this.$("history-area").classList.toggle("hidden", !historyMode);
@@ -11016,6 +11022,7 @@ class TermdeckApp {
     const fileWorkspaceMode = this.activeFileKey !== null || FILES_SIDE_PANEL_TABS.includes(this.sideView);
     this.$("file-tabs-bar").classList.toggle("hidden", !fileWorkspaceMode);
     this.$("notebook-toggle").classList.toggle("hidden", fileWorkspaceMode);
+    this.$("editor-wrap-toggle").classList.toggle("hidden", !fileWorkspaceMode);
     this.$("notebook-panel")?.classList.toggle("notebook-over-file-area", fileWorkspaceMode);
     this.renderFileTabs();
     this.renderFileBreadcrumbs();
@@ -16063,6 +16070,157 @@ class TermdeckApp {
     });
   }
 
+  initFontSampleEditor() {
+    const backdrop = this.$("font-samples-backdrop");
+    const range = this.$("font-samples-range");
+    if (!backdrop || !range) return;
+    this.$("font-samples-close").onclick = () => this.closeFontSampleEditor();
+    this.$("font-samples-minus").onclick = () => this.changeSelectedFontSampleSize(-1);
+    this.$("font-samples-plus").onclick = () => this.changeSelectedFontSampleSize(1);
+    this.$("font-samples-reset").onclick = () => this.resetSelectedFontSampleSize();
+    range.oninput = () => this.setSelectedFontSampleSize(Number(range.value));
+    backdrop.addEventListener("mousedown", (event) => {
+      if (event.target === backdrop) this.closeFontSampleEditor();
+    });
+    backdrop.addEventListener("pointerdown", (event) => event.stopPropagation());
+    backdrop.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        this.closeFontSampleEditor();
+        return;
+      }
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        event.preventDefault();
+        this.selectFontSample(this.fontSampleSelectionIndex + (event.key === "ArrowDown" ? 1 : -1), true);
+        return;
+      }
+      if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        this.selectFontSample(event.key === "Home" ? 0 : INLINE_SIZE_SETTING_DEFINITIONS.length - 1, true);
+        return;
+      }
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        this.changeSelectedFontSampleSize(event.key === "ArrowRight" ? 1 : -1);
+      }
+    });
+  }
+
+  openFontSampleEditor() {
+    this.fontSampleReturnFocus = this.$("settings-gear");
+    this.fontSizeEditorOpen = false;
+    this.$("settings-popover").classList.add("hidden");
+    this.$("font-samples-backdrop").classList.remove("hidden");
+    this.renderFontSampleList();
+    this.selectFontSample(this.fontSampleSelectionIndex, false);
+    requestAnimationFrame(() => this.$("font-samples-list")?.querySelector(".font-samples-list-item.selected")?.focus());
+  }
+
+  closeFontSampleEditor() {
+    const backdrop = this.$("font-samples-backdrop");
+    if (!backdrop || backdrop.classList.contains("hidden")) return false;
+    backdrop.classList.add("hidden");
+    this.flushPendingSettingsSave();
+    const returnFocus = this.fontSampleReturnFocus;
+    this.fontSampleReturnFocus = null;
+    requestAnimationFrame(() => returnFocus?.focus());
+    return true;
+  }
+
+  selectedFontSampleDefinition() {
+    return INLINE_SIZE_SETTING_DEFINITIONS[this.fontSampleSelectionIndex] || INLINE_SIZE_SETTING_DEFINITIONS[0];
+  }
+
+  renderFontSampleList() {
+    const list = this.$("font-samples-list");
+    if (!list) return;
+    list.textContent = "";
+    INLINE_SIZE_SETTING_DEFINITIONS.forEach((definition, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "font-samples-list-item";
+      button.dataset.index = String(index);
+      button.dataset.key = definition.key;
+      button.setAttribute("role", "option");
+      const label = document.createElement("span");
+      label.textContent = definition.label;
+      const value = document.createElement("span");
+      value.className = "font-samples-list-value";
+      value.textContent = `${Math.round(Number(this.settings[definition.key]) || SETTINGS_DEFAULTS[definition.key])}px`;
+      button.append(label, value);
+      button.onclick = () => this.selectFontSample(index, true);
+      list.appendChild(button);
+    });
+  }
+
+  selectFontSample(index, focus = false) {
+    const count = INLINE_SIZE_SETTING_DEFINITIONS.length;
+    this.fontSampleSelectionIndex = (Number(index) + count) % count;
+    this.refreshFontSampleEditor();
+    if (focus) this.$("font-samples-list")?.querySelector(".font-samples-list-item.selected")?.focus();
+  }
+
+  setSelectedFontSampleSize(value) {
+    const definition = this.selectedFontSampleDefinition();
+    const normalized = Math.max(FONT_MIN, Math.min(FONT_MAX, Number(value) || FONT_MIN));
+    this.settings[definition.key] = normalized;
+    this.applySettings({ fitTerminals: false });
+    this.saveSettings();
+    this.refreshFontSampleEditor();
+  }
+
+  changeSelectedFontSampleSize(delta) {
+    const definition = this.selectedFontSampleDefinition();
+    this.setSelectedFontSampleSize((Number(this.settings[definition.key]) || SETTINGS_DEFAULTS[definition.key]) + delta);
+  }
+
+  resetSelectedFontSampleSize() {
+    const definition = this.selectedFontSampleDefinition();
+    this.setSelectedFontSampleSize(SETTINGS_DEFAULTS[definition.key]);
+  }
+
+  refreshFontSampleEditor() {
+    const definition = this.selectedFontSampleDefinition();
+    const value = Math.round(Number(this.settings[definition.key]) || SETTINGS_DEFAULTS[definition.key]);
+    this.$("font-samples-selection-label").textContent = definition.label;
+    this.$("font-samples-selection-value").textContent = `${value}px`;
+    this.$("font-samples-range").value = String(value);
+    const preview = this.$("font-samples-preview");
+    preview.style.setProperty("--font-sample-size", `${value}px`);
+    this.renderSelectedFontSamplePreview(definition.key);
+    for (const row of this.$("font-samples-list").querySelectorAll(".font-samples-list-item")) {
+      const selected = row.dataset.key === definition.key;
+      row.classList.toggle("selected", selected);
+      row.setAttribute("aria-selected", String(selected));
+      row.tabIndex = selected ? 0 : -1;
+      const rowValue = row.querySelector(".font-samples-list-value");
+      if (rowValue) {
+        const rowDefinition = INLINE_SIZE_SETTING_DEFINITIONS[Number(row.dataset.index)];
+        rowValue.textContent = `${Math.round(Number(this.settings[rowDefinition.key]) || SETTINGS_DEFAULTS[rowDefinition.key])}px`;
+      }
+      if (selected) row.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  renderSelectedFontSamplePreview(key) {
+    const preview = this.$("font-samples-preview");
+    const samples = {
+      sidebar_font_size: '<section class="font-sample-stage font-sample-terminal-list"><div class="font-sample-terminal-group"><span class="codicon codicon-chevron-down"></span><strong>RESEARCH</strong><span class="font-sample-count">2 active</span></div><div class="font-sample-terminal-row"><span class="font-sample-dot"></span><span>feat-model-review</span><span class="font-sample-age">4m</span></div></section>',
+      project_font_size: '<section class="font-sample-stage"><div class="font-sample-project">stock-intraday <span>main · ~/workspace</span></div></section>',
+      terminal_icon_size: '<section class="font-sample-stage font-sample-icons"><span class="codicon codicon-terminal"></span><span class="codicon codicon-sparkle"></span><span class="codicon codicon-hubot"></span></section>',
+      terminal_font_size: '<section class="font-sample-stage font-sample-terminal"><pre><span class="prompt">›</span> review the current feature cache\n\n<span class="assistant">•</span> Working through the source files…</pre></section>',
+      ui_font_size: '<section class="font-sample-stage font-sample-status"><span>gpt-5.4-codex medium</span><span>12m · 41% context</span></section>',
+      system_font_size: '<section class="font-sample-stage font-sample-menu"><div><span class="codicon codicon-go-to-file"></span>Open</div><div><span class="codicon codicon-edit"></span>Rename</div><div><span class="codicon codicon-arrow-swap"></span>Move to</div></section>',
+      files_tab_font_size: '<section class="font-sample-stage font-sample-tabs"><span>Files</span><span>Search</span><span>Git</span></section>',
+      code_font_size: '<section class="font-sample-stage font-sample-code"><pre><span class="line-number">12</span> <span class="keyword">const</span> cache = <span class="function">loadFeatures</span>(<span class="string">"stock"</span>);\n<span class="line-number">13</span> cache.validate();</pre></section>',
+      bottom_font_size: '<section class="font-sample-stage font-sample-bottom"><span class="codicon codicon-markdown"></span><span class="codicon codicon-refresh"></span><span class="codicon codicon-fold-down"></span><span class="codicon codicon-cloud-upload"></span></section>',
+      diff_font_size: '<section class="font-sample-stage font-sample-diff"><pre><div class="removed">− old_feature = cache.final_value</div><div class="added">+ feature = cache.point_in_time_value</div></pre></section>',
+      tree_font_size: '<section class="font-sample-stage font-sample-tree"><div class="folder"><span class="codicon codicon-folder-opened"></span>trainer</div><div class="child"><span class="codicon codicon-file-code"></span><span class="match">model_<mark>config</mark>.py</span></div><div class="child"><span class="codicon codicon-file"></span>features.py</div></section>',
+    };
+    preview.innerHTML = samples[key] || "";
+  }
+
   initInlineSizeControls() {
     this.inlineSizeControlRoots = new Map();
     const done = document.createElement("button");
@@ -16483,6 +16641,11 @@ class TermdeckApp {
     visualize.className = "theme-toggle";
     visualize.textContent = "visualize";
     visualize.title = "Edit font sizes in place on their UI elements";
+    const samples = document.createElement("button");
+    samples.type = "button";
+    samples.className = "theme-toggle";
+    samples.textContent = "samples";
+    samples.title = "Edit font sizes with representative UI samples";
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "theme-toggle";
@@ -16495,12 +16658,13 @@ class TermdeckApp {
     reset.title = "Reset all font sizes to defaults";
     reset.setAttribute("aria-label", reset.title);
     visualize.onclick = () => this.openInlineSizeEditor();
+    samples.onclick = () => this.openFontSampleEditor(samples);
     edit.onclick = () => {
       this.exitInlineSizeControls();
       this.openSettingsPopover(anchor, items, true);
     };
     reset.onclick = () => this.resetAllFontSizesWithConfirmation();
-    controls.append(visualize, edit, reset);
+    controls.append(visualize, samples, edit, reset);
     row.append(label, controls);
     return row;
   }
