@@ -14,11 +14,11 @@ const DEFAULT_CWD = "~";
 const TERMINAL_ICON_AGENT_KINDS = ["codex", "claude", "agy", "none"];
 const TERMINAL_ICON_AGENT_LABELS = { codex: "Codex", claude: "Claude", agy: "AGY", none: "Shell" };
 const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 18, project_font_size: 18, terminal_font_size: 18,
-  ui_font_size: 11, files_tab_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
+  ui_font_size: 11, system_font_size: 13, files_tab_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", attach_repaint: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", attach_repaint: true, tall_webgl: false, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
@@ -75,8 +75,13 @@ const TALL_ROWS_DOM = 1000;
 // MAX_TEXTURE_SIZE caps it near 390 rows on this hardware, against 1000 for DOM, which has no such
 // limit. Flip to true to explore that trade again; tallRowPlan then sizes the terminal to whatever the
 // GPU can actually back.
-const TALL_WEBGL_ENABLED = false;
 const TALL_ROWS_MIN_FOR_WEBGL = 120;
+// Fraction of MAX_TEXTURE_SIZE the canvas may occupy. MAX_TEXTURE_SIZE is not the real ceiling: measured
+// on a 16384 GPU, the renderer draws normally up to 11520 device pixels of canvas and paints NOTHING at
+// 13920 -- no error, no fallback, just a black pane with a full buffer behind it. That is the "a new
+// terminal shows nothing" report, and the old 0.85 put the canvas at 13926, landing exactly in the dead
+// zone. Sized under the measured boundary rather than the advertised one, with room for other GPUs.
+const TALL_WEBGL_TEXTURE_HEADROOM = 0.65;
 // How close to the ceiling still counts as "at the bottom". Deliberately tiny: a row's worth of slack
 // was enough to swallow a slow scroll whole -- nudging up a few pixels still measured as "at the bottom",
 // so the settle handler turned following back on and pulled the view straight back down, and only a fast
@@ -87,8 +92,6 @@ const TALL_BOTTOM_TOLERANCE_PX = 2;
 // quiet period settles it. Both cover a scrollbar drag pausing mid-gesture without ending it.
 const TALL_SCROLL_ACTIVE_MS = 250;
 const TALL_SCROLL_SETTLE_MS = 150;
-// A scroll event caused by our own write lands within a frame or two of it.
-const TALL_PROGRAMMATIC_ECHO_MS = 48;
 // How far the view may sit below the ceiling before a write treats it as "the user moved this", without
 // waiting for the scroll event to say so. Several rows: the browser's own focus scroll-into-view nudges
 // by a pixel or two, which must NOT count, while any real gesture clears this immediately.
@@ -138,7 +141,6 @@ const TERMINAL_VIEWPORT_RESTORE_TIMEOUT_MS = 3000;
 const TERMINAL_VIEWPORT_ANCHOR_ROWS = 12;
 const TERMINAL_VIEWPORT_ANCHOR_MAX_CHARS = 180;
 const TERMINAL_VIEWPORT_ANCHOR_MIN_CHARS = 24;
-const TERMINAL_MANUAL_REPAINT_CLICK_WINDOW_MS = 2000;
 const OPEN_FILES_MAX_ENTRIES = 80;
 const RECENTLY_OPENED_TERMINALS_MAX_ENTRIES = 80;
 const TERMINAL_V2_FIT_RETRY_LIMIT = 32;
@@ -159,8 +161,8 @@ const TERMINAL_CLAUDE_IDLE_RECONNECT_MS = 5 * 60 * 1000;
 const CLAUDE_STATUS_ROW_REFRESH_INTERVAL_MS = 500;
 const CODEX_PROMPT_REFLOW_GUARD_MS = 1800;
 const AGENT_PASTE_RETRY_DELAY_MS = 250;
-const AGENT_PASTE_TIMEOUT_MS = 15000;
-const CLAUDE_AGENT_PASTE_DELAY_MS = 1500;
+const AGENT_PASTE_TIMEOUT_MS = 45000;
+const AGENT_PASTE_OUTPUT_QUIET_MS = 600;
 const DEFAULT_AGENT_PASTE_DELAY_MS = 250;
 const TERMINAL_ATTENTION_ANIMATION_MS = 2600;
 const TERMINAL_ATTENTION_TEXT_MARKERS = ["esc to cancel", "tab to amend"];
@@ -215,7 +217,7 @@ const DESKTOP_KEYBINDINGS = [
   { id: "recent-terminals", label: "Recently opened terminals", def: "Meta+e", section: "Terminal" },
   { id: "quick-open", label: "Quick Open", def: "Alt+p", section: "Files" },
   { id: "toggle-problems", label: "Problems panel", def: "Alt+Shift+p", section: "Files" },
-  { id: "conversation-outline", label: "Conversation outline", def: "Alt+o", section: "General" },
+  { id: "conversation-outline", label: "Outline", def: "Alt+o", section: "General" },
 ];
 const VSCODE_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Ctrl+Alt+b", section: "Terminal" },
@@ -261,7 +263,7 @@ const FONT_MIN = 8, FONT_MAX = 32;
 const INLINE_SIZE_SETTING_DEFINITIONS = [
   { key: "sidebar_font_size", label: "Terminal list" }, { key: "project_font_size", label: "Project title" },
   { key: "terminal_icon_size", label: "Terminal icons" }, { key: "terminal_font_size", label: "Terminal" },
-  { key: "ui_font_size", label: "Status" }, { key: "files_tab_font_size", label: "Files / Search tabs" }, { key: "code_font_size", label: "Code" },
+  { key: "ui_font_size", label: "Status" }, { key: "system_font_size", label: "Menus / lists" }, { key: "files_tab_font_size", label: "Files / Search tabs" }, { key: "code_font_size", label: "Code" },
   { key: "bottom_font_size", label: "UI icons / spacing" }, { key: "diff_font_size", label: "Diff" },
   { key: "tree_font_size", label: "Tree / search" },
 ];
@@ -284,7 +286,7 @@ const PATH_HINT = String(location.pathname || "").toLowerCase();
 const LOCATION_HINT = String(location.href || "").toLowerCase();
 const LOCATION_PARAMS = new URLSearchParams(location.search);
 const WORKSPACE_ROOT_QUERY = LOCATION_PARAMS.get("workspace_root") || "";
-const IS_PROJECT_NAVIGATION_PATH = /^\/p\/[^/]+\/[^/]+\/.+/.test(location.pathname);
+const IS_PROJECT_NAVIGATION_PATH = /^\/[pfg]\/[^/]+\/[^/]+\/.+/.test(location.pathname);
 if (location.hash && !IS_PROJECT_NAVIGATION_PATH) {
   const hash = location.hash.replace(/^#/, "");
   for (const [key, value] of new URLSearchParams(hash)) {
@@ -450,7 +452,7 @@ class TermdeckApp {
     this.activeId = null;
     this.activeFileKey = null;
     this.fileHistoryOpen = false;
-    this.fileHistoryMode = "local";
+    this.fileHistoryMode = "all";
     this.fileHistorySelections = [];
     this.fileHistoryVersions = [];
     this.fileHistoryItems = [];
@@ -512,6 +514,24 @@ class TermdeckApp {
     this.treeChangedEntries = new Map();
     this.gitSideGeneration = 0;
     this.gitSideState = null;
+    this.gitPanelView = "changes";
+    this.gitSelectedPaths = new Set();
+    this.gitSelectionRoot = "";
+    this.gitSelectionExplicitlyCleared = false;
+    this.gitSelectionAnchorPath = "";
+    this.gitFocusedFile = null;
+    this.gitReviewOpen = false;
+    this.gitReviewDiffEditor = null;
+    this.gitReviewModels = [];
+    this.gitReviewGeneration = 0;
+    this.gitReviewDiffIndex = -1;
+    this.gitReviewSideBySide = true;
+    this.gitGraphGeneration = 0;
+    this.gitExpandedCommitId = "";
+    this.gitCommitDetails = new Map();
+    this.gitCommitDetailGeneration = 0;
+    this.gitHistoryLimit = 25;
+    this.gitStashesCollapsed = localStorage.getItem("termdeck.git_stashes_collapsed") === "1";
     this.recentFiles = [];
     this.recentFilesRoot = null;
     this.recentFilesFingerprint = "";
@@ -627,6 +647,8 @@ class TermdeckApp {
     this.selectionCopyHistoryIndex = 0;
     this.selectionActionUpdateFrame = 0;
     this.selectionActionUpdateTimer = 0;
+    this.lastDormantSessionClickId = null;
+    this.lastDormantSessionClickAt = 0;
     this.pendingNewAgentSelection = "";
     this.nativeSessionIds = new Set();
     this.sessionModelById = new Map();
@@ -653,7 +675,9 @@ class TermdeckApp {
     this.worktreeId = "root";
     this.interactionWorktreeId = "root";
     this.renderWorktreeId = null;
-    const projectMatch = location.pathname.match(/^\/p\/([^/]+)(?:\/([^/]+))?(?:\/(.*))?$/);
+    const fileModeRoute = location.pathname.startsWith("/f/");
+    const gitModeRoute = location.pathname.startsWith("/g/");
+    const projectMatch = location.pathname.match(/^\/[pfg]\/([^/]+)(?:\/([^/]+))?(?:\/(.*))?$/);
     this.projectSlug = projectMatch ? decodeURIComponent(projectMatch[1])
       : this.vscodeEditorMode ? (LOCATION_PARAMS.get("project") || null) : null;
     this.requestedWorktreeUrlSegment = projectMatch?.[2] ? decodeURIComponent(projectMatch[2]) : "";
@@ -661,9 +685,22 @@ class TermdeckApp {
       ? projectMatch[3].split("/").map((segment) => decodeURIComponent(segment)).join("/") : "";
     const urlParams = new URLSearchParams(location.search);
     this.worktreeId = String(urlParams.get("wt") || "root").trim() || "root";
-    const requestedFileView = ["project", "search", "git"].includes(urlParams.get("view")) ? urlParams.get("view") : "project";
+    const requestedFileView = gitModeRoute ? "git"
+      : ["project", "search", "git"].includes(urlParams.get("view")) ? urlParams.get("view") : "project";
     if (urlParams.get("t")) this.initialNav = { kind: "term", id: urlParams.get("t") };
-    else if (urlParams.get("f")) {
+    else if (gitModeRoute && urlParams.get("git_path")) {
+      this.initialNav = { kind: "git-diff", path: urlParams.get("git_path"), scope: urlParams.get("git_scope") || "working",
+        revision: urlParams.get("git_revision") || "", previous_path: urlParams.get("git_previous_path") || "" };
+    } else if (fileModeRoute && this.requestedNavigationPath && urlParams.has("history")) {
+      this.initialNav = { kind: "file-history-path", selector: this.requestedNavigationPath,
+        mode: ["all", "local", "git"].includes(urlParams.get("history")) ? urlParams.get("history") : "all",
+        selection: (urlParams.get("history_selection") || "").split(",").filter(Boolean) };
+    }
+    else if (urlParams.get("f") && urlParams.has("history")) {
+      this.initialNav = { kind: "file-history", key: urlParams.get("f"),
+        mode: ["all", "local", "git"].includes(urlParams.get("history")) ? urlParams.get("history") : "all",
+        selection: (urlParams.get("history_selection") || "").split(",").filter(Boolean) };
+    } else if (urlParams.get("f")) {
       this.initialNav = {
         kind: "open-file",
         key: urlParams.get("f"),
@@ -671,8 +708,11 @@ class TermdeckApp {
         pinned: urlParams.get("pinned") === "1",
         return_to: String(urlParams.get("rt") || "").trim(),
       };
-    } else if (["project", "search", "git"].includes(urlParams.get("view"))) {
-      this.initialNav = { kind: "files", view: requestedFileView, q: urlParams.get("q") || "", pinned: urlParams.get("pinned") === "1" };
+    } else if (fileModeRoute && this.requestedNavigationPath) {
+      this.initialNav = { kind: "path", selector: this.requestedNavigationPath };
+    } else if (fileModeRoute || gitModeRoute || ["project", "search", "git"].includes(urlParams.get("view"))) {
+      this.initialNav = { kind: "files", view: requestedFileView, q: urlParams.get("q") || "",
+        pinned: urlParams.get("pinned") === "1" };
     }
     else if (urlParams.get("q")) {
       this.initialNav = { kind: "search", q: urlParams.get("q"), glob: urlParams.get("glob") || "",
@@ -715,6 +755,16 @@ class TermdeckApp {
   encodedProjectWorktreePath(project = this.projectSlug, worktreeId = this.stateWorktreeId()) {
     if (!project) return location.pathname;
     return `/p/${encodeURIComponent(project)}/${encodeURIComponent(this.worktreeUrlSegment(worktreeId))}`;
+  }
+
+  encodedFileModeWorktreePath(project = this.projectSlug, worktreeId = this.stateWorktreeId()) {
+    if (!project) return location.pathname;
+    return `/f/${encodeURIComponent(project)}/${encodeURIComponent(this.worktreeUrlSegment(worktreeId))}`;
+  }
+
+  encodedGitModeWorktreePath(project = this.projectSlug, worktreeId = this.stateWorktreeId()) {
+    if (!project) return location.pathname;
+    return `/g/${encodeURIComponent(project)}/${encodeURIComponent(this.worktreeUrlSegment(worktreeId))}`;
   }
 
   encodedRelativeFilePath(path) {
@@ -2255,9 +2305,13 @@ class TermdeckApp {
     params.set("pinned", "1");
     const selectedWorktreeId = this.worktreeId && this.worktreeId !== ALL_WORKTREES_ID && root === this.worktreeRoot()
       ? this.worktreeId : "root";
-    const basePath = project.name === this.projectSlug
-      ? this.encodedProjectWorktreePath(project.name, selectedWorktreeId)
-      : `/p/${encodeURIComponent(project.name)}/${encodeURIComponent(selectedWorktreeId)}`;
+    const basePath = view === "git"
+      ? project.name === this.projectSlug
+        ? this.encodedGitModeWorktreePath(project.name, selectedWorktreeId)
+        : `/g/${encodeURIComponent(project.name)}/${encodeURIComponent(selectedWorktreeId)}`
+      : project.name === this.projectSlug
+        ? this.encodedFileModeWorktreePath(project.name, selectedWorktreeId)
+        : `/f/${encodeURIComponent(project.name)}/${encodeURIComponent(selectedWorktreeId)}`;
     let navigationPath = "";
     if (relativePath) {
       const fileRoot = this.worktreeId && this.worktreeId !== "root" && this.worktreeId !== ALL_WORKTREES_ID && root === this.worktreeRoot() ? root : project.root;
@@ -2301,6 +2355,16 @@ class TermdeckApp {
     if (event.button !== 1) return;
     event.preventDefault();
     event.stopPropagation();
+    this.openNavigationViewInNewTab(view);
+  }
+
+  handleNavigationContextMenu(event, view) {
+    event.preventDefault();
+    event.stopPropagation();
+    this.openNavigationViewInNewTab(view);
+  }
+
+  openNavigationViewInNewTab(view) {
     if (view === "terminals") {
       const session = this.session(this.activeId);
       if (session) this.openTerminalInNewTab(session);
@@ -2418,15 +2482,24 @@ class TermdeckApp {
        { label: "Code font", key: "code_font_size" },
        { label: "Terminal list font", key: "sidebar_font_size" }, { label: "Project title font", key: "project_font_size" },
        { label: "Tree/search font", key: "tree_font_size" }, { label: "Files / Search tabs font", key: "files_tab_font_size" },
-       { label: "Diff font", key: "diff_font_size" }, { label: "System / status font", key: "ui_font_size" },
+       { label: "Diff font", key: "diff_font_size" }, { label: "Status font", key: "ui_font_size" },
+       { label: "Menus / lists font", key: "system_font_size" },
        { label: "UI icons / spacing", key: "bottom_font_size", type: "scale" }]);
     // Null-safe: #file-view-close is not in index.html yet. This runs during setup, so the throw
     // aborted the rest of this initialisation rather than just failing one button.
     const fileViewClose = this.$("file-view-close");
     if (fileViewClose) fileViewClose.onclick = () => this.navigateBackFromActiveFile();
     this.$("file-history-toggle").onclick = () => this.toggleFileHistory();
+    this.$("file-history-toggle").oncontextmenu = (event) => this.openActiveFileHistoryMenu(event);
+    this.$("git-review-close").onclick = () => this.closeGitReview();
+    this.$("git-review-open-file").onclick = () => this.openFocusedGitWorkingFile();
+    this.$("git-review-previous").onclick = () => this.navigateGitReviewDiff(-1);
+    this.$("git-review-next").onclick = () => this.navigateGitReviewDiff(1);
+    this.$("git-review-layout").onclick = () => this.toggleGitReviewLayout();
     this.$("file-history-close").onclick = () => this.closeFileHistory();
-    this.$("file-history-git-toggle").onclick = () => this.toggleFileHistoryMode();
+    for (const button of this.$("file-history-filters").querySelectorAll("button[data-mode]")) {
+      button.onclick = () => this.setFileHistoryMode(button.dataset.mode);
+    }
     this.$("file-history-diff-previous").onclick = () => this.navigateFileHistoryDiff(-1);
     this.$("file-history-diff-next").onclick = () => this.navigateFileHistoryDiff(1);
     this.$("file-history-diff-undo-block").onclick = () => this.undoFileHistoryDiffBlock();
@@ -2435,44 +2508,18 @@ class TermdeckApp {
     this.initSelectionActions();
     this.initIdeFeatures();
     for (const view of ["terminals", "project", "search", "git"]) {
-      this.$("view-" + view).onclick = () => {
-        if (view === "terminals") {
-          this.setSideView(view);
-          return;
-        }
-        if (this.sideView === view) {
-          this.openFilesSidePanelView(view);
-          return;
-        }
-       if (view === "search") {
-         this.openSearchSidePanelFromNavigation();
-         return;
-       }
-       if (view === "project" && this.searchFileFromSelection()) {
-         return;
-       }
-        this.openFilesSidePanelView(view);
-      };
+      this.$("view-" + view).onclick = () => this.handleFileModeNavigationClick(view);
       this.$("view-" + view).onauxclick = (event) => this.handleNavigationAuxClick(event, view);
+      if (view !== "terminals") {
+        this.$("view-" + view).oncontextmenu = (event) => this.handleNavigationContextMenu(event, view);
+      }
     }
-    this.$("view-git").onclick = () => this.openFilesSidePanelView("git");
-    this.$("view-git").onauxclick = (event) => this.handleNavigationAuxClick(event, "git");
     for (const [view, id] of [["project", "files-tab-project"], ["search", "files-tab-search"], ["git", "files-tab-git"]]) {
       const button = this.$(id);
       if (!button) continue;
-      button.onclick = () => {
-        if (this.sideView === view) {
-          this.openFilesSidePanelView(view);
-          return;
-        }
-        if (view === "search") {
-          this.openSearchSidePanelFromNavigation();
-          return;
-        }
-        if (view === "project" && this.searchFileFromSelection()) return;
-        this.openFilesSidePanelView(view);
-      };
+      button.onclick = () => this.handleFileModeNavigationClick(view);
       button.onauxclick = (event) => this.handleNavigationAuxClick(event, view);
+      button.oncontextmenu = (event) => this.handleNavigationContextMenu(event, view);
     }
     const replaceToggle = this.$("replace-toggle");
     replaceToggle.onclick = () => {
@@ -2513,7 +2560,11 @@ class TermdeckApp {
     this.syncFileGlobInputs();
     this.$("file-type-filter-button").onclick = (event) => this.toggleFileTypeFilterMenu(event.currentTarget);
     this.$("search-file-type-filter-button").onclick = (event) => this.toggleFileTypeFilterMenu(event.currentTarget);
-    this.$("minimize-toggle").onclick = () => this.setSideView("terminals");
+    this.$("minimize-toggle").onclick = () => {
+      this.setSideView("terminals", false);
+      if (this.activeId && this.session(this.activeId)) this.pushNav({ kind: "term", id: this.activeId });
+      else this.pushNav({ kind: "init" });
+    };
     const wordBtn = this.$("search-word-toggle"), caseBtn = this.$("search-case-toggle"), regexBtn = this.$("search-regex-toggle");
     wordBtn.onclick = () => { this.searchWord = !this.searchWord; wordBtn.classList.toggle("on", this.searchWord); };
     caseBtn.onclick = () => { this.searchCase = !this.searchCase; caseBtn.classList.toggle("on", this.searchCase); };
@@ -2643,8 +2694,11 @@ class TermdeckApp {
       }
       const notebookPanel = this.$("notebook-panel");
       const notebookToggle = this.$("notebook-toggle");
+      const fileTabsNotebook = this.$("file-tabs-notebook");
       if (this.settings.notebook_open && notebookPanel && !notebookPanel.contains(e.target) &&
-          !notebookToggle?.contains(e.target)) this.setNotebookOpen(false, { focus: false });
+          !notebookToggle?.contains(e.target) && !fileTabsNotebook?.contains(e.target)) {
+        this.setNotebookOpen(false, { focus: false });
+      }
       const fileHistoryPanel = this.$("file-history-panel");
       const fileHistoryToggle = this.$("file-history-toggle");
       if (this.fileHistoryOpen && fileHistoryPanel && !fileHistoryPanel.contains(e.target) &&
@@ -3007,7 +3061,13 @@ class TermdeckApp {
 
   navUrl(state) {
     const params = new URLSearchParams();
-    const basePath = this.encodedProjectWorktreePath();
+    const gitModeNavigation = state.kind === "git-diff" || state.kind !== "term" && state.kind !== "file-history" &&
+      (location.pathname.startsWith("/g/") || (state.kind === "files" && state.view === "git"));
+    const fileModeNavigation = state.kind !== "term" &&
+      (location.pathname.startsWith("/f/") || state.kind === "files" || state.kind === "file" ||
+       state.kind === "open-file" || state.kind === "file-history");
+    const basePath = gitModeNavigation ? this.encodedGitModeWorktreePath()
+      : fileModeNavigation ? this.encodedFileModeWorktreePath() : this.encodedProjectWorktreePath();
     let navigationPath = "";
     let fragment = "";
     if (state.kind === "term") {
@@ -3029,6 +3089,20 @@ class TermdeckApp {
         if (state.view) params.set("view", state.view);
         if (state.pinned) params.set("pinned", "1");
       }
+    } else if (state.kind === "file-history") {
+      navigationPath = this.relativeNavigationPathForFileKey(state.key);
+      if (!navigationPath && state.key) params.set("f", state.key);
+      params.set("history", state.mode || "all");
+      if (state.selection?.length) params.set("history_selection", state.selection.join(","));
+    } else if (state.kind === "file-history-path") {
+      navigationPath = this.encodedRelativeFilePath(state.selector);
+      params.set("history", state.mode || "all");
+      if (state.selection?.length) params.set("history_selection", state.selection.join(","));
+    } else if (state.kind === "git-diff") {
+      params.set("git_path", state.path);
+      params.set("git_scope", state.scope || "working");
+      if (state.revision) params.set("git_revision", state.revision);
+      if (state.previous_path) params.set("git_previous_path", state.previous_path);
     } else if (state.kind === "path") {
       navigationPath = this.encodedRelativeFilePath(state.selector);
     } else if (state.kind === "files") {
@@ -3083,7 +3157,7 @@ class TermdeckApp {
   }
 
   applyBrowserNavigationState(state) {
-    const projectMatch = location.pathname.match(/^\/p\/[^/]+\/([^/]+)/);
+    const projectMatch = location.pathname.match(/^\/[pfg]\/[^/]+\/([^/]+)/);
     const targetWorktreeUrlSegment = projectMatch?.[1] ? decodeURIComponent(projectMatch[1]) : "";
     const targetWorktree = this.worktreeForUrlSegment(targetWorktreeUrlSegment);
     if (targetWorktreeUrlSegment && !targetWorktree) throw new Error(`unknown or ambiguous worktree URL segment: ${targetWorktreeUrlSegment}`);
@@ -3111,6 +3185,29 @@ class TermdeckApp {
       }
       return;
     }
+    if (state.kind === "file-history-path") {
+      const root = this.worktreeRoot();
+      if (root && state.selector) void this.openFileHistoryForPath(root, state.selector, state.mode || "all",
+        { history: false, selection: state.selection || [] });
+      return;
+    }
+    if (state.kind === "file-history") {
+      const separator = String(state.key || "").indexOf("|");
+      if (separator <= 0) return;
+      const root = state.key.slice(0, separator);
+      const path = state.key.slice(separator + 1);
+      void this.openFileHistoryForPath(root, path, state.mode || "all", { history: false, selection: state.selection || [] });
+      return;
+    }
+    if (state.kind === "git-diff") {
+      const root = this.worktreeRoot();
+      if (!root || !state.path) return;
+      this.setSideView("git", false);
+      this.gitExpandedCommitId = state.revision ? state.revision.slice(0, 7) : "";
+      void this.openGitReviewDiff(root, state.path, state.scope || "working", false,
+        { revision: state.revision || "", previousPath: state.previous_path || "", history: false });
+      return;
+    }
     if (state.kind === "open-file") {
       const separator = String(state.key || "").indexOf("|");
       if (separator <= 0) return;
@@ -3124,10 +3221,16 @@ class TermdeckApp {
     if (state.kind === "files") {
       if (state.pinned) this.setFilesPinned(true);
       const view = ["project", "search", "git"].includes(state.view) ? state.view : "project";
+      if (view === "git" && this.gitReviewOpen) this.closeGitReview(false);
       this.setSideView(view, false);
       if (view === "search" && state.q) {
         this.$("search-query").value = state.q;
         void this.runSearch(state.q, true);
+      }
+      if (location.pathname.startsWith("/f/") && this.openFiles.size) {
+        const key = [...this.openFiles.keys()].at(-1);
+        this.replaceNav({ kind: "file", key });
+        void this.activateFile(key, null, { history: false });
       }
       return;
     }
@@ -3151,6 +3254,7 @@ class TermdeckApp {
         }
         this.activate(state.id, { history: false });
       } else if (state.kind === "file" && this.openFiles.has(state.key)) {
+        if (this.fileHistoryOpen) this.closeFileHistory(false);
         this.activateFile(state.key, null, { history: false });
       } else if (state.kind === "search") {
         this.searchWord = !!state.word;
@@ -3279,7 +3383,9 @@ class TermdeckApp {
     }
     if (!this.activeId && sessions.length && this.activeFileKey === null) {
       const remembered = this.getProjectState().active_session_id;
-      this.activate(ids.has(remembered) ? remembered : sessions[0].session_id);
+      const selectedSessionId = ids.has(remembered) ? remembered : sessions[0].session_id;
+      if (location.pathname.startsWith("/f/") || location.pathname.startsWith("/g/")) this.activeId = selectedSessionId;
+      else this.activate(selectedSessionId);
     }
     if (previousSessionListSignature !== this.sessionListSignatureFor(this.sessions) || !this.sessionTitleEls.size) {
       this.renderList();
@@ -3660,7 +3766,7 @@ class TermdeckApp {
     icon.classList.toggle("on", enabled);
     icon.closest(".session-item")?.classList.toggle("terminal-icons-hidden", !enabled);
     const active = enabled && (!!this.processingStates.get(id) || this.unreadSessions.has(id));
-    const exited = enabled && !session.running && !session.dormant;
+    const exited = enabled && !session.running;
     icon.classList.toggle("terminal-status-active", active);
     icon.classList.toggle("terminal-status-exited", !active && exited);
   }
@@ -5483,7 +5589,7 @@ class TermdeckApp {
     const typeIcon = this.terminalTypeIcon(s);
     const iconStatusActive = showDesktopBrandIndicator &&
       (presentation.spinning || this.unreadSessions.has(s.session_id));
-    const iconStatusExited = showDesktopBrandIndicator && !s.running && !s.dormant;
+    const iconStatusExited = showDesktopBrandIndicator && !s.running;
     typeIcon.classList.toggle("terminal-status-active", iconStatusActive);
     typeIcon.classList.toggle("terminal-status-exited", !iconStatusActive && iconStatusExited);
     const worktreeBadge = document.createElement("span");
@@ -5508,7 +5614,14 @@ class TermdeckApp {
     item.title = `${item.dataset.baseTitle}\nlast activity ${this.terminalAgeAgoLabel(s)}\n${this.terminalAgeExactTimestamp(s)}`;
     item.onclick = (event) => {
       this.setInteractionWorktreeFromElement(item, s);
+      const currentSession = this.session(s.session_id);
+      const clickedAt = Date.now();
+      const startDormantSession = !!currentSession?.dormant && this.lastDormantSessionClickId === s.session_id &&
+        clickedAt - this.lastDormantSessionClickAt <= 500;
+      this.lastDormantSessionClickId = startDormantSession ? null : s.session_id;
+      this.lastDormantSessionClickAt = startDormantSession ? 0 : clickedAt;
       this.handleSessionRowSelection(event, s.session_id);
+      if (startDormantSession) void this.restartSession(s.session_id);
     };
     item.onfocus = () => {
       if (this.terminalSearchText.trim()) this.terminalSearchFocusIndex = this.terminalSearchRows().indexOf(item);
@@ -5804,6 +5917,7 @@ class TermdeckApp {
       ? (view === "terminals" ? CLOSED_SIDE_VIEW : "terminals") : view;
     this.sideView = nextView;
     view = this.sideView;
+    if (view !== "git") this.closeGitReview(false);
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(view);
     if (filesVisible) {
       this.lastFilesSidePanelTab = view;
@@ -5822,7 +5936,8 @@ class TermdeckApp {
     this.$("files-section").classList.toggle("with-git", view === "git");
     this.$("files-section").classList.toggle("floating", filesVisible && !filesPinned);
     const gitView = view === "git";
-    this.$("git-branch-label").classList.toggle("hidden", !gitView);
+    this.$("files-root-label").classList.toggle("hidden", gitView);
+    this.$("git-branch-controls").classList.toggle("hidden", !gitView);
     this.$("git-refresh").classList.toggle("hidden", !gitView);
     for (const id of ["mtime-toggle", "tree-sort-toggle", "hide-excluded-toggle"]) {
       this.$(id).classList.toggle("hidden", gitView);
@@ -5836,6 +5951,7 @@ class TermdeckApp {
       const button = this.$(id);
       if (button) button.classList.toggle("on", name === view);
     }
+    this.renderFileEditorChrome();
     this.$("side-split").classList.toggle("hidden", view === "terminals" || view === CLOSED_SIDE_VIEW || filesVisible);
     this.applySettings({ fitTerminals: !filesVisible || filesPinned });
     this.applySideLayout();
@@ -5915,6 +6031,43 @@ class TermdeckApp {
     }
   }
 
+  handleFileModeNavigationClick(view) {
+    if (view === "terminals") {
+      this.setSideView(view, false);
+      const session = this.recentlyOpenedTerminalSessions()[0];
+      if (session) this.activate(session.session_id, { reveal: true });
+      else if (this.activeFileKey !== null) this.navigateBackFromActiveFile();
+      return;
+    }
+    if (this.sideView === view) {
+      this.openFilesSidePanelView(view);
+    } else if (view === "search") {
+      this.openSearchSidePanelFromNavigation();
+    } else if (view !== "project" || !this.searchFileFromSelection()) {
+      this.openFilesSidePanelView(view);
+    }
+    if (!FILES_SIDE_PANEL_TABS.includes(this.sideView)) {
+      if (view === "git" && this.activeId && this.session(this.activeId)) this.pushNav({ kind: "term", id: this.activeId });
+      return;
+    }
+    if (this.sideView === "git") {
+      this.pushNav({ kind: "files", view: "git", pinned: !!this.settings.files_pinned });
+      return;
+    }
+    if (this.activeFileKey !== null && this.openFiles.has(this.activeFileKey)) {
+      this.pushNav({ kind: "file", key: this.activeFileKey });
+      return;
+    }
+    if (this.openFiles.size) {
+      const key = [...this.openFiles.keys()].at(-1);
+      void this.activateFile(key, null);
+      return;
+    }
+    const state = { kind: "files", view: this.sideView, pinned: !!this.settings.files_pinned };
+    if (this.sideView === "search" && this.$("search-query").value.trim()) state.q = this.$("search-query").value.trim();
+    this.pushNav(state);
+  }
+
   setExplorerMode(mode) {
     this.$("files-tree").classList.toggle("hidden", mode !== "tree");
     this.$("search-results").classList.toggle("hidden", mode !== "content");
@@ -5923,46 +6076,322 @@ class TermdeckApp {
     if (mode !== "git") {
       this.gitSideGeneration += 1;
       this.$("git-results").textContent = "";
-      this.$("git-branch-label").textContent = "";
+      this.$("git-header-branch-select").textContent = "";
+      this.closeGitReview(false);
     }
   }
 
   async loadGitSidePanel() {
     if (this.sideView !== "git" || this.vscodeMode) return;
     const generation = ++this.gitSideGeneration;
-    const root = this.session(this.activeId)?.cwd || this.treeRoot || this.worktreeRoot();
+    const root = this.session(this.activeId)?.cwd || this.treeRoot || this.worktreeRoot() || this.projectRoot();
     const results = this.$("git-results");
-    const branch = this.$("git-branch-label");
-    if (!root || !results || !branch) return;
+    if (!root || !results) return;
     results.textContent = "Loading Git status…";
-    const response = await fetch(`/api/files/git-branch?${new URLSearchParams({ root, limit: "100" })}`);
+    const response = await fetch(`/api/git/state?${new URLSearchParams({ root, limit: "200" })}`);
     if (generation !== this.gitSideGeneration || this.sideView !== "git") return;
     if (!response.ok) {
-      results.textContent = "Git status unavailable";
-      branch.textContent = "Git unavailable";
+      results.textContent = "";
+      const unavailable = document.createElement("div");
+      unavailable.className = "file-inspector-empty";
+      unavailable.textContent = "This folder is not a Git repository.";
+      const clone = this.gitWorkflowButton("repo-clone", "Clone SSH or remote project",
+                                           () => this.gitCloneProject(root), " clone remote project");
+      clone.classList.add("git-clone-empty");
+      results.append(unavailable, clone);
+      this.$("git-header-branch-select").textContent = "";
+      this.$("git-header-branch-select").disabled = true;
+      this.$("git-new-branch").disabled = true;
       return;
     }
     const state = await response.json();
     this.gitSideState = state;
-    branch.textContent = state.branch || "(detached HEAD)";
-    branch.title = state.upstream ? `${state.branch} → ${state.upstream}` : state.branch || "Git";
+    const tracking = state.upstream ? `${state.branch} → ${state.upstream} · ↑${state.ahead || 0} ↓${state.behind || 0}` : state.branch;
+    this.renderGitHeaderState(state.repository_root || root, state, tracking);
+    this.renderGitSidePanelState(results, state.repository_root || root, state);
+  }
+
+  renderGitHeaderState(root, state, tracking) {
+    const branchSelect = this.$("git-header-branch-select");
+    branchSelect.textContent = "";
+    branchSelect.disabled = false;
+    for (const branch of (state.branches || []).filter((candidate) => !candidate.remote)) {
+      const option = document.createElement("option");
+      option.value = branch.name;
+      option.textContent = branch.name;
+      option.selected = branch.current || branch.name === state.branch;
+      branchSelect.appendChild(option);
+    }
+    branchSelect.title = tracking || state.branch || "Switch branch";
+    branchSelect.onchange = () => void this.gitWorkflowAction("/api/git/switch", { root, name: branchSelect.value });
+    this.$("git-new-branch").disabled = false;
+    this.$("git-new-branch").onclick = () => void this.gitCreateBranch(root);
+  }
+
+  renderGitSidePanelState(results, root, state) {
     results.textContent = "";
+    const view = this.gitPanelView === "repositories" ? "repositories" : "changes";
+    if (this.gitSelectionRoot !== root) {
+      this.gitSelectionRoot = root;
+      this.gitSelectedPaths.clear();
+      this.gitSelectionExplicitlyCleared = false;
+      this.gitSelectionAnchorPath = "";
+      this.gitFocusedFile = null;
+      this.gitExpandedCommitId = "";
+      this.gitCommitDetails.clear();
+    }
+    const fileGroups = this.gitFileGroups(state.files || []);
+    const descriptors = fileGroups.flatMap(([, , files, scope]) => files.map((file) => ({ file, scope })));
+    const validPaths = new Set(descriptors.map(({ file }) => file.path));
+    this.gitSelectedPaths = new Set([...this.gitSelectedPaths].filter((path) => validPaths.has(path)));
+    if (!this.gitSelectedPaths.size && descriptors.length && !this.gitSelectionExplicitlyCleared) {
+      this.gitSelectedPaths.add(descriptors[0].file.path);
+    }
+    const focusedCommitReview = this.gitReviewOpen && this.gitFocusedFile?.scope === "commit";
+    if (!focusedCommitReview && (!this.gitFocusedFile ||
+        !descriptors.some(({ file, scope }) => file.path === this.gitFocusedFile.path && scope === this.gitFocusedFile.scope))) {
+      this.gitFocusedFile = descriptors.length ? { root, path: descriptors[0].file.path, scope: descriptors[0].scope } : null;
+    }
+    this.renderGitPanelTabs(results, root, state, view);
+    this.renderGitWorkflowControls(results, root, state, view);
+    if (view === "repositories") {
+      this.closeGitReview(false);
+      this.renderGitAgentWorktrees(results, state.agents || []);
+      this.renderGitWorktrees(results, root, state.worktrees || [], state.repository_root);
+      this.renderGitRemotes(results, root, state.remotes || [], state.branch);
+      this.$("status-name").textContent = `${(state.worktrees || []).length} worktrees · ${(state.remotes || []).length} remotes`;
+      return;
+    }
     const files = state.files || [];
+    const changesPanel = this.createGitPanelSection(results, "Current changes", "diff");
     const summary = document.createElement("div");
     summary.className = "git-summary";
-    summary.textContent = files.length ? `${files.length} modified file${files.length === 1 ? "" : "s"} in ${state.branch}` : `Working tree clean · ${state.branch}`;
-    results.appendChild(summary);
-    this.renderGitSideGroupHeader(results, "working tree", "diff-modified");
+    const conflicted = files.filter((file) => file.conflicted).length;
+    const staged = files.filter((file) => file.staged).length;
+    summary.textContent = files.length
+      ? `${files.length} changed · ${staged} staged${conflicted ? ` · ${conflicted} conflicted` : ""}`
+      : `Working tree clean · ${state.branch}`;
+    changesPanel.appendChild(summary);
     if (!files.length) {
       const empty = document.createElement("div");
       empty.className = "file-inspector-empty";
       empty.textContent = "No uncommitted changes on this branch.";
-      results.appendChild(empty);
+      changesPanel.appendChild(empty);
     }
-    for (const file of files) this.renderGitSideFile(results, root, file);
-    this.renderGitSideGroupHeader(results, "branch history", "history");
-    for (const commit of (state.commits || []).slice(0, 30)) this.renderGitSideCommit(results, commit);
+    const orderedPaths = [...new Set(descriptors.map(({ file }) => file.path))];
+    for (const [label, icon, groupFiles, scope] of fileGroups) {
+      if (!groupFiles.length) continue;
+      this.renderGitSideGroupHeader(changesPanel, `${label} (${groupFiles.length})`, icon);
+      for (const file of groupFiles) this.renderGitSideFile(changesPanel, root, file, scope, orderedPaths);
+    }
+    const stashAction = this.gitTextButton("+ Stash", () => this.gitCreateStash(root));
+    stashAction.classList.add("compact");
+    const stashPanel = this.createGitPanelSection(results, `Stashes (${(state.stashes || []).length})`, "archive",
+      "git-stashes-panel", { collapsible: true, collapsed: this.gitStashesCollapsed, action: stashAction,
+        onToggle: (collapsed) => {
+          this.gitStashesCollapsed = collapsed;
+          localStorage.setItem("termdeck.git_stashes_collapsed", collapsed ? "1" : "0");
+        } });
+    this.renderGitStashes(stashPanel, root, state.stashes || []);
+    const graphPaths = [...this.gitSelectedPaths];
+    const historyScope = graphPaths.length === 1 ? graphPaths[0]
+      : graphPaths.length > 1 ? `${graphPaths.length} selected files` : "whole worktree";
+    const historyPanel = this.createGitPanelSection(results, `History · ${historyScope}`, "git-commit", "git-history-panel");
+    this.renderGitCommitGraph(historyPanel, root, state.graph || [], graphPaths);
     this.$("status-name").textContent = `${files.length} modified file${files.length === 1 ? "" : "s"} · branch ${state.branch}`;
+    if (this.gitGraphPathsKey !== JSON.stringify([root, ...graphPaths])) void this.loadGitCommitGraph(root, graphPaths);
+    if (!this.gitExpandedCommitId && this.gitFocusedFile) {
+      void this.openGitReviewDiff(this.gitFocusedFile.root, this.gitFocusedFile.path, this.gitFocusedFile.scope, false);
+    }
+  }
+
+  gitFileGroups(files) {
+    return [
+      ["conflicts", "warning", files.filter((file) => file.conflicted), "conflict"],
+      ["staged changes", "check", files.filter((file) => file.staged && !file.conflicted), "staged"],
+      ["working tree", "diff-modified", files.filter((file) => file.unstaged && !file.conflicted), "working"],
+      ["untracked", "new-file", files.filter((file) => file.untracked), "untracked"],
+    ];
+  }
+
+  renderGitPanelTabs(container, root, state, view) {
+    const tabs = document.createElement("div");
+    tabs.className = "git-panel-tabs";
+    for (const [value, label] of [["changes", "Changes"], ["repositories", "Worktrees & remotes"]]) {
+      const tab = document.createElement("button");
+      tab.className = `git-panel-tab${view === value ? " active" : ""}`;
+      tab.textContent = label;
+      tab.setAttribute("aria-pressed", String(view === value));
+      tab.onclick = () => {
+        if (this.gitPanelView === value) return;
+        this.gitPanelView = value;
+        this.renderGitSidePanelState(container, root, state);
+      };
+      tabs.appendChild(tab);
+    }
+    container.appendChild(tabs);
+  }
+
+  renderGitWorkflowControls(container, root, state, view) {
+    if (view === "repositories") {
+      const controls = document.createElement("div");
+      controls.className = "git-workflow-controls repository-controls";
+      controls.append(
+        this.gitWorkflowButton("repo-create", "Create worktree", () => this.gitCreateWorktree(root, state.branch), " worktree"),
+        this.gitWorkflowButton("remote", "Add Git remote", () => this.gitAddRemote(root), " remote"),
+        this.gitWorkflowButton("repo-clone", "Clone SSH or remote project", () => this.gitCloneProject(root), " clone"),
+      );
+      container.appendChild(controls);
+    }
+    if (view === "repositories") return;
+    const primaryActions = document.createElement("div");
+    primaryActions.className = "git-primary-actions";
+    const selectedFiles = (state.files || []).filter((file) => this.gitSelectedPaths.has(file.path));
+    primaryActions.append(
+      this.gitWorkflowButton("add", `Stage ${selectedFiles.length || "all"}`, () => this.gitStagePaths(root,
+        selectedFiles.length ? selectedFiles : state.files || [], true)),
+      this.gitWorkflowButton("remove", `Unstage ${selectedFiles.length || "all"}`, () => this.gitStagePaths(root,
+        selectedFiles.length ? selectedFiles : state.files || [], false)),
+      this.gitWorkflowButton("discard", `Revert ${selectedFiles.length || "all"} to HEAD`, () => this.gitRevertPaths(root,
+        selectedFiles.length ? selectedFiles : state.files || [])),
+      this.gitTextButton("Commit", () => this.gitCommit(root), true),
+    );
+    container.appendChild(primaryActions);
+    const selection = document.createElement("div");
+    selection.className = "git-selection-summary";
+    selection.textContent = this.gitSelectedPaths.size
+      ? `${this.gitSelectedPaths.size} selected · commit graph scoped to ${this.gitSelectedPaths.size === 1 ? "this file" : "these files"}`
+      : "No files selected · commit graph scoped to the whole worktree";
+    if (this.gitSelectedPaths.size) {
+      const clear = this.gitTextButton("Whole worktree", () => {
+        this.gitSelectedPaths.clear();
+        this.gitSelectionExplicitlyCleared = true;
+        this.gitSelectionAnchorPath = "";
+        this.renderGitSidePanelState(container, root, state);
+      });
+      clear.classList.add("compact");
+      selection.appendChild(clear);
+    }
+    container.appendChild(selection);
+  }
+
+  gitWorkflowButton(icon, title, run, text = "") {
+    const button = document.createElement("button");
+    button.className = "git-workflow-button";
+    button.title = title;
+    button.setAttribute("aria-label", title);
+    const glyph = document.createElement("span");
+    glyph.className = `codicon codicon-${icon}`;
+    button.appendChild(glyph);
+    if (text) button.append(document.createTextNode(text));
+    button.onclick = (event) => { event.stopPropagation(); run(); };
+    return button;
+  }
+
+  gitTextButton(label, run, primary = false) {
+    const button = document.createElement("button");
+    button.className = `git-text-button${primary ? " primary" : ""}`;
+    button.textContent = label;
+    button.title = label;
+    button.onclick = (event) => { event.stopPropagation(); run(); };
+    return button;
+  }
+
+  openGitDialog({ title, description = "", fields = [], submitLabel = "Continue", danger = false,
+                  hideCancel = false }) {
+    return new Promise((resolve) => {
+      const backdrop = document.createElement("div");
+      backdrop.className = "git-dialog-backdrop";
+      const form = document.createElement("form");
+      form.className = "git-dialog";
+      form.setAttribute("role", "dialog");
+      form.setAttribute("aria-modal", "true");
+      const heading = document.createElement("div");
+      heading.className = "git-dialog-title";
+      heading.textContent = title;
+      form.appendChild(heading);
+      if (description) {
+        const detail = document.createElement("div");
+        detail.className = "git-dialog-description";
+        detail.textContent = description;
+        form.appendChild(detail);
+      }
+      const controls = new Map();
+      for (const field of fields) {
+        const label = document.createElement("label");
+        label.className = `git-dialog-field${field.type === "checkbox" ? " checkbox" : ""}`;
+        const caption = document.createElement("span");
+        caption.textContent = field.label;
+        let control;
+        if (field.type === "textarea") {
+          control = document.createElement("textarea");
+          control.rows = field.rows || 5;
+          control.value = field.value || "";
+        } else {
+          control = document.createElement("input");
+          control.type = field.type || "text";
+          if (control.type === "checkbox") control.checked = field.checked !== false;
+          else control.value = field.value || "";
+        }
+        control.name = field.name;
+        control.placeholder = field.placeholder || "";
+        control.required = !!field.required;
+        if (field.type === "checkbox") label.append(control, caption);
+        else label.append(caption, control);
+        controls.set(field.name, control);
+        form.appendChild(label);
+      }
+      const actions = document.createElement("div");
+      actions.className = "git-dialog-actions";
+      if (!hideCancel) {
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.textContent = "Cancel";
+        cancel.onclick = () => close(null);
+        actions.appendChild(cancel);
+      }
+      const submit = document.createElement("button");
+      submit.type = "submit";
+      submit.className = danger ? "danger" : "primary";
+      submit.textContent = submitLabel;
+      actions.appendChild(submit);
+      form.appendChild(actions);
+      backdrop.appendChild(form);
+      const close = (value) => {
+        document.removeEventListener("keydown", onKeyDown, true);
+        backdrop.remove();
+        requestAnimationFrame(() => this.focusActiveEditor());
+        resolve(value);
+      };
+      const onKeyDown = (event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        close(null);
+      };
+      form.onsubmit = (event) => {
+        event.preventDefault();
+        const values = {};
+        for (const [name, control] of controls) {
+          values[name] = control.type === "checkbox" ? control.checked : control.value;
+        }
+        close(values);
+      };
+      backdrop.onmousedown = (event) => {
+        if (event.target === backdrop) close(null);
+      };
+      document.addEventListener("keydown", onKeyDown, true);
+      document.body.appendChild(backdrop);
+      requestAnimationFrame(() => (controls.values().next().value || submit).focus());
+    });
+  }
+
+  async confirmGitAction(title, description, submitLabel, danger = false) {
+    return !!await this.openGitDialog({ title, description, submitLabel, danger, fields: [] });
+  }
+
+  async showGitMessage(title, description) {
+    await this.openGitDialog({ title, description, submitLabel: "Close", hideCancel: true, fields: [] });
   }
 
   renderGitSideGroupHeader(container, label, icon) {
@@ -5976,21 +6405,757 @@ class TermdeckApp {
     container.appendChild(header);
   }
 
-  renderGitSideFile(container, root, file) {
+  createGitPanelSection(container, label, icon, extraClass = "", options = {}) {
+    const section = document.createElement("section");
+    section.className = `git-panel-section${extraClass ? ` ${extraClass}` : ""}${options.collapsed ? " collapsed" : ""}`;
+    const header = document.createElement("div");
+    header.className = "git-panel-section-header";
+    if (options.collapsible) {
+      const chevron = document.createElement("span");
+      chevron.className = `codicon codicon-chevron-${options.collapsed ? "right" : "down"} git-panel-chevron`;
+      header.appendChild(chevron);
+      header.onclick = () => {
+        const collapsed = section.classList.toggle("collapsed");
+        chevron.className = `codicon codicon-chevron-${collapsed ? "right" : "down"} git-panel-chevron`;
+        options.onToggle?.(collapsed);
+      };
+    }
+    const glyph = document.createElement("span");
+    glyph.className = `codicon codicon-${icon}`;
+    const title = document.createElement("span");
+    title.textContent = label;
+    header.append(glyph, title);
+    if (options.action) header.appendChild(options.action);
+    const body = document.createElement("div");
+    body.className = "git-panel-section-body";
+    section.append(header, body);
+    container.appendChild(section);
+    return body;
+  }
+
+  renderGitSideFile(container, root, file, scope, orderedPaths) {
     const row = document.createElement("div");
     row.className = "tree-row file git-file-row";
     row.dataset.path = file.path;
-    row.title = `${root}/${file.path}\nOpen file; middle-click opens in a new TermDeck tab`;
+    row.classList.toggle("selected", this.gitSelectedPaths.has(file.path));
+    row.classList.toggle("focused", this.gitFocusedFile?.path === file.path && this.gitFocusedFile?.scope === scope);
+    row.title = `${root}/${file.path}\nClick to review pending changes; middle-click opens the working file in a new TermDeck tab`;
     row.append(this.fileTypeIconEl(file.path.split("/").pop(), "tree-type-icon"));
     const name = document.createElement("span");
     name.className = "tree-name";
     name.textContent = file.path;
     row.appendChild(name);
     this.appendGitStatus(row, { git_status: file.status });
-    row.onclick = () => void this.openFile(root, file.path, null, row, { fromFilePanel: true, pinned: false });
+    const actions = document.createElement("span");
+    actions.className = "git-file-actions";
+    if (file.conflicted) {
+      actions.append(
+        this.gitWorkflowButton("arrow-left", "Accept ours", () => this.gitResolveConflict(root, file.path, "ours")),
+        this.gitWorkflowButton("arrow-right", "Accept theirs", () => this.gitResolveConflict(root, file.path, "theirs")),
+        this.gitWorkflowButton("check", "Mark resolved", () => this.gitResolveConflict(root, file.path, "resolved")),
+      );
+    } else {
+      if (file.staged) actions.appendChild(this.gitWorkflowButton("remove", "Unstage", () => this.gitStagePaths(root, [file], false)));
+      if (file.unstaged || file.untracked) {
+        actions.appendChild(this.gitWorkflowButton("add", "Stage", () => this.gitStagePaths(root, [file], true)));
+      }
+    }
+    row.appendChild(actions);
+    row.onclick = (event) => this.selectGitFile(event, container, root, file, scope, orderedPaths);
     row.onauxclick = (event) => this.handleFileDeckAuxClick(event, root, file.path);
-    row.oncontextmenu = (event) => this.openFileDeckRowContextMenu(event, root, file.path);
+    row.oncontextmenu = (event) => this.openGitFileContextMenu(event, root, file, scope);
     container.appendChild(row);
+  }
+
+  openGitFileContextMenu(event, root, file, scope) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!this.gitSelectedPaths.has(file.path)) {
+      this.gitSelectedPaths = new Set([file.path]);
+      this.gitSelectionExplicitlyCleared = false;
+      this.gitSelectionAnchorPath = file.path;
+    }
+    this.gitFocusedFile = { root, path: file.path, scope };
+    this.gitSelectionExplicitlyCleared = this.gitSelectedPaths.size === 0;
+    const selectedFiles = (this.gitSideState?.files || []).filter((candidate) => this.gitSelectedPaths.has(candidate.path));
+    const menu = this.$("context-menu");
+    menu.textContent = "";
+    this.contextMenuTarget = { type: "git-files", paths: [...this.gitSelectedPaths] };
+    this.addContextItem(menu, "View pending diff", () => this.openGitReviewDiff(root, file.path, scope, true), "diff");
+    this.addContextItem(menu, "Open working file", () => this.openFile(root, file.path, null, null,
+      { fromFilePanel: true, pinned: true }), "go-to-file");
+    this.addContextItem(menu, "Open working file in new browser tab", () => this.openFileDeckInNewTab(root, file.path), "new-window");
+    if (selectedFiles.some((candidate) => !candidate.conflicted && (candidate.unstaged || candidate.untracked))) {
+      this.addContextItem(menu, `Stage${selectedFiles.length > 1 ? ` ${selectedFiles.length} files` : ""}`,
+        () => this.gitStagePaths(root, selectedFiles, true), "add");
+    }
+    if (selectedFiles.some((candidate) => !candidate.conflicted && candidate.staged)) {
+      this.addContextItem(menu, `Unstage${selectedFiles.length > 1 ? ` ${selectedFiles.length} files` : ""}`,
+        () => this.gitStagePaths(root, selectedFiles, false), "remove");
+    }
+    this.addContextItem(menu, `Revert${selectedFiles.length > 1 ? ` ${selectedFiles.length} files` : " changes"} to HEAD…`,
+      () => this.gitRevertPaths(root, selectedFiles), "discard");
+    if (selectedFiles.length === 1) {
+      this.addContextItem(menu, "Local history", () => this.openFileHistoryForPath(root, file.path, "local"), "history");
+      this.addContextItem(menu, "Git history", () => this.openFileHistoryForPath(root, file.path, "git"), "git-commit");
+    } else {
+      this.addContextItem(menu, `Show Git history for ${selectedFiles.length} files`,
+        () => this.loadGitCommitGraph(root, [...this.gitSelectedPaths]), "git-commit");
+    }
+    this.addContextItem(menu, "Copy relative path", () => this.copyTextToClipboard(file.path, "relative path copied"), "copy");
+    this.positionContextMenu(menu, event.clientX, event.clientY);
+  }
+
+  selectGitFile(event, container, root, file, scope, orderedPaths) {
+    const additive = event.metaKey || event.ctrlKey;
+    if (event.shiftKey && this.gitSelectionAnchorPath) {
+      const anchorIndex = orderedPaths.indexOf(this.gitSelectionAnchorPath);
+      const targetIndex = orderedPaths.indexOf(file.path);
+      if (anchorIndex >= 0 && targetIndex >= 0) {
+        if (!additive) this.gitSelectedPaths.clear();
+        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+        for (const path of orderedPaths.slice(start, end + 1)) this.gitSelectedPaths.add(path);
+      }
+    } else if (additive) {
+      if (this.gitSelectedPaths.has(file.path)) this.gitSelectedPaths.delete(file.path);
+      else this.gitSelectedPaths.add(file.path);
+      this.gitSelectionAnchorPath = file.path;
+    } else {
+      this.gitSelectedPaths = new Set([file.path]);
+      this.gitSelectionAnchorPath = file.path;
+    }
+    this.gitSelectionExplicitlyCleared = this.gitSelectedPaths.size === 0;
+    this.gitFocusedFile = { root, path: file.path, scope };
+    if (this.gitSideState) this.renderGitSidePanelState(container, root, this.gitSideState);
+    if (!additive && !event.shiftKey) void this.openGitReviewDiff(root, file.path, scope, false, { updateUrl: true });
+  }
+
+  renderGitAgentWorktrees(container, agents) {
+    if (!agents.length) return;
+    this.renderGitSideGroupHeader(container, `agent worktrees (${agents.length})`, "organization");
+    for (const agent of agents) {
+      const details = document.createElement("details");
+      details.className = "git-agent-details";
+      const row = document.createElement("summary");
+      row.className = "git-agent-row";
+      const status = document.createElement("span");
+      status.className = `git-agent-status${agent.processing ? " working" : ""}`;
+      const title = document.createElement("span");
+      title.className = "git-agent-title";
+      title.textContent = agent.sessions?.length === 1 ? agent.sessions[0].title : `${agent.sessions?.length || 0} agents`;
+      const branch = document.createElement("span");
+      branch.className = "git-agent-branch";
+      branch.textContent = `${agent.branch} · ${agent.changed_files}`;
+      row.append(status, title, branch);
+      const sessionNames = (agent.sessions || []).map((session) => `${session.agent_kind}: ${session.title}`).join("\n");
+      row.title = `${agent.worktree}\n${sessionNames}\n${agent.changed_files} worktree changes`;
+      details.appendChild(row);
+      for (const file of agent.files || []) {
+        const fileRow = document.createElement("div");
+        fileRow.className = "git-agent-file";
+        fileRow.append(this.fileTypeIconEl(file.path.split("/").pop(), "tree-type-icon"));
+        const fileName = document.createElement("span");
+        fileName.textContent = file.path;
+        fileRow.appendChild(fileName);
+        this.appendGitStatus(fileRow, { git_status: file.status });
+        fileRow.onclick = () => void this.openFile(agent.worktree, file.path, null, fileRow,
+                                                   { fromFilePanel: true, pinned: false });
+        details.appendChild(fileRow);
+      }
+      for (const session of agent.sessions || []) {
+        if (!this.session(session.session_id)) continue;
+        const open = this.gitWorkflowButton("terminal", `Open ${session.title}`,
+                                            () => this.activate(session.session_id), ` ${session.title}`);
+        open.classList.add("git-agent-open");
+        details.appendChild(open);
+      }
+      container.appendChild(details);
+    }
+  }
+
+  renderGitStashes(container, root, stashes) {
+    if (!stashes.length) {
+      const empty = document.createElement("div");
+      empty.className = "file-inspector-empty";
+      empty.textContent = "No saved stashes.";
+      container.appendChild(empty);
+      return;
+    }
+    for (const stash of stashes) {
+      const row = document.createElement("div");
+      row.className = "git-stash-row";
+      const name = document.createElement("span");
+      name.className = "git-stash-name";
+      name.textContent = stash.message;
+      const actions = document.createElement("span");
+      actions.className = "git-row-actions";
+      actions.append(
+        this.gitWorkflowButton("play", "Apply stash", () => this.gitStashAction(root, stash.reference, "apply")),
+        this.gitWorkflowButton("move", "Pop stash", () => this.gitStashAction(root, stash.reference, "pop")),
+        this.gitWorkflowButton("trash", "Delete stash", () => this.gitStashAction(root, stash.reference, "drop")),
+      );
+      row.append(name, actions);
+      row.title = `${stash.reference} · ${stash.created_at}`;
+      container.appendChild(row);
+    }
+  }
+
+  renderGitWorktrees(container, root, worktrees, repositoryRoot) {
+    this.renderGitSideGroupHeader(container, `worktrees (${worktrees.length})`, "repo");
+    for (const worktree of worktrees) {
+      const row = document.createElement("div");
+      row.className = "git-worktree-row";
+      const name = document.createElement("span");
+      name.className = "git-worktree-name";
+      name.textContent = worktree.branch || "detached";
+      const path = document.createElement("span");
+      path.className = "git-worktree-path";
+      path.textContent = worktree.path;
+      row.append(name, path);
+      if (worktree.path !== repositoryRoot) {
+        row.appendChild(this.gitWorkflowButton("trash", "Remove clean worktree", () => this.gitRemoveWorktree(root, worktree.path)));
+      }
+      row.title = worktree.path;
+      container.appendChild(row);
+    }
+    const prune = this.gitWorkflowButton("clear-all", "Prune missing worktrees", () => this.gitPruneWorktrees(root), " prune missing");
+    prune.classList.add("git-worktree-prune");
+    container.appendChild(prune);
+  }
+
+  renderGitRemotes(container, root, remotes, branch) {
+    this.renderGitSideGroupHeader(container, `remotes (${remotes.length})`, "remote");
+    if (!remotes.length) {
+      const empty = document.createElement("div");
+      empty.className = "file-inspector-empty";
+      empty.textContent = "No remotes. Add an SSH or HTTPS repository URL.";
+      container.appendChild(empty);
+      return;
+    }
+    for (const remote of remotes) {
+      const row = document.createElement("div");
+      row.className = "git-remote-row";
+      const name = document.createElement("span");
+      name.className = "git-remote-name";
+      name.textContent = remote.name;
+      const url = document.createElement("span");
+      url.className = "git-remote-url";
+      url.textContent = remote.fetch_url;
+      const actions = document.createElement("span");
+      actions.className = "git-row-actions";
+      actions.append(
+        this.gitWorkflowButton("sync", `Fetch ${remote.name}`, () => this.gitRemoteAction(root, remote.name, "fetch", branch)),
+        this.gitWorkflowButton("cloud-download", `Pull ${remote.name}/${branch}`, () => this.gitRemoteAction(root, remote.name, "pull", branch)),
+        this.gitWorkflowButton("cloud-upload", `Push ${branch} to ${remote.name}`, () => this.gitRemoteAction(root, remote.name, "push", branch)),
+        this.gitWorkflowButton("trash", `Remove remote ${remote.name}`, () => this.gitRemoteAction(root, remote.name, "remove", branch)),
+      );
+      row.append(name, url, actions);
+      row.title = `Fetch: ${remote.fetch_url}\nPush: ${remote.push_url}`;
+      container.appendChild(row);
+    }
+  }
+
+  renderGitCommitGraph(container, root, graph, paths = []) {
+    if (!graph.length) {
+      const empty = document.createElement("div");
+      empty.className = "file-inspector-empty";
+      empty.textContent = paths.length ? "No commits found for this selection." : "No commits in this worktree yet.";
+      container.appendChild(empty);
+      return;
+    }
+    const visibleGraph = [];
+    let visibleCommits = 0;
+    for (const line of graph) {
+      const commitLine = /[0-9a-f]{4,64}/i.test(line.split("\u0000", 1)[0] || "");
+      if (commitLine && visibleCommits >= this.gitHistoryLimit) break;
+      visibleGraph.push(line);
+      if (commitLine) visibleCommits += 1;
+    }
+    for (const line of visibleGraph) {
+      const fields = line.split("\u0000");
+      const commitId = (fields[0] || "").match(/[0-9a-f]{4,64}/i)?.[0] || "";
+      if (!commitId) {
+        const connector = document.createElement("div");
+        connector.className = "git-graph-connector";
+        connector.textContent = fields[0] || "";
+        container.appendChild(connector);
+        continue;
+      }
+      const entry = document.createElement("div");
+      entry.className = `git-graph-entry${this.gitExpandedCommitId === commitId ? " expanded" : ""}`;
+      const row = document.createElement("div");
+      row.className = "git-graph-row";
+      row.tabIndex = 0;
+      row.dataset.commitId = commitId;
+      const graphText = document.createElement("span");
+      graphText.className = "git-graph-lines";
+      graphText.textContent = fields[0] || "";
+      const message = document.createElement("span");
+      message.className = "git-graph-message";
+      message.textContent = fields[1] || "";
+      const age = document.createElement("span");
+      age.className = "git-graph-age";
+      age.textContent = fields[2] || "";
+      row.append(graphText, message, age);
+      row.title = [fields[1], fields[3]].filter(Boolean).join("\n");
+      row.onclick = () => void this.selectGitCommit(root, commitId, false);
+      row.onkeydown = (event) => this.handleGitCommitKeyDown(event, root, commitId);
+      entry.appendChild(row);
+      if (this.gitExpandedCommitId === commitId) this.renderGitCommitDetails(entry, root, commitId);
+      container.appendChild(entry);
+    }
+    const totalCommits = graph.filter((line) => /[0-9a-f]{4,64}/i.test(line.split("\u0000", 1)[0] || "")).length;
+    if (totalCommits > visibleCommits) {
+      const loadMore = this.gitTextButton(`Load ${Math.min(25, totalCommits - visibleCommits)} more`, () => {
+        this.gitHistoryLimit = Math.min(totalCommits, this.gitHistoryLimit + 25);
+        this.renderGitSidePanelState(this.$("git-results"), root, this.gitSideState);
+      });
+      loadMore.classList.add("git-history-load-more");
+      container.appendChild(loadMore);
+    }
+  }
+
+  handleGitCommitKeyDown(event, root, commitId) {
+    if (["ArrowDown", "ArrowUp"].includes(event.key)) {
+      event.preventDefault();
+      const rows = [...event.currentTarget.closest(".git-history-panel").querySelectorAll(".git-graph-row")];
+      const currentIndex = rows.indexOf(event.currentTarget);
+      const next = rows[currentIndex + (event.key === "ArrowDown" ? 1 : -1)];
+      if (!next) return;
+      next.focus();
+      void this.selectGitCommit(root, next.dataset.commitId, true);
+      return;
+    }
+    if (["Enter", " ", "ArrowRight"].includes(event.key)) {
+      event.preventDefault();
+      void this.selectGitCommit(root, commitId, event.key === "ArrowRight");
+      return;
+    }
+    if (event.key === "ArrowLeft" && this.gitExpandedCommitId === commitId) {
+      event.preventDefault();
+      this.gitExpandedCommitId = "";
+      this.closeGitReview(false);
+      this.renderGitSidePanelState(this.$("git-results"), root, this.gitSideState);
+      requestAnimationFrame(() => this.$("git-results")?.querySelector(`[data-commit-id="${CSS.escape(commitId)}"]`)?.focus());
+    }
+  }
+
+  async selectGitCommit(root, commitId, keepOpen) {
+    if (!commitId) return;
+    this.gitExpandedCommitId = keepOpen || this.gitExpandedCommitId !== commitId ? commitId : "";
+    if (!this.gitExpandedCommitId) {
+      this.closeGitReview(false);
+      this.renderGitSidePanelState(this.$("git-results"), root, this.gitSideState);
+      return;
+    }
+    this.closeGitReview(false);
+    this.renderGitSidePanelState(this.$("git-results"), root, this.gitSideState);
+    if (!this.gitCommitDetails.has(commitId)) await this.loadGitCommitDetails(root, commitId);
+    else await this.openFirstGitCommitDiff(root, this.gitCommitDetails.get(commitId));
+    requestAnimationFrame(() => this.$("git-results")?.querySelector(`[data-commit-id="${CSS.escape(commitId)}"]`)?.focus());
+  }
+
+  async loadGitCommitDetails(root, commitId) {
+    const generation = ++this.gitCommitDetailGeneration;
+    const response = await fetch(`/api/git/commit-detail?${new URLSearchParams({ root, commit_id: commitId })}`);
+    if (generation !== this.gitCommitDetailGeneration || this.gitExpandedCommitId !== commitId) return;
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      await this.showGitMessage("Commit unavailable", error.detail || "The selected commit could not be loaded.");
+      return;
+    }
+    const commit = await response.json();
+    this.gitCommitDetails.set(commitId, commit);
+    this.renderGitSidePanelState(this.$("git-results"), root, this.gitSideState);
+    await this.openFirstGitCommitDiff(root, commit);
+  }
+
+  renderGitCommitDetails(container, root, commitId) {
+    const details = document.createElement("div");
+    details.className = "git-commit-details";
+    const commit = this.gitCommitDetails.get(commitId);
+    if (!commit) {
+      details.textContent = "Loading commit changes…";
+      container.appendChild(details);
+      return;
+    }
+    const message = document.createElement("div");
+    message.className = "git-commit-full-message";
+    message.textContent = commit.message;
+    const metadata = document.createElement("div");
+    metadata.className = "git-commit-metadata";
+    metadata.textContent = `${commit.author} <${commit.email}> · ${commit.committed_at}`;
+    details.append(message, metadata);
+    const files = document.createElement("div");
+    files.className = "git-commit-files";
+    for (const file of commit.files || []) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "git-commit-file";
+      const status = document.createElement("span");
+      status.className = `git-commit-file-status status-${String(file.status || "M").toLowerCase()}`;
+      status.textContent = file.status || "M";
+      const path = document.createElement("span");
+      path.className = "git-commit-file-path";
+      path.textContent = file.previous_path ? `${file.previous_path} → ${file.path}` : file.path;
+      row.append(status, this.fileTypeIconEl(file.path.split("/").pop(), "tree-type-icon"), path);
+      row.title = `Show ${file.path} diff in ${commit.short_id}`;
+      row.onclick = (event) => {
+        event.stopPropagation();
+        void this.openGitCommitDiff(root, commit, file, true);
+      };
+      files.appendChild(row);
+    }
+    details.appendChild(files);
+    container.appendChild(details);
+  }
+
+  async openFirstGitCommitDiff(root, commit) {
+    const firstFile = commit?.files?.[0];
+    if (firstFile) await this.openGitCommitDiff(root, commit, firstFile, false, true);
+  }
+
+  async openGitCommitDiff(root, commit, file, focus, updateUrl = true) {
+    await this.openGitReviewDiff(root, file.path, "commit", focus,
+      { revision: commit.commit_id, previousPath: file.previous_path || "", updateUrl });
+  }
+
+  async gitWorkflowAction(endpoint, payload) {
+    if (this.gitActionPending) return false;
+    this.gitActionPending = true;
+    this.$("git-results")?.classList.add("git-action-pending");
+    try {
+      const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" },
+                                               body: JSON.stringify(payload) });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        await this.showGitMessage("Git operation failed", error.detail || "The Git operation could not be completed.");
+        await this.loadGitSidePanel();
+        return false;
+      }
+      await this.loadGitSidePanel();
+      return true;
+    } catch (error) {
+      await this.showGitMessage("Git operation failed", error.message || "The Git operation could not be completed.");
+      return false;
+    } finally {
+      this.gitActionPending = false;
+      this.$("git-results")?.classList.remove("git-action-pending");
+    }
+  }
+
+  async gitStagePaths(root, files, stage) {
+    const paths = files.filter((file) => !file.conflicted && (stage ? (file.unstaged || file.untracked) : file.staged))
+      .map((file) => file.path);
+    if (!paths.length) return;
+    await this.gitWorkflowAction(stage ? "/api/git/stage" : "/api/git/unstage", { root, paths });
+  }
+
+  async gitRevertPaths(root, files) {
+    const paths = [...new Set(files.map((file) => file.path))];
+    if (!paths.length) return;
+    const confirmed = await this.confirmGitAction(
+      `Revert ${paths.length === 1 ? paths[0] : `${paths.length} files`} to HEAD?`,
+      "Current working copies are moved to Trash first, so their contents remain recoverable. Staged and working-tree changes will both be reverted.",
+      "Move copies to Trash and revert", true,
+    );
+    if (!confirmed) return;
+    const reverted = await this.gitWorkflowAction("/api/git/revert", { root, paths });
+    if (!reverted) return;
+    const revertedKeys = [...this.openFiles.entries()]
+      .filter(([, entry]) => entry.root === root && paths.includes(entry.path)).map(([key]) => key);
+    if (revertedKeys.length) await this.closeFiles(revertedKeys, { discard: true });
+  }
+
+  async loadGitCommitGraph(root, paths) {
+    const generation = ++this.gitGraphGeneration;
+    const response = await fetch("/api/git/graph", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ root, paths, limit: 200 }) });
+    if (generation !== this.gitGraphGeneration || !response.ok || this.sideView !== "git" || !this.gitSideState) return;
+    const result = await response.json();
+    this.gitSideState.graph = result.graph || [];
+    this.gitGraphPathsKey = JSON.stringify([root, ...paths]);
+    this.renderGitSidePanelState(this.$("git-results"), root, this.gitSideState);
+  }
+
+  disposeGitReviewEditor() {
+    this.gitReviewDiffEditor?.dispose();
+    this.gitReviewDiffEditor = null;
+    for (const model of this.gitReviewModels) model.dispose();
+    this.gitReviewModels = [];
+  }
+
+  async openGitReviewDiff(root, path, scope, focus, options = {}) {
+    const revision = String(options.revision || "");
+    const previousPath = String(options.previousPath || "");
+    const reviewKey = `${root}\u0000${path}\u0000${scope}\u0000${revision}\u0000${previousPath}`;
+    if (!focus && this.gitReviewOpen && this.gitReviewKey === reviewKey) {
+      if (options.history !== false && options.updateUrl) {
+        this.pushNav({ kind: "git-diff", path, scope, revision, previous_path: previousPath });
+      }
+      return;
+    }
+    const generation = ++this.gitReviewGeneration;
+    const response = await fetch(`/api/git/review?${new URLSearchParams({ root, path, scope, revision,
+                                                                          previous_path: previousPath })}`);
+    if (!response.ok) {
+      if (focus) {
+        const error = await response.json().catch(() => ({}));
+        await this.showGitMessage("Git diff unavailable", error.detail || "The pending diff could not be loaded.");
+      }
+      return;
+    }
+    const review = await response.json();
+    await this.monacoReady;
+    if (generation !== this.gitReviewGeneration || this.sideView !== "git") return;
+    this.disposeGitReviewEditor();
+    const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+    const originalModel = monaco.editor.createModel(review.original, undefined,
+      monaco.Uri.parse(`inmemory://termdeck-git-review/original/${encodedPath}`));
+    const modifiedModel = monaco.editor.createModel(review.modified, undefined,
+      monaco.Uri.parse(`inmemory://termdeck-git-review/modified/${encodedPath}`));
+    this.gitReviewModels = [originalModel, modifiedModel];
+    this.gitReviewDiffEditor = monaco.editor.createDiffEditor(this.$("git-review-editor-host"), {
+      ...this.fileHistoryEditorOptions(), readOnly: true, originalEditable: false, renderSideBySide: this.gitReviewSideBySide,
+      theme: this.monacoThemeName(),
+    });
+    this.gitReviewDiffEditor.setModel({ original: originalModel, modified: modifiedModel });
+    this.gitReviewDiffIndex = -1;
+    this.gitReviewDiffEditor.onDidUpdateDiff(() => this.updateGitReviewDiffNavigation());
+    this.gitReviewOpen = true;
+    this.gitReviewKey = reviewKey;
+    this.gitFocusedFile = { root, path, scope, revision, previousPath };
+    this.activeFileKey = null;
+    this.$("git-review-title").textContent = path;
+    this.$("git-review-title").title = `${root}/${path}`;
+    this.$("git-review-scope").textContent = `${review.original_label} → ${review.modified_label}`;
+    if (options.history !== false && (focus || options.updateUrl)) {
+      this.pushNav({ kind: "git-diff", path, scope, revision, previous_path: previousPath });
+    }
+    this.renderTopbar();
+    this.$("status-name").textContent = `${path} · ${review.original_label} → ${review.modified_label}`;
+    this.applyMainLayout();
+    requestAnimationFrame(() => {
+      this.gitReviewDiffEditor?.layout();
+      this.updateGitReviewDiffNavigation();
+      if (focus) this.gitReviewDiffEditor?.getModifiedEditor().focus();
+    });
+  }
+
+  gitReviewLineChanges() {
+    return this.gitReviewDiffEditor?.getLineChanges() || [];
+  }
+
+  updateGitReviewDiffNavigation() {
+    const changes = this.gitReviewLineChanges();
+    if (!changes.length) this.gitReviewDiffIndex = -1;
+    else if (this.gitReviewDiffIndex >= changes.length) this.gitReviewDiffIndex = changes.length - 1;
+    this.$("git-review-position").textContent = changes.length ? `${Math.max(0, this.gitReviewDiffIndex) + 1}/${changes.length}` : "0/0";
+    this.$("git-review-previous").disabled = !changes.length;
+    this.$("git-review-next").disabled = !changes.length;
+    this.$("git-review-layout").classList.toggle("on", !this.gitReviewSideBySide);
+  }
+
+  navigateGitReviewDiff(direction) {
+    const changes = this.gitReviewLineChanges();
+    if (!changes.length) return;
+    this.gitReviewDiffIndex = (this.gitReviewDiffIndex + direction + changes.length) % changes.length;
+    const change = changes[this.gitReviewDiffIndex];
+    const modifiedLine = change.modifiedStartLineNumber || change.modifiedEndLineNumber;
+    const originalLine = change.originalStartLineNumber || change.originalEndLineNumber;
+    if (modifiedLine) this.gitReviewDiffEditor.getModifiedEditor().revealLineInCenter(modifiedLine);
+    if (originalLine) this.gitReviewDiffEditor.getOriginalEditor().revealLineInCenter(originalLine);
+    this.updateGitReviewDiffNavigation();
+  }
+
+  toggleGitReviewLayout() {
+    this.gitReviewSideBySide = !this.gitReviewSideBySide;
+    this.gitReviewDiffEditor?.updateOptions({ renderSideBySide: this.gitReviewSideBySide });
+    this.gitReviewDiffEditor?.layout();
+    this.updateGitReviewDiffNavigation();
+  }
+
+  closeGitReview(restoreFocus = true) {
+    if (!this.gitReviewOpen && !this.gitReviewDiffEditor) return;
+    this.gitReviewGeneration += 1;
+    this.gitReviewOpen = false;
+    this.gitReviewKey = "";
+    this.gitReviewDiffIndex = -1;
+    this.disposeGitReviewEditor();
+    this.renderTopbar();
+    this.applyMainLayout();
+    if (restoreFocus) {
+      this.pushNav({ kind: "files", view: "git", pinned: !!this.settings.files_pinned });
+      requestAnimationFrame(() => this.focusActiveEditor());
+    }
+  }
+
+  async openFocusedGitWorkingFile() {
+    const focused = this.gitFocusedFile;
+    if (!focused) return;
+    this.closeGitReview(false);
+    await this.openFile(focused.root, focused.path, null, null, { fromFilePanel: true, pinned: true });
+  }
+
+  async openFocusedGitFileHistory() {
+    const focused = this.gitFocusedFile;
+    if (!focused) return;
+    await this.openFileHistoryForPath(focused.root, focused.path, "all");
+  }
+
+  async openFileHistoryForPath(root, path, mode, options = {}) {
+    const key = `${root}|${path}`;
+    if (this.activeFileKey !== key || !this.openFiles.has(key)) {
+      await this.openFile(root, path, null, null, { fromFilePanel: true, pinned: true, history: options.history !== false });
+    }
+    if (this.activeFileKey !== key || !this.openFiles.has(key)) return;
+    this.fileHistoryMode = ["all", "local", "git"].includes(mode) ? mode : "all";
+    this.fileHistoryOpen = true;
+    this.fileHistorySelections = Array.isArray(options.selection) ? options.selection.slice(-2) : [];
+    this.$("file-history-panel").classList.remove("hidden");
+    this.$("file-history-toggle").classList.add("on");
+    this.$("file-history-toggle").setAttribute("aria-pressed", "true");
+    this.renderTopbar();
+    await this.loadFileHistory();
+    if (options.history !== false) {
+      this.pushNav({ kind: "file-history", key, mode: this.fileHistoryMode, selection: this.fileHistorySelections });
+    }
+  }
+
+  async gitCommit(root) {
+    const values = await this.openGitDialog({
+      title: "Commit staged changes",
+      description: "Write the commit message for the currently staged files.",
+      submitLabel: "Commit",
+      fields: [{ name: "message", label: "Commit message", type: "textarea", rows: 6,
+                 placeholder: "Describe the change…", required: true }],
+    });
+    if (!values?.message.trim()) return;
+    await this.gitWorkflowAction("/api/git/commit", { root, message: values.message.trim() });
+  }
+
+  async gitCreateBranch(root) {
+    const values = await this.openGitDialog({
+      title: "Create branch",
+      description: "The new branch starts at the current HEAD and becomes active immediately.",
+      submitLabel: "Create and switch",
+      fields: [{ name: "name", label: "Branch name", placeholder: "feature/my-change", required: true }],
+    });
+    if (!values?.name.trim()) return;
+    await this.gitWorkflowAction("/api/git/branch", { root, name: values.name.trim(), start_point: "HEAD", switch: true });
+  }
+
+  async gitCreateStash(root) {
+    const values = await this.openGitDialog({
+      title: "Stash working changes",
+      description: "Review the message and untracked-file choice. Nothing changes until you press Create stash.",
+      submitLabel: "Create stash",
+      fields: [
+        { name: "message", label: "Stash message", type: "textarea", rows: 3, value: "TermDeck stash" },
+        { name: "include_untracked", label: "Include untracked files", type: "checkbox", checked: true },
+      ],
+    });
+    if (!values) return;
+    await this.gitWorkflowAction("/api/git/stash", { root, message: values.message.trim(),
+                                                     include_untracked: values.include_untracked });
+  }
+
+  async gitStashAction(root, reference, action) {
+    const labels = {
+      apply: ["Apply stash", `Apply ${reference} while keeping it in the stash list?`, "Apply stash", false],
+      pop: ["Pop stash", `Apply ${reference} and remove it from the stash list if Git succeeds?`, "Pop stash", false],
+      drop: ["Delete stash", `Permanently delete ${reference}? This cannot be restored by TermDeck.`, "Delete stash", true],
+    };
+    const confirmation = labels[action];
+    if (!confirmation || !await this.confirmGitAction(...confirmation)) return;
+    await this.gitWorkflowAction("/api/git/stash/action", { root, reference, action });
+  }
+
+  async gitResolveConflict(root, path, resolution) {
+    if (resolution !== "resolved" &&
+        !await this.confirmGitAction(`Accept ${resolution}`, `Replace ${path} with the ${resolution} version and stage it.`,
+                                     `Accept ${resolution}`, true)) return;
+    await this.gitWorkflowAction("/api/git/conflict", { root, path, resolution });
+  }
+
+  async gitCreateWorktree(root, currentBranch) {
+    const suggestedBranch = `${currentBranch || "work"}-agent`;
+    const values = await this.openGitDialog({
+      title: "Create worktree",
+      description: "Create and register an isolated project worktree for an agent or parallel task.",
+      submitLabel: "Create worktree",
+      fields: [
+        { name: "branch", label: "New branch", value: suggestedBranch, required: true },
+        { name: "path", label: "Worktree folder",
+          value: `${root.replace(/\/$/, "")}-${suggestedBranch.replaceAll("/", "-")}`, required: true },
+      ],
+    });
+    if (!values?.branch.trim() || !values.path.trim()) return;
+    await this.gitWorkflowAction("/api/git/worktree", { root, action: "create", path: values.path.trim(),
+                                                       branch: values.branch.trim(),
+                                                       create_branch: true, start_point: "HEAD" });
+  }
+
+  async gitRemoveWorktree(root, path) {
+    if (!await this.confirmGitAction("Remove worktree", path, "Remove worktree", true)) return;
+    await this.gitWorkflowAction("/api/git/worktree", { root, action: "remove", path });
+  }
+
+  async gitPruneWorktrees(root) {
+    await this.gitWorkflowAction("/api/git/worktree", { root, action: "prune" });
+  }
+
+  async gitAddRemote(root) {
+    const values = await this.openGitDialog({
+      title: "Add Git remote",
+      submitLabel: "Add remote",
+      fields: [
+        { name: "name", label: "Remote name", value: "origin", required: true },
+        { name: "url", label: "SSH or HTTPS URL", value: "git@github.com:", required: true },
+      ],
+    });
+    if (!values?.name.trim() || !values.url.trim()) return;
+    await this.gitWorkflowAction("/api/git/remote", { root, action: "add", name: values.name.trim(),
+                                                     url: values.url.trim() });
+  }
+
+  async gitRemoteAction(root, name, action, branch) {
+    if (action === "remove" &&
+        !await this.confirmGitAction("Remove Git remote", name, "Remove remote", true)) return;
+    if (action === "push" &&
+        !await this.confirmGitAction("Push branch", `${branch} → ${name} and set it as upstream.`, "Push")) return;
+    await this.gitWorkflowAction("/api/git/remote", { root, action, name, branch,
+                                                     set_upstream: action === "push" });
+  }
+
+  async gitCloneProject(root) {
+    const parent = String(root || "~/workspace/project").replace(/\/+$/, "").replace(/\/[^/]+$/, "");
+    const values = await this.openGitDialog({
+      title: "Clone remote project",
+      description: "SSH uses your existing Git and SSH configuration. Leave branch blank for the remote default.",
+      submitLabel: "Clone project",
+      fields: [
+        { name: "url", label: "SSH or HTTPS URL", value: "git@github.com:", required: true },
+        { name: "path", label: "Local project folder", value: `${parent}/project`, required: true },
+        { name: "branch", label: "Branch", placeholder: "Remote default" },
+      ],
+    });
+    if (!values?.url.trim() || !values.path.trim()) return;
+    const response = await fetch("/api/git/clone", { method: "POST", headers: { "Content-Type": "application/json" },
+                                                     body: JSON.stringify({ url: values.url.trim(), path: values.path.trim(),
+                                                                            branch: values.branch.trim() }) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      await this.showGitMessage("Git clone failed", payload.detail || "The remote project could not be cloned.");
+      return;
+    }
+    await this.loadProjects();
+    if (payload.project?.name &&
+        await this.confirmGitAction("Clone complete", `Open ${payload.project.name} now?`, "Open project")) {
+      location.href = `/p/${encodeURIComponent(payload.project.name)}`;
+    } else {
+      await this.loadGitSidePanel();
+    }
   }
 
   renderGitSideCommit(container, commit) {
@@ -6021,9 +7186,8 @@ class TermdeckApp {
       this.$("status-name").textContent = "Open a file to inspect its Git history";
       return;
     }
-    this.fileHistoryMode = "git";
-    if (!this.fileHistoryOpen) this.toggleFileHistory();
-    else void this.loadFileHistory();
+    const entry = this.openFiles.get(this.activeFileKey);
+    if (entry) void this.openFileHistoryForPath(entry.root, entry.path, "git");
   }
 
   updateFilesPinButton() {
@@ -6473,12 +7637,13 @@ class TermdeckApp {
     for (const id of ["view-project", "view-search", "view-git", "files-tab-project", "files-tab-search", "files-tab-git"]) {
       const button = this.$(id);
       if (button) button.title = id === "view-git" || id === "files-tab-git"
-        ? `Git (click; ${sidePanelAction} cycles tabs) · middle-click opens in a new TermDeck tab`
-        : `${button.title} · middle-click opens in a new TermDeck tab`;
+        ? `Git (click; ${sidePanelAction} cycles tabs) · middle/right-click opens file mode in a new tab`
+        : `${button.title} · middle/right-click opens file mode in a new tab`;
     }
     const notebookToggle = this.$("notebook-toggle");
-    if (notebookToggle) {
-      notebookToggle.title = `Quick notebook (${this.bindingToDisplay(this.bindingFor("toggle-notebook"))})`;
+    const notebookTitle = `Quick notebook (${this.bindingToDisplay(this.bindingFor("toggle-notebook"))})`;
+    for (const button of [notebookToggle, this.$("file-tabs-notebook")]) {
+      if (button) button.title = notebookTitle;
     }
     const scrollBottomAction = this.bindingToDisplay(this.bindingFor("scroll-bottom"));
     for (const id of ["scroll-bottom-btn", "vscode-scroll-bottom-btn"]) {
@@ -6502,8 +7667,9 @@ class TermdeckApp {
     }
     const conversationOutlineButton = this.$("conversation-outline-toggle");
     if (conversationOutlineButton) {
-      conversationOutlineButton.title = this.shortcutTitle("Conversation outline", "conversation-outline");
-      conversationOutlineButton.setAttribute("aria-label", conversationOutlineButton.title);
+      const outlineLabel = this.activeFileKey !== null ? "File outline" : "Conversation outline";
+      conversationOutlineButton.title = this.shortcutTitle(outlineLabel, "conversation-outline");
+      conversationOutlineButton.setAttribute("aria-label", outlineLabel);
     }
     const newSession = this.$("new-session-btn");
     if (newSession) {
@@ -6538,6 +7704,7 @@ class TermdeckApp {
         () => this.openModal(null, session.session_id), "add");
       this.addContextItem(menu, this.shortcutLabel("Restart", "restart-terminal"),
         () => this.restartSession(session.session_id), "refresh");
+      this.addContextItem(menu, "Stop", session.running ? () => this.stopSession(session.session_id) : null, "debug-stop");
       const permissions = MODEL_PERMISSIONS[session.agent_kind || "none"] || MODEL_PERMISSIONS.none;
       if (permissions.length > 1) {
         this.addContextSubmenu(menu, "Restart with permission", permissions.map((entry) => ({
@@ -6700,7 +7867,11 @@ class TermdeckApp {
     this.contextMenuTarget = { type: "files", keys };
     if (keys.length === 1) {
       const entry = this.openFiles.get(keys[0]);
-      if (entry) this.addContextItem(menu, "Open this file in a new browser tab", () => this.openFileDeckInNewTab(entry.root, entry.path), "new-window");
+      if (entry) {
+        this.addContextItem(menu, "Open this file in a new browser tab", () => this.openFileDeckInNewTab(entry.root, entry.path), "new-window");
+        this.addContextItem(menu, "Local history", () => this.openFileHistoryForPath(entry.root, entry.path, "local"), "history");
+        this.addContextItem(menu, "Git history", () => this.openFileHistoryForPath(entry.root, entry.path, "git"), "git-commit");
+      }
     }
     const label = keys.length === 1 ? "Close file" : `Close ${keys.length} selected files`;
     this.addContextItem(menu, this.shortcutLabel(label, "close-item"), () => this.closeFiles(keys), "close-all");
@@ -6714,6 +7885,8 @@ class TermdeckApp {
     menu.textContent = "";
     this.contextMenuTarget = { type: "filedeck", root, path: relativePath };
     this.addContextItem(menu, "Open this file in a new browser tab", () => this.openFileDeckInNewTab(root, relativePath), "new-window");
+    this.addContextItem(menu, "Local history", () => this.openFileHistoryForPath(root, relativePath, "local"), "history");
+    this.addContextItem(menu, "Git history", () => this.openFileHistoryForPath(root, relativePath, "git"), "git-commit");
     this.positionContextMenu(menu, event.clientX, event.clientY);
   }
 
@@ -6754,6 +7927,8 @@ class TermdeckApp {
     } else {
       this.addContextItem(menu, "Open this file in a new browser tab", () => this.openFileDeckInNewTab(this.treeRoot, rel), "new-window");
       this.addContextItem(menu, "Open", () => this.openFile(this.treeRoot, rel, null, row));
+      this.addContextItem(menu, "Local history", () => this.openFileHistoryForPath(this.treeRoot, rel, "local"), "history");
+      this.addContextItem(menu, "Git history", () => this.openFileHistoryForPath(this.treeRoot, rel, "git"), "git-commit");
       this.markTreeSelection(row);
     }
     const parent = isDir ? rel : rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
@@ -6981,7 +8156,7 @@ class TermdeckApp {
   async openRecentlyModifiedFile(root, path) {
     await this.openFile(root, path, null, null);
     if (this.vscodeMode || this.activeFileKey !== `${root}|${path}`) return;
-    this.fileHistoryMode = "local";
+    this.fileHistoryMode = "all";
     this.fileHistoryOpen = true;
     this.fileHistorySelections = [];
     this.$("file-history-panel").classList.remove("hidden");
@@ -6989,6 +8164,7 @@ class TermdeckApp {
     this.$("file-history-toggle").setAttribute("aria-pressed", "true");
     this.renderTopbar();
     await this.loadFileHistory(true);
+    this.pushNav({ kind: "file-history", key: this.activeFileKey, mode: this.fileHistoryMode });
   }
 
   async refreshRecentFiles(force = false) {
@@ -7033,7 +8209,7 @@ class TermdeckApp {
       : closedSessions;
     if (search && !matchingClosed.length) return;
     const header = document.createElement("div");
-    header.className = "side-section-label closed-header";
+    header.className = "side-section-label side-section-header collapsible-section-header closed-header";
     header.dataset.worktreeId = worktreeId;
     const chevron = document.createElement("span");
     const expanded = this.worktreeClosedExpanded(worktreeId);
@@ -7197,7 +8373,7 @@ class TermdeckApp {
     this.updateDocumentTitle(pageTitle, processing ? "processing" : unread ? "unread" : "plain");
     const statusEl = this.$("status-name");
     if (entry) {
-      statusEl.textContent = this.vscodeMode ? entry.name : (entry.fullPath || `${entry.root}/${entry.path}`);
+      statusEl.textContent = this.vscodeMode ? entry.name : "";
     } else {
       statusEl.textContent = this.vscodeMode ? (s ? this.titlePresentation(s).text : "") : (s ? `${this.titlePresentation(s).text}  ·  ${s.cwd}` : "");
     }
@@ -7211,17 +8387,15 @@ class TermdeckApp {
     }
     const fileHistoryToggle = this.$("file-history-toggle");
     if (fileHistoryToggle) {
-      fileHistoryToggle.classList.toggle("hidden", !entry || this.vscodeMode);
+      const historyTarget = entry || (this.gitReviewOpen ? this.gitFocusedFile : null);
+      fileHistoryToggle.classList.toggle("hidden", !historyTarget || this.vscodeMode);
       fileHistoryToggle.classList.toggle("on", !!entry && this.fileHistoryOpen);
-      fileHistoryToggle.title = entry ? `File history for ${entry.name}` : "File history";
+      const historyName = entry?.name || this.gitFocusedFile?.path?.split("/").pop();
+      fileHistoryToggle.title = historyTarget
+        ? `File history for ${historyName} · right-click to filter Local or Git history` : "File history";
       fileHistoryToggle.setAttribute("aria-pressed", String(!!entry && this.fileHistoryOpen));
     }
-    const fileHistoryGitToggle = this.$("file-history-git-toggle");
-    if (fileHistoryGitToggle) {
-      fileHistoryGitToggle.title = this.fileHistoryMode === "git" ? "Show local history" : "Show Git history";
-      fileHistoryGitToggle.setAttribute("aria-label", fileHistoryGitToggle.title);
-      fileHistoryGitToggle.setAttribute("aria-pressed", String(this.fileHistoryMode === "git"));
-    }
+    this.updateFileHistoryFilterButtons();
     const navigationState = this.parseNavState(this.lastNavJson);
     if (!entry && s && navigationState?.kind === "term" && navigationState.id === s.session_id) {
       // Through replaceNav, not history directly: this runs on every chrome render, so calling history
@@ -7302,16 +8476,40 @@ class TermdeckApp {
       this.closeFileHistory();
       return;
     }
-    if (this.vscodeMode || this.activeFileKey === null) return;
+    if (this.vscodeMode) return;
+    if (this.activeFileKey === null) {
+      if (this.gitReviewOpen && this.gitFocusedFile) {
+        const selection = this.gitFocusedFile.revision ? ["current", `git:${this.gitFocusedFile.revision}`] : [];
+        void this.openFileHistoryForPath(this.gitFocusedFile.root, this.gitFocusedFile.path, "all", { selection });
+      }
+      return;
+    }
+    this.fileHistoryMode = "all";
     this.fileHistoryOpen = true;
     this.fileHistorySelections = [];
     this.$("file-history-panel").classList.remove("hidden");
     this.$("file-history-toggle").classList.add("on");
     this.$("file-history-toggle").setAttribute("aria-pressed", "true");
     void this.loadFileHistory();
+    this.pushNav({ kind: "file-history", key: this.activeFileKey, mode: this.fileHistoryMode });
   }
 
-  closeFileHistory() {
+  openActiveFileHistoryMenu(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
+    const target = entry || (this.gitReviewOpen ? this.gitFocusedFile : null);
+    if (!target) return;
+    const menu = this.$("context-menu");
+    menu.textContent = "";
+    this.contextMenuTarget = { type: "file-history", key: this.activeFileKey };
+    this.addContextItem(menu, "All history", () => this.openFileHistoryForPath(target.root, target.path, "all"), "history");
+    this.addContextItem(menu, "Local history", () => this.openFileHistoryForPath(target.root, target.path, "local"), "history");
+    this.addContextItem(menu, "Git history", () => this.openFileHistoryForPath(target.root, target.path, "git"), "git-commit");
+    this.positionContextMenu(menu, event.clientX, event.clientY);
+  }
+
+  closeFileHistory(updateNavigation = true) {
     this.fileHistoryOpen = false;
     clearTimeout(this.fileHistoryComparisonTimer);
     this.fileHistoryComparisonTimer = 0;
@@ -7324,21 +8522,36 @@ class TermdeckApp {
     this.$("file-history-panel")?.classList.add("hidden");
     this.$("file-history-toggle")?.classList.remove("on");
     this.$("file-history-toggle")?.setAttribute("aria-pressed", "false");
+    if (updateNavigation && this.activeFileKey !== null && this.openFiles.has(this.activeFileKey)) {
+      this.pushNav({ kind: "file", key: this.activeFileKey });
+    }
   }
 
-  toggleFileHistoryMode() {
-    if (!this.fileHistoryOpen) return;
-    this.fileHistoryMode = this.fileHistoryMode === "local" ? "git" : "local";
+  setFileHistoryMode(mode, updateNavigation = true) {
+    if (!this.fileHistoryOpen || !["all", "local", "git"].includes(mode) || this.fileHistoryMode === mode) return;
+    this.fileHistoryMode = mode;
     this.fileHistorySelections = [];
-    const toggle = this.$("file-history-git-toggle");
-    toggle.textContent = "";
-    const icon = document.createElement("span");
-    icon.className = "codicon codicon-git-branch";
-    toggle.appendChild(icon);
-    toggle.title = this.fileHistoryMode === "git" ? "Show local history" : "Show Git history";
-    toggle.setAttribute("aria-label", toggle.title);
-    toggle.setAttribute("aria-pressed", String(this.fileHistoryMode === "git"));
+    this.updateFileHistoryFilterButtons();
     void this.loadFileHistory();
+    if (updateNavigation && this.activeFileKey !== null) {
+      this.replaceNav({ kind: "file-history", key: this.activeFileKey, mode: this.fileHistoryMode });
+    }
+  }
+
+  updateFileHistoryFilterButtons() {
+    const filters = this.$("file-history-filters");
+    if (!filters) return;
+    for (const button of filters.querySelectorAll("button[data-mode]")) {
+      const selected = button.dataset.mode === this.fileHistoryMode;
+      button.classList.toggle("on", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    }
+  }
+
+  fileHistoryItemTime(item) {
+    if (item.kind === "git") return Date.parse(item.committed_at) || 0;
+    const localTime = String(item.captured_at_est || "").replace(" ", "T");
+    return Date.parse(localTime) || 0;
   }
 
   async loadFileHistory(compareWithPreviousVersion = false) {
@@ -7348,35 +8561,39 @@ class TermdeckApp {
       return;
     }
     const generation = ++this.fileHistoryLoadGeneration;
+    this.updateFileHistoryFilterButtons();
     const path = `${entry.root}/${entry.path}`;
     this.$("file-history-path").textContent = path;
     this.$("file-history-path").title = path;
     this.$("file-history-list").textContent = "loading history…";
-    this.$("file-history-preview-empty").textContent = this.fileHistoryMode === "git"
-      ? "Select a Git commit, or select two commits to compare them."
-      : "Select a version to compare it with the current file, or select two versions to compare them.";
+    this.$("file-history-preview-empty").textContent = "Select one version to compare with the current file, or select two timeline entries to compare them.";
     this.$("file-history-preview-empty").classList.remove("hidden");
     this.$("file-history-preview").classList.add("hidden");
-    const historyUrl = this.fileHistoryMode === "git"
-      ? `/api/files/git-history?root=${encodeURIComponent(entry.root)}&path=${encodeURIComponent(entry.path)}`
-      : `/api/files/history?root=${encodeURIComponent(entry.root)}&path=${encodeURIComponent(entry.path)}`;
-    const res = await fetch(historyUrl);
+    const query = `root=${encodeURIComponent(entry.root)}&path=${encodeURIComponent(entry.path)}`;
+    const [localResponse, gitResponse] = await Promise.all([
+      fetch(`/api/files/history?${query}`),
+      fetch(`/api/files/git-history?${query}`),
+    ]);
     if (generation !== this.fileHistoryLoadGeneration || !this.fileHistoryOpen) return;
-    if (!res.ok) {
+    if (!localResponse.ok && !gitResponse.ok) {
       this.$("file-history-list").textContent = "history unavailable";
       return;
     }
-    const values = await res.json();
-    this.fileHistoryVersions = this.fileHistoryMode === "local" ? values : [];
-    const historicalItems = this.fileHistoryMode === "local"
-      ? values.map((version) => ({ kind: "local", ...version }))
-      : values.map((commit) => ({ kind: "git", ...commit }));
+    const localVersions = localResponse.ok ? await localResponse.json() : [];
+    const gitCommits = gitResponse.ok ? await gitResponse.json() : [];
+    this.fileHistoryVersions = localVersions;
+    const localItems = localVersions.map((version) => ({ kind: "local", ...version }));
+    const gitItems = gitCommits.map((commit) => ({ kind: "git", ...commit }));
+    const historicalItems = [
+      ...(this.fileHistoryMode === "git" ? [] : localItems),
+      ...(this.fileHistoryMode === "local" ? [] : gitItems),
+    ].sort((left, right) => this.fileHistoryItemTime(right) - this.fileHistoryItemTime(left));
     this.fileHistoryItems = [{ kind: "current" }, ...historicalItems];
     if (generation !== this.fileHistoryLoadGeneration || !this.fileHistoryOpen) return;
     const availableKeys = new Set(this.fileHistoryItems.map((item) => this.fileHistoryItemKey(item)));
     this.fileHistorySelections = this.fileHistorySelections.filter((key) => availableKeys.has(key)).slice(-2);
-    if (compareWithPreviousVersion && historicalItems.length > 1) {
-      this.fileHistorySelections = ["current", this.fileHistoryItemKey(historicalItems[1])];
+    if (compareWithPreviousVersion && historicalItems.length) {
+      this.fileHistorySelections = ["current", this.fileHistoryItemKey(historicalItems[0])];
     } else if (!this.fileHistorySelections.length && this.fileHistoryItems.length) {
       this.fileHistorySelections = [this.fileHistoryItemKey(this.fileHistoryItems[0])];
     }
@@ -7388,13 +8605,13 @@ class TermdeckApp {
     const list = this.$("file-history-list");
     list.textContent = "";
     if (!this.fileHistoryItems.length) {
-      list.textContent = this.fileHistoryMode === "git" ? "No Git history found for this file." : "No saved or externally changed versions yet.";
+      list.textContent = "No matching history found for this file.";
       return;
     }
     for (const item of this.fileHistoryItems) {
       const itemKey = this.fileHistoryItemKey(item);
       const row = document.createElement("div");
-      row.className = "file-history-version" + (item.kind === "current" ? " current" : "") +
+      row.className = `file-history-version kind-${item.kind}` + (item.kind === "current" ? " current" : "") +
         (this.fileHistorySelections.includes(itemKey) ? " selected" : "");
       const select = document.createElement("button");
       select.className = "file-history-version-select";
@@ -7445,6 +8662,10 @@ class TermdeckApp {
     }
     this.renderFileHistoryRows();
     void this.renderFileHistoryComparison(this.fileHistoryLoadGeneration);
+    if (this.activeFileKey !== null) {
+      this.replaceNav({ kind: "file-history", key: this.activeFileKey, mode: this.fileHistoryMode,
+        selection: this.fileHistorySelections });
+    }
   }
 
   async loadFileHistoryItemContent(item, entry) {
@@ -7956,16 +9177,19 @@ class TermdeckApp {
     modelEl.title = modelEl.textContent;
   }
 
-  usesTranscriptFirstSession(session = this.session(this.activeId)) {
+  sessionSupportsTranscript(session = this.session(this.activeId)) {
     return !!session && ["codex", "claude", "agy"].includes(session.agent_kind);
   }
 
+  usesTranscriptFirstSession(session = this.session(this.activeId)) {
+    return this.sessionSupportsTranscript(session);
+  }
+
   selectedHistoryMode(session = this.session(this.activeId)) {
-    if (!session) return false;
+    if (!this.sessionSupportsTranscript(session)) return false;
     const savedMode = this.getProjectState().session_view_modes?.[session.session_id];
     if (savedMode === "markdown" || savedMode === "terminal") return savedMode === "markdown";
-    if (this.usesTranscriptFirstSession(session)) return this.settings.transcript_first_surface === "markdown";
-    return !!this.settings.history_mode;
+    return this.settings.transcript_first_surface === "markdown";
   }
 
   reconcileActiveSessionViewMode() {
@@ -7977,17 +9201,27 @@ class TermdeckApp {
   applyMainLayout() {
     const fileMode = this.activeFileKey !== null;
     if (!fileMode && this.fileHistoryOpen) this.closeFileHistory();
-    const historyMode = this.historyOpen && !fileMode;
+    const gitReviewMode = this.gitReviewOpen && this.sideView === "git" && !fileMode;
+    const historyMode = this.historyOpen && !fileMode && !gitReviewMode;
+    const transcriptSupported = this.sessionSupportsTranscript();
     const transcriptFirstMode = historyMode && this.usesTranscriptFirstSession();
+    this.$("file-tabs-bar").classList.toggle("hidden",
+      this.vscodeMode || (!fileMode && !FILES_SIDE_PANEL_TABS.includes(this.sideView)));
+    this.$("notebook-toggle").classList.toggle("hidden", fileMode || gitReviewMode || FILES_SIDE_PANEL_TABS.includes(this.sideView));
     this.$("editor-area").classList.toggle("hidden", !fileMode);
+    this.$("git-review-area").classList.toggle("hidden", !gitReviewMode);
     this.$("history-area").classList.toggle("hidden", !historyMode);
     this.$("history-area").classList.toggle("transcript-first", transcriptFirstMode);
-    this.$("terminal-area").classList.toggle("hidden", fileMode || historyMode);
-    this.$("conversation-outline").classList.toggle("hidden", fileMode || !this.conversationOutlineOpen);
-    this.$("conversation-outline-toggle").classList.toggle("on", !fileMode && this.conversationOutlineOpen);
+    this.$("terminal-area").classList.toggle("hidden", fileMode || historyMode || gitReviewMode);
+    this.$("conversation-outline").classList.toggle("hidden",
+      fileMode || gitReviewMode || !transcriptSupported || !this.conversationOutlineOpen);
+    this.$("conversation-outline-toggle").classList.toggle("transcript-unavailable", !fileMode && !transcriptSupported);
+    this.$("conversation-outline-toggle").classList.toggle("on", fileMode
+      ? this.fileInspectorMode === "outline" : !gitReviewMode && this.conversationOutlineOpen);
     for (const id of ["history-btn", "vscode-history-btn"]) {
       const historyButton = this.$(id);
       if (!historyButton) continue;
+      historyButton.classList.toggle("transcript-unavailable", !transcriptSupported);
       historyButton.classList.toggle("on", historyMode);
       const openTerminal = transcriptFirstMode && historyMode;
       const label = openTerminal ? "Open terminal" : "Open Markdown transcript";
@@ -8001,8 +9235,8 @@ class TermdeckApp {
       if (button) button.classList.toggle("hidden", !historyMode);
     }
     this.updateShortcutTitles();
-    this.$("attach-btn").classList.toggle("hidden", fileMode);
-    this.$("reveal-session-btn").classList.toggle("hidden", fileMode);
+    this.$("attach-btn").classList.toggle("hidden", fileMode || gitReviewMode);
+    this.$("reveal-session-btn").classList.toggle("hidden", fileMode || gitReviewMode);
     const attachButton = this.$("attach-btn");
     if (attachButton) {
       const label = historyMode ? "Upload file/image into Markdown prompt" : "Attach file/image to terminal";
@@ -8011,13 +9245,13 @@ class TermdeckApp {
     }
     for (const id of ["terminal-resync-btn"]) {
       const button = this.$(id);
-      if (button) button.classList.toggle("hidden", fileMode);
+      if (button) button.classList.toggle("hidden", fileMode || gitReviewMode);
     }
     const terminalScrollButton = this.$("scroll-bottom-btn");
     if (terminalScrollButton) {
-      terminalScrollButton.classList.toggle("hidden", historyMode || fileMode);
+      terminalScrollButton.classList.toggle("hidden", historyMode || fileMode || gitReviewMode);
     }
-    this.$("history-btn").classList.toggle("hidden", fileMode);
+    this.$("history-btn").classList.toggle("hidden", fileMode || gitReviewMode);
     this.renderHistoryMeta();
     this.updateHistoryThinkingIndicator();
     this.renderHistoryQueue();
@@ -8176,6 +9410,10 @@ class TermdeckApp {
       this.editor?.focus();
       return;
     }
+    if (this.gitReviewOpen && this.sideView === "git") {
+      this.gitReviewDiffEditor?.getModifiedEditor().focus();
+      return;
+    }
     if (!view) return;
     if (this.historyOpen) {
       if (this.nativeVscodeMode) this.postVscodeNativeSession(this.session(this.activeId), false);
@@ -8211,12 +9449,13 @@ class TermdeckApp {
   }
 
   async toggleHistory() {
-    if (this.activeFileKey !== null) return;
+    if (this.activeFileKey !== null || (!this.historyOpen && !this.sessionSupportsTranscript())) return;
     this.setHistoryMode(!this.historyOpen);
   }
 
   setHistoryMode(enabled, options = {}) {
     if (!this.activeId) return;
+    if (enabled && !this.sessionSupportsTranscript()) return;
     if (this.historyOpen && !enabled) this.rememberHistoryScrollPosition(this.activeId);
     this.closeTerminalFind();
     this.hideSelectionActions(true);
@@ -8784,11 +10023,13 @@ class TermdeckApp {
         view.pendingAgentPaste = "";
         view.pendingAgentPasteStartedAt = 0;
         view.pendingAgentPasteReadyAt = 0;
+        view.pendingAgentPasteExpectedTitle = "";
+        view.pendingAgentPasteRequireComposer = false;
         this.$("status-name").textContent = "selected text could not be pasted into the agent";
         return;
       }
       if (view.awaitingSnapshot || view.replaying || !view.ws || view.ws.readyState !== WebSocket.OPEN ||
-          Date.now() < (view.pendingAgentPasteReadyAt || 0)) {
+          Date.now() < (view.pendingAgentPasteReadyAt || 0) || !this.agentPasteDestinationReady(view)) {
         this.schedulePendingAgentPaste(view, AGENT_PASTE_RETRY_DELAY_MS);
         return;
       }
@@ -8796,24 +10037,51 @@ class TermdeckApp {
     }, wait);
   }
 
-  queuePendingAgentPaste(view, text) {
+  agentPasteDestinationReady(view) {
+    if (!view.pendingAgentPasteRequireComposer) return true;
+    if (view.lastTerminalOutputAt && Date.now() - view.lastTerminalOutputAt < AGENT_PASTE_OUTPUT_QUIET_MS) return false;
+    const session = this.session(view.sessionId);
+    const expectedTitle = String(view.pendingAgentPasteExpectedTitle || "").trim();
+    if (expectedTitle) {
+      const cliTitle = this.stripTitleStatusPrefixes(session?.cli_title || "");
+      if (cliTitle !== expectedTitle) return false;
+    }
+    const buffer = view.term?.buffer?.active;
+    if (!buffer) return false;
+    const baseY = Number(buffer.baseY || 0);
+    const cursorRow = baseY + Number(buffer.cursorY || 0);
+    const firstRow = Math.max(baseY, cursorRow - 8);
+    const lastRow = Math.min(buffer.length - 1, cursorRow + 8);
+    const promptMarker = session?.agent_kind === "claude" ? "❯" : session?.agent_kind === "codex" ? "›" : "";
+    if (!promptMarker) return true;
+    for (let row = firstRow; row <= lastRow; row += 1) {
+      if ((buffer.getLine(row)?.translateToString(true) || "").trimStart().startsWith(promptMarker)) return true;
+    }
+    return false;
+  }
+
+  queuePendingAgentPaste(view, text, options = {}) {
     const value = this.normalizeSelectionText(text);
     if (!view || view.closed || !value) return false;
     view.pendingAgentPaste = value;
     view.pendingAgentPasteStartedAt = Date.now();
-    view.pendingAgentPasteReadyAt = Date.now() + (this.session(view.sessionId)?.agent_kind === "claude"
-      ? CLAUDE_AGENT_PASTE_DELAY_MS : DEFAULT_AGENT_PASTE_DELAY_MS);
+    view.pendingAgentPasteReadyAt = Date.now() + DEFAULT_AGENT_PASTE_DELAY_MS;
+    view.pendingAgentPasteExpectedTitle = String(options.expectedTitle || "").trim();
+    view.pendingAgentPasteRequireComposer = options.requireComposer !== false;
     this.schedulePendingAgentPaste(view);
     return true;
   }
 
   flushPendingAgentPaste(view) {
     if (!view || view.closed || !view.pendingAgentPaste || view.awaitingSnapshot || view.replaying ||
-        !view.ws || view.ws.readyState !== WebSocket.OPEN || Date.now() < (view.pendingAgentPasteReadyAt || 0)) return false;
+        !view.ws || view.ws.readyState !== WebSocket.OPEN || Date.now() < (view.pendingAgentPasteReadyAt || 0) ||
+        !this.agentPasteDestinationReady(view)) return false;
     const text = view.pendingAgentPaste;
     view.pendingAgentPaste = "";
     view.pendingAgentPasteStartedAt = 0;
     view.pendingAgentPasteReadyAt = 0;
+    view.pendingAgentPasteExpectedTitle = "";
+    view.pendingAgentPasteRequireComposer = false;
     if (this.activeId === view.sessionId && this.activeFileKey === null && !this.historyOpen) view.term.focus();
     this.sendTrackedInput(view, this.terminalPastePayload(view, text));
     this.$("status-name").textContent = "selected text pasted into " +
@@ -9268,9 +10536,7 @@ class TermdeckApp {
       if (!turns.length) {
         const empty = document.createElement("div");
         empty.className = "history-empty";
-        empty.textContent = s && s.agent_kind !== "none"
-          ? "no transcript found yet (send a message first, or the session id isn't resolved)"
-          : "transcript history is only available for claude/codex/agy terminals";
+        empty.textContent = "no transcript found yet (send a message first, or the session id isn't resolved)";
         body.appendChild(empty);
       } else {
         this.renderHistoryTurns(turns, { preserveExpanded: preserveScroll });
@@ -9349,12 +10615,12 @@ class TermdeckApp {
   }
 
   initNotebook() {
-    const toggle = this.$("notebook-toggle");
+    const toggles = [this.$("notebook-toggle"), this.$("file-tabs-notebook")].filter(Boolean);
     const panel = this.$("notebook-panel");
     const host = this.$("notebook-editor-host");
-    if (!toggle || !panel || !host) return;
+    if (!toggles.length || !panel || !host) return;
     this.normalizeNotebookNotes();
-    toggle.onclick = () => this.toggleNotebook();
+    for (const toggle of toggles) toggle.onclick = () => this.toggleNotebook();
     this.$("notebook-new").onclick = () => { void this.createNotebookNote(); };
     this.$("notebook-find").onclick = () => this.openNotebookFind();
     this.$("notebook-find-close").onclick = () => this.closeNotebookFind(true);
@@ -9499,10 +10765,15 @@ class TermdeckApp {
     this.$("problems-toggle").onclick = () => this.toggleProblemsPanel();
     this.$("problems-close").onclick = () => this.setProblemsOpen(false);
     this.$("problems-refresh").onclick = () => this.refreshProblems();
-    this.$("conversation-outline-toggle").onclick = () => this.toggleConversationOutline();
+    this.$("conversation-outline-toggle").onclick = () => this.toggleContextualOutline();
     this.$("conversation-outline-close").onclick = () => this.setConversationOutlineOpen(false);
     this.$("conversation-outline-refresh").onclick = () => void this.loadConversationOutline(true);
     document.addEventListener("pointerdown", (event) => {
+      if (this.activeFileKey !== null && this.fileInspectorMode === "outline") {
+        if (this.$("file-inspector").contains(event.target) || this.$("conversation-outline-toggle").contains(event.target)) return;
+        this.closeFileInspector();
+        return;
+      }
       if (!this.conversationOutlineOpen) return;
       if (this.$("conversation-outline").contains(event.target) || this.$("conversation-outline-toggle").contains(event.target)) return;
       this.setConversationOutlineOpen(false);
@@ -9582,15 +10853,17 @@ class TermdeckApp {
   }
 
   quickOpenCommands() {
-    return [
+    const commands = [
       { title: "New terminal", icon: "add", run: () => this.openModal() },
       { title: "Show Problems", icon: "warning", run: () => this.setProblemsOpen(true) },
       { title: "Show file Outline", icon: "symbol-class", run: () => this.toggleFileInspector("outline", true) },
       { title: "Split active editor", icon: "split-horizontal", run: () => this.toggleSplitEditor(true) },
       { title: "Reveal active file in tree", icon: "target", run: () => void this.revealActiveFile() },
-      { title: "Open Markdown transcript", icon: "markdown", run: () => this.setHistoryMode(true) },
       { title: "Open Quick Notes", icon: "notebook", run: () => this.setNotebookOpen(true) },
     ];
+    if (this.sessionSupportsTranscript()) commands.splice(commands.length - 1, 0,
+      { title: "Open Markdown transcript", icon: "markdown", run: () => this.setHistoryMode(true) });
+    return commands;
   }
 
   recentlyOpenedTerminalSessions() {
@@ -9740,6 +11013,10 @@ class TermdeckApp {
 
   renderFileEditorChrome() {
     if (this.vscodeMode) return;
+    const fileWorkspaceMode = this.activeFileKey !== null || FILES_SIDE_PANEL_TABS.includes(this.sideView);
+    this.$("file-tabs-bar").classList.toggle("hidden", !fileWorkspaceMode);
+    this.$("notebook-toggle").classList.toggle("hidden", fileWorkspaceMode);
+    this.$("notebook-panel")?.classList.toggle("notebook-over-file-area", fileWorkspaceMode);
     this.renderFileTabs();
     this.renderFileBreadcrumbs();
     this.renderSecondaryFileSelect();
@@ -9751,23 +11028,22 @@ class TermdeckApp {
     const container = this.$("file-tabs");
     if (!container) return;
     container.textContent = "";
-    for (const [key, entry] of this.openFiles) {
+    for (const [key, entry] of this.visibleOrderedFileTabs()) {
       const tab = document.createElement("button");
       tab.type = "button";
       tab.className = `file-editor-tab${key === this.activeFileKey ? " active" : ""}${entry.preview ? " preview" : ""}`;
-      tab.title = entry.fullPath || `${entry.root}/${entry.path}`;
+      tab.title = this.fileTabHoverPath(entry);
       tab.setAttribute("role", "tab");
       tab.setAttribute("aria-selected", String(key === this.activeFileKey));
       const name = document.createElement("span");
       name.className = "file-editor-tab-name";
       name.textContent = entry.name;
-      tab.appendChild(name);
-      if (entry.dirty || entry.savePromise) {
-        const dirty = document.createElement("span");
-        dirty.className = "file-editor-tab-dirty";
-        dirty.title = "Unsaved changes";
-        tab.appendChild(dirty);
+      const gitStatus = this.gitStatusPresentation(entry.git_status);
+      if (gitStatus) {
+        name.classList.add(`git-row-${gitStatus.statusClass}`);
+        tab.title = `${tab.title}\ngit: ${gitStatus.label}`;
       }
+      tab.appendChild(name);
       const pin = document.createElement("span");
       pin.className = `file-editor-tab-pin codicon codicon-${entry.preview ? "pin" : "pinned"}`;
       pin.title = entry.preview ? "Pin file" : "Unpin to preview";
@@ -9777,11 +11053,26 @@ class TermdeckApp {
       close.title = "Close file";
       close.onclick = (event) => { event.stopPropagation(); void this.closeFile(key); };
       tab.append(pin, close);
-      tab.onclick = () => void this.activateFile(key, null, { history: false });
+      tab.onclick = () => void this.activateFile(key, null);
       tab.ondblclick = () => this.setFilePreview(key, false);
       container.appendChild(tab);
     }
     requestAnimationFrame(() => container.querySelector(".file-editor-tab.active")?.scrollIntoView({ inline: "nearest" }));
+  }
+
+  visibleOrderedFileTabs() {
+    const entries = [...this.openFiles.entries()];
+    if (this.settings.file_tab_order === "modified") {
+      entries.sort((left, right) => (Number(right[1].mtime) || 0) - (Number(left[1].mtime) || 0));
+    }
+    const maximumVisible = Math.max(1, Math.min(OPEN_FILES_MAX_ENTRIES,
+      Number(this.settings.file_tab_max_visible) || SETTINGS_DEFAULTS.file_tab_max_visible));
+    const visible = entries.slice(0, maximumVisible);
+    if (this.activeFileKey !== null && !visible.some(([key]) => key === this.activeFileKey)) {
+      const active = entries.find(([key]) => key === this.activeFileKey);
+      if (active) visible[Math.max(0, visible.length - 1)] = active;
+    }
+    return visible;
   }
 
   setFilePreview(key, preview) {
@@ -9796,10 +11087,66 @@ class TermdeckApp {
     const menu = this.$("context-menu");
     menu.textContent = "";
     menu.classList.remove("hidden");
-    if (this.activeFileKey !== null) {
-      this.addContextItem(menu, "Close other files", () => void this.closeOtherFiles(this.activeFileKey), "close-all");
-      this.addContextItem(menu, "Close all files", () => void this.closeFiles([...this.openFiles.keys()]), "close-all");
+    const title = document.createElement("div");
+    title.className = "file-tab-settings-title";
+    title.textContent = "File tabs";
+    const maximumRow = document.createElement("label");
+    maximumRow.className = "file-tab-settings-row";
+    maximumRow.appendChild(document.createTextNode("Maximum visible"));
+    const maximum = document.createElement("select");
+    maximum.setAttribute("aria-label", "Maximum visible file tabs");
+    for (const value of [5, 10, 15, 20, 25, 30, 40, 50, 60, 80]) {
+      const option = document.createElement("option");
+      option.value = String(value);
+      option.textContent = String(value);
+      maximum.appendChild(option);
     }
+    maximum.value = String(Math.max(1, Math.min(OPEN_FILES_MAX_ENTRIES,
+      Number(this.settings.file_tab_max_visible) || SETTINGS_DEFAULTS.file_tab_max_visible)));
+    maximum.onchange = () => {
+      this.settings.file_tab_max_visible = Number(maximum.value);
+      this.saveSettings();
+      this.renderFileTabs();
+    };
+    maximumRow.appendChild(maximum);
+    const orderRow = document.createElement("label");
+    orderRow.className = "file-tab-settings-row";
+    orderRow.appendChild(document.createTextNode("Order"));
+    const order = document.createElement("select");
+    order.setAttribute("aria-label", "File tab order");
+    for (const [value, label] of [["opened", "Opening order"], ["modified", "Last modified first"]]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      order.appendChild(option);
+    }
+    order.value = this.settings.file_tab_order === "modified" ? "modified" : "opened";
+    order.onchange = () => {
+      this.settings.file_tab_order = order.value;
+      this.saveSettings();
+      this.renderFileTabs();
+    };
+    orderRow.appendChild(order);
+    const codeFontRow = document.createElement("label");
+    codeFontRow.className = "file-tab-settings-row";
+    codeFontRow.appendChild(document.createTextNode("Code font size"));
+    const codeFont = document.createElement("select");
+    codeFont.setAttribute("aria-label", "Code font size");
+    for (let value = FONT_MIN; value <= FONT_MAX; value += 1) {
+      const option = document.createElement("option");
+      option.value = String(value);
+      option.textContent = `${value}px`;
+      codeFont.appendChild(option);
+    }
+    codeFont.value = String(Math.max(FONT_MIN, Math.min(FONT_MAX,
+      Number(this.settings.code_font_size) || SETTINGS_DEFAULTS.code_font_size)));
+    codeFont.onchange = () => {
+      this.settings.code_font_size = Number(codeFont.value);
+      this.applySettings();
+      this.saveSettings();
+    };
+    codeFontRow.appendChild(codeFont);
+    menu.append(title, maximumRow, orderRow, codeFontRow);
     const recentlyClosed = (this.settings.recent_closed_files || [])[0];
     this.addContextItem(menu, recentlyClosed ? `Reopen ${recentlyClosed.path.split("/").pop()}` : "No recently closed files",
       recentlyClosed ? () => void this.openFile(recentlyClosed.root, recentlyClosed.path, null, null, { pinned: true }) : null,
@@ -9808,16 +11155,17 @@ class TermdeckApp {
     this.positionContextMenu(menu, rect.right, rect.bottom + 4);
   }
 
-  async closeOtherFiles(keepKey) {
-    await this.closeFiles([...this.openFiles.keys()].filter((key) => key !== keepKey));
-  }
-
   renderFileBreadcrumbs() {
     const container = this.$("file-breadcrumbs");
     if (!container) return;
     container.textContent = "";
     const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    if (!entry) return;
+    container.classList.toggle("hidden", !entry || this.vscodeMode);
+    if (!entry || this.vscodeMode) {
+      container.title = "";
+      return;
+    }
+    container.title = entry.fullPath || `${entry.root}/${entry.path}`;
     const project = this.projectForCwd(entry.root);
     const parts = entry.path.split("/").filter(Boolean);
     const labels = [project?.name || entry.root.split("/").filter(Boolean).pop() || entry.root, ...parts];
@@ -9826,9 +11174,41 @@ class TermdeckApp {
       crumb.type = "button";
       crumb.className = "file-breadcrumb";
       crumb.textContent = label;
-      if (index < labels.length - 1) crumb.onclick = () => void this.revealActiveFile();
+      crumb.title = container.title;
+      if (index < labels.length - 1) {
+        const folderPath = index === 0 ? "" : parts.slice(0, index).join("/");
+        crumb.onclick = () => void this.revealFileBreadcrumb(entry, folderPath);
+      }
       container.appendChild(crumb);
     }
+  }
+
+  fileTabHoverPath(entry) {
+    const absolutePath = this.normalizedFileSystemPath(entry.fullPath || `${entry.root}/${entry.path}`);
+    const projectBases = [this.worktreeRoot(), this.projectRoot()].filter(Boolean)
+      .map((base) => this.normalizedFileSystemPath(base)).sort((left, right) => right.length - left.length);
+    const matchingBase = projectBases.find((base) => absolutePath.startsWith(`${base}/`));
+    return matchingBase ? absolutePath.slice(matchingBase.length + 1) : absolutePath;
+  }
+
+  async revealFileBreadcrumb(entry, folderPath) {
+    if (this.sideView !== "project") this.setSideView("project", false);
+    if (this.treeRoot !== entry.root || !this.treeDirs.get("")) await this.reloadTree(entry.root);
+    if (!folderPath) {
+      this.markTreeSelection(null);
+      this.$("files-tree").scrollTop = 0;
+      return;
+    }
+    let relativePath = "";
+    let folderRow = null;
+    for (const part of folderPath.split("/")) {
+      relativePath = relativePath ? `${relativePath}/${part}` : part;
+      folderRow = this.treeRowForPath(relativePath);
+      if (!folderRow) return;
+      if (!this.expandedDirs.has(relativePath)) await this.toggleDir(folderRow, relativePath);
+    }
+    this.markTreeSelection(folderRow);
+    folderRow?.scrollIntoView({ block: "center" });
   }
 
   toggleFileInspector(mode, forceOpen = false) {
@@ -9839,14 +11219,16 @@ class TermdeckApp {
     }
     this.fileInspectorMode = mode;
     this.$("file-inspector").classList.remove("hidden");
-    this.$("file-outline-toggle").classList.toggle("on", mode === "outline");
+    this.$("file-outline-toggle")?.classList.toggle("on", mode === "outline");
+    this.$("conversation-outline-toggle").classList.toggle("on", mode === "outline");
     this.refreshFileInspector();
   }
 
   closeFileInspector() {
     this.fileInspectorMode = null;
     this.$("file-inspector").classList.add("hidden");
-    this.$("file-outline-toggle").classList.remove("on");
+    this.$("file-outline-toggle")?.classList.remove("on");
+    if (this.activeFileKey !== null) this.$("conversation-outline-toggle").classList.remove("on");
     this.editor?.layout();
   }
 
@@ -10081,8 +11463,16 @@ class TermdeckApp {
     this.setConversationOutlineOpen(!this.conversationOutlineOpen);
   }
 
+  toggleContextualOutline() {
+    if (this.activeFileKey !== null) {
+      this.toggleFileInspector("outline");
+      return;
+    }
+    this.toggleConversationOutline();
+  }
+
   setConversationOutlineOpen(open) {
-    this.conversationOutlineOpen = !!open && this.activeFileKey === null && !!this.activeId;
+    this.conversationOutlineOpen = !!open && this.activeFileKey === null && !!this.activeId && this.sessionSupportsTranscript();
     this.$("conversation-outline").classList.toggle("hidden", !this.conversationOutlineOpen);
     this.$("conversation-outline-toggle").classList.toggle("on", this.conversationOutlineOpen);
     if (this.conversationOutlineOpen) void this.loadConversationOutline(true);
@@ -10435,6 +11825,9 @@ class TermdeckApp {
       this.addContextItem(menu, "Append to note", hasSelection ? () => { void this.appendSelectionToNotebook(); } : null, "comment-add");
       this.addContextItem(menu, "File contents", hasSelection ? () => this.searchContentFromSelection() : null, "search");
       this.addContextItem(menu, "File name", hasSelection ? () => this.searchFileFromSelection() : null, "symbol-file");
+      if (selectionState.kind === "terminal" && this.session(this.activeId)?.agent_kind === "codex") {
+        this.addContextItem(menu, "Repaint Codex display", () => this.repaintActiveCodexDisplay(), "refresh");
+      }
       const agentEntries = [{
         label: "New agent…",
         handler: hasSelection ? () => this.openNewAgentFromSelection(selectionText) : () => this.openModal(),
@@ -10719,7 +12112,8 @@ class TermdeckApp {
     if (!value || !session || !session.agent_kind || session.agent_kind === "none" ||
         (!session.running && !session.dormant)) return false;
     this.hideSelectionActions(true);
-    const view = this.ensureView(sessionId);
+    this.activate(sessionId, { reveal: true });
+    const view = this.views.get(sessionId) || this.ensureView(sessionId);
     if (!this.queuePendingAgentPaste(view, value)) return false;
     if (!view.ws) this.connect(sessionId, view);
     this.$("status-name").textContent = "selected text queued for " + this.agentSessionContextLabel(session);
@@ -10731,6 +12125,16 @@ class TermdeckApp {
     if (!value) return false;
     this.hideSelectionActions(true);
     this.openModal(null, null, value);
+    return true;
+  }
+
+  pasteSelectionIntoNewAgentWhenReady(sessionId, text, expectedTitle = "") {
+    const value = this.normalizeSelectionText(text);
+    if (!sessionId || !value) return false;
+    const view = this.views.get(sessionId) || this.ensureView(sessionId);
+    if (!this.queuePendingAgentPaste(view, value, { requireComposer: true, expectedTitle })) return false;
+    if (!view.ws) this.connect(sessionId, view);
+    this.$("status-name").textContent = "waiting for the new agent to accept selected text";
     return true;
   }
 
@@ -11218,8 +12622,10 @@ class TermdeckApp {
 
   renderNotebook() {
     const panel = this.$("notebook-panel");
-    const toggle = this.$("notebook-toggle");
-    if (!panel || !toggle) return;
+    const toggles = [this.$("notebook-toggle"), this.$("file-tabs-notebook")].filter(Boolean);
+    if (!panel || !toggles.length) return;
+    panel.classList.toggle("notebook-over-file-area",
+      this.activeFileKey !== null || FILES_SIDE_PANEL_TABS.includes(this.sideView));
     this.renderNotebookTabs();
     this.renderNotebookRecentCopies();
     if (this.settings.notebook_open) {
@@ -11230,7 +12636,7 @@ class TermdeckApp {
       panel.classList.add("hidden");
     }
     panel.classList.toggle("notebook-copies-open", this.notebookCopiesOpen);
-    toggle.classList.toggle("on", !!this.settings.notebook_open);
+    for (const toggle of toggles) toggle.classList.toggle("on", !!this.settings.notebook_open);
     if (this.settings.notebook_open && this.activeNotebookNote() && !this.notebookMounted) {
       void this.mountNotebookEditor();
     }
@@ -11462,8 +12868,10 @@ class TermdeckApp {
       this.prepareTerminalForFirstPaint(view);
       if (this.isTerminalScrollV2() && !view.userScrollIntent) view.scrollMode = "follow";
       this.refreshTerminalAppearance(view);
-      if (this.shouldReconnectIdleClaudeView(view, s, previousId)) this.reconnectIdleClaudeView(view);
-      else if (!view.ws) this.connect(id, view);
+      if (!s?.dormant) {
+        if (this.shouldReconnectIdleClaudeView(view, s, previousId)) this.reconnectIdleClaudeView(view);
+        else if (!view.ws) this.connect(id, view);
+      }
       if (this.isTerminalScrollV2()) {
         // Only a genuinely first-ever connection should default to follow mode. A background tab's
         // websocket can close on its own (ws.onclose only auto-reconnects the ACTIVE tab, by design,
@@ -11671,15 +13079,24 @@ class TermdeckApp {
       // Our own scrolls must not read as the user scrolling, or following would flip on every write.
       // Matching on value ALONE is wrong: the user scrolling to the bottom lands on exactly the ceiling
       // we last set ourselves, so a real gesture was being discarded as an echo -- which is what left the
-      // pinned viewport stale and the newest lines unreachable. The echo of our own write arrives within
-      // a frame or two, so requiring it to be recent as well tells the two apart.
-      const echoOfOurOwnWrite = container.scrollTop === view.tallLastProgrammaticTop &&
-        performance.now() - (view.tallProgrammaticAt || 0) < TALL_PROGRAMMATIC_ECHO_MS;
+      // pinned viewport stale and the newest lines unreachable. Track whether a write is actually waiting
+      // for its scroll event instead of using a timing window that can swallow a real move to that value.
+      const echoOfOurOwnWrite = view.tallProgrammaticScrollPending &&
+        container.scrollTop === view.tallLastProgrammaticTop;
+      view.tallProgrammaticScrollPending = false;
       if (echoOfOurOwnWrite) return;
       // Marks a gesture as in progress. Writes check this and leave the view completely alone while it is
       // set: a scrollbar drag or an autoscroll keeps producing scroll events, and a write that re-asserts
       // the follow position in the middle of one is what tears the text between two positions.
       view.tallScrollActiveUntil = Date.now() + TALL_SCROLL_ACTIVE_MS;
+      // The scroll position is the buffer position in this mode, so it has to be honoured immediately
+      // rather than waiting for the gesture to settle -- the rendered window is what makes the scroll
+      // visible at all.
+      if (this.wholeBufferScrollEnabled()) {
+        this.tallSyncBufferToScroll(view);
+        scheduleTallSettle();
+        return;
+      }
       scheduleTallSettle();
     }, { passive: true });
     // The scrollback bridge for the CSS's overflow-y:hidden on .xterm-viewport (see style.css). That rule
@@ -11705,21 +13122,50 @@ class TermdeckApp {
       // full canvas. Clamping the gesture here means the overshoot is never painted at all. Trackpad
       // momentum keeps firing wheel events, so this has to absorb those too, which it does by staying on
       // the clamp branch once scrollTop has reached the ceiling.
-      if (!up && view.tallMaxScrollTop != null && container.scrollTop + event.deltaY > view.tallMaxScrollTop) {
-        event.preventDefault();
-        if (container.scrollTop !== view.tallMaxScrollTop) this.tallSetScrollTop(view, view.tallMaxScrollTop);
-        return;
-      }
-      // The container is the outer surface in both directions: going up, it has to bottom out at 0 before
-      // scrollback is in play; going down, any pending scrollback has to be spent BEFORE the container
-      // moves again, or the two would run in the wrong order and the content would jump.
-      if (up ? container.scrollTop > 0 : buffer.viewportY >= buffer.baseY) return;
-      if (up && buffer.viewportY <= 0) return;
+      //
+      // Only when there is no scrollback left to spend, though. Scrolling up past the top of the container
+      // hands the rest of the gesture to xterm's viewport (see the bridge below), and from then on the
+      // container sits at its ceiling with the viewport parked above baseY -- so on the way back down this
+      // clamp matched every single event and returned before the bridge could give the scrollback back.
+      // On a short session, where the ceiling is 0, that made downward scrolling impossible: the view
+      // could be scrolled up into history and never returned. Reported as "shows up at the top, cannot
+      // scroll down".
       const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
       if (!cellHeight) return;
+      // No bridge needed when the container already spans the whole buffer: native scrolling reaches
+      // every line, pixel by pixel, which is the entire point of that mode.
+      if (this.wholeBufferScrollEnabled()) return;
+      const ceiling = view.tallMaxScrollTop == null ? Infinity : view.tallMaxScrollTop;
+      // The container is the outer surface in BOTH directions, and that symmetry is the whole point. It
+      // used to hold only going up: going down, the buffer viewport was advanced whenever any scrollback
+      // was pending, which is true for the entire time a view is parked -- so downward scrolling was
+      // quantised to whole lines while the container still had smooth pixels to give. Scrolling the same
+      // number of notches up and then back down proved it: four each way landed 4.76 rows (one whole
+      // notch) from where it started, and eight each way through scrollback landed 8 rows out.
+      const room = up ? container.scrollTop : ceiling - container.scrollTop;
+      if (Math.abs(event.deltaY) <= room) return;      // the container can absorb this on its own
+      if (up ? buffer.viewportY <= 0 : buffer.viewportY >= buffer.baseY) {
+        // Nothing beyond the container in this direction. Absorb the overshoot rather than letting the
+        // browser paint past the last line and yanking it back afterwards -- the bounce at the bottom.
+        if (!up && ceiling !== Infinity) {
+          event.preventDefault();
+          if (container.scrollTop !== ceiling) this.tallSetScrollTop(view, ceiling);
+        }
+        return;
+      }
       event.preventDefault();
-      const lines = event.deltaY / cellHeight;
-      view.term.scrollLines(lines < 0 ? Math.floor(lines) : Math.ceil(lines));
+      // One continuous position expressed across two surfaces. xterm scrolls whole lines only, so a 100px
+      // notch over a 21px row (4.76 rows) snapped to 4 or 5 -- measured per notch as 4,5,5,4,5,5,5,5,4,3
+      // against a steady 4.76 once the container took over, which is what "jumpy" is. The container takes
+      // the spill up to its own edge and keeps the leftover sub-row as its offset, so the remainder lives
+      // in the position itself rather than in a variable that can drift out of step with it.
+      const spill = event.deltaY - (up ? -room : room);
+      const edge = up ? 0 : ceiling;
+      const pendingRows = spill / cellHeight;
+      const wholeLines = Math.floor(pendingRows);
+      const subRow = pendingRows - wholeLines;
+      if (wholeLines) view.term.scrollLines(wholeLines);
+      this.tallSetScrollTop(view, edge + subRow * cellHeight);
     }, { passive: false });
     const term = new Terminal({
       fontSize: this.settings.terminal_font_size, fontFamily: '"SF Mono", Menlo, monospace', letterSpacing: -0.2, theme: this.termTheme(),
@@ -11771,6 +13217,7 @@ class TermdeckApp {
     const view = { sessionId: id, container, term, fit, terminalFindAddon, tallRows: rowPlan.rows,
                    terminalFindResultIndex: -1,
                    terminalFindResultCount: 0, terminalFindResultListener: null,
+                   tallWebgl: rowPlan.webgl,
                    ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
                    replaying: false, pasting: false, suppressReconnect: false, cliTitle: null, pinBottomUntil: 0,
                    programmaticScrollUntil: 0, programmaticScrollGeneration: 0, scrollSettleTimer: 0,
@@ -11796,7 +13243,6 @@ class TermdeckApp {
                    promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptSubmissionReflowGuardUntil: 0, promptSubmissionReflowGuardTimer: 0,
-                   manualRepaintClickCount: 0, manualRepaintClickTimer: 0, manualRepaintLastClickAt: 0,
                    attentionScreenDetectionSuppressed: false,
                    reconnectAfterClose: false, claudeInitialReplayCheckTimer: 0,
                    claudeInitialReplayRecoveryAttempted: false,
@@ -11805,7 +13251,8 @@ class TermdeckApp {
                    promptQueue: this.markdownPromptQueueForSession(id), promptQueueEditIndex: null, promptQueueDispatching: false,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, promptDraftSyncDebounceTimer: 0,
                    pendingDraftSync: null, pendingTerminalDraft: null, pendingAgentPaste: "", pendingAgentPasteTimer: 0,
-                   pendingAgentPasteStartedAt: 0, pendingAgentPasteReadyAt: 0,
+                   pendingAgentPasteStartedAt: 0, pendingAgentPasteReadyAt: 0, pendingAgentPasteExpectedTitle: "",
+                   pendingAgentPasteRequireComposer: false, lastTerminalOutputAt: 0,
                    promptEditVersion: 0, promptSubmitVersion: -1 };
     view.terminalFindResultListener = terminalFindAddon?.onDidChangeResults((result) => this.updateTerminalFindResultCount(view, result)) || null;
     const releaseManualScrollWhenStable = () => {
@@ -11869,7 +13316,6 @@ class TermdeckApp {
     view.renderObserver = term.onRender(({ start, end }) => this.recordTerminalRenderedRows(view, start, end));
     this.refreshTerminal(view);
     container.addEventListener("focusin", () => this.scheduleCodexFocusTailRefresh(view));
-    container.addEventListener("click", (event) => this.handleManualCodexRepaintClick(event, view, id), true);
     // Capture before xterm's wheel handler so the first wheel after a tab
     // switch cannot be mistaken for an automatic bottom-follow scroll.
     container.addEventListener("wheel", markManualScroll, { passive: true, capture: true });
@@ -12120,6 +13566,8 @@ class TermdeckApp {
     };
     ws.onmessage = (e) => {
       if (typeof e.data === "string") { this.handleControl(id, view, JSON.parse(e.data)); return; }
+      view.lastTerminalOutputAt = Date.now();
+      if (view.pendingAgentPaste) this.schedulePendingAgentPaste(view, AGENT_PASTE_OUTPUT_QUIET_MS);
       // xterm's buffer continues to process output while an inactive tab is
       // display:none, but its browser viewport has zero height. Remember that
       // state so activation can synchronize the now-visible scrollbar through
@@ -12606,22 +14054,10 @@ class TermdeckApp {
     view.term.focus();
   }
 
-  handleManualCodexRepaintClick(event, view, id) {
-    if (event.button !== 0 || this.activeId !== id || this.activeFileKey !== null || this.historyOpen ||
-        this.session(id)?.agent_kind !== "codex") return;
-    const now = Date.now();
-    if (now - view.manualRepaintLastClickAt > TERMINAL_MANUAL_REPAINT_CLICK_WINDOW_MS) view.manualRepaintClickCount = 0;
-    view.manualRepaintLastClickAt = now;
-    view.manualRepaintClickCount += 1;
-    clearTimeout(view.manualRepaintClickTimer);
-    view.manualRepaintClickTimer = setTimeout(() => {
-      view.manualRepaintClickTimer = 0;
-      view.manualRepaintClickCount = 0;
-    }, TERMINAL_MANUAL_REPAINT_CLICK_WINDOW_MS);
-    if (view.manualRepaintClickCount < 3 && event.detail < 3) return;
-    view.manualRepaintClickCount = 0;
-    clearTimeout(view.manualRepaintClickTimer);
-    view.manualRepaintClickTimer = 0;
+  repaintActiveCodexDisplay() {
+    const id = this.activeId;
+    const view = this.views.get(id);
+    if (!view || this.activeFileKey !== null || this.historyOpen || this.session(id)?.agent_kind !== "codex") return;
     if (this.terminalTailRenderMismatch(view)) {
       view.renderRepairArmed = true;
       if (this.repairTerminalRenderIfStale(view)) {
@@ -13612,12 +15048,31 @@ class TermdeckApp {
     if (!inner) return true;
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
     if (!cellHeight) return true;
-    const target = Math.max(0, (this.tallEffectiveBottomRow(view) + 1) * cellHeight - view.container.clientHeight);
+    // Same frame as the ceiling: absolute over the buffer when the scroll box spans it, rendered-window
+    // relative otherwise -- see tallUpdateMaxScrollTop.
+    const baseRows = this.wholeBufferScrollEnabled() ? Number(view.term.buffer.active.baseY || 0) : 0;
+    const target = Math.max(0, (baseRows + this.tallEffectiveBottomRow(view) + 1) * cellHeight - view.container.clientHeight);
     return Math.abs(view.container.scrollTop - target) <= 24;
   }
 
+
   scrollTallContainerToCursor(view) {
     if (!view || view.closed || view.tallMaxScrollTop == null) return;
+    if (this.wholeBufferScrollEnabled()) {
+      // The newest line is the bottom of the box. The buffer viewport is derived from the scroll
+      // position rather than forced to baseY: the box ends at the content bottom, so a screen shorter
+      // than the viewport puts scrollback in the visible span above it, and a rendered window parked at
+      // baseY would leave that span blank. Reaching the bottom also ends the parked state completely --
+      // pin, anchor and marker -- for the same reason the other branch clears them: following and
+      // parked are mutually exclusive, and a stale pin is what the release gate flags.
+      view.tallPinnedViewportY = null;
+      view.tallAnchorRow = null;
+      this.tallReleaseAnchorMarker(view);
+      view.tallFollowTop = view.tallMaxScrollTop;
+      this.tallSetScrollTop(view, view.tallMaxScrollTop);
+      this.tallSyncBufferToScroll(view);
+      return;
+    }
     // Following means showing the newest output, so xterm's own viewport has to be back at the bottom.
     // While parked it is deliberately left short of baseY (see tallHoldAnchorRow) -- that is what stops
     // it auto-scrolling -- and leaving it there would pin the canvas to stale rows no matter where the
@@ -13673,9 +15128,11 @@ class TermdeckApp {
     if (!view || view.closed) return;
     const target = Math.max(0, Math.round(value));
     view.tallLastProgrammaticTop = target;
-    view.tallProgrammaticAt = performance.now();
     // Skip a write that changes nothing: it only adds scroll-event noise for the listener to sort out.
-    if (Math.abs(view.container.scrollTop - target) > 1) view.container.scrollTop = target;
+    if (Math.abs(view.container.scrollTop - target) > 1) {
+      view.tallProgrammaticScrollPending = true;
+      view.container.scrollTop = target;
+    }
   }
 
   // The single place that decides "parked, or following the output?" -- for a scroll from ANY source.
@@ -13723,7 +15180,14 @@ class TermdeckApp {
     if (!cellHeight) { view.tallAnchorRow = null; view.tallPinnedViewportY = null; return; }
     const buffer = view.term.buffer.active;
     const viewportY = Number(buffer.viewportY || 0);
-    const anchorRow = viewportY + Math.round(view.container.scrollTop / cellHeight);
+    // Two coordinate systems, one anchor. Whole-buffer scrollTop is already an absolute buffer offset --
+    // adding viewportY on top double-counted the scrollback the viewport shows and produced anchors past
+    // the end of the buffer (captured live: anchor 11237 on a 5814-row buffer, a marker that no trim
+    // could ever move). Otherwise the container spans only the rendered window and the buffer row is
+    // viewport plus container offset.
+    const anchorRow = this.wholeBufferScrollEnabled()
+      ? Math.max(0, Math.min(Number(buffer.length || 1) - 1, Math.round(view.container.scrollTop / cellHeight)))
+      : viewportY + Math.round(view.container.scrollTop / cellHeight);
     view.tallAnchorRow = anchorRow;
     view.tallPinnedViewportY = viewportY;
     // A row index only means something until the scrollback fills. From then on every new line trims one
@@ -13755,6 +15219,31 @@ class TermdeckApp {
   tallHoldAnchorRow(view) {
     if (!view || view.closed || view.tallPinnedViewportY == null) return;
     const marker = view.tallAnchorMarker;
+    if (this.wholeBufferScrollEnabled()) {
+      // Absolute coordinates make this hold a different job. The content under a fixed scrollTop only
+      // changes when trimming renumbers the buffer, so the marker's movement is exactly the correction
+      // scrollTop needs -- and with no trimming, nothing moves at all. What DOES go wrong without this
+      // branch: xterm auto-scrolls its own viewport to the bottom on output, the geometry pass then
+      // positions the rendered window there, and the window walks down the box write after write while
+      // scrollTop stands still -- observed live as the content sliding down toward the prompt under a
+      // parked reader. Re-deriving the viewport from the scroll position (the same mapping every user
+      // scroll uses) puts the window back and renders the history rows the visible span actually needs.
+      const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+      if (!cellHeight) return;
+      if (marker && !marker.isDisposed && view.tallAnchorRow != null) {
+        const drift = Number(marker.line || 0) - view.tallAnchorRow;
+        if (drift !== 0) {
+          view.tallAnchorRow = Number(marker.line || 0);
+          this.tallSetScrollTop(view, Math.max(0, view.container.scrollTop + drift * cellHeight));
+        }
+      } else if (marker && marker.isDisposed) {
+        // The anchored line was trimmed away; hold the index the reader is at instead.
+        this.tallReleaseAnchorMarker(view);
+        view.tallAnchorRow = Math.round(view.container.scrollTop / cellHeight);
+      }
+      this.tallSyncBufferToScroll(view);
+      return;
+    }
     if (marker && marker.isDisposed) {
       // The anchored line has finally fallen out of the scrollback: there is no longer a line to hold, so
       // adopt wherever the view is now rather than chasing content that no longer exists.
@@ -13832,24 +15321,43 @@ class TermdeckApp {
     if (!cellHeight || !view.container.clientHeight) return;
     // tallEffectiveBottomRow, not raw cursorY: picks up the closing border + status line Claude/Codex
     // draw below the input box (see that function's comment), so the boundary lands past them instead of
-    // clipping them out of view.
-    const bottomPx = (this.tallEffectiveBottomRow(view) + 1) * cellHeight;
+    // clipping them out of view. In whole-buffer mode the scroll position is absolute over the buffer,
+    // so the bottom counts the scrollback above the screen too; otherwise the container spans only the
+    // rendered window and the bottom stays in its frame.
+    const whole = this.wholeBufferScrollEnabled();
+    const baseRows = whole ? Number(view.term.buffer.active.baseY || 0) : 0;
+    const bottomPx = (baseRows + this.tallEffectiveBottomRow(view) + 1) * cellHeight;
     const next = Math.max(0, bottomPx - view.container.clientHeight);
-    const current = view.tallMaxScrollTop;
+    // Hard bound, enforced at once: no state of the CURRENT buffer can justify a ceiling past its last
+    // line, so a stored value beyond that is stale by construction -- typically left over from a longer
+    // buffer that a reconnect has since replaced. Waiting out the shrink hold for one of these pins the
+    // view past the end of the content in the meantime (captured live: ceiling 31981 on a 799-row
+    // buffer, the visible window ~400 rows past the newest line, output "pushing the content up" through
+    // a blank screen).
+    const boundRows = whole ? Number(view.term.buffer.active.length || 0) : (view.term.rows || 0);
+    const hardMax = Math.max(0, boundRows * cellHeight - view.container.clientHeight);
+    let current = view.tallMaxScrollTop;
+    if (current != null && current > hardMax) {
+      current = hardMax;
+      view.tallMaxScrollTop = hardMax;
+    }
     // Growing is applied at once; shrinking has to hold first, for the same reason the scrollable height
     // does (see tallApplyGeometry). While following, the view is driven to this value, so a bottom that
     // dips for a frame during an agent's repaint drags the view backwards -- the residual upward jump
     // still visible on a tab switch after the replay guard above. Real shrinkage still lands, just after
-    // it has proved itself rather than on the first frame that suggests it.
+    // it has proved itself rather than on the first frame that suggests it. What has to prove itself is
+    // the BOUND, not one exact value: a streaming session moves the content bottom on every write, so
+    // requiring the same number twice in a row reset the hold forever and a stale-large ceiling never
+    // came down at all.
     if (current == null || next >= current) {
       view.tallMaxScrollTop = next;
-      view.tallCeilingShrinkTarget = null;
+      view.tallCeilingShrinkSince = null;
     } else {
-      if (view.tallCeilingShrinkTarget !== next) {
-        view.tallCeilingShrinkTarget = next;
-        view.tallCeilingShrinkSince = Date.now();
+      if (view.tallCeilingShrinkSince == null) view.tallCeilingShrinkSince = Date.now();
+      if (Date.now() - view.tallCeilingShrinkSince >= TALL_SHRINK_SETTLE_MS) {
+        view.tallMaxScrollTop = next;
+        view.tallCeilingShrinkSince = null;
       }
-      if (Date.now() - (view.tallCeilingShrinkSince || 0) >= TALL_SHRINK_SETTLE_MS) view.tallMaxScrollTop = next;
     }
     this.tallApplyGeometry(view);
   }
@@ -13942,7 +15450,15 @@ class TermdeckApp {
         // Any gesture in flight -- wheel, scrollbar drag, autoscroll -- owns the view until it settles.
         const userScrolling = view.tallPointerHeld ||
           Date.now() < Math.max(view.tallWheelActiveUntil || 0, view.tallScrollActiveUntil || 0);
-        if (userScrolling) {
+        if (!view.container.clientHeight) {
+          // A backgrounded tab is display:none, and a hidden element reports scrollTop 0 no matter where
+          // it was left. Every check below reads that position, so running them while hidden compares a
+          // real remembered offset against a fake zero: the follow-break test measured 20212px of
+          // "movement" nobody made, cleared following, and anchored the view mid-history. The damage was
+          // invisible until the tab was next looked at and the agent printed something -- which is the
+          // "switch away, come back, and it sits in the middle" report. Nothing here is decidable while
+          // the pane has no height, so nothing is decided; the state is left exactly as the tab was.
+        } else if (userScrolling) {
           // Deliberately nothing: the settle handler decides where this lands.
         } else if (following && view.tallLastProgrammaticTop != null &&
                    Math.abs(view.container.scrollTop - view.tallLastProgrammaticTop) > TALL_FOLLOW_BREAK_PX) {
@@ -14105,7 +15621,6 @@ class TermdeckApp {
     clearTimeout(view.promptSubmissionReflowGuardTimer);
     clearTimeout(view.promptDraftSyncTimer);
     clearTimeout(view.promptDraftSyncDebounceTimer);
-    clearTimeout(view.manualRepaintClickTimer);
     clearTimeout(view.pendingAgentPasteTimer);
     this.cancelTerminalViewportRestore(view);
     for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
@@ -14211,10 +15726,12 @@ class TermdeckApp {
     for (const f of files) {
       const key = `${f.root}|${f.path}`;
       this.openFiles.set(key,
-        { root: f.root, path: f.path, name: f.path.split("/").pop(), model: null, fullPath: null, truncated: false });
+        { root: f.root, path: f.path, name: f.path.split("/").pop(), model: null, fullPath: null, truncated: false,
+          mtime: Number(f.mtime) || 0, git_status: String(f.git_status || "") });
       if (this.projectSlug && !scopedSavedKeys.has(key)) recoveredMisownedFile = true;
     }
     if (recoveredMisownedFile) this.persistOpenFiles();
+    void this.refreshOpenFileGitStatuses();
   }
 
   closeOpenFileEntry(key, entry, recordRecent = true) {
@@ -14321,6 +15838,7 @@ class TermdeckApp {
     document.documentElement.style.setProperty("--project-font-size", s.project_font_size + "px");
     document.documentElement.style.setProperty("--terminal-font-size", s.terminal_font_size + "px");
     document.documentElement.style.setProperty("--ui-font-size", s.ui_font_size + "px");
+    document.documentElement.style.setProperty("--system-font-size", s.system_font_size + "px");
     document.documentElement.style.setProperty("--files-tab-font-size", s.files_tab_font_size + "px");
     document.documentElement.style.setProperty("--code-font-size", s.code_font_size + "px");
     document.documentElement.style.setProperty("--bottom-font-size", s.bottom_font_size + "px");
@@ -14364,6 +15882,12 @@ class TermdeckApp {
       this.fileHistoryDiffEditor.getOriginalEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
       this.fileHistoryDiffEditor.getModifiedEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
       this.fileHistoryDiffEditor.layout();
+    }
+    if (this.gitReviewDiffEditor) {
+      this.gitReviewDiffEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.gitReviewDiffEditor.getOriginalEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.gitReviewDiffEditor.getModifiedEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.gitReviewDiffEditor.layout();
     }
     this.$("stat-text").classList.toggle("hidden", !s.show_stats);
     this.$("stat-spark").classList.toggle("hidden", !s.show_stats);
@@ -14541,6 +16065,15 @@ class TermdeckApp {
 
   initInlineSizeControls() {
     this.inlineSizeControlRoots = new Map();
+    const done = document.createElement("button");
+    done.id = "inline-size-done";
+    done.type = "button";
+    done.className = "hidden";
+    done.innerHTML = '<span class="codicon codicon-save"></span><span>Save</span>';
+    done.title = "Save font sizes and close Visualize";
+    done.setAttribute("aria-label", done.title);
+    done.onclick = () => this.exitInlineSizeControls();
+    document.body.appendChild(done);
     for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) {
       const root = document.createElement("div");
       root.id = `inline-size-control-${definition.key}`;
@@ -14643,6 +16176,7 @@ class TermdeckApp {
       { selectors: "#project-select", key: "project_font_size" },
       { selectors: "#files-section-tabs, .files-section-tab", key: "files_tab_font_size" },
       { selectors: "#status-name, #terminal-age, #history-meta, #stat-text", key: "ui_font_size" },
+      { selectors: ".collapsible-section-header, .closed-header, .file-item, .closed-item, #context-menu, #settings-popover, #keys-modal", key: "system_font_size" },
       { selectors: "#bottombar, #sidebar-footer, #terminal-actions, #files-section-header", key: "bottom_font_size" },
       { selectors: ".history-event pre, .history-diff, .markdown pre code", key: "diff_font_size" },
       { selectors: "#terminal-area, .term-container, .xterm", key: "terminal_font_size" },
@@ -14666,6 +16200,7 @@ class TermdeckApp {
       terminal_icon_size: ".terminal-type-icon",
       terminal_font_size: "#terminal-area",
       ui_font_size: "#status-name, #terminal-age, #history-meta, #stat-text",
+      system_font_size: "#sidebar",
       files_tab_font_size: "#files-section-tabs",
       code_font_size: "#editor-area, #history-area, #notebook-panel, #file-history-panel",
       bottom_font_size: "#sidebar-footer",
@@ -14685,10 +16220,13 @@ class TermdeckApp {
 
   renderInlineSizeControls() {
     if (!this.inlineSizeControlRoots) return;
+    const done = this.$("inline-size-done");
     if (!this.settings.inline_size_controls) {
       this.hideInlineSizeControls();
+      done?.classList.add("hidden");
       return;
     }
+    done?.classList.remove("hidden");
     const visibleTargets = new Map();
     const placedControls = [];
     for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) {
@@ -14779,8 +16317,11 @@ class TermdeckApp {
     this.settings.inline_size_controls = false;
     this.fontSizeEditorOpen = false;
     this.hideInlineSizeControls();
+    this.$("inline-size-done")?.classList.add("hidden");
     this.saveSettings();
+    this.flushPendingSettingsSave();
     this.$("settings-popover").classList.add("hidden");
+    requestAnimationFrame(() => this.focusActiveEditor());
     return true;
   }
 
@@ -14791,7 +16332,7 @@ class TermdeckApp {
   openSettingsPopover(anchor, items, showFontSizeEditor = false) {
     const pop = this.$("settings-popover");
     this.fontSizeEditorOpen = showFontSizeEditor;
-    pop.classList.remove("lsp-settings-expanded");
+    pop.classList.remove("lsp-settings-expanded", "lsp-install-options-popover");
     pop.textContent = "";
     pop.onkeydown = (event) => {
       if (event.key !== "Escape") return;
@@ -14809,6 +16350,15 @@ class TermdeckApp {
     pop.appendChild(this.buildToggleRow("Repaint on attach (reload)",
       () => (this.attachRepaintEnabled() ? "on" : "off"),
       () => { this.settings.attach_repaint = !this.attachRepaintEnabled(); }));
+    // Experiment switch: see wholeBufferScrollEnabled().
+    pop.appendChild(this.buildToggleRow("Scroll through full history (reload)",
+      () => (this.wholeBufferScrollEnabled() ? "on" : "off"),
+      () => { this.settings.scroll_whole_buffer = !this.wholeBufferScrollEnabled(); }));
+    // Experiment switch: see tallRowPlan(). GPU rendering, at the cost of a much shorter scrollable
+    // canvas -- the whole trade is explained there.
+    pop.appendChild(this.buildToggleRow("WebGL renderer (reload)",
+      () => (this.tallWebglEnabled() ? "on" : "off"),
+      () => { this.settings.tall_webgl = !this.tallWebglEnabled(); }));
     for (const item of items) {
       if (!showFontSizeEditor || (this.settings.inline_size_controls && item.type !== "color")) continue;
       const row = document.createElement("div");
@@ -15068,7 +16618,12 @@ class TermdeckApp {
       if (!gl) return 0;
       const limit = Number(gl.getParameter(gl.MAX_TEXTURE_SIZE)) || 0;
       const deviceCellHeight = Math.max(1, cellHeight * (window.devicePixelRatio || 1));
-      return Math.floor(limit / deviceCellHeight);
+      // Headroom, not the whole limit. Sizing right up against MAX_TEXTURE_SIZE does not fail loudly --
+      // the addon silently allocates a 1x backing store and lets the browser stretch it, which renders as
+      // text that is both too large and soft. Measured at dpr 2.5: 154 rows needed 8162 device px against
+      // an 8192 cap, and the WebGL canvas came back at ratio 1 while the 2D link layer beside it scaled
+      // correctly. The margin covers the addon's own padding and the atlas it allocates alongside.
+      return Math.floor((limit * TALL_WEBGL_TEXTURE_HEADROOM) / deviceCellHeight);
     } catch (webglProbeError) {
       return 0;
     }
@@ -15086,6 +16641,12 @@ class TermdeckApp {
   tallFit(view) {
     if (!view || view.closed || !view.term) return;
     if (this.nativeVscodeMode) { view.fit.fit(); return; }
+    // NOTE: xterm reserves ~15px for a scrollbar it never draws here (style.css hides .xterm-viewport's
+    // overflow), and zeroing that reserve to reclaim the space was tried and reverted -- it yields three
+    // more columns whose arithmetic fits (98 x 10.84 = 1062 inside a 1068px pane) but whose glyphs do
+    // not: text was visibly clipped at the right edge in BOTH renderers. Whatever xterm withholds that
+    // width for, the painted line needs it. Do not reclaim it without measuring painted glyph extent,
+    // not column arithmetic.
     let dims = null;
     try { dims = view.fit.proposeDimensions(); } catch (fitError) { dims = null; }
     const rows = view.tallRows || TALL_ROWS_DOM;
@@ -15119,13 +16680,23 @@ class TermdeckApp {
     const inner = view.container.querySelector(".term-inner");
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
     if (!inner || !cellHeight) return;
+    if (view.tallWebgl) this.syncWebglCanvasToDevicePixels(view);
+    const whole = this.wholeBufferScrollEnabled();
     const fullPx = Math.round((view.term.rows || TALL_ROWS_DOM) * cellHeight);
     if (view.term.element && view.term.element.style.height !== `${fullPx}px`) {
       view.term.element.style.height = `${fullPx}px`;
     }
-    const contentPx = Math.round((this.tallEffectiveBottomRow(view) + 1) * cellHeight);
+    // Whole-buffer mode measures in absolute buffer rows -- scrollTop spans the scrollback too -- so the
+    // content bottom counts the history above the screen, and the cap is history plus the screen. It is
+    // still the CONTENT bottom, not the rendered window's: the window ends with however many hundred
+    // blank rows the forced height leaves under the cursor, and a box sized to it opens a fresh session
+    // as one mostly-empty page with the ceiling -- and the following view -- parked in the blank space
+    // at its bottom, the real content out of sight above the fold.
+    const baseRows = whole ? Number(view.term.buffer.active.baseY || 0) : 0;
+    const contentPx = Math.round((baseRows + this.tallEffectiveBottomRow(view) + 1) * cellHeight);
+    const capPx = whole ? Math.round(this.tallBufferRows(view) * cellHeight) : fullPx;
     // Never shorter than the viewport, never taller than the terminal itself.
-    const desired = Math.max(view.container.clientHeight || 0, Math.min(fullPx, contentPx));
+    const desired = Math.max(view.container.clientHeight || 0, Math.min(capPx, contentPx));
     const current = view.tallInnerHeight || 0;
     let height = desired;
     if (desired < current) {
@@ -15150,6 +16721,7 @@ class TermdeckApp {
       view.tallInnerHeight = height;
       inner.style.height = `${height}px`;
     }
+    if (whole) this.tallPositionRenderedWindow(view, cellHeight);
   }
 
   // Whether attaching to a terminal forces it to repaint itself. Every one of these mechanisms exists
@@ -15207,8 +16779,66 @@ class TermdeckApp {
     return this.settings.attach_repaint !== false;
   }
 
+    // Off by default, and a reload is needed either way: the row count is fixed when a view is built, and
+  // the renderer is chosen to match it. Turning it ON trades canvas height for GPU rendering -- the GPU
+  // can only back MAX_TEXTURE_SIZE / (cellHeight * dpr) rows, measured at 309 on this machine against
+  // 1000 for DOM, so the scrollable canvas drops from ~25 screens to ~8 and the scrollback bridge starts
+  // moving the buffer viewport that much sooner. Search, selection and how far back you can reach are
+  // unaffected: they read the 20,000-line buffer, not the rendered rows.
+  tallWebglEnabled() {
+    return this.settings.tall_webgl === true;
+  }
+
+  // Experiment switch, default off. The scrollbar has never represented history -- it represents the
+  // rendered canvas, which is why the thumb stops resizing once you pass it, dragging to the bottom lands
+  // mid-content, and releasing snaps. Measured on a 1641-line buffer with 1000 rendered rows, the bar
+  // covered 60.9% of the session; against a full 20,000-line scrollback it is 5%, and under WebGL's
+  // ~300-row canvas about 2%. On, the scroll box is the whole buffer and the rendered rows are positioned
+  // inside it, so the thumb means what it looks like it means -- and the canvas row count stops governing
+  // how far you can scroll, which is what puts WebGL and a long history back on speaking terms.
+
+  wholeBufferScrollEnabled() {
+    return this.settings.scroll_whole_buffer === true;
+  }
+
+  // Rows of history the scroll box spans. Everything above the rendered window plus the window itself.
+  tallBufferRows(view) {
+    const buffer = view.term.buffer.active;
+    return Math.max(view.term.rows || 0, Number(buffer.baseY || 0) + (view.term.rows || 0));
+  }
+
+  // Puts the rendered window where the scroll position says it should be. xterm always draws the same
+  // `rows` rows; this slides that block down the tall box so the row under the reader is the row the
+  // scrollbar is pointing at.
+  tallPositionRenderedWindow(view, cellHeight) {
+    const element = view.term.element;
+    if (!element) return;
+    const offset = Math.round(Number(view.term.buffer.active.viewportY || 0) * cellHeight);
+    if (element.style.position !== "absolute") {
+      element.style.position = "absolute";
+      element.style.left = "0";
+      element.style.right = "0";
+    }
+    const wanted = `${offset}px`;
+    if (element.style.top !== wanted) element.style.top = wanted;
+  }
+
+  // Maps a scroll position onto the buffer: the top of the box is row 0, the bottom is the newest line.
+  // Only the rendered window has to move, and only when the wanted row leaves it.
+  tallSyncBufferToScroll(view) {
+    if (!view || view.closed) return;
+    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+    if (!cellHeight) return;
+    const buffer = view.term.buffer.active;
+    const wantedRow = Math.max(0, Math.min(Number(buffer.baseY || 0),
+      Math.floor(view.container.scrollTop / cellHeight)));
+    const current = Number(buffer.viewportY || 0);
+    if (wantedRow !== current) view.term.scrollLines(wantedRow - current);
+    this.tallPositionRenderedWindow(view, cellHeight);
+  }
+
   tallRowPlan(cellHeight) {
-    if (!TALL_WEBGL_ENABLED) return { rows: TALL_ROWS_DOM, webgl: false };
+    if (!this.tallWebglEnabled()) return { rows: TALL_ROWS_DOM, webgl: false };
     const safeRows = this.maxWebglSafeRows(cellHeight);
     if (safeRows < TALL_ROWS_MIN_FOR_WEBGL) return { rows: TALL_ROWS_DOM, webgl: false };
     return { rows: Math.min(TALL_ROWS_MAX, safeRows), webgl: true };
@@ -15227,6 +16857,42 @@ class TermdeckApp {
     } catch (webglError) {
       return false;
     }
+  }
+
+
+  // The addon sizes its canvas when it loads and again on a terminal resize, but this layout changes the
+  // terminal element's height directly rather than through one, so the canvas can be left holding the
+  // size it was born with. Measured at dpr 2.5: the render service had device canvas 2781x6943 and the
+  // canvas element was still 2777x2777 -- a backing store at 1x stretched across a 2.5x box, which reads
+  // as text that is too large, soft, and running off the right edge. The correct numbers are already
+  // computed; this just applies them.
+
+  syncWebglCanvasToDevicePixels(view) {
+    const term = view.term;
+    const dimensions = term._core?._renderService?.dimensions;
+    const canvas = term.element?.querySelector("canvas:not(.xterm-link-layer)");
+    // Taken from xterm's own dimensions rather than recomputed here. Two attempts to derive it from
+    // cols x deviceCell have now been reverted, and the second one is worth recording precisely:
+    // dimensions.device.cell is ALREADY in device pixels (measured: css 13.5 -> device 27 at dpr 2), so
+    // multiplying by devicePixelRatio again doubles it. That produced a 5184x21216 canvas where xterm
+    // wanted 2592x10608 -- past MAX_TEXTURE_SIZE and far past the ~11500px where this GPU silently stops
+    // drawing, i.e. the blank-new-terminal bug. It was aimed at right-edge truncation, which cannot be
+    // this code in any case: that happens in DOM mode too, where no canvas exists.
+    const wanted = dimensions?.device?.canvas;
+    if (!canvas || !wanted?.width || !wanted?.height) return;
+    const styleWidth = `${dimensions.css.canvas.width}px`;
+    const styleHeight = `${dimensions.css.canvas.height}px`;
+    const restyled = canvas.style.width !== styleWidth || canvas.style.height !== styleHeight;
+    if (restyled) {
+      canvas.style.width = styleWidth;
+      canvas.style.height = styleHeight;
+    }
+    const resized = canvas.width !== wanted.width || canvas.height !== wanted.height;
+    if (resized) {
+      canvas.width = wanted.width;
+      canvas.height = wanted.height;
+    }
+    if (resized || restyled) term.refresh(0, Math.max(0, term.rows - 1));
   }
 
 
@@ -15480,12 +17146,46 @@ class TermdeckApp {
 
   appendGitStatus(row, entry) {
     if (this.settings.show_git_status === false || !entry.git_status) return;
-    const gitStatus = String(entry.git_status).trim().toUpperCase();
-    const statusClass = gitStatus === "?" ? "untracked" : gitStatus.toLowerCase();
+    const gitStatus = this.gitStatusPresentation(entry.git_status);
+    if (!gitStatus) return;
+    row.dataset.gitStatus = gitStatus.code;
+    row.classList.add("git-row", `git-row-${gitStatus.statusClass}`);
+    row.title = `${row.title ? `${row.title}\n` : ""}git: ${gitStatus.label}`;
+  }
+
+  gitStatusPresentation(rawStatus) {
+    const code = String(rawStatus || "").trim().toUpperCase();
+    if (!code) return null;
     const labels = { "?": "untracked", "M": "modified", "A": "added", "D": "deleted",
       "R": "renamed", "C": "copied", "U": "conflicted" };
-    row.classList.add("git-row", `git-row-${statusClass}`);
-    row.title = `${row.title ? `${row.title}\n` : ""}git: ${labels[gitStatus] || gitStatus}`;
+    return { code, statusClass: code === "?" ? "untracked" : code.toLowerCase(), label: labels[code] || code };
+  }
+
+  async refreshOpenFileGitStatuses(root = "", refresh = false) {
+    const roots = [...new Set([...this.openFiles.values()].map((entry) => entry.root).filter((entryRoot) => !root || entryRoot === root))];
+    let changed = false;
+    await Promise.all(roots.map(async (entryRoot) => {
+      const params = new URLSearchParams({ root: entryRoot });
+      if (refresh) params.set("refresh", "true");
+      let response;
+      try {
+        response = await fetch(`/api/files/git-status?${params}`);
+      } catch (error) {
+        return;
+      }
+      if (!response.ok) return;
+      const statuses = await response.json();
+      for (const entry of this.openFiles.values()) {
+        if (entry.root !== entryRoot) continue;
+        const nextStatus = String(statuses[entry.path] || "");
+        if (entry.git_status === nextStatus) continue;
+        entry.git_status = nextStatus;
+        changed = true;
+      }
+    }));
+    if (!changed) return;
+    this.persistOpenFiles();
+    this.renderFileTabs();
   }
 
   formatMtime(epochSeconds) {
@@ -15701,9 +17401,16 @@ class TermdeckApp {
     for (const className of [...row.classList]) {
       if (className === "git-row" || className.startsWith("git-row-")) row.classList.remove(className);
     }
+    delete row.dataset.gitStatus;
     row.title = `${this.treeRoot}/${row.dataset.rel}`;
     this.appendMtime(row, entry);
     this.appendGitStatus(row, entry);
+    const openEntry = this.openFiles.get(`${this.treeRoot}|${row.dataset.rel}`);
+    if (openEntry && openEntry.git_status !== String(entry.git_status || "")) {
+      openEntry.git_status = String(entry.git_status || "");
+      this.persistOpenFiles();
+      this.renderFileTabs();
+    }
   }
 
   async refreshTreeDirectories(directoryPaths = null) {
@@ -15778,7 +17485,8 @@ class TermdeckApp {
     const groups = {};
     for (const entry of this.openFiles.values()) {
       const key = this.owningProjectKey(entry.root);
-      (groups[key] = groups[key] || []).push({ root: entry.root, path: entry.path });
+      (groups[key] = groups[key] || []).push({ root: entry.root, path: entry.path,
+        mtime: String(Math.max(0, Number(entry.mtime) || 0)), git_status: String(entry.git_status || "") });
     }
     const states = this.settings.project_state || {};
     if (this.projectSlug) {
@@ -15808,7 +17516,8 @@ class TermdeckApp {
     const key = `${root}|${path}`;
     if (!this.openFiles.has(key)) {
       this.openFiles.set(key, { root, path, name: path.split("/").pop(), model: null, fullPath: null,
-        truncated: false, preview: !!options.preview && !options.pinned });
+        truncated: false, preview: !!options.preview && !options.pinned, mtime: 0,
+        git_status: String(treeRow?.dataset.gitStatus || "") });
     } else {
       const entry = this.openFiles.get(key);
       if (options.pinned) entry.preview = false;
@@ -15821,6 +17530,7 @@ class TermdeckApp {
     const entry = this.openFiles.get(key);
     const returnTo = typeof options.returnTo === "string" ? options.returnTo.trim() : "";
     await this.activateFile(key, line, { returnTo, history: options.history });
+    void this.refreshOpenFileGitStatuses(root);
     const openedFromFilePanel = !!treeRow || !!options.fromFilePanel;
     if (openedFromFilePanel && !this.settings.files_pinned && entry.model && this.sideView !== "terminals") {
       this.setSideView("terminals", false);
@@ -16041,6 +17751,10 @@ class TermdeckApp {
     const data = await res.json();
     entry.fullPath = data.path;
     entry.truncated = data.truncated;
+    const previousMtime = Number(entry.mtime) || 0;
+    entry.mtime = Number(data.mtime) || 0;
+    if (entry.mtime !== previousMtime) this.persistOpenFiles();
+    if (this.settings.file_tab_order === "modified") this.renderFileTabs();
     if (!entry.model) {
       const uri = monaco.Uri.file(data.path);
       const existing = monaco.editor.getModel(uri);
@@ -16135,7 +17849,10 @@ class TermdeckApp {
         }
         if (entry.model === model && model.getVersionId() === versionId) {
           entry.dirty = false;
+          entry.mtime = Math.floor(Date.now() / 1000);
+          this.persistOpenFiles();
           this.renderFileEditorChrome();
+          void this.refreshOpenFileGitStatuses(entry.root, true);
         } else if (entry.model && !entry.autosaveTimer) {
           this.scheduleFileAutosave(entry);
         }
@@ -16645,17 +18362,19 @@ class TermdeckApp {
       this.repositionSelectedSessions([created.session_id], anchorSessionId, true);
     }
     this.activate(created.session_id, { reveal: true });
-    const createdView = this.views.get(created.session_id);
-    if (createdView && pendingAgentText) this.queuePendingAgentPaste(createdView, pendingAgentText);
+    if (pendingAgentText) this.pasteSelectionIntoNewAgentWhenReady(created.session_id, pendingAgentText, title);
   }
 
   async openLanguageServerInstallTerminal(details) {
     const project = this.projectForCwd(details.root)?.name || this.projectSlug || "";
     const languageName = this.lspClient?.languageDisplayName(details.language) || details.language;
+    const command = String(details.installHint || "").trim();
+    if (!command) return;
     const response = await fetch("/api/sessions", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "none", permission: "default", cwd: details.root, project,
-        title: `Install ${languageName} language server` }),
+      body: JSON.stringify({ command, cwd: details.root, project,
+        title: details.title || `Install ${languageName} language server`,
+        after: this.activeId ? `session:${this.activeId}` : null }),
     });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
@@ -16663,24 +18382,12 @@ class TermdeckApp {
       return;
     }
     const session = await response.json();
+    if (!this.vscodeMode && session.project && session.project !== (this.projectSlug || "")) {
+      location.href = `/p/${encodeURIComponent(session.project)}?t=${encodeURIComponent(session.session_id)}`;
+      return;
+    }
     await this.refresh();
     this.activate(session.session_id, { reveal: true });
-    this.prefillTerminalWhenConnected(session.session_id, details.installHint, 0);
-  }
-
-  prefillTerminalWhenConnected(sessionId, command, attempt) {
-    const view = this.views.get(sessionId);
-    if (view?.ws?.readyState === WebSocket.OPEN) {
-      this.sendTrackedInput(view, this.terminalPastePayload(view, command));
-      view.term.focus();
-      this.$("status-name").textContent = "install command ready — press Enter to run";
-      return;
-    }
-    if (attempt >= 80) {
-      this.$("status-name").textContent = "install terminal did not become ready";
-      return;
-    }
-    setTimeout(() => this.prefillTerminalWhenConnected(sessionId, command, attempt + 1), 100);
   }
 
   createShortcutSection(title) {
@@ -17127,7 +18834,7 @@ class TermdeckApp {
     else if (actionId === "open-files-new-tab") this.openFileDeckViewInNewTab(this.treeRoot || this.projectRoot(), "tree");
     else if (actionId === "open-search-new-tab") this.openFileDeckViewInNewTab(this.treeRoot || this.projectRoot(), "search", "", this.$("search-query").value.trim());
     else if (actionId === "open-terminal-search") this.toggleTerminalSearchEditor();
-    else if (actionId === "view-terminals") this.setSideView("terminals");
+    else if (actionId === "view-terminals") this.handleFileModeNavigationClick("terminals");
     else if (actionId === "switch-project") this.openProjectSwitcher();
     else if (actionId === "toggle-notebook") this.toggleNotebook();
     else if (actionId === "selection-copy") this.copySelectionToClipboard();
@@ -17146,7 +18853,7 @@ class TermdeckApp {
       else this.closeQuickOpen();
     }
     else if (actionId === "toggle-problems") this.toggleProblemsPanel();
-    else if (actionId === "conversation-outline") this.toggleConversationOutline();
+    else if (actionId === "conversation-outline") this.toggleContextualOutline();
     else if (actionId === "vscode-refresh") this.requestVscodeRefresh(false);
     else if (actionId === "vscode-reload") this.requestVscodeRefresh(true);
   }
@@ -17337,6 +19044,7 @@ class TermdeckApp {
   }
 
   async restartSession(sessionId, permission = "") {
+    const wasDormant = !!this.session(sessionId)?.dormant;
     this.activate(sessionId);
     this.$("status-name").textContent = "restarting…";
     const view = this.views.get(sessionId);
@@ -17351,7 +19059,25 @@ class TermdeckApp {
       this.$("status-name").textContent = detail?.detail || "restart failed";
       return;
     }
-    this.refresh();
+    await this.refresh();
+    if (wasDormant && this.activeId === sessionId) {
+      const restartedView = this.views.get(sessionId);
+      if (restartedView && !restartedView.ws) this.connect(sessionId, restartedView);
+    }
+  }
+
+  async stopSession(sessionId) {
+    const session = this.session(sessionId);
+    if (!session?.running) return;
+    this.$("status-name").textContent = "stopping…";
+    const response = await fetch(`/api/sessions/${sessionId}/stop`, { method: "POST" });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      this.$("status-name").textContent = detail?.detail || "stop failed";
+      return;
+    }
+    await this.refresh();
+    this.$("status-name").textContent = "stopped";
   }
 
   async closeSession(sessionId) {

@@ -45,8 +45,12 @@ const BASE = 'http://127.0.0.1:8536';
       for (let y = b.length - 1; y >= 0; y--) {
         if ((b.getLine(y)?.translateToString(true) || '').trim()) { lastContent = y; break; }
       }
-      const lastContentBottomPx = (lastContent - b.viewportY + 1) * cell;
+      // Anchored at the rendered window's offset inside the scroll box, so the number is in the same
+      // frame as maxReachable in both scroll modes: offsetTop is 0 in the default mode and
+      // viewportY*cell in whole-buffer mode, where the box legitimately spans the scrollback above.
+      const lastContentBottomPx = v.term.element.offsetTop + (lastContent - b.viewportY + 1) * cell;
       return { termRows: v.term.rows, cols: v.term.cols, cell,
+               plannedRows: v.tallRows, webgl: v.tallWebgl === true,
                innerHeight: c.querySelector('.term-inner').style.height,
                xtermHeight: v.term.element.style.height,
                scrollHeight: c.scrollHeight, clientHeight: c.clientHeight,
@@ -64,11 +68,14 @@ const BASE = 'http://127.0.0.1:8536';
   const a = await check(sparse, 0, 'sparse (near-empty):');
   const b = await check(full, 1500, 'full (1500 lines)  :');
 
-  const ok = Math.abs(a.extraPastLastLine) <= 2 && Math.abs(b.extraPastLastLine) <= 2 &&
-             a.termRows === 1000 && b.termRows === 1000;
+  // WebGL mode deliberately runs fewer rows (the GPU texture limit -- see tallRowPlan); what must hold
+  // in every mode is that the terminal kept the height the plan chose for it.
+  const rowsOk = a.termRows === a.plannedRows && b.termRows === b.plannedRows &&
+                 (a.webgl || (a.termRows === 1000 && b.termRows === 1000));
+  const ok = Math.abs(a.extraPastLastLine) <= 2 && Math.abs(b.extraPastLastLine) <= 2 && rowsOk;
   console.log(`\n  sparse extra space: ${a.extraPastLastLine}px  (was ~19000)`);
   console.log(`  full extra space:   ${b.extraPastLastLine}px  (was ~10-40)`);
-  console.log(`  rows still 1000:    ${a.termRows === 1000 && b.termRows === 1000 ? 'yes' : 'NO'}`);
+  console.log(`  rows as planned:    ${rowsOk ? 'yes' : 'NO'} (${b.termRows} rows${b.webgl ? ', webgl' : ''})`);
   console.log(ok ? '\nPASS: no reachable space past the last line' : '\nFAIL');
   await br.close();
   process.exit(ok ? 0 : 1);

@@ -14,7 +14,10 @@ const READ = (i) => {
   const v = window.__td.views.get(i);
   const b = v.term.buffer.active;
   const cell = v.term._core?._renderService?.dimensions?.css?.cell?.height || 21;
-  const row = b.viewportY + Math.round(v.container.scrollTop / cell);
+  // The row the page actually renders at the top of the view, valid in both scroll modes: the rendered
+  // window sits at element.offsetTop inside the scroll box (0 in the default mode, viewportY*cell in
+  // whole-buffer mode -- where adding viewportY to scrollTop alone would double-count the scrollback).
+  const row = b.viewportY + Math.round((v.container.scrollTop - v.term.element.offsetTop) / cell);
   return {
     top: Math.round(v.container.scrollTop), row,
     text: (b.getLine(row)?.translateToString(true) || '').trim().slice(0, 40),
