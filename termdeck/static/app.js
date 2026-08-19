@@ -2436,10 +2436,12 @@ class TermdeckApp {
     this.initFontSampleEditor();
     window.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
-      if (!this.settings.inline_size_controls && !this.fontSizeEditorOpen) return;
+      const fontSampleEditorOpen = !this.$("font-samples-backdrop").classList.contains("hidden");
+      if (!this.settings.inline_size_controls && !this.fontSizeEditorOpen && !fontSampleEditorOpen) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      if (this.settings.inline_size_controls) this.exitInlineSizeControls();
+      if (fontSampleEditorOpen) this.closeFontSampleEditor();
+      else if (this.settings.inline_size_controls) this.exitInlineSizeControls();
       else {
         this.fontSizeEditorOpen = false;
         this.$("settings-popover").classList.add("hidden");
