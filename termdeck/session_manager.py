@@ -107,9 +107,13 @@ class ManagedSession:
     def processing(self) -> bool:
         if not self.cli_title or not self.title_updated_monotonic:
             return False
-        marker = self.cli_title[:1]
-        return ("\u2800" <= marker <= "\u28ff" or marker == "✳") and \
+        return self.title_has_processing_marker(self.cli_title) and \
             time.monotonic() - self.title_updated_monotonic < 3.0
+
+    @staticmethod
+    def title_has_processing_marker(value: str | None) -> bool:
+        marker = value[:1] if value else ""
+        return "\u2800" <= marker <= "\u28ff" or "○" <= marker <= "◗" or marker == "✳"
 
     @property
     def dormant(self) -> bool:
@@ -580,13 +584,20 @@ class TerminalSessionManager:
         ms.detect_attempts += 1
         socket = self._dtach_socket(ms.record.session_id)
         found = await self._tracker.session_id_from_open_files(kind, socket)
+        existing_agent_session_id = ms.record.agent_session_id
+        if kind is AgentKind.CLAUDE and existing_agent_session_id and found not in {None, existing_agent_session_id}:
+            resumed_session_id = await self._tracker.claude_resume_session_id_from_process_arguments(socket)
+            if resumed_session_id != found:
+                found = None
         recent_input = (time.monotonic() - ms.last_input_monotonic) < TermdeckConfig.AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS
-        claim_allowed = found is None and (kind is AgentKind.AGY or recent_input or bool(ms.pending_agent_rename))
+        claim_allowed = existing_agent_session_id is None and found is None and \
+            (kind is AgentKind.AGY or recent_input or bool(ms.pending_agent_rename))
         dir_found = self._tracker.absorb_and_find_new_session_file(
             kind, Path(ms.record.cwd), ms.detect_baseline, self._claimed_agent_ids(ms), claim_allowed=claim_allowed)
         if found is None:
             found = dir_found
-        recent_claude_submit = kind is AgentKind.CLAUDE and ms.last_agent_submit_monotonic > 0 and \
+        recent_claude_submit = existing_agent_session_id is None and kind is AgentKind.CLAUDE and \
+            ms.last_agent_submit_monotonic > 0 and \
             time.monotonic() - ms.last_agent_submit_monotonic < TermdeckConfig.AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS
         if found is None and recent_claude_submit:
             submitted_at = time.time() - (time.monotonic() - ms.last_agent_submit_monotonic)
@@ -758,12 +769,19 @@ class TerminalSessionManager:
         try:
             current_mtime = current_path.stat().st_mtime
         except OSError:
-            return False
+            current_mtime = 0.0
         created_at = TimeUtil.est_naive_iso_timestamp(ms.record.created_at_est)
-        if current_mtime >= created_at:
+        live_title = self._display_title(ms.cli_title)
+        current_explicit_title = self._tracker.claude_explicit_session_title(cwd, ms.record.agent_session_id)
+        normalized_live_title = self._tracker._normalized_claude_title(live_title)
+        normalized_record_title = self._tracker._normalized_claude_title(ms.record.title)
+        normalized_current_title = self._tracker._normalized_claude_title(current_explicit_title)
+        renamed_title_points_to_another_transcript = ms.record.title_user_set and normalized_live_title and \
+            normalized_record_title == normalized_live_title and normalized_current_title != normalized_live_title
+        if current_mtime >= created_at and not renamed_title_points_to_another_transcript:
             return False
         replacement = self._tracker.claude_session_id_for_explicit_title(
-            cwd, self._display_title(ms.cli_title), created_at, self._claimed_agent_ids(ms))
+            cwd, live_title, created_at, self._claimed_agent_ids(ms))
         if replacement is None or replacement == ms.record.agent_session_id:
             return False
         self._set_agent_session_binding(ms, replacement)
@@ -971,7 +989,7 @@ class TerminalSessionManager:
 
     @staticmethod
     def _display_title(value: str | None) -> str | None:
-        if value and ("\u2800" <= value[0] <= "\u28ff" or value[0] == "✳"):
+        if ManagedSession.title_has_processing_marker(value):
             return value[1:].lstrip()
         return value
 

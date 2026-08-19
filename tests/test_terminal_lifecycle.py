@@ -431,6 +431,68 @@ class CliTitlePersistenceTest(unittest.TestCase):
 
         self.assertFalse(ManagedSession(saved).processing)
 
+    def test_claude_circle_spinner_reports_processing_and_is_removed_from_persisted_title(self) -> None:
+        manager, session, persists = self._manager_with_session()
+        session.cli_title = "◑ intraday-fed"
+        session.title_updated_monotonic = 99.0
+
+        with patch("termdeck.session_manager.time.monotonic", return_value=100.0):
+            self.assertTrue(session.processing)
+        manager._remember_cli_title(session)
+
+        self.assertEqual(session.record.cli_title, "intraday-fed")
+        self.assertEqual(len(persists), 1)
+
+
+class ClaudeRenameBindingReconciliationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_known_claude_session_does_not_claim_unrelated_recent_transcript_after_input(self) -> None:
+        manager = TerminalSessionManager()
+        saved = record("claude-known")
+        saved.agent_kind = "claude"
+        saved.agent_session_id = "current-session"
+        saved.command = "claude --resume current-session"
+        session = ManagedSession(saved)
+        session.detached_live = True
+        session.detect_kind = AgentKind.CLAUDE
+        session.last_input_monotonic = 99.0
+        session.last_agent_submit_monotonic = 99.0
+        manager._sessions[saved.session_id] = session
+        manager._tracker.session_id_from_open_files = AsyncMock(return_value=None)
+        manager._tracker.absorb_and_find_new_session_file = MagicMock(return_value=None)
+        manager._tracker.claude_session_id_from_recent_file_activity = MagicMock(return_value="unrelated-session")
+
+        with patch("termdeck.session_manager.time.monotonic", return_value=100.0):
+            await manager._detect_after(session, 0)
+
+        self.assertEqual(saved.agent_session_id, "current-session")
+        self.assertFalse(manager._tracker.absorb_and_find_new_session_file.call_args.kwargs["claim_allowed"])
+        manager._tracker.claude_session_id_from_recent_file_activity.assert_not_called()
+
+    def test_user_renamed_claude_session_rebinds_to_matching_explicit_title(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = TerminalSessionManager()
+            saved = record("claude-renamed")
+            saved.agent_kind = "claude"
+            saved.agent_session_id = "stale-session"
+            saved.command = "claude --resume stale-session"
+            saved.title = "L-mtermdeck"
+            saved.title_user_set = True
+            session = ManagedSession(saved)
+            session.cli_title = "◑ L-mtermdeck"
+            manager._sessions[saved.session_id] = session
+            current_path = Path(directory) / "stale-session.jsonl"
+            current_path.write_text("{}\n")
+            manager._tracker.claude_project_dir = MagicMock(return_value=Path(directory))
+            manager._tracker.claude_explicit_session_title = MagicMock(return_value=None)
+            manager._tracker.claude_session_id_for_explicit_title = MagicMock(return_value="live-session")
+            manager._initialize_claude_subagent_state = MagicMock()
+            manager._persist = MagicMock()
+
+            self.assertTrue(manager._reconcile_stale_claude_session_binding(session))
+
+        self.assertEqual(saved.agent_session_id, "live-session")
+        self.assertEqual(saved.command, "claude --resume live-session")
+
 
 class CodexSessionActivityTest(unittest.TestCase):
     def test_task_state_is_read_without_starting_the_terminal(self) -> None:
