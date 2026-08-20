@@ -13219,6 +13219,12 @@ class TermdeckApp {
     }, { passive: false });
     const term = new Terminal({
       fontSize: this.settings.terminal_font_size, fontFamily: '"SF Mono", Menlo, monospace', letterSpacing: -0.2, theme: this.termTheme(),
+      // scrollOnUserInput must be off: it scrolls xterm's own viewport to the buffer bottom on every
+      // keystroke, but that viewport is DERIVED from the container's scroll position in this layout
+      // (tallSyncBufferToScroll), so each key bounced it down a row and the sync pulled it back -- both
+      // frames painted, a visible jitter on every key press whenever any scrollback existed. The typing
+      // key handler resumes following through the container instead, which is the surface that scrolls.
+      scrollOnUserInput: false,
       scrollback: 20000, cursorBlink: true, macOptionIsMeta: true, allowProposedApi: true,
     });
     const fit = new FitAddon.FitAddon();
@@ -14225,7 +14231,13 @@ class TermdeckApp {
     view.userScrollIntent = false;
     view.scrollMode = "follow";
     view.v2Programmatic = true;
-    view.term.scrollToBottom();
+    // The tall layout owns xterm's viewport: it is DERIVED from the container's scroll position
+    // (tallSyncBufferToScroll), never forced to the buffer's own bottom. Forcing it here fought that
+    // derivation on every write -- scrollToBottom pushed the viewport down a row, the write callback's
+    // sync pulled it straight back, and both states painted: a visible one-row jitter on each keystroke
+    // whenever any scrollback existed (baseY > 0) while the content still fit the viewport. Captured
+    // live with a stack recorder on a fresh codex tab (baseY 1, viewportY bouncing 0->1->0 per key).
+    this.tallSyncBufferToScroll(view);
     queueMicrotask(() => {
       if (!view.closed) view.v2Programmatic = false;
     });
@@ -15159,17 +15171,25 @@ class TermdeckApp {
       this.tallReleaseAnchorMarker(view);
       const wholeCell = view.term._core?._renderService?.dimensions?.css?.cell?.height;
       // Capped so the cursor's row stays on screen -- see tallFollowTarget.
-      const wholeTarget = wholeCell
-        ? Math.min(view.tallMaxScrollTop, Math.max(0, this.tallFollowCursorCap(view, wholeCell)))
-        : view.tallMaxScrollTop;
+      const capPx = wholeCell ? Math.max(0, this.tallFollowCursorCap(view, wholeCell)) : Infinity;
+      const wholeTarget = Math.min(view.tallMaxScrollTop, capPx);
       const wholeTop = view.container.scrollTop;
       if (userSettled) {
         if (wholeTop < wholeTarget) this.tallSetScrollTop(view, wholeTarget);
         else if (wholeTop > view.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
           this.tallSetScrollTop(view, view.tallMaxScrollTop);
         }
-      } else if (wholeTop < wholeTarget || wholeTop > wholeTarget + TALL_OVERSHOOT_DEADZONE_PX) {
+      } else if (wholeTop < wholeTarget) {
         this.tallSetScrollTop(view, wholeTarget);
+      } else if (wholeTop > capPx) {
+        // The cursor's row is above the visible top: this is the one case a write may pull the view UP
+        // (a popup taller than the screen just opened under the composer). A cursor that is merely
+        // higher than usual but still on screen is NOT one -- a TUI repaint walks the cursor through the
+        // frame it is redrawing, and pty chunking can land a write callback mid-repaint, so chasing
+        // every transient cursor position bounced the view up and down under ordinary typing.
+        this.tallSetScrollTop(view, wholeTarget);
+      } else if (wholeTop > view.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
+        this.tallSetScrollTop(view, view.tallMaxScrollTop);
       }
       view.tallFollowTop = Math.max(wholeTarget, Math.min(view.container.scrollTop, view.tallMaxScrollTop));
       this.tallSyncBufferToScroll(view);
