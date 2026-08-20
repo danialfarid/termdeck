@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-08-20
+
+### Fixed
+
+- Homebrew now copies cached wheel resources back to their original filenames before invoking pip, avoiding the invalid `<sha>--<wheel>` filenames used by Homebrew's download cache.
+
 ## [0.6.0] — 2026-08-20
 
 ### Added
@@ -137,7 +143,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/danialfarid/termdeck/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/danialfarid/termdeck/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/danialfarid/termdeck/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/danialfarid/termdeck/compare/v0.3.0...v0.4.0
