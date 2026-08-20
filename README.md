@@ -2,8 +2,12 @@
 
 # TermDeck
 
-**A persistent local workspace for Codex, Claude Code, AGY/Antigravity, and shell terminals — built
-for running, watching, and returning to many agent sessions without losing the thread.**
+**The persistent control room for coding agents.**
+
+*Run every agent. Keep every thread.*
+
+A local-first workspace for Codex, Claude Code, AGY/Antigravity, and shell terminals — built for running,
+watching, searching, and returning to many agent sessions without losing their prompts or context.
 
 [![Release](https://img.shields.io/github/v/release/danialfarid/termdeck?sort=semver)](https://github.com/danialfarid/termdeck/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
@@ -16,9 +20,11 @@ for running, watching, and returning to many agent sessions without losing the t
 
 ## What it is
 
-TermDeck is a small local web app that runs a deck of named terminals and serves them to your browser.
-It is built around one idea: **an AI coding agent session should never be lost in a pile of terminal
-windows.**
+TermDeck puts every coding-agent session in one persistent, searchable workspace instead of scattering valuable
+context across terminal windows and browser tabs. Start parallel agents, see what is working or waiting, hand
+selected context to another agent, search across their conversations, and return to the exact session later.
+
+It is built around one idea: **an AI coding agent session should never be lost in a pile of terminal windows.**
 
 Close the tab or restart the TermDeck server and live processes keep running under `dtach`. After a computer
 restart, saved Codex and Claude terminals reopen **resumed into the exact agent session they were on**, not a
@@ -28,6 +34,25 @@ The terminal deck stays at the center. Around it are tools that shorten the loop
 and searchable sessions, activity and unread state, an MD conversation mode, prompt and clipboard
 history, quick notes, a Monaco file editor, project search, Git history, and an automation API for spawning
 parallel agents and coordinating work between them.
+
+## Features at a glance
+
+- **Keep every prompt and session.** Unsent drafts are restored, submitted prompts stay in history, live terminals
+  survive browser and server restarts, and saved Codex and Claude sessions resume after a computer restart.
+- **Manage every coding agent together.** Run Codex, Claude Code, AGY/Antigravity, and shells; then group, reorder,
+  fork, rename, search, close, reopen, and monitor them from one deck.
+- **Hand work between agents.** Select terminal, transcript, file, or note text and use **Ask an agent**, or use the
+  automation API to spawn reviewers and subtasks, send prompts, monitor completion, and read their responses.
+- **Read the conversation, not terminal noise.** MD conversation mode renders the agent's native transcript with
+  model and status details, collapsible thinking and diffs, prompt history, queues, and a clickable outline.
+- **Search across many agents at once.** Find matching session names and conversation text across open and closed
+  terminals, inspect the surrounding context, and jump back to the relevant turn.
+- **Keep parallel work isolated.** Give each task its own Git worktree, terminal layout, files, search, and Git
+  context, then review its changes and explicitly keep, merge, or discard the result.
+- **Work beside the agents.** Open clickable source references in Monaco, search and replace across the project,
+  inspect definitions and usages, review Git history and blame, and keep notes and copied snippets close by.
+- **Stay local or connect remotely.** TermDeck is local-first and supports direct LAN access or an optional
+  authenticated remote connection when you need to check the deck from another device.
 
 ```
 ┌──────────────────────────┬────────────────────────────────────────────────────┐
