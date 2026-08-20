@@ -50,6 +50,7 @@ Run a TermDeck instance on 8536 with a throwaway data dir, then run any file wit
 | `parked_under_chunks.cjs` | a parked reader holds its line once the scrollback is full and trimming |
 | `wheel_travel.cjs` | a wheel gesture moves the content exactly as far as it was pushed |
 | `composer_cap.cjs` | a popup taller than the screen leaves the composer visible; its overflow stays scrollable |
+| `find_reveals_match.cjs` | find brings the match onto the screen, scrollback included, fresh page included |
 | `symptom_detector.cjs` | the live fault recorder can fire, and does not fire on look-alike states |
 | `overtravel_detector.cjs` | the wheel-accounting detector fires on interference, not on clean gestures |
 

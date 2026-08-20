@@ -18,7 +18,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", attach_repaint: true, tall_webgl: false, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: false, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
@@ -4948,13 +4948,6 @@ class TermdeckApp {
       return false;
     }
     view.v2Programmatic = true;
-    const buffer = view.term.buffer.active;
-    const viewportStart = Math.max(0, Number(buffer.viewportY || 0));
-    const viewportRows = Math.max(1, Number(view.term.rows || 1));
-    if (match.row < viewportStart || match.row >= viewportStart + viewportRows) {
-      const centeredLine = match.row - Math.floor(viewportRows / 2);
-      view.term.scrollToLine(Math.max(0, Math.min(centeredLine, Number(buffer.baseY || 0))));
-    }
     view.term.select(match.column, match.row, query.length);
     this.scrollTallContainerToRow(view, match.row);
     requestAnimationFrame(() => { view.v2Programmatic = false; });
@@ -4962,27 +4955,28 @@ class TermdeckApp {
     return true;
   }
 
-  // Find highlights the match but cannot bring it into view on its own here. Both mechanisms above are
-  // no-ops against the tall container: term.scrollToLine moves xterm's viewport, which is not the surface
-  // being scrolled any more, and the guard that decides whether to call it compares against term.rows --
-  // 1000 here -- so a match almost always looks "already visible" and it is never even called. The result
-  // is a highlighted, selected match somewhere outside the ~37 rows actually on screen. Centering is
-  // deliberate rather than a minimal scroll-into-view: a match found mid-search usually wants its
-  // surrounding context readable, and centering also keeps repeat presses of the same direction moving a
-  // predictable distance instead of pinning the match to whichever edge it entered from.
+  // Find highlights the match but cannot bring it into view on its own: the addon scrolls xterm's
+  // viewport, which is not the surface being scrolled. The container's scrollTop is an absolute buffer
+  // offset, so the match's row maps to it directly -- subtracting viewportY (the old rendered-window
+  // frame) landed the view somewhere unrelated, which read as "search moves the scroll but the match is
+  // further down". Centering is deliberate rather than a minimal scroll-into-view: a match found
+  // mid-search usually wants its surrounding context readable, and centering also keeps repeat presses
+  // of the same direction moving a predictable distance instead of pinning the match to whichever edge
+  // it entered from.
   scrollTallContainerToRow(view, absoluteRow) {
     if (!view || view.closed) return;
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
     if (!cellHeight || !view.container.clientHeight) return;
-    // Read viewportY now, not before: the scrollToLine above may have just moved it to reach a match
-    // that was sitting in real scrollback, and this row is in absolute buffer coordinates.
-    const canvasRow = absoluteRow - Number(view.term.buffer.active.viewportY || 0);
-    const centered = canvasRow * cellHeight - Math.max(0, (view.container.clientHeight - cellHeight) / 2);
+    const centered = absoluteRow * cellHeight - Math.max(0, (view.container.clientHeight - cellHeight) / 2);
     const nativeMax = Math.max(0, view.container.scrollHeight - view.container.clientHeight);
     // Honor the same content ceiling the scroll listener enforces, so centering a match near the end
     // cannot park the view in the blank rows past the content.
     const ceiling = view.tallMaxScrollTop == null ? nativeMax : Math.min(nativeMax, view.tallMaxScrollTop);
-    this.tallSetScrollTop(view, Math.min(centered, ceiling));
+    this.tallSetScrollTop(view, Math.max(0, Math.min(centered, ceiling)));
+    // Our own scrollTop write suppresses its scroll event as an echo, so the listener's viewport sync
+    // never runs for it -- the rendered window has to be brought along explicitly, or the container
+    // points at a region the window does not cover and the match "lands" on blank canvas.
+    this.tallSyncBufferToScroll(view);
     // Searching is the user asking to look at something specific, so stop following new output -- other-
     // wise the next write scrolls straight back to the prompt and the match they just navigated to is
     // gone. Typing resumes following (see the key handler in ensureView). Anchoring to the match's row
@@ -12781,7 +12775,6 @@ class TermdeckApp {
   }
 
   scheduleClaudeInitialReplayRecovery(id, view) {
-    if (!this.attachRepaintEnabled()) return;
     if (!view || view.closed || view.claudeInitialReplayRecoveryAttempted || view.claudeInitialReplayCheckTimer) return;
     clearTimeout(view.claudeInitialReplayCheckTimer);
     view.claudeInitialReplayCheckTimer = setTimeout(this.recoverClaudeInitialReplay.bind(this, id, view), 900);
@@ -13567,7 +13560,7 @@ class TermdeckApp {
     // already holds a populated buffer asks it to skip; an empty one always wants the repaint.
     // screen_repaint=0 tells the server to skip its SIGWINCH nudge, which is the repaint that actually
     // makes an agent redraw. With the switch off we never ask for it.
-    const screenRepaint = this.attachRepaintEnabled() ? (hasPopulatedBuffer ? 0 : 1) : 0;
+    const screenRepaint = hasPopulatedBuffer ? 0 : 1;
     const haveBuffer = hasPopulatedBuffer ? 1 : 0;
     // repaint_preserved_buffer is deliberately not sent: it only ever meant "this client restored a
     // client-side snapshot, so make the agent repaint over it", and that snapshot path is gone. The
@@ -14144,7 +14137,6 @@ class TermdeckApp {
   }
 
   scheduleTerminalResizeRepair(view) {
-    if (!this.attachRepaintEnabled()) return;
     if (!view || view.closed || !view.container.classList.contains("visible")) return;
     view.forceResizeAfterFit = true;
     this.scheduleTerminalLayoutFit();
@@ -14836,7 +14828,6 @@ class TermdeckApp {
   }
 
   scheduleTerminalTailRepair(view) {
-    if (!this.attachRepaintEnabled()) return;
     if (!view || view.closed || view.tailRepairTimer || view.tailRepairConfirmTimer ||
         !view.container.classList.contains("visible") || !this.isTerminalScrollV2() ||
         this.session(view.sessionId)?.agent_kind !== "codex" || !this.terminalPageCanResize()) return;
@@ -14902,7 +14893,6 @@ class TermdeckApp {
   // regresses again later, not a real option (it reintroduces the Claude wrap on its own). No UI for it;
   // set/clear it from the browser console.
   forceVisibleTerminalReflow(view) {
-    if (!this.attachRepaintEnabled()) return false;
     if (localStorage.getItem("td-debug-reflow-mode") === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
     const kind = this.session(view.sessionId)?.agent_kind;
     if (kind !== "codex") return this.forceVisibleTerminalReflowViaClear(view);
@@ -15647,7 +15637,6 @@ class TermdeckApp {
   }
 
   repairTerminalViewport(view) {
-    if (!this.attachRepaintEnabled()) return;
     // Do this only after an initial replay has drained and only while output
     // following is active. The older generic viewport scroll listener caused
     // this same repair to race a user's first wheel gesture after tab switch.
@@ -16620,11 +16609,6 @@ class TermdeckApp {
     pop.appendChild(this.buildTerminalIconSettingsRow());
     pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));
-    // Experiment switch: see attachRepaintEnabled(). Off means a terminal is shown exactly as its buffer
-    // already holds it, with nothing forced to redraw on attach.
-    pop.appendChild(this.buildToggleRow("Repaint on attach (reload)",
-      () => (this.attachRepaintEnabled() ? "on" : "off"),
-      () => { this.settings.attach_repaint = !this.attachRepaintEnabled(); }));
     // Experiment switch: see tallRowPlan(). GPU rendering, at the cost of a much shorter scrollable
     // canvas -- the whole trade is explained there.
     pop.appendChild(this.buildToggleRow("WebGL renderer (reload)",
@@ -17001,15 +16985,11 @@ class TermdeckApp {
     if (whole) this.tallPositionRenderedWindow(view, cellHeight);
   }
 
-  // Whether attaching to a terminal forces it to repaint itself. Every one of these mechanisms exists
-  // because a normal-height terminal cannot hold the agent's screen: reattaching replays scrollback that
-  // cannot reconstruct a synchronized-update frame, so the screen had to be forced to redraw. A terminal
-  // taller than the whole conversation keeps that screen in its buffer, so the redraw may now be
-  // redundant -- and it is not free: the repaint is what flickers on the first visit to a tab and can
-  // leave the view somewhere above the prompt once it settles.
-  //
-  // Kept as a switch rather than a deletion because the answer differs per agent and per state, and the
-  // failure it originally fixed (a blank pane) is worse than the flicker it causes.
+  // Attaching to a terminal forces it to repaint itself, permanently (formerly the attach_repaint
+  // experiment). The mechanisms exist because agents paint their screens inside synchronized-update
+  // frames, which the durable scrollback deliberately strips -- so after a server restart the replay can
+  // lack the actual current screen, and the failure that leaves (a blank or stale pane) is worse than
+  // the flicker a redundant repaint costs.
   // Repaint only if the terminal has nothing to show. Deliberately checked after the replay rather than
   // before connecting: whether anything exists to replay is only knowable once it has arrived, and a
   // server restart is exactly the case where the answer is "nothing".
@@ -17052,9 +17032,6 @@ class TermdeckApp {
     }
   }
 
-  attachRepaintEnabled() {
-    return this.settings.attach_repaint !== false;
-  }
 
     // Off by default, and a reload is needed either way: the row count is fixed when a view is built, and
   // the renderer is chosen to match it. Turning it ON trades canvas height for GPU rendering -- the GPU

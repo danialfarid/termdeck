@@ -62,6 +62,7 @@ TESTS=(
   wheel_travel
   scrollback_wheel_travel
   composer_cap
+  find_reveals_match
   scroll_round_trip
   short_session_scrollback
   parked_under_chunks

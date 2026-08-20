@@ -456,7 +456,6 @@ class UiSettings(BaseModel):
     history_mode: bool = False
     transcript_first_surface: str = "terminal"
     # Declared explicitly or it is silently dropped when settings are saved.
-    attach_repaint: bool = True
     tall_webgl: bool = False
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
