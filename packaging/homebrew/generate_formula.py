@@ -70,7 +70,13 @@ class HomebrewFormulaGenerator:
     venv_root = libexec
     system formula_opt_bin("{python_formula}")/"python{python_tag}", "-m", "venv", venv_root
     pip = venv_root/"bin/pip"
-    system pip, "install", "--no-deps", "--no-index", *resources.map(&:cached_download)
+    wheelhouse = buildpath/"wheelhouse"
+    wheelhouse.mkpath
+    resources.each do |resource|
+      wheel_name = resource.cached_download.basename.to_s.sub(/\\A[0-9a-f]+--/, "")
+      cp resource.cached_download, wheelhouse/wheel_name
+    end
+    system pip, "install", "--no-deps", "--no-index", *wheelhouse.children
     system pip, "install", "--no-deps", "--no-build-isolation", buildpath
     bin.install_symlink venv_root/"bin/termdeck"
   end

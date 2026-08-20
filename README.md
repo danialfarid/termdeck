@@ -131,7 +131,7 @@ Install `dtach` and `ripgrep` with the system package manager, then install the 
 
 ```sh
 sudo apt install dtach ripgrep
-uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.6.0"
+uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.6.1"
 termdeck service install
 ```
 
