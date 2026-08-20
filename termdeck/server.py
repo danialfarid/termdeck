@@ -26,6 +26,7 @@ from filedeck.git_remote_service import GitRemoteService
 from filedeck.git_service import FileDeckGitService
 from filedeck.git_workflow_service import GitWorkflowService
 from termdeck.history_index import HistorySearchIndex
+from termdeck.lan_access import LanAccessManager
 from termdeck.lsp_protocol import LanguageServerConnection, LanguageServerProtocolError, LanguageServerRequestError
 from termdeck.lsp_service import LanguageServerManager, LanguageServerRegistry, LanguageServerUnavailableError
 from termdeck.lsp_workspace_edit import LspWorkspaceEditService
@@ -385,6 +386,10 @@ class LspEnabledRequest(BaseModel):
     enabled: bool
 
 
+class LanAccessRequest(BaseModel):
+    enabled: bool
+
+
 class ProjectUiState(BaseModel):
     active_session_id: str = ""
     open_files: list[dict[str, str]] = []
@@ -481,12 +486,15 @@ class UiSettings(BaseModel):
     file_tab_order: str = "opened"
     lsp_enabled: bool = True
     lsp_command_overrides: dict[str, dict[str, str]] = {}
+    lan_access_enabled: bool = False
 
 
 class TermdeckServer:
     """HTTP + websocket surface of the mini terminal IDE: session CRUD API, static UI, one websocket per terminal.
     Terminal websocket protocol: server sends raw output as binary frames (scrollback replay first) and control
     events as JSON text frames; client sends JSON text frames for input and resize."""
+
+    LAN_DISABLE_RESPONSE_DELAY_SECONDS = 0.25
 
     def __init__(self) -> None:
         self.server_instance_id = uuid.uuid4().hex
@@ -529,6 +537,8 @@ class TermdeckServer:
             reconnect_max_seconds=TermdeckConfig.REMOTE_RECONNECT_MAX_SECONDS,
             http_timeout_seconds=TermdeckConfig.REMOTE_HTTP_TIMEOUT_SECONDS,
             demand_poll_seconds=TermdeckConfig.REMOTE_DEMAND_POLL_SECONDS)
+        self.lan_access: LanAccessManager | None = None
+        self._lan_stop_task: asyncio.Task[None] | None = None
         self._state_backup_task: asyncio.Task | None = None
         self._origin_delivery_locks: dict[str, asyncio.Lock] = {}
         self._task_delivery_jobs: set[asyncio.Task] = set()
@@ -545,9 +555,17 @@ class TermdeckServer:
         self.transcripts.start(asyncio.get_running_loop())
         self.history_index.start()
         await self.remote_access.start()
+        if UiSettings(**self.settings_store.load()).lan_access_enabled:
+            try:
+                await self._required_lan_access_manager().start()
+            except (OSError, RuntimeError) as lan_error:
+                self._required_lan_access_manager().record_error(lan_error)
+                print(f"termdeck local Wi-Fi listener failed: {lan_error}", flush=True)
         try:
             yield
         finally:
+            await self._cancel_pending_lan_stop()
+            await self._required_lan_access_manager().stop()
             await self.remote_access.stop()
             if self._state_backup_task is not None:
                 self._state_backup_task.cancel()
@@ -565,6 +583,7 @@ class TermdeckServer:
 
     def build_app(self) -> FastAPI:
         app = FastAPI(lifespan=self._lifespan)
+        self.lan_access = LanAccessManager(app, TermdeckConfig.LAN_PORT, TermdeckConfig.UVICORN_LOG_LEVEL)
         app.middleware("http")(self._no_cache_middleware)
         app.mount(TermdeckConfig.STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.STATIC_DIR), name=TermdeckConfig.STATIC_NAME)
         app.mount(TermdeckConfig.FILEDECK_STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.FILEDECK_STATIC_DIR),
@@ -644,6 +663,8 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_REMOTE_STATUS_ROUTE, response_model=None)(self._remote_status)
         app.post(TermdeckConfig.API_REMOTE_PAIR_ROUTE, response_model=None)(self._remote_pair)
         app.post(TermdeckConfig.API_REMOTE_DISCONNECT_ROUTE, response_model=None)(self._remote_disconnect)
+        app.get(TermdeckConfig.API_LAN_STATUS_ROUTE, response_model=None)(self._lan_status)
+        app.put(TermdeckConfig.API_LAN_ACCESS_ROUTE, response_model=None)(self._set_lan_access)
         app.post(TermdeckConfig.API_NOTEBOOK_TRASH_ROUTE, response_model=None)(self._trash_notebook_note)
         app.get(TermdeckConfig.API_FILE_LIST_ROUTE, response_model=None)(self._list_files)
         app.get(TermdeckConfig.API_FILE_RECENT_ROUTE, response_model=None)(self._recent_files)
@@ -790,6 +811,54 @@ class TermdeckServer:
             return await self.remote_access.disconnect()
         except httpx.HTTPError as remote_error:
             raise HTTPException(status_code=502, detail=str(remote_error)) from remote_error
+
+    def _required_lan_access_manager(self) -> LanAccessManager:
+        if self.lan_access is None:
+            raise RuntimeError("local Wi-Fi listener is not initialized")
+        return self.lan_access
+
+    async def _lan_status(self) -> dict[str, object]:
+        enabled = UiSettings(**self.settings_store.load()).lan_access_enabled
+        return await self._required_lan_access_manager().status(enabled)
+
+    async def _set_lan_access(self, request: LanAccessRequest) -> dict[str, object]:
+        if self.recovery_mode:
+            raise HTTPException(status_code=409, detail="local Wi-Fi access is unavailable during state recovery")
+        manager = self._required_lan_access_manager()
+        if request.enabled:
+            await self._cancel_pending_lan_stop()
+            try:
+                await manager.start()
+            except (OSError, RuntimeError) as lan_error:
+                manager.record_error(lan_error)
+                raise HTTPException(status_code=409, detail=str(lan_error)) from lan_error
+            payload = self._validated_setting_payload("lan_access_enabled", True)
+            self.settings_store.save(payload)
+            return await manager.status(True)
+        payload = self._validated_setting_payload("lan_access_enabled", False)
+        self.settings_store.save(payload)
+        status = await manager.status(False)
+        status["running"] = False
+        if self._lan_stop_task is None or self._lan_stop_task.done():
+            self._lan_stop_task = asyncio.create_task(self._stop_lan_access_after_response())
+        return status
+
+    async def _stop_lan_access_after_response(self) -> None:
+        await asyncio.sleep(self.LAN_DISABLE_RESPONSE_DELAY_SECONDS)
+        if UiSettings(**self.settings_store.load()).lan_access_enabled:
+            return
+        await self._required_lan_access_manager().stop()
+
+    async def _cancel_pending_lan_stop(self) -> None:
+        task = self._lan_stop_task
+        self._lan_stop_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     async def _put_settings(self, settings: UiSettings) -> dict[str, object]:
         payload = self._preserve_active_layout_entries(settings.model_dump())

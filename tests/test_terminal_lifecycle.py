@@ -391,6 +391,36 @@ class CodexTranscriptParsingTest(unittest.TestCase):
         self.assertFalse(turns[0]["final"])
         self.assertTrue(turns[1]["final"])
 
+    def test_codex_agent_message_and_response_item_with_different_metadata_are_one_turn(self) -> None:
+        service = TranscriptService()
+        text = "I’ll inspect the transcript before changing the renderer."
+        lines = [
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "agent_message", "message": text, "phase": "commentary",
+            }}),
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "assistant", "phase": "commentary",
+                "content": [{"type": "output_text", "text": text}],
+            }}),
+        ]
+
+        turns = service._parse_codex_lines(lines)
+
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["text"], text)
+        self.assertEqual(turns[0]["phase"], "commentary")
+        self.assertFalse(turns[0]["final"])
+
+
+class ClaudeTranscriptParsingTest(unittest.TestCase):
+    def test_terminal_clear_line_prefix_is_removed_from_user_prompt(self) -> None:
+        service = TranscriptService()
+        lines = [json.dumps({"type": "user", "message": {"content": "\x15Should we increase max workers?"}})]
+
+        turns = service._parse_claude_lines(lines)
+
+        self.assertEqual(turns[0]["text"], "Should we increase max workers?")
+
 
 class CliTitlePersistenceTest(unittest.TestCase):
     def _manager_with_session(self) -> tuple[TerminalSessionManager, ManagedSession, list[int]]:

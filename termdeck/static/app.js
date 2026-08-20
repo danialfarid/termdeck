@@ -23,7 +23,8 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
   files_side_panel_last_tab: "project", file_search_history: [], files_panel_width_initialized: false,
-  file_tab_max_visible: 20, file_tab_order: "opened", lsp_enabled: true, lsp_command_overrides: {} };
+  file_tab_max_visible: 20, file_tab_order: "opened", lsp_enabled: true, lsp_command_overrides: {},
+  lan_access_enabled: false };
 const MODEL_PERMISSIONS = {
   codex: [
     { value: "default", label: "Default (Codex config)" },
@@ -675,6 +676,10 @@ class TermdeckApp {
     this.remoteIdleActivityHandler = () => this.recordRemoteBrowserActivity();
     this.remoteIdleVisibilityHandler = () => this.handleRemoteBrowserVisibilityChange();
     this.layoutFitSettleTimer = 0;
+    this.mobileOrientationChangeTimer = 0;
+    this.mobileViewportResizeHandler = this.syncMobileVisualViewport.bind(this);
+    this.mobileOrientationChangeHandler = this.scheduleMobileOrientationChange.bind(this);
+    this.mobileOrientationFinishHandler = this.finishMobileOrientationChange.bind(this);
     this.sidebarResizeInProgress = false;
     this.sidebarResizeFinalFitFrame = 0;
     this.activeEditorFocusTimer = 0;
@@ -730,6 +735,33 @@ class TermdeckApp {
     this.$ = (id) => document.getElementById(id);
     this.ensureDesktopTerminalsHeader();
     this.applyVscodeModeLayout();
+  }
+
+  touchMobileLayoutEnabled() {
+    return window.matchMedia("(max-width: 900px), (hover: none) and (pointer: coarse)").matches;
+  }
+
+  syncMobileVisualViewport() {
+    const viewport = window.visualViewport;
+    if (!this.touchMobileLayoutEnabled() || !viewport || !Number.isFinite(viewport.height) || viewport.height <= 0) {
+      document.documentElement.style.removeProperty("--mobile-visual-height");
+      return;
+    }
+    document.documentElement.style.setProperty("--mobile-visual-height", `${Math.round(viewport.height)}px`);
+  }
+
+  scheduleMobileOrientationChange() {
+    clearTimeout(this.mobileOrientationChangeTimer);
+    this.mobileOrientationChangeTimer = window.setTimeout(this.mobileOrientationFinishHandler, 250);
+  }
+
+  finishMobileOrientationChange() {
+    this.mobileOrientationChangeTimer = 0;
+    this.syncMobileVisualViewport();
+    const scrollingElement = document.scrollingElement;
+    if (scrollingElement) scrollingElement.scrollTop = 0;
+    this.positionFloatingFilesPanel();
+    this.scheduleTerminalLayoutFit();
   }
 
   projectQuery() {
@@ -3046,6 +3078,9 @@ class TermdeckApp {
     new ResizeObserver(scheduleLayoutFit).observe(this.$("terminal-area"));
     new ResizeObserver(scheduleLayoutFit).observe(this.$("main"));
     window.addEventListener("resize", scheduleLayoutFit);
+    this.syncMobileVisualViewport();
+    window.visualViewport?.addEventListener("resize", this.mobileViewportResizeHandler);
+    window.addEventListener("orientationchange", this.mobileOrientationChangeHandler);
     // Every fit/repaint pass in this file runs off requestAnimationFrame or setTimeout, both of
     // which browsers throttle or fully suspend for a backgrounded tab or unfocused window. A
     // repair scheduled while hidden does not fail — it just never runs, or runs late against
@@ -9757,7 +9792,7 @@ class TermdeckApp {
   }
 
   historyPromptComparisonText(text) {
-    return String(text || "").replace(/\r\n?/g, "\n").trim();
+    return String(text || "").replace(/^\x15+/, "").replace(/\r\n?/g, "\n").trim();
   }
 
   sendHistoryPrompt(options = {}) {
@@ -16581,6 +16616,7 @@ class TermdeckApp {
     };
     pop.appendChild(this.buildThemeSelectRow());
     pop.appendChild(this.buildRemoteAccessRow());
+    pop.appendChild(this.buildLanAccessRow());
     pop.appendChild(this.buildTerminalIconSettingsRow());
     pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));
@@ -17804,7 +17840,11 @@ class TermdeckApp {
     const status = document.createElement("span");
     status.className = "remote-access-status";
     status.textContent = "checking…";
-    heading.append(label, status);
+    const accessUrl = document.createElement("a");
+    accessUrl.className = "remote-access-url hidden";
+    accessUrl.target = "_blank";
+    accessUrl.rel = "noopener";
+    heading.append(label, status, accessUrl);
     const controls = document.createElement("span");
     controls.className = "settings-controls";
     const open = document.createElement("button");
@@ -17818,7 +17858,7 @@ class TermdeckApp {
     action.textContent = "Sign in";
     controls.append(open, action);
     row.append(heading, controls);
-    row.remoteAccessElements = { status, open, action };
+    row.remoteAccessElements = { status, accessUrl, open, action };
     action.onclick = () => this.handleRemoteAccessAction(row);
     open.onclick = () => {
       const relayUrl = row.dataset.relayUrl;
@@ -17830,7 +17870,7 @@ class TermdeckApp {
 
   async refreshRemoteAccessRow(row) {
     if (!row) return;
-    const { status, open, action } = row.remoteAccessElements;
+    const { status, accessUrl, open, action } = row.remoteAccessElements;
     try {
       const response = await fetch("/api/remote/status");
       if (!response.ok) throw new Error(`remote status failed (${response.status})`);
@@ -17839,6 +17879,11 @@ class TermdeckApp {
       row.dataset.remoteState = remote.state;
       row.dataset.relayUrl = remote.public_url || remote.relay_url || "";
       row.dataset.loginUrl = remote.login_url || "";
+      const showAccessUrl = !!row.dataset.relayUrl && !!(remote.email || this.remoteBrowserEmail);
+      accessUrl.href = showAccessUrl ? row.dataset.relayUrl : "";
+      accessUrl.textContent = showAccessUrl ? row.dataset.relayUrl : "";
+      accessUrl.title = showAccessUrl ? `Open ${row.dataset.relayUrl}` : "";
+      accessUrl.classList.toggle("hidden", !showAccessUrl);
       const labels = {
         disconnected: "off",
         pairing: "finish Google sign-in",
@@ -17848,7 +17893,7 @@ class TermdeckApp {
       };
       status.textContent = labels[remote.state] || remote.state;
       status.title = remote.error || remote.relay_url || "";
-      open.classList.toggle("hidden", !!this.remoteBrowserEmail || remote.state !== "connected");
+      open.classList.toggle("hidden", !!this.remoteBrowserEmail || !showAccessUrl);
       action.textContent = this.remoteBrowserEmail ? "Log out" :
         ["connected", "ready"].includes(remote.state) ? "Disconnect" :
           remote.state === "pairing" ? "Open login" : "Sign in";
@@ -17859,6 +17904,7 @@ class TermdeckApp {
     } catch (error) {
       status.textContent = "unavailable";
       status.title = error instanceof Error ? error.message : String(error);
+      accessUrl.classList.add("hidden");
       action.textContent = "Retry";
     }
   }
@@ -17895,6 +17941,106 @@ class TermdeckApp {
       if (loginWindow) loginWindow.close();
       window.alert(error instanceof Error ? error.message : String(error));
       await this.refreshRemoteAccessRow(row);
+    }
+  }
+
+  buildLanAccessRow() {
+    const row = document.createElement("div");
+    row.className = "settings-row lan-access-settings-row";
+    const heading = document.createElement("span");
+    heading.className = "lan-access-heading";
+    const label = document.createElement("span");
+    label.className = "settings-label";
+    label.textContent = "Local Wi-Fi";
+    const status = document.createElement("span");
+    status.className = "lan-access-status";
+    status.textContent = "checking…";
+    const accessUrl = document.createElement("a");
+    accessUrl.className = "lan-access-url hidden";
+    accessUrl.target = "_blank";
+    accessUrl.rel = "noopener";
+    heading.append(label, status, accessUrl);
+    const controls = document.createElement("span");
+    controls.className = "settings-controls";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "lan-access-open hidden";
+    open.textContent = "↗";
+    open.title = "Open over local Wi-Fi";
+    const action = document.createElement("button");
+    action.type = "button";
+    action.className = "lan-access-action";
+    action.textContent = "Enable";
+    controls.append(open, action);
+    row.append(heading, controls);
+    row.lanAccessElements = { status, accessUrl, open, action };
+    action.onclick = () => this.handleLanAccessAction(row);
+    open.onclick = () => {
+      const url = row.dataset.accessUrl;
+      if (url) window.open(url, "_blank", "noopener");
+    };
+    void this.refreshLanAccessRow(row);
+    return row;
+  }
+
+  async refreshLanAccessRow(row) {
+    if (!row) return;
+    const { status, accessUrl, open, action } = row.lanAccessElements;
+    try {
+      const response = await fetch("/api/lan/status");
+      const lan = await response.json();
+      if (!response.ok) throw new Error(lan.detail || `local Wi-Fi status failed (${response.status})`);
+      if (!row.isConnected) return;
+      const enabled = !!lan.enabled;
+      const running = !!lan.running;
+      const baseUrl = Array.isArray(lan.urls) ? String(lan.urls[0] || "") : "";
+      const pageUrl = baseUrl ? new URL(`${location.pathname}${location.search}${location.hash}`, `${baseUrl}/`).href : "";
+      row.dataset.enabled = enabled ? "1" : "0";
+      row.dataset.accessUrl = pageUrl;
+      this.settings.lan_access_enabled = enabled;
+      this.persistedSettings.lan_access_enabled = enabled;
+      status.textContent = enabled ? running ? "on · same network only" : lan.error || "not listening" : "off";
+      status.title = lan.error || (Array.isArray(lan.networks) ? lan.networks.join("\n") : "");
+      accessUrl.href = enabled && running ? pageUrl : "";
+      accessUrl.textContent = enabled && running ? baseUrl : "";
+      accessUrl.title = enabled && running ? `Open ${pageUrl}` : "";
+      accessUrl.classList.toggle("hidden", !enabled || !running || !pageUrl);
+      open.classList.toggle("hidden", !enabled || !running || !pageUrl);
+      action.textContent = enabled ? "Disable" : "Enable";
+    } catch (error) {
+      status.textContent = "unavailable";
+      status.title = error instanceof Error ? error.message : String(error);
+      accessUrl.classList.add("hidden");
+      open.classList.add("hidden");
+      action.textContent = "Retry";
+    }
+  }
+
+  async handleLanAccessAction(row) {
+    const enabled = row.dataset.enabled === "1";
+    const message = enabled
+      ? "Disable local Wi-Fi access? A page currently using the Wi-Fi address will disconnect."
+      : "Anyone on your current local Wi-Fi network will be able to control terminals and access files without signing in. Enable local Wi-Fi access?";
+    if (!window.confirm(message)) return;
+    const action = row.lanAccessElements.action;
+    action.disabled = true;
+    try {
+      const response = await fetch("/api/lan/access", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !enabled }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || `local Wi-Fi update failed (${response.status})`);
+      row.dataset.enabled = payload.enabled ? "1" : "0";
+      this.settings.lan_access_enabled = !!payload.enabled;
+      this.persistedSettings.lan_access_enabled = !!payload.enabled;
+      await this.refreshLanAccessRow(row);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error));
+      await this.refreshLanAccessRow(row);
+    } finally {
+      action.disabled = false;
     }
   }
 

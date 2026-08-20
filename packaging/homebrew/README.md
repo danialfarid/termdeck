@@ -20,10 +20,11 @@ This is the important decision. A source build would compile `pydantic-core` fro
 build backend would also have to be vendored, and every user would wait through a Rust build. Installing from
 wheels means **nothing compiles at install time**: fast, and far fewer ways to break.
 
-The cost: the four packages with native extensions — `pydantic-core`, `setproctitle`, `watchdog`,
-`websockets` — are architecture-specific, so their wheels live in per-arch `on_arm`/`on_intel` blocks. The
-rest are universal `py3-none-any` wheels. This makes the formula **macOS-only** (Apple Silicon + Intel);
-Linux users install with `uv`/`pipx` from the GitHub release.
+Packages with native extensions are architecture-specific, so their wheels live in per-arch
+`on_arm`/`on_intel` blocks. The generator resolves every dependency for both architectures and classifies the
+downloaded wheel instead of relying on a hard-coded package list. The rest are universal `py3-none-any` wheels.
+This makes the formula **macOS-only** (Apple Silicon + Intel); Linux users install with `uv`/`pipx` from the
+GitHub release.
 
 TermDeck itself is still built from the GitHub release tarball (it is pure Python, so `hatchling` — installed
 from its own wheel first — is all that is needed).
@@ -50,7 +51,7 @@ One-time:
 gh repo create danialfarid/homebrew-tap --public --description "Homebrew tap for termdeck"
 ```
 
-Each release:
+Each tagged release updates the tap through `.github/workflows/release.yml`. For a manual repair:
 
 ```sh
 python packaging/homebrew/generate_formula.py

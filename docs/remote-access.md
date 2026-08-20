@@ -4,6 +4,17 @@ TermDeck Remote keeps the terminal server bound to localhost. The local TermDeck
 hosted relay and opens an outbound tunnel only when an authenticated browser requests it. No inbound port,
 router rule, public IP, or local TLS certificate is required.
 
+## Local Wi-Fi access
+
+For direct access from a phone or another computer on the same network, open Settings and enable **Local Wi-Fi**.
+TermDeck starts a separate listener on port `8532` and shows the local URL to open. This connection stays on the
+local network and does not use Google sign-in, the hosted relay, or the internet.
+
+The listener accepts only loopback clients and clients inside a private subnet currently assigned to the computer.
+It is plain HTTP with no user authentication, so anyone on that local network can control terminals and access the
+files exposed by TermDeck. Enable it only on a trusted home or office network and disable it on public Wi-Fi. The
+port can be changed with `TERMDECK_LAN_PORT` or `termdeck --lan-port`.
+
 ## Connect a computer
 
 Set the relay URL before installing or restarting the TermDeck background service:

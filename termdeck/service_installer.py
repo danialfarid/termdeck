@@ -24,7 +24,8 @@ class ServiceInstaller:
     LOG_FILE_NAME = "termdeck.log"
     CONSOLE_SCRIPT_NAME = "termdeck"
     MODULE_ARGS = ("-m", "termdeck")
-    FORWARDED_ENV_KEYS = (PlatformPaths.ENV_HOST, PlatformPaths.ENV_PORT, PlatformPaths.ENV_DATA_DIR,
+    FORWARDED_ENV_KEYS = (PlatformPaths.ENV_HOST, PlatformPaths.ENV_PORT, PlatformPaths.ENV_LAN_PORT,
+                          PlatformPaths.ENV_DATA_DIR,
                           PlatformPaths.ENV_DEFAULT_CWD, PlatformPaths.ENV_FILE_ROOT, PlatformPaths.ENV_SHELL,
                           PlatformPaths.ENV_DTACH_BIN, PlatformPaths.ENV_RG_BIN, PlatformPaths.ENV_LOG_LEVEL,
                           PlatformPaths.ENV_REMOTE_URL)
