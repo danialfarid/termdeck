@@ -84,6 +84,12 @@ jobs:
       - run: python -m pip install --upgrade pip build twine
       - run: python -m build
       - run: python -m twine check dist/*
+      - name: Install and run the built wheel
+        run: |
+          python -m venv "${RUNNER_TEMP}/termdeck-wheel"
+          "${RUNNER_TEMP}/termdeck-wheel/bin/pip" install dist/*.whl
+          "${RUNNER_TEMP}/termdeck-wheel/bin/termdeck" --version
+          "${RUNNER_TEMP}/termdeck-wheel/bin/termdeck" --help >/dev/null
       - uses: actions/upload-artifact@v7
         with:
           name: dist

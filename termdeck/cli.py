@@ -53,6 +53,7 @@ class TermdeckCli:
         parser.add_argument("--version", action="version", version=f"{TermdeckCli.PROGRAM_NAME} {__version__}")
         parser.add_argument("--host", help="interface to bind (default 127.0.0.1; use 0.0.0.0 only behind a trusted network)")
         parser.add_argument("--port", type=int, help="port to serve on (default 8530)")
+        parser.add_argument("--lan-port", type=int, help="local Wi-Fi access port (default 8532)")
         parser.add_argument("--data-dir", help="where sessions/settings/scrollback live (default ~/.termdeck)")
         parser.add_argument("--default-cwd", help="starting directory for new terminals (default ~)")
         parser.add_argument("--file-root", help="directory the file browser is confined to (default ~)")
@@ -71,6 +72,7 @@ class TermdeckCli:
     def apply_environment_overrides(args: argparse.Namespace) -> None:
         overrides: tuple[tuple[str, str | int | None], ...] = (
             (PlatformPaths.ENV_HOST, args.host), (PlatformPaths.ENV_PORT, args.port),
+            (PlatformPaths.ENV_LAN_PORT, args.lan_port),
             (PlatformPaths.ENV_DATA_DIR, args.data_dir), (PlatformPaths.ENV_DEFAULT_CWD, args.default_cwd),
             (PlatformPaths.ENV_FILE_ROOT, args.file_root), (PlatformPaths.ENV_LOG_LEVEL, args.log_level),
         )

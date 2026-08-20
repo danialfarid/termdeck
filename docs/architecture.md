@@ -82,6 +82,8 @@ cpu/rss.
 | Module | Responsibility |
 |---|---|
 | `file_service.py` | Listing, reading, writing, renaming, moving, trashing — all confined to the file root, size-capped, binary-refusing. |
+| `filedeck/git_workflow_service.py` | Typed Git workflow operations for status, staging, commits, branches, conflicts, stashes, worktrees, and agent attribution. |
+| `filedeck/git_remote_service.py` | SSH/HTTPS Git remote listing, fetch, fast-forward pull, push, and clone transport. |
 | `search_service.py` | ripgrep wrapper: fixed-string or regex, smart-case, gitignore-aware, glob filters, find-usages. |
 | `proc_tree.py` | Socket → master pid → descendant pids. |
 | `stats_service.py` | Per-terminal and whole-app cpu/rss sampling. |

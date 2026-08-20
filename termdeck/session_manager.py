@@ -107,9 +107,13 @@ class ManagedSession:
     def processing(self) -> bool:
         if not self.cli_title or not self.title_updated_monotonic:
             return False
-        marker = self.cli_title[:1]
-        return ("\u2800" <= marker <= "\u28ff" or marker == "✳") and \
+        return self.title_has_processing_marker(self.cli_title) and \
             time.monotonic() - self.title_updated_monotonic < 3.0
+
+    @staticmethod
+    def title_has_processing_marker(value: str | None) -> bool:
+        marker = value[:1] if value else ""
+        return "\u2800" <= marker <= "\u28ff" or "○" <= marker <= "◗" or marker == "✳"
 
     @property
     def dormant(self) -> bool:
@@ -183,6 +187,7 @@ class TerminalSessionManager:
             await self._reconcile_session_socket(ms)
             await self._reconcile_live_claude_session_binding(ms)
             self._reconcile_stale_claude_session_binding(ms)
+            self._canonicalize_agent_resume_command(ms.record)
             self._sync_claude_explicit_title(ms)
             self._refresh_session_activity(ms)
             self._refresh_persisted_agent_activity(ms)
@@ -219,7 +224,7 @@ class TerminalSessionManager:
             AgentKind.CLAUDE, cwd, ms.record.agent_session_id)
         if candidate_activity <= current_activity:
             return False
-        ms.record.agent_session_id = candidate
+        self._set_agent_session_binding(ms, candidate)
         self._initialize_claude_subagent_state(ms)
         return True
 
@@ -283,7 +288,7 @@ class TerminalSessionManager:
             }
             if selected_permission not in permission_flags:
                 raise ValueError(f"unknown codex permission: {permission}")
-            parts = ["codex", *permission_flags[selected_permission]]
+            parts = ["codex", TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG, *permission_flags[selected_permission]]
             if normalized_model_name:
                 model_id, reasoning_effort = self._codex_model_parts(normalized_model_name)
                 if reasoning_effort:
@@ -333,8 +338,14 @@ class TerminalSessionManager:
             options = {
                 "default": (),
                 "accept-edits": ("--permission-mode", "acceptEdits"),
+                "acceptedits": ("--permission-mode", "acceptEdits"),
                 "auto": ("--permission-mode", "auto"),
                 "full-access": ("--dangerously-skip-permissions",),
+                "bypasspermissions": ("--dangerously-skip-permissions",),
+                "manual": ("--permission-mode", "manual"),
+                "dontask": ("--permission-mode", "dontAsk"),
+                "dont-ask": ("--permission-mode", "dontAsk"),
+                "plan": ("--permission-mode", "plan"),
             }
         elif kind is AgentKind.CODEX:
             options = {
@@ -386,6 +397,18 @@ class TerminalSessionManager:
             filtered.append(token)
         updated = preamble + list(permissions) + filtered
         record.command = shlex.join(updated)
+
+    def _canonicalize_agent_resume_command(self, record: SessionRecord) -> None:
+        if not record.agent_session_id:
+            return
+        kind = AgentKind(record.agent_kind)
+        if kind not in (AgentKind.CODEX, AgentKind.CLAUDE):
+            return
+        record.command = self._tracker.build_resume_command(kind, record.command, record.agent_session_id)
+
+    def _set_agent_session_binding(self, ms: ManagedSession, agent_session_id: str) -> None:
+        ms.record.agent_session_id = agent_session_id
+        self._canonicalize_agent_resume_command(ms.record)
 
     def _create(self, clean_command: str, cwd_path: Path, title: str, initial_command: str | None,
                 agent_rename: str | None = None, project: str | None = None,
@@ -441,6 +464,7 @@ class TerminalSessionManager:
         kind = AgentKind(ms.record.agent_kind)
         if kind is AgentKind.CLAUDE:
             self._reconcile_stale_claude_session_binding(ms)
+        self._canonicalize_agent_resume_command(ms.record)
         socket = self._dtach_socket(ms.record.session_id)
         reattach = resume and self._dtach_socket_live(socket)
         ms.detached_live = reattach
@@ -450,6 +474,12 @@ class TerminalSessionManager:
         elif resume and not reattach and kind is not AgentKind.NONE and ms.record.agent_session_id:
             command = self._tracker.build_resume_command(kind, ms.record.command, ms.record.agent_session_id)
         baseline = self._tracker.snapshot_session_files(kind, Path(ms.record.cwd)) if kind is not AgentKind.NONE else set()
+        if reattach and screen_repaint:
+            ms.repaint_activity_suppressed_until_monotonic = max(
+                ms.repaint_activity_suppressed_until_monotonic,
+                time.monotonic() + TermdeckConfig.SCREEN_REPAINT_REATTACH_DELAY_SECONDS +
+                TermdeckConfig.SCREEN_REPAINT_ACTIVITY_SUPPRESSION_SECONDS,
+            )
         if ms.buffer:
             divider = TermdeckConfig.REATTACH_DIVIDER if reattach else TermdeckConfig.RESPAWN_DIVIDER
             self._handle_output(ms, ("\r\n" * ms.rows + divider + "\r\n").encode(), mark_activity=False)
@@ -554,13 +584,20 @@ class TerminalSessionManager:
         ms.detect_attempts += 1
         socket = self._dtach_socket(ms.record.session_id)
         found = await self._tracker.session_id_from_open_files(kind, socket)
+        existing_agent_session_id = ms.record.agent_session_id
+        if kind is AgentKind.CLAUDE and existing_agent_session_id and found not in {None, existing_agent_session_id}:
+            resumed_session_id = await self._tracker.claude_resume_session_id_from_process_arguments(socket)
+            if resumed_session_id != found:
+                found = None
         recent_input = (time.monotonic() - ms.last_input_monotonic) < TermdeckConfig.AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS
-        claim_allowed = found is None and (kind is AgentKind.AGY or recent_input or bool(ms.pending_agent_rename))
+        claim_allowed = existing_agent_session_id is None and found is None and \
+            (kind is AgentKind.AGY or recent_input or bool(ms.pending_agent_rename))
         dir_found = self._tracker.absorb_and_find_new_session_file(
             kind, Path(ms.record.cwd), ms.detect_baseline, self._claimed_agent_ids(ms), claim_allowed=claim_allowed)
         if found is None:
             found = dir_found
-        recent_claude_submit = kind is AgentKind.CLAUDE and ms.last_agent_submit_monotonic > 0 and \
+        recent_claude_submit = existing_agent_session_id is None and kind is AgentKind.CLAUDE and \
+            ms.last_agent_submit_monotonic > 0 and \
             time.monotonic() - ms.last_agent_submit_monotonic < TermdeckConfig.AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS
         if found is None and recent_claude_submit:
             submitted_at = time.time() - (time.monotonic() - ms.last_agent_submit_monotonic)
@@ -574,7 +611,7 @@ class TerminalSessionManager:
             return
         if found is not None and found != ms.record.agent_session_id:
             ms.detect_deadline_monotonic = 0.0
-            ms.record.agent_session_id = found
+            self._set_agent_session_binding(ms, found)
             if kind is AgentKind.CLAUDE:
                 self._initialize_claude_subagent_state(ms)
                 if ms.cli_title is None:
@@ -732,15 +769,22 @@ class TerminalSessionManager:
         try:
             current_mtime = current_path.stat().st_mtime
         except OSError:
-            return False
+            current_mtime = 0.0
         created_at = TimeUtil.est_naive_iso_timestamp(ms.record.created_at_est)
-        if current_mtime >= created_at:
+        live_title = self._display_title(ms.cli_title)
+        current_explicit_title = self._tracker.claude_explicit_session_title(cwd, ms.record.agent_session_id)
+        normalized_live_title = self._tracker._normalized_claude_title(live_title)
+        normalized_record_title = self._tracker._normalized_claude_title(ms.record.title)
+        normalized_current_title = self._tracker._normalized_claude_title(current_explicit_title)
+        renamed_title_points_to_another_transcript = ms.record.title_user_set and normalized_live_title and \
+            normalized_record_title == normalized_live_title and normalized_current_title != normalized_live_title
+        if current_mtime >= created_at and not renamed_title_points_to_another_transcript:
             return False
         replacement = self._tracker.claude_session_id_for_explicit_title(
-            cwd, self._display_title(ms.cli_title), created_at, self._claimed_agent_ids(ms))
+            cwd, live_title, created_at, self._claimed_agent_ids(ms))
         if replacement is None or replacement == ms.record.agent_session_id:
             return False
-        ms.record.agent_session_id = replacement
+        self._set_agent_session_binding(ms, replacement)
         self._initialize_claude_subagent_state(ms)
         self._persist()
         return True
@@ -945,7 +989,7 @@ class TerminalSessionManager:
 
     @staticmethod
     def _display_title(value: str | None) -> str | None:
-        if value and ("\u2800" <= value[0] <= "\u28ff" or value[0] == "✳"):
+        if ManagedSession.title_has_processing_marker(value):
             return value[1:].lstrip()
         return value
 
@@ -1356,6 +1400,30 @@ class TerminalSessionManager:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         return "".join(character for character in text if character in "\n\t" or ord(character) >= 0x20)
 
+    # A complete OSC 0/1/2 window-title sequence. The body excludes ESC so a match can never run across
+    # the ST terminator or into a following escape.
+    _OSC_TITLE_SEQUENCE = re.compile(rb"\x1b\][012];[^\x07\x1b]*(?:\x07|\x1b\\)")
+
+    def _replay_bytes(self, ms: ManagedSession) -> bytes:
+        """The durable buffer with title churn collapsed to the final title.
+
+        A window title is screen state, not history: only the last one describes the terminal a client
+        is attaching to, the same reasoning that keeps synchronized-update frames out of the durable
+        buffer. A TUI spinner rewrites the title several times a second, and replaying every frame makes
+        the client apply each one -- sidebar text, processing state, top bar -- inside the replay write.
+        Measured on a long-lived training session: 49,777 title sequences were 99% of an 806KB replay
+        and 5.9 of its 6 seconds of load, identically in both renderers. The buffer itself is left
+        intact -- title recovery reads it -- and an unterminated title at the tail is left alone for the
+        live stream to finish.
+        """
+        data = bytes(ms.buffer)
+        last = None
+        for match in self._OSC_TITLE_SEQUENCE.finditer(data):
+            last = match.group(0)
+        if last is None:
+            return data
+        return self._OSC_TITLE_SEQUENCE.sub(b"", data) + last
+
     def attach_client(self, session_id: str, screen_repaint: bool = True, have_buffer: bool = False,
                       repaint_preserved_buffer: bool = False) -> tuple[bytes, asyncio.Queue]:
         ms = self._sessions[session_id]
@@ -1387,7 +1455,7 @@ class TerminalSessionManager:
         ms.cold_attach_repaint_done = True
         if screen_repaint and needs_repaint:
             self._schedule_screen_repaint(ms, TermdeckConfig.SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS)
-        return bytes(ms.buffer), queue
+        return self._replay_bytes(ms), queue
 
     def detach_client(self, session_id: str, queue: asyncio.Queue) -> None:
         ms = self._sessions.get(session_id)
@@ -1610,19 +1678,40 @@ class TerminalSessionManager:
             return
         proc.write(TermdeckConfig.BRACKETED_PASTE_START + ms.record.draft.encode() + TermdeckConfig.BRACKETED_PASTE_END)
 
-    def resize(self, session_id: str, cols: int, rows: int) -> None:
+    def resize(self, session_id: str, cols: int, rows: int, force: bool = False) -> tuple[bool, int, int]:
+        """Apply a client's terminal size, unless another client already owns it.
+
+        A pty has one size, so with two browsers attached the last one to connect used to silently
+        reshape the terminal for everyone -- the other window then wraps its lines at a width its screen
+        does not have, and the agent's redraw lands on top of itself. Whoever is already attached keeps
+        the size; a later client is told what the size actually is (see the return value) and can ask for
+        it explicitly, which is what force is for.
+
+        Returns (applied, cols, rows) where the returned size is the one now in effect.
+        """
         ms = self._sessions[session_id]
         size_changed = (ms.record.cols, ms.record.rows) != (cols, rows)
+        if size_changed and not force and len(ms.client_queues) > 1:
+            return False, ms.record.cols, ms.record.rows
         ms.cols, ms.rows = cols, rows
         if size_changed and ms.proc is not None:
             ms.proc.resize(cols, rows)
         if size_changed:
             ms.record.cols, ms.record.rows = cols, rows
             self._persist()
+        return True, cols, rows
 
     def request_screen_repaint(self, session_id: str) -> bool:
+        """Nudge the pty size so a full-screen app redraws itself.
+
+        Not restricted to Codex: this began as a manual Codex-only workaround, but the client now also
+        asks for a repaint when a terminal attaches to nothing to show -- which happens to any agent after
+        the server restarts, because there is no saved scrollback left to replay. Refusing the request for
+        Claude left those panes blank with no way back. Any live pty can be nudged; one that has nothing
+        to redraw simply ignores it.
+        """
         ms = self._sessions[session_id]
-        if ms.record.agent_kind != AgentKind.CODEX.value or ms.proc is None or not ms.proc.alive:
+        if ms.proc is None or not ms.proc.alive:
             return False
         self._schedule_screen_repaint(ms, 0)
         return ms.screen_repaint_task is not None
@@ -1631,9 +1720,17 @@ class TerminalSessionManager:
         ms = self._sessions[session_id]
         if ms.detect_task is not None:
             ms.detect_task.cancel()
+        if ms.record.agent_kind != AgentKind.NONE.value and not ms.record.agent_session_id:
+            raise RuntimeError(f"agent session identity is still resolving; wait before restarting: {session_id}")
+        self._canonicalize_agent_resume_command(ms.record)
         if permission:
             self._set_restart_permission(ms.record, permission)
-            self._persist()
+        elif ms.record.agent_kind == AgentKind.CLAUDE.value:
+            current_permission_mode = self._tracker.claude_session_permission_mode(
+                Path(ms.record.cwd), ms.record.agent_session_id)
+            if current_permission_mode:
+                self._set_restart_permission(ms.record, current_permission_mode)
+        self._persist()
         if not await self._terminate_proc(ms):
             raise RuntimeError(f"could not stop dtach session before restart: {session_id}")
         self._spawn(ms, resume=True)
@@ -1694,6 +1791,33 @@ class TerminalSessionManager:
 
     async def stop_session_process_for_worktree(self, session_id: str) -> bool:
         return await self._terminate_proc(self._sessions[session_id])
+
+    async def stop_session(self, session_id: str) -> bool:
+        ms = self._sessions[session_id]
+        if not ms.running:
+            return True
+        previous_activity_at = ms.last_activity_at
+        ms.lazy_start_pending = True
+        if ms.detect_task is not None:
+            ms.detect_task.cancel()
+        if not await self._terminate_proc(ms):
+            ms.lazy_start_pending = False
+            self._broadcast_status(ms)
+            return False
+        ms.proc = None
+        ms.detached_live = False
+        ms.exit_code = None
+        ms.processing_started_at = None
+        ms.codex_transcript_active = False
+        ms.claude_main_active = False
+        ms.claude_subagents_active = False
+        ms.claude_subagent_states = {}
+        ms.agy_transcript_active = False
+        ms.last_activity_at = previous_activity_at
+        ms.record.last_activity_at = previous_activity_at
+        self._broadcast_status(ms)
+        self._persist()
+        return True
 
     async def remove_session_after_worktree_finish(self, session_id: str) -> bool:
         ms = self._sessions[session_id]

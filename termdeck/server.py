@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import time
@@ -16,13 +17,19 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from termdeck.config import TermdeckConfig
 from termdeck.file_history_service import FileHistoryService
 from termdeck.file_service import ProjectFileService
+from filedeck.git_remote_service import GitRemoteService
 from filedeck.git_service import FileDeckGitService
+from filedeck.git_workflow_service import GitWorkflowService
 from termdeck.history_index import HistorySearchIndex
+from termdeck.lan_access import LanAccessManager
+from termdeck.lsp_protocol import LanguageServerConnection, LanguageServerProtocolError, LanguageServerRequestError
+from termdeck.lsp_service import LanguageServerManager, LanguageServerRegistry, LanguageServerUnavailableError
+from termdeck.lsp_workspace_edit import LspWorkspaceEditService
 from termdeck.models import ApiFields, WsMessageFields
 from termdeck.platform_paths import PlatformPaths
 from termdeck.remote_access import RemoteAccessManager, RemoteAccessStatus
@@ -197,6 +204,57 @@ class ProjectStatePatch(BaseModel):
     terminal_groups: list[dict[str, str | bool]] | None = None
     session_groups: dict[str, str] | None = None
     terminal_layout: list[str] | None = None
+    session_view_modes: dict[str, str] | None = None
+
+
+class StoredValueRequest(BaseModel):
+    value: object
+
+
+class TerminalGroupCreateRequest(BaseModel):
+    group_id: str
+    name: str
+    collapsed: bool = False
+    session_ids: list[str] = []
+    anchor_token: str = ""
+    after: bool = False
+
+
+class TerminalGroupUpdateRequest(BaseModel):
+    name: str | None = None
+    collapsed: bool | None = None
+
+
+class TerminalGroupMergeRequest(BaseModel):
+    target_group_id: str
+
+
+class SessionGroupAssignmentsRequest(BaseModel):
+    assignments: dict[str, str | None]
+    target_session_id: str = ""
+    after: bool = False
+
+
+class TerminalLayoutMoveRequest(BaseModel):
+    token: str
+    target_token: str = ""
+    after: bool = False
+    to_top: bool = False
+
+
+class SessionOrderMoveRequest(BaseModel):
+    session_ids: list[str]
+    target_session_id: str = ""
+    after: bool = False
+
+
+class SessionUnreadRequest(BaseModel):
+    session_ids: list[str]
+    unread: bool
+
+
+class SessionViewModeRequest(BaseModel):
+    mode: str
 
 
 class FileOpRequest(BaseModel):
@@ -224,6 +282,77 @@ class FileHistoryRestoreRequest(BaseModel):
     version_id: int
 
 
+class GitPathsRequest(BaseModel):
+    root: str
+    paths: list[str]
+
+
+class GitGraphRequest(BaseModel):
+    root: str
+    paths: list[str] = []
+    limit: int = 100
+
+
+class GitCommitRequest(BaseModel):
+    root: str
+    message: str
+
+
+class GitBranchRequest(BaseModel):
+    root: str
+    name: str
+    start_point: str = "HEAD"
+    switch: bool = True
+
+
+class GitSwitchRequest(BaseModel):
+    root: str
+    name: str
+
+
+class GitStashRequest(BaseModel):
+    root: str
+    message: str = ""
+    include_untracked: bool = True
+
+
+class GitStashActionRequest(BaseModel):
+    root: str
+    reference: str
+    action: str
+
+
+class GitConflictRequest(BaseModel):
+    root: str
+    path: str
+    resolution: str
+
+
+class GitWorktreeRequest(BaseModel):
+    root: str
+    action: str
+    path: str = ""
+    branch: str = ""
+    create_branch: bool = True
+    start_point: str = "HEAD"
+
+
+class GitRemoteRequest(BaseModel):
+    root: str
+    action: str
+    name: str = "origin"
+    url: str = ""
+    branch: str = ""
+    set_upstream: bool = False
+
+
+class GitCloneProjectRequest(BaseModel):
+    url: str
+    path: str
+    branch: str = ""
+    name: str = ""
+
+
 class ReplaceRequest(BaseModel):
     root: str
     q: str
@@ -242,6 +371,25 @@ class NotebookTrashRequest(BaseModel):
     content: str
 
 
+class LspWorkspaceEditRequest(BaseModel):
+    root: str
+    edit: dict[str, object]
+
+
+class LspCommandOverrideRequest(BaseModel):
+    root: str = ""
+    language: str
+    command: str = ""
+
+
+class LspEnabledRequest(BaseModel):
+    enabled: bool
+
+
+class LanAccessRequest(BaseModel):
+    enabled: bool
+
+
 class ProjectUiState(BaseModel):
     active_session_id: str = ""
     open_files: list[dict[str, str]] = []
@@ -257,6 +405,7 @@ class ProjectUiState(BaseModel):
     terminal_groups: list[dict[str, str | bool]] = []
     session_groups: dict[str, str] = {}
     terminal_layout: list[str] = []
+    session_view_modes: dict[str, str] = {}
 
 
 class NotebookNote(BaseModel):
@@ -271,6 +420,7 @@ class UiSettings(BaseModel):
     project_font_size: int = 18
     terminal_font_size: int = 18
     ui_font_size: int = 11
+    system_font_size: int = 13
     files_tab_font_size: int = 11
     viewer_font_size: int = 12
     code_font_size: int = 12
@@ -289,7 +439,7 @@ class UiSettings(BaseModel):
     show_stats: bool = True
     show_mtime: bool = True
     show_git_status: bool = True
-    word_wrap: bool = False
+    editor_no_wrap: bool = False
     search_glob: str = "!*.json, !*.csv, !*.log"
     tree_file_glob: str = ""
     search_file_glob: str = ""
@@ -305,9 +455,12 @@ class UiSettings(BaseModel):
     prompt_wrap_guard: bool = False
     history_mode: bool = False
     transcript_first_surface: str = "terminal"
-    claude_snapshot_experimental: bool = False
+    # Declared explicitly or it is silently dropped when settings are saved.
+    attach_repaint: bool = True
+    tall_webgl: bool = False
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
+    md_prompt_drafts: dict[str, str] = {}
     selection_copy_history: list[str] = []
     notebook_open: bool = False
     notebook_left: int = -1
@@ -324,12 +477,24 @@ class UiSettings(BaseModel):
     side_split_user_set: bool = False
     search_scope: str = "project"
     recent_closed_files: list[dict[str, str]] = []
+    worktree_ui_state: dict[str, dict[str, bool]] = {}
+    selected_worktrees: dict[str, str] = {}
+    files_side_panel_last_tab: str = "project"
+    file_search_history: list[dict[str, str | bool]] = []
+    files_panel_width_initialized: bool = False
+    file_tab_max_visible: int = 20
+    file_tab_order: str = "opened"
+    lsp_enabled: bool = True
+    lsp_command_overrides: dict[str, dict[str, str]] = {}
+    lan_access_enabled: bool = False
 
 
 class TermdeckServer:
     """HTTP + websocket surface of the mini terminal IDE: session CRUD API, static UI, one websocket per terminal.
     Terminal websocket protocol: server sends raw output as binary frames (scrollback replay first) and control
     events as JSON text frames; client sends JSON text frames for input and resize."""
+
+    LAN_DISABLE_RESPONSE_DELAY_SECONDS = 0.25
 
     def __init__(self) -> None:
         self.server_instance_id = uuid.uuid4().hex
@@ -343,6 +508,8 @@ class TermdeckServer:
             self.manager = TerminalSessionManager(self.state_backup)
         self.files = ProjectFileService()
         self.filedeck_git = FileDeckGitService()
+        self.git_remotes = GitRemoteService()
+        self.git_workflow = GitWorkflowService(self.filedeck_git, self.git_remotes)
         self.worktrees = GitWorktreeService(TermdeckConfig.WORKTREES_DIR)
         self.worktree_registry = WorktreeRegistry(TermdeckConfig.WORKTREE_REGISTRY_FILE, self.state_backup, self.worktrees)
         self.file_history = FileHistoryService(TermdeckConfig.FILE_HISTORY_DATABASE)
@@ -357,6 +524,9 @@ class TermdeckServer:
         if self.manager is not None:
             self.transcripts.add_file_change_listener(self.manager.notify_agent_transcript_changed)
         self.settings_store = UiSettingsStore(TermdeckConfig.SETTINGS_FILE, self.state_backup)
+        self.lsp_workspace_edits = LspWorkspaceEditService(self.files, self.file_history)
+        self.language_servers = LanguageServerManager(
+            self.files, self.lsp_workspace_edits, self._lsp_command_overrides, self._lsp_enabled)
         self.remote_access = RemoteAccessManager(
             relay_url=TermdeckConfig.REMOTE_SERVICE_URL, public_url=TermdeckConfig.REMOTE_PUBLIC_URL,
             local_url=f"http://127.0.0.1:{TermdeckConfig.PORT}",
@@ -367,6 +537,8 @@ class TermdeckServer:
             reconnect_max_seconds=TermdeckConfig.REMOTE_RECONNECT_MAX_SECONDS,
             http_timeout_seconds=TermdeckConfig.REMOTE_HTTP_TIMEOUT_SECONDS,
             demand_poll_seconds=TermdeckConfig.REMOTE_DEMAND_POLL_SECONDS)
+        self.lan_access: LanAccessManager | None = None
+        self._lan_stop_task: asyncio.Task[None] | None = None
         self._state_backup_task: asyncio.Task | None = None
         self._origin_delivery_locks: dict[str, asyncio.Lock] = {}
         self._task_delivery_jobs: set[asyncio.Task] = set()
@@ -383,9 +555,17 @@ class TermdeckServer:
         self.transcripts.start(asyncio.get_running_loop())
         self.history_index.start()
         await self.remote_access.start()
+        if UiSettings(**self.settings_store.load()).lan_access_enabled:
+            try:
+                await self._required_lan_access_manager().start()
+            except (OSError, RuntimeError) as lan_error:
+                self._required_lan_access_manager().record_error(lan_error)
+                print(f"termdeck local Wi-Fi listener failed: {lan_error}", flush=True)
         try:
             yield
         finally:
+            await self._cancel_pending_lan_stop()
+            await self._required_lan_access_manager().stop()
             await self.remote_access.stop()
             if self._state_backup_task is not None:
                 self._state_backup_task.cancel()
@@ -397,11 +577,13 @@ class TermdeckServer:
             self.transcripts.stop()
             self.manager.stop_background_tasks()
             self.manager.detach_for_shutdown()
+            await self.language_servers.shutdown()
             self.state_backup.create_snapshot("shutdown", True)
             self.files.close()
 
     def build_app(self) -> FastAPI:
         app = FastAPI(lifespan=self._lifespan)
+        self.lan_access = LanAccessManager(app, TermdeckConfig.LAN_PORT, TermdeckConfig.UVICORN_LOG_LEVEL)
         app.middleware("http")(self._no_cache_middleware)
         app.mount(TermdeckConfig.STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.STATIC_DIR), name=TermdeckConfig.STATIC_NAME)
         app.mount(TermdeckConfig.FILEDECK_STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.FILEDECK_STATIC_DIR),
@@ -412,6 +594,9 @@ class TermdeckServer:
         app.get(TermdeckConfig.PROJECT_PAGE_ROUTE, response_model=None)(self._project_page)
         app.get(TermdeckConfig.PROJECT_NAVIGATION_PAGE_ROUTE, response_model=None)(self._project_navigation_page)
         app.get(TermdeckConfig.FILEDECK_PAGE_ROUTE, response_model=None)(self._filedeck_page)
+        app.get(TermdeckConfig.FILEDECK_NAVIGATION_PAGE_ROUTE, response_model=None)(self._filedeck_navigation_page)
+        app.get(TermdeckConfig.GIT_PAGE_ROUTE, response_model=None)(self._filedeck_page)
+        app.get(TermdeckConfig.GIT_NAVIGATION_PAGE_ROUTE, response_model=None)(self._filedeck_navigation_page)
         app.get(TermdeckConfig.API_STATE_RECOVERY_ROUTE, response_model=None)(self._state_recovery_status)
         app.post(TermdeckConfig.API_STATE_RECOVERY_RESTORE_ROUTE, response_model=None)(self._restore_state_recovery)
         app.get(TermdeckConfig.API_PROJECTS_ROUTE, response_model=None)(self._list_projects)
@@ -426,6 +611,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_TERMINAL_TASK_ROUTE, response_model=None)(self._run_terminal_task)
         app.post(TermdeckConfig.API_TERMINAL_TASK_PROMPT_ROUTE, response_model=None)(self._follow_up_task_prompt)
         app.post(TermdeckConfig.API_TERMINALS_BATCH_ROUTE, response_model=None)(self._launch_terminal_batch)
+        app.post(TermdeckConfig.API_SESSION_STOP_ROUTE, response_model=None)(self._stop_session)
         app.post(TermdeckConfig.API_SESSION_RESTART_ROUTE, response_model=None)(self._restart_session)
         app.post(TermdeckConfig.API_SESSION_FORK_ROUTE, response_model=None)(self._fork_session)
         app.get(TermdeckConfig.API_SESSION_WORKTREE_REVIEW_ROUTE, response_model=None)(self._review_worktree)
@@ -445,6 +631,19 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_SESSION_HISTORY_PAGE_ROUTE, response_model=None)(self._session_history_page)
         app.get(TermdeckConfig.API_TERMINAL_LAYOUT_ROUTE, response_model=None)(self._get_terminal_layout)
         app.patch(TermdeckConfig.API_TERMINAL_LAYOUT_ROUTE, response_model=None)(self._patch_terminal_layout)
+        app.get(TermdeckConfig.API_TERMINAL_GROUPS_ROUTE, response_model=None)(self._get_terminal_groups)
+        app.post(TermdeckConfig.API_TERMINAL_GROUPS_ROUTE, response_model=None)(self._create_terminal_group)
+        app.patch(TermdeckConfig.API_TERMINAL_GROUP_ROUTE, response_model=None)(self._update_terminal_group)
+        app.delete(TermdeckConfig.API_TERMINAL_GROUP_ROUTE, response_model=None)(self._delete_terminal_group)
+        app.post(TermdeckConfig.API_TERMINAL_GROUP_MERGE_ROUTE, response_model=None)(self._merge_terminal_group)
+        app.put(TermdeckConfig.API_SESSION_GROUP_ASSIGNMENTS_ROUTE, response_model=None)(self._put_session_group_assignments)
+        app.patch(TermdeckConfig.API_TERMINAL_LAYOUT_MOVE_ROUTE, response_model=None)(self._move_terminal_layout_item)
+        app.patch(TermdeckConfig.API_SESSION_ORDER_MOVE_ROUTE, response_model=None)(self._move_session_order_items)
+        app.put(TermdeckConfig.API_SESSION_UNREAD_ROUTE, response_model=None)(self._put_session_unread)
+        app.post(TermdeckConfig.API_RECENTLY_OPENED_TERMINAL_ROUTE, response_model=None)(self._record_recently_opened_terminal)
+        app.put(TermdeckConfig.API_SESSION_VIEW_MODE_ROUTE, response_model=None)(self._put_session_view_mode)
+        app.get(TermdeckConfig.API_PROJECT_STATE_FIELD_ROUTE, response_model=None)(self._get_project_state_field)
+        app.put(TermdeckConfig.API_PROJECT_STATE_FIELD_ROUTE, response_model=None)(self._put_project_state_field)
         app.get(TermdeckConfig.API_TERMINAL_SEARCH_ROUTE, response_model=None)(self._search_terminal_buffers)
         app.get(TermdeckConfig.API_HISTORY_SEARCH_ROUTE, response_model=None)(self._search_history)
         app.get(TermdeckConfig.API_HISTORY_CONTEXT_ROUTE, response_model=None)(self._history_context)
@@ -455,13 +654,22 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._get_settings)
         app.put(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._replace_settings)
         app.patch(TermdeckConfig.API_SETTINGS_ROUTE, response_model=None)(self._patch_settings)
+        app.get(TermdeckConfig.API_SETTING_ENTRY_ROUTE, response_model=None)(self._get_setting_entry)
+        app.put(TermdeckConfig.API_SETTING_ENTRY_ROUTE, response_model=None)(self._put_setting_entry)
+        app.delete(TermdeckConfig.API_SETTING_ENTRY_ROUTE, response_model=None)(self._delete_setting_entry)
+        app.get(TermdeckConfig.API_SETTING_ROUTE, response_model=None)(self._get_setting)
+        app.put(TermdeckConfig.API_SETTING_ROUTE, response_model=None)(self._put_setting)
+        app.delete(TermdeckConfig.API_SETTING_ROUTE, response_model=None)(self._delete_setting)
         app.get(TermdeckConfig.API_REMOTE_STATUS_ROUTE, response_model=None)(self._remote_status)
         app.post(TermdeckConfig.API_REMOTE_PAIR_ROUTE, response_model=None)(self._remote_pair)
         app.post(TermdeckConfig.API_REMOTE_DISCONNECT_ROUTE, response_model=None)(self._remote_disconnect)
+        app.get(TermdeckConfig.API_LAN_STATUS_ROUTE, response_model=None)(self._lan_status)
+        app.put(TermdeckConfig.API_LAN_ACCESS_ROUTE, response_model=None)(self._set_lan_access)
         app.post(TermdeckConfig.API_NOTEBOOK_TRASH_ROUTE, response_model=None)(self._trash_notebook_note)
         app.get(TermdeckConfig.API_FILE_LIST_ROUTE, response_model=None)(self._list_files)
         app.get(TermdeckConfig.API_FILE_RECENT_ROUTE, response_model=None)(self._recent_files)
         app.get(TermdeckConfig.API_FILE_READ_ROUTE, response_model=None)(self._read_file)
+        app.get(TermdeckConfig.API_FILE_EXISTS_ROUTE, response_model=None)(self._file_exists)
         app.get(TermdeckConfig.API_FILE_SEARCH_ROUTE, response_model=None)(self._search_files)
         app.get(TermdeckConfig.API_FILE_FIND_ROUTE, response_model=None)(self._find_files)
         app.post(TermdeckConfig.API_FILE_HISTORY_RESTORE_ROUTE, response_model=None)(self._restore_file_history)
@@ -473,6 +681,22 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_FILE_GIT_BRANCH_ROUTE, response_model=None)(self._git_branch_state)
         app.get(TermdeckConfig.API_FILE_GIT_BLAME_ROUTE, response_model=None)(self._git_blame)
         app.get(TermdeckConfig.API_FILE_GIT_DIFF_ROUTE, response_model=None)(self._git_diff)
+        app.get(TermdeckConfig.API_GIT_WORKFLOW_STATE_ROUTE, response_model=None)(self._git_workflow_state)
+        app.post(TermdeckConfig.API_GIT_STAGE_ROUTE, response_model=None)(self._git_stage)
+        app.post(TermdeckConfig.API_GIT_UNSTAGE_ROUTE, response_model=None)(self._git_unstage)
+        app.post(TermdeckConfig.API_GIT_REVERT_ROUTE, response_model=None)(self._git_revert)
+        app.get(TermdeckConfig.API_GIT_REVIEW_ROUTE, response_model=None)(self._git_review)
+        app.post(TermdeckConfig.API_GIT_GRAPH_ROUTE, response_model=None)(self._git_graph)
+        app.get(TermdeckConfig.API_GIT_COMMIT_DETAIL_ROUTE, response_model=None)(self._git_commit_detail)
+        app.post(TermdeckConfig.API_GIT_COMMIT_ROUTE, response_model=None)(self._git_commit)
+        app.post(TermdeckConfig.API_GIT_BRANCH_ROUTE, response_model=None)(self._git_create_branch)
+        app.post(TermdeckConfig.API_GIT_SWITCH_ROUTE, response_model=None)(self._git_switch_branch)
+        app.post(TermdeckConfig.API_GIT_STASH_ROUTE, response_model=None)(self._git_create_stash)
+        app.post(TermdeckConfig.API_GIT_STASH_ACTION_ROUTE, response_model=None)(self._git_stash_action)
+        app.post(TermdeckConfig.API_GIT_CONFLICT_ROUTE, response_model=None)(self._git_resolve_conflict)
+        app.post(TermdeckConfig.API_GIT_WORKTREE_ROUTE, response_model=None)(self._git_worktree_action)
+        app.post(TermdeckConfig.API_GIT_REMOTE_ROUTE, response_model=None)(self._git_remote_action)
+        app.post(TermdeckConfig.API_GIT_CLONE_ROUTE, response_model=None)(self._git_clone_project)
         app.post(TermdeckConfig.API_UPLOAD_ROUTE, response_model=None)(self._upload_file)
         app.post(TermdeckConfig.API_FILE_WRITE_ROUTE, response_model=None)(self._write_file)
         app.post(TermdeckConfig.API_FILE_CREATE_ROUTE, response_model=None)(self._create_file)
@@ -481,10 +705,15 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_FILE_RENAME_ROUTE, response_model=None)(self._rename_file)
         app.post(TermdeckConfig.API_FILE_MOVE_ROUTE, response_model=None)(self._move_file)
         app.post(TermdeckConfig.API_FILE_DELETE_ROUTE, response_model=None)(self._delete_file)
+        app.get(TermdeckConfig.API_LSP_STATUS_ROUTE, response_model=None)(self._lsp_status)
+        app.put(TermdeckConfig.API_LSP_CONFIG_ROUTE, response_model=None)(self._put_lsp_config)
+        app.put(TermdeckConfig.API_LSP_ENABLED_ROUTE, response_model=None)(self._put_lsp_enabled)
+        app.post(TermdeckConfig.API_LSP_APPLY_WORKSPACE_EDIT_ROUTE, response_model=None)(self._apply_lsp_workspace_edit)
         app.get(TermdeckConfig.API_STATS_ROUTE, response_model=None)(self._resource_stats)
         app.websocket(TermdeckConfig.STATUS_WS_ROUTE)(self._ws_status)
         app.websocket(TermdeckConfig.FILE_TREE_WS_ROUTE)(self._ws_file_tree)
         app.websocket(TermdeckConfig.TRANSCRIPT_WS_ROUTE)(self._ws_transcript)
+        app.websocket(TermdeckConfig.LSP_WS_ROUTE)(self._ws_lsp)
         app.websocket(TermdeckConfig.WS_ROUTE)(self._ws_terminal)
         return app
 
@@ -502,8 +731,71 @@ class TermdeckServer:
         self.manager.purge_closed_session(session_id)
         return {ApiFields.DELETED: session_id}
 
-    async def _get_settings(self) -> dict[str, int | str]:
+    async def _get_settings(self) -> dict[str, object]:
         return UiSettings(**self.settings_store.load()).model_dump()
+
+    def _validated_setting_payload(self, setting_name: str, value: object) -> dict[str, object]:
+        if setting_name not in UiSettings.model_fields or setting_name == "project_state":
+            raise HTTPException(status_code=404, detail=f"unknown setting: {setting_name}")
+        current = self.settings_store.load()
+        current[setting_name] = value
+        try:
+            return self._preserve_active_layout_entries(UiSettings(**current).model_dump())
+        except ValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    async def _get_setting(self, setting_name: str) -> dict[str, object]:
+        if setting_name not in UiSettings.model_fields or setting_name == "project_state":
+            raise HTTPException(status_code=404, detail=f"unknown setting: {setting_name}")
+        settings = UiSettings(**self.settings_store.load())
+        return {"name": setting_name, "value": getattr(settings, setting_name)}
+
+    async def _put_setting(self, request: StoredValueRequest, setting_name: str) -> dict[str, object]:
+        payload = self._validated_setting_payload(setting_name, request.value)
+        self.settings_store.save(payload)
+        return {"name": setting_name, "value": payload[setting_name]}
+
+    async def _delete_setting(self, setting_name: str) -> dict[str, object]:
+        defaults = UiSettings().model_dump()
+        if setting_name not in defaults or setting_name == "project_state":
+            raise HTTPException(status_code=404, detail=f"unknown setting: {setting_name}")
+        payload = self._validated_setting_payload(setting_name, defaults[setting_name])
+        self.settings_store.save(payload)
+        return {"name": setting_name, "value": payload[setting_name]}
+
+    async def _get_setting_entry(self, setting_name: str, entry_key: str) -> dict[str, object]:
+        setting = (await self._get_setting(setting_name))["value"]
+        if not isinstance(setting, dict):
+            raise HTTPException(status_code=409, detail=f"setting is not keyed: {setting_name}")
+        if entry_key not in setting:
+            raise HTTPException(status_code=404, detail=entry_key)
+        return {"name": setting_name, "entry_key": entry_key, "value": setting[entry_key]}
+
+    async def _put_setting_entry(self, request: StoredValueRequest, setting_name: str, entry_key: str) -> dict[str, object]:
+        if setting_name not in UiSettings.model_fields:
+            raise HTTPException(status_code=404, detail=f"unknown setting: {setting_name}")
+        settings = UiSettings(**self.settings_store.load())
+        current = getattr(settings, setting_name, None)
+        if setting_name == "project_state" or not isinstance(current, dict):
+            raise HTTPException(status_code=409, detail=f"setting is not keyed: {setting_name}")
+        updated = dict(current)
+        updated[entry_key] = request.value
+        payload = self._validated_setting_payload(setting_name, updated)
+        self.settings_store.save(payload)
+        return {"name": setting_name, "entry_key": entry_key, "value": payload[setting_name][entry_key]}
+
+    async def _delete_setting_entry(self, setting_name: str, entry_key: str) -> dict[str, object]:
+        if setting_name not in UiSettings.model_fields:
+            raise HTTPException(status_code=404, detail=f"unknown setting: {setting_name}")
+        settings = UiSettings(**self.settings_store.load())
+        current = getattr(settings, setting_name, None)
+        if setting_name == "project_state" or not isinstance(current, dict):
+            raise HTTPException(status_code=409, detail=f"setting is not keyed: {setting_name}")
+        updated = dict(current)
+        updated.pop(entry_key, None)
+        payload = self._validated_setting_payload(setting_name, updated)
+        self.settings_store.save(payload)
+        return {"name": setting_name, "entry_key": entry_key, "deleted": True}
 
     async def _remote_status(self) -> RemoteAccessStatus:
         return self.remote_access.status()
@@ -520,12 +812,60 @@ class TermdeckServer:
         except httpx.HTTPError as remote_error:
             raise HTTPException(status_code=502, detail=str(remote_error)) from remote_error
 
-    async def _put_settings(self, settings: UiSettings) -> dict[str, int | str]:
+    def _required_lan_access_manager(self) -> LanAccessManager:
+        if self.lan_access is None:
+            raise RuntimeError("local Wi-Fi listener is not initialized")
+        return self.lan_access
+
+    async def _lan_status(self) -> dict[str, object]:
+        enabled = UiSettings(**self.settings_store.load()).lan_access_enabled
+        return await self._required_lan_access_manager().status(enabled)
+
+    async def _set_lan_access(self, request: LanAccessRequest) -> dict[str, object]:
+        if self.recovery_mode:
+            raise HTTPException(status_code=409, detail="local Wi-Fi access is unavailable during state recovery")
+        manager = self._required_lan_access_manager()
+        if request.enabled:
+            await self._cancel_pending_lan_stop()
+            try:
+                await manager.start()
+            except (OSError, RuntimeError) as lan_error:
+                manager.record_error(lan_error)
+                raise HTTPException(status_code=409, detail=str(lan_error)) from lan_error
+            payload = self._validated_setting_payload("lan_access_enabled", True)
+            self.settings_store.save(payload)
+            return await manager.status(True)
+        payload = self._validated_setting_payload("lan_access_enabled", False)
+        self.settings_store.save(payload)
+        status = await manager.status(False)
+        status["running"] = False
+        if self._lan_stop_task is None or self._lan_stop_task.done():
+            self._lan_stop_task = asyncio.create_task(self._stop_lan_access_after_response())
+        return status
+
+    async def _stop_lan_access_after_response(self) -> None:
+        await asyncio.sleep(self.LAN_DISABLE_RESPONSE_DELAY_SECONDS)
+        if UiSettings(**self.settings_store.load()).lan_access_enabled:
+            return
+        await self._required_lan_access_manager().stop()
+
+    async def _cancel_pending_lan_stop(self) -> None:
+        task = self._lan_stop_task
+        self._lan_stop_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _put_settings(self, settings: UiSettings) -> dict[str, object]:
         payload = self._preserve_active_layout_entries(settings.model_dump())
         self.settings_store.save(payload)
         return payload
 
-    async def _replace_settings(self, settings: UiSettings, replace: bool = False) -> dict[str, int | str]:
+    async def _replace_settings(self, settings: UiSettings, replace: bool = False) -> dict[str, object]:
         if not replace:
             raise HTTPException(status_code=409, detail="full settings replacement requires ?replace=true")
         return await self._put_settings(settings)
@@ -544,6 +884,8 @@ class TermdeckServer:
     def _preserve_active_layout_entries(self, incoming_payload: dict[str, object]) -> dict[str, object]:
         current_settings = UiSettings(**self.settings_store.load())
         incoming_settings = UiSettings(**incoming_payload)
+        incoming_settings.lsp_enabled = current_settings.lsp_enabled
+        incoming_settings.lsp_command_overrides = current_settings.lsp_command_overrides
         active_sessions = self.manager.list_sessions(None)
         active_session_ids_by_project: dict[str, set[str]] = {}
         for session in active_sessions:
@@ -605,9 +947,9 @@ class TermdeckServer:
         except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError, OSError) as recent_error:
             raise HTTPException(status_code=404, detail=str(recent_error)) from recent_error
 
-    async def _git_status(self, root: str) -> dict[str, str]:
+    async def _git_status(self, root: str, refresh: bool = False) -> dict[str, str]:
         try:
-            return await asyncio.to_thread(self.files.git_statuses, root)
+            return await asyncio.to_thread(self.files.git_statuses, root, refresh)
         except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError, OSError) as git_error:
             raise HTTPException(status_code=404, detail=str(git_error)) from git_error
 
@@ -632,6 +974,153 @@ class TermdeckServer:
         except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as diff_error:
             raise HTTPException(status_code=404, detail=str(diff_error)) from diff_error
 
+    async def _git_workflow_state(self, root: str, limit: int = 100) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            sessions = list(self.manager.list_sessions(None))
+            return await asyncio.to_thread(self.git_workflow.get_state, base, sessions, limit)
+        except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError, OSError,
+                subprocess.SubprocessError) as git_error:
+            raise HTTPException(status_code=404, detail=str(git_error)) from git_error
+
+    async def _git_stage(self, request: GitPathsRequest) -> dict[str, bool]:
+        await self._run_git_workflow_mutation(self.git_workflow.stage, request.root, request.paths)
+        return {"staged": True}
+
+    async def _git_unstage(self, request: GitPathsRequest) -> dict[str, bool]:
+        await self._run_git_workflow_mutation(self.git_workflow.unstage, request.root, request.paths)
+        return {"unstaged": True}
+
+    async def _git_revert(self, request: GitPathsRequest) -> dict[str, object]:
+        trashed_paths = await self._run_git_workflow_mutation(self.git_workflow.revert_paths_to_head, request.root,
+                                                              request.paths, self.files.move_to_trash)
+        return {"reverted": True, "trashed_paths": trashed_paths}
+
+    async def _git_review(self, root: str, path: str, scope: str, revision: str = "", previous_path: str = "") -> dict[str, str]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            if scope == "commit":
+                return await asyncio.to_thread(self.git_workflow.review_commit_file, base, path, revision, previous_path)
+            return await asyncio.to_thread(self.git_workflow.review_file, base, path, scope)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as review_error:
+            raise HTTPException(status_code=404, detail=str(review_error)) from review_error
+
+    async def _git_graph(self, request: GitGraphRequest) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(request.root, "")
+            repository_root = await asyncio.to_thread(self.git_workflow.repository_root, base)
+            graph = await asyncio.to_thread(self.git_workflow.commit_graph, repository_root, request.limit,
+                                            request.paths or None)
+            scope = "worktree" if not request.paths else "file" if len(request.paths) == 1 else "files"
+            return {"scope": scope, "paths": request.paths, "graph": graph}
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as graph_error:
+            raise HTTPException(status_code=404, detail=str(graph_error)) from graph_error
+
+    async def _git_commit_detail(self, root: str, commit_id: str) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.git_workflow.commit_detail, base, commit_id)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as detail_error:
+            raise HTTPException(status_code=404, detail=str(detail_error)) from detail_error
+
+    async def _git_commit(self, request: GitCommitRequest) -> dict[str, str]:
+        commit_id = await self._run_git_workflow_mutation(self.git_workflow.commit, request.root, request.message)
+        return {"commit_id": str(commit_id)}
+
+    async def _git_create_branch(self, request: GitBranchRequest) -> dict[str, str]:
+        branch = await self._run_git_workflow_mutation(self.git_workflow.create_branch, request.root, request.name,
+                                                       request.start_point, request.switch)
+        return {"branch": str(branch)}
+
+    async def _git_switch_branch(self, request: GitSwitchRequest) -> dict[str, str]:
+        branch = await self._run_git_workflow_mutation(self.git_workflow.switch_branch, request.root, request.name)
+        return {"branch": str(branch)}
+
+    async def _git_create_stash(self, request: GitStashRequest) -> dict[str, str]:
+        result = await self._run_git_workflow_mutation(self.git_workflow.create_stash, request.root, request.message,
+                                                       request.include_untracked)
+        return {"result": str(result)}
+
+    async def _git_stash_action(self, request: GitStashActionRequest) -> dict[str, bool]:
+        if request.action in {"apply", "pop"}:
+            await self._run_git_workflow_mutation(self.git_workflow.apply_stash, request.root, request.reference,
+                                                  request.action == "pop")
+        elif request.action == "drop":
+            await self._run_git_workflow_mutation(self.git_workflow.drop_stash, request.root, request.reference)
+        else:
+            raise HTTPException(status_code=400, detail=f"unknown stash action: {request.action}")
+        return {"updated": True}
+
+    async def _git_resolve_conflict(self, request: GitConflictRequest) -> dict[str, bool]:
+        await self._run_git_workflow_mutation(self.git_workflow.resolve_conflict, request.root, request.path,
+                                              request.resolution)
+        return {"resolved": True}
+
+    async def _git_worktree_action(self, request: GitWorktreeRequest) -> dict[str, object]:
+        if request.action == "create":
+            if not request.path or not request.branch:
+                raise HTTPException(status_code=400, detail="worktree path and branch are required")
+            worktree_path = self.files.resolve_confined(str(TermdeckConfig.FILE_ACCESS_ROOT), request.path)
+            worktree = await self._run_git_workflow_mutation(self.git_workflow.create_worktree, request.root,
+                                                             worktree_path, request.branch, request.create_branch,
+                                                             request.start_point)
+            repository_root = await asyncio.to_thread(self.git_workflow.repository_root,
+                                                       self.files.resolve_confined(request.root, ""))
+            project_entry = next((entry for entry in self.manager.registry.list_projects()
+                                  if Path(entry["root"]).expanduser().resolve() == repository_root), None)
+            if project_entry is not None:
+                await asyncio.to_thread(self.worktree_registry.list_for_project, project_entry["name"],
+                                        str(repository_root))
+            return {"worktree": worktree}
+        if request.action == "remove":
+            worktree_path = self.files.resolve_confined(str(TermdeckConfig.FILE_ACCESS_ROOT), request.path)
+            await self._run_git_workflow_mutation(self.git_workflow.remove_worktree, request.root, worktree_path)
+            return {"removed": True}
+        if request.action == "prune":
+            await self._run_git_workflow_mutation(self.git_workflow.prune_worktrees, request.root)
+            return {"pruned": True}
+        raise HTTPException(status_code=400, detail=f"unknown worktree action: {request.action}")
+
+    async def _git_remote_action(self, request: GitRemoteRequest) -> dict[str, bool | str | object]:
+        if request.action == "add":
+            remote = await self._run_git_workflow_mutation(self.git_remotes.add_remote, request.root,
+                                                           request.name, request.url)
+            return {"updated": True, "remote": remote}
+        if request.action == "remove":
+            await self._run_git_workflow_mutation(self.git_remotes.remove_remote, request.root, request.name)
+        elif request.action == "fetch":
+            await self._run_git_workflow_mutation(self.git_remotes.fetch_remote, request.root, request.name)
+        elif request.action == "pull":
+            await self._run_git_workflow_mutation(self.git_remotes.pull_remote, request.root, request.name,
+                                                  request.branch)
+        elif request.action == "push":
+            await self._run_git_workflow_mutation(self.git_remotes.push_remote, request.root, request.name,
+                                                  request.branch, request.set_upstream)
+        else:
+            raise HTTPException(status_code=400, detail=f"unknown remote action: {request.action}")
+        return {"updated": True}
+
+    async def _git_clone_project(self, request: GitCloneProjectRequest) -> dict[str, object]:
+        try:
+            destination = self.files.resolve_confined(str(TermdeckConfig.FILE_ACCESS_ROOT), request.path)
+            cloned_path = await asyncio.to_thread(self.git_remotes.clone_remote_project, request.url, destination,
+                                                  request.branch)
+            project = self.manager.registry.add_project(cloned_path, request.name)
+            return {"project": project, "path": str(cloned_path)}
+        except (ValueError, FileNotFoundError, FileExistsError, NotADirectoryError, PermissionError, OSError,
+                subprocess.SubprocessError) as clone_error:
+            raise HTTPException(status_code=409, detail=str(clone_error)) from clone_error
+
+    async def _run_git_workflow_mutation(self, operation: Callable[..., object], *arguments: object) -> object:
+        try:
+            base = self.files.resolve_confined(str(arguments[0]), "")
+            result = await asyncio.to_thread(operation, base, *arguments[1:])
+            self.files.invalidate_git_status(str(base))
+            return result
+        except (ValueError, FileNotFoundError, FileExistsError, NotADirectoryError, PermissionError, OSError,
+                subprocess.SubprocessError) as git_error:
+            raise HTTPException(status_code=409, detail=str(git_error)) from git_error
+
     async def _read_file(self, root: str, path: str) -> dict[str, object]:
         try:
             result = self.files.read_file(root, path)
@@ -639,6 +1128,12 @@ class TermdeckServer:
             return result
         except (ValueError, FileNotFoundError, IsADirectoryError, PermissionError) as read_error:
             raise HTTPException(status_code=404, detail=str(read_error)) from read_error
+
+    async def _file_exists(self, root: str, path: str) -> dict[str, bool]:
+        try:
+            return {"exists": self.files.file_exists(root, path)}
+        except (ValueError, PermissionError):
+            return {"exists": False}
 
     async def _search_files(self, root: str, q: str, glob: str = "", ignore: str = "", word: bool = False,
                             case_sensitive: bool = False, regex: bool = False, include_hidden: bool = False) -> list[dict[str, str | int]]:
@@ -662,6 +1157,60 @@ class TermdeckServer:
             socket = sockets.get(session_id)
             sockets = {session_id: socket} if socket else {}
         return await self.stats.sample(sockets)
+
+    def _lsp_enabled(self) -> bool:
+        return UiSettings(**self.settings_store.load()).lsp_enabled
+
+    def _lsp_command_overrides(self) -> dict[str, dict[str, str]]:
+        return UiSettings(**self.settings_store.load()).lsp_command_overrides
+
+    async def _lsp_status(self, root: str = "") -> dict[str, object]:
+        return self.language_servers.status(root)
+
+    async def _put_lsp_enabled(self, request: LspEnabledRequest) -> dict[str, object]:
+        settings = UiSettings(**self.settings_store.load())
+        settings.lsp_enabled = request.enabled
+        self.settings_store.save(settings.model_dump())
+        if not request.enabled:
+            await self.language_servers.shutdown()
+        return self.language_servers.status()
+
+    async def _put_lsp_config(self, request: LspCommandOverrideRequest) -> dict[str, object]:
+        spec = LanguageServerRegistry.spec_for_setting_key(request.language)
+        if spec is None:
+            raise HTTPException(status_code=400, detail=f"unsupported language server: {request.language}")
+        try:
+            root = str(self.files.resolve_confined(request.root, "")) if request.root.strip() else ""
+            if request.command.strip() and not shlex.split(request.command):
+                raise ValueError("language server command cannot be empty")
+        except (ValueError, FileNotFoundError, PermissionError, OSError) as config_error:
+            raise HTTPException(status_code=400, detail=str(config_error)) from config_error
+        settings = UiSettings(**self.settings_store.load())
+        scope = root or LanguageServerRegistry.DEFAULT_OVERRIDE_SCOPE
+        overrides = {key: dict(value) for key, value in settings.lsp_command_overrides.items()}
+        scoped = dict(overrides.get(scope, {}))
+        setting_key = LanguageServerRegistry.setting_key(spec)
+        if request.command.strip():
+            scoped[setting_key] = request.command.strip()
+        else:
+            scoped.pop(setting_key, None)
+        if scoped:
+            overrides[scope] = scoped
+        else:
+            overrides.pop(scope, None)
+        settings.lsp_command_overrides = overrides
+        self.settings_store.save(settings.model_dump())
+        await self.language_servers.reload(root)
+        return self.language_servers.status(root)
+
+    async def _apply_lsp_workspace_edit(self, request: LspWorkspaceEditRequest) -> dict[str, object]:
+        if not self._lsp_enabled():
+            raise HTTPException(status_code=409, detail="language servers are disabled in settings")
+        try:
+            changed = self.lsp_workspace_edits.apply(request.root, request.edit)
+            return {"changed": changed}
+        except (ValueError, FileNotFoundError, IsADirectoryError, PermissionError, OSError, UnicodeDecodeError) as edit_error:
+            raise HTTPException(status_code=400, detail=str(edit_error)) from edit_error
 
     async def _write_file(self, request: FileWriteRequest) -> dict[str, int]:
         try:
@@ -814,7 +1363,10 @@ class TermdeckServer:
             return FileResponse(TermdeckConfig.STATIC_DIR / "recovery.html")
         if self.manager.registry.root_for(project_name) is None:
             raise HTTPException(status_code=404, detail=project_name)
-        return FileResponse(TermdeckConfig.FILEDECK_STATIC_DIR / "index.html")
+        return FileResponse(TermdeckConfig.STATIC_DIR / TermdeckConfig.INDEX_FILE)
+
+    async def _filedeck_navigation_page(self, project_name: str, navigation_path: str) -> FileResponse:
+        return await self._filedeck_page(project_name)
 
     async def _state_recovery_status(self) -> dict[str, object]:
         return self.state_backup.recovery_status()
@@ -936,14 +1488,308 @@ class TermdeckServer:
     def _terminal_layout_payload(self, project: str, settings: UiSettings, worktree_id: str = "") -> dict[str, object]:
         key = self._project_state_key(project, worktree_id)
         state = settings.project_state.get(key, ProjectUiState())
+        selected_worktree_id = worktree_id or ("root" if project else None)
         return {"project": project, "worktree_id": worktree_id or "root",
-                "sessions": self.manager.list_sessions(project or None, worktree_id or None), **state.model_dump()}
+                "sessions": self.manager.list_sessions(project or None, selected_worktree_id), **state.model_dump()}
 
     async def _get_terminal_layout(self, project: str = "", worktree_id: str = "") -> dict[str, object]:
         settings = UiSettings(**self.settings_store.load())
         return self._terminal_layout_payload(project, settings, worktree_id)
 
+    def _project_state_context(self, project: str, worktree_id: str) -> tuple[UiSettings, str, ProjectUiState]:
+        settings = UiSettings(**self.settings_store.load())
+        key = self._project_state_key(project, worktree_id)
+        return settings, key, settings.project_state.get(key, ProjectUiState())
+
+    def _save_project_state(self, settings: UiSettings, key: str, state: ProjectUiState,
+                            project: str, worktree_id: str) -> dict[str, object]:
+        settings.project_state[key] = state
+        payload = settings.model_dump()
+        self.settings_store.save(payload)
+        return self._terminal_layout_payload(project, UiSettings(**payload), worktree_id)
+
+    def _current_project_session_ids(self, project: str, worktree_id: str) -> list[str]:
+        selected_worktree_id = worktree_id or ("root" if project else None)
+        return [str(session["session_id"])
+                for session in self.manager.list_sessions(project or None, selected_worktree_id)]
+
+    def _materialized_terminal_layout(self, state: ProjectUiState, project: str, worktree_id: str) -> list[str]:
+        group_ids = [str(group.get("id", "")) for group in state.terminal_groups if str(group.get("id", ""))]
+        session_ids = self._current_project_session_ids(project, worktree_id)
+        valid_group_ids = set(group_ids)
+        valid_session_ids = set(session_ids)
+        layout: list[str] = []
+        for token in state.terminal_layout:
+            kind, separator, identifier = token.partition(":")
+            if not separator or token in layout:
+                continue
+            if kind == "group" and identifier in valid_group_ids:
+                layout.append(token)
+            elif kind == "session" and identifier in valid_session_ids and identifier not in state.session_groups:
+                layout.append(token)
+        for session_id in session_ids:
+            token = f"session:{session_id}"
+            if session_id not in state.session_groups and token not in layout:
+                layout.append(token)
+        for group_id in group_ids:
+            token = f"group:{group_id}"
+            if token not in layout:
+                layout.append(token)
+        return layout
+
+    def _moved_session_order(self, state: ProjectUiState, project: str, worktree_id: str,
+                             session_ids: list[str], target_session_id: str, after: bool) -> list[str]:
+        available_ids = self._current_project_session_ids(project, worktree_id)
+        available_set = set(available_ids)
+        selected_ids = [session_id for session_id in dict.fromkeys(session_ids)
+                        if session_id in available_set and session_id != target_session_id]
+        selected_set = set(selected_ids)
+        order = [session_id for session_id in state.session_order if session_id in available_set and session_id not in selected_set]
+        order.extend(session_id for session_id in available_ids if session_id not in order and session_id not in selected_set)
+        target_index = order.index(target_session_id) if target_session_id in order else -1
+        insert_at = target_index + (1 if after else 0) if target_index >= 0 else len(order)
+        order[insert_at:insert_at] = selected_ids
+        return order
+
+    async def _get_terminal_groups(self, project: str = "", worktree_id: str = "") -> dict[str, object]:
+        _, _, state = self._project_state_context(project, worktree_id)
+        return {"project": project, "worktree_id": worktree_id or "root",
+                "terminal_groups": state.terminal_groups, "session_groups": state.session_groups,
+                "terminal_layout": self._materialized_terminal_layout(state, project, worktree_id),
+                "session_order": state.session_order}
+
+    async def _create_terminal_group(self, request: TerminalGroupCreateRequest, project: str = "",
+                                     worktree_id: str = "") -> dict[str, object]:
+        group_id = request.group_id.strip()
+        name = request.name.strip()
+        if not group_id or not name:
+            raise HTTPException(status_code=422, detail="group_id and name are required")
+        settings, key, state = self._project_state_context(project, worktree_id)
+        if any(str(group.get("id", "")) == group_id for group in state.terminal_groups):
+            raise HTTPException(status_code=409, detail=f"terminal group already exists: {group_id}")
+        session_ids = [session_id for session_id in dict.fromkeys(request.session_ids) if session_id]
+        available_ids = set(self._current_project_session_ids(project, worktree_id))
+        unknown_ids = [session_id for session_id in session_ids if session_id not in available_ids]
+        if unknown_ids:
+            raise HTTPException(status_code=404, detail=f"unknown sessions: {', '.join(unknown_ids)}")
+        original_layout = self._materialized_terminal_layout(state, project, worktree_id)
+        anchor_index = original_layout.index(request.anchor_token) if request.anchor_token in original_layout else len(original_layout)
+        removed_tokens = {f"session:{session_id}" for session_id in session_ids}
+        layout = [token for token in original_layout if token not in removed_tokens]
+        retained_before_anchor = [token for token in original_layout[:anchor_index] if token not in removed_tokens]
+        insert_at = len(retained_before_anchor)
+        if request.after and request.anchor_token in layout:
+            insert_at += 1
+        layout.insert(min(insert_at, len(layout)), f"group:{group_id}")
+        state.terminal_groups = [*state.terminal_groups, {"id": group_id, "name": name, "collapsed": request.collapsed}]
+        state.terminal_layout = layout
+        assignments = dict(state.session_groups)
+        for session_id in session_ids:
+            assignments[session_id] = group_id
+        state.session_groups = assignments
+        if session_ids and request.anchor_token.startswith("session:"):
+            target_session_id = request.anchor_token[8:]
+            state.session_order = self._moved_session_order(
+                state, project, worktree_id, [session_id for session_id in session_ids if session_id != target_session_id],
+                target_session_id, request.after)
+        return self._save_project_state(settings, key, state, project, worktree_id)
+
+    async def _update_terminal_group(self, request: TerminalGroupUpdateRequest, group_id: str, project: str = "",
+                                     worktree_id: str = "") -> dict[str, object]:
+        settings, key, state = self._project_state_context(project, worktree_id)
+        index = next((index for index, group in enumerate(state.terminal_groups)
+                      if str(group.get("id", "")) == group_id), -1)
+        if index < 0:
+            raise HTTPException(status_code=404, detail=group_id)
+        group = dict(state.terminal_groups[index])
+        if request.name is not None:
+            name = request.name.strip()
+            if not name:
+                raise HTTPException(status_code=422, detail="group name is required")
+            group["name"] = name
+        if request.collapsed is not None:
+            group["collapsed"] = request.collapsed
+        groups = list(state.terminal_groups)
+        groups[index] = group
+        state.terminal_groups = groups
+        return self._save_project_state(settings, key, state, project, worktree_id)
+
+    async def _delete_terminal_group(self, group_id: str, project: str = "",
+                                     worktree_id: str = "") -> dict[str, object]:
+        settings, key, state = self._project_state_context(project, worktree_id)
+        if not any(str(group.get("id", "")) == group_id for group in state.terminal_groups):
+            raise HTTPException(status_code=404, detail=group_id)
+        layout = self._materialized_terminal_layout(state, project, worktree_id)
+        group_token = f"group:{group_id}"
+        group_index = layout.index(group_token) if group_token in layout else len(layout)
+        layout = [token for token in layout if token != group_token]
+        available_ids = set(self._current_project_session_ids(project, worktree_id))
+        members = [session_id for session_id in state.session_order
+                   if session_id in available_ids and state.session_groups.get(session_id) == group_id]
+        members.extend(session_id for session_id, assigned_group_id in state.session_groups.items()
+                       if assigned_group_id == group_id and session_id in available_ids and session_id not in members)
+        member_tokens = [f"session:{session_id}" for session_id in members]
+        layout[group_index:group_index] = [token for token in member_tokens if token not in layout]
+        state.terminal_groups = [group for group in state.terminal_groups if str(group.get("id", "")) != group_id]
+        state.session_groups = {session_id: assigned_group_id for session_id, assigned_group_id in state.session_groups.items()
+                                if assigned_group_id != group_id}
+        state.terminal_layout = layout
+        return self._save_project_state(settings, key, state, project, worktree_id)
+
+    async def _merge_terminal_group(self, request: TerminalGroupMergeRequest, group_id: str, project: str = "",
+                                    worktree_id: str = "") -> dict[str, object]:
+        target_group_id = request.target_group_id.strip()
+        if not target_group_id or target_group_id == group_id:
+            raise HTTPException(status_code=422, detail="a different target_group_id is required")
+        settings, key, state = self._project_state_context(project, worktree_id)
+        group_ids = {str(group.get("id", "")) for group in state.terminal_groups}
+        if group_id not in group_ids or target_group_id not in group_ids:
+            raise HTTPException(status_code=404, detail="source or target terminal group not found")
+        state.session_groups = {session_id: target_group_id if assigned_group_id == group_id else assigned_group_id
+                                for session_id, assigned_group_id in state.session_groups.items()}
+        state.terminal_groups = [group for group in state.terminal_groups if str(group.get("id", "")) != group_id]
+        state.terminal_layout = [token for token in self._materialized_terminal_layout(state, project, worktree_id)
+                                 if token != f"group:{group_id}"]
+        return self._save_project_state(settings, key, state, project, worktree_id)
+
+    async def _put_session_group_assignments(self, request: SessionGroupAssignmentsRequest, project: str = "",
+                                             worktree_id: str = "") -> dict[str, object]:
+        settings, key, state = self._project_state_context(project, worktree_id)
+        group_ids = {str(group.get("id", "")) for group in state.terminal_groups}
+        available_ids = set(self._current_project_session_ids(project, worktree_id))
+        unknown_sessions = [session_id for session_id in request.assignments if session_id not in available_ids]
+        if unknown_sessions:
+            raise HTTPException(status_code=404, detail=f"unknown sessions: {', '.join(unknown_sessions)}")
+        unknown_groups = sorted({group_id for group_id in request.assignments.values()
+                                 if group_id is not None and group_id not in group_ids})
+        if unknown_groups:
+            raise HTTPException(status_code=404, detail=f"unknown groups: {', '.join(unknown_groups)}")
+        layout = self._materialized_terminal_layout(state, project, worktree_id)
+        assignments = dict(state.session_groups)
+        previous_groups = {session_id: assignments.get(session_id) for session_id in request.assignments}
+        insertion_offsets: dict[str, int] = {}
+        for session_id, group_id in request.assignments.items():
+            token = f"session:{session_id}"
+            if group_id:
+                assignments[session_id] = group_id
+                layout = [entry for entry in layout if entry != token]
+            else:
+                assignments.pop(session_id, None)
+                if token in layout:
+                    continue
+                target_token = f"session:{request.target_session_id}" if request.target_session_id else ""
+                if target_token in layout:
+                    insertion_key = target_token
+                    base_index = layout.index(target_token) + (1 if request.after else 0)
+                else:
+                    previous_group_token = f"group:{previous_groups[session_id]}" if previous_groups[session_id] else ""
+                    insertion_key = previous_group_token or "__end__"
+                    base_index = layout.index(previous_group_token) + 1 if previous_group_token in layout else len(layout)
+                insert_at = base_index + insertion_offsets.get(insertion_key, 0)
+                layout.insert(insert_at, token)
+                insertion_offsets[insertion_key] = insertion_offsets.get(insertion_key, 0) + 1
+        state.session_groups = assignments
+        state.terminal_layout = layout
+        if request.target_session_id:
+            state.session_order = self._moved_session_order(
+                state, project, worktree_id, list(request.assignments), request.target_session_id, request.after)
+        return self._save_project_state(settings, key, state, project, worktree_id)
+
+    async def _move_terminal_layout_item(self, request: TerminalLayoutMoveRequest, project: str = "",
+                                         worktree_id: str = "") -> dict[str, object]:
+        settings, key, state = self._project_state_context(project, worktree_id)
+        layout = self._materialized_terminal_layout(state, project, worktree_id)
+        if request.token not in layout:
+            raise HTTPException(status_code=404, detail=request.token)
+        layout.remove(request.token)
+        if request.to_top:
+            layout.insert(0, request.token)
+        elif request.target_token in layout:
+            target_index = layout.index(request.target_token)
+            layout.insert(target_index + (1 if request.after else 0), request.token)
+        else:
+            raise HTTPException(status_code=404, detail=request.target_token)
+        state.terminal_layout = layout
+        return self._save_project_state(settings, key, state, project, worktree_id)
+
+    async def _move_session_order_items(self, request: SessionOrderMoveRequest, project: str = "",
+                                        worktree_id: str = "") -> dict[str, object]:
+        settings, key, state = self._project_state_context(project, worktree_id)
+        state.session_order = self._moved_session_order(
+            state, project, worktree_id, request.session_ids, request.target_session_id, request.after)
+        return self._save_project_state(settings, key, state, project, worktree_id)
+
+    async def _put_session_unread(self, request: SessionUnreadRequest, project: str = "",
+                                  worktree_id: str = "") -> dict[str, object]:
+        settings, key, state = self._project_state_context(project, worktree_id)
+        if request.unread:
+            available_ids = set(self._current_project_session_ids(project, worktree_id))
+            unknown_ids = [session_id for session_id in request.session_ids if session_id not in available_ids]
+            if unknown_ids:
+                raise HTTPException(status_code=404, detail=f"unknown sessions: {', '.join(unknown_ids)}")
+        unread = set(state.unread_sessions)
+        if request.unread:
+            unread.update(request.session_ids)
+        else:
+            unread.difference_update(request.session_ids)
+        state.unread_sessions = list(dict.fromkeys([*state.unread_sessions, *request.session_ids])) if request.unread \
+            else [session_id for session_id in state.unread_sessions if session_id in unread]
+        return self._save_project_state(settings, key, state, project, worktree_id)
+
+    async def _record_recently_opened_terminal(self, session_id: str, project: str = "",
+                                               worktree_id: str = "") -> dict[str, object]:
+        settings, key, state = self._project_state_context(project, worktree_id)
+        if session_id not in set(self._current_project_session_ids(project, worktree_id)):
+            raise HTTPException(status_code=404, detail=session_id)
+        state.recently_opened_terminal_ids = [session_id, *[existing for existing in state.recently_opened_terminal_ids
+                                                            if existing != session_id]][:100]
+        return self._save_project_state(settings, key, state, project, worktree_id)
+
+    async def _put_session_view_mode(self, request: SessionViewModeRequest, session_id: str, project: str = "",
+                                     worktree_id: str = "") -> dict[str, object]:
+        if request.mode not in {"terminal", "markdown"}:
+            raise HTTPException(status_code=422, detail="mode must be terminal or markdown")
+        if session_id not in set(self._current_project_session_ids(project, worktree_id)):
+            raise HTTPException(status_code=404, detail=session_id)
+        settings, key, state = self._project_state_context(project, worktree_id)
+        modes = dict(state.session_view_modes)
+        modes[session_id] = request.mode
+        state.session_view_modes = modes
+        return self._save_project_state(settings, key, state, project, worktree_id)
+
+    def _project_state_field_names(self) -> set[str]:
+        return set(ProjectStatePatch.model_fields) - {
+            "terminal_groups", "session_groups", "terminal_layout", "session_order", "unread_sessions",
+            "recently_opened_terminal_ids", "session_view_modes",
+        }
+
+    async def _get_project_state_field(self, field_name: str, project: str = "",
+                                       worktree_id: str = "") -> dict[str, object]:
+        if field_name not in self._project_state_field_names():
+            raise HTTPException(status_code=404, detail=f"unknown project state field: {field_name}")
+        _, _, state = self._project_state_context(project, worktree_id)
+        return {"field": field_name, "value": getattr(state, field_name)}
+
+    async def _put_project_state_field(self, request: StoredValueRequest, field_name: str, project: str = "",
+                                       worktree_id: str = "") -> dict[str, object]:
+        if field_name not in self._project_state_field_names():
+            raise HTTPException(status_code=404, detail=f"unknown project state field: {field_name}")
+        settings, key, state = self._project_state_context(project, worktree_id)
+        updated = state.model_dump()
+        updated[field_name] = request.value
+        try:
+            state = ProjectUiState(**updated)
+        except ValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return self._save_project_state(settings, key, state, project, worktree_id)
+
     async def _patch_terminal_layout(self, patch: ProjectStatePatch, project: str = "", worktree_id: str = "") -> dict[str, object]:
+        resource_fields = {"terminal_groups", "session_groups", "terminal_layout", "session_order",
+                           "unread_sessions", "recently_opened_terminal_ids", "session_view_modes"}
+        supplied_resource_fields = resource_fields & patch.model_fields_set
+        if supplied_resource_fields:
+            raise HTTPException(status_code=409,
+                                detail=f"project resources require targeted APIs: {', '.join(sorted(supplied_resource_fields))}")
         settings = UiSettings(**self.settings_store.load())
         key = self._project_state_key(project, worktree_id)
         current = settings.project_state.get(key, ProjectUiState()).model_dump()
@@ -1614,6 +2460,13 @@ class TermdeckServer:
             raise HTTPException(status_code=400, detail=str(restart_error)) from restart_error
         return self.manager.session_summary_by_id(session_id)
 
+    async def _stop_session(self, session_id: str) -> dict[str, object]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        if not await self.manager.stop_session(session_id):
+            raise HTTPException(status_code=409, detail="could not terminate the detached terminal process tree")
+        return self.manager.session_summary_by_id(session_id)
+
     async def _fork_session(self, session_id: str, request: ForkSessionRequest) -> dict[str, object]:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
@@ -1729,6 +2582,101 @@ class TermdeckServer:
                     raise pump_error
         finally:
             self.manager.detach_client(session_id, queue)
+
+    async def _ws_lsp(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        send_lock = asyncio.Lock()
+        root = websocket.query_params.get("root", "")
+        path = websocket.query_params.get("path", "")
+        language = websocket.query_params.get("language", "")
+        uri = ""
+        connection: LanguageServerConnection | None = None
+        events: asyncio.Queue[dict[str, object]] | None = None
+        event_pump: asyncio.Task[None] | None = None
+        try:
+            open_message = json.loads(await websocket.receive_text())
+            if not isinstance(open_message, dict) or open_message.get("type") != "open" or not isinstance(open_message.get("text"), str):
+                await self._send_lsp_message(websocket, send_lock, {"type": "status", "available": False,
+                                                                    "error": "first language-server message must open a document"})
+                return
+            connection, uri = await self.language_servers.open_document(root, path, language, open_message["text"])
+            events = connection.subscribe()
+            await self._send_lsp_message(websocket, send_lock, {"type": "status", "available": True,
+                                                                "server": connection.server_name, "uri": uri,
+                                                                "capabilities": connection.capabilities})
+            event_pump = asyncio.create_task(self._pump_lsp_events(websocket, send_lock, events))
+            while True:
+                message = json.loads(await websocket.receive_text())
+                if not isinstance(message, dict):
+                    raise ValueError("language-server client message must be an object")
+                message_type = message.get("type")
+                if message_type == "change":
+                    text = message.get("text")
+                    if not isinstance(text, str):
+                        raise ValueError("language-server change has no text")
+                    await connection.open_document(uri, language, text)
+                    continue
+                if message_type == "save":
+                    text = message.get("text")
+                    if not isinstance(text, str):
+                        raise ValueError("language-server save has no text")
+                    await connection.save_document(uri, text)
+                    continue
+                if message_type != "request":
+                    raise ValueError(f"unsupported language-server client message: {message_type}")
+                request_id = message.get("requestId")
+                method = message.get("method")
+                params = message.get("params", {})
+                if not isinstance(request_id, int) or not isinstance(method, str) or not isinstance(params, dict):
+                    raise ValueError("invalid language-server request")
+                try:
+                    result = await connection.request(method, params)
+                    response = {"type": "response", "requestId": request_id, "result": result}
+                except LanguageServerRequestError as request_error:
+                    response = {"type": "response", "requestId": request_id, "error": request_error.error}
+                except LanguageServerProtocolError as protocol_error:
+                    response = {"type": "response", "requestId": request_id, "error": {"message": str(protocol_error)}}
+                await self._send_lsp_message(websocket, send_lock, response)
+        except LanguageServerUnavailableError as unavailable_error:
+            unavailable_status: dict[str, object] = {"type": "status", "available": False,
+                                                     "error": str(unavailable_error),
+                                                     "disabled": not self.language_servers.enabled()}
+            if self.language_servers.enabled():
+                installation_status = self.language_servers.installation_status(language, root)
+                if installation_status is not None:
+                    unavailable_status.update(installation_status)
+            await self._send_lsp_message(websocket, send_lock, unavailable_status)
+        except WebSocketDisconnect:
+            return
+        except (ValueError, TypeError, json.JSONDecodeError, FileNotFoundError, PermissionError, OSError,
+                LanguageServerProtocolError) as lsp_error:
+            try:
+                await self._send_lsp_message(websocket, send_lock, {"type": "status", "available": False,
+                                                                    "error": str(lsp_error)})
+            except (RuntimeError, WebSocketDisconnect):
+                pass
+        finally:
+            if event_pump is not None:
+                event_pump.cancel()
+                try:
+                    await event_pump
+                except (asyncio.CancelledError, RuntimeError, WebSocketDisconnect):
+                    pass
+            if connection is not None and events is not None:
+                connection.unsubscribe(events)
+            if connection is not None and uri:
+                await self.language_servers.close_document(connection, uri)
+
+    @staticmethod
+    async def _send_lsp_message(websocket: WebSocket, send_lock: asyncio.Lock, message: dict[str, object]) -> None:
+        async with send_lock:
+            await websocket.send_text(json.dumps(message))
+
+    @classmethod
+    async def _pump_lsp_events(cls, websocket: WebSocket, send_lock: asyncio.Lock,
+                               events: asyncio.Queue[dict[str, object]]) -> None:
+        while True:
+            await cls._send_lsp_message(websocket, send_lock, await events.get())
 
     async def _ws_status(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -1861,7 +2809,13 @@ class TermdeckServer:
             if message_type == WsMessageFields.INPUT:
                 self.manager.write_input(session_id, message[WsMessageFields.DATA])
             elif message_type == WsMessageFields.RESIZE:
-                self.manager.resize(session_id, int(message[WsMessageFields.COLS]), int(message[WsMessageFields.ROWS]))
+                applied, live_cols, live_rows = self.manager.resize(
+                    session_id, int(message[WsMessageFields.COLS]), int(message[WsMessageFields.ROWS]),
+                    force=bool(message.get("force", False)))
+                if not applied:
+                    # Another window owns this terminal's size. Tell this client what it actually is so it
+                    # can render at the real width instead of its own, and offer to take it over.
+                    await websocket.send_json({"type": "resize_rejected", "cols": live_cols, "rows": live_rows})
             elif message_type == WsMessageFields.REPAINT:
                 self.manager.request_screen_repaint(session_id)
             elif message_type == WsMessageFields.DRAFT_SYNC:
@@ -1891,4 +2845,5 @@ class TermdeckServer:
     def run(self) -> None:
         TermdeckConfig.DATA_DIR.mkdir(parents=True, exist_ok=True)
         uvicorn.run(self.build_app(), host=TermdeckConfig.HOST, port=TermdeckConfig.PORT,
-                    log_level=TermdeckConfig.UVICORN_LOG_LEVEL, access_log=False)
+                    log_level=TermdeckConfig.UVICORN_LOG_LEVEL, access_log=False,
+                    timeout_graceful_shutdown=TermdeckConfig.UVICORN_GRACEFUL_SHUTDOWN_SECONDS)

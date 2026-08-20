@@ -29,6 +29,8 @@ class AgentSessionTracker:
     _SUBAGENT_TAIL_BYTES = 256 * 1024
     _AGY_ACTIVITY_TAIL_BYTES = 256 * 1024
     _CODEX_ACTIVITY_TAIL_BYTES = 8 * 1024 * 1024
+    _CLAUDE_PERMISSION_TAIL_BYTES = 256 * 1024
+    _CLAUDE_PERMISSION_MODES = {"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
     _CLAUDE_INTERRUPT_TEXT_PREFIX = "[Request interrupted by user"
     _CLAUDE_LOCAL_COMMAND_MARKERS = ("<command-name>", "<local-command-")
     _CLI_TITLE_CACHE_SIZE = 120
@@ -231,6 +233,26 @@ class AgentSessionTracker:
         if not session_id:
             return None, False
         return self._claude_attention_state_from_path(self.claude_project_dir(cwd) / f"{session_id}.jsonl")
+
+    def claude_session_permission_mode(self, cwd: Path, session_id: str | None) -> str | None:
+        if not session_id:
+            return None
+        path = self.claude_project_dir(cwd) / f"{session_id}.jsonl"
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                handle.seek(max(0, handle.tell() - self._CLAUDE_PERMISSION_TAIL_BYTES))
+                lines = handle.read().decode(errors="replace").splitlines()
+        except OSError:
+            return None
+        for line in reversed(lines):
+            try:
+                mode = json.loads(line).get("permissionMode")
+            except json.JSONDecodeError:
+                continue
+            if mode in self._CLAUDE_PERMISSION_MODES:
+                return mode
+        return None
 
     def codex_session_id_for_reference(self, reference: str) -> str | None:
         """Resolve a Codex UUID or saved thread name to the UUID accepted by resume."""
@@ -725,6 +747,7 @@ class AgentSessionTracker:
             if not parts:
                 return TermdeckConfig.CODEX_RESUME_TEMPLATE.format(agent_session_id=agent_session_id)
             cleaned = self._strip_codex_session_arguments(parts)
+            cleaned = self._ensure_codex_searchable_scrollback(cleaned)
             return f"{shlex.join(cleaned)} resume {agent_session_id}"
         return original_command
 
@@ -786,6 +809,15 @@ class AgentSessionTracker:
             cleaned.append(token)
         return cleaned
 
+    @staticmethod
+    def _ensure_codex_searchable_scrollback(parts: list[str]) -> list[str]:
+        if TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG in parts:
+            return parts
+        command_index = next((index for index, token in enumerate(parts) if Path(token).name == AgentKind.CODEX.value), None)
+        if command_index is None:
+            return parts
+        return [*parts[:command_index + 1], TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG, *parts[command_index + 1:]]
+
     def build_fork_command(self, kind: AgentKind, original_command: str, agent_session_id: str,
                            session_name: str = "") -> str:
         if kind is AgentKind.CLAUDE:
@@ -799,5 +831,9 @@ class AgentSessionTracker:
                 cleaned.extend((TermdeckConfig.CLAUDE_NAME_FLAG, " ".join(session_name.splitlines()).strip()))
             return shlex.join(cleaned)
         if kind is AgentKind.CODEX:
-            return TermdeckConfig.CODEX_FORK_TEMPLATE.format(agent_session_id=agent_session_id)
+            parts = self._command_parts(original_command)
+            cleaned = self._strip_codex_session_arguments(parts) if parts else [AgentKind.CODEX.value]
+            cleaned = self._ensure_codex_searchable_scrollback(cleaned)
+            cleaned.extend(("fork", agent_session_id))
+            return shlex.join(cleaned)
         return original_command

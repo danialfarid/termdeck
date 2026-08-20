@@ -9,6 +9,9 @@ __pycache__/
 *.log
 *.bin
 
+node_modules/
+package-lock.json
+
 dist/
 build/
 *.egg-info/

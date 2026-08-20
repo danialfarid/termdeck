@@ -2,6 +2,7 @@ import asyncio
 import datetime as dt
 import json
 import re
+import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -128,17 +129,32 @@ class TranscriptService:
                 leaf_observer.start()
                 self._codex_leaf_observer = leaf_observer
 
+    # Bounded on the stop() call itself, not just the join. An observer that will not come down blocks
+    # here forever, and this runs inside the app's shutdown: measured with SIGTERM, the server logged
+    # "Waiting for application shutdown", released its port, and then lived on indefinitely holding its
+    # memory -- so `kill <pid>` produced an orphan rather than a stopped server, and the state-recovery
+    # restart (which signals itself with SIGTERM) could never come back up. These watchers hold nothing
+    # that has to be flushed, so abandoning a stuck one costs nothing: the process is on its way out, and
+    # a daemon thread does not hold it back.
     def stop(self) -> None:
         observer, self._observer = self._observer, None
         leaf_observer, self._codex_leaf_observer = self._codex_leaf_observer, None
-        if leaf_observer is not None:
-            leaf_observer.stop()
-            leaf_observer.join(timeout=2)
-        if observer is not None:
-            observer.stop()
-            observer.join(timeout=2)
+        for watcher in (leaf_observer, observer):
+            if watcher is None:
+                continue
+            closer = threading.Thread(target=self._close_observer, args=(watcher,), daemon=True)
+            closer.start()
+            closer.join(timeout=2)
         self._loop = None
         self._subscribers.clear()
+
+    @staticmethod
+    def _close_observer(watcher) -> None:
+        try:
+            watcher.stop()
+            watcher.join(timeout=2)
+        except Exception:
+            pass
 
     def subscribe(self, agent_kind: str, cwd: str, agent_session_id: str | None) -> tuple[Path | None, list[dict[str, object]], int, asyncio.Queue]:
         path = self.source_path(agent_kind, cwd, agent_session_id)
@@ -881,6 +897,15 @@ class TranscriptService:
     def _parse_codex(self, path: Path) -> list[dict[str, object]]:
         return self._collapse_thinking_events(self._parse_codex_lines(path.read_text(errors="replace").splitlines()))
 
+    @staticmethod
+    def _append_codex_message_turn(turns: list[dict[str, object]], candidate: dict[str, object]) -> None:
+        if not candidate["text"]:
+            return
+        if turns and turns[-1].get("role") == candidate.get("role") and turns[-1].get("text") == candidate.get("text"):
+            turns[-1] = candidate
+            return
+        turns.append(candidate)
+
     def _parse_codex_lines(self, lines: Iterable[str]) -> list[dict[str, object]]:
         turns: list[dict[str, object]] = []
         current_model = ""
@@ -900,10 +925,11 @@ class TranscriptService:
             model = current_model
             if entry_type == "event_msg" and body_type == "agent_message":
                 candidate = self._turn(self.ROLE_ASSISTANT, str(body.get("message", "")), model=model)
-                candidate["phase"] = "final_answer"
-                candidate["final"] = True
-                if candidate["text"] and (not turns or turns[-1] != candidate):
-                    turns.append(candidate)
+                phase = str(body.get("phase", ""))
+                if phase:
+                    candidate["phase"] = phase
+                    candidate["final"] = phase == "final_answer"
+                self._append_codex_message_turn(turns, candidate)
             elif entry_type == "event_msg" and body_type == "item_completed":
                 item = body.get("item")
                 if isinstance(item, dict) and item.get("type") == "AgentMessage":
@@ -913,8 +939,7 @@ class TranscriptService:
                     if phase:
                         candidate["phase"] = phase
                         candidate["final"] = phase == "final_answer"
-                    if candidate["text"] and (not turns or turns[-1] != candidate):
-                        turns.append(candidate)
+                    self._append_codex_message_turn(turns, candidate)
             elif entry_type == "response_item" and body_type == "message" and body.get("role") in ("user", "assistant"):
                 text_keys = ("input_text", "text") if body.get("role") == "user" else ("output_text", "text")
                 text = self._join_text(body.get("content"), text_keys)
@@ -925,7 +950,8 @@ class TranscriptService:
                         if phase:
                             candidate["phase"] = phase
                             candidate["final"] = phase == "final_answer"
-                    if not turns or turns[-1] != candidate:
+                        self._append_codex_message_turn(turns, candidate)
+                    elif not turns or turns[-1] != candidate:
                         turns.append(candidate)
             elif entry_type == "response_item" and body_type in ("custom_tool_call", "function_call"):
                 name = str(body.get("name") or "tool")
@@ -960,6 +986,10 @@ class TranscriptService:
     def _parse_claude(self, path: Path) -> list[dict[str, object]]:
         return self._collapse_thinking_events(self._parse_claude_lines(path.read_text(errors="replace").splitlines()))
 
+    @staticmethod
+    def _normalize_claude_user_text(role: str, text: str) -> str:
+        return text.lstrip("\x15") if role == TranscriptService.ROLE_USER else text
+
     def _parse_claude_lines(self, lines: Iterable[str]) -> list[dict[str, object]]:
         turns: list[dict[str, object]] = []
         for line in lines:
@@ -973,15 +1003,18 @@ class TranscriptService:
             content = message.get("content")
             model = self._extract_turn_model(payload) or self._extract_turn_model(message)
             if isinstance(content, str):
-                if content.strip():
-                    turns.append(self._turn(role, content, model=model))
+                normalized_content = self._normalize_claude_user_text(role, content)
+                if normalized_content.strip():
+                    turns.append(self._turn(role, normalized_content, model=model))
             elif isinstance(content, list):
                 for block in content:
                     if not isinstance(block, dict):
                         continue
                     block_type = block.get("type")
-                    if block_type == "text" and str(block.get("text", "")).strip():
-                        turns.append(self._turn(role, str(block.get("text", "")), model=model))
+                    if block_type == "text":
+                        text = self._normalize_claude_user_text(role, str(block.get("text", "")))
+                        if text.strip():
+                            turns.append(self._turn(role, text, model=model))
                     elif block_type == "tool_use":
                         turns.append(self._tool_event(str(block.get("name", "tool")), block.get("input", {}), model=model))
                     elif block_type == "tool_result":

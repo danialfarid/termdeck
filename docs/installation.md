@@ -24,12 +24,19 @@ its job — `dtach` above all, because that is what keeps terminals alive when t
 
 ```sh
 brew install danialfarid/tap/termdeck
+termdeck service install
 ```
 
 The tap pulls in `dtach` and `ripgrep` automatically, and installs TermDeck's Python dependencies from
 prebuilt CPython 3.13 wheels, so nothing compiles at install time. Works on Apple Silicon and Intel.
 
-Upgrade later with `brew update && brew upgrade termdeck`.
+Upgrade later with:
+
+```sh
+brew update
+brew upgrade danialfarid/tap/termdeck
+termdeck service restart
+```
 
 ---
 
@@ -38,7 +45,7 @@ Upgrade later with `brew update && brew upgrade termdeck`.
 `uv` brings its own Python, so the system Python version doesn't matter.
 
 ```sh
-uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.5.0"
+uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.6.0"
 ```
 
 Upgrade to a newer release by re-running with the new tag. Pin to `main` instead of a tag for the latest
@@ -47,7 +54,7 @@ development version.
 ## pipx
 
 ```sh
-pipx install "git+https://github.com/danialfarid/termdeck.git@v0.5.0"
+pipx install "git+https://github.com/danialfarid/termdeck.git@v0.6.0"
 ```
 
 ## pip
@@ -55,7 +62,7 @@ pipx install "git+https://github.com/danialfarid/termdeck.git@v0.5.0"
 Only if you want it inside a specific environment rather than as a standalone tool:
 
 ```sh
-python3 -m pip install "git+https://github.com/danialfarid/termdeck.git@v0.5.0"
+python3 -m pip install "git+https://github.com/danialfarid/termdeck.git@v0.6.0"
 ```
 
 ### Installing the external tools
@@ -173,7 +180,7 @@ Remove it with `termdeck service uninstall`.
 
 | Installed with | Upgrade |
 |---|---|
-| Homebrew | `brew update && brew upgrade termdeck` |
+| Homebrew | `brew update && brew upgrade danialfarid/tap/termdeck && termdeck service restart` |
 | uv | `uv tool install --force "git+https://github.com/danialfarid/termdeck.git@v0.5.0"` |
 | pipx | `pipx install --force "git+https://github.com/danialfarid/termdeck.git@v0.5.0"` |
 | pip | `pip install --upgrade "git+https://github.com/danialfarid/termdeck.git@v0.5.0"` |

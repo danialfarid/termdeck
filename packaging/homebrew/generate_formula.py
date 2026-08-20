@@ -18,9 +18,9 @@ class HomebrewFormulaGenerator:
     maturin/setuptools-rust) plus a C compiler, and Homebrew's install sandbox has no network, so every build
     backend would have to be vendored too. Wheels sidestep all of it — nothing compiles at install time.
 
-    The cost is that the four packages with native extensions (pydantic-core, setproctitle, watchdog,
-    websockets) are architecture-specific, so their wheels go in per-arch on_arm/on_intel blocks; the rest are
-    universal `py3-none-any` wheels. macOS only (Apple Silicon + Intel); Linux users install with uv/pipx.
+    Packages with native extensions are architecture-specific, so their wheels go in per-arch on_arm/on_intel
+    blocks; the rest are universal `py3-none-any` wheels. macOS only (Apple Silicon + Intel); Linux users install
+    with uv/pipx.
 
     Run it AFTER the `vX.Y.Z` tag exists on GitHub (it hashes the release tarball), then copy the output into
     the tap repo as Formula/termdeck.rb:
@@ -39,7 +39,6 @@ class HomebrewFormulaGenerator:
     ABI = "cp313"
     ARM_PLATFORMS = ("macosx_11_0_arm64", "macosx_10_12_universal2")
     INTEL_PLATFORMS = ("macosx_10_13_x86_64", "macosx_10_12_x86_64", "macosx_11_0_x86_64", "macosx_10_9_x86_64")
-    NATIVE_PACKAGES = ("pydantic-core", "setproctitle", "watchdog", "websockets")
     UNIVERSAL_WHEEL_SUFFIX = "py3-none-any.whl"
     SYSTEM_DEPENDENCIES = ("dtach", "ripgrep")
     PIP_FREEZE_SEPARATOR = "=="
@@ -56,6 +55,7 @@ class HomebrewFormulaGenerator:
   url "{tarball_url}"
   sha256 "{tarball_sha256}"
   license "Apache-2.0"
+  depends_on :macos
 
 {dependency_lines}
   on_macos do
@@ -165,11 +165,8 @@ end
         print(f"termdeck {version}: {len(specs)} dependencies", file=sys.stderr)
         with tempfile.TemporaryDirectory() as temp_dir:
             arm_dir, intel_dir = Path(temp_dir) / "arm", Path(temp_dir) / "intel"
-            native_specs = [s for s in specs
-                            if s.split(HomebrewFormulaGenerator.PIP_FREEZE_SEPARATOR)[0].lower().replace("_", "-")
-                            in HomebrewFormulaGenerator.NATIVE_PACKAGES]
             HomebrewFormulaGenerator.download_wheels(specs, HomebrewFormulaGenerator.ARM_PLATFORMS, arm_dir)
-            HomebrewFormulaGenerator.download_wheels(native_specs, HomebrewFormulaGenerator.INTEL_PLATFORMS, intel_dir)
+            HomebrewFormulaGenerator.download_wheels(specs, HomebrewFormulaGenerator.INTEL_PLATFORMS, intel_dir)
             universal_blocks, arm_blocks, intel_blocks = "", "", ""
             for wheel in sorted(arm_dir.glob("*.whl")):
                 name = HomebrewFormulaGenerator.package_from_wheel(wheel.name)
@@ -178,6 +175,8 @@ end
                 else:
                     arm_blocks += HomebrewFormulaGenerator.resource_block(name, wheel.name, "      ")
             for wheel in sorted(intel_dir.glob("*.whl")):
+                if wheel.name.endswith(HomebrewFormulaGenerator.UNIVERSAL_WHEEL_SUFFIX):
+                    continue
                 name = HomebrewFormulaGenerator.package_from_wheel(wheel.name)
                 intel_blocks += HomebrewFormulaGenerator.resource_block(name, wheel.name, "      ")
         dependency_lines = "".join(f'  depends_on "{name}"\n'

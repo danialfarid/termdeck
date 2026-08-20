@@ -27,6 +27,13 @@ jobs:
       - name: Build sdist and wheel
         run: python -m pip install --upgrade pip build twine && python -m build && python -m twine check dist/*
 
+      - name: Install and run the built wheel
+        run: |
+          python -m venv "${RUNNER_TEMP}/termdeck-wheel"
+          "${RUNNER_TEMP}/termdeck-wheel/bin/pip" install dist/*.whl
+          "${RUNNER_TEMP}/termdeck-wheel/bin/termdeck" --version
+          "${RUNNER_TEMP}/termdeck-wheel/bin/termdeck" --help >/dev/null
+
       - name: Verify the tag matches the package version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -58,3 +65,45 @@ jobs:
         with:
           name: dist
           path: dist/
+
+  homebrew:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Generate the Homebrew formula
+        run: python packaging/homebrew/generate_formula.py "${GITHUB_REF_NAME#v}"
+      - uses: actions/checkout@v7
+        with:
+          repository: danialfarid/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+      - name: Publish the Homebrew formula
+        run: |
+          cp packaging/homebrew/termdeck.rb homebrew-tap/Formula/termdeck.rb
+          ruby -c homebrew-tap/Formula/termdeck.rb
+          git -C homebrew-tap config user.name github-actions[bot]
+          git -C homebrew-tap config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git -C homebrew-tap add Formula/termdeck.rb
+          if git -C homebrew-tap diff --cached --quiet; then exit 0; fi
+          git -C homebrew-tap commit -m "termdeck ${GITHUB_REF_NAME#v}"
+          git -C homebrew-tap push
+
+  homebrew-install:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: homebrew
+    runs-on: macos-latest
+    steps:
+      - name: Install the published formula
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          brew tap danialfarid/tap
+          brew install danialfarid/tap/termdeck
+          termdeck --version
+          termdeck --help >/dev/null
+          brew test danialfarid/tap/termdeck

@@ -13,6 +13,7 @@ class TermdeckConfig:
 
     HOST = PlatformPaths.env_text(PlatformPaths.ENV_HOST, "127.0.0.1")
     PORT = PlatformPaths.env_int(PlatformPaths.ENV_PORT, 8530)
+    LAN_PORT = PlatformPaths.env_int(PlatformPaths.ENV_LAN_PORT, 8532)
     DATA_DIR = PlatformPaths.env_directory(PlatformPaths.ENV_DATA_DIR, PlatformPaths.default_data_dir())
     SESSIONS_FILE = DATA_DIR / "sessions.json"
     SETTINGS_FILE = DATA_DIR / "settings.json"
@@ -42,6 +43,9 @@ class TermdeckConfig:
     PROJECT_PAGE_ROUTE = "/p/{project_name}"
     PROJECT_NAVIGATION_PAGE_ROUTE = "/p/{project_name}/{navigation_path:path}"
     FILEDECK_PAGE_ROUTE = "/f/{project_name}"
+    FILEDECK_NAVIGATION_PAGE_ROUTE = "/f/{project_name}/{navigation_path:path}"
+    GIT_PAGE_ROUTE = "/g/{project_name}"
+    GIT_NAVIGATION_PAGE_ROUTE = "/g/{project_name}/{navigation_path:path}"
     STATIC_DIR = Path(__file__).resolve().parent / "static"
     FILEDECK_STATIC_DIR = Path(__file__).resolve().parent.parent / "filedeck" / "static"
     INDEX_FILE = "index.html"
@@ -61,6 +65,7 @@ class TermdeckConfig:
     API_SESSION_TASK_RESULT_ROUTE = "/api/sessions/{session_id}/task-result"
     API_SESSION_LAST_TURN_ROUTE = "/api/sessions/{session_id}/last_turn"
     API_SESSION_PROMPT_ROUTE = "/api/sessions/{session_id}/prompt"
+    API_SESSION_STOP_ROUTE = "/api/sessions/{session_id}/stop"
     API_SESSION_RESTART_ROUTE = "/api/sessions/{session_id}/restart"
     API_SESSION_FORK_ROUTE = "/api/sessions/{session_id}/fork"
     API_SESSION_WORKTREE_REVIEW_ROUTE = "/api/sessions/{session_id}/worktree/review"
@@ -74,6 +79,16 @@ class TermdeckConfig:
     API_TERMINAL_PROCESSES_ROUTE = "/api/terminals/processes"
     API_RECLAIM_ORPHAN_TERMINALS_ROUTE = "/api/terminals/reclaim-orphans"
     API_TERMINAL_LAYOUT_ROUTE = "/api/terminal-layout"
+    API_TERMINAL_GROUPS_ROUTE = "/api/terminal-groups"
+    API_TERMINAL_GROUP_ROUTE = "/api/terminal-groups/{group_id}"
+    API_TERMINAL_GROUP_MERGE_ROUTE = "/api/terminal-groups/{group_id}/merge"
+    API_SESSION_GROUP_ASSIGNMENTS_ROUTE = "/api/session-group-assignments"
+    API_TERMINAL_LAYOUT_MOVE_ROUTE = "/api/terminal-layout/move"
+    API_SESSION_ORDER_MOVE_ROUTE = "/api/session-order/move"
+    API_SESSION_UNREAD_ROUTE = "/api/session-unread"
+    API_RECENTLY_OPENED_TERMINAL_ROUTE = "/api/recently-opened-terminals/{session_id}"
+    API_SESSION_VIEW_MODE_ROUTE = "/api/session-view-modes/{session_id}"
+    API_PROJECT_STATE_FIELD_ROUTE = "/api/project-state/{field_name}"
     API_TERMINAL_SEARCH_ROUTE = "/api/terminal-search"
     # Claude Code hook callback. Claude posts its own hook payload here (see docs/configuration.md);
     # `state=attention` marks the tab as waiting on the user, `state=clear` releases it.
@@ -82,9 +97,13 @@ class TermdeckConfig:
     API_HISTORY_SEARCH_ROUTE = "/api/history-search"
     API_HISTORY_CONTEXT_ROUTE = "/api/history-context"
     API_SETTINGS_ROUTE = "/api/settings"
+    API_SETTING_ROUTE = "/api/settings/{setting_name}"
+    API_SETTING_ENTRY_ROUTE = "/api/settings/{setting_name}/{entry_key}"
     API_REMOTE_STATUS_ROUTE = "/api/remote/status"
     API_REMOTE_PAIR_ROUTE = "/api/remote/pair"
     API_REMOTE_DISCONNECT_ROUTE = "/api/remote/disconnect"
+    API_LAN_STATUS_ROUTE = "/api/lan/status"
+    API_LAN_ACCESS_ROUTE = "/api/lan/access"
     API_NOTEBOOK_TRASH_ROUTE = "/api/notebook/trash"
     API_CLOSED_ROUTE = "/api/closed"
     API_CLOSED_ITEM_ROUTE = "/api/closed/{session_id}"
@@ -92,6 +111,7 @@ class TermdeckConfig:
     API_FILE_LIST_ROUTE = "/api/files/list"
     API_FILE_RECENT_ROUTE = "/api/files/recent"
     API_FILE_READ_ROUTE = "/api/files/read"
+    API_FILE_EXISTS_ROUTE = "/api/files/exists"
     API_FILE_SEARCH_ROUTE = "/api/files/search"
     API_FILE_FIND_ROUTE = "/api/files/find"
     API_FILE_WRITE_ROUTE = "/api/files/write"
@@ -106,12 +126,33 @@ class TermdeckConfig:
     API_FILE_GIT_BRANCH_ROUTE = "/api/files/git-branch"
     API_FILE_GIT_BLAME_ROUTE = "/api/files/git-blame"
     API_FILE_GIT_DIFF_ROUTE = "/api/files/git-diff"
+    API_GIT_WORKFLOW_STATE_ROUTE = "/api/git/state"
+    API_GIT_STAGE_ROUTE = "/api/git/stage"
+    API_GIT_UNSTAGE_ROUTE = "/api/git/unstage"
+    API_GIT_REVERT_ROUTE = "/api/git/revert"
+    API_GIT_REVIEW_ROUTE = "/api/git/review"
+    API_GIT_GRAPH_ROUTE = "/api/git/graph"
+    API_GIT_COMMIT_DETAIL_ROUTE = "/api/git/commit-detail"
+    API_GIT_COMMIT_ROUTE = "/api/git/commit"
+    API_GIT_BRANCH_ROUTE = "/api/git/branch"
+    API_GIT_SWITCH_ROUTE = "/api/git/switch"
+    API_GIT_STASH_ROUTE = "/api/git/stash"
+    API_GIT_STASH_ACTION_ROUTE = "/api/git/stash/action"
+    API_GIT_CONFLICT_ROUTE = "/api/git/conflict"
+    API_GIT_WORKTREE_ROUTE = "/api/git/worktree"
+    API_GIT_REMOTE_ROUTE = "/api/git/remote"
+    API_GIT_CLONE_ROUTE = "/api/git/clone"
     API_FILE_REPLACE_ROUTE = "/api/files/replace"
     REPLACE_MAX_FILES = 200
     FIND_MAX_RESULTS = 200
     API_FILE_RENAME_ROUTE = "/api/files/rename"
     API_FILE_MOVE_ROUTE = "/api/files/move"
     API_FILE_DELETE_ROUTE = "/api/files/delete"
+    API_LSP_STATUS_ROUTE = "/api/lsp/status"
+    API_LSP_CONFIG_ROUTE = "/api/lsp/config"
+    API_LSP_ENABLED_ROUTE = "/api/lsp/enabled"
+    API_LSP_APPLY_WORKSPACE_EDIT_ROUTE = "/api/lsp/apply-workspace-edit"
+    LSP_WS_ROUTE = "/ws/lsp"
     TRASH_DIR = PlatformPaths.user_trash_dir()
     API_STATS_ROUTE = "/api/stats"
     RG_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_RG_BIN, "rg")
@@ -165,7 +206,11 @@ class TermdeckConfig:
     SESSION_CWD_ENV_KEY = "TERMDECK_CWD"
     SCRUBBED_ENV_PREFIX = "CLAUDE"
     INITIAL_COLS = 120
-    INITIAL_ROWS = 32
+    # Tall-terminal-probe worktree only: real TermDeck uses 32. Every new claude/codex/zsh session in
+    # THIS worktree spawns at this height from the very first byte (see the matching FitAddon override
+    # near the top of app.js), so there is no window where the pty is briefly the normal fitted height
+    # before something resizes it -- the CLI never sees anything but tall.
+    INITIAL_ROWS = 1000
     SCROLLBACK_BYTES = 12_000_000
     SYNC_UPDATE_START = b"\x1b[?2026h"
     SYNC_UPDATE_END = b"\x1b[?2026l"
@@ -196,8 +241,9 @@ class TermdeckConfig:
     CLAUDE_RESUME_FLAG = "--resume"
     CLAUDE_FORK_FLAG = "--fork-session"
     CLAUDE_NAME_FLAG = "--name"
-    CODEX_RESUME_TEMPLATE = "codex resume {agent_session_id}"
-    CODEX_FORK_TEMPLATE = "codex fork {agent_session_id}"
+    CODEX_NO_ALT_SCREEN_FLAG = "--no-alt-screen"
+    CODEX_RESUME_TEMPLATE = "codex --no-alt-screen resume {agent_session_id}"
+    CODEX_FORK_TEMPLATE = "codex --no-alt-screen fork {agent_session_id}"
     CODEX_SESSION_INDEX_FILE = Path.home() / ".codex" / "session_index.jsonl"
     DRAFT_MAX_CHARS = 20000
     TERMINAL_BATCH_MAX_ITEMS = 32
@@ -223,6 +269,12 @@ class TermdeckConfig:
     REATTACH_DIVIDER = "\x1b[2m──────────── reconnected (kept running) ────────────\x1b[0m"
     SPAWN_ERROR_TEMPLATE = "\x1b[31m[termdeck] spawn failed: {error}\x1b[0m\r\n"
     UVICORN_LOG_LEVEL = PlatformPaths.env_text(PlatformPaths.ENV_LOG_LEVEL, "info")
+    # Without a bound, uvicorn's graceful shutdown waits forever for connections that never end -- every
+    # terminal stream is an open websocket, and _pump_queue_to_client awaits its queue in a `while True`.
+    # The result is a server that answers SIGTERM by releasing its port and then living on indefinitely:
+    # `kill <pid>` leaves an orphan holding its memory, and the state-recovery restart (which signals
+    # itself with SIGTERM) never comes back up.
+    UVICORN_GRACEFUL_SHUTDOWN_SECONDS = 5
     REMOTE_SERVICE_URL = PlatformPaths.env_text(
         PlatformPaths.ENV_REMOTE_URL, "https://termdeck-remote-298065490746.us-central1.run.app")
     REMOTE_PUBLIC_URL = PlatformPaths.env_text(

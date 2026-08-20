@@ -248,14 +248,14 @@ class AgentSessionTrackerResumeCommandTest(unittest.TestCase):
         command = "codex --sandbox workspace-write resume aa11 --foo"
         self.assertEqual(tracker.build_resume_command(
             AgentKind.CODEX, command, "bb22"),
-            "codex --sandbox workspace-write --foo resume bb22")
+            "codex --no-alt-screen --sandbox workspace-write --foo resume bb22")
 
     def test_build_codex_resume_command_with_path_keeps_flags(self) -> None:
         tracker = AgentSessionTracker()
         command = "/usr/bin/codex --dangerously-bypass-approvals-and-sandbox resume aa11"
         self.assertEqual(tracker.build_resume_command(
             AgentKind.CODEX, command, "bb22"),
-            "/usr/bin/codex --dangerously-bypass-approvals-and-sandbox resume bb22")
+            "/usr/bin/codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume bb22")
 
     def test_build_claude_resume_command_strips_old_resume_flag(self) -> None:
         tracker = AgentSessionTracker()
@@ -264,11 +264,82 @@ class AgentSessionTrackerResumeCommandTest(unittest.TestCase):
             AgentKind.CLAUDE, command, "bb22"),
             "claude --permission-mode auto --resume bb22")
 
+    def test_latest_claude_permission_mode_comes_from_transcript(self) -> None:
+        tracker = AgentSessionTracker()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "resolved-child.jsonl"
+            path.write_text('\n'.join((
+                json.dumps({"type": "permission-mode", "permissionMode": "dontAsk"}),
+                json.dumps({"type": "permission-mode", "permissionMode": "auto"}),
+            )))
+            with patch.object(tracker, "claude_project_dir", return_value=Path(temp_dir)):
+                self.assertEqual(tracker.claude_session_permission_mode(Path("/tmp"), "resolved-child"), "auto")
+
+
+class TerminalRestartIdentityTest(unittest.TestCase):
+    @staticmethod
+    def claude_session(agent_session_id: str | None) -> ManagedSession:
+        session_record = record("claude-tab")
+        session_record.agent_kind = AgentKind.CLAUDE.value
+        session_record.agent_session_id = agent_session_id
+        session_record.command = "claude --permission-mode auto --resume stale-parent"
+        return ManagedSession(session_record)
+
+    def test_binding_detected_fork_session_replaces_stale_parent_resume_command(self) -> None:
+        manager = TerminalSessionManager()
+        session = self.claude_session(None)
+
+        manager._set_agent_session_binding(session, "resolved-child")
+
+        self.assertEqual(session.record.agent_session_id, "resolved-child")
+        self.assertEqual(session.record.command, "claude --permission-mode auto --resume resolved-child")
+
+    def test_restart_with_permission_resumes_resolved_child_session(self) -> None:
+        manager = TerminalSessionManager()
+        session = self.claude_session("resolved-child")
+        manager._sessions = {session.record.session_id: session}
+        manager._persist = MagicMock()
+        manager._terminate_proc = AsyncMock(return_value=True)
+        manager._spawn = MagicMock()
+
+        asyncio.run(manager.restart_session(session.record.session_id, "full-access"))
+
+        self.assertEqual(session.record.command,
+                         "claude --dangerously-skip-permissions --resume resolved-child")
+        manager._terminate_proc.assert_awaited_once_with(session)
+        manager._spawn.assert_called_once_with(session, resume=True)
+
+    def test_restart_preserves_latest_claude_transcript_permission(self) -> None:
+        manager = TerminalSessionManager()
+        session = self.claude_session("resolved-child")
+        session.record.command = "claude --dangerously-skip-permissions --resume resolved-child"
+        manager._sessions = {session.record.session_id: session}
+        manager._tracker.claude_session_permission_mode = MagicMock(return_value="auto")
+        manager._persist = MagicMock()
+        manager._terminate_proc = AsyncMock(return_value=True)
+        manager._spawn = MagicMock()
+
+        asyncio.run(manager.restart_session(session.record.session_id))
+
+        self.assertEqual(session.record.command, "claude --permission-mode auto --resume resolved-child")
+        manager._spawn.assert_called_once_with(session, resume=True)
+
+    def test_restart_refuses_agent_before_child_session_identity_is_resolved(self) -> None:
+        manager = TerminalSessionManager()
+        session = self.claude_session(None)
+        manager._sessions = {session.record.session_id: session}
+        manager._terminate_proc = AsyncMock(return_value=True)
+
+        with self.assertRaisesRegex(RuntimeError, "identity is still resolving"):
+            asyncio.run(manager.restart_session(session.record.session_id, "full-access"))
+
+        manager._terminate_proc.assert_not_awaited()
+
 
 class NewAgentCommandModelTest(unittest.TestCase):
     def test_codex_model_name_separates_model_from_reasoning_effort(self) -> None:
         command = TerminalSessionManager().command_for_new_session("codex", "default", "", "gpt-5.6-luna xhigh")
-        self.assertEqual(command, "codex -c 'model_reasoning_effort=\"xhigh\"' --model gpt-5.6-luna")
+        self.assertEqual(command, "codex --no-alt-screen -c 'model_reasoning_effort=\"xhigh\"' --model gpt-5.6-luna")
 
     def test_model_name_is_forwarded_to_claude(self) -> None:
         command = TerminalSessionManager().command_for_new_session("claude", "default", "", "opus")
@@ -320,6 +391,36 @@ class CodexTranscriptParsingTest(unittest.TestCase):
         self.assertFalse(turns[0]["final"])
         self.assertTrue(turns[1]["final"])
 
+    def test_codex_agent_message_and_response_item_with_different_metadata_are_one_turn(self) -> None:
+        service = TranscriptService()
+        text = "I’ll inspect the transcript before changing the renderer."
+        lines = [
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "agent_message", "message": text, "phase": "commentary",
+            }}),
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "assistant", "phase": "commentary",
+                "content": [{"type": "output_text", "text": text}],
+            }}),
+        ]
+
+        turns = service._parse_codex_lines(lines)
+
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["text"], text)
+        self.assertEqual(turns[0]["phase"], "commentary")
+        self.assertFalse(turns[0]["final"])
+
+
+class ClaudeTranscriptParsingTest(unittest.TestCase):
+    def test_terminal_clear_line_prefix_is_removed_from_user_prompt(self) -> None:
+        service = TranscriptService()
+        lines = [json.dumps({"type": "user", "message": {"content": "\x15Should we increase max workers?"}})]
+
+        turns = service._parse_claude_lines(lines)
+
+        self.assertEqual(turns[0]["text"], "Should we increase max workers?")
+
 
 class CliTitlePersistenceTest(unittest.TestCase):
     def _manager_with_session(self) -> tuple[TerminalSessionManager, ManagedSession, list[int]]:
@@ -359,6 +460,68 @@ class CliTitlePersistenceTest(unittest.TestCase):
         saved.cli_title = "intraday-fed"
 
         self.assertFalse(ManagedSession(saved).processing)
+
+    def test_claude_circle_spinner_reports_processing_and_is_removed_from_persisted_title(self) -> None:
+        manager, session, persists = self._manager_with_session()
+        session.cli_title = "◑ intraday-fed"
+        session.title_updated_monotonic = 99.0
+
+        with patch("termdeck.session_manager.time.monotonic", return_value=100.0):
+            self.assertTrue(session.processing)
+        manager._remember_cli_title(session)
+
+        self.assertEqual(session.record.cli_title, "intraday-fed")
+        self.assertEqual(len(persists), 1)
+
+
+class ClaudeRenameBindingReconciliationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_known_claude_session_does_not_claim_unrelated_recent_transcript_after_input(self) -> None:
+        manager = TerminalSessionManager()
+        saved = record("claude-known")
+        saved.agent_kind = "claude"
+        saved.agent_session_id = "current-session"
+        saved.command = "claude --resume current-session"
+        session = ManagedSession(saved)
+        session.detached_live = True
+        session.detect_kind = AgentKind.CLAUDE
+        session.last_input_monotonic = 99.0
+        session.last_agent_submit_monotonic = 99.0
+        manager._sessions[saved.session_id] = session
+        manager._tracker.session_id_from_open_files = AsyncMock(return_value=None)
+        manager._tracker.absorb_and_find_new_session_file = MagicMock(return_value=None)
+        manager._tracker.claude_session_id_from_recent_file_activity = MagicMock(return_value="unrelated-session")
+
+        with patch("termdeck.session_manager.time.monotonic", return_value=100.0):
+            await manager._detect_after(session, 0)
+
+        self.assertEqual(saved.agent_session_id, "current-session")
+        self.assertFalse(manager._tracker.absorb_and_find_new_session_file.call_args.kwargs["claim_allowed"])
+        manager._tracker.claude_session_id_from_recent_file_activity.assert_not_called()
+
+    def test_user_renamed_claude_session_rebinds_to_matching_explicit_title(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = TerminalSessionManager()
+            saved = record("claude-renamed")
+            saved.agent_kind = "claude"
+            saved.agent_session_id = "stale-session"
+            saved.command = "claude --resume stale-session"
+            saved.title = "L-mtermdeck"
+            saved.title_user_set = True
+            session = ManagedSession(saved)
+            session.cli_title = "◑ L-mtermdeck"
+            manager._sessions[saved.session_id] = session
+            current_path = Path(directory) / "stale-session.jsonl"
+            current_path.write_text("{}\n")
+            manager._tracker.claude_project_dir = MagicMock(return_value=Path(directory))
+            manager._tracker.claude_explicit_session_title = MagicMock(return_value=None)
+            manager._tracker.claude_session_id_for_explicit_title = MagicMock(return_value="live-session")
+            manager._initialize_claude_subagent_state = MagicMock()
+            manager._persist = MagicMock()
+
+            self.assertTrue(manager._reconcile_stale_claude_session_binding(session))
+
+        self.assertEqual(saved.agent_session_id, "live-session")
+        self.assertEqual(saved.command, "claude --resume live-session")
 
 
 class CodexSessionActivityTest(unittest.TestCase):
@@ -1008,3 +1171,36 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             manager._persist = lambda: None
             ms = manager.create_session("bash", directory, "task", output_path="logs/task.out")
             self.assertEqual(ms.record.output_path, str(Path(directory, "logs", "task.out").resolve()))
+
+
+class ReplayTitleCollapseTest(unittest.TestCase):
+    """The attach replay collapses OSC title churn to the final title (a spinner rewrites the title
+    thousands of times; replaying each one made the client apply each in turn -- measured as 5.9s of a
+    6s load on a real training session)."""
+
+    @staticmethod
+    def _replay(buffer: bytes) -> bytes:
+        ms = MagicMock()
+        ms.buffer = bytearray(buffer)
+        return TerminalSessionManager._replay_bytes(TerminalSessionManager, ms)
+
+    def test_title_spam_collapses_to_the_final_title(self) -> None:
+        spam = b"".join(b"\x1b]0;spin %d\x07" % n for n in range(500))
+        replay = self._replay(b"line one\n" + spam + b"line two\n")
+        self.assertEqual(replay.count(b"\x1b]0;"), 1)
+        self.assertTrue(replay.endswith(b"\x1b]0;spin 499\x07"))
+        self.assertIn(b"line one\n", replay)
+        self.assertIn(b"line two\n", replay)
+
+    def test_st_terminated_and_icon_titles_collapse_too(self) -> None:
+        replay = self._replay(b"\x1b]2;a\x1b\\middle\x1b]1;b\x07\x1b]0;last\x1b\\")
+        self.assertEqual(replay, b"middle\x1b]0;last\x1b\\")
+
+    def test_stream_without_titles_is_untouched(self) -> None:
+        data = b"plain output\x1b[31mcolored\x1b[0m\n"
+        self.assertEqual(self._replay(data), data)
+
+    def test_unterminated_tail_title_is_left_for_the_live_stream(self) -> None:
+        replay = self._replay(b"\x1b]0;done\x07content\x1b]0;partial")
+        self.assertTrue(replay.startswith(b"content\x1b]0;partial"))
+        self.assertTrue(replay.endswith(b"\x1b]0;done\x07"))

@@ -91,6 +91,7 @@ parallel agents and coordinating work between them.
 | **Python** | 3.11 or newer |
 | **Required** | [`dtach`](https://github.com/crigler/dtach) — keeps terminals alive across restarts |
 | **Recommended** | [`ripgrep`](https://github.com/BurntSushi/ripgrep) — powers project search and replace |
+| **Optional** | A language server for IDE navigation, diagnostics, refactoring, code actions, and hover information |
 | **Optional** | [`claude`](https://claude.com/claude-code), [`codex`](https://github.com/openai/codex), and/or the `agy` Antigravity CLI |
 | **Browser** | Any current Chrome, Safari, Firefox, or Edge |
 
@@ -98,52 +99,45 @@ Run `termdeck doctor` at any time to see exactly what was found and what's missi
 
 ---
 
-## Install
+## Install and update
 
-### Homebrew (macOS)
+### macOS — Homebrew (recommended)
+
+Fresh install:
 
 ```sh
 brew install danialfarid/tap/termdeck
+termdeck service install
+open http://127.0.0.1:8530
 ```
 
-This pulls in `dtach` and `ripgrep` automatically and needs nothing compiled. Then `termdeck --open`.
+Homebrew installs `dtach`, `ripgrep`, Python, and prebuilt dependency wheels automatically on both Apple Silicon
+and Intel Macs. Nothing should compile during installation.
 
-### uv (macOS and Linux)
-
-`uv` brings its own Python and works everywhere. Install the two external tools first:
+Upgrade an existing installation:
 
 ```sh
-brew install dtach ripgrep                 # macOS / Linuxbrew
-sudo apt install dtach ripgrep             # Debian / Ubuntu
-sudo dnf install dtach ripgrep             # Fedora
-sudo pacman -S dtach ripgrep               # Arch
+brew update
+brew upgrade danialfarid/tap/termdeck
+termdeck service restart
 ```
 
-then TermDeck itself:
+That is the complete macOS install and upgrade path. Your sessions and settings remain in `~/.termdeck`, and
+upgrading or restarting the TermDeck service does not stop live `dtach` terminals.
+
+### Linux or installation without Homebrew
+
+Install `dtach` and `ripgrep` with the system package manager, then install the tagged release with `uv`:
 
 ```sh
-uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.5.0"
-termdeck --open
+sudo apt install dtach ripgrep
+uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.6.0"
+termdeck service install
 ```
 
-Upgrade to a newer release by re-running the same command with the new tag.
-
-### pipx
-
-```sh
-pipx install "git+https://github.com/danialfarid/termdeck.git@v0.5.0"
-```
-
-### From source
-
-```sh
-git clone https://github.com/danialfarid/termdeck.git
-cd termdeck
-python3 -m venv .venv && .venv/bin/pip install -e .
-.venv/bin/termdeck
-```
-
-> **PyPI:** `pip install termdeck` is planned but not published yet — use `uv`/`pipx` from GitHub above.
+The equivalent `pipx` command and source-install instructions are in
+[docs/installation.md](docs/installation.md). TermDeck is not yet published on PyPI, so plain
+`pip install termdeck` does not install this project.
 
 ---
 
@@ -315,7 +309,9 @@ Press **⌥G** again, or hit **TERM**, to go back to the live terminal.
 The **Files** view (**⌘⇧D**) is a lazy VS Code–style tree rooted at the active project. It can float over the
 terminal, stay pinned, or open in its own browser tab. Selecting a file swaps the main area to Monaco — the
 actual VS Code editor component, vendored locally — with syntax highlighting, folding, find/replace, symbol
-navigation, definitions, usages, and a Problems panel.
+navigation, definitions, usages, and a Problems panel. Install a matching language server to add precise
+definitions and references, workspace symbols, rename refactoring, diagnostics, code actions, and hover types
+and documentation. See [Language servers](docs/language-servers.md) for supported commands and setup.
 
 - **File paths printed in any terminal are clickable.** They resolve against that terminal's directory, and
   `path:line` references jump straight to the requested line.
@@ -323,7 +319,10 @@ navigation, definitions, usages, and a Problems panel.
 - **⌘S** saves. **⌃R** renames, **⌃M** moves, **⌘⌫** trashes the selected tree file.
 - The file-tree context menu creates, renames, duplicates, moves, refreshes, or trashes files and folders.
 - Local snapshots and Git history show earlier versions of an open file, with diffs and targeted restore.
-- Git view lists branch changes; file tools include history and blame.
+- Git view stages and unstages files, commits staged work, creates and switches branches, manages stashes and
+  worktrees, resolves conflicts with ours/theirs/manual choices, attributes changes to agent terminals, and
+  renders the commit graph. Remotes can be fetched, fast-forward pulled, pushed over SSH or HTTPS, and cloned
+  directly into a registered TermDeck project. File tools also include history and blame.
 - Access is confined to your home directory, files over 2 MB are refused, and binaries are refused.
 - Deletes go to the system trash (`~/.Trash` on macOS, the XDG trash on Linux), never `rm`.
 

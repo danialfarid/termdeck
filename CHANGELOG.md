@@ -6,6 +6,38 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-20
+
+### Added
+
+- Terminal groups with naming, renaming, merging, collapse state, and drag-driven ordering of terminals and groups.
+- Per-session unread and view-mode state, and a confirmation step before restoring the last closed terminal.
+- Claude Code hook endpoint so permission and elicitation prompts drive the attention indicator directly instead of being inferred from terminal text.
+- Regression tests for terminal scrolling under `tools/scroll-tests/`, and a blank-screen guard that checks every running session for an empty pane, an oversized renderer canvas, or a transparent terminal surface.
+- Direct local Wi-Fi access on a separate same-subnet-only listener, with a persisted Settings toggle and no cloud relay or login requirement.
+
+### Changed
+
+- Terminals run far taller than the visible viewport, so an agent CLI paints its whole interface into one screen and its history stays scrollable without relying on the terminal's own scrollback.
+- Scrolling moves an outer container over that terminal rather than xterm's viewport, giving one scroll surface with a scrollable range that matches the content exactly.
+- Sidebar animations changed to compositor-only properties, pause while the document is hidden, and pause outside the visible sidebar viewport, which measurably lowered idle browser CPU.
+- Mobile browser sizing follows the visual viewport and supports horizontal access to the full desktop workspace in landscape and desktop-site modes.
+- Homebrew formula generation now discovers native wheels for both Apple Silicon and Intel automatically, and tagged releases publish and clean-install-test the tap formula.
+
+### Removed
+
+- The experimental IndexedDB terminal-snapshot restore, superseded by the server-side repaint that reattaching already performs.
+
+### Fixed
+
+- Scrolling no longer fights the pointer: holding the scrollbar, dragging it, middle-click autoscroll, and fast wheel scrolling all leave the view where the gesture puts it.
+- The newest output stays reachable after scrolling into history and back, and the scroll-to-bottom button and shortcut work against the scrolled surface.
+- Typing returns to the prompt while Cmd shortcuts do not, so copying a selection no longer scrolls away from it.
+- Find scrolls its match into view and holds it while output continues arriving.
+- A composer redrawing itself no longer jumps the view, and reading history is no longer disturbed by output arriving underneath it.
+- Codex transcript events with equivalent text no longer render as duplicate turns, and Claude prompt control prefixes no longer leak into Markdown history.
+- Homebrew installs no longer omit the Intel `msgpack` wheel.
+
 ## [0.5.0] — 2026-08-17
 
 ### Added
@@ -105,7 +137,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/danialfarid/termdeck/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/danialfarid/termdeck/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/danialfarid/termdeck/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/danialfarid/termdeck/compare/v0.2.0...v0.3.0
