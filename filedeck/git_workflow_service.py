@@ -2,7 +2,7 @@ import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from filedeck.git_remote_service import GitRemote, GitRemoteService
 from filedeck.git_service import FileDeckGitService
@@ -80,6 +80,9 @@ class GitReviewFile(TypedDict):
     modified: str
     original_label: str
     modified_label: str
+    base: NotRequired[str]
+    ours: NotRequired[str]
+    theirs: NotRequired[str]
 
 
 class GitCommitFile(TypedDict):
@@ -106,7 +109,9 @@ class GitWorkflowService:
     CONFLICT_CODES = frozenset({"DD", "AU", "UD", "UA", "DU", "AA", "UU"})
     MAX_PATHS = 500
     MAX_GRAPH_COMMITS = 200
+    MAX_GRAPH_QUERY_LENGTH = 200
     MAX_REVIEW_BYTES = 2 * 1024 * 1024
+    LOG_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 
     def __init__(self, git_reader: FileDeckGitService, git_remote: GitRemoteService) -> None:
         self._git_reader = git_reader
@@ -264,10 +269,31 @@ class GitWorkflowService:
                 current = None
         return worktrees
 
-    def commit_graph(self, repository_root: Path, limit: int, paths: list[str] | None = None) -> list[str]:
+    def commit_graph(self, repository_root: Path, limit: int, paths: list[str] | None = None, query: str = "",
+                     author: str = "", since: str = "", until: str = "", revision: str = "") -> list[str]:
         graph_limit = max(1, min(limit, self.MAX_GRAPH_COMMITS))
-        arguments = ["log", "--graph", "--decorate", "--all", "--date-order", f"--max-count={graph_limit}",
-                     "--pretty=format:%h%x00%s%x00%cr%x00%d"]
+        normalized_query = query.strip()
+        normalized_author = author.strip()
+        if max(len(normalized_query), len(normalized_author)) > self.MAX_GRAPH_QUERY_LENGTH:
+            raise ValueError(f"Git history filters must be at most {self.MAX_GRAPH_QUERY_LENGTH} characters")
+        if any(character in normalized_query + normalized_author for character in "\x00\r\n"):
+            raise ValueError("Git history filters cannot contain line breaks")
+        normalized_since = self._validated_log_date(since)
+        normalized_until = self._validated_log_date(until)
+        selected_revision = self._validated_log_revision(repository_root, revision) if revision.strip() else ""
+        arguments = ["log", "--graph", "--decorate", "--date-order", f"--max-count={graph_limit}",
+                     "--pretty=format:%h%x00%s%x00%ct%x00%d"]
+        if normalized_query or normalized_author:
+            arguments.extend(["--regexp-ignore-case", "--fixed-strings"])
+        if normalized_query:
+            arguments.append(f"--grep={normalized_query}")
+        if normalized_author:
+            arguments.append(f"--author={normalized_author}")
+        if normalized_since:
+            arguments.append(f"--since={normalized_since}")
+        if normalized_until:
+            arguments.append(f"--until={normalized_until} 23:59:59")
+        arguments.append(selected_revision or "--all")
         if paths:
             arguments.extend(["--", *self._validated_paths(repository_root, paths)])
         result = self._run_git(repository_root, arguments)
@@ -289,13 +315,19 @@ class GitWorkflowService:
             modified = self._working_tree_content(repository_root, selected_path)
             labels = ("new file", "working tree")
         elif scope == "conflict":
-            original = self._revision_content(repository_root, f"HEAD:{selected_path}")
+            base = self._revision_content(repository_root, f":1:{selected_path}")
+            ours = self._revision_content(repository_root, f":2:{selected_path}")
+            theirs = self._revision_content(repository_root, f":3:{selected_path}")
+            original = theirs
             modified = self._working_tree_content(repository_root, selected_path)
-            labels = ("HEAD", "conflicted working tree")
+            labels = ("theirs", "merge result")
         else:
             raise ValueError(f"unknown Git review scope: {scope}")
-        return {"path": selected_path, "scope": scope, "original": original, "modified": modified,
-                "original_label": labels[0], "modified_label": labels[1]}
+        review: GitReviewFile = {"path": selected_path, "scope": scope, "original": original, "modified": modified,
+                                 "original_label": labels[0], "modified_label": labels[1]}
+        if scope == "conflict":
+            review.update({"base": base, "ours": ours, "theirs": theirs})
+        return review
 
     def commit_detail(self, requested_root: Path, commit_id: str) -> GitCommitDetail:
         repository_root = self.repository_root(requested_root)
@@ -480,11 +512,29 @@ class GitWorkflowService:
         return normalized
 
     @classmethod
+    def _validated_log_date(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized and not cls.LOG_DATE_PATTERN.fullmatch(normalized):
+            raise ValueError(f"invalid Git history date: {value}")
+        return normalized
+
+    @classmethod
+    def _validated_log_revision(cls, repository_root: Path, revision: str) -> str:
+        normalized = revision.strip()
+        if not normalized or len(normalized) > 200 or normalized.startswith("-") or any(
+                character in normalized for character in "\x00\r\n"):
+            raise ValueError(f"invalid Git revision: {revision}")
+        result = cls._run_git(repository_root, ["rev-parse", "--verify", f"{normalized}^{{commit}}"])
+        return result.stdout.decode("utf-8", errors="replace").strip()
+
+    @classmethod
     def _validated_paths(cls, repository_root: Path, paths: list[str]) -> list[str]:
         if not paths or len(paths) > cls.MAX_PATHS:
             raise ValueError(f"select between 1 and {cls.MAX_PATHS} paths")
         selected: list[str] = []
         for path in paths:
+            if not path.strip() or any(character in path for character in "\x00\r\n"):
+                raise ValueError(f"invalid Git path: {path}")
             target = (repository_root / path).resolve()
             if not target.is_relative_to(repository_root):
                 raise ValueError(f"path outside repository: {path}")

@@ -1720,7 +1720,8 @@ class TerminalSessionManager:
         ms = self._sessions[session_id]
         if ms.detect_task is not None:
             ms.detect_task.cancel()
-        if ms.record.agent_kind != AgentKind.NONE.value and not ms.record.agent_session_id:
+        if ms.record.agent_kind != AgentKind.NONE.value and not ms.record.agent_session_id and \
+                ms.exit_code is None and not ms.dormant:
             raise RuntimeError(f"agent session identity is still resolving; wait before restarting: {session_id}")
         self._canonicalize_agent_resume_command(ms.record)
         if permission:

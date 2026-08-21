@@ -24,7 +24,11 @@ from termdeck.file_history_service import FileHistoryService
 from termdeck.file_service import ProjectFileService
 from filedeck.git_remote_service import GitRemoteService
 from filedeck.git_service import FileDeckGitService
+from filedeck.git_history_service import GitHistoryService
+from filedeck.git_hunk_service import GitHunkService
+from filedeck.git_mutation_service import GitMutationService
 from filedeck.git_workflow_service import GitWorkflowService
+from filedeck.github_pull_request_service import GitHubPullRequestService
 from termdeck.history_index import HistorySearchIndex
 from termdeck.lan_access import LanAccessManager
 from termdeck.lsp_protocol import LanguageServerConnection, LanguageServerProtocolError, LanguageServerRequestError
@@ -291,6 +295,63 @@ class GitGraphRequest(BaseModel):
     root: str
     paths: list[str] = []
     limit: int = 100
+    query: str = ""
+    author: str = ""
+    since: str = ""
+    until: str = ""
+    revision: str = ""
+
+
+class GitCompareRequest(BaseModel):
+    root: str
+    base: str
+    target: str
+    path: str = ""
+    previous_path: str = ""
+
+
+class GitHunkActionRequest(BaseModel):
+    root: str
+    path: str
+    scope: str
+    hunk_id: str
+    action: str
+
+
+class GitCommitActionRequest(BaseModel):
+    root: str
+    commit_id: str
+    action: str
+
+
+class GitRebaseEntryRequest(BaseModel):
+    commit_id: str
+    action: str
+
+
+class GitRebaseRequest(BaseModel):
+    root: str
+    base: str
+    entries: list[GitRebaseEntryRequest]
+
+
+class GitOperationActionRequest(BaseModel):
+    root: str
+    action: str
+
+
+class GitIgnoreRequest(BaseModel):
+    root: str
+    path: str
+    mode: str
+    directory: bool = False
+
+
+class GitHubPullRequestReviewRequest(BaseModel):
+    root: str
+    number: int
+    action: str
+    body: str = ""
 
 
 class GitCommitRequest(BaseModel):
@@ -326,6 +387,7 @@ class GitConflictRequest(BaseModel):
     root: str
     path: str
     resolution: str
+    content: str | None = None
 
 
 class GitWorktreeRequest(BaseModel):
@@ -457,6 +519,7 @@ class UiSettings(BaseModel):
     transcript_first_surface: str = "terminal"
     # Declared explicitly or it is silently dropped when settings are saved.
     tall_webgl: bool = False
+    defer_inactive_terminal_output: bool = False
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
     md_prompt_drafts: dict[str, str] = {}
@@ -509,6 +572,10 @@ class TermdeckServer:
         self.filedeck_git = FileDeckGitService()
         self.git_remotes = GitRemoteService()
         self.git_workflow = GitWorkflowService(self.filedeck_git, self.git_remotes)
+        self.git_history = GitHistoryService()
+        self.git_hunks = GitHunkService()
+        self.git_mutations = GitMutationService()
+        self.github_pull_requests = GitHubPullRequestService()
         self.worktrees = GitWorktreeService(TermdeckConfig.WORKTREES_DIR)
         self.worktree_registry = WorktreeRegistry(TermdeckConfig.WORKTREE_REGISTRY_FILE, self.state_backup, self.worktrees)
         self.file_history = FileHistoryService(TermdeckConfig.FILE_HISTORY_DATABASE)
@@ -669,6 +736,7 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_FILE_RECENT_ROUTE, response_model=None)(self._recent_files)
         app.get(TermdeckConfig.API_FILE_READ_ROUTE, response_model=None)(self._read_file)
         app.get(TermdeckConfig.API_FILE_EXISTS_ROUTE, response_model=None)(self._file_exists)
+        app.post(TermdeckConfig.API_FILE_OPEN_EXTERNAL_ROUTE, response_model=None)(self._open_file_external)
         app.get(TermdeckConfig.API_FILE_SEARCH_ROUTE, response_model=None)(self._search_files)
         app.get(TermdeckConfig.API_FILE_FIND_ROUTE, response_model=None)(self._find_files)
         app.post(TermdeckConfig.API_FILE_HISTORY_RESTORE_ROUTE, response_model=None)(self._restore_file_history)
@@ -696,6 +764,22 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_GIT_WORKTREE_ROUTE, response_model=None)(self._git_worktree_action)
         app.post(TermdeckConfig.API_GIT_REMOTE_ROUTE, response_model=None)(self._git_remote_action)
         app.post(TermdeckConfig.API_GIT_CLONE_ROUTE, response_model=None)(self._git_clone_project)
+        app.get(TermdeckConfig.API_GIT_REFS_ROUTE, response_model=None)(self._git_references)
+        app.post(TermdeckConfig.API_GIT_COMPARE_ROUTE, response_model=None)(self._git_compare)
+        app.post(TermdeckConfig.API_GIT_COMPARE_REVIEW_ROUTE, response_model=None)(self._git_compare_review)
+        app.get(TermdeckConfig.API_GIT_DIVERGENCE_ROUTE, response_model=None)(self._git_divergence)
+        app.get(TermdeckConfig.API_GIT_HUNKS_ROUTE, response_model=None)(self._git_hunks)
+        app.post(TermdeckConfig.API_GIT_HUNK_ACTION_ROUTE, response_model=None)(self._git_hunk_action)
+        app.post(TermdeckConfig.API_GIT_COMMIT_ACTION_ROUTE, response_model=None)(self._git_commit_action)
+        app.get(TermdeckConfig.API_GIT_REBASE_PLAN_ROUTE, response_model=None)(self._git_rebase_plan)
+        app.post(TermdeckConfig.API_GIT_REBASE_ROUTE, response_model=None)(self._git_rebase)
+        app.get(TermdeckConfig.API_GIT_OPERATION_ROUTE, response_model=None)(self._git_operation)
+        app.post(TermdeckConfig.API_GIT_OPERATION_ROUTE, response_model=None)(self._git_operation_action)
+        app.post(TermdeckConfig.API_GIT_IGNORE_ROUTE, response_model=None)(self._git_ignore)
+        app.get(TermdeckConfig.API_GITHUB_PULL_REQUESTS_ROUTE, response_model=None)(self._github_pull_request_list)
+        app.get(TermdeckConfig.API_GITHUB_PULL_REQUEST_ROUTE, response_model=None)(self._github_pull_request_detail)
+        app.get(TermdeckConfig.API_GITHUB_PULL_REQUEST_PATCH_ROUTE, response_model=None)(self._github_pull_request_patch)
+        app.post(TermdeckConfig.API_GITHUB_PULL_REQUEST_REVIEW_ROUTE, response_model=None)(self._github_pull_request_review)
         app.post(TermdeckConfig.API_UPLOAD_ROUTE, response_model=None)(self._upload_file)
         app.post(TermdeckConfig.API_FILE_WRITE_ROUTE, response_model=None)(self._write_file)
         app.post(TermdeckConfig.API_FILE_CREATE_ROUTE, response_model=None)(self._create_file)
@@ -977,7 +1061,12 @@ class TermdeckServer:
         try:
             base = self.files.resolve_confined(root, "")
             sessions = list(self.manager.list_sessions(None))
-            return await asyncio.to_thread(self.git_workflow.get_state, base, sessions, limit)
+            state, operation, references = await asyncio.gather(
+                asyncio.to_thread(self.git_workflow.get_state, base, sessions, limit),
+                asyncio.to_thread(self.git_mutations.operation_state, base),
+                asyncio.to_thread(self.git_history.list_references, base),
+            )
+            return {**state, "operation": operation, "references": references}
         except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError, OSError,
                 subprocess.SubprocessError) as git_error:
             raise HTTPException(status_code=404, detail=str(git_error)) from git_error
@@ -1008,10 +1097,20 @@ class TermdeckServer:
         try:
             base = self.files.resolve_confined(request.root, "")
             repository_root = await asyncio.to_thread(self.git_workflow.repository_root, base)
+            selected_paths: list[str] = []
+            for path in request.paths:
+                selected_path = self.files.resolve_confined(request.root, path)
+                if not selected_path.is_relative_to(repository_root):
+                    raise ValueError(f"path outside repository: {path}")
+                selected_paths.append(str(selected_path.relative_to(repository_root)))
             graph = await asyncio.to_thread(self.git_workflow.commit_graph, repository_root, request.limit,
-                                            request.paths or None)
-            scope = "worktree" if not request.paths else "file" if len(request.paths) == 1 else "files"
-            return {"scope": scope, "paths": request.paths, "graph": graph}
+                                            selected_paths or None, request.query, request.author, request.since,
+                                            request.until, request.revision)
+            scope = "worktree" if not selected_paths else "file" if len(selected_paths) == 1 else "files"
+            return {"scope": scope, "paths": selected_paths, "query": request.query.strip(),
+                    "author": request.author.strip(), "since": request.since.strip(), "until": request.until.strip(),
+                    "revision": request.revision.strip(),
+                    "repository_root": str(repository_root), "graph": graph}
         except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as graph_error:
             raise HTTPException(status_code=404, detail=str(graph_error)) from graph_error
 
@@ -1051,6 +1150,8 @@ class TermdeckServer:
         return {"updated": True}
 
     async def _git_resolve_conflict(self, request: GitConflictRequest) -> dict[str, bool]:
+        if request.resolution == "resolved" and request.content is not None:
+            await self._write_file(FileWriteRequest(root=request.root, path=request.path, content=request.content))
         await self._run_git_workflow_mutation(self.git_workflow.resolve_conflict, request.root, request.path,
                                               request.resolution)
         return {"resolved": True}
@@ -1110,6 +1211,114 @@ class TermdeckServer:
                 subprocess.SubprocessError) as clone_error:
             raise HTTPException(status_code=409, detail=str(clone_error)) from clone_error
 
+    async def _git_references(self, root: str) -> list[dict[str, object]]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.git_history.list_references, base)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as reference_error:
+            raise HTTPException(status_code=404, detail=str(reference_error)) from reference_error
+
+    async def _git_compare(self, request: GitCompareRequest) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(request.root, "")
+            return await asyncio.to_thread(self.git_history.compare_revisions, base, request.base, request.target)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as compare_error:
+            raise HTTPException(status_code=404, detail=str(compare_error)) from compare_error
+
+    async def _git_compare_review(self, request: GitCompareRequest) -> dict[str, str]:
+        try:
+            base = self.files.resolve_confined(request.root, "")
+            return await asyncio.to_thread(self.git_history.review_comparison_file, base, request.path,
+                                           request.previous_path, request.base, request.target)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as review_error:
+            raise HTTPException(status_code=404, detail=str(review_error)) from review_error
+
+    async def _git_divergence(self, root: str, remote: str = "", branch: str = "") -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.git_history.incoming_outgoing, base, remote, branch)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as divergence_error:
+            raise HTTPException(status_code=404, detail=str(divergence_error)) from divergence_error
+
+    async def _git_hunks(self, root: str, path: str) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.git_hunks.file_hunks, base, path)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as hunk_error:
+            raise HTTPException(status_code=404, detail=str(hunk_error)) from hunk_error
+
+    async def _git_hunk_action(self, request: GitHunkActionRequest) -> dict[str, object]:
+        if request.action == "revert":
+            try:
+                current = self.files.read_file(request.root, request.path)
+                self.file_history.observe_file(request.root, request.path, str(current["content"]))
+            except (ValueError, FileNotFoundError, IsADirectoryError, PermissionError, OSError) as history_error:
+                raise HTTPException(status_code=409, detail=str(history_error)) from history_error
+        result = await self._run_git_workflow_mutation(self.git_hunks.apply_hunk_action, request.root, request.path,
+                                                       request.scope, request.hunk_id, request.action)
+        return dict(result)
+
+    async def _git_commit_action(self, request: GitCommitActionRequest) -> dict[str, object]:
+        result = await self._run_git_workflow_mutation(self.git_mutations.commit_action, request.root,
+                                                       request.commit_id, request.action)
+        return dict(result)
+
+    async def _git_rebase_plan(self, root: str, limit: int = 12) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.git_mutations.rebase_plan, base, limit)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as rebase_error:
+            raise HTTPException(status_code=404, detail=str(rebase_error)) from rebase_error
+
+    async def _git_rebase(self, request: GitRebaseRequest) -> dict[str, object]:
+        entries = [{"commit_id": entry.commit_id, "action": entry.action} for entry in request.entries]
+        result = await self._run_git_workflow_mutation(self.git_mutations.interactive_rebase, request.root,
+                                                       request.base, entries)
+        return dict(result)
+
+    async def _git_operation(self, root: str) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.git_mutations.operation_state, base)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as operation_error:
+            raise HTTPException(status_code=404, detail=str(operation_error)) from operation_error
+
+    async def _git_operation_action(self, request: GitOperationActionRequest) -> dict[str, object]:
+        result = await self._run_git_workflow_mutation(self.git_mutations.operation_action, request.root, request.action)
+        return dict(result)
+
+    async def _git_ignore(self, request: GitIgnoreRequest) -> dict[str, str]:
+        pattern = await self._run_git_workflow_mutation(self.git_mutations.update_gitignore, request.root,
+                                                        request.path, request.mode, request.directory)
+        return {"pattern": str(pattern)}
+
+    async def _github_pull_request_list(self, root: str, state: str = "open", limit: int = 30) -> list[dict[str, object]]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.github_pull_requests.list_pull_requests, base, state, limit)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as pull_request_error:
+            raise HTTPException(status_code=404, detail=str(pull_request_error)) from pull_request_error
+
+    async def _github_pull_request_detail(self, root: str, number: int) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.github_pull_requests.pull_request_detail, base, number)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as pull_request_error:
+            raise HTTPException(status_code=404, detail=str(pull_request_error)) from pull_request_error
+
+    async def _github_pull_request_patch(self, root: str, number: int) -> dict[str, str]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            patch = await asyncio.to_thread(self.github_pull_requests.pull_request_patch, base, number)
+            return {"patch": patch}
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as pull_request_error:
+            raise HTTPException(status_code=404, detail=str(pull_request_error)) from pull_request_error
+
+    async def _github_pull_request_review(self, request: GitHubPullRequestReviewRequest) -> dict[str, bool]:
+        await self._run_git_workflow_mutation(self.github_pull_requests.submit_review, request.root, request.number,
+                                              request.action, request.body)
+        return {"submitted": True}
+
     async def _run_git_workflow_mutation(self, operation: Callable[..., object], *arguments: object) -> object:
         try:
             base = self.files.resolve_confined(str(arguments[0]), "")
@@ -1133,6 +1342,13 @@ class TermdeckServer:
             return {"exists": self.files.file_exists(root, path)}
         except (ValueError, PermissionError):
             return {"exists": False}
+
+    async def _open_file_external(self, request: FileOpRequest) -> dict[str, str]:
+        try:
+            path = await asyncio.to_thread(self.files.open_file_external, request.root, request.path)
+            return {"path": path}
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as open_error:
+            raise HTTPException(status_code=404, detail=str(open_error)) from open_error
 
     async def _search_files(self, root: str, q: str, glob: str = "", ignore: str = "", word: bool = False,
                             case_sensitive: bool = False, regex: bool = False, include_hidden: bool = False) -> list[dict[str, str | int]]:
@@ -1667,6 +1883,7 @@ class TermdeckServer:
         assignments = dict(state.session_groups)
         previous_groups = {session_id: assignments.get(session_id) for session_id in request.assignments}
         insertion_offsets: dict[str, int] = {}
+        targeted_ungrouped_session_ids: list[str] = []
         for session_id, group_id in request.assignments.items():
             token = f"session:{session_id}"
             if group_id:
@@ -1674,6 +1891,10 @@ class TermdeckServer:
                 layout = [entry for entry in layout if entry != token]
             else:
                 assignments.pop(session_id, None)
+                if request.target_session_id:
+                    targeted_ungrouped_session_ids.append(session_id)
+                    layout = [entry for entry in layout if entry != token]
+                    continue
                 if token in layout:
                     continue
                 target_token = f"session:{request.target_session_id}" if request.target_session_id else ""
@@ -1687,6 +1908,10 @@ class TermdeckServer:
                 insert_at = base_index + insertion_offsets.get(insertion_key, 0)
                 layout.insert(insert_at, token)
                 insertion_offsets[insertion_key] = insertion_offsets.get(insertion_key, 0) + 1
+        if targeted_ungrouped_session_ids:
+            target_token = f"session:{request.target_session_id}"
+            insert_at = layout.index(target_token) + (1 if request.after else 0) if target_token in layout else len(layout)
+            layout[insert_at:insert_at] = [f"session:{session_id}" for session_id in targeted_ungrouped_session_ids]
         state.session_groups = assignments
         state.terminal_layout = layout
         if request.target_session_id:

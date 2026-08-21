@@ -58,7 +58,8 @@ class ProjectSearchService:
             return False
         normalized = path.replace("\\", "/")
         segments = normalized.split("/")
-        return any(fnmatch.fnmatch(normalized, pattern) or segment == pattern for pattern in patterns for segment in segments)
+        return any(fnmatch.fnmatch(normalized, pattern) or any(fnmatch.fnmatch(segment, pattern) for segment in segments)
+                   for pattern in patterns)
 
     @staticmethod
     def _path_is_ignored(path: str, exact: list[str], wildcard: list[str]) -> bool:

@@ -20,6 +20,11 @@
       </div>
       <div id="worktree-header-row" class="hidden">
         <select id="worktree-select" title="Current worktree" aria-label="Current worktree"></select>
+        <div id="file-header-controls" class="hidden">
+          <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
+          <button id="tree-sort-toggle" title="Sort files alphabetically"><span class="codicon codicon-sort-precedence"></span></button>
+          <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-filter"></span></button>
+        </div>
       </div>
     </div>
     <div id="header-add-menu" class="hidden" role="menu" aria-label="Create or open">
@@ -34,23 +39,12 @@
   <div id="session-list" class="side-view"></div>
   <div id="side-split" class="hidden"></div>
   <div id="files-section" class="side-view hidden">
-    <div id="files-section-tabs">
-      <button id="files-tab-project" class="files-section-tab" title="Open files · middle/right-click opens file mode in a new tab" aria-label="Files"><span class="codicon codicon-files"></span><span class="files-tab-label">Files</span></button>
-      <button id="files-tab-search" class="files-section-tab" title="Search files · middle/right-click opens file mode in a new tab" aria-label="Search files"><span class="codicon codicon-search"></span><span class="files-tab-label">Search</span></button>
-      <button id="files-tab-git" class="files-section-tab" title="Git changes and history · middle/right-click opens file mode in a new tab" aria-label="Git changes and history"><span class="codicon codicon-git-branch"></span><span class="files-tab-label">Git</span></button>
-    </div>
     <div id="files-section-header">
-      <span class="side-section-label" id="files-root-label">files</span>
       <div id="git-branch-controls" class="hidden">
         <button id="git-new-branch" title="Create branch" aria-label="Create branch"><span class="codicon codicon-add"></span></button>
         <select id="git-header-branch-select" title="Switch branch" aria-label="Switch branch"></select>
       </div>
-      <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
-      <button id="tree-sort-toggle" title="Sort files alphabetically"><span class="codicon codicon-sort-precedence"></span></button>
-      <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-filter"></span></button>
       <button id="git-refresh" class="hidden" title="Refresh Git status"><span class="codicon codicon-refresh"></span></button>
-      <button id="files-pin-toggle" title="Keep this panel open after opening a file" aria-label="Pin file panel" aria-pressed="false"><span class="codicon codicon-pin"></span></button>
-      <button id="minimize-toggle" class="far-right" title="Minimize panel"><span class="codicon codicon-chrome-minimize"></span></button>
     </div>
     <div id="files-explorer-panel">
       <div id="name-search-bar">
@@ -60,27 +54,45 @@
         <button id="name-case-toggle" title="Match filename case">Aa</button>
         <button id="name-search-history-btn" title="Recent searches" aria-label="Recent searches" aria-expanded="false"><span class="codicon codicon-history"></span></button>
       </div>
-      <div id="search-controls">
-        <div id="search-bar">
-          <button id="search-back" title="Previous search"><span class="codicon codicon-arrow-left"></span></button>
-          <input id="search-query" placeholder="search in files" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-          <button id="search-file-type-filter-button" title="Search file filters" aria-label="Search file filters" aria-expanded="false"><span class="codicon codicon-symbol-enum"></span></button>
-          <button id="search-case-toggle" title="Match case">Aa</button>
-          <button id="search-word-toggle" title="Whole word">ab|</button>
-          <button id="search-regex-toggle" title="Regular expression">.*</button>
-          <button id="replace-toggle" title="Replace"><span class="codicon codicon-replace-all"></span></button>
-          <button id="search-history-btn" title="Recent searches" aria-label="Recent searches" aria-expanded="false"><span class="codicon codicon-history"></span></button>
+      <div id="search-scroll-region">
+        <div id="search-controls">
+          <div id="search-bar">
+            <input id="search-query" placeholder="search in files" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+            <button id="search-case-toggle" title="Match case">Aa</button>
+            <button id="search-history-btn" title="Recent searches" aria-label="Recent searches" aria-expanded="false"><span class="codicon codicon-history"></span></button>
+          </div>
+          <div id="search-filters" class="search-options-row">
+            <input id="search-file-glob" placeholder="file name match (glob: abc*cdf)" title="Only search matching file paths; supports glob patterns such as abc*cdf" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+            <button id="search-file-type-filter-button" title="Search file filters" aria-label="Search file filters" aria-expanded="false"><span class="codicon codicon-symbol-enum"></span></button>
+            <button id="search-word-toggle" title="Whole word">ab|</button>
+            <button id="search-regex-toggle" title="Regular expression">.*</button>
+            <button id="replace-toggle" title="Replace"><span class="codicon codicon-replace-all"></span></button>
+          </div>
+          <div id="replace-bar" class="hidden">
+            <input id="replace-with" placeholder="replace with&hellip;" spellcheck="false">
+            <button id="replace-all-btn" title="Preview replacements">Preview</button>
+          </div>
+          <div id="replace-preview" class="hidden"></div>
         </div>
-        <div id="replace-bar" class="hidden">
-          <input id="replace-with" placeholder="replace with&hellip;" spellcheck="false">
-          <button id="replace-all-btn" title="Preview replacements">Preview</button>
-        </div>
-        <div id="replace-preview" class="hidden"></div>
+        <div id="search-results" class="hidden"></div>
       </div>
       <div id="files-tree" tabindex="0" aria-label="Project file tree"></div>
-      <div id="search-results" class="hidden"></div>
       <div id="name-results" class="hidden"></div>
       <div id="git-results" class="hidden"></div>
+    </div>
+    <div id="file-history-sidebar" class="hidden" aria-label="File history timeline">
+      <div id="file-history-head">
+        <div id="file-history-title">History</div>
+        <div id="file-history-path"></div>
+        <button id="file-history-close" title="Close history sidebar" aria-label="Close history sidebar"><span class="codicon codicon-close"></span></button>
+      </div>
+      <div id="file-history-filters" role="group" aria-label="History source filter">
+        <button id="file-history-filter-all" data-mode="all" title="Show local and Git history" aria-pressed="true">All</button>
+        <button id="file-history-filter-local" data-mode="local" title="Show local history" aria-pressed="false">Local</button>
+        <button id="file-history-filter-git" data-mode="git" title="Show Git history" aria-pressed="false">Git</button>
+      </div>
+      <div id="file-history-sidebar-title">Timeline</div>
+      <div id="file-history-list"></div>
     </div>
     <div id="search-history-menu" class="hidden" role="menu" aria-label="Recent searches">
       <div id="search-history-head">Recent searches</div>
@@ -198,11 +210,30 @@
       </aside>
     </div>
   </div>
+  <div id="file-history-diff-pane" class="hidden" aria-label="File history comparison">
+    <div id="file-history-diff-toolbar" class="hidden">
+      <button id="file-history-diff-previous" type="button" title="Previous change" aria-label="Previous change"><span class="codicon codicon-chevron-up"></span></button>
+      <span id="file-history-diff-position"></span>
+      <button id="file-history-diff-next" type="button" title="Next change" aria-label="Next change"><span class="codicon codicon-chevron-down"></span></button>
+    </div>
+    <div id="file-history-preview-empty">Select a version to preview it.</div>
+    <div id="file-history-editor-host" class="hidden"></div>
+    <div id="file-history-preview" class="hidden"></div>
+  </div>
   <div id="git-review-area" class="hidden">
     <div id="git-review-head">
       <div id="git-review-title-group">
         <span id="git-review-title"></span>
         <span id="git-review-scope"></span>
+      </div>
+      <div id="git-review-conflict-controls" class="hidden">
+        <span id="git-review-conflict-position"></span>
+        <div id="git-review-conflict-sources" role="group" aria-label="Merge comparison source">
+          <button data-source="base" title="Compare merge base with result">Base</button>
+          <button data-source="ours" title="Compare our version with result">Ours</button>
+          <button data-source="theirs" title="Compare incoming version with result">Theirs</button>
+        </div>
+        <button id="git-review-conflict-stage" title="Save and stage this resolved file, then open the next conflict">Stage result &amp; next</button>
       </div>
       <div id="git-review-actions">
         <button id="git-review-previous" title="Previous changed section" aria-label="Previous changed section"><span class="codicon codicon-chevron-up"></span></button>
@@ -290,9 +321,11 @@
     <span id="terminal-age" class="hidden"></span>
     <span id="history-meta" class="hidden"></span>
     <span class="footer-spacer"></span>
-    <span id="stat-text"></span>
-    <canvas id="stat-spark" width="48" height="20"></canvas>
-    <button id="kill-stale-terminals-btn" title="Kill terminals older than 24 hours; keep tabs for reattach" aria-label="Kill terminals older than 24 hours; keep tabs for reattach"><span class="codicon codicon-trash"></span></button>
+    <div id="bottombar-stats">
+      <span id="stat-text"></span>
+      <canvas id="stat-spark" width="36" height="20" title="TermDeck server CPU and memory history"></canvas>
+      <button id="kill-stale-terminals-btn" title="Kill terminals older than 24 hours; keep tabs for reattach" aria-label="Kill terminals older than 24 hours; keep tabs for reattach"><span class="codicon codicon-trash"></span></button>
+    </div>
   </div>
 </div>
 <div id="notebook-panel" class="hidden">
@@ -326,35 +359,6 @@
   </div>
   <div id="notebook-editor-host"></div>
   <div id="notebook-help">Plain-text notes autosave</div>
-</div>
-<div id="file-history-panel" class="hidden" role="dialog" aria-label="File history">
-  <div id="file-history-head">
-    <div id="file-history-title">File history</div>
-    <div id="file-history-path"></div>
-    <div id="file-history-filters" role="group" aria-label="History source filter">
-      <button id="file-history-filter-all" data-mode="all" title="Show local and Git history" aria-pressed="true">All</button>
-      <button id="file-history-filter-local" data-mode="local" title="Show local history" aria-pressed="false">Local</button>
-      <button id="file-history-filter-git" data-mode="git" title="Show Git history" aria-pressed="false">Git</button>
-    </div>
-    <button id="file-history-close" title="Close file history" aria-label="Close file history"><span class="codicon codicon-close"></span></button>
-  </div>
-  <div id="file-history-sidebar">
-    <div id="file-history-sidebar-title">Timeline</div>
-    <div id="file-history-list"></div>
-  </div>
-  <div id="file-history-diff-pane">
-    <div id="file-history-diff-toolbar" class="hidden">
-      <button id="file-history-diff-previous" type="button" title="Previous change" aria-label="Previous change"><span class="codicon codicon-chevron-up"></span></button>
-      <span id="file-history-diff-position"></span>
-      <button id="file-history-diff-next" type="button" title="Next change" aria-label="Next change"><span class="codicon codicon-chevron-down"></span></button>
-      <span id="file-history-diff-spacer"></span>
-      <button id="file-history-diff-undo-block" type="button" title="Apply this change from the selected history version into the current file"><span class="codicon codicon-arrow-right"></span> Apply change to current</button>
-      <button id="file-history-diff-undo-line" type="button" title="Apply the selected history line into the current file"><span class="codicon codicon-arrow-right"></span> Apply line</button>
-    </div>
-    <div id="file-history-preview-empty">Select a version to preview it.</div>
-    <div id="file-history-editor-host" class="hidden"></div>
-    <div id="file-history-preview" class="hidden"></div>
-  </div>
 </div>
 <div id="selection-actions" class="hidden" role="menu" aria-label="Selection actions">
   <button id="selection-copy" class="selection-action-icon-button" type="button" role="menuitem" title="Copy selection" aria-label="Copy selection"><span class="codicon codicon-copy" aria-hidden="true"></span></button>

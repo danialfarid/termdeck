@@ -17,7 +17,7 @@ window.TermDeckFileBrowser = (() => {
     const minutes = Math.max(0, Math.floor((Date.now() - Number(epochSeconds) * 1000) / 60000));
     const hours = Math.floor(minutes / 60), days = Math.floor(hours / 24), weeks = Math.floor(days / 7), months = Math.floor(weeks / 4);
     const values = months >= 12 ? [[Math.floor(months / 12), "y"], [months % 12, "m"]] : months ? [[months, "m"], [weeks % 4, "w"]] : weeks ? [[weeks, "w"], [days % 7, "d"]] : days ? [[days, "d"], [hours % 24, "h"]] : hours ? [[hours, "h"], [minutes % 60, "m"]] : [[minutes, "m"]];
-    return `${values.filter(([value]) => value > 0).map(([value, suffix]) => `${value}${suffix}`).join(" ") || "0m"} ago`;
+    return values.filter(([value]) => value > 0).map(([value, suffix]) => `${value}${suffix}`).join(" ") || "0m";
   }
 
   function appendEntryMetadata(row, entry, { showMtime = true, showGitStatus = true } = {}) {

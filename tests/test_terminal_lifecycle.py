@@ -15,7 +15,7 @@ from termdeck.models import AgentKind, SessionRecord
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeUtil
 from termdeck.pty_process import PtyProcess
-from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, ProjectUiState, RunTerminalTaskRequest, TermdeckServer, UiSettings
+from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, TermdeckServer, UiSettings
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
 from termdeck.transcript_service import TranscriptService
 
@@ -143,6 +143,38 @@ class PlacementNameTest(unittest.TestCase):
         self.assertEqual(server.settings_store.payload["project_state"]["stock"]["session_order"], [
             "origin-id", "child-id", "other-id",
         ])
+
+    def test_ungrouped_session_reposition_persists_top_level_layout_and_session_order(self) -> None:
+        class Store:
+            def __init__(self) -> None:
+                self.payload = {"project_state": {"speechify": {
+                    "terminal_layout": ["session:task1", "session:task2", "session:task3", "session:task2-audit"],
+                    "session_order": ["task1", "task2", "task3", "task2-audit"],
+                }}}
+
+            def load(self) -> dict[str, object]:
+                return self.payload
+
+            def save(self, payload: dict[str, object]) -> None:
+                self.payload = payload
+
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.settings_store = Store()
+        server.manager = MagicMock()
+        server.manager.list_sessions.return_value = [
+            {"session_id": "task1"}, {"session_id": "task2"},
+            {"session_id": "task3"}, {"session_id": "task2-audit"},
+        ]
+
+        asyncio.run(server._put_session_group_assignments(
+            SessionGroupAssignmentsRequest(assignments={"task2-audit": None}, target_session_id="task2", after=True),
+            project="speechify", worktree_id="root"))
+
+        state = server.settings_store.payload["project_state"]["speechify"]
+        self.assertEqual(state["terminal_layout"], [
+            "session:task1", "session:task2", "session:task2-audit", "session:task3",
+        ])
+        self.assertEqual(state["session_order"], ["task1", "task2", "task2-audit", "task3"])
 
 
 class FileTreeEventTest(unittest.TestCase):
