@@ -66,10 +66,12 @@ class ManagedSession:
         self.claude_raw_replay_buffer = bytearray()
         self.claude_raw_replay_title_carry = b""
         self.claude_raw_replay_last_title = b""
-        self.scrollback_revision = 0
-        self.scrollback_checkpoint_revision = 0
-        self.claude_raw_replay_revision = 0
-        self.claude_raw_replay_checkpoint_revision = 0
+        self.scrollback_checkpoint_pending = bytearray()
+        self.scrollback_compaction_generation = 0
+        self.scrollback_checkpoint_compaction_generation = 0
+        self.claude_raw_replay_checkpoint_pending = bytearray()
+        self.claude_raw_replay_compaction_generation = 0
+        self.claude_raw_replay_checkpoint_compaction_generation = 0
         self.terminal_history_cleared_for_spawn = False
         # Whether attach_client has already treated a cold (no-strip-witnessed-yet) claude/codex attach as
         # needing a repaint. Scoped to a single occurrence per process lifetime so a burst of simultaneous
@@ -234,38 +236,86 @@ class TerminalSessionManager:
             if temporary.exists():
                 temporary.unlink()
 
-    def _pending_replay_checkpoint_snapshots(self, active_only: bool, force: bool = False) -> list[tuple[ManagedSession, str, int, Path, bytes]]:
-        snapshots: list[tuple[ManagedSession, str, int, Path, bytes]] = []
+    @staticmethod
+    def _append_replay_checkpoint_bytes(target: Path, payload: bytes) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("ab") as checkpoint_file:
+            checkpoint_file.write(payload)
+            checkpoint_file.flush()
+            os.fsync(checkpoint_file.fileno())
+
+    @staticmethod
+    def _read_replay_checkpoint_tail(target: Path, byte_limit: int) -> tuple[bytes, bool]:
+        target_bytes = target.stat().st_size
+        with target.open("rb") as checkpoint_file:
+            if target_bytes > byte_limit:
+                checkpoint_file.seek(-byte_limit, os.SEEK_END)
+            return checkpoint_file.read(), target_bytes > byte_limit
+
+    @staticmethod
+    def _replay_checkpoint_snapshot(ms: ManagedSession, replay_kind: str, target: Path, full_payload: bytes,
+                                    pending: bytearray, byte_limit: int, compaction_generation: int,
+                                    checkpoint_compaction_generation: int) -> tuple[ManagedSession, str, int, Path, bytes, bytes, bool] | None:
+        if not pending and compaction_generation == checkpoint_compaction_generation and target.exists():
+            return None
+        pending_payload = bytes(pending)
+        target_bytes = target.stat().st_size if target.exists() else 0
+        replace = not target.exists() or compaction_generation != checkpoint_compaction_generation or \
+            target_bytes + len(pending_payload) > byte_limit
+        write_payload = full_payload if replace else pending_payload
+        if not write_payload:
+            return None
+        return ms, replay_kind, compaction_generation, target, write_payload, pending_payload, replace
+
+    def _pending_replay_checkpoint_snapshots(self, active_only: bool) -> list[tuple[ManagedSession, str, int, Path, bytes, bytes, bool]]:
+        snapshots: list[tuple[ManagedSession, str, int, Path, bytes, bytes, bool]] = []
         for ms in self._sessions.values():
             if active_only and not ms.running:
                 continue
-            if ms.record.agent_kind == AgentKind.NONE.value and ms.buffer and \
-                    (force or ms.scrollback_revision != ms.scrollback_checkpoint_revision):
-                snapshots.append((ms, AgentKind.NONE.value, ms.scrollback_revision,
-                                  self._scrollback_path(ms.record.session_id), bytes(ms.buffer)))
-            if self._claude_raw_replay_enabled and ms.record.agent_kind == AgentKind.CLAUDE.value and \
-                    ms.claude_raw_replay_buffer and \
-                    (force or ms.claude_raw_replay_revision != ms.claude_raw_replay_checkpoint_revision):
-                snapshots.append((ms, AgentKind.CLAUDE.value, ms.claude_raw_replay_revision,
-                                  self._claude_raw_replay_path(ms.record.session_id),
-                                  self._claude_raw_replay_bytes(ms)))
+            if ms.record.agent_kind == AgentKind.NONE.value and ms.buffer:
+                snapshot = self._replay_checkpoint_snapshot(
+                    ms, AgentKind.NONE.value, self._scrollback_path(ms.record.session_id), bytes(ms.buffer),
+                    ms.scrollback_checkpoint_pending, TermdeckConfig.SCROLLBACK_BYTES,
+                    ms.scrollback_compaction_generation, ms.scrollback_checkpoint_compaction_generation)
+                if snapshot is not None:
+                    snapshots.append(snapshot)
+            if self._claude_raw_replay_enabled and ms.record.agent_kind == AgentKind.CLAUDE.value and ms.claude_raw_replay_buffer:
+                snapshot = self._replay_checkpoint_snapshot(
+                    ms, AgentKind.CLAUDE.value, self._claude_raw_replay_path(ms.record.session_id),
+                    self._claude_raw_replay_bytes(ms), ms.claude_raw_replay_checkpoint_pending,
+                    TermdeckConfig.CLAUDE_RAW_REPLAY_SESSION_BYTES, ms.claude_raw_replay_compaction_generation,
+                    ms.claude_raw_replay_checkpoint_compaction_generation)
+                if snapshot is not None:
+                    snapshots.append(snapshot)
         return snapshots
 
     @staticmethod
-    def _record_replay_checkpoint_success(ms: ManagedSession, replay_kind: str, revision: int) -> None:
-        if replay_kind == AgentKind.NONE.value and ms.scrollback_revision == revision:
-            ms.scrollback_checkpoint_revision = revision
-        if replay_kind == AgentKind.CLAUDE.value and ms.claude_raw_replay_revision == revision:
-            ms.claude_raw_replay_checkpoint_revision = revision
+    def _record_replay_checkpoint_success(ms: ManagedSession, replay_kind: str, compaction_generation: int,
+                                          pending_payload: bytes, replaced: bool) -> None:
+        if replay_kind == AgentKind.NONE.value:
+            pending = ms.scrollback_checkpoint_pending
+            if bytes(pending[:len(pending_payload)]) == pending_payload:
+                del pending[:len(pending_payload)]
+            if replaced and ms.scrollback_compaction_generation == compaction_generation:
+                ms.scrollback_checkpoint_compaction_generation = compaction_generation
+            return
+        pending = ms.claude_raw_replay_checkpoint_pending
+        if bytes(pending[:len(pending_payload)]) == pending_payload:
+            del pending[:len(pending_payload)]
+        if replaced and ms.claude_raw_replay_compaction_generation == compaction_generation:
+            ms.claude_raw_replay_checkpoint_compaction_generation = compaction_generation
 
     async def _checkpoint_active_replays(self) -> None:
-        for ms, replay_kind, revision, target, payload in self._pending_replay_checkpoint_snapshots(True):
+        for ms, replay_kind, compaction_generation, target, payload, pending_payload, replace in \
+                self._pending_replay_checkpoint_snapshots(True):
             try:
-                await asyncio.to_thread(self._write_replay_checkpoint_atomically, target, payload)
+                writer = self._write_replay_checkpoint_atomically if replace else self._append_replay_checkpoint_bytes
+                await asyncio.to_thread(writer, target, payload)
             except OSError as checkpoint_error:
                 print(f"termdeck replay checkpoint failed for {ms.record.session_id}: {checkpoint_error}", flush=True)
                 continue
-            self._record_replay_checkpoint_success(ms, replay_kind, revision)
+            self._record_replay_checkpoint_success(
+                ms, replay_kind, compaction_generation, pending_payload, replace)
 
     async def _periodically_checkpoint_active_replays(self) -> None:
         while True:
@@ -273,9 +323,12 @@ class TerminalSessionManager:
             await self._checkpoint_active_replays()
 
     def _checkpoint_all_replays(self) -> None:
-        for ms, replay_kind, revision, target, payload in self._pending_replay_checkpoint_snapshots(False, True):
-            self._write_replay_checkpoint_atomically(target, payload)
-            self._record_replay_checkpoint_success(ms, replay_kind, revision)
+        for ms, replay_kind, compaction_generation, target, payload, pending_payload, replace in \
+                self._pending_replay_checkpoint_snapshots(False):
+            writer = self._write_replay_checkpoint_atomically if replace else self._append_replay_checkpoint_bytes
+            writer(target, payload)
+            self._record_replay_checkpoint_success(
+                ms, replay_kind, compaction_generation, pending_payload, replace)
 
     @classmethod
     def _claude_raw_replay_partial_title_prefix_length(cls, data: bytes) -> int:
@@ -345,7 +398,7 @@ class TerminalSessionManager:
             self._claude_raw_replay_total_bytes -= removed
             overflow -= removed
             if removed:
-                candidate.claude_raw_replay_revision += 1
+                candidate.claude_raw_replay_compaction_generation += 1
 
     def _append_claude_raw_replay(self, ms: ManagedSession, data: bytes) -> None:
         if not self._claude_raw_replay_enabled or ms.record.agent_kind != AgentKind.CLAUDE.value:
@@ -355,12 +408,13 @@ class TerminalSessionManager:
             return
         previous_bytes = len(ms.claude_raw_replay_buffer)
         ms.claude_raw_replay_buffer.extend(filtered)
+        ms.claude_raw_replay_checkpoint_pending.extend(filtered)
         session_overflow = len(ms.claude_raw_replay_buffer) - TermdeckConfig.CLAUDE_RAW_REPLAY_SESSION_BYTES
         if session_overflow > 0:
             self._trim_claude_raw_replay_front(ms.claude_raw_replay_buffer, session_overflow)
+            ms.claude_raw_replay_compaction_generation += 1
         self._claude_raw_replay_total_bytes += len(ms.claude_raw_replay_buffer) - previous_bytes
         self._enforce_claude_raw_replay_total_limit()
-        ms.claude_raw_replay_revision += 1
 
     def _seed_claude_raw_replay_from_durable_buffer(self, ms: ManagedSession) -> None:
         if ms.record.agent_kind != AgentKind.CLAUDE.value or ms.claude_raw_replay_buffer or not ms.buffer:
@@ -368,7 +422,7 @@ class TerminalSessionManager:
         replay = self._replay_bytes(ms)[-TermdeckConfig.CLAUDE_RAW_REPLAY_SESSION_BYTES:]
         ms.claude_raw_replay_buffer.extend(replay)
         self._claude_raw_replay_total_bytes += len(replay)
-        ms.claude_raw_replay_revision += 1
+        ms.claude_raw_replay_compaction_generation += 1
 
     def _discard_claude_raw_replay(self, ms: ManagedSession) -> None:
         self._claude_raw_replay_total_bytes = max(
@@ -376,7 +430,8 @@ class TerminalSessionManager:
         ms.claude_raw_replay_buffer.clear()
         ms.claude_raw_replay_title_carry = b""
         ms.claude_raw_replay_last_title = b""
-        ms.claude_raw_replay_revision += 1
+        ms.claude_raw_replay_checkpoint_pending.clear()
+        ms.claude_raw_replay_compaction_generation += 1
 
     @staticmethod
     def _claude_raw_replay_bytes(ms: ManagedSession) -> bytes:
@@ -463,13 +518,19 @@ class TerminalSessionManager:
             ms.lazy_start_pending = True
             saved = self._scrollback_path(record.session_id)
             if record.agent_kind == AgentKind.NONE.value and saved.exists():
-                ms.buffer.extend(saved.read_bytes()[-TermdeckConfig.SCROLLBACK_BYTES:])
+                replay, requires_compaction = self._read_replay_checkpoint_tail(saved, TermdeckConfig.SCROLLBACK_BYTES)
+                ms.buffer.extend(replay)
+                if requires_compaction:
+                    ms.scrollback_compaction_generation += 1
             if self._claude_raw_replay_enabled and record.agent_kind == AgentKind.CLAUDE.value:
                 claude_replay_path = self._claude_raw_replay_path(record.session_id)
                 if claude_replay_path.exists():
-                    replay = claude_replay_path.read_bytes()[-TermdeckConfig.CLAUDE_RAW_REPLAY_SESSION_BYTES:]
+                    replay, requires_compaction = self._read_replay_checkpoint_tail(
+                        claude_replay_path, TermdeckConfig.CLAUDE_RAW_REPLAY_SESSION_BYTES)
                     ms.claude_raw_replay_buffer.extend(replay)
                     self._claude_raw_replay_total_bytes += len(replay)
+                    if requires_compaction:
+                        ms.claude_raw_replay_compaction_generation += 1
                 self._seed_claude_raw_replay_from_durable_buffer(ms)
         self._enforce_claude_raw_replay_total_limit()
         # Do not launch old terminals merely because the web server came up.
@@ -1422,10 +1483,13 @@ class TerminalSessionManager:
             return
         ms.last_repaint_offset = None
         ms.buffer.extend(durable)
-        ms.scrollback_revision += 1
+        if ms.record.agent_kind == AgentKind.NONE.value:
+            ms.scrollback_checkpoint_pending.extend(durable)
         overflow = len(ms.buffer) - TermdeckConfig.SCROLLBACK_BYTES
         if overflow > 0:
             del ms.buffer[:overflow]
+            if ms.record.agent_kind == AgentKind.NONE.value:
+                ms.scrollback_compaction_generation += 1
             if ms.last_repaint_offset is not None:
                 ms.last_repaint_offset = max(0, ms.last_repaint_offset - overflow)
 

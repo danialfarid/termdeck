@@ -777,6 +777,60 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
             await manager._checkpoint_active_replays()
             self.assertFalse((Path(directory) / "inactive-shell.bin").exists())
 
+    async def test_shell_checkpoint_appends_only_new_output_until_its_byte_limit(self) -> None:
+        manager = TerminalSessionManager()
+        shell = ManagedSession(record("append-shell"))
+        shell.detached_live = True
+        manager._sessions[shell.record.session_id] = shell
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)), \
+                patch.object(TermdeckConfig, "SCROLLBACK_BYTES", 12):
+            manager._append_collapsing_repaints(shell, b"12345678")
+            await manager._checkpoint_active_replays()
+            checkpoint = Path(directory) / "append-shell.bin"
+            self.assertEqual(checkpoint.read_bytes(), b"12345678")
+
+            with patch.object(manager, "_write_replay_checkpoint_atomically",
+                              wraps=manager._write_replay_checkpoint_atomically) as replace_checkpoint, \
+                    patch.object(manager, "_append_replay_checkpoint_bytes",
+                                 wraps=manager._append_replay_checkpoint_bytes) as append_checkpoint:
+                manager._append_collapsing_repaints(shell, b"abcd")
+                await manager._checkpoint_active_replays()
+                replace_checkpoint.assert_not_called()
+                append_checkpoint.assert_called_once_with(checkpoint, b"abcd")
+            self.assertEqual(checkpoint.read_bytes(), b"12345678abcd")
+
+            manager._append_collapsing_repaints(shell, b"efgh")
+            await manager._checkpoint_active_replays()
+            self.assertEqual(checkpoint.read_bytes(), b"5678abcdefgh")
+            self.assertEqual(checkpoint.stat().st_size, 12)
+
+    async def test_claude_checkpoint_appends_only_new_raw_output(self) -> None:
+        manager = TerminalSessionManager()
+        claude_record = record("append-claude")
+        claude_record.agent_kind = AgentKind.CLAUDE.value
+        claude = ManagedSession(claude_record)
+        claude.detached_live = True
+        manager._sessions[claude.record.session_id] = claude
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)):
+            manager._append_claude_raw_replay(claude, b"first frame\n")
+            await manager._checkpoint_active_replays()
+            checkpoint = Path(directory) / "append-claude.claude-replay.bin"
+            self.assertEqual(checkpoint.read_bytes(), b"first frame\n")
+
+            with patch.object(manager, "_write_replay_checkpoint_atomically",
+                              wraps=manager._write_replay_checkpoint_atomically) as replace_checkpoint, \
+                    patch.object(manager, "_append_replay_checkpoint_bytes",
+                                 wraps=manager._append_replay_checkpoint_bytes) as append_checkpoint:
+                manager._append_claude_raw_replay(claude, b"second frame\n")
+                await manager._checkpoint_active_replays()
+                replace_checkpoint.assert_not_called()
+                append_checkpoint.assert_called_once_with(checkpoint, b"second frame\n")
+            self.assertEqual(checkpoint.read_bytes(), b"first frame\nsecond frame\n")
+
     async def test_startup_reuses_shell_and_claude_checkpoints_without_consuming_them(self) -> None:
         manager = TerminalSessionManager()
         shell_record = record("restore-shell")
