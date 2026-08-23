@@ -739,6 +739,64 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session.running)
         self.assertTrue(session.dormant)
 
+    async def test_active_shell_and_claude_replays_are_checkpointed_without_codex_or_agy(self) -> None:
+        manager = TerminalSessionManager()
+        shell = ManagedSession(record("checkpoint-shell"))
+        claude_record = record("checkpoint-claude")
+        claude_record.agent_kind = AgentKind.CLAUDE.value
+        claude = ManagedSession(claude_record)
+        codex_record = record("checkpoint-codex")
+        codex_record.agent_kind = AgentKind.CODEX.value
+        codex = ManagedSession(codex_record)
+        agy_record = record("checkpoint-agy")
+        agy_record.agent_kind = AgentKind.AGY.value
+        agy = ManagedSession(agy_record)
+        for session in (shell, claude, codex, agy):
+            session.detached_live = True
+            manager._sessions[session.record.session_id] = session
+            manager._append_collapsing_repaints(session, f"{session.record.session_id}\n".encode())
+        manager._append_claude_raw_replay(claude, b"\x1b[Hclaude replay\n")
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)):
+            await manager._checkpoint_active_replays()
+            self.assertEqual((Path(directory) / "checkpoint-shell.bin").read_bytes(), b"checkpoint-shell\n")
+            self.assertTrue((Path(directory) / "checkpoint-claude.claude-replay.bin").exists())
+            self.assertFalse((Path(directory) / "checkpoint-claude.bin").exists())
+            self.assertFalse((Path(directory) / "checkpoint-codex.bin").exists())
+            self.assertFalse((Path(directory) / "checkpoint-agy.bin").exists())
+
+    async def test_inactive_shell_replay_is_not_periodically_checkpointed(self) -> None:
+        manager = TerminalSessionManager()
+        shell = ManagedSession(record("inactive-shell"))
+        manager._sessions[shell.record.session_id] = shell
+        manager._append_collapsing_repaints(shell, b"not running\n")
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)):
+            await manager._checkpoint_active_replays()
+            self.assertFalse((Path(directory) / "inactive-shell.bin").exists())
+
+    async def test_startup_reuses_shell_and_claude_checkpoints_without_consuming_them(self) -> None:
+        manager = TerminalSessionManager()
+        shell_record = record("restore-shell")
+        claude_record = record("restore-claude")
+        claude_record.agent_kind = AgentKind.CLAUDE.value
+        manager._store.load_all = lambda: [shell_record, claude_record]  # type: ignore[method-assign]
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)):
+            shell_path = Path(directory) / "restore-shell.bin"
+            claude_path = Path(directory) / "restore-claude.claude-replay.bin"
+            shell_path.write_bytes(b"shell history\n")
+            claude_path.write_bytes(b"\x1b[Hclaude history\n")
+            await manager.startup_respawn_saved_sessions()
+            self.assertEqual(bytes(manager._sessions["restore-shell"].buffer), b"shell history\n")
+            self.assertEqual(bytes(manager._sessions["restore-claude"].claude_raw_replay_buffer),
+                             b"\x1b[Hclaude history\n")
+            self.assertTrue(shell_path.exists())
+            self.assertTrue(claude_path.exists())
+
     async def test_delete_keeps_record_when_socket_cleanup_fails(self) -> None:
         manager = TerminalSessionManager()
         session = ManagedSession(record())

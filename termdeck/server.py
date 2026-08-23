@@ -518,10 +518,8 @@ class UiSettings(BaseModel):
     history_mode: bool = False
     transcript_first_surface: str = "terminal"
     # Declared explicitly or it is silently dropped when settings are saved.
-    tall_webgl: bool = False
+    tall_webgl: bool = True
     virtual_tall_webgl: bool = False
-    claude_raw_replay_experimental: bool = False
-    claude_full_raw_replay_experimental: bool = False
     defer_inactive_terminal_output: bool = False
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
@@ -619,7 +617,6 @@ class TermdeckServer:
             return
         self.state_backup.create_snapshot("startup", True)
         self._state_backup_task = asyncio.create_task(self.state_backup.run_periodic_snapshots())
-        self._apply_terminal_runtime_settings(UiSettings(**self.settings_store.load()).model_dump())
         await self.manager.startup_respawn_saved_sessions()
         self.manager.start_background_tasks()
         self.transcripts.start(asyncio.get_running_loop())
@@ -821,13 +818,6 @@ class TermdeckServer:
     async def _get_settings(self) -> dict[str, object]:
         return UiSettings(**self.settings_store.load()).model_dump()
 
-    def _apply_terminal_runtime_settings(self, payload: dict[str, object]) -> None:
-        if self.manager is None:
-            return
-        settings = UiSettings(**payload)
-        self.manager.set_claude_raw_replay_enabled(
-            settings.claude_raw_replay_experimental, settings.claude_full_raw_replay_experimental)
-
     def _validated_setting_payload(self, setting_name: str, value: object) -> dict[str, object]:
         if setting_name not in UiSettings.model_fields or setting_name == "project_state":
             raise HTTPException(status_code=404, detail=f"unknown setting: {setting_name}")
@@ -847,7 +837,6 @@ class TermdeckServer:
     async def _put_setting(self, request: StoredValueRequest, setting_name: str) -> dict[str, object]:
         payload = self._validated_setting_payload(setting_name, request.value)
         self.settings_store.save(payload)
-        self._apply_terminal_runtime_settings(payload)
         return {"name": setting_name, "value": payload[setting_name]}
 
     async def _delete_setting(self, setting_name: str) -> dict[str, object]:
@@ -856,7 +845,6 @@ class TermdeckServer:
             raise HTTPException(status_code=404, detail=f"unknown setting: {setting_name}")
         payload = self._validated_setting_payload(setting_name, defaults[setting_name])
         self.settings_store.save(payload)
-        self._apply_terminal_runtime_settings(payload)
         return {"name": setting_name, "value": payload[setting_name]}
 
     async def _get_setting_entry(self, setting_name: str, entry_key: str) -> dict[str, object]:
@@ -959,7 +947,6 @@ class TermdeckServer:
     async def _put_settings(self, settings: UiSettings) -> dict[str, object]:
         payload = self._preserve_active_layout_entries(settings.model_dump())
         self.settings_store.save(payload)
-        self._apply_terminal_runtime_settings(payload)
         return payload
 
     async def _replace_settings(self, settings: UiSettings, replace: bool = False) -> dict[str, object]:
@@ -976,7 +963,6 @@ class TermdeckServer:
         merged_settings = {**self.settings_store.load(), **incoming_settings}
         payload = self._preserve_active_layout_entries(UiSettings(**merged_settings).model_dump())
         self.settings_store.save(payload)
-        self._apply_terminal_runtime_settings(payload)
         return payload
 
     def _preserve_active_layout_entries(self, incoming_payload: dict[str, object]) -> dict[str, object]:

@@ -20,7 +20,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: false, virtual_tall_webgl: false, claude_raw_replay_experimental: false, claude_full_raw_replay_experimental: false, defer_inactive_terminal_output: false, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, virtual_tall_webgl: false, defer_inactive_terminal_output: false, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
@@ -14393,39 +14393,6 @@ class TermdeckApp {
     host.focus();
   }
 
-  shouldReconnectIdleClaudeView(view, session, previousId) {
-    if (this.settings.claude_raw_replay_experimental || !view || !session || session.agent_kind !== "claude" ||
-        previousId === session.session_id ||
-        view.closed || view.replaying || view.scrollMode !== "follow" || !view.hiddenAt || !view.ws ||
-        view.ws.readyState !== WebSocket.OPEN || view.hiddenOutputPending || !session.processing) return false;
-    return Date.now() - view.hiddenAt >= TERMINAL_CLAUDE_IDLE_RECONNECT_MS;
-  }
-
-  reconnectIdleClaudeView(view) {
-    if (!view?.ws || view.closed || view.reconnectAfterClose) return;
-    view.reconnectAfterClose = true;
-    view.suppressReconnect = true;
-    view.ws.close(1000, "idle Claude terminal replay");
-  }
-
-  scheduleClaudeInitialReplayRecovery(id, view) {
-    if (this.settings.claude_raw_replay_experimental || !view || view.closed ||
-        view.claudeInitialReplayRecoveryAttempted || view.claudeInitialReplayCheckTimer) return;
-    clearTimeout(view.claudeInitialReplayCheckTimer);
-    view.claudeInitialReplayCheckTimer = setTimeout(this.recoverClaudeInitialReplay.bind(this, id, view), 900);
-  }
-
-  recoverClaudeInitialReplay(id, view) {
-    view.claudeInitialReplayCheckTimer = 0;
-    if (view.closed || view.claudeInitialReplayRecoveryAttempted || this.activeId !== id || this.historyOpen ||
-        this.activeFileKey !== null || !view.container.classList.contains("visible") || view.replaying || !view.ws ||
-        view.ws.readyState !== WebSocket.OPEN || this.session(id)?.agent_kind !== "claude") return;
-    const buffer = view.term?.buffer?.active;
-    if (!buffer || buffer.baseY > view.term.rows + 2) return;
-    view.claudeInitialReplayRecoveryAttempted = true;
-    this.reconnectIdleClaudeView(view);
-  }
-
   activate(id, options = {}) {
     this.closePromptHistory();
     this.hideSelectionActions(true);
@@ -14551,8 +14518,7 @@ class TermdeckApp {
       if (this.isTerminalScrollV2() && !view.userScrollIntent) view.scrollMode = "follow";
       this.refreshTerminalAppearance(view);
       if (options.startDormant !== false) {
-        if (this.shouldReconnectIdleClaudeView(view, s, previousId)) this.reconnectIdleClaudeView(view);
-        else if (!view.ws) this.connect(id, view);
+        if (!view.ws) this.connect(id, view);
       }
       if (this.isTerminalScrollV2()) {
         // Only a genuinely first-ever connection should default to follow mode. A background tab's
@@ -15318,8 +15284,7 @@ class TermdeckApp {
     // repaint it; a reconnect that already has a populated xterm buffer can skip the SIGWINCH nudge.
     const screenRepaint = hasPopulatedBuffer ? 0 : 1;
     const haveBuffer = hasPopulatedBuffer ? 1 : 0;
-    const fullClaudeRawReplay = !hasPopulatedBuffer && this.settings.claude_full_raw_replay_experimental &&
-      this.session(id)?.agent_kind === "claude" ? 1 : 0;
+    const fullClaudeRawReplay = !hasPopulatedBuffer && this.session(id)?.agent_kind === "claude" ? 1 : 0;
     // repaint_preserved_buffer is deliberately not sent: it only ever meant "this client restored a
     // client-side snapshot, so make the agent repaint over it", and that snapshot path is gone. The
     // server defaults the flag to false when the parameter is absent.
@@ -15424,10 +15389,6 @@ class TermdeckApp {
           // buffer already holds the screen and repainting is what causes the flicker.
           this.requestRepaintIfBlank(view);
           this.schedulePendingAgentPaste(view);
-          if (!view.reconnectReset && this.session(id)?.agent_kind === "claude" &&
-              !view.claudeWebglColdPrimePending) {
-            this.scheduleClaudeInitialReplayRecovery(id, view);
-          }
           if (v2 && view.container.classList.contains("visible")) {
             const firstSnapshot = !view.initialSnapshotPainted;
             view.initialSnapshotPainted = true;
@@ -17674,15 +17635,10 @@ class TermdeckApp {
         incoming.search_file_glob = legacyIncludeGlob;
       }
       if (migratedExcludeGlob) incoming.excluded_file_glob = legacyExcludeGlob;
+      delete incoming.claude_raw_replay_experimental;
+      delete incoming.claude_full_raw_replay_experimental;
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
       this.persistedSettings = this.copySettings(this.settings);
-      const claudeFullReplaySettingsChanged = this.settings.claude_full_raw_replay_experimental &&
-        (!this.settings.claude_raw_replay_experimental || !this.settings.tall_webgl || this.settings.virtual_tall_webgl);
-      if (this.settings.claude_full_raw_replay_experimental) {
-        this.settings.claude_raw_replay_experimental = true;
-        this.settings.virtual_tall_webgl = false;
-        this.settings.tall_webgl = true;
-      }
       this.filesPanelWidthInitialized = !!this.settings.files_panel_width_initialized;
       this.lastFilesSidePanelTab = FILES_SIDE_PANEL_TABS.includes(this.settings.files_side_panel_last_tab)
         ? this.settings.files_side_panel_last_tab : "project";
@@ -17698,7 +17654,7 @@ class TermdeckApp {
       this.settings.excluded_file_glob = normalizedExcludedGlob;
       this.settings.hide_dot_folders = excludedTokens.includes("!.*");
       this.syncLegacySearchGlob();
-      if (migratedFileGlobSettings || migratedExcludeGlob || excludedGlobChanged || claudeFullReplaySettingsChanged) this.saveSettings();
+      if (migratedFileGlobSettings || migratedExcludeGlob || excludedGlobChanged) this.saveSettings();
     } catch (err) {
       this.settings = { ...SETTINGS_DEFAULTS };
       this.persistedSettings = this.copySettings(this.settings);
@@ -18590,19 +18546,6 @@ class TermdeckApp {
       () => {
         this.settings.virtual_tall_webgl = !this.virtualTallWebglEnabled();
         if (this.settings.virtual_tall_webgl) this.settings.tall_webgl = false;
-      }));
-    pop.appendChild(this.buildToggleRow("Claude .bin replay (experimental)",
-      () => (this.settings.claude_raw_replay_experimental ? "on" : "off"),
-      () => { this.settings.claude_raw_replay_experimental = !this.settings.claude_raw_replay_experimental; }));
-    pop.appendChild(this.buildToggleRow("Claude full .bin history + WebGL (experimental, reload)",
-      () => (this.settings.claude_full_raw_replay_experimental ? "on" : "off"),
-      () => {
-        this.settings.claude_full_raw_replay_experimental = !this.settings.claude_full_raw_replay_experimental;
-        if (this.settings.claude_full_raw_replay_experimental) {
-          this.settings.claude_raw_replay_experimental = true;
-          this.settings.virtual_tall_webgl = false;
-          this.settings.tall_webgl = true;
-        }
       }));
     pop.appendChild(this.buildToggleRow("Pause inactive terminal rendering (experimental)",
       () => (this.deferInactiveTerminalOutputEnabled() ? "on" : "off"),
