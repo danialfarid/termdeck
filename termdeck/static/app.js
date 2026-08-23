@@ -20,7 +20,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, virtual_tall_webgl: false, defer_inactive_terminal_output: false, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, defer_inactive_terminal_output: false, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
@@ -169,7 +169,6 @@ const SELECTION_ACTION_DELAY_MS = 500;
 const IMAGE_ATTACHMENT_MIME_RE = /^image\//i;
 const IMAGE_ATTACHMENT_EXTENSION_RE = /\.(?:avif|bmp|gif|heic|jpeg|jpg|png|svg|tif|tiff|webp)$/i;
 const MAX_FORK_COUNT = 25;
-const TERMINAL_CLAUDE_IDLE_RECONNECT_MS = 5 * 60 * 1000;
 const CLAUDE_STATUS_ROW_REFRESH_INTERVAL_MS = 500;
 const CODEX_PROMPT_REFLOW_GUARD_MS = 1800;
 const AGENT_PASTE_RETRY_DELAY_MS = 250;
@@ -14878,17 +14877,16 @@ class TermdeckApp {
     // is what buys the full 1000 rows.
     const cellHeight = term._core?._renderService?.dimensions?.css?.cell?.height || 17;
     const targetRowPlan = this.tallRowPlan(cellHeight);
-    const claudeWebglColdPrime = targetRowPlan.webgl && !targetRowPlan.virtual && this.session(id)?.agent_kind === "claude";
+    const claudeWebglColdPrime = targetRowPlan.webgl && this.session(id)?.agent_kind === "claude";
     const rowPlan = claudeWebglColdPrime ? { rows: TALL_ROWS_DOM, webgl: false } : targetRowPlan;
 
     inner.style.height = `${Math.round(rowPlan.rows * cellHeight)}px`;
-    if (rowPlan.webgl) this.enableWebglRenderer(term, container);
+    if (rowPlan.webgl) this.enableWebglRenderer(term);
     term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
     const view = { sessionId: id, container, term, fit, terminalFindAddon, tallRows: rowPlan.rows,
                    terminalFindResultIndex: -1,
                    terminalFindResultCount: 0, terminalFindResultListener: null,
                    tallWebgl: rowPlan.webgl,
-                   virtualWebglAddon: term.__termdeckVirtualWebglAddon || null,
                    claudeWebglColdPrimePending: claudeWebglColdPrime,
                    claudeWebglColdPrimeTargetRows: claudeWebglColdPrime ? targetRowPlan.rows : 0,
                    claudeWebglColdPrimeStartedAt: 0, claudeWebglColdPrimeLastOutputAt: 0,
@@ -15233,8 +15231,7 @@ class TermdeckApp {
     view.suppressResizeToServer = true;
     view.tallRows = targetRows;
     view.term.resize(cols, targetRows);
-    view.tallWebgl = this.enableWebglRenderer(view.term, view.container);
-    view.virtualWebglAddon = view.term.__termdeckVirtualWebglAddon || null;
+    view.tallWebgl = this.enableWebglRenderer(view.term);
     if (!view.tallWebgl) {
       view.tallRows = TALL_ROWS_DOM;
       view.term.resize(cols, TALL_ROWS_DOM);
@@ -15569,8 +15566,7 @@ class TermdeckApp {
         view.claudeWebglColdPrimeCompleting = false;
         view.tallRows = Math.max(2, Number(msg.rows || view.term.rows));
         const webglRows = Math.max(2, Number(view.claudeWebglColdPrimeTargetRows || 0));
-        view.tallWebgl = view.tallRows <= webglRows && this.enableWebglRenderer(view.term, view.container);
-        view.virtualWebglAddon = view.term.__termdeckVirtualWebglAddon || null;
+        view.tallWebgl = view.tallRows <= webglRows && this.enableWebglRenderer(view.term);
       }
       if (restoreFollowingPosition && terminalSizeChanged) {
         view.tallMaxScrollTop = null;
@@ -17635,6 +17631,9 @@ class TermdeckApp {
         incoming.search_file_glob = legacyIncludeGlob;
       }
       if (migratedExcludeGlob) incoming.excluded_file_glob = legacyExcludeGlob;
+      const migratedVirtualWebgl = incoming.virtual_tall_webgl === true;
+      if (migratedVirtualWebgl) incoming.tall_webgl = true;
+      delete incoming.virtual_tall_webgl;
       delete incoming.claude_raw_replay_experimental;
       delete incoming.claude_full_raw_replay_experimental;
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
@@ -17654,7 +17653,7 @@ class TermdeckApp {
       this.settings.excluded_file_glob = normalizedExcludedGlob;
       this.settings.hide_dot_folders = excludedTokens.includes("!.*");
       this.syncLegacySearchGlob();
-      if (migratedFileGlobSettings || migratedExcludeGlob || excludedGlobChanged) this.saveSettings();
+      if (migratedFileGlobSettings || migratedExcludeGlob || migratedVirtualWebgl || excludedGlobChanged) this.saveSettings();
     } catch (err) {
       this.settings = { ...SETTINGS_DEFAULTS };
       this.persistedSettings = this.copySettings(this.settings);
@@ -18537,16 +18536,7 @@ class TermdeckApp {
     // canvas -- the whole trade is explained there.
     pop.appendChild(this.buildToggleRow("WebGL renderer (reload)",
       () => (this.standardTallWebglEnabled() ? "on" : "off"),
-      () => {
-        this.settings.tall_webgl = !this.standardTallWebglEnabled();
-        if (this.settings.tall_webgl) this.settings.virtual_tall_webgl = false;
-      }));
-    pop.appendChild(this.buildToggleRow("Virtual 4K WebGL (experimental, reload)",
-      () => (this.virtualTallWebglEnabled() ? "on" : "off"),
-      () => {
-        this.settings.virtual_tall_webgl = !this.virtualTallWebglEnabled();
-        if (this.settings.virtual_tall_webgl) this.settings.tall_webgl = false;
-      }));
+      () => { this.settings.tall_webgl = !this.standardTallWebglEnabled(); }));
     pop.appendChild(this.buildToggleRow("Pause inactive terminal rendering (experimental)",
       () => (this.deferInactiveTerminalOutputEnabled() ? "on" : "off"),
       () => { this.settings.defer_inactive_terminal_output = !this.deferInactiveTerminalOutputEnabled(); },
@@ -18878,7 +18868,7 @@ class TermdeckApp {
     const inner = view.container.querySelector(".term-inner");
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
     if (!inner || !cellHeight) return;
-    if (view.tallWebgl && !view.virtualWebglAddon) this.syncWebglCanvasToDevicePixels(view);
+    if (view.tallWebgl) this.syncWebglCanvasToDevicePixels(view);
     const whole = this.wholeBufferScrollEnabled();
     const fullPx = Math.round((view.term.rows || TALL_ROWS_DOM) * cellHeight);
     if (view.term.element && view.term.element.style.height !== `${fullPx}px`) {
@@ -18982,15 +18972,11 @@ class TermdeckApp {
   // moving the buffer viewport that much sooner. Search, selection and how far back you can reach are
   // unaffected: they read the 20,000-line buffer, not the rendered rows.
   tallWebglEnabled() {
-    return this.standardTallWebglEnabled() || this.virtualTallWebglEnabled();
+    return this.standardTallWebglEnabled();
   }
 
   standardTallWebglEnabled() {
     return this.settings.tall_webgl === true;
-  }
-
-  virtualTallWebglEnabled() {
-    return this.settings.virtual_tall_webgl === true;
   }
 
   deferInactiveTerminalOutputEnabled() {
@@ -19037,11 +19023,6 @@ class TermdeckApp {
     }
     const wanted = `${offset}px`;
     if (element.style.top !== wanted) element.style.top = wanted;
-    const virtualAddon = view.virtualWebglAddon || view.term.__termdeckVirtualWebglAddon;
-    if (virtualAddon) {
-      const absoluteTopRow = Math.floor(view.container.scrollTop / cellHeight);
-      virtualAddon.setLogicalRowOffset(absoluteTopRow - Number(view.term.buffer.active.viewportY || 0));
-    }
   }
 
   // Maps a scroll position onto the buffer: the top of the box is row 0, the bottom is the newest line.
@@ -19059,33 +19040,21 @@ class TermdeckApp {
   }
 
   tallRowPlan(cellHeight) {
-    if (this.virtualTallWebglEnabled()) return { rows: TALL_ROWS_DOM, webgl: true, virtual: true };
     if (!this.tallWebglEnabled()) return { rows: TALL_ROWS_DOM, webgl: false };
     const safeRows = this.maxWebglSafeRows(cellHeight);
     if (safeRows < TALL_ROWS_MIN_FOR_WEBGL) return { rows: TALL_ROWS_DOM, webgl: false };
     return { rows: Math.min(TALL_ROWS_MAX, safeRows), webgl: true };
   }
 
-  virtualWebglRenderRows(term, container) {
-    const cellHeight = Number(term._core?._renderService?.dimensions?.css?.cell?.height || 0);
-    if (!cellHeight) return TALL_ROWS_MIN_FOR_WEBGL;
-    const viewportHeight = Number(container?.clientHeight || window.innerHeight || 0);
-    const viewportRows = Math.ceil(viewportHeight / cellHeight) + 2;
-    const safeRows = this.maxWebglSafeRows(cellHeight);
-    return Math.max(2, Math.min(viewportRows, safeRows || viewportRows));
-  }
-
-  enableWebglRenderer(term, container = null) {
-    const virtual = this.virtualTallWebglEnabled();
-    const Addon = virtual ? window.VirtualWebglAddon?.VirtualWebglAddon : window.WebglAddon?.WebglAddon;
+  enableWebglRenderer(term) {
+    const Addon = window.WebglAddon?.WebglAddon;
     if (!Addon) return false;
     try {
-      const addon = virtual ? new Addon({ getRenderRows: () => this.virtualWebglRenderRows(term, container) }) : new Addon();
+      const addon = new Addon();
       addon.onContextLoss(() => {
         try { addon.dispose(); } catch (disposeError) { /* already gone; DOM renderer takes over */ }
       });
       term.loadAddon(addon);
-      if (virtual) term.__termdeckVirtualWebglAddon = addon;
       return true;
     } catch (webglError) {
       return false;
