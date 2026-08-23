@@ -290,7 +290,8 @@
     <button id="terminal-find-next" title="Next match" aria-label="Next match"><span class="codicon codicon-arrow-down"></span></button>
     <button id="terminal-find-close" title="Close terminal search" aria-label="Close terminal search"><span class="codicon codicon-close"></span></button>
   </div>
-  <div id="empty-state" class="loading" role="status" aria-live="polite">loading TermDeck&hellip;</div>
+  <div id="initial-loading-state" class="loading" role="status" aria-live="polite">loading TermDeck&hellip;</div>
+  <div id="empty-state" role="status" aria-live="polite" style="display: none">no terminals &mdash; press + to open one</div>
   </div>
   <div id="problems-panel" class="hidden">
     <div id="problems-head"><span>Problems</span><span id="problems-count"></span><button id="problems-refresh" title="Refresh problems"><span class="codicon codicon-refresh"></span></button><button id="problems-close" title="Close problems"><span class="codicon codicon-close"></span></button></div>
@@ -452,6 +453,7 @@
 <script src="/static/vendor/xterm.js"></script>
 <script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/vendor/addon-webgl.js"></script>
+<script src="/static/virtual-webgl-addon.js"></script>
 <script src="/static/vendor/addon-search.js"></script>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/monaco/vs/loader.js"></script>

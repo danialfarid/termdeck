@@ -530,6 +530,33 @@ class ClaudeRenameBindingReconciliationTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(manager._tracker.absorb_and_find_new_session_file.call_args.kwargs["claim_allowed"])
         manager._tracker.claude_session_id_from_recent_file_activity.assert_not_called()
 
+    async def test_codex_detection_does_not_bind_an_already_claimed_parent(self) -> None:
+        manager = TerminalSessionManager()
+        parent = record("codex-parent")
+        parent.agent_kind = AgentKind.CODEX.value
+        parent.agent_session_id = "parent-session"
+        parent.command = "codex resume parent-session"
+        child = record("codex-child")
+        child.agent_kind = AgentKind.CODEX.value
+        child.command = "codex fork parent-session"
+        child_session = ManagedSession(child)
+        manager._sessions = {parent.session_id: ManagedSession(parent), child.session_id: child_session}
+        child_session.detached_live = True
+        child_session.detect_kind = AgentKind.CODEX
+        child_session.detect_baseline = set()
+        child_session.pending_agent_rename = "codex child"
+        manager._tracker.session_id_from_open_files = AsyncMock(return_value="parent-session")
+        manager._tracker.absorb_and_find_new_session_file = MagicMock(return_value="child-session")
+        manager._persist = MagicMock()
+        manager._broadcast_control = MagicMock()
+        manager._broadcast_status = MagicMock()
+
+        with patch("termdeck.session_manager.time.monotonic", return_value=100.0):
+            await manager._detect_after(child_session, 0)
+
+        self.assertEqual(child.agent_session_id, "child-session")
+        manager._tracker.absorb_and_find_new_session_file.assert_called_once()
+
     def test_user_renamed_claude_session_rebinds_to_matching_explicit_title(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = TerminalSessionManager()
@@ -611,6 +638,13 @@ class ClaudeSessionActivityTest(unittest.TestCase):
             reminder = self._user_text("<system-reminder>The user named this session</system-reminder>")
             reminder["isMeta"] = True
             path = self._transcript(directory, self._assistant({"type": "text", "text": "all done"}), reminder)
+            self.assertFalse(AgentSessionTracker().claude_session_is_active(path))
+
+    def test_failed_plain_slash_command_does_not_keep_the_spinner_running(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._transcript(directory, self._assistant({"type": "text", "text": "all done"}),
+                                    self._user_text("/compact"),
+                                    {"type": "system", "subtype": "local_command", "content": "limit reached"})
             self.assertFalse(AgentSessionTracker().claude_session_is_active(path))
 
     def test_finished_answer_reads_as_idle(self) -> None:
@@ -748,28 +782,26 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(session.screen_lives_only_in_stripped_sync_frames)
 
-    async def test_attaching_client_nudges_pty_width_so_a_tui_repaints_its_stripped_screen(self) -> None:
+    async def test_attaching_client_signals_a_tui_to_repaint_its_stripped_screen(self) -> None:
         manager, session, proc = self._session_whose_screen_was_stripped()
 
-        with patch.object(TermdeckConfig, "SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS", 0), \
-             patch.object(TermdeckConfig, "SCREEN_REPAINT_NUDGE_HOLD_SECONDS", 0):
+        with patch.object(TermdeckConfig, "SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS", 0):
             manager.attach_client(session.record.session_id)
             await session.screen_repaint_task
 
-        self.assertEqual(proc.resizes, [(119, 32), (120, 32)])
+        self.assertEqual(proc.window_change_signals, 1)
 
-    async def test_attaching_client_keeps_nudge_when_output_arrives_during_the_delay(self) -> None:
+    async def test_attaching_client_keeps_repaint_signal_when_output_arrives_during_the_delay(self) -> None:
         manager, session, proc = self._session_whose_screen_was_stripped()
 
-        with patch.object(TermdeckConfig, "SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS", 0), \
-             patch.object(TermdeckConfig, "SCREEN_REPAINT_NUDGE_HOLD_SECONDS", 0):
+        with patch.object(TermdeckConfig, "SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS", 0):
             manager.attach_client(session.record.session_id)
             session.last_activity_at += 1
             await session.screen_repaint_task
 
-        self.assertEqual(proc.resizes, [(119, 32), (120, 32)])
+        self.assertEqual(proc.window_change_signals, 1)
 
-    async def test_attaching_client_does_not_nudge_a_shell_whose_scrollback_replays_the_screen(self) -> None:
+    async def test_attaching_client_does_not_signal_a_shell_whose_scrollback_replays_the_screen(self) -> None:
         manager, session, proc = self._session_whose_screen_was_stripped()
         session.screen_lives_only_in_stripped_sync_frames = False
         session.buffer.extend(b"prompt$ ls\nfile.txt\n")
@@ -777,38 +809,36 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         manager.attach_client(session.record.session_id)
 
         self.assertIsNone(session.screen_repaint_task)
-        self.assertEqual(proc.resizes, [])
+        self.assertEqual(proc.window_change_signals, 0)
 
-    async def test_attaching_client_nudges_when_the_server_has_no_scrollback_to_replay(self) -> None:
+    async def test_attaching_client_signals_when_the_server_has_no_scrollback_to_replay(self) -> None:
         manager, session, proc = self._session_whose_screen_was_stripped()
         session.screen_lives_only_in_stripped_sync_frames = False
 
-        with patch.object(TermdeckConfig, "SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS", 0), \
-             patch.object(TermdeckConfig, "SCREEN_REPAINT_NUDGE_HOLD_SECONDS", 0):
+        with patch.object(TermdeckConfig, "SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS", 0):
             manager.attach_client(session.record.session_id)
             await session.screen_repaint_task
 
-        self.assertEqual(proc.resizes, [(119, 32), (120, 32)])
+        self.assertEqual(proc.window_change_signals, 1)
 
-    async def test_explicit_codex_repaint_nudges_the_live_pty(self) -> None:
+    async def test_explicit_codex_repaint_signals_the_live_pty(self) -> None:
         manager, session, proc = self._session_whose_screen_was_stripped()
         session.record.agent_kind = AgentKind.CODEX.value
 
-        with patch.object(TermdeckConfig, "SCREEN_REPAINT_NUDGE_HOLD_SECONDS", 0):
-            self.assertTrue(manager.request_screen_repaint(session.record.session_id))
-            await session.screen_repaint_task
+        self.assertTrue(manager.request_screen_repaint(session.record.session_id))
+        await session.screen_repaint_task
 
-        self.assertEqual(proc.resizes, [(119, 32), (120, 32)])
+        self.assertEqual(proc.window_change_signals, 1)
 
     def _session_whose_screen_was_stripped(self):
         class FakeProc:
             alive = True
 
             def __init__(self) -> None:
-                self.resizes: list[tuple[int, int]] = []
+                self.window_change_signals = 0
 
-            def resize(self, cols: int, rows: int) -> None:
-                self.resizes.append((cols, rows))
+            def send_window_change_signal(self) -> None:
+                self.window_change_signals += 1
 
         manager = TerminalSessionManager()
         session = ManagedSession(record())

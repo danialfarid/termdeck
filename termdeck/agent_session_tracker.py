@@ -378,7 +378,8 @@ class AgentSessionTracker:
             texts = [content]
         else:
             texts = [part.get("text") or "" for part in content or [] if isinstance(part, dict)]
-        return any(marker in text for text in texts for marker in AgentSessionTracker._CLAUDE_LOCAL_COMMAND_MARKERS)
+        return any(text.strip().startswith("/") or any(marker in text for marker in AgentSessionTracker._CLAUDE_LOCAL_COMMAND_MARKERS)
+                   for text in texts)
 
     @staticmethod
     def _claude_user_event_is_non_prompt_metadata(message: dict) -> bool:
@@ -749,6 +750,13 @@ class AgentSessionTracker:
             cleaned = self._strip_codex_session_arguments(parts)
             cleaned = self._ensure_codex_searchable_scrollback(cleaned)
             return f"{shlex.join(cleaned)} resume {agent_session_id}"
+        if kind is AgentKind.AGY:
+            parts = self._command_parts(original_command)
+            cleaned = self._strip_agy_session_arguments(parts)
+            if not cleaned:
+                cleaned = [AgentKind.AGY.value]
+            cleaned.extend((TermdeckConfig.AGY_CONVERSATION_FLAG, agent_session_id))
+            return shlex.join(cleaned)
         return original_command
 
     @staticmethod
@@ -770,6 +778,22 @@ class AgentSessionTracker:
                 skip_next = True
             else:
                 cleaned.append(token)
+        return cleaned
+
+    @staticmethod
+    def _strip_agy_session_arguments(parts: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        skip_next = False
+        for token in parts:
+            if skip_next:
+                skip_next = False
+                continue
+            if token == TermdeckConfig.AGY_CONVERSATION_FLAG:
+                skip_next = True
+                continue
+            if token.startswith(f"{TermdeckConfig.AGY_CONVERSATION_FLAG}=") or token in {"-c", "--continue"}:
+                continue
+            cleaned.append(token)
         return cleaned
 
     def _strip_positional_session_token(self, parts: list[str], command: str, subcommand: str) -> list[str]:

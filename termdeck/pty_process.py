@@ -129,6 +129,10 @@ class PtyProcess:
         if not self._closed:
             self._set_winsize(cols, rows)
 
+    def send_window_change_signal(self) -> None:
+        if not self._closed:
+            os.killpg(os.tcgetpgrp(self._master_fd), signal.SIGWINCH)
+
     def _set_winsize(self, cols: int, rows: int) -> None:
         fcntl.ioctl(self._master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 

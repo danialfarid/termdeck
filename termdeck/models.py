@@ -92,6 +92,7 @@ class WsMessageFields:
     INPUT = "input"
     RESIZE = "resize"
     REPAINT = "repaint"
+    TERMINAL_RESET = "terminal_reset"
     EXIT = "exit"
     CODE = "code"
     AGENT_SESSION = "agent_session"

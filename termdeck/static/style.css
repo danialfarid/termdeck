@@ -136,7 +136,6 @@ div.terminal-search-snippet-text { cursor: default; }
 .session-item.active .session-title { color: var(--active-text); }
 body:not(.vscode-mode) .session-item.active .session-title { color: var(--sidebar-text-color); }
 .status-dot { position: absolute; left: var(--terminal-status-dot-left, 6px); top: 50%; width: var(--terminal-status-dot-size, 6px); height: var(--terminal-status-dot-size, 6px); margin-top: calc(var(--terminal-status-dot-size, 6px) * -0.5); border-radius: 50%; visibility: hidden; }
-.status-dot.exited, .status-dot.dormant { background: var(--red); visibility: visible; }
 .status-dot.unread { background: var(--accent); visibility: visible; }
 .status-dot.processing { background: var(--accent); visibility: visible; transform-origin: center; will-change: opacity, transform; animation: termdeck-status-beacon 1.8s ease-in-out infinite; }
 .status-dot.attention, .group-unread-dot.attention { background: var(--accent); visibility: visible; will-change: opacity, transform; animation: termdeck-attention-cycle 4s linear infinite; }
@@ -169,7 +168,6 @@ body:not(.vscode-mode) .session-item:has(.terminal-type-icon.on) .status-dot.att
 .claude-terminal-icon { opacity: 0.85; }
 .agy-terminal-icon { opacity: 0.85; }
 .terminal-type-icon.terminal-status-active { color: var(--accent); opacity: 1; }
-.terminal-type-icon.terminal-status-exited { color: var(--red); opacity: 1; }
 .terminal-type-icon .codicon { font-size: calc(var(--terminal-icon-size, 14px) - 1px); }
 .session-item:has(.status-dot.processing) .terminal-type-icon.on {
   will-change: transform;
@@ -890,8 +888,11 @@ body:not(.vscode-mode) #terminal-actions > :not(#notebook-toggle) { display: non
 body.vscode-native-mode .term-container { display: none !important; }
 body.vscode-native-mode #vscode-terminal-resync-btn,
 body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
-#empty-state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 13px; z-index: 0; }
-#empty-state.loading::before { content: ""; width: 11px; height: 11px; margin-right: 8px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: termdeck-report-spin 0.8s linear infinite; }
+#initial-loading-state, #empty-state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 13px; }
+#initial-loading-state { z-index: 4; background: var(--term-bg); }
+#initial-loading-state.hidden { display: none; }
+#initial-loading-state.loading::before { content: ""; width: 11px; height: 11px; margin-right: 8px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: termdeck-report-spin 0.8s linear infinite; }
+#empty-state { z-index: 0; }
 
 .tree-row { cursor: pointer; padding: 2px 6px; white-space: nowrap; display: flex; align-items: center; gap: 6px; color: var(--text); border: 1px solid transparent; }
 .tree-row:hover { background: var(--panel2); }

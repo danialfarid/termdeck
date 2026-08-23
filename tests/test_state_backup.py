@@ -66,6 +66,22 @@ class StateBackupManagerTest(unittest.TestCase):
             self.assertEqual(json.loads((root / "sessions.json").read_text()), sessions)
             self.assertEqual(len(list((root / "backups" / "recovery").glob("sessions.json-*.before-manual-restore"))), 1)
 
+    def test_grouped_sessions_count_as_referenced_settings_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sessions = [{"session_id": f"session-{index}"} for index in range(4)]
+            self._write_state(root, sessions)
+            settings = {"project_state": {"demo": {
+                "session_order": [],
+                "terminal_layout": ["group:agents"],
+                "session_groups": {item["session_id"]: "agents" for item in sessions},
+            }}}
+            (root / "settings.json").write_text(json.dumps(settings))
+            manager = StateBackupManager(root, 50_000_000, 3600.0)
+            manager.create_snapshot("grouped", True)
+
+            self.assertFalse(manager.recovery_status()["required"])
+
     def test_snapshot_retention_removes_oldest_snapshots_over_cap(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

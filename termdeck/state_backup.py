@@ -124,11 +124,8 @@ class StateBackupManager:
         session_ids = self._session_ids(sessions_payload)
         referenced_session_ids = self._referenced_session_ids(settings_payload)
         suspicious: set[str] = set()
-        if len(referenced_session_ids) >= self.SUSPICIOUS_MINIMUM_REFERENCED_SESSIONS and \
-                (len(session_ids) < len(referenced_session_ids) * self.SUSPICIOUS_SESSION_COVERAGE or
-                 len(session_ids & referenced_session_ids) < len(referenced_session_ids) * self.SUSPICIOUS_SESSION_COVERAGE):
-            if self._latest_valid_backup_file("sessions.json", list) is not None:
-                suspicious.add("sessions.json")
+        if self._session_file_is_suspiciously_truncated(session_ids, referenced_session_ids):
+            suspicious.add("sessions.json")
         if session_ids and len(referenced_session_ids) < \
                 len(session_ids) * self.SUSPICIOUS_SESSION_COVERAGE:
             if self._latest_valid_backup_file("settings.json", dict) is not None:
@@ -138,6 +135,20 @@ class StateBackupManager:
             if self._latest_valid_backup_file("projects.json", dict) is not None:
                 suspicious.add("projects.json")
         return suspicious
+
+    def _session_file_is_suspiciously_truncated(self, session_ids: set[str], referenced_session_ids: set[str]) -> bool:
+        if len(referenced_session_ids) < self.SUSPICIOUS_MINIMUM_REFERENCED_SESSIONS:
+            return False
+        settings_indicate_truncation = len(session_ids) < len(referenced_session_ids) * self.SUSPICIOUS_SESSION_COVERAGE or \
+            len(session_ids & referenced_session_ids) < len(referenced_session_ids) * self.SUSPICIOUS_SESSION_COVERAGE
+        if not settings_indicate_truncation:
+            return False
+        backup_file = self._latest_valid_backup_file("sessions.json", list)
+        backup_payload = self._read_json_payload(backup_file, list) if backup_file is not None else None
+        backup_session_ids = self._session_ids(backup_payload) if isinstance(backup_payload, list) else set()
+        return len(backup_session_ids) >= self.SUSPICIOUS_MINIMUM_REFERENCED_SESSIONS and \
+            (len(session_ids) < len(backup_session_ids) * self.SUSPICIOUS_SESSION_COVERAGE or
+             len(session_ids & backup_session_ids) < len(backup_session_ids) * self.SUSPICIOUS_SESSION_COVERAGE)
 
     def _read_valid_state_files(self) -> dict[str, bytes]:
         valid_files: dict[str, bytes] = {}
@@ -183,6 +194,9 @@ class StateBackupManager:
             if isinstance(terminal_layout, list):
                 session_ids.update(str(item)[8:] for item in terminal_layout
                                    if isinstance(item, str) and item.startswith("session:"))
+            session_groups = state.get("session_groups")
+            if isinstance(session_groups, dict):
+                session_ids.update(str(session_id) for session_id in session_groups if session_id)
         return session_ids
 
     @classmethod

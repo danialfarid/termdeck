@@ -20,7 +20,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_s
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: false, defer_inactive_terminal_output: false, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: false, virtual_tall_webgl: false, claude_raw_replay_experimental: false, claude_full_raw_replay_experimental: false, defer_inactive_terminal_output: false, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
@@ -121,6 +121,10 @@ const TALL_BLANK_REPAINT_MS = 900;
 // How many consecutive "looks mid-redraw" frames may be skipped before the measurement is taken anyway.
 const TALL_MAX_BLANK_SKIPS = 4;
 const TALL_ROWS_MAX = 1000;
+const CLAUDE_WEBGL_COLD_PRIME_MIN_MS = 900;
+const CLAUDE_WEBGL_COLD_PRIME_IDLE_MS = 220;
+const CLAUDE_WEBGL_COLD_PRIME_MAX_MS = 2400;
+const CLAUDE_WEBGL_COLD_PRIME_RETRY_MS = 60;
 const HISTORY_BACKGROUND_TARGET_TURNS = 320;
 const HISTORY_BACKGROUND_PAGE_TURNS = 160;
 const HISTORY_BACKGROUND_LOAD_DELAY_MS = 180;
@@ -144,7 +148,6 @@ const TERMINAL_TAIL_REPAIR_LINES = 16;
 const TERMINAL_RENDER_CHECK_INTERVAL_MS = 3000;
 const TERMINAL_RENDER_CONFIRM_DELAY_MS = 700;
 const TERMINAL_RENDER_REPAIR_COOLDOWN_MS = 10000;
-const TERMINAL_ACTIVATION_REFLOW_IDLE_MS = 1200;
 const TERMINAL_VIEWPORT_RESTORE_IDLE_MS = 260;
 const TERMINAL_VIEWPORT_RESTORE_TIMEOUT_MS = 3000;
 const TERMINAL_VIEWPORT_ANCHOR_ROWS = 12;
@@ -459,6 +462,7 @@ class TermdeckApp {
     this.sessions = [];
     this.closedSessions = [];
     this.initialLoadComplete = false;
+    this.initialPageContentReady = false;
     this.views = new Map();
     this.openFiles = new Map();
     this.lspClient = null;
@@ -699,8 +703,6 @@ class TermdeckApp {
     this.selectionCopyHistoryIndex = 0;
     this.selectionActionUpdateFrame = 0;
     this.selectionActionUpdateTimer = 0;
-    this.lastDormantSessionClickId = null;
-    this.lastDormantSessionClickAt = 0;
     this.pendingNewAgentSelection = "";
     this.nativeSessionIds = new Set();
     this.sessionModelById = new Map();
@@ -2390,8 +2392,33 @@ class TermdeckApp {
     return true;
   }
 
+  containingDirectoryPath(path) {
+    const normalized = String(path || "").replace(/\\/g, "/");
+    const separator = normalized.lastIndexOf("/");
+    return separator < 0 ? "" : normalized.slice(0, separator);
+  }
+
+  async openFolderExternally(root, path, label = "folder") {
+    const response = await fetch("/api/files/open-external", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ root, path }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      this.$("status-name").textContent = payload.detail || `unable to open ${label} externally`;
+      return false;
+    }
+    this.$("status-name").textContent = `opened ${label} externally`;
+    return true;
+  }
+
   addOpenFileExternallyContextItem(menu, root, path) {
     this.addContextItem(menu, "Open externally", () => { void this.openFileExternally(root, path); }, "link-external");
+    this.addContextItem(menu, "Open containing folder externally",
+      () => { void this.openFolderExternally(root, this.containingDirectoryPath(path), "containing folder"); }, "folder-opened");
+  }
+
+  addOpenFolderExternallyContextItem(menu, root, path) {
+    this.addContextItem(menu, "Open folder externally", () => { void this.openFolderExternally(root, path); }, "folder-opened");
   }
 
   projectRelativeFilePath(project, root, relativePath) {
@@ -3466,7 +3493,6 @@ class TermdeckApp {
       if (!this.initialLoadComplete) this.showInitialLoadFailure();
       return;
     }
-    this.finishInitialLoadingState();
     const previousSessionListSignature = this.sessionListSignature;
     this.sessions = this.worktreeId === ALL_WORKTREES_ID ? sessions : this.applySessionOrder(sessions);
     this.closedSessions = closed;
@@ -3550,6 +3576,7 @@ class TermdeckApp {
       this.nativeSessionIds = new Set(this.sessions.map((s) => s.session_id));
     }
     this.scheduleTerminalLayoutFit();
+    this.finishInitialLoadingState();
   }
 
   connectStatusStream() {
@@ -3666,24 +3693,42 @@ class TermdeckApp {
   }
 
   showInitialLoadingState() {
-    const emptyState = this.$("empty-state");
-    emptyState.classList.add("loading");
-    emptyState.textContent = "loading TermDeck…";
-    emptyState.style.display = "flex";
+    const loadingState = this.$("initial-loading-state");
+    loadingState.classList.add("loading");
+    loadingState.classList.remove("hidden");
+    loadingState.textContent = "loading TermDeck…";
   }
 
   showInitialLoadFailure() {
-    const emptyState = this.$("empty-state");
-    emptyState.classList.remove("loading");
-    emptyState.textContent = "unable to load TermDeck — retrying…";
-    emptyState.style.display = "flex";
+    const loadingState = this.$("initial-loading-state");
+    loadingState.classList.remove("loading", "hidden");
+    loadingState.textContent = "unable to load TermDeck — retrying…";
   }
 
   finishInitialLoadingState() {
     this.initialLoadComplete = true;
     const emptyState = this.$("empty-state");
-    emptyState.classList.remove("loading");
     emptyState.textContent = "no terminals — press + to open one";
+    const session = this.session(this.activeId);
+    const view = this.views.get(this.activeId);
+    const terminalContentPending = !this.vscodeMode && this.activeFileKey === null && !this.historyOpen &&
+      !!session && !!view && (view.awaitingSnapshot || view.replaying || !view.everConnected);
+    if (terminalContentPending) {
+      const loadingState = this.$("initial-loading-state");
+      loadingState.classList.add("loading");
+      loadingState.classList.remove("hidden");
+      loadingState.textContent = "loading terminal session…";
+      return;
+    }
+    this.finishInitialPageContentLoading();
+  }
+
+  finishInitialPageContentLoading(sessionId = this.activeId) {
+    if (this.initialPageContentReady || sessionId !== this.activeId) return;
+    this.initialPageContentReady = true;
+    const loadingState = this.$("initial-loading-state");
+    loadingState.classList.remove("loading");
+    loadingState.classList.add("hidden");
   }
 
   applySessionStatus(message) {
@@ -3905,12 +3950,12 @@ class TermdeckApp {
     const session = this.session(id);
     if (!icon || !session) return;
     const enabled = this.terminalIconEnabledForAgent(session.agent_kind);
-    icon.classList.toggle("on", enabled);
-    icon.closest(".session-item")?.classList.toggle("terminal-icons-hidden", !enabled);
-    const active = enabled && (!!this.processingStates.get(id) || this.unreadSessions.has(id));
-    const exited = enabled && !session.running;
+    const visible = enabled && !!session.running;
+    icon.classList.toggle("on", visible);
+    icon.closest(".session-item")?.classList.toggle("terminal-icons-hidden", !visible);
+    const active = visible && (!!this.processingStates.get(id) || this.unreadSessions.has(id));
     icon.classList.toggle("terminal-status-active", active);
-    icon.classList.toggle("terminal-status-exited", !active && exited);
+    icon.classList.remove("terminal-status-exited");
   }
 
   triggerSessionAttention(id) {
@@ -4049,7 +4094,7 @@ class TermdeckApp {
         this.usesTextTerminalStatus(s.agent_kind) && presentation.spinning);
       const dot = this.sessionStatusEls.get(s.session_id);
       if (dot) {
-        dot.className = "status-dot" + (s.running ? "" : s.dormant ? " dormant" : " exited") +
+        dot.className = "status-dot" +
           (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "") +
           (this.attentionSessions.has(s.session_id) ? " attention" : "");
       }
@@ -5615,7 +5660,7 @@ class TermdeckApp {
     icon.classList.toggle("claude-terminal-icon", s.agent_kind === "claude");
     icon.classList.toggle("codex-terminal-icon", s.agent_kind === "codex");
     icon.classList.toggle("agy-terminal-icon", s.agent_kind === "agy");
-    icon.classList.toggle("on", this.terminalIconEnabledForAgent(s.agent_kind));
+    icon.classList.toggle("on", this.terminalIconEnabledForAgent(s.agent_kind) && !!s.running);
     return icon;
   }
 
@@ -5706,11 +5751,11 @@ class TermdeckApp {
     item.style.setProperty("--session-age-color", this.terminalAgeColor(s));
     this.sessionRowEls.set(s.session_id, item);
     const presentation = this.titlePresentation(s);
-    const showDesktopBrandIndicator = !this.vscodeMode && this.terminalIconEnabledForAgent(s.agent_kind);
+    const showDesktopBrandIndicator = !this.vscodeMode && !!s.running && this.terminalIconEnabledForAgent(s.agent_kind);
     const useTextStatusIndicator = !this.vscodeMode && !showDesktopBrandIndicator;
     if (useTextStatusIndicator) item.classList.add("terminal-icons-hidden");
     const dot = document.createElement("span");
-    dot.className = "status-dot" + (s.running ? "" : s.dormant ? " dormant" : " exited") +
+    dot.className = "status-dot" +
       (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "") +
       (this.attentionSessions.has(s.session_id) ? " attention" : "");
     this.sessionStatusEls.set(s.session_id, dot);
@@ -5725,9 +5770,7 @@ class TermdeckApp {
     const typeIcon = this.terminalTypeIcon(s);
     const iconStatusActive = showDesktopBrandIndicator &&
       (presentation.spinning || this.unreadSessions.has(s.session_id));
-    const iconStatusExited = showDesktopBrandIndicator && !s.running;
     typeIcon.classList.toggle("terminal-status-active", iconStatusActive);
-    typeIcon.classList.toggle("terminal-status-exited", !iconStatusActive && iconStatusExited);
     const worktreeBadge = document.createElement("span");
     worktreeBadge.className = "worktree-badge";
     if (s.worktree_branch) {
@@ -5750,14 +5793,7 @@ class TermdeckApp {
     item.title = `${item.dataset.baseTitle}\nlast activity ${this.terminalAgeAgoLabel(s)}\n${this.terminalAgeExactTimestamp(s)}`;
     item.onclick = (event) => {
       this.setInteractionWorktreeFromElement(item, s);
-      const currentSession = this.session(s.session_id);
-      const clickedAt = Date.now();
-      const startDormantSession = !!currentSession?.dormant && this.lastDormantSessionClickId === s.session_id &&
-        clickedAt - this.lastDormantSessionClickAt <= 500;
-      this.lastDormantSessionClickId = startDormantSession ? null : s.session_id;
-      this.lastDormantSessionClickAt = startDormantSession ? 0 : clickedAt;
       this.handleSessionRowSelection(event, s.session_id);
-      if (startDormantSession) void this.restartSession(s.session_id);
     };
     item.onfocus = () => {
       if (this.terminalSearchText.trim()) this.terminalSearchFocusIndex = this.terminalSearchRows().indexOf(item);
@@ -8839,7 +8875,6 @@ class TermdeckApp {
         () => this.openModal(null, session.session_id), "add");
       this.addContextItem(menu, this.shortcutLabel("Restart", "restart-terminal"),
         () => this.restartSession(session.session_id), "refresh");
-      this.addContextItem(menu, "Stop", session.running ? () => this.stopSession(session.session_id) : null, "debug-stop");
       const permissions = MODEL_PERMISSIONS[session.agent_kind || "none"] || MODEL_PERMISSIONS.none;
       if (permissions.length > 1) {
         this.addContextSubmenu(menu, "Restart with permission", permissions.map((entry) => ({
@@ -8848,6 +8883,7 @@ class TermdeckApp {
           icon: "refresh",
         })), "refresh");
       }
+      this.addContextItem(menu, "Stop", session.running ? () => this.stopSession(session.session_id) : null, "debug-stop");
       this.addContextItem(menu, this.shortcutLabel("Rename", "rename-terminal"),
         () => this.renameSession(session), "edit");
       this.addContextItem(menu, "Copy session name",
@@ -9101,6 +9137,7 @@ class TermdeckApp {
     const menu = this.$("context-menu");
     menu.textContent = "";
     if (isDir) {
+      this.addOpenFolderExternallyContextItem(menu, this.treeRoot, rel);
       if (ALWAYS_EXCLUDED.includes(name)) {
         this.addContextItem(menu, `"${name}" is always excluded from search`, null);
       } else {
@@ -14357,7 +14394,8 @@ class TermdeckApp {
   }
 
   shouldReconnectIdleClaudeView(view, session, previousId) {
-    if (!view || !session || session.agent_kind !== "claude" || previousId === session.session_id ||
+    if (this.settings.claude_raw_replay_experimental || !view || !session || session.agent_kind !== "claude" ||
+        previousId === session.session_id ||
         view.closed || view.replaying || view.scrollMode !== "follow" || !view.hiddenAt || !view.ws ||
         view.ws.readyState !== WebSocket.OPEN || view.hiddenOutputPending || !session.processing) return false;
     return Date.now() - view.hiddenAt >= TERMINAL_CLAUDE_IDLE_RECONNECT_MS;
@@ -14371,7 +14409,8 @@ class TermdeckApp {
   }
 
   scheduleClaudeInitialReplayRecovery(id, view) {
-    if (!view || view.closed || view.claudeInitialReplayRecoveryAttempted || view.claudeInitialReplayCheckTimer) return;
+    if (this.settings.claude_raw_replay_experimental || !view || view.closed ||
+        view.claudeInitialReplayRecoveryAttempted || view.claudeInitialReplayCheckTimer) return;
     clearTimeout(view.claudeInitialReplayCheckTimer);
     view.claudeInitialReplayCheckTimer = setTimeout(this.recoverClaudeInitialReplay.bind(this, id, view), 900);
   }
@@ -14506,10 +14545,12 @@ class TermdeckApp {
     }
     if (view) {
       this.drainTerminalWrites(view);
+      this.scheduleV2ViewportSync(view);
       this.prepareTerminalForFirstPaint(view);
+      this.scheduleClaudeWebglColdPrimeCompletion(view);
       if (this.isTerminalScrollV2() && !view.userScrollIntent) view.scrollMode = "follow";
       this.refreshTerminalAppearance(view);
-      if (!s?.dormant) {
+      if (options.startDormant !== false) {
         if (this.shouldReconnectIdleClaudeView(view, s, previousId)) this.reconnectIdleClaudeView(view);
         else if (!view.ws) this.connect(id, view);
       }
@@ -14544,12 +14585,12 @@ class TermdeckApp {
         if (view.scrollMode === "preserve" && !needsFreshConnectHandling) {
           // Nothing to do: no fit, no reflow, no repair, no watchdog.
         } else {
-          const forceFit = previousId !== id || this.shouldForceTerminalActivationReflow(view, switchedViews);
+          const forceFit = previousId !== id || this.shouldForceTerminalActivationReflow(view);
           this.scheduleV2Fit(view, { force: forceFit });
           this.scheduleInitialV2Fit(view);
           if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
           this.scheduleTerminalActivationRepair(view, {
-            forceReflow: this.shouldForceTerminalActivationReflow(view, switchedViews),
+            forceReflow: this.shouldForceTerminalActivationReflow(view),
           });
           this.scheduleActiveTerminalSettleWatchdog(view);
         }
@@ -14625,6 +14666,7 @@ class TermdeckApp {
     container.addEventListener("wheel", (event) => {
       const wheelView = this.views.get(id);
       if (wheelView) {
+        wheelView.tallUserScrollIntentPending = true;
         // Stopping the follow has to be IMMEDIATE, and cannot wait for the debounce below. A streaming
         // agent delivers a write every ~20-50ms, and each write while following snaps back to the bottom
         // -- so a scroll-up was being undone within a frame or two, long before the 150ms settle fired,
@@ -14645,13 +14687,10 @@ class TermdeckApp {
         const view = this.views.get(id);
         if (!view) return;
         view.tallWheelActiveUntil = 0;
-        view.tallFollowing = this.tallContainerNearCursor(view);
-        // Captured once here, at the settled position, rather than re-sampled per write: each write used
-        // to snapshot "wherever scrollTop happens to be right now" as its own restore target, so small
-        // incremental drift between rapid keystroke-batches (the browser's scroll-into-view nudge,
-        // individually too small to flip tallFollowing) could still accumulate write over write even while
-        // tallFollowing correctly stayed false throughout -- confirmed live.
-        if (!view.tallFollowing) this.tallCaptureAnchorRow(view);
+        view.tallScrollActiveUntil = 0;
+        this.tallUpdateMaxScrollTop(view);
+        view.tallUserScrollIntentPending = false;
+        this.tallApplySettledScroll(view);
       }, 150);
     }, { passive: true });
     // A hard ceiling, not an intent signal -- unlike the "wheel" listener above, this one never decides
@@ -14689,6 +14728,7 @@ class TermdeckApp {
           scheduleTallSettle();   // moved since scheduling: still in flight, wait for real quiet
           return;
         }
+        const applyUserScrollIntent = settled.tallUserScrollIntentPending === true;
         settled.tallScrollActiveUntil = 0;
         // Refresh the ceiling from the buffer as it is NOW, before enforcing it. It is otherwise only
         // recomputed on writes, so a value latched from a mid-repaint cursor on a session that then goes
@@ -14701,7 +14741,10 @@ class TermdeckApp {
             container.scrollTop > settled.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
           this.tallSetScrollTop(settled, settled.tallMaxScrollTop);
         }
-        this.tallApplySettledScroll(settled);
+        if (applyUserScrollIntent) {
+          settled.tallUserScrollIntentPending = false;
+          this.tallApplySettledScroll(settled);
+        }
       }, TALL_SCROLL_SETTLE_MS);
     };
     // Pointer-held tracking. Registered on the container in capture so a scrollbar interaction counts,
@@ -14712,12 +14755,15 @@ class TermdeckApp {
       window.removeEventListener("pointercancel", releaseTallPointer, true);
       if (!view || view.closed) return;
       view.tallPointerHeld = false;
+      view.tallUserScrollIntentPending = true;
+      view.tallScrollActiveUntil = Date.now() + TALL_SCROLL_ACTIVE_MS;
       scheduleTallSettle();       // now that it is released, let it settle exactly once
     };
     container.addEventListener("pointerdown", () => {
       const view = this.views.get(id);
       if (!view || view.closed) return;
       view.tallPointerHeld = true;
+      view.tallUserScrollIntentPending = true;
       window.addEventListener("pointerup", releaseTallPointer, true);
       window.addEventListener("pointercancel", releaseTallPointer, true);
     }, { capture: true, passive: true });
@@ -14736,7 +14782,9 @@ class TermdeckApp {
       // Marks a gesture as in progress. Writes check this and leave the view completely alone while it is
       // set: a scrollbar drag or an autoscroll keeps producing scroll events, and a write that re-asserts
       // the follow position in the middle of one is what tears the text between two positions.
-      view.tallScrollActiveUntil = Date.now() + TALL_SCROLL_ACTIVE_MS;
+      if (view.tallUserScrollIntentPending) {
+        view.tallScrollActiveUntil = Date.now() + TALL_SCROLL_ACTIVE_MS;
+      }
       // The scroll position is the buffer position in this mode, so it has to be honoured immediately
       // rather than waiting for the gesture to settle -- the rendered window is what makes the scroll
       // visible at all.
@@ -14863,15 +14911,22 @@ class TermdeckApp {
     // mode takes the tallest height the GPU can back and the DOM mode, which has no texture limit at all,
     // is what buys the full 1000 rows.
     const cellHeight = term._core?._renderService?.dimensions?.css?.cell?.height || 17;
-    const rowPlan = this.tallRowPlan(cellHeight);
+    const targetRowPlan = this.tallRowPlan(cellHeight);
+    const claudeWebglColdPrime = targetRowPlan.webgl && !targetRowPlan.virtual && this.session(id)?.agent_kind === "claude";
+    const rowPlan = claudeWebglColdPrime ? { rows: TALL_ROWS_DOM, webgl: false } : targetRowPlan;
 
     inner.style.height = `${Math.round(rowPlan.rows * cellHeight)}px`;
-    if (rowPlan.webgl) this.enableWebglRenderer(term);
+    if (rowPlan.webgl) this.enableWebglRenderer(term, container);
     term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
     const view = { sessionId: id, container, term, fit, terminalFindAddon, tallRows: rowPlan.rows,
                    terminalFindResultIndex: -1,
                    terminalFindResultCount: 0, terminalFindResultListener: null,
                    tallWebgl: rowPlan.webgl,
+                   virtualWebglAddon: term.__termdeckVirtualWebglAddon || null,
+                   claudeWebglColdPrimePending: claudeWebglColdPrime,
+                   claudeWebglColdPrimeTargetRows: claudeWebglColdPrime ? targetRowPlan.rows : 0,
+                   claudeWebglColdPrimeStartedAt: 0, claudeWebglColdPrimeLastOutputAt: 0,
+                   claudeWebglColdPrimeTimer: 0, claudeWebglColdPrimeCompleting: false,
                    ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
                    replaying: false, pasting: false, suppressReconnect: false, cliTitle: null, pinBottomUntil: 0,
                    programmaticScrollUntil: 0, programmaticScrollGeneration: 0, scrollSettleTimer: 0,
@@ -14887,13 +14942,14 @@ class TermdeckApp {
                    v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
                    forceResizeAfterFit: true, initialSnapshotPainted: false, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
                    suppressResizeToServer: false, resyncResizeRepairPending: false,
-                   hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
+                   hiddenAt: 0, lastShownAt: 0,
                    tailRepairFrame: 0, tailRepairTimer: 0, tailRepairConfirmTimer: 0,
                    activationRepairFrame: 0, tailRepairSignature: "", lastRenderRepairAt: 0,
                    renderedRows: [], renderedViewportY: null, renderedCols: 0, renderedTermRows: 0,
                    renderRepairArmed: true, renderObserver: null,
                    viewportAnchorRestore: null, viewportAnchorRestoreTimer: 0,
                    lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [], codexReflowFollowupTimers: [],
+                   tallGeometrySettleTimer: 0, tallGeometrySettleAt: 0,
                    preserveRowsFromBottom: 0, reconnectReset: false,
                    promptDraft: this.session(id)?.draft || "", markdownPromptDraft: this.markdownPromptDraftForSession(id),
                    promptPaste: false, promptEscape: "", promptEditing: false,
@@ -15142,6 +15198,96 @@ class TermdeckApp {
     return view;
   }
 
+  startClaudeWebglColdPrime(view) {
+    if (!view?.claudeWebglColdPrimePending || view.claudeWebglColdPrimeStartedAt) return;
+    const now = Date.now();
+    view.claudeWebglColdPrimeStartedAt = now;
+    view.claudeWebglColdPrimeLastOutputAt = now;
+    this.scheduleClaudeWebglColdPrimeCompletion(view);
+  }
+
+  noteClaudeWebglColdPrimeOutput(view) {
+    if (!view?.claudeWebglColdPrimePending || !view.claudeWebglColdPrimeStartedAt) return;
+    view.claudeWebglColdPrimeLastOutputAt = Date.now();
+    this.scheduleClaudeWebglColdPrimeCompletion(view);
+  }
+
+  scheduleClaudeWebglColdPrimeCompletion(view) {
+    clearTimeout(view?.claudeWebglColdPrimeTimer);
+    if (!view?.claudeWebglColdPrimePending || !view.claudeWebglColdPrimeStartedAt || view.closed ||
+        !view.container.classList.contains("visible") || this.historyOpen || this.activeFileKey !== null ||
+        view.sessionId !== this.activeId) return;
+    const now = Date.now();
+    const quietReadyAt = Math.max(view.claudeWebglColdPrimeStartedAt + CLAUDE_WEBGL_COLD_PRIME_MIN_MS,
+      view.claudeWebglColdPrimeLastOutputAt + CLAUDE_WEBGL_COLD_PRIME_IDLE_MS);
+    const deadline = view.claudeWebglColdPrimeStartedAt + CLAUDE_WEBGL_COLD_PRIME_MAX_MS;
+    const delay = Math.max(0, Math.min(quietReadyAt, deadline) - now);
+    view.claudeWebglColdPrimeTimer = setTimeout(() => this.completeClaudeWebglColdPrime(view), delay);
+  }
+
+  completeClaudeWebglColdPrime(view) {
+    view.claudeWebglColdPrimeTimer = 0;
+    if (!view.claudeWebglColdPrimePending || view.claudeWebglColdPrimeCompleting || view.closed ||
+        !view.container.classList.contains("visible") || this.historyOpen || this.activeFileKey !== null ||
+        view.sessionId !== this.activeId) return;
+    const now = Date.now();
+    const beforeDeadline = now < view.claudeWebglColdPrimeStartedAt + CLAUDE_WEBGL_COLD_PRIME_MAX_MS;
+    const minimumElapsed = now >= view.claudeWebglColdPrimeStartedAt + CLAUDE_WEBGL_COLD_PRIME_MIN_MS;
+    const outputQuiet = now >= view.claudeWebglColdPrimeLastOutputAt + CLAUDE_WEBGL_COLD_PRIME_IDLE_MS;
+    if ((beforeDeadline && (!minimumElapsed || !outputQuiet)) || view.awaitingSnapshot || view.replaying ||
+        view.outputWriteInFlight || view.outputQueue.length) {
+      view.claudeWebglColdPrimeTimer = setTimeout(
+        () => this.completeClaudeWebglColdPrime(view), CLAUDE_WEBGL_COLD_PRIME_RETRY_MS);
+      return;
+    }
+    view.claudeWebglColdPrimeCompleting = true;
+    const buffer = view.term.buffer.active;
+    const screenStart = Number(buffer.baseY || 0);
+    const screenEnd = Math.min(buffer.length, screenStart + view.term.rows);
+    let lastContentRow = Number(buffer.cursorY || 0);
+    for (let row = screenEnd - 1; row >= screenStart; row -= 1) {
+      if (!buffer.getLine(row)?.translateToString(true).trim()) continue;
+      lastContentRow = row - screenStart;
+      break;
+    }
+    view.term.write(`\x1b[${Math.max(1, lastContentRow + 1)};1H`, () => this.finishClaudeWebglColdPrime(view));
+  }
+
+  finishClaudeWebglColdPrime(view) {
+    if (!view.claudeWebglColdPrimePending || view.closed) return;
+    clearTimeout(view.claudeWebglColdPrimeTimer);
+    view.claudeWebglColdPrimeTimer = 0;
+    const targetRows = Math.max(2, Number(view.claudeWebglColdPrimeTargetRows || 0));
+    const cols = Math.max(2, view.term.cols);
+    const repaintAfterFullClaudeReplay = view.fullClaudeRawReplayConnection === true;
+    view.fullClaudeRawReplayConnection = false;
+    view.claudeWebglColdPrimePending = false;
+    view.claudeWebglColdPrimeCompleting = false;
+    view.claudeInitialReplayRecoveryAttempted = true;
+    view.suppressResizeToServer = true;
+    view.tallRows = targetRows;
+    view.term.resize(cols, targetRows);
+    view.tallWebgl = this.enableWebglRenderer(view.term, view.container);
+    view.virtualWebglAddon = view.term.__termdeckVirtualWebglAddon || null;
+    if (!view.tallWebgl) {
+      view.tallRows = TALL_ROWS_DOM;
+      view.term.resize(cols, TALL_ROWS_DOM);
+    }
+    view.suppressResizeToServer = false;
+    this.tallApplyGeometry(view);
+    this.tallUpdateMaxScrollTop(view);
+    if (view.tallFollowing !== false) this.scrollTallContainerToCursor(view);
+    this.refreshTerminalAppearance(view);
+    this.sendResize(view, view.term.cols, view.term.rows, true, repaintAfterFullClaudeReplay);
+    if (repaintAfterFullClaudeReplay && view.ws?.readyState === WebSocket.OPEN) {
+      view.term.write("\x1b[2J\x1b[H", () => {
+        if (!view.closed && view.ws?.readyState === WebSocket.OPEN) {
+          view.ws.send(JSON.stringify({ type: "repaint" }));
+        }
+      });
+    }
+  }
+
   prepareTerminalForFirstPaint(view) {
     if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
     const rect = view.container.getBoundingClientRect();
@@ -15168,17 +15314,18 @@ class TermdeckApp {
     view.suppressReconnect = false;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const hasPopulatedBuffer = view.everConnected && !view.closed && view.term?.buffer?.active?.baseY > 0;
-    // The server's SIGWINCH repaint is what rebuilds an agent's screen on reattach, so a client that
-    // already holds a populated buffer asks it to skip; an empty one always wants the repaint.
-    // screen_repaint=0 tells the server to skip its SIGWINCH nudge, which is the repaint that actually
-    // makes an agent redraw. With the switch off we never ask for it.
+    // A fresh client has no trustworthy terminal screen after a server restart. Ask the live agent to
+    // repaint it; a reconnect that already has a populated xterm buffer can skip the SIGWINCH nudge.
     const screenRepaint = hasPopulatedBuffer ? 0 : 1;
     const haveBuffer = hasPopulatedBuffer ? 1 : 0;
+    const fullClaudeRawReplay = !hasPopulatedBuffer && this.settings.claude_full_raw_replay_experimental &&
+      this.session(id)?.agent_kind === "claude" ? 1 : 0;
     // repaint_preserved_buffer is deliberately not sent: it only ever meant "this client restored a
     // client-side snapshot, so make the agent repaint over it", and that snapshot path is gone. The
     // server defaults the flag to false when the parameter is absent.
-    const ws = new WebSocket(`${proto}://${location.host}/ws/${id}?screen_repaint=${screenRepaint}&have_buffer=${haveBuffer}`);
+    const ws = new WebSocket(`${proto}://${location.host}/ws/${id}?screen_repaint=${screenRepaint}&have_buffer=${haveBuffer}&full_claude_raw_replay=${fullClaudeRawReplay}`);
     ws.binaryType = "arraybuffer";
+    view.fullClaudeRawReplayConnection = fullClaudeRawReplay === 1;
     view.preserveBufferOnReconnect = haveBuffer === 1;
     view.awaitingSnapshot = true;
     view.replaying = false;
@@ -15222,7 +15369,8 @@ class TermdeckApp {
       // onResize callback could not send the resulting dimensions to the
       // PTY. Always send the currently fitted size once the socket is ready.
       if (view.term.cols >= 2 && view.term.rows >= 2) {
-        this.sendResize(view, view.term.cols, view.term.rows);
+        this.sendResize(view, view.term.cols, view.term.rows, false,
+          view.claudeWebglColdPrimePending && view.fullClaudeRawReplayConnection);
       }
       this.flushPromptSync(view);
       this.dispatchNextMarkdownPrompt(view);
@@ -15231,6 +15379,7 @@ class TermdeckApp {
     ws.onmessage = (e) => {
       if (typeof e.data === "string") { this.handleControl(id, view, JSON.parse(e.data)); return; }
       view.lastTerminalOutputAt = Date.now();
+      this.noteClaudeWebglColdPrimeOutput(view);
       if (view.pendingAgentPaste) this.schedulePendingAgentPaste(view, AGENT_PASTE_OUTPUT_QUIET_MS);
       // xterm's buffer continues to process output while an inactive tab is
       // display:none, but its browser viewport has zero height. Remember that
@@ -15264,6 +15413,7 @@ class TermdeckApp {
         this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
           this.refreshTerminal(view);
           view.replaying = false;
+          this.finishInitialPageContentLoading(id);
           // Replay finished, so the cursor finally describes the real screen: take the geometry and the
           // follow position from it once, rather than from every intermediate frame.
           this.tallUpdateMaxScrollTop(view);
@@ -15274,7 +15424,8 @@ class TermdeckApp {
           // buffer already holds the screen and repainting is what causes the flicker.
           this.requestRepaintIfBlank(view);
           this.schedulePendingAgentPaste(view);
-          if (!view.reconnectReset && this.session(id)?.agent_kind === "claude") {
+          if (!view.reconnectReset && this.session(id)?.agent_kind === "claude" &&
+              !view.claudeWebglColdPrimePending) {
             this.scheduleClaudeInitialReplayRecovery(id, view);
           }
           if (v2 && view.container.classList.contains("visible")) {
@@ -15345,6 +15496,13 @@ class TermdeckApp {
       });
     };
     ws.onclose = () => {
+      clearTimeout(view.claudeWebglColdPrimeTimer);
+      view.claudeWebglColdPrimeTimer = 0;
+      if (view.claudeWebglColdPrimePending) {
+        view.claudeWebglColdPrimeStartedAt = 0;
+        view.claudeWebglColdPrimeLastOutputAt = 0;
+        view.claudeWebglColdPrimeCompleting = false;
+      }
       const reconnectAfterClose = view.reconnectAfterClose;
       view.reconnectAfterClose = false;
       view.ws = null;
@@ -15421,15 +15579,49 @@ class TermdeckApp {
   }
 
   handleControl(id, view, msg) {
+    if (msg.type === "terminal_reset") {
+      view.scrollMode = "follow";
+      view.userScrollIntent = false;
+      view.manualScroll = false;
+      view.keepBottom = true;
+      view.preserveRowsFromBottom = 0;
+      view.needsViewportRepair = false;
+      this.tallResetScrollState(view);
+      return;
+    }
     if (msg.type === "resize_rejected") {
+      const restoreFollowingPosition = view.scrollMode === "follow" && view.tallFollowing !== false;
+      const terminalSizeChanged = view.term.cols !== msg.cols || view.term.rows !== msg.rows;
       // Another window already owns this terminal's size. Stop pushing ours -- a pty has one size, and
       // two windows disagreeing means one of them renders at a width its screen does not have, wrapping
       // lines and painting redraws over themselves. Adopt the real size so this window renders correctly
       // too, and offer the swap explicitly rather than taking it.
       view.suppressResizeToServer = true;
       view.sizeOwnedElsewhere = { cols: msg.cols, rows: msg.rows };
-      if (view.term.cols !== msg.cols || view.term.rows !== msg.rows) {
+      if (terminalSizeChanged) {
         try { view.term.resize(msg.cols, msg.rows); } catch (resizeError) { /* geometry not ready yet */ }
+      }
+      if (view.claudeWebglColdPrimePending) {
+        clearTimeout(view.claudeWebglColdPrimeTimer);
+        view.claudeWebglColdPrimeTimer = 0;
+        view.claudeWebglColdPrimePending = false;
+        view.claudeWebglColdPrimeCompleting = false;
+        view.tallRows = Math.max(2, Number(msg.rows || view.term.rows));
+        const webglRows = Math.max(2, Number(view.claudeWebglColdPrimeTargetRows || 0));
+        view.tallWebgl = view.tallRows <= webglRows && this.enableWebglRenderer(view.term, view.container);
+        view.virtualWebglAddon = view.term.__termdeckVirtualWebglAddon || null;
+      }
+      if (restoreFollowingPosition && terminalSizeChanged) {
+        view.tallMaxScrollTop = null;
+        view.tallCeilingShrinkSince = null;
+        view.tallInnerHeight = 0;
+        view.tallShrinkTarget = null;
+      }
+      this.tallApplyGeometry(view);
+      this.tallUpdateMaxScrollTop(view);
+      if (restoreFollowingPosition) {
+        view.tallFollowing = true;
+        this.scrollTallContainerToCursor(view);
       }
       this.updateSizeOwnershipIndicator(view);
       return;
@@ -15620,15 +15812,16 @@ class TermdeckApp {
     return document.visibilityState === "visible" && document.hasFocus();
   }
 
-  sendResize(view, cols, rows, force = false) {
+  sendResize(view, cols, rows, resend = false, takeOwnership = false) {
     if (this.sidebarResizeInProgress || view.suppressResizeToServer || !this.terminalPageCanResize() ||
         view.closed || view.sessionId !== this.activeId || !view.container.classList.contains("visible") ||
         this.activeFileKey !== null || this.historyOpen) return;
     if (view.ws && view.ws.readyState === WebSocket.OPEN &&
-        (force || view.lastSentCols !== cols || view.lastSentRows !== rows)) {
+        (resend || view.lastSentCols !== cols || view.lastSentRows !== rows)) {
       view.lastSentCols = cols;
       view.lastSentRows = rows;
-      view.ws.send(JSON.stringify({ type: "resize", cols, rows }));
+      view.ws.send(JSON.stringify({ type: "resize", cols, rows, force: takeOwnership }));
+      if (view.claudeWebglColdPrimePending && rows === TALL_ROWS_DOM) this.startClaudeWebglColdPrime(view);
     }
   }
 
@@ -15788,14 +15981,18 @@ class TermdeckApp {
       view.resyncResizeRepairPending = true;
       this.scheduleTerminalResizeRepair(view);
     }
-    this.applySettings();
+    view.suppressResizeToServer = true;
+    view.sizeOwnedElsewhere = null;
+    this.updateSizeOwnershipIndicator(view);
+    this.applySettings({ fitTerminals: false });
+    this.tallFit(view);
+    const takeoverCols = view.term.cols;
+    const takeoverRows = view.term.rows;
     this.$("status-name").textContent = "resyncing terminal…";
     // Explicit user action, so this is the one place allowed to take the size from another window.
     view.suppressResizeToServer = false;
-    view.sizeOwnedElsewhere = null;
-    this.updateSizeOwnershipIndicator(view);
-    if (view.ws && view.ws.readyState === WebSocket.OPEN && view.term.cols >= 2) {
-      view.ws.send(JSON.stringify({ type: "resize", cols: view.term.cols, rows: view.term.rows, force: true }));
+    if (view.ws && view.ws.readyState === WebSocket.OPEN && takeoverCols >= 2 && takeoverRows >= 2) {
+      view.ws.send(JSON.stringify({ type: "resize", cols: takeoverCols, rows: takeoverRows, force: true }));
     }
     const ws = view.ws;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -16117,36 +16314,31 @@ class TermdeckApp {
   scheduleV2ViewportSync(view) {
     if (!view || view.closed || view.v2ViewportSyncFrame || !view.hiddenOutputPending ||
         !view.container.classList.contains("visible")) return;
-    view.v2ViewportSyncFrame = requestAnimationFrame(() => {
-      view.v2ViewportSyncFrame = 0;
-      if (view.closed || !view.hiddenOutputPending || !view.container.classList.contains("visible")) return;
-      view.hiddenOutputPending = false;
-      // The tall container needs its own catch-up: the ceiling cannot move while the pane is hidden (a
-      // hidden pane has no height to measure against, so writes deliberately decide nothing), which
-      // leaves it describing the content as of when the tab was left. Refreshing it here is what lets a
-      // following view reach output that arrived meanwhile, and a parked reader scroll down to it.
-      this.tallUpdateMaxScrollTop(view);
-      if (view.scrollMode === "follow") {
-        this.scrollTerminalV2ToBottom(view);
-        if (view.tallFollowing !== false) this.scrollTallContainerToCursor(view);
-        return;
-      }
-      const buffer = view.term.buffer.active;
-      const target = buffer.viewportY;
-      if (buffer.baseY <= 0) return;
-      // While the element was display:none, xterm advanced its logical
-      // viewport but the DOM scrollbar retained its old geometry. Nudge one
-      // logical line, then restore the exact line. Both calls are public
-      // xterm APIs, preserve a reader's position, and avoid the old fake
-      // resize/direct-scroll repair paths that caused tab-switch jumps.
-      const nudge = target < buffer.baseY ? target + 1 : Math.max(0, target - 1);
-      if (nudge === target) return;
-      view.v2Programmatic = true;
-      view.term.scrollToLine(nudge);
-      view.term.scrollToLine(target);
-      queueMicrotask(() => {
-        if (!view.closed) view.v2Programmatic = false;
+    if (view.outputWriteInFlight || view.outputQueue.length || view.replaying || view.awaitingSnapshot ||
+        !view.container.clientHeight || !view.term._core?._renderService?.dimensions?.css?.cell?.height) {
+      view.v2ViewportSyncFrame = requestAnimationFrame(() => {
+        view.v2ViewportSyncFrame = 0;
+        this.scheduleV2ViewportSync(view);
       });
+      return;
+    }
+    this.tallUpdateMaxScrollTop(view, true);
+    view.hiddenOutputPending = false;
+    if (view.scrollMode === "follow") {
+      this.scrollTerminalV2ToBottom(view);
+      if (view.tallFollowing !== false) this.scrollTallContainerToCursor(view);
+      return;
+    }
+    const buffer = view.term.buffer.active;
+    const target = buffer.viewportY;
+    if (buffer.baseY <= 0) return;
+    const nudge = target < buffer.baseY ? target + 1 : Math.max(0, target - 1);
+    if (nudge === target) return;
+    view.v2Programmatic = true;
+    view.term.scrollToLine(nudge);
+    view.term.scrollToLine(target);
+    queueMicrotask(() => {
+      if (!view.closed) view.v2Programmatic = false;
     });
   }
 
@@ -16402,15 +16594,10 @@ class TermdeckApp {
     return true;
   }
 
-  shouldForceTerminalActivationReflow(view, switchedViews) {
+  shouldForceTerminalActivationReflow(view) {
     if (!view || view.closed || !this.isTerminalScrollV2() ||
         !view.container.classList.contains("visible")) return false;
-    const now = Date.now();
-    if (now - (view.lastActivationReflowAt || 0) < TERMINAL_ACTIVATION_REFLOW_IDLE_MS) return false;
-    if (view.forceResizeAfterFit || !view.lastActivationReflowAt) return true;
-    if (!switchedViews) return false;
-    const hiddenFor = view.hiddenAt ? now - view.hiddenAt : Number.POSITIVE_INFINITY;
-    return hiddenFor >= TERMINAL_ACTIVATION_REFLOW_IDLE_MS;
+    return view.initialSnapshotPainted && view.forceResizeAfterFit;
   }
 
   // Re-measures and force-resends a terminal's size at several points after it becomes active,
@@ -16489,12 +16676,8 @@ class TermdeckApp {
         if (view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return;
         if (view.outputWriteInFlight && generation !== view.outputWriteGeneration) return;
         const repaired = this.repairTerminalRenderIfStale(view);
-        if (repaired) {
-          view.lastActivationReflowAt = Date.now();
-          return;
-        }
+        if (repaired) return;
         if (forceReflow) {
-          view.lastActivationReflowAt = Date.now();
           view.forceResizeAfterFit = true;
           this.scheduleV2Fit(view);
         }
@@ -16752,15 +16935,6 @@ class TermdeckApp {
     return Math.min(bottomTarget, this.tallFollowCursorCap(view, cellHeight));
   }
 
-  tallContainerNearCursor(view) {
-    const inner = view.container.querySelector(".term-inner");
-    if (!inner) return true;
-    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-    if (!cellHeight) return true;
-    return Math.abs(view.container.scrollTop - this.tallFollowTarget(view, cellHeight)) <= 24;
-  }
-
-
   // `userSettled` marks a placement that ends a user gesture rather than reacting to output. The
   // difference matters only between the cursor cap and the ceiling -- a popup's overflow: a user who
   // scrolled down there chose that position and a settle must not drag them back up to the cap, while a
@@ -16844,6 +17018,7 @@ class TermdeckApp {
   // user scrolled away to read something" to preserve.
   tallResetScrollState(view) {
     if (!view) return;
+    this.cancelTallGeometrySettle(view);
     view.tallMaxScrollTop = null;
     view.tallAnchorRow = null;
     view.tallPinnedViewportY = null;
@@ -16851,6 +17026,39 @@ class TermdeckApp {
     view.tallFollowing = true;
     this.tallReleaseAnchorMarker(view);
     this.tallSetScrollTop(view, 0);
+  }
+
+  cancelTallGeometrySettle(view) {
+    if (!view) return;
+    clearTimeout(view.tallGeometrySettleTimer);
+    view.tallGeometrySettleTimer = 0;
+    view.tallGeometrySettleAt = 0;
+  }
+
+  scheduleTallGeometrySettle(view, delay) {
+    if (!view || view.closed) return;
+    const settleDelay = Math.max(0, Number(delay) || 0);
+    const settleAt = Date.now() + settleDelay;
+    if (view.tallGeometrySettleTimer && view.tallGeometrySettleAt <= settleAt) return;
+    this.cancelTallGeometrySettle(view);
+    view.tallGeometrySettleAt = settleAt;
+    view.tallGeometrySettleTimer = setTimeout(() => {
+      view.tallGeometrySettleTimer = 0;
+      view.tallGeometrySettleAt = 0;
+      if (view.closed || view.replaying || !view.container.classList.contains("visible")) return;
+      const userScrolling = view.tallPointerHeld ||
+        Date.now() < Math.max(view.tallWheelActiveUntil || 0, view.tallScrollActiveUntil || 0);
+      if (userScrolling) {
+        this.scheduleTallGeometrySettle(view, TALL_SCROLL_SETTLE_MS);
+        return;
+      }
+      const following = view.tallFollowing !== false;
+      this.tallUpdateMaxScrollTop(view, true);
+      if (following && view.tallFollowing !== false) {
+        this.scrollTallContainerToCursor(view);
+        this.tallApplyGeometry(view);
+      }
+    }, settleDelay);
   }
 
   // Markers live in the terminal's buffer and are updated on every trim, so a stale one is both a leak
@@ -16904,8 +17112,15 @@ class TermdeckApp {
     // Reaching the bottom has to undo the parked state completely, xterm's viewport included: while
     // parked it sits deliberately short of baseY, and a stale pin there is precisely what made the last
     // lines unreachable. scrollTallContainerToCursor restores it and clears the pin.
-    if (atBottom) this.scrollTallContainerToCursor(view, true);
-    else this.tallCaptureAnchorRow(view);
+    if (atBottom) {
+      view.scrollMode = "follow";
+      view.userScrollIntent = false;
+      this.scrollTallContainerToCursor(view, true);
+    } else {
+      view.scrollMode = "preserve";
+      view.userScrollIntent = true;
+      this.tallCaptureAnchorRow(view);
+    }
   }
 
   // What the user is reading is a LINE, not a pixel offset, and in this layout those are not the same
@@ -17024,7 +17239,7 @@ class TermdeckApp {
   // view is currently following. Updating it even while not following matters: content keeps growing while
   // the user has scrolled away to read history, and the ceiling has to grow with it, or scrolling back down
   // later would stop short of the actual new bottom.
-  tallUpdateMaxScrollTop(view) {
+  tallUpdateMaxScrollTop(view, settling = false) {
     // A replay is not a stream of finished screens. Reattaching replays the saved buffer and the agent
     // repaints over it, so the cursor lands wherever each escape sequence leaves it -- and deriving the
     // content bottom from that cursor makes the bottom, and the view chasing it, lurch. Measured on a
@@ -17054,9 +17269,12 @@ class TermdeckApp {
     // 1728x1080: all 446 attempts were skipped, the ceiling was never established at all, and the view
     // sat at the very top with ~950 rows below the fold. So it may delay an update, never the first
     // value, and never more than a few in a row.
-    if (this.tallCursorRegionMostlyBlank(view)) {
+    if (!settling && this.tallCursorRegionMostlyBlank(view)) {
       view.tallBlankSkips = (view.tallBlankSkips || 0) + 1;
-      if (view.tallMaxScrollTop != null && view.tallBlankSkips <= TALL_MAX_BLANK_SKIPS) return;
+      if (view.tallMaxScrollTop != null && view.tallBlankSkips <= TALL_MAX_BLANK_SKIPS) {
+        this.scheduleTallGeometrySettle(view, TALL_SCROLL_SETTLE_MS);
+        return false;
+      }
     }
     view.tallBlankSkips = 0;
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
@@ -17094,11 +17312,16 @@ class TermdeckApp {
     if (current == null || next >= current) {
       view.tallMaxScrollTop = next;
       view.tallCeilingShrinkSince = null;
+      this.cancelTallGeometrySettle(view);
     } else {
       if (view.tallCeilingShrinkSince == null) view.tallCeilingShrinkSince = Date.now();
-      if (Date.now() - view.tallCeilingShrinkSince >= TALL_SHRINK_SETTLE_MS) {
+      const shrinkElapsed = Date.now() - view.tallCeilingShrinkSince;
+      if (shrinkElapsed >= TALL_SHRINK_SETTLE_MS) {
         view.tallMaxScrollTop = next;
         view.tallCeilingShrinkSince = null;
+        this.cancelTallGeometrySettle(view);
+      } else {
+        this.scheduleTallGeometrySettle(view, TALL_SHRINK_SETTLE_MS - shrinkElapsed);
       }
     }
     this.tallApplyGeometry(view);
@@ -17396,6 +17619,8 @@ class TermdeckApp {
     clearTimeout(view.promptDraftSyncDebounceTimer);
     clearTimeout(view.pendingAgentPasteTimer);
     clearTimeout(view.inactiveOutputDrainTimer);
+    clearTimeout(view.claudeWebglColdPrimeTimer);
+    this.cancelTallGeometrySettle(view);
     this.cancelTerminalViewportRestore(view);
     for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
     if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
@@ -17451,6 +17676,13 @@ class TermdeckApp {
       if (migratedExcludeGlob) incoming.excluded_file_glob = legacyExcludeGlob;
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
       this.persistedSettings = this.copySettings(this.settings);
+      const claudeFullReplaySettingsChanged = this.settings.claude_full_raw_replay_experimental &&
+        (!this.settings.claude_raw_replay_experimental || !this.settings.tall_webgl || this.settings.virtual_tall_webgl);
+      if (this.settings.claude_full_raw_replay_experimental) {
+        this.settings.claude_raw_replay_experimental = true;
+        this.settings.virtual_tall_webgl = false;
+        this.settings.tall_webgl = true;
+      }
       this.filesPanelWidthInitialized = !!this.settings.files_panel_width_initialized;
       this.lastFilesSidePanelTab = FILES_SIDE_PANEL_TABS.includes(this.settings.files_side_panel_last_tab)
         ? this.settings.files_side_panel_last_tab : "project";
@@ -17466,7 +17698,7 @@ class TermdeckApp {
       this.settings.excluded_file_glob = normalizedExcludedGlob;
       this.settings.hide_dot_folders = excludedTokens.includes("!.*");
       this.syncLegacySearchGlob();
-      if (migratedFileGlobSettings || migratedExcludeGlob || excludedGlobChanged) this.saveSettings();
+      if (migratedFileGlobSettings || migratedExcludeGlob || excludedGlobChanged || claudeFullReplaySettingsChanged) this.saveSettings();
     } catch (err) {
       this.settings = { ...SETTINGS_DEFAULTS };
       this.persistedSettings = this.copySettings(this.settings);
@@ -18348,8 +18580,30 @@ class TermdeckApp {
     // Experiment switch: see tallRowPlan(). GPU rendering, at the cost of a much shorter scrollable
     // canvas -- the whole trade is explained there.
     pop.appendChild(this.buildToggleRow("WebGL renderer (reload)",
-      () => (this.tallWebglEnabled() ? "on" : "off"),
-      () => { this.settings.tall_webgl = !this.tallWebglEnabled(); }));
+      () => (this.standardTallWebglEnabled() ? "on" : "off"),
+      () => {
+        this.settings.tall_webgl = !this.standardTallWebglEnabled();
+        if (this.settings.tall_webgl) this.settings.virtual_tall_webgl = false;
+      }));
+    pop.appendChild(this.buildToggleRow("Virtual 4K WebGL (experimental, reload)",
+      () => (this.virtualTallWebglEnabled() ? "on" : "off"),
+      () => {
+        this.settings.virtual_tall_webgl = !this.virtualTallWebglEnabled();
+        if (this.settings.virtual_tall_webgl) this.settings.tall_webgl = false;
+      }));
+    pop.appendChild(this.buildToggleRow("Claude .bin replay (experimental)",
+      () => (this.settings.claude_raw_replay_experimental ? "on" : "off"),
+      () => { this.settings.claude_raw_replay_experimental = !this.settings.claude_raw_replay_experimental; }));
+    pop.appendChild(this.buildToggleRow("Claude full .bin history + WebGL (experimental, reload)",
+      () => (this.settings.claude_full_raw_replay_experimental ? "on" : "off"),
+      () => {
+        this.settings.claude_full_raw_replay_experimental = !this.settings.claude_full_raw_replay_experimental;
+        if (this.settings.claude_full_raw_replay_experimental) {
+          this.settings.claude_raw_replay_experimental = true;
+          this.settings.virtual_tall_webgl = false;
+          this.settings.tall_webgl = true;
+        }
+      }));
     pop.appendChild(this.buildToggleRow("Pause inactive terminal rendering (experimental)",
       () => (this.deferInactiveTerminalOutputEnabled() ? "on" : "off"),
       () => { this.settings.defer_inactive_terminal_output = !this.deferInactiveTerminalOutputEnabled(); },
@@ -18681,7 +18935,7 @@ class TermdeckApp {
     const inner = view.container.querySelector(".term-inner");
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
     if (!inner || !cellHeight) return;
-    if (view.tallWebgl) this.syncWebglCanvasToDevicePixels(view);
+    if (view.tallWebgl && !view.virtualWebglAddon) this.syncWebglCanvasToDevicePixels(view);
     const whole = this.wholeBufferScrollEnabled();
     const fullPx = Math.round((view.term.rows || TALL_ROWS_DOM) * cellHeight);
     if (view.term.element && view.term.element.style.height !== `${fullPx}px`) {
@@ -18715,6 +18969,8 @@ class TermdeckApp {
       const settled = Date.now() - (view.tallShrinkSince || 0) >= TALL_SHRINK_SETTLE_MS;
       const keepScrollValid = Math.ceil(view.container.scrollTop + (view.container.clientHeight || 0));
       height = settled ? Math.max(desired, Math.min(current, keepScrollValid)) : current;
+      if (!settled) this.scheduleTallGeometrySettle(
+        view, TALL_SHRINK_SETTLE_MS - (Date.now() - (view.tallShrinkSince || 0)));
     } else {
       view.tallShrinkTarget = null;
     }
@@ -18765,6 +19021,9 @@ class TermdeckApp {
       if (active) {
         button.title = `Another window is using this terminal at ${owned.cols} columns. Click to resize it to this window.`;
         button.setAttribute("aria-label", button.title);
+      } else {
+        button.title = "Resync terminal content";
+        button.setAttribute("aria-label", button.title);
       }
     }
     if (active) {
@@ -18780,7 +19039,15 @@ class TermdeckApp {
   // moving the buffer viewport that much sooner. Search, selection and how far back you can reach are
   // unaffected: they read the 20,000-line buffer, not the rendered rows.
   tallWebglEnabled() {
+    return this.standardTallWebglEnabled() || this.virtualTallWebglEnabled();
+  }
+
+  standardTallWebglEnabled() {
     return this.settings.tall_webgl === true;
+  }
+
+  virtualTallWebglEnabled() {
+    return this.settings.virtual_tall_webgl === true;
   }
 
   deferInactiveTerminalOutputEnabled() {
@@ -18827,6 +19094,11 @@ class TermdeckApp {
     }
     const wanted = `${offset}px`;
     if (element.style.top !== wanted) element.style.top = wanted;
+    const virtualAddon = view.virtualWebglAddon || view.term.__termdeckVirtualWebglAddon;
+    if (virtualAddon) {
+      const absoluteTopRow = Math.floor(view.container.scrollTop / cellHeight);
+      virtualAddon.setLogicalRowOffset(absoluteTopRow - Number(view.term.buffer.active.viewportY || 0));
+    }
   }
 
   // Maps a scroll position onto the buffer: the top of the box is row 0, the bottom is the newest line.
@@ -18844,21 +19116,33 @@ class TermdeckApp {
   }
 
   tallRowPlan(cellHeight) {
+    if (this.virtualTallWebglEnabled()) return { rows: TALL_ROWS_DOM, webgl: true, virtual: true };
     if (!this.tallWebglEnabled()) return { rows: TALL_ROWS_DOM, webgl: false };
     const safeRows = this.maxWebglSafeRows(cellHeight);
     if (safeRows < TALL_ROWS_MIN_FOR_WEBGL) return { rows: TALL_ROWS_DOM, webgl: false };
     return { rows: Math.min(TALL_ROWS_MAX, safeRows), webgl: true };
   }
 
-  enableWebglRenderer(term) {
-    const Addon = window.WebglAddon?.WebglAddon;
+  virtualWebglRenderRows(term, container) {
+    const cellHeight = Number(term._core?._renderService?.dimensions?.css?.cell?.height || 0);
+    if (!cellHeight) return TALL_ROWS_MIN_FOR_WEBGL;
+    const viewportHeight = Number(container?.clientHeight || window.innerHeight || 0);
+    const viewportRows = Math.ceil(viewportHeight / cellHeight) + 2;
+    const safeRows = this.maxWebglSafeRows(cellHeight);
+    return Math.max(2, Math.min(viewportRows, safeRows || viewportRows));
+  }
+
+  enableWebglRenderer(term, container = null) {
+    const virtual = this.virtualTallWebglEnabled();
+    const Addon = virtual ? window.VirtualWebglAddon?.VirtualWebglAddon : window.WebglAddon?.WebglAddon;
     if (!Addon) return false;
     try {
-      const addon = new Addon();
+      const addon = virtual ? new Addon({ getRenderRows: () => this.virtualWebglRenderRows(term, container) }) : new Addon();
       addon.onContextLoss(() => {
         try { addon.dispose(); } catch (disposeError) { /* already gone; DOM renderer takes over */ }
       });
       term.loadAddon(addon);
+      if (virtual) term.__termdeckVirtualWebglAddon = addon;
       return true;
     } catch (webglError) {
       return false;
@@ -21241,7 +21525,7 @@ class TermdeckApp {
 
   async restartSession(sessionId, permission = "") {
     const wasDormant = !!this.session(sessionId)?.dormant;
-    this.activate(sessionId);
+    this.activate(sessionId, { startDormant: false });
     this.$("status-name").textContent = "restarting…";
     const view = this.views.get(sessionId);
     if (view) view.pinBottomUntil = Date.now() + 6000;

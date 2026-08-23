@@ -520,7 +520,7 @@ class ProjectFileService:
 
     def open_file_external(self, root: str, rel: str) -> str:
         target = self.resolve_confined(root, rel)
-        if not target.is_file():
+        if not target.is_file() and not target.is_dir():
             raise FileNotFoundError(str(target))
         if sys.platform == "darwin":
             subprocess.run(["/usr/bin/open", str(target)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
