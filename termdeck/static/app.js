@@ -3736,7 +3736,7 @@ class TermdeckApp {
   }
 
   finishInitialPageContentLoading(sessionId = this.activeId) {
-    if (this.initialPageContentReady || sessionId !== this.activeId) return;
+    if (sessionId !== this.activeId) return;
     this.initialPageContentReady = true;
     const loadingState = this.$("initial-loading-state");
     loadingState.classList.remove("loading");
@@ -6326,7 +6326,7 @@ class TermdeckApp {
 
   renderGitSidePanelState(results, root, state) {
     results.textContent = "";
-    const view = ["changes", "repositories", "pull-requests"].includes(this.gitPanelView) ? this.gitPanelView : "changes";
+    const view = ["changes", "pull-requests"].includes(this.gitPanelView) ? this.gitPanelView : "changes";
     if (this.gitSelectionRoot !== root) {
       const preserveReviewTarget = this.gitPendingReview?.root === root ||
         this.gitReviewOpen && this.gitFocusedFile?.root === root;
@@ -6375,14 +6375,6 @@ class TermdeckApp {
     }
     this.renderGitPanelTabs(results, root, state, view);
     this.renderGitWorkflowControls(results, root, state, view);
-    if (view === "repositories") {
-      this.closeGitReview(false);
-      this.renderGitAgentWorktrees(results, state.agents || []);
-      this.renderGitWorktrees(results, root, state.worktrees || [], state.repository_root);
-      this.renderGitRemotes(results, root, state.remotes || [], state.branch);
-      this.$("status-name").textContent = `${(state.worktrees || []).length} worktrees · ${(state.remotes || []).length} remotes`;
-      return;
-    }
     this.renderGitOperationBanner(results, root, state.operation || {});
     if (this.gitComparison?.root === root) this.renderGitComparison(results, root, this.gitComparison);
     const files = state.files || [];
@@ -6416,6 +6408,18 @@ class TermdeckApp {
           localStorage.setItem("termdeck.git_stashes_collapsed", collapsed ? "1" : "0");
         } });
     this.renderGitStashes(stashPanel, root, state.stashes || []);
+    const repositoriesPanel = this.createGitPanelSection(results, "Worktrees & remotes", "repo", "git-repositories-panel");
+    const repositoryActions = document.createElement("div");
+    repositoryActions.className = "git-workflow-controls repository-controls git-repository-actions";
+    repositoryActions.append(
+      this.gitWorkflowButton("repo-create", "Create worktree", () => this.gitCreateWorktree(root, state.branch), " worktree"),
+      this.gitWorkflowButton("remote", "Add Git remote", () => this.gitAddRemote(root), " remote"),
+      this.gitWorkflowButton("repo-clone", "Clone SSH or remote project", () => this.gitCloneProject(root), " clone"),
+    );
+    repositoriesPanel.appendChild(repositoryActions);
+    this.renderGitAgentWorktrees(repositoriesPanel, state.agents || []);
+    this.renderGitWorktrees(repositoriesPanel, root, state.worktrees || [], state.repository_root);
+    this.renderGitRemotes(repositoriesPanel, root, state.remotes || [], state.branch);
     const graphPaths = this.gitHistoryScopePaths.length ? [...this.gitHistoryScopePaths] : [...this.gitSelectedPaths];
     const historyScope = graphPaths.length === 1 ? graphPaths[0]
       : graphPaths.length > 1 ? `${graphPaths.length} selected files` : "whole worktree";
@@ -6447,8 +6451,7 @@ class TermdeckApp {
   renderGitPanelTabs(container, root, state, view) {
     const tabs = document.createElement("div");
     tabs.className = "git-panel-tabs";
-    for (const [value, label] of [["changes", "Changes"], ["repositories", "Worktrees & remotes"],
-                                  ["pull-requests", "Pull requests"]]) {
+    for (const [value, label] of [["changes", "Changes"], ["pull-requests", "Pull requests"]]) {
       const tab = document.createElement("button");
       tab.className = `git-panel-tab${view === value ? " active" : ""}`;
       tab.textContent = label;
@@ -6474,17 +6477,6 @@ class TermdeckApp {
       container.appendChild(controls);
       return;
     }
-    if (view === "repositories") {
-      const controls = document.createElement("div");
-      controls.className = "git-workflow-controls repository-controls";
-      controls.append(
-        this.gitWorkflowButton("repo-create", "Create worktree", () => this.gitCreateWorktree(root, state.branch), " worktree"),
-        this.gitWorkflowButton("remote", "Add Git remote", () => this.gitAddRemote(root), " remote"),
-        this.gitWorkflowButton("repo-clone", "Clone SSH or remote project", () => this.gitCloneProject(root), " clone"),
-      );
-      container.appendChild(controls);
-    }
-    if (view === "repositories") return;
     const primaryActions = document.createElement("div");
     primaryActions.className = "git-primary-actions";
     const selectedFiles = (state.files || []).filter((file) => this.gitSelectedPaths.has(file.path));
