@@ -894,16 +894,16 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(session.screen_lives_only_in_stripped_sync_frames)
 
-    async def test_attaching_client_signals_a_tui_to_repaint_its_stripped_screen(self) -> None:
+    async def test_attaching_client_resizes_a_tui_to_repaint_its_stripped_screen(self) -> None:
         manager, session, proc = self._session_whose_screen_was_stripped()
 
         with patch.object(TermdeckConfig, "SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS", 0):
             manager.attach_client(session.record.session_id)
             await session.screen_repaint_task
 
-        self.assertEqual(proc.window_change_signals, 1)
+        self.assertEqual(proc.resize_calls, [(119, 32), (120, 32)])
 
-    async def test_attaching_client_keeps_repaint_signal_when_output_arrives_during_the_delay(self) -> None:
+    async def test_attaching_client_keeps_repaint_resize_when_output_arrives_during_the_delay(self) -> None:
         manager, session, proc = self._session_whose_screen_was_stripped()
 
         with patch.object(TermdeckConfig, "SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS", 0):
@@ -911,7 +911,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
             session.last_activity_at += 1
             await session.screen_repaint_task
 
-        self.assertEqual(proc.window_change_signals, 1)
+        self.assertEqual(proc.resize_calls, [(119, 32), (120, 32)])
 
     async def test_attaching_client_does_not_signal_a_shell_whose_scrollback_replays_the_screen(self) -> None:
         manager, session, proc = self._session_whose_screen_was_stripped()
@@ -921,7 +921,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         manager.attach_client(session.record.session_id)
 
         self.assertIsNone(session.screen_repaint_task)
-        self.assertEqual(proc.window_change_signals, 0)
+        self.assertEqual(proc.resize_calls, [])
 
     async def test_attaching_client_signals_when_the_server_has_no_scrollback_to_replay(self) -> None:
         manager, session, proc = self._session_whose_screen_was_stripped()
@@ -931,26 +931,26 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
             manager.attach_client(session.record.session_id)
             await session.screen_repaint_task
 
-        self.assertEqual(proc.window_change_signals, 1)
+        self.assertEqual(proc.resize_calls, [(119, 32), (120, 32)])
 
-    async def test_explicit_codex_repaint_signals_the_live_pty(self) -> None:
+    async def test_explicit_codex_repaint_resizes_the_live_pty(self) -> None:
         manager, session, proc = self._session_whose_screen_was_stripped()
         session.record.agent_kind = AgentKind.CODEX.value
 
         self.assertTrue(manager.request_screen_repaint(session.record.session_id))
         await session.screen_repaint_task
 
-        self.assertEqual(proc.window_change_signals, 1)
+        self.assertEqual(proc.resize_calls, [(119, 32), (120, 32)])
 
     def _session_whose_screen_was_stripped(self):
         class FakeProc:
             alive = True
 
             def __init__(self) -> None:
-                self.window_change_signals = 0
+                self.resize_calls: list[tuple[int, int]] = []
 
-            def send_window_change_signal(self) -> None:
-                self.window_change_signals += 1
+            def resize(self, cols: int, rows: int) -> None:
+                self.resize_calls.append((cols, rows))
 
         manager = TerminalSessionManager()
         session = ManagedSession(record())

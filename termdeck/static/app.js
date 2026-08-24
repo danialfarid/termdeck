@@ -160,9 +160,6 @@ const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
 // Three checks, well spread out, not five packed inside the first 600ms: only a genuine geometry change
 // sends a pty resize, so a tight burst cannot interrupt an agent CLI's multi-line composer redraw.
 const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [150, 800, 2000];
-const CODEX_REFLOW_FOLLOWUP_DELAYS_MS = [1500, 3500, 6000];
-const CODEX_REFLOW_FOLLOWUP_BUSY_RETRY_MS = 500;
-const CODEX_REFLOW_FOLLOWUP_BUSY_RETRIES = 8;
 const TERMINAL_DEBUG_SNAPSHOT_LIMIT = 50;
 const SELECTION_SEARCH_MAX_CHARS = 1000;
 const SELECTION_ACTION_DELAY_MS = 500;
@@ -488,6 +485,8 @@ class TermdeckApp {
     this.fileHistoryDiffBlockIndex = -1;
     this.fileHistoryDiffPending = false;
     this.historyOpen = false;
+    this.terminalLayoutTransitionGeneration = 0;
+    this.terminalLayoutTransitioning = false;
     this.historyRefreshTimer = 0;
     this.historyLoadBusy = false;
     this.historyWs = null;
@@ -2605,6 +2604,7 @@ class TermdeckApp {
     await this.loadSettings();
     this.loadSearchHistory();
     await this.loadProjects();
+    this.initializeEventlyDemoPresentation();
     this.applyVscodeModeLayout();
     if (!this.vscodeMode) {
       this.restoreOpenFiles();
@@ -3171,25 +3171,9 @@ class TermdeckApp {
     this.syncMobileVisualViewport();
     window.visualViewport?.addEventListener("resize", this.mobileViewportResizeHandler);
     window.addEventListener("orientationchange", this.mobileOrientationChangeHandler);
-    // Every fit/repaint pass in this file runs off requestAnimationFrame or setTimeout, both of
-    // which browsers throttle or fully suspend for a backgrounded tab or unfocused window. A
-    // repair scheduled while hidden does not fail — it just never runs, or runs late against
-    // stale state, until something un-suspends the page. visibilitychange/focus/pageshow fire
-    // promptly even from a suspended state (unlike rAF/setTimeout), so they are the one place
-    // that can reliably kick the active terminal back into a known-good state on return. This is
-    // also the likely reason a manual resize "always" fixes a stuck terminal: resizing requires
-    // focusing the window first, which is the trigger this file otherwise never listens for.
-    const revalidateActiveTerminalOnReturn = () => {
-      if (document.hidden) return;
-      const view = this.views.get(this.activeId);
-      if (!view || view.closed) return;
-      view.forceResizeAfterFit = true;
-      this.scheduleTerminalActivationRepair(view, { forceReflow: true });
-      this.scheduleActiveTerminalSettleWatchdog(view);
-    };
-    document.addEventListener("visibilitychange", revalidateActiveTerminalOnReturn);
-    window.addEventListener("focus", revalidateActiveTerminalOnReturn);
-    window.addEventListener("pageshow", revalidateActiveTerminalOnReturn);
+    window.addEventListener("pageshow", (event) => {
+      if (event.persisted) scheduleLayoutFit();
+    });
     this.installTerminalSizeDebugOverlay();
     void this.initializeRemoteIdleMode();
     this.refresh().finally(() => this.connectStatusStream());
@@ -3198,6 +3182,9 @@ class TermdeckApp {
 
   navUrl(state) {
     const params = new URLSearchParams();
+    if (this.projectSlug === "evently-demo" && new URLSearchParams(location.search).get("demo") === "evently") {
+      params.set("demo", "evently");
+    }
     const gitModeNavigation = state.kind === "git-diff" || state.kind !== "term" && state.kind !== "file-history" &&
       (location.pathname.startsWith("/g/") || (state.kind === "files" && state.view === "git"));
     const fileModeNavigation = state.kind !== "term" &&
@@ -3720,6 +3707,32 @@ class TermdeckApp {
       return;
     }
     this.finishInitialPageContentLoading();
+  }
+
+  initializeEventlyDemoPresentation() {
+    const params = new URLSearchParams(location.search);
+    if (this.projectSlug !== "evently-demo" || params.get("demo") !== "evently") return;
+    document.body.classList.add("evently-demo-presentation");
+    if (this.$("evently-demo-feature-banner")) return;
+    const banner = document.createElement("div");
+    banner.id = "evently-demo-feature-banner";
+    banner.innerHTML = '<span id="evently-demo-caption"></span>';
+    document.body.append(banner);
+    this.updateEventlyDemoFeatureBanner();
+  }
+
+  updateEventlyDemoFeatureBanner() {
+    if (!document.body.classList.contains("evently-demo-presentation")) return;
+    const caption = this.$("evently-demo-caption");
+    if (!caption) return;
+    const session = this.session(this.activeId);
+    const groupName = this.terminalGroupNameForSession(this.activeId) || "Evently workspace";
+    let feature = "Persistent terminal workspace";
+    if (this.sideView === "git") feature = "Git history and changed-file review";
+    else if (this.sideView === "search") feature = "Search across files and agents";
+    else if (this.activeFileKey !== null) feature = "File editing, history, and usages";
+    else if (this.historyOpen) feature = "Markdown transcript and cross-agent review";
+    caption.textContent = `Caption: ${feature} · ${groupName} · ${session?.title || "Select a feature terminal"}`;
   }
 
   finishInitialPageContentLoading(sessionId = this.activeId) {
@@ -6105,14 +6118,14 @@ class TermdeckApp {
       localStorage.setItem(FILES_SIDE_PANEL_LAST_TAB_KEY, view);
     }
     if (!filesVisible || view === "git") this.closeFileTypeFilterMenu();
-    const filesPinned = filesVisible && !!this.settings.files_pinned;
+    const gitView = view === "git";
+    const filesPinned = filesVisible && (!!this.settings.files_pinned || gitView);
     this.settings.side_full = filesVisible;
     this.$("files-section").classList.toggle("hidden", !filesVisible);
     this.$("session-list").classList.toggle("hidden", view === CLOSED_SIDE_VIEW);
     this.$("files-section").classList.toggle("with-search", view === "search");
     this.$("files-section").classList.toggle("with-git", view === "git");
     this.$("files-section").classList.toggle("floating", filesVisible && !filesPinned);
-    const gitView = view === "git";
     this.$("file-header-controls")?.classList.toggle("hidden", !filesVisible || gitView);
     this.$("git-branch-controls").classList.toggle("hidden", !gitView);
     this.$("git-refresh").classList.toggle("hidden", !gitView);
@@ -8381,7 +8394,7 @@ class TermdeckApp {
       localStorage.setItem("termdeck.files_panel_width_v2", "1");
     }
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
-    this.$("files-section").classList.toggle("floating", filesVisible && !nextPinned);
+    this.$("files-section").classList.toggle("floating", filesVisible && !nextPinned && this.sideView !== "git");
     this.updateFilesPinButton();
     this.applySideLayout();
     this.applySettings({ fitTerminals: !filesVisible || nextPinned });
@@ -8406,7 +8419,7 @@ class TermdeckApp {
   }
 
   scheduleTerminalFitAfterSidebarChange() {
-    if (FILES_SIDE_PANEL_TABS.includes(this.sideView) && !this.settings.files_pinned) return;
+    if (FILES_SIDE_PANEL_TABS.includes(this.sideView) && !this.settings.files_pinned && this.sideView !== "git") return;
     this.scheduleTerminalLayoutFit();
   }
 
@@ -8440,7 +8453,8 @@ class TermdeckApp {
     const availableWidth = Math.max(normalWidth, window.innerWidth - sidebar.getBoundingClientRect().left - 20);
     const filesPinned = !!this.settings.files_pinned;
     section.style.top = filesPinned ? `${header?.offsetHeight || 0}px` : "0px";
-    section.style.bottom = "0px";
+    const footer = this.$("sidebar-footer");
+    section.style.bottom = `${footer?.offsetHeight || 0}px`;
     section.style.width = `${Math.min(requestedWidth, availableWidth)}px`;
     document.documentElement.style.setProperty("--files-panel-width", `${Math.min(requestedWidth, availableWidth)}px`);
   }
@@ -8471,6 +8485,33 @@ class TermdeckApp {
       this.layoutFitSettleTimer = 0;
       this.fitActive();
     }, 420);
+  }
+
+  terminalSurfaceAvailableForFit(view) {
+    return !!view && !view.closed && !this.terminalLayoutTransitioning && !this.sidebarResizeInProgress &&
+      this.activeId === view.sessionId && this.activeFileKey === null && !this.historyOpen &&
+      !this.$("terminal-area").classList.contains("hidden") && view.container.classList.contains("visible") &&
+      this.terminalPageCanResize();
+  }
+
+  beginTerminalLayoutTransition(view) {
+    const generation = ++this.terminalLayoutTransitionGeneration;
+    this.terminalLayoutTransitioning = true;
+    if (view) {
+      if (view.v2FitFrame) cancelAnimationFrame(view.v2FitFrame);
+      view.v2FitFrame = 0;
+      if (view.v2InitialFitFrame) cancelAnimationFrame(view.v2InitialFitFrame);
+      view.v2InitialFitFrame = 0;
+      clearTimeout(view.layoutFitRetryTimer);
+      view.layoutFitRetryTimer = 0;
+      view.layoutFitRetryCount = 0;
+      this.clearActiveTerminalSettleWatchdog(view);
+    }
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (generation !== this.terminalLayoutTransitionGeneration) return;
+      this.terminalLayoutTransitioning = false;
+      this.fitActive();
+    }));
   }
 
   cycleView(view) {
@@ -8525,6 +8566,9 @@ class TermdeckApp {
       this.positionFloatingFilesPanel();
       return;
     }
+    section.style.top = "";
+    section.style.bottom = "";
+    section.style.width = "";
     if (full) {
       section.style.height = "";
       section.style.flex = "1";
@@ -10641,6 +10685,7 @@ class TermdeckApp {
     this.updateHistoryThinkingIndicator();
     this.renderHistoryQueue();
     this.fitActive();
+    this.updateEventlyDemoFeatureBanner();
     if (fileHistoryMode) requestAnimationFrame(() => {
       if (this.fileHistoryDiffEditor) this.fileHistoryDiffEditor.layout();
       else this.fileHistoryCurrentEditor?.layout();
@@ -10865,6 +10910,8 @@ class TermdeckApp {
     this.historyFingerprint = "";
     this.historyTurns = [];
     this.historyLoaded = false;
+    const view = this.views.get(this.activeId);
+    this.beginTerminalLayoutTransition(view);
     this.historyOpen = !!enabled && this.activeFileKey === null && !!this.activeId;
     this.postVscodeNativeSession(this.session(this.activeId), !this.historyOpen);
     this.applyMainLayout();
@@ -10876,7 +10923,6 @@ class TermdeckApp {
       if (cached) this.applyHistoryTurns(sessionId, cached, { preserveScroll: false });
       this.connectHistoryStream(sessionId, { fresh: true });
     } else {
-      const view = this.views.get(this.activeId);
       if (view) {
         if (this.nativeVscodeMode) this.postVscodeNativeSession(this.session(this.activeId), true);
         else view.term.focus();
@@ -12127,6 +12173,7 @@ class TermdeckApp {
         : source.id === "monaco-host" ? "file" : "notebook";
       this.openSelectionContextMenu(state, { x: event.clientX, y: event.clientY }, contextKind);
     });
+    document.addEventListener("auxclick", (event) => this.handleDetectedFileLinkAuxClick(event));
     document.addEventListener("selectionchange", () => this.scheduleSelectionActions());
     document.addEventListener("mouseup", () => this.scheduleSelectionActions());
     document.addEventListener("copy", () => this.recordDocumentSelectionCopy());
@@ -14438,6 +14485,7 @@ class TermdeckApp {
     this.historyLoaded = cachedHistory.length > 0;
     const previousView = previousId ? this.views.get(previousId) : null;
     this.activeId = id;
+    this.updateEventlyDemoFeatureBanner();
     this.updateRecentFilesWatch();
     this.historyOpen = this.selectedHistoryMode(selected);
     if (options.history !== false) this.pushNav({ kind: "term", id });
@@ -14904,15 +14952,15 @@ class TermdeckApp {
                    wasAtBottom: true, scrollMode: "follow", v2Programmatic: false, v2FitFrame: 0,
                    userScrollIntent: false,
                    v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
-                   forceResizeAfterFit: true, initialSnapshotPainted: false, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
+                   forceResizeAfterFit: true, initialSnapshotPainted: false,
                    suppressResizeToServer: false, resyncResizeRepairPending: false,
                    hiddenAt: 0, lastShownAt: 0,
-                   tailRepairFrame: 0, tailRepairTimer: 0, tailRepairConfirmTimer: 0,
+                   tailRepairTimer: 0, tailRepairConfirmTimer: 0,
                    activationRepairFrame: 0, tailRepairSignature: "", lastRenderRepairAt: 0,
                    renderedRows: [], renderedViewportY: null, renderedCols: 0, renderedTermRows: 0,
                    renderRepairArmed: true, renderObserver: null,
                    viewportAnchorRestore: null, viewportAnchorRestoreTimer: 0,
-                   lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [], codexReflowFollowupTimers: [],
+                   lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [],
                    tallGeometrySettleTimer: 0, tallGeometrySettleAt: 0,
                    preserveRowsFromBottom: 0, reconnectReset: false,
                    promptDraft: this.session(id)?.draft || "", markdownPromptDraft: this.markdownPromptDraftForSession(id),
@@ -15134,8 +15182,7 @@ class TermdeckApp {
       view.scrollObserver.observe(scrollArea);
     }
     view.layoutObserver = new ResizeObserver(() => {
-      if (!view.container.classList.contains("visible") || view.closed || !this.terminalPageCanResize()) return;
-      if (this.sidebarResizeInProgress) return;
+      if (!this.terminalSurfaceAvailableForFit(view)) return;
       if (this.isTerminalScrollV2()) {
         this.scheduleV2Fit(view);
         return;
@@ -15252,7 +15299,7 @@ class TermdeckApp {
   }
 
   prepareTerminalForFirstPaint(view) {
-    if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
+    if (!this.terminalSurfaceAvailableForFit(view)) return false;
     const rect = view.container.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 40) return false;
     this.tallFit(view);
@@ -15392,13 +15439,6 @@ class TermdeckApp {
             view.forceResizeAfterFit = !firstSnapshot;
             this.scheduleV2Fit(view);
           } else if (view.resyncResizeRepairPending && view.container.classList.contains("visible")) {
-            // Legacy (non-V2) scroll mode has no equivalent post-snapshot repaint trigger above, so it
-            // still needs resync's own scheduled repair. V2 mode does NOT reach here (the branch above
-            // already re-triggers forceVisibleTerminalReflow at exactly this moment, the same path a
-            // plain page refresh goes through) -- calling both raced them: the older, timer-based
-            // scheduleTerminalResizeRepair could fire the codex nudge before this reconnect had actually
-            // delivered any content, nudging an empty buffer and leaving a tab that was showing content
-            // black. See resyncActiveTerminal.
             view.resyncResizeRepairPending = false;
             this.scheduleTerminalResizeRepair(view);
           }
@@ -15802,8 +15842,8 @@ class TermdeckApp {
   // empty body kept as reusable scaffolding for a future terminal-rendering investigation. Deliberately
   // NOT wired to any automatic capture/logging -- an earlier version accumulated visible blur/focus/
   // resize chatter once its original investigation was fixed (reported as noise, stripped back out),
-  // and a later "guarded" A/B toggle here showed no observable difference from the shipped default in
-  // practice (also removed, see forceVisibleTerminalReflow). The body (this.debugOverlay.stats/.diff)
+  // and a later "guarded" A/B toggle here showed no observable difference from the shipped default.
+  // The body (this.debugOverlay.stats/.diff)
   // stays empty until something explicitly writes into it. To reactivate for a NEW investigation: set
   // box.style.display = "block", write into this.debugOverlay.stats/.diff, and wire
   // this.captureDebugSnapshot(view, "label") into whatever new code path is under suspicion -- see this
@@ -16186,7 +16226,7 @@ class TermdeckApp {
 
   scheduleV2Fit(view, options = {}) {
     const forceResize = !!options.force;
-    if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return;
+    if (!this.terminalSurfaceAvailableForFit(view)) return;
     if (this.shouldDeferPromptReflowFit(view)) return;
     if (view.v2FitFrame && forceResize) {
       cancelAnimationFrame(view.v2FitFrame);
@@ -16195,7 +16235,7 @@ class TermdeckApp {
     if (view.v2FitFrame) return;
     view.v2FitFrame = requestAnimationFrame(() => {
       view.v2FitFrame = 0;
-      if (view.closed || !view.container.classList.contains("visible") || this.sidebarResizeInProgress || !this.terminalPageCanResize()) return;
+      if (!this.terminalSurfaceAvailableForFit(view)) return;
       if (this.shouldDeferPromptReflowFit(view)) return;
       const rect = view.container.getBoundingClientRect();
       if (rect.width < 40 || rect.height < 40) {
@@ -16205,7 +16245,7 @@ class TermdeckApp {
           view.layoutFitRetryCount += 1;
           view.layoutFitRetryTimer = setTimeout(() => {
             view.layoutFitRetryTimer = 0;
-            if (!view.closed && view.container.classList.contains("visible")) this.scheduleV2Fit(view, options);
+            if (this.terminalSurfaceAvailableForFit(view)) this.scheduleV2Fit(view, options);
           }, retryDelay);
         }
         return;
@@ -16213,15 +16253,6 @@ class TermdeckApp {
       view.layoutFitRetryCount = 0;
       clearTimeout(view.layoutFitRetryTimer);
       view.layoutFitRetryTimer = 0;
-      // Captured as an offset (not the absolute viewportY) and BEFORE fit() below, since this is the
-      // earliest point in the whole activation chain where a cols/rows change (and therefore a full
-      // buffer reflow) can happen -- every downstream repair function (repairTerminalRenderIfStale,
-      // forceVisibleTerminalReflow*) captures ITS OWN restore point only after this has already run,
-      // so if fit() corrupts the position here, they just faithfully preserve the already-corrupted
-      // value instead of the user's actual intended position. Ground-truth testing (window.__td)
-      // confirmed this is where "switching between half-scrolled tabs jumps to the top" traces back
-      // to: FitAddon.fit() calling term.resize() with different cols does not preserve viewportY on
-      // its own, it can land at 0.
       const beforeCols = view.term.cols, beforeRows = view.term.rows;
       const rowsFromBottom = view.term.buffer.active.baseY - view.term.buffer.active.viewportY;
       // FitAddon is the public xterm sizing mechanism. v2 never writes to
@@ -16240,12 +16271,7 @@ class TermdeckApp {
       const hasPaintedInitialSnapshot = view.initialSnapshotPainted;
       const forceResizeThisFrame = hasPaintedInitialSnapshot && (forceResize || view.forceResizeAfterFit);
       if (!hasPaintedInitialSnapshot) view.forceResizeAfterFit = false;
-      if (forceResizeThisFrame) {
-        view.forceResizeAfterFit = false;
-        if (this.forceVisibleTerminalReflow(view)) return;
-      } else {
-        view.forceResizeAfterFit = false;
-      }
+      view.forceResizeAfterFit = false;
       this.refreshTerminalAppearance(view, forceResizeThisFrame);
       if (forceResizeThisFrame && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
       if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
@@ -16453,7 +16479,6 @@ class TermdeckApp {
   }
 
   terminalTailRenderMismatch(view) {
-    if (view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame) return false;
     const visibleRows = Math.max(1, Number(view.term.rows || 1));
     const expected = this.terminalBufferVisibleTailLines(view, visibleRows);
     const rendered = this.terminalRenderedTailLines(view, visibleRows);
@@ -16486,7 +16511,7 @@ class TermdeckApp {
   }
 
   repairTerminalRenderIfStale(view) {
-    if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
+    if (!this.terminalSurfaceAvailableForFit(view)) return false;
     if (this.shouldDeferPromptReflowFit(view)) return false;
     if (!this.terminalTailRenderMismatch(view)) {
       view.renderRepairArmed = true;
@@ -16534,15 +16559,6 @@ class TermdeckApp {
       this.refreshTerminalAppearance(view, true);
       if (follow) this.scrollTerminalV2ToBottom(view);
       else this.scrollTerminalV2ToLine(view, Math.min(restoreLine, view.term.buffer.active.baseY));
-      if (view.tailRepairFrame) cancelAnimationFrame(view.tailRepairFrame);
-      view.tailRepairFrame = requestAnimationFrame(() => {
-        view.tailRepairFrame = requestAnimationFrame(() => {
-          view.tailRepairFrame = 0;
-          if (view.closed || !view.container.classList.contains("visible")) return;
-          if (this.terminalTailRenderMismatch(view)) this.forceVisibleTerminalReflowViaResizeNudge(view, 1);
-          else view.renderRepairArmed = true;
-        });
-      });
       return true;
     }
     this.refreshTerminalAppearance(view, true);
@@ -16566,11 +16582,10 @@ class TermdeckApp {
   // and self-terminating instead of a standing timer.
   scheduleActiveTerminalSettleWatchdog(view) {
     this.clearActiveTerminalSettleWatchdog(view);
-    if (!view || view.closed || !this.isTerminalScrollV2() || !this.terminalPageCanResize()) return;
+    if (!this.isTerminalScrollV2() || !this.terminalSurfaceAvailableForFit(view)) return;
     for (const delay of TERMINAL_ACTIVE_SETTLE_DELAYS_MS) {
       view.settleWatchdogTimers.push(setTimeout(() => {
-        if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible") ||
-            this.sidebarResizeInProgress || !this.terminalPageCanResize()) return;
+        if (!this.terminalSurfaceAvailableForFit(view)) return;
         if (this.shouldDeferPromptReflowFit(view)) return;
         const beforeCols = view.term.cols, beforeRows = view.term.rows;
         const viewportAnchor = this.captureTerminalViewportAnchor(view);
@@ -16594,11 +16609,10 @@ class TermdeckApp {
   scheduleTerminalTailRepair(view) {
     if (!view || view.closed || view.tailRepairTimer || view.tailRepairConfirmTimer ||
         !view.container.classList.contains("visible") || !this.isTerminalScrollV2() ||
-        this.session(view.sessionId)?.agent_kind !== "codex" || !this.terminalPageCanResize()) return;
+        this.session(view.sessionId)?.agent_kind !== "codex" || !this.terminalSurfaceAvailableForFit(view)) return;
     view.tailRepairTimer = setTimeout(() => {
       view.tailRepairTimer = 0;
-      if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible") ||
-          !this.terminalPageCanResize()) return;
+      if (!this.terminalSurfaceAvailableForFit(view)) return;
       const candidate = this.terminalRenderMismatchSnapshot(view);
       if (!candidate) {
         view.renderRepairArmed = true;
@@ -16606,8 +16620,7 @@ class TermdeckApp {
       }
       view.tailRepairConfirmTimer = setTimeout(() => {
         view.tailRepairConfirmTimer = 0;
-        if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible") ||
-            !this.terminalPageCanResize()) return;
+        if (!this.terminalSurfaceAvailableForFit(view)) return;
         const confirmed = this.terminalRenderMismatchSnapshot(view);
         if (!this.sameTerminalRenderMismatch(candidate, confirmed)) {
           if (!confirmed) view.renderRepairArmed = true;
@@ -16622,15 +16635,14 @@ class TermdeckApp {
   }
 
   scheduleTerminalActivationRepair(view, options = {}) {
-    if (!view || view.closed || view.activationRepairFrame || !view.container.classList.contains("visible") ||
-        !this.terminalPageCanResize()) return;
+    if (!view || view.activationRepairFrame || !this.terminalSurfaceAvailableForFit(view)) return;
     if (!this.isTerminalScrollV2()) return;
     const generation = view.outputWriteGeneration;
     const forceReflow = !!options.forceReflow;
     view.activationRepairFrame = requestAnimationFrame(() => {
       view.activationRepairFrame = requestAnimationFrame(() => {
         view.activationRepairFrame = 0;
-        if (view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return;
+        if (!this.terminalSurfaceAvailableForFit(view)) return;
         if (view.outputWriteInFlight && generation !== view.outputWriteGeneration) return;
         const repaired = this.repairTerminalRenderIfStale(view);
         if (repaired) return;
@@ -16640,153 +16652,6 @@ class TermdeckApp {
         }
       });
     });
-  }
-
-  // Neither underlying implementation alone satisfies both CLIs: the resize-free clear leaves codex's
-  // stale paint stuck, any resize-nudge magnitude/direction tried corrupts Claude's composer wrap (root
-  // cause: xterm's resize-driven buffer reflow can permanently mis-rewrap an already-wrapped row when
-  // cols is nudged even briefly and client-side-only, confirmed live). They need opposite treatment, so
-  // branch by the session's actual agent_kind instead of hunting for one universal value.
-  //
-  // localStorage["td-debug-reflow-mode"]="nudge" forces the pre-fix nudge-everyone behavior for every
-  // session regardless of kind -- a manual escape hatch kept ONLY for a side-by-side comparison if this
-  // regresses again later, not a real option (it reintroduces the Claude wrap on its own). No UI for it;
-  // set/clear it from the browser console.
-  forceVisibleTerminalReflow(view) {
-    if (localStorage.getItem("td-debug-reflow-mode") === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
-    const kind = this.session(view.sessionId)?.agent_kind;
-    if (kind !== "codex") return this.forceVisibleTerminalReflowViaClear(view);
-    const result = this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
-    this.scheduleCodexReflowFollowup(view);
-    return result;
-  }
-
-  // Codex still sometimes shows only its last few scrollback lines after a fresh connect (~10-20% of
-  // tries, reported, persisting across 2-3 hard refreshes in some cases) -- likely a timing race, not
-  // necessarily missing data: this nudge fires as soon as the client's snapshot replay completes, which
-  // can be BEFORE the SERVER's own repair (_force_screen_repaint in session_manager.py, ~0.28-0.43s
-  // delayed) has actually finished getting codex to redraw its full screen -- now unconditional
-  // server-side (see session_manager.py), but still not instant. Retries at several delays (matching
-  // how scheduleActiveTerminalSettleWatchdog already retries elsewhere in this file) instead of just
-  // once, to give that server-side window more chances to be caught.
-  //
-  // Every attempt is gated on terminalTailRenderMismatch(view) -- the rendered DOM actually disagreeing
-  // with xterm's own buffer, i.e. something a repaint could fix. If they already agree, a resize-nudge
-  // is powerless to improve things (its whole mechanism is "force xterm to fully repaint its EXISTING
-  // buffer", not "fetch more data"): either both already show the full correct content (retrying would
-  // just be a visible flicker for nothing) or the buffer genuinely still lacks the content (a
-  // client-side repaint cannot manufacture data that hasn't arrived). Either way, skip that attempt.
-  scheduleCodexReflowFollowup(view) {
-    if (!view || view.closed) return;
-    for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
-    view.codexReflowFollowupTimers = CODEX_REFLOW_FOLLOWUP_DELAYS_MS.map((delay) => setTimeout(
-      () => this.runCodexReflowFollowup(view, CODEX_REFLOW_FOLLOWUP_BUSY_RETRIES), delay));
-  }
-
-  // Deferred while output is still arriving. terminalTailRenderMismatch compares xterm's buffer tail to
-  // the painted DOM tail, and those legitimately differ for a frame or two mid-stream, so acting on that
-  // difference nudges the terminal's width in the middle of a synchronized-update frame and leaves
-  // exactly the half-painted screen this repair exists to remove -- a greyed status line with a couple of
-  // stray glyphs, which then heals on the CLI's next full redraw. Retry once output settles instead.
-  runCodexReflowFollowup(view, busyRetriesLeft) {
-    if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
-    if (view.outputWriteInFlight || view.outputQueue.length) {
-      if (busyRetriesLeft <= 0) return;
-      view.codexReflowFollowupTimers.push(setTimeout(
-        () => this.runCodexReflowFollowup(view, busyRetriesLeft - 1), CODEX_REFLOW_FOLLOWUP_BUSY_RETRY_MS));
-      return;
-    }
-    if (!this.terminalTailRenderMismatch(view)) return;
-    this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
-  }
-
-  forceVisibleTerminalReflowViaClear(view) {
-    if (!view || view.closed || view.v2ForcedReflowFrame || !view.container.classList.contains("visible") ||
-        !this.terminalPageCanResize()) return false;
-    if (this.shouldDeferPromptReflowFit(view)) return false;
-    const rect = view.container.getBoundingClientRect();
-    if (rect.width < 40 || rect.height < 40) return false;
-    const restoreLine = view.term.buffer.active.viewportY;
-    const follow = view.scrollMode === "follow";
-    view.v2Programmatic = true;
-    view.v2ForcedReflowFrame = requestAnimationFrame(() => {
-      view.v2ForcedReflowFrame = 0;
-      if (view.closed || !view.container.classList.contains("visible")) {
-        view.v2Programmatic = false;
-        return;
-      }
-      // A pure repaint, deliberately WITHOUT ever touching cols/rows. The alternative (see
-      // ...ViaResizeNudge below) nudges the container's CSS width to force a real xterm resize down
-      // and back up, suppressed from reaching the server so the CLI never saw it. But xterm's
-      // resize-driven reflow can PERMANENTLY mis-rewrap already-wrapped rows (box-drawing characters
-      // especially) even for a resize that only ever happens client-side -- confirmed via a live debug
-      // capture showing a 104->102->104 xterm-only bounce (never sent to the server:
-      // suppressResizeToServer was true throughout) leave a horizontal composer rule permanently split
-      // across two rows afterward. refreshTerminalAppearance(view, true) already clears and re-runs the
-      // render service against the CURRENT (unchanged) cols/rows -- a full glyph repaint with no call
-      // into resize()/reflow(), so there is nothing for xterm to fail to perfectly undo.
-      this.refreshTerminalAppearance(view, true);
-      if (follow) this.scrollTerminalV2ToBottom(view);
-      else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
-      queueMicrotask(() => {
-        if (!view.closed) view.v2Programmatic = false;
-      });
-    });
-    return true;
-  }
-
-  // Original implementation, kept only for the A/B toggle: nudges the container narrower by ~2 cols
-  // via CSS then restores, forcing a real (client-only, never sent to the server) xterm resize cycle.
-  // nudgeCols: how many columns narrower to go before restoring. The original value (2) is exactly
-  // wide enough to catch a composer's horizontal rule right at its wrap boundary; testing whether 1
-  // column is still enough to unstick a stale codex paint without landing on that boundary.
-  //
-  forceVisibleTerminalReflowViaResizeNudge(view, nudgeCols = 2) {
-    if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
-        !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
-    if (this.shouldDeferPromptReflowFit(view)) return false;
-    const rect = view.container.getBoundingClientRect();
-    if (rect.width < 40 || rect.height < 40) return false;
-    const computed = window.getComputedStyle(view.container);
-    const originalRight = view.container.style.right;
-    const right = Number.parseFloat(computed.right);
-    const cellWidth = Number(view.term._core?._renderService?.dimensions?.css?.cell?.width) || 8;
-    const nudgeRight = (Number.isFinite(right) ? right : 4) + Math.max(Math.ceil(cellWidth * nudgeCols), 7 * nudgeCols);
-    const restoreLine = view.term.buffer.active.viewportY;
-    const follow = view.scrollMode === "follow";
-    view.suppressResizeToServer = true;
-    view.v2Programmatic = true;
-    view.v2ForcedReflowFrame = requestAnimationFrame(() => {
-      view.v2ForcedReflowFrame = 0;
-      if (view.closed || !view.container.classList.contains("visible")) {
-        view.suppressResizeToServer = false;
-        view.v2Programmatic = false;
-        return;
-      }
-      view.container.style.right = `${nudgeRight}px`;
-      this.tallFit(view);
-      this.refreshTerminalAppearance(view, true);
-      view.v2ForcedReflowRestoreFrame = requestAnimationFrame(() => {
-        view.v2ForcedReflowRestoreFrame = 0;
-        if (!view.closed) {
-          view.container.style.right = originalRight;
-          if (view.container.classList.contains("visible")) {
-            this.tallFit(view);
-            this.refreshTerminalAppearance(view, true);
-            if (follow) this.scrollTerminalV2ToBottom(view);
-            else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
-          }
-        }
-        view.suppressResizeToServer = false;
-        if (!view.closed && view.container.classList.contains("visible") && view.term.cols >= 2 && view.term.rows >= 2) {
-          this.sendResize(view, view.term.cols, view.term.rows);
-        }
-        queueMicrotask(() => {
-          if (!view.closed) view.v2Programmatic = false;
-        });
-      });
-    });
-    return true;
   }
 
   queueTerminalWrite(view, data, afterWrite = null) {
@@ -17539,10 +17404,9 @@ class TermdeckApp {
   }
 
   fitActive() {
-    if (this.nativeVscodeMode || this.sidebarResizeInProgress || !this.terminalPageCanResize()) return;
-    if (this.$("terminal-area").classList.contains("hidden")) return;
+    if (this.nativeVscodeMode) return;
     const view = this.views.get(this.activeId);
-    if (!view || !view.container.classList.contains("visible")) return;
+    if (!this.terminalSurfaceAvailableForFit(view)) return;
     if (this.isTerminalScrollV2()) {
       this.scheduleV2Fit(view);
       this.scheduleV2ViewportSync(view);
@@ -17579,15 +17443,11 @@ class TermdeckApp {
     clearTimeout(view.claudeWebglColdPrimeTimer);
     this.cancelTallGeometrySettle(view);
     this.cancelTerminalViewportRestore(view);
-    for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
     if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
     if (view.viewportRepairFrame) cancelAnimationFrame(view.viewportRepairFrame);
     if (view.v2ViewportSyncFrame) cancelAnimationFrame(view.v2ViewportSyncFrame);
     if (view.v2FitFrame) cancelAnimationFrame(view.v2FitFrame);
     if (view.v2InitialFitFrame) cancelAnimationFrame(view.v2InitialFitFrame);
-    if (view.v2ForcedReflowFrame) cancelAnimationFrame(view.v2ForcedReflowFrame);
-    if (view.v2ForcedReflowRestoreFrame) cancelAnimationFrame(view.v2ForcedReflowRestoreFrame);
-    if (view.tailRepairFrame) cancelAnimationFrame(view.tailRepairFrame);
     if (view.activationRepairFrame) cancelAnimationFrame(view.activationRepairFrame);
     if (view.codexFocusRefreshFrame) cancelAnimationFrame(view.codexFocusRefreshFrame);
     clearTimeout(view.layoutFitRetryTimer);
@@ -17631,7 +17491,7 @@ class TermdeckApp {
         incoming.search_file_glob = legacyIncludeGlob;
       }
       if (migratedExcludeGlob) incoming.excluded_file_glob = legacyExcludeGlob;
-      const migratedVirtualWebgl = incoming.virtual_tall_webgl === true;
+      const migratedVirtualWebgl = incoming.virtual_tall_webgl === true && incoming.tall_webgl == null;
       if (migratedVirtualWebgl) incoming.tall_webgl = true;
       delete incoming.virtual_tall_webgl;
       delete incoming.claude_raw_replay_experimental;
@@ -20459,7 +20319,29 @@ class TermdeckApp {
     this.openFileFromLink(this.activeId, linkText);
   }
 
+  openDetectedFileLinkExternally(fileLink) {
+    const parsed = this.parseVscodeFileLink(fileLink?.linkText);
+    if (!parsed) return false;
+    const session = this.session(fileLink.sessionId);
+    void this.openFileExternally(session?.cwd || this.worktreeRoot() || "~", parsed.path);
+    return true;
+  }
+
+  handleDetectedFileLinkAuxClick(event) {
+    if (event.button !== 1) return;
+    const source = event.target.closest?.(".xterm, #history-body");
+    if (!source) return;
+    const fileLink = this.fileLinkAtContextEvent(event, source);
+    if (!fileLink || !this.openDetectedFileLinkExternally(fileLink)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
   activateTerminalFileLink(event, sessionId, linkText) {
+    if (event?.button === 1) {
+      this.openDetectedFileLinkExternally({ sessionId, linkText });
+      return;
+    }
     if (event?.button !== 0 || event?.ctrlKey) return;
     this.openFileFromLink(sessionId, linkText);
   }

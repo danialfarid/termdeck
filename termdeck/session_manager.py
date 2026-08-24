@@ -891,7 +891,12 @@ class TerminalSessionManager:
         await asyncio.sleep(delay)
         if ms.proc is not proc or not proc.alive:
             return
-        proc.send_window_change_signal()
+        cols, rows = max(2, ms.cols), max(2, ms.rows)
+        nudge = cols - 1 if cols > TermdeckConfig.SCREEN_REPAINT_NUDGE_MIN_COLS else cols + 1
+        proc.resize(nudge, rows)
+        await asyncio.sleep(TermdeckConfig.SCREEN_REPAINT_NUDGE_HOLD_SECONDS)
+        if ms.proc is proc and proc.alive:
+            proc.resize(max(2, ms.cols), max(2, ms.rows))
 
     @staticmethod
     def _dtach_socket_live(socket: Path) -> bool:
