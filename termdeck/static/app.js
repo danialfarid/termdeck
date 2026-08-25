@@ -9746,10 +9746,26 @@ class TermdeckApp {
     this.showPageTitleFaviconState(faviconState);
   }
 
+  activePageTabTitle(entry, session) {
+    if (entry) return entry.name;
+    if (this.sideView === "git") {
+      if (this.gitReviewOpen && this.gitFocusedFile?.scope === "pull-request") {
+        return this.$("git-review-title")?.textContent || "Pull requests";
+      }
+      if (this.gitReviewOpen && this.gitFocusedFile?.path) {
+        return this.gitFocusedFile.path.split("/").pop();
+      }
+      return this.gitPanelView === "pull-requests" ? "Pull requests" : "Changes";
+    }
+    if (this.sideView === "project") return "Files";
+    if (this.sideView === "search") return "Search";
+    return session ? this.titlePresentation(session).text : null;
+  }
+
   renderTopbar() {
     const s = this.session(this.activeId);
     const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    const tabTitle = entry ? entry.name : (s ? this.titlePresentation(s).text : null);
+    const tabTitle = this.activePageTabTitle(entry, s);
     const pageTitle = this.vscodeMode ? "TermDeck" : (tabTitle ? `${tabTitle} — TermDeck` : "TermDeck");
     const processing = !entry && !!s && this.titlePresentation(s).spinning;
     const unread = !entry && !!s && !processing && this.unreadSessions.has(s.session_id);
@@ -17171,7 +17187,15 @@ class TermdeckApp {
         this.tallSetScrollTop(view, wholeTarget);
       } else if (wholeTop > capPx) {
         this.scheduleTallGeometrySettle(view, view.codexCollapseSettleUntil - Date.now());
-      } else if (wholeTop > view.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
+      } else if (wholeTop > view.tallMaxScrollTop + (wholeCell || TALL_OVERSHOOT_DEADZONE_PX)) {
+        // A WRITE-driven placement corrects past-the-ceiling rests beyond ONE row, not the gesture
+        // deadzone: the deadzone exists so a user's small overshoot is not visibly snapped back, but
+        // here nobody is touching the view (gestures are guarded out above) -- the ceiling shrank
+        // underneath a following view, e.g. a response finished and its streaming UI folded while the
+        // tab was elsewhere. Left alone, the view rested up to a deadzone past the content with blank
+        // rows below it, looking parked mid-page while claiming to follow. The single row of grace is
+        // for a composer that settles one row shorter after a redraw -- correcting that 21px is itself
+        // the jutter jump_on_shrink pins down.
         this.tallSetScrollTop(view, view.tallMaxScrollTop);
       }
       view.tallFollowTop = Math.max(wholeTarget, Math.min(view.container.scrollTop, view.tallMaxScrollTop));
