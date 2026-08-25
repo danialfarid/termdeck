@@ -82,6 +82,7 @@ class TermdeckConfig:
     API_SESSION_HISTORY_PAGE_ROUTE = "/api/sessions/{session_id}/history-page"
     API_KILL_ALL_TERMINALS_ROUTE = "/api/terminals/kill-all"
     API_KILL_STALE_TERMINALS_ROUTE = "/api/terminals/kill-stale"
+    API_SERVER_RESTART_ROUTE = "/api/server/restart"
     API_TERMINAL_PROCESSES_ROUTE = "/api/terminals/processes"
     API_RECLAIM_ORPHAN_TERMINALS_ROUTE = "/api/terminals/reclaim-orphans"
     API_TERMINAL_LAYOUT_ROUTE = "/api/terminal-layout"

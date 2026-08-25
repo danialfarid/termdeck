@@ -691,6 +691,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_AGENT_HOOK_ROUTE, response_model=None)(self._agent_hook)
         app.post(TermdeckConfig.API_KILL_ALL_TERMINALS_ROUTE, response_model=None)(self._kill_all_terminals)
         app.post(TermdeckConfig.API_KILL_STALE_TERMINALS_ROUTE, response_model=None)(self._kill_stale_terminals)
+        app.post(TermdeckConfig.API_SERVER_RESTART_ROUTE, response_model=None)(self._restart_server)
         app.get(TermdeckConfig.API_TERMINAL_PROCESSES_ROUTE, response_model=None)(self._terminal_process_report)
         app.post(TermdeckConfig.API_RECLAIM_ORPHAN_TERMINALS_ROUTE, response_model=None)(self._reclaim_orphan_terminals)
         app.get(TermdeckConfig.API_SESSION_HISTORY_ROUTE, response_model=None)(self._session_history)
@@ -2775,6 +2776,10 @@ class TermdeckServer:
 
     async def _kill_stale_terminals(self) -> dict[str, object]:
         return await self.manager.kill_stale_running_sessions(TermdeckConfig.STALE_TERMINAL_AGE_SECONDS)
+
+    async def _restart_server(self) -> dict[str, bool]:
+        asyncio.create_task(self._restart_after_state_recovery())
+        return {"restart_scheduled": True}
 
     async def _terminal_process_report(self) -> dict[str, object]:
         return await self.manager.terminal_process_report()

@@ -63,6 +63,18 @@ const TERMINAL_FIND_DECORATIONS = Object.freeze({
 // renderer too (CSS could only ever style the DOM renderer's selection layer).
 const TERMINAL_FIND_SELECTION_BACKGROUND = TERMINAL_FIND_DECORATIONS.activeMatchBackground;
 const TERMINAL_FIND_SELECTION_FOREGROUND = "#ffffff";
+const MOBILE_TERMINAL_LONG_PRESS_MS = 450;
+const MOBILE_TERMINAL_SELECTION_MOVE_TOLERANCE = 12;
+const MOBILE_TERMINAL_SELECTION_BACKGROUND = "#287fd1";
+const MOBILE_TERMINAL_SELECTION_FOREGROUND = "#ffffff";
+const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
+const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
+const BROWSER_DEFER_INACTIVE_OUTPUT_KEY = "termdeck.browser_defer_inactive_terminal_output";
+const MOBILE_DISPLAY_SCALE_KEY = "termdeck.mobile_display_scale";
+const SERVER_LOCAL_SETTING_KEYS = new Set(["tall_webgl", "defer_inactive_terminal_output"]);
+const MOBILE_DISPLAY_SCALE_MIN = 0.8;
+const MOBILE_DISPLAY_SCALE_MAX = 1.6;
+const MOBILE_DISPLAY_SCALE_STEP = 0.1;
 // Tall-terminal row budget. WebGL backs the terminal with one drawing buffer sized to the FULL terminal
 // in DEVICE pixels, so the real ceiling is MAX_TEXTURE_SIZE / (cellHeight * devicePixelRatio). That dpr
 // term is why a row count measured safe on one machine is wrong on another: a retina display needs twice
@@ -115,6 +127,10 @@ const TALL_OVERSHOOT_DEADZONE_PX = 72;
 // redrawing itself reports one row fewer for a frame at a time, and reacting to each dip makes the box
 // oscillate; growth is always applied immediately, so nothing is ever unreachable while this waits.
 const TALL_SHRINK_SETTLE_MS = 400;
+const CODEX_COLLAPSE_SHRINK_SETTLE_MS = 1200;
+const CODEX_COMMAND_COLLAPSE_BYTES = new TextEncoder().encode("ctrl + t to view transcript");
+const CODEX_INITIAL_REPAINT_SETTLE_MS = 140;
+const CODEX_INITIAL_REPAINT_MAX_MS = 700;
 // How long to wait after attaching before deciding the terminal really has nothing to show. Long enough
 // for a replay to arrive and paint, short enough that a genuinely blank pane is not left sitting there.
 const TALL_BLANK_REPAINT_MS = 900;
@@ -485,6 +501,7 @@ class TermdeckApp {
     this.fileHistoryDiffBlockIndex = -1;
     this.fileHistoryDiffPending = false;
     this.historyOpen = false;
+    this.mobileTerminalSurfaceSessions = new Set();
     this.terminalLayoutTransitionGeneration = 0;
     this.terminalLayoutTransitioning = false;
     this.historyRefreshTimer = 0;
@@ -786,6 +803,95 @@ class TermdeckApp {
 
   touchMobileLayoutEnabled() {
     return window.matchMedia("(max-width: 900px), (hover: none) and (pointer: coarse)").matches;
+  }
+
+  browserBooleanSetting(storageKey, fallback) {
+    const stored = localStorage.getItem(storageKey);
+    return stored == null ? !!fallback : stored === "1";
+  }
+
+  setBrowserBooleanSetting(storageKey, enabled) {
+    localStorage.setItem(storageKey, enabled ? "1" : "0");
+  }
+
+  initializeBrowserRendererSettings() {
+    if (localStorage.getItem(BROWSER_TALL_WEBGL_KEY) == null) {
+      this.setBrowserBooleanSetting(BROWSER_TALL_WEBGL_KEY, this.settings.tall_webgl === true);
+    }
+    if (localStorage.getItem(BROWSER_DEFER_INACTIVE_OUTPUT_KEY) == null) {
+      this.setBrowserBooleanSetting(BROWSER_DEFER_INACTIVE_OUTPUT_KEY, this.settings.defer_inactive_terminal_output === true);
+    }
+  }
+
+  mobileDisplayScale() {
+    const stored = Number(localStorage.getItem(MOBILE_DISPLAY_SCALE_KEY));
+    if (!Number.isFinite(stored) || stored <= 0) return 1;
+    return Math.max(MOBILE_DISPLAY_SCALE_MIN, Math.min(MOBILE_DISPLAY_SCALE_MAX, stored));
+  }
+
+  displayScale() {
+    return this.touchMobileLayoutEnabled() ? this.mobileDisplayScale() : 1;
+  }
+
+  scaledSettingSize(key) {
+    const base = Number(this.settings[key]) || SETTINGS_DEFAULTS[key];
+    return Math.round(base * this.displayScale() * 100) / 100;
+  }
+
+  setMobileDisplayScale(scale) {
+    const normalized = Math.max(MOBILE_DISPLAY_SCALE_MIN, Math.min(MOBILE_DISPLAY_SCALE_MAX,
+      Math.round(Number(scale) / MOBILE_DISPLAY_SCALE_STEP) * MOBILE_DISPLAY_SCALE_STEP));
+    localStorage.setItem(MOBILE_DISPLAY_SCALE_KEY, String(normalized));
+    this.applySettings();
+  }
+
+  mobileSidebarPinned() {
+    return localStorage.getItem(MOBILE_SIDEBAR_PINNED_KEY) === "1";
+  }
+
+  syncMobileSidebarControls() {
+    const pinned = this.mobileSidebarPinned();
+    document.body.classList.toggle("mobile-sidebar-pinned", pinned);
+    const pin = this.$("mobile-sidebar-pin");
+    if (!pin) return;
+    pin.setAttribute("aria-pressed", String(pinned));
+    pin.title = pinned ? "Unpin sidebar" : "Keep sidebar open after selection";
+    pin.setAttribute("aria-label", pin.title);
+    const icon = pin.querySelector(".codicon");
+    icon?.classList.toggle("codicon-pin", !pinned);
+    icon?.classList.toggle("codicon-pinned", pinned);
+  }
+
+  setMobileSidebarCollapsed(collapsed) {
+    if (!this.touchMobileLayoutEnabled()) return;
+    const next = !!collapsed && !this.mobileSidebarPinned();
+    document.body.classList.toggle("mobile-sidebar-collapsed", next);
+    document.body.scrollTo({ left: 0, behavior: "auto" });
+    requestAnimationFrame(() => {
+      this.syncMobileVisualViewport();
+      this.scheduleTerminalLayoutFit();
+    });
+  }
+
+  collapseMobileSidebarAfterSelection() {
+    if (this.touchMobileLayoutEnabled() && !this.mobileSidebarPinned()) this.setMobileSidebarCollapsed(true);
+  }
+
+  initializeMobileSidebar() {
+    if (!this.touchMobileLayoutEnabled()) return;
+    document.body.classList.add("mobile-touch-layout");
+    document.body.classList.remove("mobile-sidebar-collapsed");
+    this.syncMobileSidebarControls();
+    this.$("mobile-sidebar-collapse").onclick = () => this.setMobileSidebarCollapsed(true);
+    this.$("mobile-sidebar-toggle").onclick = () => this.setMobileSidebarCollapsed(false);
+    this.$("mobile-display-smaller").onclick = () => this.setMobileDisplayScale(this.mobileDisplayScale() - MOBILE_DISPLAY_SCALE_STEP);
+    this.$("mobile-display-larger").onclick = () => this.setMobileDisplayScale(this.mobileDisplayScale() + MOBILE_DISPLAY_SCALE_STEP);
+    this.$("mobile-sidebar-pin").onclick = () => {
+      const pinned = !this.mobileSidebarPinned();
+      localStorage.setItem(MOBILE_SIDEBAR_PINNED_KEY, pinned ? "1" : "0");
+      this.syncMobileSidebarControls();
+      if (pinned) this.setMobileSidebarCollapsed(false);
+    };
   }
 
   syncMobileVisualViewport() {
@@ -1566,7 +1672,11 @@ class TermdeckApp {
     this.sidebarSelectedSessionIds.clear();
     this.applySidebarSelectionStyles();
     this.applySidebarFileSelectionStyles();
-    void this.activateFile(key, null, { fromOpenFiles: true });
+    void this.activateFile(key, null, { fromOpenFiles: true }).then(() => {
+      if (!event.shiftKey && !multiSelect && this.activeFileKey === key && this.openFiles.get(key)?.model) {
+        this.collapseMobileSidebarAfterSelection();
+      }
+    });
   }
 
   selectContextMenuFileKeys(key) {
@@ -1615,6 +1725,7 @@ class TermdeckApp {
     this.applySidebarSelectionStyles();
     this.applySidebarFileSelectionStyles();
     this.activate(sessionId);
+    if (!event.shiftKey && !multiSelect) this.collapseMobileSidebarAfterSelection();
   }
 
   selectedSessionIdsForDrag(sessionId) {
@@ -2602,6 +2713,7 @@ class TermdeckApp {
       }
     });
     await this.loadSettings();
+    this.initializeMobileSidebar();
     this.loadSearchHistory();
     await this.loadProjects();
     this.initializeEventlyDemoPresentation();
@@ -3016,6 +3128,7 @@ class TermdeckApp {
       e.stopImmediatePropagation();
       this.selectActiveTerminalText();
     }, true);
+    document.addEventListener("keydown", (e) => this.handleCodexCommandTranscriptShortcut(e), true);
     // Every per-element dragleave/drop/dragend only runs when the drag ends on that same element, so a
     // drag released anywhere else — empty sidebar, outside the window, Escape — strands its indicator.
     // Bubble phase, never capture: the drop handlers read .drop-after off the target to decide placement,
@@ -3682,13 +3795,14 @@ class TermdeckApp {
     const loadingState = this.$("initial-loading-state");
     loadingState.classList.add("loading");
     loadingState.classList.remove("hidden");
-    loadingState.textContent = "loading TermDeck…";
+    this.$("initial-loading-message").textContent = "loading TermDeck…";
   }
 
   showInitialLoadFailure() {
     const loadingState = this.$("initial-loading-state");
     loadingState.classList.remove("loading", "hidden");
-    loadingState.textContent = "unable to load TermDeck — retrying…";
+    this.$("initial-loading-message").textContent = "unable to load TermDeck — retrying…";
+    this.$("initial-loading-recovery").classList.remove("hidden");
   }
 
   finishInitialLoadingState() {
@@ -3703,7 +3817,7 @@ class TermdeckApp {
       const loadingState = this.$("initial-loading-state");
       loadingState.classList.add("loading");
       loadingState.classList.remove("hidden");
-      loadingState.textContent = "loading terminal session…";
+      this.$("initial-loading-message").textContent = "loading terminal session…";
       return;
     }
     this.finishInitialPageContentLoading();
@@ -3962,7 +4076,7 @@ class TermdeckApp {
     const session = this.session(id);
     if (!icon || !session) return;
     const enabled = this.terminalIconEnabledForAgent(session.agent_kind);
-    const visible = enabled && !!session.running;
+    const visible = enabled;
     icon.classList.toggle("on", visible);
     icon.closest(".session-item")?.classList.toggle("terminal-icons-hidden", !visible);
     const active = visible && (!!this.processingStates.get(id) || this.unreadSessions.has(id));
@@ -5044,9 +5158,18 @@ class TermdeckApp {
              selectionForeground: TERMINAL_FIND_SELECTION_FOREGROUND };
   }
 
+  terminalDisplayTheme(view = null) {
+    const mobileSelection = this.touchMobileLayoutEnabled()
+      ? { selectionBackground: MOBILE_TERMINAL_SELECTION_BACKGROUND,
+          selectionInactiveBackground: MOBILE_TERMINAL_SELECTION_BACKGROUND,
+          selectionForeground: MOBILE_TERMINAL_SELECTION_FOREGROUND }
+      : {};
+    return { ...this.termTheme(), ...mobileSelection, ...(this.terminalFindThemeOverride(view) || {}) };
+  }
+
   applyTerminalFindHighlight(view) {
     if (!view || view.closed || !view.term) return;
-    view.term.options.theme = { ...this.termTheme(), ...(this.terminalFindThemeOverride(view) || {}) };
+    view.term.options.theme = this.terminalDisplayTheme(view);
   }
 
   prepareTerminalFindNavigation(view) {
@@ -5672,7 +5795,7 @@ class TermdeckApp {
     icon.classList.toggle("claude-terminal-icon", s.agent_kind === "claude");
     icon.classList.toggle("codex-terminal-icon", s.agent_kind === "codex");
     icon.classList.toggle("agy-terminal-icon", s.agent_kind === "agy");
-    icon.classList.toggle("on", this.terminalIconEnabledForAgent(s.agent_kind) && !!s.running);
+    icon.classList.toggle("on", this.terminalIconEnabledForAgent(s.agent_kind));
     return icon;
   }
 
@@ -5763,7 +5886,7 @@ class TermdeckApp {
     item.style.setProperty("--session-age-color", this.terminalAgeColor(s));
     this.sessionRowEls.set(s.session_id, item);
     const presentation = this.titlePresentation(s);
-    const showDesktopBrandIndicator = !this.vscodeMode && !!s.running && this.terminalIconEnabledForAgent(s.agent_kind);
+    const showDesktopBrandIndicator = !this.vscodeMode && this.terminalIconEnabledForAgent(s.agent_kind);
     const useTextStatusIndicator = !this.vscodeMode && !showDesktopBrandIndicator;
     if (useTextStatusIndicator) item.classList.add("terminal-icons-hidden");
     const dot = document.createElement("span");
@@ -8838,9 +8961,8 @@ class TermdeckApp {
       const button = this.$(id);
       if (button) button.title = `${button.title} · middle/right-click opens file mode in a new tab`;
     }
-    const notebookToggle = this.$("notebook-toggle");
     const notebookTitle = `Quick notebook (${this.bindingToDisplay(this.bindingFor("toggle-notebook"))})`;
-    for (const button of [notebookToggle, this.$("file-tabs-notebook")]) {
+    for (const button of [this.$("notebook-toggle"), this.$("file-tabs-notebook"), this.$("mobile-notebook-toggle")]) {
       if (button) button.title = notebookTitle;
     }
     const scrollBottomAction = this.bindingToDisplay(this.bindingFor("scroll-bottom"));
@@ -9519,7 +9641,9 @@ class TermdeckApp {
       this.bindTerminalSearchHoverPopup(item, searchMatch);
       item.onclick = () => {
         this.setInteractionWorktreeFromElement(item, c);
-        this.reopenClosed(c.session_id);
+        void this.reopenClosed(c.session_id).then((reopened) => {
+          if (reopened) this.collapseMobileSidebarAfterSelection();
+        });
       };
       item.onfocus = () => {
         if (this.terminalSearchText.trim()) this.terminalSearchFocusIndex = this.terminalSearchRows().indexOf(item);
@@ -10222,7 +10346,7 @@ class TermdeckApp {
 
   fileHistoryEditorOptions() {
     return { automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
-      fontSize: this.settings.code_font_size, lineNumbersMinChars: 4, renderLineHighlight: "all", folding: true,
+      fontSize: this.scaledSettingSize("code_font_size"), lineNumbersMinChars: 4, renderLineHighlight: "all", folding: true,
       wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true };
   }
 
@@ -10597,6 +10721,7 @@ class TermdeckApp {
 
   selectedHistoryMode(session = this.session(this.activeId)) {
     if (!this.sessionSupportsTranscript(session)) return false;
+    if (this.touchMobileLayoutEnabled()) return !this.mobileTerminalSurfaceSessions.has(session.session_id);
     const savedMode = this.getProjectState().session_view_modes?.[session.session_id];
     if (savedMode === "markdown" || savedMode === "terminal") return savedMode === "markdown";
     return this.settings.transcript_first_surface === "markdown";
@@ -10619,6 +10744,7 @@ class TermdeckApp {
     const historyMode = this.historyOpen && !fileMode && !gitReviewMode;
     const transcriptSupported = this.sessionSupportsTranscript();
     const transcriptFirstMode = historyMode && this.usesTranscriptFirstSession();
+    document.body.classList.toggle("mobile-history-surface", this.touchMobileLayoutEnabled() && historyMode);
     const fileWorkspaceMode = fileMode || FILES_SIDE_PANEL_TABS.includes(this.sideView);
     this.$("file-tabs-bar").classList.toggle("hidden",
       this.vscodeMode || (!fileMode && !FILES_SIDE_PANEL_TABS.includes(this.sideView)));
@@ -10886,12 +11012,17 @@ class TermdeckApp {
   setHistoryMode(enabled, options = {}) {
     if (!this.activeId) return;
     if (enabled && !this.sessionSupportsTranscript()) return;
+    const mobileTranscriptMode = this.touchMobileLayoutEnabled() && this.sessionSupportsTranscript();
+    if (mobileTranscriptMode) {
+      if (enabled) this.mobileTerminalSurfaceSessions.delete(this.activeId);
+      else this.mobileTerminalSurfaceSessions.add(this.activeId);
+    }
     if (this.historyOpen && !enabled) this.rememberHistoryScrollPosition(this.activeId);
     this.closeTerminalFind();
     this.hideSelectionActions(true);
     if (!enabled) this.closePromptHistory();
     const mode = enabled ? "markdown" : "terminal";
-    if (options.persist !== false) {
+    if (options.persist !== false && !mobileTranscriptMode) {
       const sessionViewModes = { ...(this.getProjectState().session_view_modes || {}), [this.activeId]: mode };
       this.applyLocalProjectStatePatch({ session_view_modes: sessionViewModes });
       this.queueProjectResourceRequest(this.projectStateKey(),
@@ -11551,7 +11682,6 @@ class TermdeckApp {
     }
     this.sendInput(view, data);
     if (submittedText && view.ws && view.ws.readyState === WebSocket.OPEN) this.recordPromptHistory(view.sessionId, submittedText);
-    if (view.promptDraft !== previousDraft && !pastedInput) this.sendPromptDraftSync(view, view.promptDraft);
     if (queueText) {
       view.promptDraft = "";
       view.promptEditing = false;
@@ -11561,6 +11691,83 @@ class TermdeckApp {
       this.sendPromptDraftSync(view, "");
       this.showPromptDraft(view);
     }
+  }
+
+  normalizeMobileTerminalInput(view, data) {
+    const input = String(data || "");
+    if (!this.touchMobileLayoutEnabled() || view.promptPaste || /[\x00-\x1f\x7f\x1b]/.test(input)) return input;
+    const imeDelta = this.consumeMobileTerminalImeDelta(view);
+    if (imeDelta !== null) return imeDelta;
+    if (input.length <= 1) return input;
+    const draft = String(view.promptDraft || "");
+    if (draft.length < 8) return input;
+    if (input.startsWith(draft)) return input.slice(draft.length);
+    if (draft.startsWith(input) && input.length >= Math.floor(draft.length * 0.8)) return "";
+    return input;
+  }
+
+  consumeMobileTerminalImeDelta(view) {
+    const baseline = view.mobileImeTextareaBaseline;
+    if (baseline == null) return null;
+    view.mobileImeTextareaBaseline = null;
+    if (Date.now() > Number(view.mobileImeTextareaDeadline || 0)) return null;
+    const textarea = view.term?.textarea || view.container?.querySelector(".xterm-helper-textarea");
+    const current = String(textarea?.value || "");
+    if (current === baseline) return null;
+    let prefixLength = 0;
+    while (prefixLength < baseline.length && prefixLength < current.length &&
+           baseline[prefixLength] === current[prefixLength]) prefixLength += 1;
+    let suffixLength = 0;
+    while (suffixLength < baseline.length - prefixLength && suffixLength < current.length - prefixLength &&
+           baseline[baseline.length - suffixLength - 1] === current[current.length - suffixLength - 1]) suffixLength += 1;
+    const inserted = current.slice(prefixLength, current.length - suffixLength);
+    if (inserted) return inserted;
+    return "\x7f".repeat(Math.max(0, baseline.length - prefixLength - suffixLength));
+  }
+
+  installMobileTerminalTextareaStabilizer(view) {
+    if (!this.touchMobileLayoutEnabled() || view.term.options.screenReaderMode) return;
+    const textarea = view.term.textarea || view.container.querySelector(".xterm-helper-textarea");
+    if (!textarea) return;
+    let composing = false;
+    const clearTextarea = () => {
+      view.mobileTextareaCleanupTimer = 0;
+      if (composing || view.closed) return;
+      textarea.value = "";
+      textarea.setSelectionRange(0, 0);
+    };
+    const scheduleTextareaClear = () => {
+      if (composing || view.mobileTextareaCleanupTimer) return;
+      view.mobileTextareaCleanupTimer = window.setTimeout(clearTextarea, 40);
+    };
+    const handleKeyDown = (event) => {
+      if ((event.keyCode || event.which) !== 229 || event.isComposing || composing) return;
+      view.mobileImeTextareaBaseline = textarea.value;
+      view.mobileImeTextareaDeadline = Date.now() + 250;
+    };
+    const handleCompositionStart = () => {
+      composing = true;
+      clearTimeout(view.mobileTextareaCleanupTimer);
+      view.mobileTextareaCleanupTimer = 0;
+    };
+    const handleCompositionEnd = () => {
+      composing = false;
+      scheduleTextareaClear();
+    };
+    const handleInput = (event) => {
+      if (!event.isComposing) scheduleTextareaClear();
+    };
+    textarea.addEventListener("keydown", handleKeyDown, true);
+    textarea.addEventListener("compositionstart", handleCompositionStart, true);
+    textarea.addEventListener("compositionend", handleCompositionEnd, true);
+    textarea.addEventListener("input", handleInput, true);
+    view.disposeMobileTextareaStabilizer = () => {
+      textarea.removeEventListener("keydown", handleKeyDown, true);
+      textarea.removeEventListener("compositionstart", handleCompositionStart, true);
+      textarea.removeEventListener("compositionend", handleCompositionEnd, true);
+      textarea.removeEventListener("input", handleInput, true);
+      clearTimeout(view.mobileTextareaCleanupTimer);
+    };
   }
 
   updatePromptDraftFromTerminal(view, data) {
@@ -12046,7 +12253,7 @@ class TermdeckApp {
   }
 
   initNotebook() {
-    const toggles = [this.$("notebook-toggle"), this.$("file-tabs-notebook")].filter(Boolean);
+    const toggles = [this.$("notebook-toggle"), this.$("file-tabs-notebook"), this.$("mobile-notebook-toggle")].filter(Boolean);
     const panel = this.$("notebook-panel");
     const host = this.$("notebook-editor-host");
     if (!toggles.length || !panel || !host) return;
@@ -13082,7 +13289,7 @@ class TermdeckApp {
     const host = this.$("secondary-editor-host");
     host.textContent = "";
     const options = { automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
-      fontSize: this.settings.code_font_size, wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true };
+      fontSize: this.scaledSettingSize("code_font_size"), wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true };
     if (diff) {
       this.secondaryDiffEditor = monaco.editor.createDiffEditor(host, { ...options, readOnly: true, renderSideBySide: false });
       this.secondaryDiffEditor.setModel({ original: activeEntry.model, modified: secondaryEntry.model });
@@ -13390,6 +13597,112 @@ class TermdeckApp {
     return text && rect ? { kind: "terminal", sessionId: view.sessionId, text, rect } : null;
   }
 
+  mobileTerminalSelectionPoint(view, touch) {
+    const screen = view.container.querySelector(".xterm-screen");
+    const dimensions = view.term._core?._renderService?.dimensions?.css?.cell;
+    const buffer = view.term.buffer.active;
+    if (!screen || !dimensions?.width || !dimensions?.height || !buffer?.length) return null;
+    const bounds = screen.getBoundingClientRect();
+    const column = Math.max(0, Math.min(view.term.cols - 1, Math.floor((touch.clientX - bounds.left) / dimensions.width)));
+    const visibleRow = Math.floor((touch.clientY - bounds.top) / dimensions.height);
+    const row = Math.max(0, Math.min(buffer.length - 1, buffer.viewportY + visibleRow));
+    return { column, row };
+  }
+
+  mobileTerminalWordRange(view, point) {
+    const line = view.term.buffer.active.getLine(point.row);
+    const text = line?.translateToString(false) || "";
+    if (!text || /\s/.test(text[point.column] || " ")) return { start: point, end: point };
+    let startColumn = point.column;
+    let endColumn = point.column;
+    while (startColumn > 0 && !/\s/.test(text[startColumn - 1] || " ")) startColumn -= 1;
+    while (endColumn + 1 < view.term.cols && !/\s/.test(text[endColumn + 1] || " ")) endColumn += 1;
+    return { start: { column: startColumn, row: point.row }, end: { column: endColumn, row: point.row } };
+  }
+
+  selectMobileTerminalRange(view, start, end) {
+    const columns = view.term.cols;
+    const startIndex = start.row * columns + start.column;
+    const endIndex = end.row * columns + end.column;
+    const first = startIndex <= endIndex ? start : end;
+    view.term.select(first.column, first.row, Math.abs(endIndex - startIndex) + 1);
+  }
+
+  cancelMobileTerminalLongPress(view) {
+    const state = view.mobileTerminalSelection;
+    if (state?.timer) clearTimeout(state.timer);
+    view.mobileTerminalSelection = null;
+  }
+
+  installMobileTerminalLongPressSelection(view) {
+    if (!this.touchMobileLayoutEnabled()) return;
+    const surface = view.container.querySelector(".xterm");
+    if (!surface) return;
+    surface.addEventListener("touchstart", (event) => {
+      this.cancelMobileTerminalLongPress(view);
+      if (event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      const state = { identifier: touch.identifier, startX: touch.clientX, startY: touch.clientY,
+        lastX: touch.clientX, lastY: touch.clientY, active: false, wordRange: null, timer: 0 };
+      state.timer = window.setTimeout(() => {
+        state.timer = 0;
+        if (view.closed || view.mobileTerminalSelection !== state || !view.container.classList.contains("visible")) return;
+        const point = this.mobileTerminalSelectionPoint(view, { clientX: state.lastX, clientY: state.lastY });
+        if (!point) return;
+        state.active = true;
+        state.wordRange = this.mobileTerminalWordRange(view, point);
+        this.selectMobileTerminalRange(view, state.wordRange.start, state.wordRange.end);
+      }, MOBILE_TERMINAL_LONG_PRESS_MS);
+      view.mobileTerminalSelection = state;
+    }, { passive: true, capture: true });
+    surface.addEventListener("touchmove", (event) => {
+      const state = view.mobileTerminalSelection;
+      if (event.touches.length !== 1) {
+        this.cancelMobileTerminalLongPress(view);
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (!state) return;
+      const touch = [...event.touches].find((candidate) => candidate.identifier === state.identifier);
+      if (!touch) return;
+      state.lastX = touch.clientX;
+      state.lastY = touch.clientY;
+      if (!state.active) {
+        if (Math.hypot(touch.clientX - state.startX, touch.clientY - state.startY) > MOBILE_TERMINAL_SELECTION_MOVE_TOLERANCE) {
+          this.cancelMobileTerminalLongPress(view);
+        }
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const point = this.mobileTerminalSelectionPoint(view, touch);
+      if (!point || !state.wordRange) return;
+      const pointIndex = point.row * view.term.cols + point.column;
+      const startIndex = state.wordRange.start.row * view.term.cols + state.wordRange.start.column;
+      const endIndex = state.wordRange.end.row * view.term.cols + state.wordRange.end.column;
+      this.selectMobileTerminalRange(view, pointIndex < startIndex ? point : state.wordRange.start,
+        pointIndex > endIndex ? point : state.wordRange.end);
+    }, { passive: false, capture: true });
+    surface.addEventListener("touchend", (event) => {
+      const state = view.mobileTerminalSelection;
+      if (!state) return;
+      if (state.timer) clearTimeout(state.timer);
+      if (state.active) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const changedTouch = [...event.changedTouches].find((candidate) => candidate.identifier === state.identifier);
+        window.setTimeout(() => {
+          const selectionState = this.readSelectionActionState(surface);
+          if (selectionState) this.openSelectionContextMenu(selectionState,
+            { x: changedTouch?.clientX || state.lastX, y: changedTouch?.clientY || state.lastY }, "terminal");
+        }, 0);
+      }
+      view.mobileTerminalSelection = null;
+    }, { passive: false, capture: true });
+    surface.addEventListener("touchcancel", () => this.cancelMobileTerminalLongPress(view), { passive: true, capture: true });
+    surface.addEventListener("touchmove", (event) => event.stopImmediatePropagation(), { passive: true, capture: true });
+  }
+
   markdownSelectionText(range, body, rawText) {
     const selectedItems = [...body.querySelectorAll(".markdown li")].filter((item) => range.intersectsNode(item));
     const previousMarkers = selectedItems.map((item) => [item, item.getAttribute("data-termdeck-selection-marker")]);
@@ -13540,8 +13853,8 @@ class TermdeckApp {
       this.addContextItem(menu, "Append to note", hasSelection ? () => { void this.appendSelectionToNotebook(); } : null, "comment-add");
       this.addContextItem(menu, "File contents", hasSelection ? () => this.searchContentFromSelection() : null, "search");
       this.addContextItem(menu, "File name", hasSelection ? () => this.searchFileFromSelection() : null, "symbol-file");
-      if (selectionState.kind === "terminal" && this.session(this.activeId)?.agent_kind === "codex") {
-        this.addContextItem(menu, "Repaint Codex display", () => this.repaintActiveCodexDisplay(), "refresh");
+      if (selectionState.kind === "terminal") {
+        this.addContextItem(menu, "Repaint display", () => this.repaintActiveTerminalDisplay(), "refresh");
       }
       const agentEntries = [{
         label: "New agent…",
@@ -14337,7 +14650,7 @@ class TermdeckApp {
 
   renderNotebook() {
     const panel = this.$("notebook-panel");
-    const toggles = [this.$("notebook-toggle"), this.$("file-tabs-notebook")].filter(Boolean);
+    const toggles = [this.$("notebook-toggle"), this.$("file-tabs-notebook"), this.$("mobile-notebook-toggle")].filter(Boolean);
     if (!panel || !toggles.length) return;
     panel.classList.toggle("notebook-over-file-area",
       this.activeFileKey !== null || FILES_SIDE_PANEL_TABS.includes(this.sideView));
@@ -14681,7 +14994,13 @@ class TermdeckApp {
         // read anything while the agent worked. Scrolling UP is unambiguous on its own, so it takes
         // effect on the spot; only the decision to RESUME following needs the settled position, which is
         // what the debounce below still handles.
-        if (event.deltaY < 0) wheelView.tallFollowing = false;
+        if (event.deltaY < 0) {
+          wheelView.tallFollowing = false;
+          wheelView.tallUserBottomReturnCeiling = null;
+        } else if (wheelView.tallMaxScrollTop != null &&
+                   container.scrollTop + event.deltaY >= wheelView.tallMaxScrollTop - TALL_BOTTOM_TOLERANCE_PX) {
+          wheelView.tallUserBottomReturnCeiling = wheelView.tallMaxScrollTop;
+        }
         // Writes must not fight an in-progress gesture either: while the wheel is still moving, the
         // not-following branch of drainTerminalWrites would keep restoring an anchor captured before
         // this gesture started, which reads as the view refusing to scroll.
@@ -14760,6 +15079,14 @@ class TermdeckApp {
       window.removeEventListener("pointercancel", releaseTallPointer, true);
       if (!view || view.closed) return;
       view.tallPointerHeld = false;
+      const rememberedBottom = view.tallUserBottomReturnCeiling;
+      if (view.tallMaxScrollTop != null &&
+          container.scrollTop >= view.tallMaxScrollTop - TALL_BOTTOM_TOLERANCE_PX) {
+        view.tallUserBottomReturnCeiling = view.tallMaxScrollTop;
+      } else if (rememberedBottom != null &&
+                 container.scrollTop < rememberedBottom - TALL_BOTTOM_TOLERANCE_PX) {
+        view.tallUserBottomReturnCeiling = null;
+      }
       view.tallUserScrollIntentPending = true;
       view.tallScrollActiveUntil = Date.now() + TALL_SCROLL_ACTIVE_MS;
       scheduleTallSettle();       // now that it is released, let it settle exactly once
@@ -14784,6 +15111,10 @@ class TermdeckApp {
         container.scrollTop === view.tallLastProgrammaticTop;
       view.tallProgrammaticScrollPending = false;
       if (echoOfOurOwnWrite) return;
+      if (view.tallUserScrollIntentPending && view.tallMaxScrollTop != null &&
+          container.scrollTop >= view.tallMaxScrollTop - TALL_BOTTOM_TOLERANCE_PX) {
+        view.tallUserBottomReturnCeiling = view.tallMaxScrollTop;
+      }
       // Marks a gesture as in progress. Writes check this and leave the view completely alone while it is
       // set: a scrollbar drag or an autoscroll keeps producing scroll events, and a write that re-asserts
       // the follow position in the middle of one is what tears the text between two positions.
@@ -14869,7 +15200,7 @@ class TermdeckApp {
       this.tallSetScrollTop(view, edge + subRow * cellHeight);
     }, { passive: false });
     const term = new Terminal({
-      fontSize: this.settings.terminal_font_size, fontFamily: '"SF Mono", Menlo, monospace', letterSpacing: -0.2, theme: this.termTheme(),
+      fontSize: this.scaledSettingSize("terminal_font_size"), fontFamily: '"SF Mono", Menlo, monospace', letterSpacing: -0.2, theme: this.terminalDisplayTheme(),
       // scrollOnUserInput must be off: it scrolls xterm's own viewport to the buffer bottom on every
       // keystroke, but that viewport is DERIVED from the container's scroll position in this layout
       // (tallSyncBufferToScroll), so each key bounced it down a row and the sync pulled it back -- both
@@ -14961,6 +15292,7 @@ class TermdeckApp {
                    promptSubmissionReflowGuardUntil: 0, promptSubmissionReflowGuardTimer: 0,
                    attentionScreenDetectionSuppressed: false,
                    reconnectAfterClose: false, claudeInitialReplayCheckTimer: 0,
+                   initialCodexRepaintTimer: 0, initialCodexRepaintWatchdogTimer: 0,
                    claudeInitialReplayRecoveryAttempted: false,
                    claudeStatusRowRefreshTimer: 0, historyModelRefreshTimer: 0, lastClaudeStatusRowRefreshAt: 0,
                    codexFocusRefreshFrame: 0,
@@ -14969,8 +15301,13 @@ class TermdeckApp {
                    pendingDraftSync: null, pendingTerminalDraft: null, pendingAgentPaste: "", pendingAgentPasteTimer: 0,
                    pendingAgentPasteStartedAt: 0, pendingAgentPasteReadyAt: 0, pendingAgentPasteExpectedTitle: "",
                    pendingAgentPasteRequireComposer: false, lastTerminalOutputAt: 0,
-                   promptEditVersion: 0, promptSubmitVersion: -1 };
+                   promptEditVersion: 0, promptSubmitVersion: -1,
+                   mobileImeTextareaBaseline: null, mobileImeTextareaDeadline: 0, mobileTextareaCleanupTimer: 0,
+                   disposeMobileTextareaStabilizer: null };
     view.terminalFindResultListener = terminalFindAddon?.onDidChangeResults((result) => this.updateTerminalFindResultCount(view, result)) || null;
+    view.mobileSelectionChangeObserver = term.onSelectionChange(() => this.scheduleSelectionActions());
+    this.installMobileTerminalLongPressSelection(view);
+    this.installMobileTerminalTextareaStabilizer(view);
     const releaseManualScrollWhenStable = () => {
       clearTimeout(view.manualScrollReleaseTimer);
       const generation = view.manualScrollGeneration;
@@ -15104,13 +15441,17 @@ class TermdeckApp {
       if (tallTypingKey) {
         const tallView = this.views.get(id);
         if (tallView) {
+          const wasFollowing = tallView.tallFollowing !== false;
           tallView.tallFollowing = true;
-          this.scrollTallContainerToCursor(tallView);
+          if (!wasFollowing) this.scrollTallContainerToCursor(tallView);
         }
       }
       return this.handleTerminalEditingKeys(view, e);
     });
-    term.onData((data) => this.sendTrackedInput(view, data));
+    term.onData((data) => {
+      const normalizedInput = this.normalizeMobileTerminalInput(view, data);
+      if (normalizedInput) this.sendTrackedInput(view, normalizedInput);
+    });
     term.onResize(({ cols, rows }) => {
       if (!view.suppressResizeToServer) this.sendResize(view, cols, rows);
     });
@@ -15318,7 +15659,7 @@ class TermdeckApp {
     const hasPopulatedBuffer = view.everConnected && !view.closed && view.term?.buffer?.active?.baseY > 0;
     // A fresh client has no trustworthy terminal screen after a server restart. Ask the live agent to
     // repaint it; a reconnect that already has a populated xterm buffer can skip the SIGWINCH nudge.
-    const screenRepaint = hasPopulatedBuffer ? 0 : 1;
+    const screenRepaint = hasPopulatedBuffer || this.session(id)?.agent_kind === "codex" ? 0 : 1;
     const haveBuffer = hasPopulatedBuffer ? 1 : 0;
     const fullClaudeRawReplay = !hasPopulatedBuffer && this.session(id)?.agent_kind === "claude" ? 1 : 0;
     // repaint_preserved_buffer is deliberately not sent: it only ever meant "this client restored a
@@ -15414,7 +15755,6 @@ class TermdeckApp {
         this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
           this.refreshTerminal(view);
           view.replaying = false;
-          this.finishInitialPageContentLoading(id);
           // Replay finished, so the cursor finally describes the real screen: take the geometry and the
           // follow position from it once, rather than from every intermediate frame.
           this.tallUpdateMaxScrollTop(view);
@@ -15423,7 +15763,19 @@ class TermdeckApp {
           // restart there is no saved scrollback to replay, so nothing arrives and the pane would just
           // stay blank. Asking only here keeps the attach-time repaint off in the common case, where the
           // buffer already holds the screen and repainting is what causes the flicker.
-          this.requestRepaintIfBlank(view);
+          const initialRepaintRequested = this.requestRepaintIfBlank(view);
+          if (initialRepaintRequested) {
+            clearTimeout(view.initialCodexRepaintTimer);
+            clearTimeout(view.initialCodexRepaintWatchdogTimer);
+            view.initialCodexRepaintTimer = 0;
+            view.initialCodexRepaintWatchdogTimer = 0;
+            view.initialCodexRepaintPending = true;
+            view.initialCodexRepaintStartedAt = Date.now();
+            view.initialCodexRepaintOutputSeen = false;
+            this.scheduleInitialCodexRepaintCompletion(view);
+          } else {
+            this.finishInitialPageContentLoading(id);
+          }
           this.schedulePendingAgentPaste(view);
           if (v2 && view.container.classList.contains("visible")) {
             const firstSnapshot = !view.initialSnapshotPainted;
@@ -15526,6 +15878,7 @@ class TermdeckApp {
       this.selectActiveTerminalText();
       return false;
     }
+    if (this.handleCodexCommandTranscriptShortcut(e, view)) return false;
     if (this.tryAppShortcut(e)) return false;
     if (e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
@@ -15900,14 +16253,14 @@ class TermdeckApp {
     view.term.focus();
   }
 
-  repaintActiveCodexDisplay() {
+  repaintActiveTerminalDisplay() {
     const id = this.activeId;
     const view = this.views.get(id);
-    if (!view || this.activeFileKey !== null || this.historyOpen || this.session(id)?.agent_kind !== "codex") return;
+    if (!view || this.activeFileKey !== null || this.historyOpen || !this.session(id)) return;
     if (this.terminalTailRenderMismatch(view)) {
       view.renderRepairArmed = true;
       if (this.repairTerminalRenderIfStale(view)) {
-        this.$("status-name").textContent = "Codex display repainted";
+        this.$("status-name").textContent = "Terminal display repainted";
         return;
       }
     }
@@ -15916,7 +16269,7 @@ class TermdeckApp {
     const anchor = this.captureTerminalViewportAnchor(view, { preserveFollow: true, restoreAfterDeadline: true });
     this.beginTerminalViewportRestore(view, anchor);
     view.ws.send(JSON.stringify({ type: "repaint" }));
-    this.$("status-name").textContent = "requesting Codex repaint…";
+    this.$("status-name").textContent = "requesting terminal repaint…";
   }
 
   scrollHistoryToBottom() {
@@ -16778,13 +17131,15 @@ class TermdeckApp {
         }
       } else if (wholeTop < wholeTarget) {
         this.tallSetScrollTop(view, wholeTarget);
-      } else if (wholeTop > capPx) {
+      } else if (wholeTop > capPx && !codexCollapseSettling) {
         // The cursor's row is above the visible top: this is the one case a write may pull the view UP
         // (a popup taller than the screen just opened under the composer). A cursor that is merely
         // higher than usual but still on screen is NOT one -- a TUI repaint walks the cursor through the
         // frame it is redrawing, and pty chunking can land a write callback mid-repaint, so chasing
         // every transient cursor position bounced the view up and down under ordinary typing.
         this.tallSetScrollTop(view, wholeTarget);
+      } else if (wholeTop > capPx) {
+        this.scheduleTallGeometrySettle(view, view.codexCollapseSettleUntil - Date.now());
       } else if (wholeTop > view.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
         this.tallSetScrollTop(view, view.tallMaxScrollTop);
       }
@@ -16809,13 +17164,16 @@ class TermdeckApp {
       ? Math.min(view.tallMaxScrollTop, this.tallFollowCursorCap(view, domCell))
       : view.tallMaxScrollTop;
     const top = view.container.scrollTop;
+    const codexCollapseSettling = Date.now() < Number(view.codexCollapseSettleUntil || 0);
     if (userSettled) {
       if (top < target) this.tallSetScrollTop(view, target);
       else if (top > view.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
         this.tallSetScrollTop(view, view.tallMaxScrollTop);
       }
-    } else if (top < target || top > target + TALL_OVERSHOOT_DEADZONE_PX) {
+    } else if (top < target || (!codexCollapseSettling && top > target + TALL_OVERSHOOT_DEADZONE_PX)) {
       this.tallSetScrollTop(view, target);
+    } else if (top > target + TALL_OVERSHOOT_DEADZONE_PX) {
+      this.scheduleTallGeometrySettle(view, view.codexCollapseSettleUntil - Date.now());
     }
     // Where a following view belongs as of this placement. The settle handler needs it kept, because the
     // ceiling keeps moving afterwards -- see tallApplySettledScroll.
@@ -16838,6 +17196,8 @@ class TermdeckApp {
     view.tallPinnedViewportY = null;
     view.tallFollowTop = null;
     view.tallFollowing = true;
+    view.tallUserBottomReturnCeiling = null;
+    view.codexCollapseSettleUntil = 0;
     this.tallReleaseAnchorMarker(view);
     this.tallSetScrollTop(view, 0);
   }
@@ -17129,13 +17489,14 @@ class TermdeckApp {
       this.cancelTallGeometrySettle(view);
     } else {
       if (view.tallCeilingShrinkSince == null) view.tallCeilingShrinkSince = Date.now();
-      const shrinkElapsed = Date.now() - view.tallCeilingShrinkSince;
-      if (shrinkElapsed >= TALL_SHRINK_SETTLE_MS) {
+      const shrinkReadyAt = Math.max(view.tallCeilingShrinkSince + TALL_SHRINK_SETTLE_MS,
+        Number(view.codexCollapseSettleUntil || 0));
+      if (Date.now() >= shrinkReadyAt) {
         view.tallMaxScrollTop = next;
         view.tallCeilingShrinkSince = null;
         this.cancelTallGeometrySettle(view);
       } else {
-        this.scheduleTallGeometrySettle(view, TALL_SHRINK_SETTLE_MS - shrinkElapsed);
+        this.scheduleTallGeometrySettle(view, shrinkReadyAt - Date.now());
       }
     }
     this.tallApplyGeometry(view);
@@ -17225,6 +17586,12 @@ class TermdeckApp {
       let offset = 0;
       for (const item of batch) { payload.set(item.data, offset); offset += item.data.length; }
     }
+    const codexCommandCollapse = this.session(view.sessionId)?.agent_kind === "codex" &&
+      !view.replaying && !view.awaitingSnapshot && this.terminalPayloadContainsBytes(payload, CODEX_COMMAND_COLLAPSE_BYTES);
+    const codexCommandCollapseAnchor = codexCommandCollapse ? this.captureCodexCommandCollapseAnchor(view, following) : null;
+    if (codexCommandCollapse) {
+      view.codexCollapseSettleUntil = Date.now() + CODEX_COLLAPSE_SHRINK_SETTLE_MS;
+    }
     view.term.write(payload, () => {
       // Always release the writer. A reconnect invalidates the old callback's
       // UI work but must not strand the new connection's queued output.
@@ -17236,6 +17603,7 @@ class TermdeckApp {
         }
       }
       if (live) {
+        this.restoreCodexCommandCollapseAnchor(view, codexCommandCollapseAnchor);
         // Kept up to date regardless of following (see tallUpdateMaxScrollTop's comment) -- it no-ops on
         // a mid-padding write (see tallCursorRegionMostlyBlank's comment), which also means
         // scrollTallContainerToCursor below correctly leaves scrollTop alone for that one cycle instead
@@ -17289,6 +17657,10 @@ class TermdeckApp {
       if (live) this.scheduleClaudeStatusRowRefresh(view);
       if (live) this.scheduleTerminalTailRepair(view);
       if (live) this.scheduleTerminalViewportRestore(view);
+      if (live && view.initialCodexRepaintPending) {
+        view.initialCodexRepaintOutputSeen = true;
+        this.scheduleInitialCodexRepaintCompletion(view);
+      }
       if (view.closed) return;
       if (!view.outputQueue.length) {
         view.inactiveOutputDeferred = false;
@@ -17357,7 +17729,7 @@ class TermdeckApp {
 
   refreshTerminalAppearance(view, forceResize = false) {
     if (!view || !view.term) return;
-    view.term.options.theme = { ...this.termTheme(), ...(this.terminalFindThemeOverride(view) || {}) };
+    view.term.options.theme = this.terminalDisplayTheme(view);
     if (typeof view.term.clearTextureAtlas === "function") view.term.clearTextureAtlas();
     const renderService = view.term._core?._renderService;
     const allowForcedRendererReset = forceResize;
@@ -17425,11 +17797,14 @@ class TermdeckApp {
     clearTimeout(view.tailRepairTimer);
     clearTimeout(view.tailRepairConfirmTimer);
     clearTimeout(view.claudeInitialReplayCheckTimer);
+    clearTimeout(view.initialCodexRepaintTimer);
+    clearTimeout(view.initialCodexRepaintWatchdogTimer);
     clearTimeout(view.claudeStatusRowRefreshTimer);
     clearTimeout(view.historyModelRefreshTimer);
     clearTimeout(view.promptSubmissionReflowGuardTimer);
     clearTimeout(view.promptDraftSyncTimer);
     clearTimeout(view.promptDraftSyncDebounceTimer);
+    view.disposeMobileTextareaStabilizer?.();
     clearTimeout(view.pendingAgentPasteTimer);
     clearTimeout(view.inactiveOutputDrainTimer);
     clearTimeout(view.claudeWebglColdPrimeTimer);
@@ -17489,6 +17864,7 @@ class TermdeckApp {
       delete incoming.claude_raw_replay_experimental;
       delete incoming.claude_full_raw_replay_experimental;
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
+      this.initializeBrowserRendererSettings();
       this.persistedSettings = this.copySettings(this.settings);
       this.filesPanelWidthInitialized = !!this.settings.files_panel_width_initialized;
       this.lastFilesSidePanelTab = FILES_SIDE_PANEL_TABS.includes(this.settings.files_side_panel_last_tab)
@@ -17508,6 +17884,7 @@ class TermdeckApp {
       if (migratedFileGlobSettings || migratedExcludeGlob || migratedVirtualWebgl || excludedGlobChanged) this.saveSettings();
     } catch (err) {
       this.settings = { ...SETTINGS_DEFAULTS };
+      this.initializeBrowserRendererSettings();
       this.persistedSettings = this.copySettings(this.settings);
     }
     if (!/^#[0-9a-f]{6}$/i.test(String(this.settings.sidebar_text_color || ""))) {
@@ -17621,6 +17998,14 @@ class TermdeckApp {
 
   applySettings({ fitTerminals = true } = {}) {
     const s = this.settings;
+    const sidebarFontSize = this.scaledSettingSize("sidebar_font_size");
+    const projectFontSize = this.scaledSettingSize("project_font_size");
+    const terminalFontSize = this.scaledSettingSize("terminal_font_size");
+    const uiFontSize = this.scaledSettingSize("ui_font_size");
+    const systemFontSize = this.scaledSettingSize("system_font_size");
+    const codeFontSize = this.scaledSettingSize("code_font_size");
+    const bottomFontSize = this.scaledSettingSize("bottom_font_size");
+    const treeFontSize = this.scaledSettingSize("tree_font_size");
     const sidebar = this.$("sidebar");
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
     const normalWidth = Number(s.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
@@ -17647,16 +18032,17 @@ class TermdeckApp {
     document.documentElement.style.setProperty("--history-sidebar-width", `${normalWidth}px`);
     document.documentElement.style.setProperty("--notebook-panel-left", `${notebookLeft}px`);
     this.positionFloatingFilesPanel(floatingFileWidth);
-    document.documentElement.style.setProperty("--sidebar-font-size", s.sidebar_font_size + "px");
-    document.documentElement.style.setProperty("--project-font-size", s.project_font_size + "px");
-    document.documentElement.style.setProperty("--terminal-font-size", s.terminal_font_size + "px");
-    document.documentElement.style.setProperty("--ui-font-size", s.ui_font_size + "px");
-    document.documentElement.style.setProperty("--system-font-size", s.system_font_size + "px");
-    document.documentElement.style.setProperty("--code-font-size", s.code_font_size + "px");
-    document.documentElement.style.setProperty("--bottom-font-size", s.bottom_font_size + "px");
-    document.documentElement.style.setProperty("--ui-scale", String(this.normalizeUiScale((Number(s.bottom_font_size) || SETTINGS_DEFAULTS.bottom_font_size) / SETTINGS_DEFAULTS.bottom_font_size)));
+    document.documentElement.style.setProperty("--sidebar-font-size", sidebarFontSize + "px");
+    document.documentElement.style.setProperty("--project-font-size", projectFontSize + "px");
+    document.documentElement.style.setProperty("--terminal-font-size", terminalFontSize + "px");
+    document.documentElement.style.setProperty("--ui-font-size", uiFontSize + "px");
+    document.documentElement.style.setProperty("--system-font-size", systemFontSize + "px");
+    document.documentElement.style.setProperty("--code-font-size", codeFontSize + "px");
+    document.documentElement.style.setProperty("--bottom-font-size", bottomFontSize + "px");
+    const baseBottomFontSize = Number(s.bottom_font_size) || SETTINGS_DEFAULTS.bottom_font_size;
+    document.documentElement.style.setProperty("--ui-scale", String(this.normalizeUiScale(baseBottomFontSize / SETTINGS_DEFAULTS.bottom_font_size)));
     document.documentElement.style.setProperty("--sidebar-text-color", s.sidebar_text_color);
-    const terminalIconSize = Math.max(FONT_MIN, Math.min(FONT_MAX, Number(s.terminal_icon_size) || SETTINGS_DEFAULTS.terminal_icon_size));
+    const terminalIconSize = Math.max(FONT_MIN, Math.min(FONT_MAX * this.displayScale(), this.scaledSettingSize("terminal_icon_size")));
     const terminalStatusDotSize = Math.max(5, Math.min(10, terminalIconSize * 0.43));
     const terminalStatusDotLeft = 2 + (terminalIconSize - terminalStatusDotSize) / 2;
     const terminalRowLeftPadding = Math.max(20, terminalIconSize + 7);
@@ -17665,40 +18051,41 @@ class TermdeckApp {
     document.documentElement.style.setProperty("--terminal-status-dot-left", `${terminalStatusDotLeft}px`);
     document.documentElement.style.setProperty("--terminal-row-left-padding", `${terminalRowLeftPadding}px`);
     this.updateSessionAgeStyles();
-    const codeFontSize = Number(s.code_font_size) || SETTINGS_DEFAULTS.code_font_size;
     const configuredDiffFontSize = Number(s.diff_font_size) || SETTINGS_DEFAULTS.diff_font_size;
-    const relativeDiffFontSize = configuredDiffFontSize === SETTINGS_DEFAULTS.diff_font_size
-      ? Math.max(8, codeFontSize - 1)
-      : Math.min(configuredDiffFontSize, Math.max(8, codeFontSize - 1));
+    const baseCodeFontSize = Number(s.code_font_size) || SETTINGS_DEFAULTS.code_font_size;
+    const baseRelativeDiffFontSize = configuredDiffFontSize === SETTINGS_DEFAULTS.diff_font_size
+      ? Math.max(8, baseCodeFontSize - 1)
+      : Math.min(configuredDiffFontSize, Math.max(8, baseCodeFontSize - 1));
+    const relativeDiffFontSize = Math.round(baseRelativeDiffFontSize * this.displayScale() * 100) / 100;
     document.documentElement.style.setProperty("--diff-font-size", relativeDiffFontSize + "px");
-    document.documentElement.style.setProperty("--tree-font-size", s.tree_font_size + "px");
+    document.documentElement.style.setProperty("--tree-font-size", treeFontSize + "px");
     this.applyThemeVariables();
     for (const view of this.views.values()) {
-      if (view.term.options.fontSize !== s.terminal_font_size) view.term.options.fontSize = s.terminal_font_size;
+      if (view.term.options.fontSize !== terminalFontSize) view.term.options.fontSize = terminalFontSize;
       this.refreshTerminalAppearance(view);
     }
     if (this.editor) {
-      this.editor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.editor.updateOptions({ fontSize: codeFontSize, wordWrap: s.editor_no_wrap ? "off" : "on" });
       this.defineMonacoTheme();
     }
     if (this.notebookEditor) {
-      this.notebookEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.notebookEditor.updateOptions({ fontSize: codeFontSize, wordWrap: s.editor_no_wrap ? "off" : "on" });
       this.notebookEditor.layout();
     }
     if (this.fileHistoryCurrentEditor) {
-      this.fileHistoryCurrentEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.fileHistoryCurrentEditor.updateOptions({ fontSize: codeFontSize, wordWrap: s.editor_no_wrap ? "off" : "on" });
       this.fileHistoryCurrentEditor.layout();
     }
     if (this.fileHistoryDiffEditor) {
-      this.fileHistoryDiffEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
-      this.fileHistoryDiffEditor.getOriginalEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
-      this.fileHistoryDiffEditor.getModifiedEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.fileHistoryDiffEditor.updateOptions({ fontSize: codeFontSize, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.fileHistoryDiffEditor.getOriginalEditor().updateOptions({ fontSize: codeFontSize, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.fileHistoryDiffEditor.getModifiedEditor().updateOptions({ fontSize: codeFontSize, wordWrap: s.editor_no_wrap ? "off" : "on" });
       this.fileHistoryDiffEditor.layout();
     }
     if (this.gitReviewDiffEditor) {
-      this.gitReviewDiffEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
-      this.gitReviewDiffEditor.getOriginalEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
-      this.gitReviewDiffEditor.getModifiedEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.gitReviewDiffEditor.updateOptions({ fontSize: codeFontSize, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.gitReviewDiffEditor.getOriginalEditor().updateOptions({ fontSize: codeFontSize, wordWrap: s.editor_no_wrap ? "off" : "on" });
+      this.gitReviewDiffEditor.getModifiedEditor().updateOptions({ fontSize: codeFontSize, wordWrap: s.editor_no_wrap ? "off" : "on" });
       this.gitReviewDiffEditor.layout();
     }
     this.$("stat-text").classList.toggle("hidden", !s.show_stats);
@@ -17774,7 +18161,7 @@ class TermdeckApp {
         this.editor = monaco.editor.create(this.$("monaco-host"), {
           readOnly: false, theme: this.monacoThemeName(),
           automaticLayout: true, minimap: { enabled: false },
-          scrollBeyondLastLine: false, fontSize: this.settings.code_font_size, lineNumbersMinChars: 4,
+          scrollBeyondLastLine: false, fontSize: this.scaledSettingSize("code_font_size"), lineNumbersMinChars: 4,
           renderLineHighlight: "all", folding: true, wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true,
         });
         this.lspClient = new TermdeckLspClient(this);
@@ -17830,7 +18217,7 @@ class TermdeckApp {
           this.notebookEditor = monaco.editor.create(notebookHost, {
             readOnly: false, theme: this.monacoThemeName(),
             automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
-            fontSize: this.settings.code_font_size, lineNumbersMinChars: 2, lineDecorationsWidth: 8, glyphMargin: false,
+            fontSize: this.scaledSettingSize("code_font_size"), lineNumbersMinChars: 2, lineDecorationsWidth: 8, glyphMargin: false,
             renderLineHighlight: "all", folding: true, wordWrap: this.settings.editor_no_wrap ? "off" : "on",
             fixedOverflowWidgets: true, padding: { top: 10, bottom: 10 },
           });
@@ -17892,7 +18279,7 @@ class TermdeckApp {
   changedSettingsPatch(settingsSnapshot) {
     const patch = {};
     for (const [key, value] of Object.entries(settingsSnapshot)) {
-      if (key === "project_state") continue;
+      if (key === "project_state" || SERVER_LOCAL_SETTING_KEYS.has(key)) continue;
       if (JSON.stringify(value) !== JSON.stringify(this.persistedSettings[key])) patch[key] = value;
     }
     return patch;
@@ -18384,15 +18771,16 @@ class TermdeckApp {
     pop.appendChild(this.buildTerminalIconSettingsRow());
     pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));
+    if (this.touchMobileLayoutEnabled()) pop.appendChild(this.buildMobileDisplayScaleRow());
     // Experiment switch: see tallRowPlan(). GPU rendering, at the cost of a much shorter scrollable
     // canvas -- the whole trade is explained there.
-    pop.appendChild(this.buildToggleRow("WebGL renderer (reload)",
+    pop.appendChild(this.buildToggleRow("WebGL renderer (this browser, reload)",
       () => (this.standardTallWebglEnabled() ? "on" : "off"),
-      () => { this.settings.tall_webgl = !this.standardTallWebglEnabled(); }));
-    pop.appendChild(this.buildToggleRow("Pause inactive terminal rendering (experimental)",
+      () => { this.setBrowserBooleanSetting(BROWSER_TALL_WEBGL_KEY, !this.standardTallWebglEnabled()); }, null, false));
+    pop.appendChild(this.buildToggleRow("Pause inactive rendering (this browser, experimental)",
       () => (this.deferInactiveTerminalOutputEnabled() ? "on" : "off"),
-      () => { this.settings.defer_inactive_terminal_output = !this.deferInactiveTerminalOutputEnabled(); },
-      () => { if (!this.deferInactiveTerminalOutputEnabled()) this.flushDeferredInactiveTerminalOutput(); }));
+      () => { this.setBrowserBooleanSetting(BROWSER_DEFER_INACTIVE_OUTPUT_KEY, !this.deferInactiveTerminalOutputEnabled()); },
+      () => { if (!this.deferInactiveTerminalOutputEnabled()) this.flushDeferredInactiveTerminalOutput(); }, false));
     for (const item of items) {
       if (!showFontSizeEditor || (this.settings.inline_size_controls && item.type !== "color")) continue;
       const row = document.createElement("div");
@@ -18452,7 +18840,7 @@ class TermdeckApp {
       pop.appendChild(row);
     }
     if (!showFontSizeEditor) {
-      pop.appendChild(this.buildFontSizeEditRow(anchor, items));
+      if (!this.touchMobileLayoutEnabled()) pop.appendChild(this.buildFontSizeEditRow(anchor, items));
       if (this.lspClient) pop.appendChild(this.lspClient.buildSettingsSection(anchor));
     }
     pop.appendChild(this.buildSettingsSubmenu("Maintenance", [
@@ -18624,7 +19012,7 @@ class TermdeckApp {
     return row;
   }
 
-  buildToggleRow(labelText, valueText, flip, afterFlip = null) {
+  buildToggleRow(labelText, valueText, flip, afterFlip = null, persistSettings = true) {
     const row = document.createElement("div");
     row.className = "settings-row";
     const label = document.createElement("span");
@@ -18637,10 +19025,40 @@ class TermdeckApp {
       flip();
       button.textContent = valueText();
       this.applySettings();
-      this.saveSettings();
+      if (persistSettings) this.saveSettings();
       if (afterFlip) afterFlip();
     };
     row.append(label, button);
+    return row;
+  }
+
+  buildMobileDisplayScaleRow() {
+    const row = document.createElement("div");
+    row.className = "settings-row mobile-display-scale-row";
+    const label = document.createElement("span");
+    label.className = "settings-label";
+    label.textContent = "Mobile size";
+    const controls = document.createElement("span");
+    controls.className = "settings-controls mobile-display-scale-controls";
+    const minus = document.createElement("button");
+    minus.type = "button";
+    minus.textContent = "−";
+    minus.setAttribute("aria-label", "Decrease mobile display size");
+    const value = document.createElement("button");
+    value.type = "button";
+    value.className = "mobile-display-scale-value";
+    value.title = "Reset mobile display size";
+    const plus = document.createElement("button");
+    plus.type = "button";
+    plus.textContent = "+";
+    plus.setAttribute("aria-label", "Increase mobile display size");
+    const updateValue = () => { value.textContent = `${Math.round(this.mobileDisplayScale() * 100)}%`; };
+    minus.onclick = () => { this.setMobileDisplayScale(this.mobileDisplayScale() - MOBILE_DISPLAY_SCALE_STEP); updateValue(); };
+    plus.onclick = () => { this.setMobileDisplayScale(this.mobileDisplayScale() + MOBILE_DISPLAY_SCALE_STEP); updateValue(); };
+    value.onclick = () => { this.setMobileDisplayScale(1); updateValue(); };
+    updateValue();
+    controls.append(minus, value, plus);
+    row.append(label, controls);
     return row;
   }
 
@@ -18751,11 +19169,12 @@ class TermdeckApp {
         view.tallShrinkTarget = desired;
         view.tallShrinkSince = Date.now();
       }
-      const settled = Date.now() - (view.tallShrinkSince || 0) >= TALL_SHRINK_SETTLE_MS;
+      const shrinkReadyAt = Math.max((view.tallShrinkSince || Date.now()) + TALL_SHRINK_SETTLE_MS,
+        Number(view.codexCollapseSettleUntil || 0));
+      const settled = Date.now() >= shrinkReadyAt;
       const keepScrollValid = Math.ceil(view.container.scrollTop + (view.container.clientHeight || 0));
       height = settled ? Math.max(desired, Math.min(current, keepScrollValid)) : current;
-      if (!settled) this.scheduleTallGeometrySettle(
-        view, TALL_SHRINK_SETTLE_MS - (Date.now() - (view.tallShrinkSince || 0)));
+      if (!settled) this.scheduleTallGeometrySettle(view, shrinkReadyAt - Date.now());
     } else {
       view.tallShrinkTarget = null;
     }
@@ -18775,21 +19194,107 @@ class TermdeckApp {
   // before connecting: whether anything exists to replay is only knowable once it has arrived, and a
   // server restart is exactly the case where the answer is "nothing".
   requestRepaintIfBlank(view) {
-    if (!view || view.closed || !view.ws || view.ws.readyState !== WebSocket.OPEN) return;
+    if (!view || view.closed || !view.ws || view.ws.readyState !== WebSocket.OPEN) return false;
     // A reconnect clears the buffer before replaying it, so "empty" during that window means "not filled
     // yet", not "nothing to show". Asking then forces a redraw of content that was about to arrive
     // anyway, which is the flicker on switching to an already-loaded tab. Try again once it has landed.
     if (view.replaying || view.awaitingSnapshot) {
       clearTimeout(view.blankRepaintTimer);
       view.blankRepaintTimer = setTimeout(() => this.requestRepaintIfBlank(view), TALL_BLANK_REPAINT_MS);
-      return;
+      return false;
     }
     const buffer = view.term.buffer.active;
-    if (Number(buffer.baseY || 0) > 0) return;
-    for (let row = 0; row < buffer.length; row += 1) {
-      if (buffer.getLine(row)?.translateToString(true).trim()) return;
+    const codex = this.session(view.sessionId)?.agent_kind === "codex";
+    if (!codex && Number(buffer.baseY || 0) > 0) return false;
+    const visibleLines = [];
+    const start = Number(buffer.baseY || 0);
+    const end = Math.min(buffer.length, start + Math.max(1, Number(view.term.rows || 1)));
+    for (let row = start; row < end; row += 1) {
+      const line = buffer.getLine(row)?.translateToString(true).trim() || "";
+      if (line) visibleLines.push(line);
     }
+    if (!codex && visibleLines.length) return false;
+    if (codex && /OpenAI Codex|Ask Codex|Context \d+% used|view transcript|q to quit|Press enter to continue/i.test(
+      visibleLines.join("\n"))) return false;
     view.ws.send(JSON.stringify({ type: "repaint" }));
+    return true;
+  }
+
+  scheduleInitialCodexRepaintCompletion(view) {
+    if (!view?.initialCodexRepaintPending) return;
+    if (!view.initialCodexRepaintWatchdogTimer) {
+      const remaining = Math.max(0,
+        view.initialCodexRepaintStartedAt + CODEX_INITIAL_REPAINT_MAX_MS - Date.now());
+      view.initialCodexRepaintWatchdogTimer = setTimeout(() => {
+        view.initialCodexRepaintWatchdogTimer = 0;
+        this.finishInitialCodexRepaint(view);
+      }, remaining);
+    }
+    clearTimeout(view.initialCodexRepaintTimer);
+    view.initialCodexRepaintTimer = setTimeout(() => {
+      view.initialCodexRepaintTimer = 0;
+      if (!view.initialCodexRepaintPending || view.closed) return;
+      const stillWriting = view.outputWriteInFlight || view.outputQueue.length;
+      const repaintElapsed = Date.now() - view.initialCodexRepaintStartedAt;
+      if ((stillWriting || !view.initialCodexRepaintOutputSeen) && repaintElapsed < CODEX_INITIAL_REPAINT_MAX_MS) {
+        this.scheduleInitialCodexRepaintCompletion(view);
+        return;
+      }
+      this.finishInitialCodexRepaint(view);
+    }, CODEX_INITIAL_REPAINT_SETTLE_MS);
+  }
+
+  finishInitialCodexRepaint(view) {
+    if (!view?.initialCodexRepaintPending || view.closed) return;
+    clearTimeout(view.initialCodexRepaintTimer);
+    clearTimeout(view.initialCodexRepaintWatchdogTimer);
+    view.initialCodexRepaintTimer = 0;
+    view.initialCodexRepaintWatchdogTimer = 0;
+    view.initialCodexRepaintPending = false;
+    this.refreshTerminal(view);
+    this.finishInitialPageContentLoading(view.sessionId);
+  }
+
+  terminalPayloadContainsBytes(payload, needle) {
+    if (!payload || !needle?.length || payload.length < needle.length) return false;
+    for (let start = 0; start <= payload.length - needle.length; start += 1) {
+      let matched = true;
+      for (let offset = 0; offset < needle.length; offset += 1) {
+        if (payload[start + offset] === needle[offset]) continue;
+        matched = false;
+        break;
+      }
+      if (matched) return true;
+    }
+    return false;
+  }
+
+  captureCodexCommandCollapseAnchor(view, following) {
+    if (!following || view.tallFollowing === false || !view.container.clientHeight) return null;
+    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+    if (!cellHeight) return null;
+    const buffer = view.term.buffer.active;
+    const baseRows = this.wholeBufferScrollEnabled() ? Number(buffer.baseY || 0) : 0;
+    return { cursorScreenTop: (baseRows + Number(buffer.cursorY || 0)) * cellHeight - view.container.scrollTop };
+  }
+
+  restoreCodexCommandCollapseAnchor(view, anchor) {
+    if (!anchor || view.tallFollowing === false || !view.container.clientHeight) return;
+    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+    if (!cellHeight) return;
+    const whole = this.wholeBufferScrollEnabled();
+    const buffer = view.term.buffer.active;
+    const baseRows = whole ? Number(buffer.baseY || 0) : 0;
+    const cursorTop = (baseRows + Number(buffer.cursorY || 0)) * cellHeight;
+    const nextTop = Math.max(0, cursorTop - anchor.cursorScreenTop);
+    const bottomPx = (baseRows + this.tallEffectiveBottomRow(view) + 1) * cellHeight;
+    const boundRows = whole ? Number(buffer.length || 0) : Number(view.term.rows || 0);
+    const hardMax = Math.max(0, boundRows * cellHeight - view.container.clientHeight);
+    view.tallMaxScrollTop = Math.min(hardMax, Math.max(0, bottomPx - view.container.clientHeight));
+    view.tallCeilingShrinkSince = null;
+    view.tallFollowTop = nextTop;
+    this.tallSetScrollTop(view, nextTop);
+    if (whole) this.tallSyncBufferToScroll(view);
   }
 
   // A status-bar line is not enough on its own: the status text is rewritten constantly by other
@@ -18828,11 +19333,11 @@ class TermdeckApp {
   }
 
   standardTallWebglEnabled() {
-    return this.settings.tall_webgl === true;
+    return this.browserBooleanSetting(BROWSER_TALL_WEBGL_KEY, this.settings.tall_webgl === true);
   }
 
   deferInactiveTerminalOutputEnabled() {
-    return this.settings.defer_inactive_terminal_output === true;
+    return this.browserBooleanSetting(BROWSER_DEFER_INACTIVE_OUTPUT_KEY, this.settings.defer_inactive_terminal_output === true);
   }
 
   flushDeferredInactiveTerminalOutput() {
@@ -19581,6 +20086,9 @@ class TermdeckApp {
     const returnTo = typeof options.returnTo === "string" ? options.returnTo.trim() : "";
     await this.activateFile(key, line, { returnTo, history: options.history, view: options.view,
       revealInTree: options.revealInTree !== false && !treeRow });
+    if (options.fromFilePanel && this.activeFileKey === key && this.openFiles.get(key)?.model) {
+      this.collapseMobileSidebarAfterSelection();
+    }
     void this.refreshOpenFileGitStatuses(root);
   }
 
@@ -20942,6 +21450,24 @@ class TermdeckApp {
       (e.code === "KeyA" || String(e.key || "").toLowerCase() === "a") &&
       this.activeFileKey === null && !this.historyOpen && !!this.views.get(this.activeId) &&
       !!e.target?.closest?.(".xterm");
+  }
+
+  handleCodexCommandTranscriptShortcut(e, view = this.views.get(this.activeId)) {
+    if (e.type !== "keydown" || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey ||
+        String(e.key || "").toLowerCase() !== "t" || e.termdeckCodexTranscriptHandled) return false;
+    if (!view || view.closed || this.activeFileKey !== null || this.historyOpen ||
+        this.session(view.sessionId)?.agent_kind !== "codex") return false;
+    const visibleTextInput = this.isTypingTarget(e) && !e.target?.closest?.(".xterm") && e.target?.offsetParent !== null;
+    if (visibleTextInput || ["keys-backdrop", "modal-backdrop", "worktree-result-backdrop", "worktree-modal-backdrop"]
+        .some((id) => this.$(id)?.classList.contains("hidden") === false)) return false;
+    e.termdeckCodexTranscriptHandled = true;
+    e.preventDefault();
+    e.stopPropagation();
+    view.tallFollowing = true;
+    this.sendTrackedInput(view, "\x14");
+    this.scheduleTallGeometrySettle(view, TALL_SCROLL_SETTLE_MS);
+    view.term.focus();
+    return true;
   }
 
   bindingFor(actionId) {

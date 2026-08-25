@@ -33,6 +33,8 @@
       <button id="header-add-terminal" role="menuitem"><span class="codicon codicon-terminal"></span><span class="header-add-label">New terminal</span><span class="header-add-shortcut"></span></button>
     </div>
     <span class="panel-actions">
+      <button id="mobile-sidebar-pin" title="Keep sidebar open after selection" aria-label="Keep sidebar open after selection" aria-pressed="false"><span class="codicon codicon-pin"></span></button>
+      <button id="mobile-sidebar-collapse" title="Collapse sidebar" aria-label="Collapse sidebar"><span class="codicon codicon-layout-sidebar-left-off"></span></button>
       <button id="vscode-refresh-btn" class="vscode-only" title="Refresh TermDeck" aria-label="Refresh TermDeck"><span class="codicon codicon-refresh"></span></button>
     </span>
   </div>
@@ -110,6 +112,12 @@
     <button id="keys-btn" title="Keyboard shortcuts"><span class="codicon codicon-keyboard"></span></button>
     <button id="settings-gear" title="Settings"><span class="codicon codicon-settings-gear"></span></button>
   </div>
+</div>
+<button id="mobile-sidebar-toggle" title="Show sidebar" aria-label="Show sidebar"><span class="codicon codicon-layout-sidebar-left"></span></button>
+<div id="mobile-history-controls" aria-label="Mobile Markdown controls">
+  <button id="mobile-display-smaller" title="Make mobile text and controls smaller" aria-label="Make mobile text and controls smaller">−</button>
+  <button id="mobile-display-larger" title="Make mobile text and controls larger" aria-label="Make mobile text and controls larger">+</button>
+  <button id="mobile-notebook-toggle" title="Quick notebook" aria-label="Quick notebook"><span class="note-taking-icon" aria-hidden="true"><span class="codicon codicon-note"></span><span class="codicon codicon-pencil"></span></span></button>
 </div>
 <div id="keys-backdrop" class="hidden">
   <div id="keys-modal">
@@ -290,7 +298,21 @@
     <button id="terminal-find-next" title="Next match" aria-label="Next match"><span class="codicon codicon-arrow-down"></span></button>
     <button id="terminal-find-close" title="Close terminal search" aria-label="Close terminal search"><span class="codicon codicon-close"></span></button>
   </div>
-  <div id="initial-loading-state" class="loading" role="status" aria-live="polite">loading TermDeck&hellip;</div>
+  <div id="initial-loading-state" class="loading">
+    <div id="initial-loading-line" role="status" aria-live="polite"><span id="initial-loading-spinner" aria-hidden="true"></span><span id="initial-loading-message">loading TermDeck&hellip;</span></div>
+    <section id="initial-loading-recovery" class="hidden" aria-label="TermDeck loading recovery">
+      <div id="initial-loading-recovery-title">Taking longer than expected</div>
+      <div id="initial-loading-recovery-description">Restarting TermDeck leaves terminal processes running.</div>
+      <div id="initial-loading-recovery-actions">
+        <button id="initial-loading-markdown" type="button"><span class="codicon codicon-markdown"></span> Switch to Markdown</button>
+        <button id="initial-loading-refresh" type="button"><span class="codicon codicon-refresh"></span> Refresh page</button>
+        <button id="initial-loading-restart" type="button"><span class="codicon codicon-debug-restart"></span> Restart TermDeck server</button>
+        <button id="initial-loading-stop-terminals" type="button"><span class="codicon codicon-debug-stop"></span> Stop running terminals</button>
+      </div>
+      <div id="initial-loading-stop-warning">Stopping terminals interrupts work currently in progress. Tabs, transcripts, and history remain available and can be restarted later.</div>
+      <div id="initial-loading-recovery-status" role="status" aria-live="polite"></div>
+    </section>
+  </div>
   <div id="empty-state" role="status" aria-live="polite" style="display: none">no terminals &mdash; press + to open one</div>
   </div>
   <div id="problems-panel" class="hidden">
@@ -450,6 +472,7 @@
     <div class="modal-actions"><button id="worktree-result-close">Done</button></div>
   </div>
 </div>
+<script src="/static/loading_recovery.js"></script>
 <script src="/static/vendor/xterm.js"></script>
 <script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/vendor/addon-webgl.js"></script>
