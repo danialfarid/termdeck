@@ -1784,7 +1784,13 @@ class TerminalSessionManager:
         preserve_client_buffer = have_buffer
         claude_raw_replay_active = self._claude_raw_replay_enabled and ms.record.agent_kind == AgentKind.CLAUDE.value
         use_full_claude_raw_replay = self._claude_full_raw_replay_enabled and full_claude_raw_replay
-        claude_raw_replay = self._full_claude_raw_screen_replay(ms) if claude_raw_replay_active and use_full_claude_raw_replay else \
+        # Full means the ENTIRE recording, not the longest single screen frame: a frame is one repaint,
+        # so serving only one showed at most a screenful of conversation on a fresh page -- "history is
+        # very short" -- while megabytes of recorded session sat unused beside it. Replaying the whole
+        # stream reproduces exactly what a continuously attached client saw, scrollback included, and
+        # starts from a clean parser state instead of mid-stream at an arbitrary repaint (the garbled
+        # first paint). Titles are already collapsed at record time, so the write is parse-bound only.
+        claude_raw_replay = self._claude_raw_replay_bytes(ms) if claude_raw_replay_active and use_full_claude_raw_replay else \
             self._latest_claude_raw_screen_replay(ms) if claude_raw_replay_active else b""
         if use_full_claude_raw_replay and not self._searchable_terminal_text(claude_raw_replay).strip():
             claude_raw_replay = b""
