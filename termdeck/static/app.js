@@ -17311,19 +17311,14 @@ class TermdeckApp {
     const returnedToReachedBottom = view.tallUserBottomReturnCeiling != null &&
       scrollTop >= view.tallUserBottomReturnCeiling - TALL_BOTTOM_TOLERANCE_PX;
     view.tallUserBottomReturnCeiling = null;
-    // Landing near the UNDAMPED content bottom counts too: after a fold the damped ceiling holds a
-    // value below which the real content now ends, so a user scrolling to the actual bottom landed
-    // short of the stale number, was judged "not at bottom", and follow silently never resumed --
-    // reported as "scroll to the bottom doesn't maintain the follow". The undamped bottom is what the
-    // user aimed at.
-    const settleCell = view.term?._core?._renderService?.dimensions?.css?.cell?.height;
-    const nearContentBottom = settleCell
-      ? Math.abs(scrollTop - this.tallFollowTarget(view, settleCell)) <= 24
-      : false;
+    // Deliberately NOT "near the content bottom counts as at it": a wider window here was tried for the
+    // stale-ceiling-after-fold case and it swallowed slow wheel-ups -- the first few notches move less
+    // than any near-window, so the settle re-followed and snapped the reader straight back to the
+    // bottom. The fold glue in scrollTallContainerToCursor fast-forwards the stale ceiling at the
+    // source now, so the tight tolerance can stay tight.
     const atBottom = ceiling == null ||
       scrollTop >= ceiling - TALL_BOTTOM_TOLERANCE_PX ||
       returnedToReachedBottom ||
-      nearContentBottom ||
       (view.tallFollowing !== false && view.tallFollowTop != null &&
         scrollTop >= view.tallFollowTop - TALL_BOTTOM_TOLERANCE_PX);
     view.tallFollowing = atBottom;
