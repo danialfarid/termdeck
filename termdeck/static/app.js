@@ -816,10 +816,10 @@ class TermdeckApp {
 
   initializeBrowserRendererSettings() {
     if (localStorage.getItem(BROWSER_TALL_WEBGL_KEY) == null) {
-      this.setBrowserBooleanSetting(BROWSER_TALL_WEBGL_KEY, this.settings.tall_webgl === true);
+      this.setBrowserBooleanSetting(BROWSER_TALL_WEBGL_KEY, true);
     }
     if (localStorage.getItem(BROWSER_DEFER_INACTIVE_OUTPUT_KEY) == null) {
-      this.setBrowserBooleanSetting(BROWSER_DEFER_INACTIVE_OUTPUT_KEY, this.settings.defer_inactive_terminal_output === true);
+      this.setBrowserBooleanSetting(BROWSER_DEFER_INACTIVE_OUTPUT_KEY, SETTINGS_DEFAULTS.defer_inactive_terminal_output === true);
     }
   }
 
@@ -834,7 +834,8 @@ class TermdeckApp {
   }
 
   scaledSettingSize(key) {
-    const base = Number(this.settings[key]) || SETTINGS_DEFAULTS[key];
+    const configured = this.touchMobileLayoutEnabled() ? SETTINGS_DEFAULTS[key] : this.settings[key];
+    const base = Number(configured) || SETTINGS_DEFAULTS[key];
     return Math.round(base * this.displayScale() * 100) / 100;
   }
 
@@ -18078,7 +18079,8 @@ class TermdeckApp {
     document.documentElement.style.setProperty("--system-font-size", systemFontSize + "px");
     document.documentElement.style.setProperty("--code-font-size", codeFontSize + "px");
     document.documentElement.style.setProperty("--bottom-font-size", bottomFontSize + "px");
-    const baseBottomFontSize = Number(s.bottom_font_size) || SETTINGS_DEFAULTS.bottom_font_size;
+    const baseBottomFontSize = this.touchMobileLayoutEnabled()
+      ? SETTINGS_DEFAULTS.bottom_font_size : Number(s.bottom_font_size) || SETTINGS_DEFAULTS.bottom_font_size;
     document.documentElement.style.setProperty("--ui-scale", String(this.normalizeUiScale(baseBottomFontSize / SETTINGS_DEFAULTS.bottom_font_size)));
     document.documentElement.style.setProperty("--sidebar-text-color", s.sidebar_text_color);
     const terminalIconSize = Math.max(FONT_MIN, Math.min(FONT_MAX * this.displayScale(), this.scaledSettingSize("terminal_icon_size")));
@@ -18090,8 +18092,10 @@ class TermdeckApp {
     document.documentElement.style.setProperty("--terminal-status-dot-left", `${terminalStatusDotLeft}px`);
     document.documentElement.style.setProperty("--terminal-row-left-padding", `${terminalRowLeftPadding}px`);
     this.updateSessionAgeStyles();
-    const configuredDiffFontSize = Number(s.diff_font_size) || SETTINGS_DEFAULTS.diff_font_size;
-    const baseCodeFontSize = Number(s.code_font_size) || SETTINGS_DEFAULTS.code_font_size;
+    const configuredDiffFontSize = this.touchMobileLayoutEnabled()
+      ? SETTINGS_DEFAULTS.diff_font_size : Number(s.diff_font_size) || SETTINGS_DEFAULTS.diff_font_size;
+    const baseCodeFontSize = this.touchMobileLayoutEnabled()
+      ? SETTINGS_DEFAULTS.code_font_size : Number(s.code_font_size) || SETTINGS_DEFAULTS.code_font_size;
     const baseRelativeDiffFontSize = configuredDiffFontSize === SETTINGS_DEFAULTS.diff_font_size
       ? Math.max(8, baseCodeFontSize - 1)
       : Math.min(configuredDiffFontSize, Math.max(8, baseCodeFontSize - 1));
@@ -19372,11 +19376,11 @@ class TermdeckApp {
   }
 
   standardTallWebglEnabled() {
-    return this.browserBooleanSetting(BROWSER_TALL_WEBGL_KEY, this.settings.tall_webgl === true);
+    return this.browserBooleanSetting(BROWSER_TALL_WEBGL_KEY, true);
   }
 
   deferInactiveTerminalOutputEnabled() {
-    return this.browserBooleanSetting(BROWSER_DEFER_INACTIVE_OUTPUT_KEY, this.settings.defer_inactive_terminal_output === true);
+    return this.browserBooleanSetting(BROWSER_DEFER_INACTIVE_OUTPUT_KEY, SETTINGS_DEFAULTS.defer_inactive_terminal_output === true);
   }
 
   flushDeferredInactiveTerminalOutput() {
