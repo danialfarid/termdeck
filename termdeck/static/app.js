@@ -17122,8 +17122,38 @@ class TermdeckApp {
       const wholeCell = view.term._core?._renderService?.dimensions?.css?.cell?.height;
       // Capped so the cursor's row stays on screen -- see tallFollowTarget.
       const capPx = wholeCell ? Math.max(0, this.tallFollowCursorCap(view, wholeCell)) : Infinity;
+      // A TUI that deletes earlier lines (Codex folding commands into "Ran 2", Claude rewriting its
+      // output) moves the composer's row UP in one write. The damped ceiling holds its old value for a
+      // while by design, so without this the view stood still, the composer floated up the screen, and
+      // only the damper's late shrink snapped it back to the bottom -- a visible float-then-snap on
+      // every fold. A cursor that moved up at least two rows since the last placement is that fold, not
+      // the one-row flicker of a redrawing composer, so the shrink is applied at once: the ceiling is
+      // fast-forwarded past its damper (which otherwise also makes the drive-down rule below shove the
+      // glued view straight back to the stale value) and the view moves with the composer in the same
+      // write. One-row moves stay with the damper on purpose.
+      let glueFold = false;
+      if (!userSettled && wholeCell) {
+        const previousCursorPx = view.tallFollowCursorPx;
+        glueFold = previousCursorPx != null && capPx <= previousCursorPx - 2 * wholeCell &&
+          !this.tallCursorRegionMostlyBlank(view);
+        view.tallFollowCursorPx = capPx;
+        if (glueFold) {
+          const baseRows = Number(view.term.buffer.active.baseY || 0);
+          const undampedBottom = Math.max(0, (baseRows + this.tallEffectiveBottomRow(view) + 1) *
+            wholeCell - view.container.clientHeight);
+          if (undampedBottom < view.tallMaxScrollTop) {
+            view.tallMaxScrollTop = undampedBottom;
+            view.tallCeilingShrinkSince = null;
+          }
+        }
+      }
       const wholeTarget = Math.min(view.tallMaxScrollTop, capPx);
-      const wholeTop = view.container.scrollTop;
+      let wholeTop = view.container.scrollTop;
+      const codexCollapseSettling = Date.now() < Number(view.codexCollapseSettleUntil || 0);
+      if (glueFold && wholeTop > wholeTarget) {
+        this.tallSetScrollTop(view, wholeTarget);
+        wholeTop = view.container.scrollTop;
+      }
       if (userSettled) {
         if (wholeTop < wholeTarget) this.tallSetScrollTop(view, wholeTarget);
         else if (wholeTop > view.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
@@ -17278,8 +17308,22 @@ class TermdeckApp {
     // can be mistaken for this.
     const ceiling = view.tallMaxScrollTop;
     const scrollTop = view.container.scrollTop;
+    const returnedToReachedBottom = view.tallUserBottomReturnCeiling != null &&
+      scrollTop >= view.tallUserBottomReturnCeiling - TALL_BOTTOM_TOLERANCE_PX;
+    view.tallUserBottomReturnCeiling = null;
+    // Landing near the UNDAMPED content bottom counts too: after a fold the damped ceiling holds a
+    // value below which the real content now ends, so a user scrolling to the actual bottom landed
+    // short of the stale number, was judged "not at bottom", and follow silently never resumed --
+    // reported as "scroll to the bottom doesn't maintain the follow". The undamped bottom is what the
+    // user aimed at.
+    const settleCell = view.term?._core?._renderService?.dimensions?.css?.cell?.height;
+    const nearContentBottom = settleCell
+      ? Math.abs(scrollTop - this.tallFollowTarget(view, settleCell)) <= 24
+      : false;
     const atBottom = ceiling == null ||
       scrollTop >= ceiling - TALL_BOTTOM_TOLERANCE_PX ||
+      returnedToReachedBottom ||
+      nearContentBottom ||
       (view.tallFollowing !== false && view.tallFollowTop != null &&
         scrollTop >= view.tallFollowTop - TALL_BOTTOM_TOLERANCE_PX);
     view.tallFollowing = atBottom;
