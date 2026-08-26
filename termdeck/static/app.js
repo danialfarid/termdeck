@@ -38,7 +38,21 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_fo
 // data-shaped about an agent (labels, permissions, markers, capability flags) comes from
 // /api/agents — one AgentCli class per agent on the server. See docs/agent-cli-api.md.
 const AGENT_CLIENT_BEHAVIORS = {
-  codex: { skipAttachScreenRepaint: true },
+  codex: {
+    skipAttachScreenRepaint: true,      // repaint after attach double-paints codex's own redraw
+    deferReflowAfterPrompt: true,       // hold reflow while codex redraws around a submitted prompt
+    viewportAnchor: true,               // marker-anchored scroll hold across "Ran N" command folds
+    focusTailRefresh: true,             // repaint the tail after focus; codex skips it while unfocused
+    tailRepair: true,                   // detect+repair a mis-rendered tail after collapse writes
+    repaintRestoreScroll: true,         // restore scroll target itself after a full repaint
+    commandCollapse: true,              // watch for command-fold byte sequences and re-anchor
+    blankRepaintDespiteScrollback: true, // codex can present a blank screen even with scrollback
+    commandTranscriptShortcut: true,    // ctrl+t opens codex's own transcript overlay
+  },
+  claude: {
+    attentionScreenDetection: true,     // scan the visible screen for permission-prompt markers
+    statusRowRefresh: true,             // periodic bottom status-row repaint while following
+  },
 };
 const SEARCH_DEBOUNCE_MS = 500;
 const TERMINAL_SEARCH_DEBOUNCE_MS = 700;
@@ -5801,9 +5815,9 @@ class TermdeckApp {
       icon.innerHTML = '<span class="codicon codicon-terminal"></span>';
     }
     icon.title = this.agentSpec(s.agent_kind)?.is_agent ? this.agentLabel(s.agent_kind) : "Shell terminal";
-    icon.classList.toggle("claude-terminal-icon", s.agent_kind === "claude");
-    icon.classList.toggle("codex-terminal-icon", s.agent_kind === "codex");
-    icon.classList.toggle("agy-terminal-icon", s.agent_kind === "agy");
+    for (const kind of Object.keys(this.agentSpecs)) {
+      if (kind !== "none") icon.classList.toggle(`${kind}-terminal-icon`, s.agent_kind === kind);
+    }
     icon.classList.toggle("on", this.terminalIconEnabledForAgent(s.agent_kind));
     return icon;
   }
@@ -10479,14 +10493,8 @@ class TermdeckApp {
     if (fromCommand && !this.historyModelIsGeneric(fromCommand)) return fromCommand;
     const fromTranscript = this.historyModelFromTranscript(turns);
     if (fromTranscript) return fromTranscript;
-    const sessionTitle = String(session?.title || "").toLowerCase();
-    if (sessionTitle.includes("codex")) return "codex";
-    if (sessionTitle.includes("claude")) return "claude";
-    if (sessionTitle.includes("agy")) return "agy";
-    const sessionCliTitle = String(session?.cli_title || "").toLowerCase();
-    if (sessionCliTitle.includes("codex")) return "codex";
-    if (sessionCliTitle.includes("claude")) return "claude";
-    if (sessionCliTitle.includes("agy")) return "agy";
+    const fromTitleText = this.agentKindInText(session?.title) || this.agentKindInText(session?.cli_title);
+    if (fromTitleText) return fromTitleText;
     if (String(session?.command || "").toLowerCase().includes("zsh") ||
         String(session?.command || "").toLowerCase().includes("bash") ||
         String(session?.command || "").toLowerCase().includes("sh")) return "none";
@@ -10540,12 +10548,20 @@ class TermdeckApp {
     return typeof raw === "string" ? raw.trim() : "";
   }
 
+  agentKindInText(raw) {
+    const text = String(raw || "").toLowerCase();
+    if (!text) return "";
+    for (const kind of Object.keys(this.agentSpecs)) {
+      if (kind !== "none" && text.includes(kind)) return kind;
+    }
+    return "";
+  }
+
   normalizeModelKind(raw) {
     const text = String(raw || "").toLowerCase();
     if (!text) return "";
-    if (text.includes("codex")) return "codex";
-    if (text.includes("claude")) return "claude";
-    if (text.includes("agy")) return "agy";
+    const kind = this.agentKindInText(text);
+    if (kind) return kind;
     if (text.includes("none") || /\b(shell|zsh|bash)\b/.test(text)) return "none";
     return "";
   }
@@ -10590,8 +10606,7 @@ class TermdeckApp {
 
   historyModelIsGeneric(raw) {
     const text = this.normalizeModelText(raw).toLowerCase();
-    return text === "codex" || text === "claude" || text === "none" || text === "shell"
-      || text === "agy" || text === "bash" || text === "zsh" || text === "sh";
+    return !!this.agentSpecs[text] || text === "shell" || text === "bash" || text === "zsh" || text === "sh";
   }
 
   historyModelDisplay(session, turns = []) {
@@ -11337,7 +11352,7 @@ class TermdeckApp {
     view.promptSubmitVersion = view.promptEditVersion;
     const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
     const sessionId = view.sessionId;
-    if (this.session(sessionId)?.agent_kind === "codex") this.deferTerminalReflowAfterPrompt(view);
+    this.deferTerminalReflowAfterPrompt(view);
     this.historyPendingProcessing.set(sessionId, Date.now());
     this.updateHistoryThinkingIndicator();
     if (this.historyOpen && this.activeId === sessionId) {
@@ -11526,7 +11541,7 @@ class TermdeckApp {
   }
 
   deferTerminalReflowAfterPrompt(view) {
-    if (!view || this.session(view.sessionId)?.agent_kind !== "codex") return;
+    if (!view || !this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.deferReflowAfterPrompt) return;
     view.promptSubmissionReflowGuardUntil = Date.now() + CODEX_PROMPT_REFLOW_GUARD_MS;
     clearTimeout(view.promptSubmissionReflowGuardTimer);
     view.promptSubmissionReflowGuardTimer = setTimeout(() => {
@@ -11668,7 +11683,7 @@ class TermdeckApp {
         }, 3000);
       }
     }
-    if ((data === "\r" || data === "\n") && session?.agent_kind === "codex") {
+    if (data === "\r" || data === "\n") {
       this.deferTerminalReflowAfterPrompt(view);
     }
     this.sendInput(view, data);
@@ -16526,7 +16541,7 @@ class TermdeckApp {
     const preserveFollow = Boolean(options.preserveFollow);
     const restoreAfterDeadline = Boolean(options.restoreAfterDeadline);
     const atBottom = this.xtermAtBottom(view);
-    if (!view || view.closed || this.session(view.sessionId)?.agent_kind !== "codex" ||
+    if (!view || view.closed || !this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.viewportAnchor ||
         (!preserveFollow && (view.scrollMode === "follow" || atBottom))) return null;
     const buffer = view.term.buffer.active;
     const viewportY = Math.max(0, Number(buffer.viewportY || 0));
@@ -16810,7 +16825,7 @@ class TermdeckApp {
   }
 
   scheduleCodexFocusTailRefresh(view) {
-    if (!view || view.closed || view.codexFocusRefreshFrame || this.session(view.sessionId)?.agent_kind !== "codex") return;
+    if (!view || view.closed || view.codexFocusRefreshFrame || !this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.focusTailRefresh) return;
     view.codexFocusRefreshFrame = requestAnimationFrame(() => {
       view.codexFocusRefreshFrame = requestAnimationFrame(() => {
         view.codexFocusRefreshFrame = 0;
@@ -17013,7 +17028,7 @@ class TermdeckApp {
         return true;
       }
     }
-    if (this.session(view.sessionId)?.agent_kind === "codex") {
+    if (this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.repaintRestoreScroll) {
       this.refreshTerminalAppearance(view, true);
       if (follow) this.scrollTerminalV2ToBottom(view);
       else this.scrollTerminalV2ToLine(view, Math.min(restoreLine, view.term.buffer.active.baseY));
@@ -17067,7 +17082,7 @@ class TermdeckApp {
   scheduleTerminalTailRepair(view) {
     if (!view || view.closed || view.tailRepairTimer || view.tailRepairConfirmTimer ||
         !view.container.classList.contains("visible") || !this.isTerminalScrollV2() ||
-        this.session(view.sessionId)?.agent_kind !== "codex" || !this.terminalSurfaceAvailableForFit(view)) return;
+        !this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.tailRepair || !this.terminalSurfaceAvailableForFit(view)) return;
     view.tailRepairTimer = setTimeout(() => {
       view.tailRepairTimer = 0;
       if (!this.terminalSurfaceAvailableForFit(view)) return;
@@ -17120,7 +17135,7 @@ class TermdeckApp {
   }
 
   detectTerminalAttentionFromBuffer(view) {
-    if (!view || view.closed || this.session(view.sessionId)?.agent_kind !== "claude" || !view.term) return;
+    if (!view || view.closed || !this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.attentionScreenDetection || !view.term) return;
     if (view.attentionScreenDetectionSuppressed) return;
     const buffer = view.term.buffer.active;
     const firstRow = Math.max(0, Number(buffer.baseY || 0) - 2);
@@ -17762,7 +17777,7 @@ class TermdeckApp {
       let offset = 0;
       for (const item of batch) { payload.set(item.data, offset); offset += item.data.length; }
     }
-    const codexCommandCollapse = this.session(view.sessionId)?.agent_kind === "codex" &&
+    const codexCommandCollapse = !!this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.commandCollapse &&
       !view.replaying && !view.awaitingSnapshot && this.terminalPayloadContainsBytes(payload, CODEX_COMMAND_COLLAPSE_BYTES);
     const codexCommandCollapseAnchor = codexCommandCollapse ? this.captureCodexCommandCollapseAnchor(view, following) : null;
     if (codexCommandCollapse) {
@@ -17859,13 +17874,13 @@ class TermdeckApp {
   }
 
   scheduleClaudeStatusRowRefresh(view) {
-    if (!view || view.closed || view.claudeStatusRowRefreshTimer || this.session(view.sessionId)?.agent_kind !== "claude" ||
+    if (!view || view.closed || view.claudeStatusRowRefreshTimer || !this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.statusRowRefresh ||
         !view.container.classList.contains("visible") || view.scrollMode !== "follow" || !this.xtermAtBottom(view)) return;
     const elapsed = Date.now() - view.lastClaudeStatusRowRefreshAt;
     const delay = Math.max(0, CLAUDE_STATUS_ROW_REFRESH_INTERVAL_MS - elapsed);
     view.claudeStatusRowRefreshTimer = setTimeout(() => {
       view.claudeStatusRowRefreshTimer = 0;
-      if (view.closed || this.session(view.sessionId)?.agent_kind !== "claude" ||
+      if (view.closed || !this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.statusRowRefresh ||
           !view.container.classList.contains("visible") || view.scrollMode !== "follow" || !this.xtermAtBottom(view)) return;
       view.lastClaudeStatusRowRefreshAt = Date.now();
       const lastRow = Math.max(0, view.term.rows - 1);
@@ -19307,8 +19322,8 @@ class TermdeckApp {
       return false;
     }
     const buffer = view.term.buffer.active;
-    const codex = this.session(view.sessionId)?.agent_kind === "codex";
-    if (!codex && Number(buffer.baseY || 0) > 0) return false;
+    const blankDespiteScrollback = !!this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.blankRepaintDespiteScrollback;
+    if (!blankDespiteScrollback && Number(buffer.baseY || 0) > 0) return false;
     const visibleLines = [];
     const start = Number(buffer.baseY || 0);
     const end = Math.min(buffer.length, start + Math.max(1, Number(view.term.rows || 1)));
@@ -19316,8 +19331,8 @@ class TermdeckApp {
       const line = buffer.getLine(row)?.translateToString(true).trim() || "";
       if (line) visibleLines.push(line);
     }
-    if (!codex && visibleLines.length) return false;
-    if (codex && /OpenAI Codex|Ask Codex|Context \d+% used|view transcript|q to quit|Press enter to continue/i.test(
+    if (!blankDespiteScrollback && visibleLines.length) return false;
+    if (blankDespiteScrollback && /OpenAI Codex|Ask Codex|Context \d+% used|view transcript|q to quit|Press enter to continue/i.test(
       visibleLines.join("\n"))) return false;
     view.ws.send(JSON.stringify({ type: "repaint" }));
     return true;
@@ -20997,7 +21012,7 @@ class TermdeckApp {
   resolveSessionNameAndReference(model, rawValue) {
     const modelValue = String(model || "").trim().toLowerCase();
     const value = String(rawValue || "").trim();
-    if (!value || modelValue === "none" || modelValue === "agy") {
+    if (!value || !this.agentSpecs[modelValue]?.accepts_session_ref) {
       return { title: value, session_ref: "" };
     }
     const needle = value.toLowerCase();
@@ -21117,7 +21132,7 @@ class TermdeckApp {
     }
     const remembered = (this.settings.last_permissions || {})[model] || "default";
     permission.value = [...permission.options].some((option) => option.value === remembered) ? remembered : "default";
-    this.$("modal-permission-field").classList.toggle("hidden", model === "none");
+    this.$("modal-permission-field").classList.toggle("hidden", this.agentPermissions(model).length <= 1);
   }
 
   async createSession() {
@@ -21531,7 +21546,7 @@ class TermdeckApp {
     if (e.type !== "keydown" || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey ||
         String(e.key || "").toLowerCase() !== "t" || e.termdeckCodexTranscriptHandled) return false;
     if (!view || view.closed || this.activeFileKey !== null || this.historyOpen ||
-        this.session(view.sessionId)?.agent_kind !== "codex") return false;
+        !this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.commandTranscriptShortcut) return false;
     const visibleTextInput = this.isTypingTarget(e) && !e.target?.closest?.(".xterm") && e.target?.offsetParent !== null;
     if (visibleTextInput || ["keys-backdrop", "modal-backdrop", "worktree-result-backdrop", "worktree-modal-backdrop"]
         .some((id) => this.$(id)?.classList.contains("hidden") === false)) return false;
