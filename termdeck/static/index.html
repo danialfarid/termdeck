@@ -346,10 +346,9 @@
     <span id="terminal-age" class="hidden"></span>
     <span id="history-meta" class="hidden"></span>
     <span class="footer-spacer"></span>
-    <div id="bottombar-stats">
+    <div id="bottombar-stats" role="button" tabindex="0" title="TermDeck server CPU and memory history · click for maintenance" aria-label="CPU and memory usage; open maintenance menu" aria-haspopup="menu">
       <span id="stat-text"></span>
-      <canvas id="stat-spark" width="36" height="20" title="TermDeck server CPU and memory history"></canvas>
-      <button id="kill-stale-terminals-btn" title="Kill terminals older than 24 hours; keep tabs for reattach" aria-label="Kill terminals older than 24 hours; keep tabs for reattach"><span class="codicon codicon-trash"></span></button>
+      <canvas id="stat-spark" width="36" height="20"></canvas>
     </div>
   </div>
 </div>

@@ -1153,7 +1153,13 @@ class TerminalSessionManager:
         if ms.record.agent_kind == AgentKind.CODEX.value and ms.record.agent_session_id:
             return ms.processing or ms.codex_transcript_active
         if ms.record.agent_kind == AgentKind.CLAUDE.value and ms.record.agent_session_id:
-            return not ms.record.claude_interrupted and (ms.claude_main_active or ms.claude_subagents_active)
+            # ms.processing (a spinner in the OSC title, refreshed within the last few seconds) is ORed in
+            # because Claude does work that writes nothing to the transcript: /compact spins for the whole
+            # compaction and only appends once it finishes, so transcript-only detection reports the tab as
+            # idle throughout. An idle Claude stops rewriting its title, so the freshness window keeps this
+            # from latching on.
+            return not ms.record.claude_interrupted and \
+                (ms.claude_main_active or ms.claude_subagents_active or ms.processing)
         return ms.processing or ms.codex_transcript_active or ms.agy_transcript_active or ms.claude_main_active or ms.claude_subagents_active
 
     @classmethod

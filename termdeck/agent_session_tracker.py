@@ -415,7 +415,12 @@ class AgentSessionTracker:
                 continue
             message = event.get("message") or {}
             if event.get("type") == "user":
-                if event.get("isMeta") or AgentSessionTracker._claude_user_event_is_local_command(message) or \
+                # isCompactSummary is the transcript Claude writes for itself after /compact ("This
+                # session is being continued from a previous conversation..."). It is a user event with
+                # real prose, so without this it reads as a freshly submitted prompt and the session
+                # shows as working forever once a compact finishes.
+                if event.get("isMeta") or event.get("isCompactSummary") or \
+                        AgentSessionTracker._claude_user_event_is_local_command(message) or \
                         AgentSessionTracker._claude_user_event_is_non_prompt_metadata(message):
                     continue
                 if AgentSessionTracker._claude_user_event_is_interruption(message):

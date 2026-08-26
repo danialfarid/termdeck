@@ -520,7 +520,6 @@ class UiSettings(BaseModel):
     transcript_first_surface: str = "terminal"
     # Declared explicitly or it is silently dropped when settings are saved.
     tall_webgl: bool = True
-    defer_inactive_terminal_output: bool = False
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
     md_prompt_drafts: dict[str, str] = {}

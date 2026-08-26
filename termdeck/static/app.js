@@ -23,11 +23,11 @@ const DEFAULT_CWD = "~";
 const TERMINAL_ICON_AGENT_KINDS = ["codex", "claude", "agy", "none"];
 const TERMINAL_ICON_AGENT_LABELS = { codex: "Codex", claude: "Claude", agy: "AGY", none: "Shell" };
 const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_font_size: 18, project_font_size: 18, terminal_font_size: 18,
-  ui_font_size: 11, system_font_size: 13, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
+  ui_font_size: 11, system_font_size: 13, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, files_tab_font_size: 11, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, defer_inactive_terminal_output: false, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
@@ -76,9 +76,11 @@ const MOBILE_TERMINAL_SELECTION_BACKGROUND = "#287fd1";
 const MOBILE_TERMINAL_SELECTION_FOREGROUND = "#ffffff";
 const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
 const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
-const BROWSER_DEFER_INACTIVE_OUTPUT_KEY = "termdeck.browser_defer_inactive_terminal_output";
+// Unfinished experiment: hold back writes to hidden terminals and catch them up on activation.
+// No setting and no toggle — flip this constant to work on it. See drainTerminalWrites().
+const DEFER_INACTIVE_TERMINAL_OUTPUT = false;
 const MOBILE_DISPLAY_SCALE_KEY = "termdeck.mobile_display_scale";
-const SERVER_LOCAL_SETTING_KEYS = new Set(["tall_webgl", "defer_inactive_terminal_output"]);
+const SERVER_LOCAL_SETTING_KEYS = new Set(["tall_webgl"]);
 const MOBILE_DISPLAY_SCALE_MIN = 0.8;
 const MOBILE_DISPLAY_SCALE_MAX = 1.6;
 const MOBILE_DISPLAY_SCALE_STEP = 0.1;
@@ -308,6 +310,7 @@ const INLINE_SIZE_SETTING_DEFINITIONS = [
   { key: "sidebar_font_size", label: "Terminal list" }, { key: "project_font_size", label: "Project title" },
   { key: "terminal_icon_size", label: "Terminal icons" }, { key: "terminal_font_size", label: "Terminal" },
   { key: "ui_font_size", label: "Status line" }, { key: "system_font_size", label: "Menus / lists" }, { key: "code_font_size", label: "Code" },
+  { key: "files_tab_font_size", label: "File tabs" },
   { key: "bottom_font_size", label: "UI icons / spacing" }, { key: "diff_font_size", label: "Diff" },
   { key: "tree_font_size", label: "Tree / search" },
 ];
@@ -827,9 +830,6 @@ class TermdeckApp {
   initializeBrowserRendererSettings() {
     if (localStorage.getItem(BROWSER_TALL_WEBGL_KEY) == null) {
       this.setBrowserBooleanSetting(BROWSER_TALL_WEBGL_KEY, true);
-    }
-    if (localStorage.getItem(BROWSER_DEFER_INACTIVE_OUTPUT_KEY) == null) {
-      this.setBrowserBooleanSetting(BROWSER_DEFER_INACTIVE_OUTPUT_KEY, SETTINGS_DEFAULTS.defer_inactive_terminal_output === true);
     }
   }
 
@@ -2685,15 +2685,11 @@ class TermdeckApp {
     window.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       const fontSampleEditorOpen = !this.$("font-samples-backdrop").classList.contains("hidden");
-      if (!this.settings.inline_size_controls && !this.fontSizeEditorOpen && !fontSampleEditorOpen) return;
+      if (!this.settings.inline_size_controls && !fontSampleEditorOpen) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       if (fontSampleEditorOpen) this.closeFontSampleEditor();
-      else if (this.settings.inline_size_controls) this.exitInlineSizeControls();
-      else {
-        this.fontSizeEditorOpen = false;
-        this.$("settings-popover").classList.add("hidden");
-      }
+      else this.exitInlineSizeControls();
     }, true);
     window.addEventListener("message", this.handleHostMessageBound, false);
     window.addEventListener("pagehide", () => {
@@ -2732,14 +2728,7 @@ class TermdeckApp {
       this.initMonaco();
       this.loadIconMap();
     }
-    this.$("settings-gear").onclick = (e) => this.openSettingsPopover(e.currentTarget,
-      [{ label: "Terminal font", key: "terminal_font_size" }, { label: "Terminal icon size", key: "terminal_icon_size", type: "scale" },
-       { label: "Code font", key: "code_font_size" },
-       { label: "Terminal list font", key: "sidebar_font_size" }, { label: "Project title font", key: "project_font_size" },
-       { label: "Tree/search font", key: "tree_font_size" },
-       { label: "Diff font", key: "diff_font_size" }, { label: "Status line font", key: "ui_font_size" },
-       { label: "Menus / lists font", key: "system_font_size" },
-       { label: "UI icons / spacing", key: "bottom_font_size", type: "scale" }]);
+    this.$("settings-gear").onclick = (e) => this.openSettingsPopover(e.currentTarget);
     // Null-safe: #file-view-close is not in index.html yet. This runs during setup, so the throw
     // aborted the rest of this initialisation rather than just failing one button.
     const fileViewClose = this.$("file-view-close");
@@ -2897,11 +2886,12 @@ class TermdeckApp {
       if (e.target.closest?.(".inline-size-controls, #inline-size-done, #font-samples-backdrop")) return;
       for (const id of ["settings-popover", "context-menu"]) {
         const pop = this.$(id);
-        if (!pop.classList.contains("hidden") && !pop.contains(e.target)) {
-          pop.classList.add("hidden");
-          if (id === "settings-popover") this.fontSizeEditorOpen = false;
-          if (id === "context-menu") this.contextMenuTarget = null;
-        }
+        if (pop.classList.contains("hidden") || pop.contains(e.target)) continue;
+        // The stats readout toggles its own menu on click. Auto-hiding here would let the click
+        // that follows reopen it, so a second click could never close it.
+        if (id === "context-menu" && this.statsMaintenanceMenuOpen() && e.target.closest?.("#bottombar-stats")) continue;
+        pop.classList.add("hidden");
+        if (id === "context-menu") this.contextMenuTarget = null;
       }
       const headerAddMenu = this.$("header-add-menu");
       if (headerAddMenu && !headerAddMenu.classList.contains("hidden") && !headerAddMenu.contains(e.target) &&
@@ -3007,7 +2997,13 @@ class TermdeckApp {
     this.$("terminal-find-previous").onclick = () => this.moveTerminalFindMatch(-1);
     this.$("terminal-find-next").onclick = () => this.moveTerminalFindMatch(1);
     this.$("terminal-find-close").onclick = () => this.closeTerminalFind();
-    this.$("kill-stale-terminals-btn").onclick = () => void this.killStaleTerminals();
+    const stats = this.$("bottombar-stats");
+    stats.onclick = (event) => this.toggleStatsMaintenanceMenu(event.currentTarget);
+    stats.onkeydown = (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      this.toggleStatsMaintenanceMenu(event.currentTarget);
+    };
     const historySend = this.$("history-send");
     historySend.onclick = () => {
       if (this.historySendLongPressTriggered) {
@@ -8809,6 +8805,9 @@ class TermdeckApp {
 
   positionContextMenu(menu, x, y) {
     menu.classList.remove("hidden");
+    // Every opener funnels through here, so clearing the marker leaves it owned by whoever
+    // sets it after positioning — no other menu can be mistaken for the stats one.
+    menu.dataset.menuKind = "";
     menu.style.left = Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 10)) + "px";
     menu.style.top = Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 10)) + "px";
   }
@@ -12795,6 +12794,29 @@ class TermdeckApp {
     this.renderFileEditorChrome();
   }
 
+  fileTabSettingsFontRow(label, key) {
+    const row = document.createElement("label");
+    row.className = "file-tab-settings-row";
+    row.appendChild(document.createTextNode(label));
+    const select = document.createElement("select");
+    select.setAttribute("aria-label", label);
+    for (let value = FONT_MIN; value <= FONT_MAX; value += 1) {
+      const option = document.createElement("option");
+      option.value = String(value);
+      option.textContent = `${value}px`;
+      select.appendChild(option);
+    }
+    select.value = String(Math.max(FONT_MIN, Math.min(FONT_MAX,
+      Number(this.settings[key]) || SETTINGS_DEFAULTS[key])));
+    select.onchange = () => {
+      this.settings[key] = Number(select.value);
+      this.applySettings();
+      this.saveSettings();
+    };
+    row.appendChild(select);
+    return row;
+  }
+
   openFileTabsMenu(anchor) {
     const menu = this.$("context-menu");
     menu.textContent = "";
@@ -12839,26 +12861,9 @@ class TermdeckApp {
       this.renderFileTabs();
     };
     orderRow.appendChild(order);
-    const codeFontRow = document.createElement("label");
-    codeFontRow.className = "file-tab-settings-row";
-    codeFontRow.appendChild(document.createTextNode("Code font size"));
-    const codeFont = document.createElement("select");
-    codeFont.setAttribute("aria-label", "Code font size");
-    for (let value = FONT_MIN; value <= FONT_MAX; value += 1) {
-      const option = document.createElement("option");
-      option.value = String(value);
-      option.textContent = `${value}px`;
-      codeFont.appendChild(option);
-    }
-    codeFont.value = String(Math.max(FONT_MIN, Math.min(FONT_MAX,
-      Number(this.settings.code_font_size) || SETTINGS_DEFAULTS.code_font_size)));
-    codeFont.onchange = () => {
-      this.settings.code_font_size = Number(codeFont.value);
-      this.applySettings();
-      this.saveSettings();
-    };
-    codeFontRow.appendChild(codeFont);
-    menu.append(title, maximumRow, orderRow, codeFontRow);
+    menu.append(title, maximumRow, orderRow,
+      this.fileTabSettingsFontRow("Tab font size", "files_tab_font_size"),
+      this.fileTabSettingsFontRow("Code font size", "code_font_size"));
     const recentlyClosed = (this.settings.recent_closed_files || [])[0];
     this.addContextItem(menu, recentlyClosed ? `Reopen ${recentlyClosed.path.split("/").pop()}` : "No recently closed files",
       recentlyClosed ? () => void this.openFile(recentlyClosed.root, recentlyClosed.path, null, null, { pinned: true }) : null,
@@ -18110,6 +18115,7 @@ class TermdeckApp {
     const codeFontSize = this.scaledSettingSize("code_font_size");
     const bottomFontSize = this.scaledSettingSize("bottom_font_size");
     const treeFontSize = this.scaledSettingSize("tree_font_size");
+    const filesTabFontSize = this.scaledSettingSize("files_tab_font_size");
     const sidebar = this.$("sidebar");
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
     const normalWidth = Number(s.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
@@ -18132,6 +18138,7 @@ class TermdeckApp {
     document.documentElement.style.setProperty("--ui-font-size", uiFontSize + "px");
     document.documentElement.style.setProperty("--system-font-size", systemFontSize + "px");
     document.documentElement.style.setProperty("--code-font-size", codeFontSize + "px");
+    document.documentElement.style.setProperty("--files-tab-font-size", filesTabFontSize + "px");
     document.documentElement.style.setProperty("--bottom-font-size", bottomFontSize + "px");
     const baseBottomFontSize = this.touchMobileLayoutEnabled()
       ? SETTINGS_DEFAULTS.bottom_font_size : Number(s.bottom_font_size) || SETTINGS_DEFAULTS.bottom_font_size;
@@ -18476,7 +18483,6 @@ class TermdeckApp {
 
   openFontSampleEditor() {
     this.fontSampleReturnFocus = this.$("settings-gear");
-    this.fontSizeEditorOpen = false;
     this.$("settings-popover").classList.add("hidden");
     this.$("font-samples-backdrop").classList.remove("hidden");
     this.renderFontSampleList();
@@ -18580,6 +18586,7 @@ class TermdeckApp {
       ui_font_size: '<section class="font-sample-stage font-sample-status"><div class="font-sample-status-row"><span>agent-session · ~/workspace/project</span><span>12m</span></div><div class="font-sample-status-row"><span>project › src › main.py</span><span>model · 41% context</span></div></section>',
       system_font_size: '<section class="font-sample-stage font-sample-menu"><div><span class="codicon codicon-go-to-file"></span>Open</div><div><span class="codicon codicon-edit"></span>Rename</div><div><span class="codicon codicon-arrow-swap"></span>Move to</div></section>',
       code_font_size: '<section class="font-sample-stage font-sample-code"><pre><span class="line-number">12</span> <span class="keyword">const</span> cache = <span class="function">loadFeatures</span>(<span class="string">"stock"</span>);\n<span class="line-number">13</span> cache.validate();</pre></section>',
+      files_tab_font_size: '<section class="font-sample-stage font-sample-file-tabs"><div class="active">model_config.py<span class="codicon codicon-close"></span></div><div>universe.py<span class="codicon codicon-close"></span></div></section>',
       bottom_font_size: '<section class="font-sample-stage font-sample-bottom"><span class="codicon codicon-markdown"></span><span class="codicon codicon-refresh"></span><span class="codicon codicon-fold-down"></span><span class="codicon codicon-cloud-upload"></span></section>',
       diff_font_size: '<section class="font-sample-stage font-sample-diff"><pre><div class="removed">− old_feature = cache.final_value</div><div class="added">+ feature = cache.point_in_time_value</div></pre></section>',
       tree_font_size: '<section class="font-sample-stage font-sample-tree"><div class="folder"><span class="codicon codicon-folder-opened"></span>trainer</div><div class="child"><span class="codicon codicon-file-code"></span><span class="match">model_<mark>config</mark>.py</span></div><div class="child"><span class="codicon codicon-file"></span>features.py</div></section>',
@@ -18703,6 +18710,7 @@ class TermdeckApp {
       { selectors: "#bottombar, #sidebar-footer, #terminal-actions, #files-section-header", key: "bottom_font_size" },
       { selectors: ".history-event pre, .history-diff, .markdown pre code", key: "diff_font_size" },
       { selectors: "#terminal-area, .term-container, .xterm", key: "terminal_font_size" },
+      { selectors: "#file-tabs-bar", key: "files_tab_font_size" },
       { selectors: "#editor-area, #history-area, #notebook-panel, #file-history-editor-host, #file-history-preview", key: "code_font_size" },
       { selectors: ".terminal-type-icon", key: "terminal_icon_size" },
       { selectors: ".tree-row, .search-file, .search-hit, .git-commit, .terminal-history-title-match, #files-section, #terminal-search-inline", key: "tree_font_size" },
@@ -18725,6 +18733,7 @@ class TermdeckApp {
       ui_font_size: "#file-breadcrumbs, #status-name, #lsp-status, #terminal-age, #history-meta, #stat-text",
       system_font_size: "#sidebar",
       code_font_size: "#editor-area, #history-area, #notebook-panel, #file-history-diff-pane",
+      files_tab_font_size: "#file-tabs-bar",
       bottom_font_size: "#sidebar-footer",
       diff_font_size: ".history-diff, .history-event pre, #file-history-preview",
       tree_font_size: "#files-tree, #search-results, #name-results, #git-results, #terminal-search-inline",
@@ -18827,7 +18836,6 @@ class TermdeckApp {
 
   openInlineSizeEditor() {
     this.settings.inline_size_controls = true;
-    this.fontSizeEditorOpen = false;
     this.applySettings({ fitTerminals: false });
     this.saveSettings();
     this.$("settings-popover").classList.add("hidden");
@@ -18837,7 +18845,6 @@ class TermdeckApp {
   exitInlineSizeControls() {
     if (!this.settings.inline_size_controls) return false;
     this.settings.inline_size_controls = false;
-    this.fontSizeEditorOpen = false;
     this.hideInlineSizeControls();
     this.$("inline-size-done")?.classList.add("hidden");
     this.saveSettings();
@@ -18847,13 +18854,8 @@ class TermdeckApp {
     return true;
   }
 
-  formatSettingValue(item) {
-    return item.type === "scale" ? `${this.settings[item.key]}px` : this.settings[item.key];
-  }
-
-  openSettingsPopover(anchor, items, showFontSizeEditor = false) {
+  openSettingsPopover(anchor) {
     const pop = this.$("settings-popover");
-    this.fontSizeEditorOpen = showFontSizeEditor;
     pop.classList.remove("lsp-settings-expanded", "lsp-install-options-popover");
     pop.textContent = "";
     pop.onkeydown = (event) => {
@@ -18866,7 +18868,9 @@ class TermdeckApp {
     pop.appendChild(this.buildRemoteAccessRow());
     pop.appendChild(this.buildLanAccessRow());
     pop.appendChild(this.buildTerminalIconSettingsRow());
-    pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
+    // The readout is the entry point to the maintenance menu, so hiding it hides both.
+    pop.appendChild(this.buildToggleRow("Resource monitor & maintenance",
+      () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));
     if (this.touchMobileLayoutEnabled()) pop.appendChild(this.buildMobileDisplayScaleRow());
     // Experiment switch: see tallRowPlan(). GPU rendering, at the cost of a much shorter scrollable
@@ -18874,78 +18878,10 @@ class TermdeckApp {
     pop.appendChild(this.buildToggleRow("WebGL renderer (this browser, reload)",
       () => (this.standardTallWebglEnabled() ? "on" : "off"),
       () => { this.setBrowserBooleanSetting(BROWSER_TALL_WEBGL_KEY, !this.standardTallWebglEnabled()); }, null, false));
-    pop.appendChild(this.buildToggleRow("Pause inactive rendering (this browser, experimental)",
-      () => (this.deferInactiveTerminalOutputEnabled() ? "on" : "off"),
-      () => { this.setBrowserBooleanSetting(BROWSER_DEFER_INACTIVE_OUTPUT_KEY, !this.deferInactiveTerminalOutputEnabled()); },
-      () => { if (!this.deferInactiveTerminalOutputEnabled()) this.flushDeferredInactiveTerminalOutput(); }, false));
-    for (const item of items) {
-      if (!showFontSizeEditor || (this.settings.inline_size_controls && item.type !== "color")) continue;
-      const row = document.createElement("div");
-      row.className = "settings-row";
-      const label = document.createElement("span");
-      label.className = "settings-label";
-      label.textContent = item.label;
-      if (item.type === "color") {
-        const controls = document.createElement("span");
-        controls.className = "settings-controls";
-        const input = document.createElement("input");
-        input.type = "color";
-        input.value = /^#[0-9a-f]{6}$/i.test(String(this.settings[item.key] || ""))
-          ? this.settings[item.key] : SETTINGS_DEFAULTS[item.key];
-        input.title = "Choose the sidebar text color";
-        input.setAttribute("aria-label", item.label);
-        input.oninput = () => {
-          this.settings[item.key] = input.value;
-          localStorage.setItem(`termdeck.${item.key}`, input.value);
-          this.applySettings();
-          this.saveSettings();
-        };
-        const reset = document.createElement("button");
-        reset.type = "button";
-        reset.className = "settings-color-reset";
-        reset.textContent = "↺";
-        reset.title = "Reset to default sidebar text color";
-        reset.setAttribute("aria-label", reset.title);
-        reset.onclick = () => {
-          const defaultColor = SETTINGS_DEFAULTS[item.key];
-          this.settings[item.key] = defaultColor;
-          input.value = defaultColor;
-          localStorage.setItem(`termdeck.${item.key}`, defaultColor);
-          localStorage.removeItem("termdeck.sidebar_status_color");
-          localStorage.removeItem("termdeck.wave_color");
-          this.applySettings();
-          this.saveSettings();
-        };
-        controls.append(input, reset);
-        row.append(label, controls);
-        pop.appendChild(row);
-        continue;
-      }
-      const controls = document.createElement("span");
-      controls.className = "settings-controls";
-      const minus = document.createElement("button");
-      minus.textContent = "−";
-      const value = document.createElement("span");
-      value.className = "settings-value";
-      value.textContent = this.formatSettingValue(item);
-      const plus = document.createElement("button");
-      plus.textContent = "+";
-      minus.onclick = () => { this.bumpSetting(item.key, -1); value.textContent = this.formatSettingValue(item); };
-      plus.onclick = () => { this.bumpSetting(item.key, 1); value.textContent = this.formatSettingValue(item); };
-      controls.append(minus, value, plus);
-      row.append(label, controls);
-      pop.appendChild(row);
-    }
-    if (!showFontSizeEditor) {
-      if (!this.touchMobileLayoutEnabled()) pop.appendChild(this.buildFontSizeEditRow(anchor, items));
-      if (this.lspClient) pop.appendChild(this.lspClient.buildSettingsSection(anchor));
-    }
-    pop.appendChild(this.buildSettingsSubmenu("Maintenance", [
-      { label: "Export settings", buttonText: "download", run: () => { pop.classList.add("hidden"); this.exportSettings(); } },
-      { label: "Terminal process report", buttonText: "view", run: () => { pop.classList.add("hidden"); void this.showTerminalProcessReport(); } },
-      { label: "Reclaim orphan terminals", buttonText: "clean", run: () => { pop.classList.add("hidden"); void this.reclaimOrphanTerminals(); } },
-      { label: "Kill all running terminals", buttonText: "kill", run: () => { pop.classList.add("hidden"); void this.killAllRunningTerminals(); } },
-    ], anchor));
+    if (!this.touchMobileLayoutEnabled()) pop.appendChild(this.buildFontSizeEditRow());
+    if (this.lspClient) pop.appendChild(this.lspClient.buildSettingsSection(anchor));
+    pop.appendChild(this.buildActionRow("Export settings", "download",
+      () => { pop.classList.add("hidden"); this.exportSettings(); }));
     this.positionPopover(pop, anchor);
     this.updateEventlyDemoFeatureBanner();
   }
@@ -18964,33 +18900,7 @@ class TermdeckApp {
     return row;
   }
 
-  buildSettingsSubmenu(labelText, entries, anchor = null) {
-    const root = document.createElement("div");
-    root.className = "settings-submenu";
-    const header = document.createElement("div");
-    header.className = "settings-row settings-submenu-header";
-    const label = document.createElement("span");
-    label.className = "settings-label";
-    label.textContent = labelText;
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "theme-toggle settings-submenu-toggle";
-    toggle.textContent = "open";
-    toggle.setAttribute("aria-expanded", "false");
-    const items = document.createElement("div");
-    items.className = "settings-submenu-items";
-    for (const entry of entries) items.appendChild(this.buildActionRow(entry.label, entry.buttonText, entry.run));
-    toggle.onclick = () => {
-      const expanded = root.classList.toggle("expanded");
-      toggle.setAttribute("aria-expanded", String(expanded));
-      if (anchor) requestAnimationFrame(() => this.positionPopover(this.$("settings-popover"), anchor));
-    };
-    header.append(label, toggle);
-    root.append(header, items);
-    return root;
-  }
-
-  buildFontSizeEditRow(anchor, items) {
+  buildFontSizeEditRow() {
     const row = document.createElement("div");
     row.className = "settings-row settings-font-size-mode-row";
     const label = document.createElement("span");
@@ -19008,11 +18918,6 @@ class TermdeckApp {
     samples.className = "theme-toggle";
     samples.textContent = "samples";
     samples.title = "Edit font sizes with representative UI samples";
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "theme-toggle";
-    edit.textContent = "edit";
-    edit.title = "Edit font sizes in Settings";
     const reset = document.createElement("button");
     reset.type = "button";
     reset.className = "settings-font-size-reset";
@@ -19021,12 +18926,8 @@ class TermdeckApp {
     reset.setAttribute("aria-label", reset.title);
     visualize.onclick = () => this.openInlineSizeEditor();
     samples.onclick = () => this.openFontSampleEditor(samples);
-    edit.onclick = () => {
-      this.exitInlineSizeControls();
-      this.openSettingsPopover(anchor, items, true);
-    };
     reset.onclick = () => this.resetAllFontSizesWithConfirmation();
-    controls.append(visualize, samples, edit, reset);
+    controls.append(visualize, samples, reset);
     row.append(label, controls);
     return row;
   }
@@ -19435,16 +19336,7 @@ class TermdeckApp {
   }
 
   deferInactiveTerminalOutputEnabled() {
-    return this.browserBooleanSetting(BROWSER_DEFER_INACTIVE_OUTPUT_KEY, SETTINGS_DEFAULTS.defer_inactive_terminal_output === true);
-  }
-
-  flushDeferredInactiveTerminalOutput() {
-    for (const view of this.views.values()) {
-      if (!view.inactiveOutputDeferred && !view.outputQueue.length) continue;
-      clearTimeout(view.inactiveOutputDrainTimer);
-      view.inactiveOutputDrainTimer = 0;
-      this.drainTerminalWrites(view, true);
-    }
+    return DEFER_INACTIVE_TERMINAL_OUTPUT;
   }
 
   // Permanent, formerly the scroll_whole_buffer experiment. The scrollbar used to represent the rendered
@@ -19602,12 +19494,6 @@ class TermdeckApp {
 
   normalizeUiScale(value) {
     return Math.max(0.8, Math.min(1.4, Math.round((Number(value) || 1) * 20) / 20));
-  }
-
-  bumpSetting(key, delta) {
-    this.settings[key] = Math.max(FONT_MIN, Math.min(FONT_MAX, this.settings[key] + delta));
-    this.applySettings();
-    this.saveSettings();
   }
 
   initResizer(handleId, key, fromRight, minWidth, maxWidth) {
@@ -21356,11 +21242,43 @@ class TermdeckApp {
     }
   }
 
+  statsMaintenanceMenuOpen() {
+    const menu = this.$("context-menu");
+    return !menu.classList.contains("hidden") && menu.dataset.menuKind === "stats-maintenance";
+  }
+
+  toggleStatsMaintenanceMenu(anchor) {
+    if (!this.statsMaintenanceMenuOpen()) {
+      this.openStatsMaintenanceMenu(anchor);
+      return;
+    }
+    const menu = this.$("context-menu");
+    menu.classList.add("hidden");
+    menu.dataset.menuKind = "";
+  }
+
+  // Maintenance hangs off the CPU/memory readout: the actions are all about what the server is
+  // spending that CPU and memory on, so they live where you notice the number is wrong.
+  openStatsMaintenanceMenu(anchor) {
+    const menu = this.$("context-menu");
+    menu.textContent = "";
+    menu.classList.remove("hidden");
+    const title = document.createElement("div");
+    title.className = "file-tab-settings-title";
+    title.textContent = "Maintenance";
+    menu.appendChild(title);
+    this.addContextItem(menu, "Terminal process report", () => void this.showTerminalProcessReport(), "list-tree");
+    this.addContextItem(menu, "Reclaim orphan terminals", () => void this.reclaimOrphanTerminals(), "debug-disconnect");
+    this.addContextItem(menu, "Kill terminals older than 24 hours", () => void this.killStaleTerminals(), "trash");
+    this.addContextItem(menu, "Kill all running terminals", () => void this.killAllRunningTerminals(), "close-all");
+    const rect = anchor.getBoundingClientRect();
+    this.positionContextMenu(menu, rect.right - menu.offsetWidth, rect.top - menu.offsetHeight - 4);
+    menu.dataset.menuKind = "stats-maintenance";
+  }
+
   async killStaleTerminals() {
     const message = "Stop running terminals older than 24 hours? Their tabs and session information will stay available for reattach.";
     if (!await uiConfirm(message)) return;
-    const button = this.$("kill-stale-terminals-btn");
-    if (button) button.disabled = true;
     try {
       const response = await fetch("/api/terminals/kill-stale", { method: "POST" });
       if (!response.ok) throw new Error(`stale terminal cleanup failed: ${response.status}`);
@@ -21373,8 +21291,6 @@ class TermdeckApp {
       await this.refresh();
     } catch (error) {
       this.$("status-name").textContent = `unable to stop old terminals: ${error.message}`;
-    } finally {
-      if (button) button.disabled = false;
     }
   }
 
@@ -23110,25 +23026,36 @@ class TermdeckApp {
     this.statHistory.push({ cpu: data.app.cpu, rss: data.app.rss_kb });
     if (this.statHistory.length > STAT_HISTORY_MAX) this.statHistory.shift();
     const active = data.sessions[this.activeId];
+    // Each metric shows two numbers side by side, so every tooltip names them in the order they
+    // are printed: the active terminal first, then the TermDeck server.
+    const activeCpu = active ? `${active.cpu.toFixed(0)}%` : "—";
+    const serverCpu = `${data.app.cpu.toFixed(0)}%`;
+    const activeMemory = active ? this.formatKb(active.rss_kb) : "—";
+    const serverMemory = this.formatKb(data.app.rss_kb);
+    const cpuDetail = `CPU · active terminal ${activeCpu} · TermDeck server ${serverCpu}`;
+    const memoryDetail = `Memory (RSS) · active terminal ${activeMemory} · TermDeck server ${serverMemory}`;
+    const sparkDetail = `History · CPU (accent line) and memory (grey line), last ${STAT_HISTORY_MAX} samples`;
     const statText = this.$("stat-text");
     statText.textContent = "";
     const cpuMetric = document.createElement("span");
     cpuMetric.className = "stat-metric";
-    cpuMetric.title = "CPU · active terminal / TermDeck server";
+    cpuMetric.title = cpuDetail;
     const cpuIcon = document.createElement("span");
     cpuIcon.className = "codicon codicon-pulse stat-metric-icon";
     const cpuValue = document.createElement("span");
-    cpuValue.textContent = `${active ? active.cpu.toFixed(0) + "%" : "—"} ${data.app.cpu.toFixed(0)}%`;
+    cpuValue.textContent = `${activeCpu} ${serverCpu}`;
     cpuMetric.append(cpuIcon, cpuValue);
     const memoryMetric = document.createElement("span");
     memoryMetric.className = "stat-metric";
-    memoryMetric.title = "Memory · active terminal / TermDeck server";
+    memoryMetric.title = memoryDetail;
     const memoryIcon = document.createElement("span");
     memoryIcon.className = "codicon codicon-chip stat-metric-icon";
     const memoryValue = document.createElement("span");
-    memoryValue.textContent = `${active ? this.formatKb(active.rss_kb) : "—"} ${this.formatKb(data.app.rss_kb)}`;
+    memoryValue.textContent = `${activeMemory} ${serverMemory}`;
     memoryMetric.append(memoryIcon, memoryValue);
     statText.append(cpuMetric, memoryMetric);
+    this.$("stat-spark").title = sparkDetail;
+    this.$("bottombar-stats").title = `${cpuDetail}\n${memoryDetail}\n${sparkDetail}\nClick for maintenance`;
     this.drawSparkline();
   }
 
