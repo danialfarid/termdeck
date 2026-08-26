@@ -1,5 +1,12 @@
 // Status/title/processing changes arrive through /ws/status. This slower
 // fallback only reconciles session-list metadata such as created/closed tabs.
+// In-app dialogs (dialogs.js) stand in for window.confirm / alert / prompt: the native ones block the
+// event loop, cannot be styled or positioned, and can be permanently suppressed by the browser's
+// "prevent this page from creating more dialogs" checkbox. confirm/prompt must be awaited; alert may be
+// dropped where the caller does not depend on dismissal.
+const uiConfirm = (...args) => window.TermdeckDialogs.confirm(...args);
+const uiAlert = (...args) => window.TermdeckDialogs.alert(...args);
+const uiPrompt = (...args) => window.TermdeckDialogs.prompt(...args);
 const SESSION_LIST_REFRESH_MS = 30000;
 const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
 // Same status glyphs as TITLE_STATUS_RE, plus the leading ellipsis codex shows while working. Used only
@@ -1524,8 +1531,8 @@ class TermdeckApp {
     return this.terminalGroupsForWorktree(worktreeId).find((group) => group.id === groupId)?.name || "";
   }
 
-  createTerminalGroup() {
-    const name = prompt("Name for the terminal group", "New group");
+  async createTerminalGroup() {
+    const name = await uiPrompt("Name for the terminal group", "New group");
     if (!name || !name.trim()) return;
     const groups = this.terminalGroups();
     const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
@@ -1534,10 +1541,10 @@ class TermdeckApp {
     this.renderList();
   }
 
-  renameTerminalGroup(groupId) {
+  async renameTerminalGroup(groupId) {
     const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
     if (!group) return;
-    const name = prompt("Rename terminal group", group.name);
+    const name = await uiPrompt("Rename terminal group", group.name);
     if (!name || !name.trim() || name.trim() === group.name) return;
     const groups = this.terminalGroups().map((candidate) => candidate.id === groupId
       ? { ...candidate, name: name.trim() } : candidate);
@@ -1546,9 +1553,9 @@ class TermdeckApp {
     this.renderList();
   }
 
-  deleteTerminalGroup(groupId) {
+  async deleteTerminalGroup(groupId) {
     const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
-    if (!group || !confirm(`Delete group "${group.name}"? Terminals will remain ungrouped.`)) return;
+    if (!group || !await uiConfirm(`Delete group "${group.name}"? Terminals will remain ungrouped.`)) return;
     this.applyLocalProjectStatePatch(this.terminalGroupDeletionPatch(groupId));
     this.queueTerminalGroupDelete(groupId);
     this.renderList();
@@ -1806,7 +1813,7 @@ class TermdeckApp {
     })));
     const failure = responses.find((response) => !response.ok);
     if (failure) {
-      alert(`move ${sessions.length === 1 ? "terminal" : "terminals"} to project failed (${failure.status})`);
+      void uiAlert(`move ${sessions.length === 1 ? "terminal" : "terminals"} to project failed (${failure.status})`);
       await this.refresh();
       return;
     }
@@ -1864,7 +1871,7 @@ class TermdeckApp {
       this.moveSelectedSessionsIntoGroup([...ids, targetId], sourceGroupIds[0], targetId, after);
       return;
     }
-    const name = prompt("Name for the new terminal group", `${this.effectiveTitle(target)} group`);
+    const name = await uiPrompt("Name for the new terminal group", `${this.effectiveTitle(target)} group`);
     if (!name || !name.trim()) return;
     const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
     const allIds = [...ids, targetId];
@@ -2072,7 +2079,7 @@ class TermdeckApp {
     const dragged = this.session(draggedId), target = this.session(targetId);
     if (!dragged || !target) return;
     const suggestion = `${this.effectiveTitle(target)} group`;
-    const name = prompt("Name for the new terminal group", suggestion);
+    const name = await uiPrompt("Name for the new terminal group", suggestion);
     if (!name || !name.trim()) return;
     const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
     const layout = this.terminalLayout().filter((entry) => entry !== `session:${draggedId}` && entry !== `session:${targetId}`);
@@ -2090,13 +2097,13 @@ class TermdeckApp {
     this.createTerminalGroupFromSessions([sessionId]);
   }
 
-  createTerminalGroupFromSessions(sessionIds) {
+  async createTerminalGroupFromSessions(sessionIds) {
     const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id));
     if (!ids.length) return;
     const firstSession = this.session(ids[0]);
     const suggestion = ids.length === 1 ? `${this.effectiveTitle(firstSession)} group`
       : `${this.effectiveTitle(firstSession)} + ${ids.length - 1} group`;
-    const name = prompt("Name for the new terminal group", suggestion);
+    const name = await uiPrompt("Name for the new terminal group", suggestion);
     if (!name || !name.trim()) return;
     const state = this.getProjectState();
     const sessionGroups = { ...(state.session_groups || {}) };
@@ -2136,8 +2143,8 @@ class TermdeckApp {
     if (!sessions.length) return;
     const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
     const label = group?.name || "this group";
-    if (!confirm(`Close all ${sessions.length} terminals in "${label}"?`)) return;
-    if (!confirm(`Confirm closing all terminals in "${label}". Running agents will be stopped.`)) return;
+    if (!await uiConfirm(`Close all ${sessions.length} terminals in "${label}"?`)) return;
+    if (!await uiConfirm(`Confirm closing all terminals in "${label}". Running agents will be stopped.`)) return;
     const responses = await Promise.all(sessions.map((session) => fetch(`/api/sessions/${session.session_id}`, { method: "DELETE" })));
     if (responses.some((response) => response.ok)) this.restoreLastClosedTerminalNeedsConfirmation = false;
     this.refresh();
@@ -2378,7 +2385,7 @@ class TermdeckApp {
     if (!project) return;
     const rootWorktree = this.worktrees.find((worktree) => worktree.is_root);
     if (rootWorktree && rootWorktree.git_repository === false) {
-      alert(`Project "${project.name}" is not a Git repository. Select the repository folder containing .git first.`);
+      void uiAlert(`Project "${project.name}" is not a Git repository. Select the repository folder containing .git first.`);
       return;
     }
     this.$("worktree-modal-project").textContent = `${project.name} · ${this.compactProjectPath(project.root)}`;
@@ -2423,7 +2430,7 @@ class TermdeckApp {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      alert(payload.detail || "worktree creation failed");
+      void uiAlert(payload.detail || "worktree creation failed");
       return;
     }
     this.closeWorktreeModal();
@@ -2449,15 +2456,15 @@ class TermdeckApp {
   async deleteSelectedWorktree() {
     const selected = this.worktrees.find((worktree) => worktree.id === this.worktreeId);
     if (!selected || selected.is_root) return;
-    if (!window.confirm(`Remove worktree "${selected.name}"? Terminals in it must be closed first.`)) return;
-    const moveToTrash = window.confirm("Move the worktree folder to the macOS Trash? Cancel keeps the files but detaches the worktree.");
+    if (!await uiConfirm(`Remove worktree "${selected.name}"? Terminals in it must be closed first.`)) return;
+    const moveToTrash = await uiConfirm("Move the worktree folder to the macOS Trash? Cancel keeps the files but detaches the worktree.");
     const response = await fetch(`/api/worktrees/${encodeURIComponent(selected.id)}`, {
       method: "DELETE", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ project: this.projectSlug, move_to_trash: moveToTrash }),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      alert(payload.detail || "worktree deletion failed");
+      void uiAlert(payload.detail || "worktree deletion failed");
       return;
     }
     this.worktreeId = "root";
@@ -2644,13 +2651,13 @@ class TermdeckApp {
       const res = await fetch("/api/projects/pick-folder", { method: "POST" });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert(payload.detail || "failed to choose project folder");
+        void uiAlert(payload.detail || "failed to choose project folder");
         return;
       }
       if (payload.cancelled) return;
       const project = payload.project;
       if (!project?.name) {
-        alert("native folder selection returned no project");
+        void uiAlert("native folder selection returned no project");
         return;
       }
       await this.loadProjects();
@@ -2666,7 +2673,7 @@ class TermdeckApp {
       this.$("worktree-result-backdrop").classList.remove("hidden");
       requestAnimationFrame(() => link.focus());
     } catch (error) {
-      alert(error.message || "failed to choose project folder");
+      void uiAlert(error.message || "failed to choose project folder");
     } finally {
       if (button) button.disabled = false;
     }
@@ -3757,7 +3764,7 @@ class TermdeckApp {
       location.replace(loginUrl.href);
     } catch (error) {
       button.disabled = false;
-      window.alert(error instanceof Error ? error.message : String(error));
+      void uiAlert(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -5698,7 +5705,7 @@ class TermdeckApp {
       });
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}));
-        alert(detail.detail || "unable to open saved session");
+        void uiAlert(detail.detail || "unable to open saved session");
         return null;
       }
       sessionId = (await response.json()).session_id;
@@ -9089,8 +9096,8 @@ class TermdeckApp {
   async finishWorktree(action) {
     const sessionId = this.worktreeReviewSessionId;
     if (!sessionId) return;
-    if (action === "discard" && !window.confirm("Discard the worktree and its branch? Uncommitted changes will be lost.")) return;
-    if (action === "merge" && !window.confirm("Merge the worktree branch into its base branch?")) return;
+    if (action === "discard" && !await uiConfirm("Discard the worktree and its branch? Uncommitted changes will be lost.")) return;
+    if (action === "merge" && !await uiConfirm("Merge the worktree branch into its base branch?")) return;
     const status = this.$("worktree-review-status");
     status.className = "";
     status.textContent = action === "keep" ? "Keeping worktree…" : `${action}ing worktree…`;
@@ -9259,7 +9266,7 @@ class TermdeckApp {
                                      body: JSON.stringify({ root: this.treeRoot, ...payload }) });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      alert(err.detail || failLabel);
+      void uiAlert(err.detail || failLabel);
       return null;
     }
     return await res.json();
@@ -9267,7 +9274,7 @@ class TermdeckApp {
 
   async renameTreePath(rel) {
     const base = rel.split("/").pop();
-    const newName = prompt(`Rename "${base}" to`, base);
+    const newName = await uiPrompt(`Rename "${base}" to`, base);
     if (!newName || newName === base) return;
     if (!await this.saveOpenFileBeforePathChange(rel)) return;
     const result = await this.fsOp("/api/files/rename", { path: rel, new_name: newName }, "rename failed");
@@ -9278,7 +9285,7 @@ class TermdeckApp {
 
   async createTreePath(parent, directory) {
     const suggested = parent ? `${parent}/` : "";
-    const path = prompt(`${directory ? "Folder" : "File"} path relative to ${this.treeRoot}`, suggested);
+    const path = await uiPrompt(`${directory ? "Folder" : "File"} path relative to ${this.treeRoot}`, suggested);
     if (!path || path === suggested) return;
     const result = await this.fsOp("/api/files/create", { path, directory }, "create failed");
     if (result === null) return;
@@ -9291,7 +9298,7 @@ class TermdeckApp {
     const dot = rel.lastIndexOf(".");
     const slash = rel.lastIndexOf("/");
     const suggested = dot > slash ? `${rel.slice(0, dot)} copy${rel.slice(dot)}` : `${rel} copy`;
-    const destination = prompt(`Duplicate "${rel}" to`, suggested);
+    const destination = await uiPrompt(`Duplicate "${rel}" to`, suggested);
     if (!destination || destination === rel) return;
     const result = await this.fsOp("/api/files/duplicate", { path: rel, destination }, "duplicate failed");
     if (result === null) return;
@@ -9300,7 +9307,7 @@ class TermdeckApp {
   }
 
   async moveTreePath(rel) {
-    const destination = prompt(`Move "${rel}" to (path relative to ${this.treeRoot}; existing folder = move into it)`, rel);
+    const destination = await uiPrompt(`Move "${rel}" to (path relative to ${this.treeRoot}; existing folder = move into it)`, rel);
     if (!destination || destination === rel) return;
     if (!await this.saveOpenFileBeforePathChange(rel)) return;
     const result = await this.fsOp("/api/files/move", { path: rel, destination }, "move failed");
@@ -9315,7 +9322,7 @@ class TermdeckApp {
   }
 
   async deleteTreePath(rel) {
-    if (!confirm(`Move "${rel}" to Trash?`)) return;
+    if (!await uiConfirm(`Move "${rel}" to Trash?`)) return;
     const result = await this.fsOp("/api/files/delete", { path: rel }, "delete failed");
     if (result === null) return;
     this.afterFsChange(rel, null);
@@ -9634,7 +9641,7 @@ class TermdeckApp {
       return;
     }
     if (this.restoreLastClosedTerminalNeedsConfirmation &&
-        !window.confirm("You already restored the last closed terminal. Restore another older terminal?")) return;
+        !await uiConfirm("You already restored the last closed terminal. Restore another older terminal?")) return;
     this.restoreLastClosedTerminalBusy = true;
     try {
       if (await this.reopenClosed(lastClosed.session_id)) this.restoreLastClosedTerminalNeedsConfirmation = true;
@@ -10417,15 +10424,15 @@ class TermdeckApp {
     const entry = this.fileHistoryTabKey !== null ? this.openFiles.get(this.fileHistoryTabKey) : null;
     const version = this.fileHistoryVersions.find((candidate) => candidate.version_id === versionId);
     if (!entry || !version) return;
-    if (entry.dirty && !confirm("Discard the current unsaved editor changes and restore this version?")) return;
-    if (!confirm(`Restore ${entry.name} from ${version.captured_at_est}?`)) return;
+    if (entry.dirty && !await uiConfirm("Discard the current unsaved editor changes and restore this version?")) return;
+    if (!await uiConfirm(`Restore ${entry.name} from ${version.captured_at_est}?`)) return;
     const res = await fetch("/api/files/history/restore", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ root: entry.root, path: entry.path, version_id: versionId }),
     });
     if (!res.ok) {
       const error = await res.json().catch(() => ({}));
-      alert(error.detail || "restore failed");
+      void uiAlert(error.detail || "restore failed");
       return;
     }
     entry.dirty = false;
@@ -14500,13 +14507,13 @@ class TermdeckApp {
     if (wasActive) await this.flushNotebook();
     const note = this.settings.notebook_notes[index];
     const title = this.notebookTabTitle(note);
-    if (!confirm(`Move "${title}" to the macOS Trash?`)) return;
+    if (!await uiConfirm(`Move "${title}" to the macOS Trash?`)) return;
     const response = await fetch("/api/notebook/trash", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, content: note.text }),
     });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      alert(error.detail || "could not move note to Trash");
+      void uiAlert(error.detail || "could not move note to Trash");
       return;
     }
     const notes = this.settings.notebook_notes.filter((note) => note.note_id !== noteId);
@@ -18814,8 +18821,8 @@ class TermdeckApp {
     this.renderInlineSizeControls();
   }
 
-  resetAllFontSizesWithConfirmation() {
-    if (window.confirm("Reset all font sizes to their defaults?")) this.resetAllFontSizes();
+  async resetAllFontSizesWithConfirmation() {
+    if (await uiConfirm("Reset all font sizes to their defaults?")) this.resetAllFontSizes();
   }
 
   openInlineSizeEditor() {
@@ -20249,11 +20256,11 @@ class TermdeckApp {
     }
     const state = row.dataset.remoteState || "disconnected";
     if (["connected", "ready"].includes(state)) {
-      if (!window.confirm("Disconnect this computer from TermDeck Remote?")) return;
+      if (!await uiConfirm("Disconnect this computer from TermDeck Remote?")) return;
       const response = await fetch("/api/remote/disconnect", { method: "POST" });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
-        window.alert(payload.detail || `remote disconnect failed (${response.status})`);
+        void uiAlert(payload.detail || `remote disconnect failed (${response.status})`);
       }
       await this.refreshRemoteAccessRow(row);
       return;
@@ -20272,7 +20279,7 @@ class TermdeckApp {
       await this.refreshRemoteAccessRow(row);
     } catch (error) {
       if (loginWindow) loginWindow.close();
-      window.alert(error instanceof Error ? error.message : String(error));
+      void uiAlert(error instanceof Error ? error.message : String(error));
       await this.refreshRemoteAccessRow(row);
     }
   }
@@ -20354,7 +20361,7 @@ class TermdeckApp {
     const message = enabled
       ? "Disable local Wi-Fi access? A page currently using the Wi-Fi address will disconnect."
       : "Anyone on your current local Wi-Fi network will be able to control terminals and access files without signing in. Enable local Wi-Fi access?";
-    if (!window.confirm(message)) return;
+    if (!await uiConfirm(message)) return;
     const action = row.lanAccessElements.action;
     action.disabled = true;
     try {
@@ -20370,7 +20377,7 @@ class TermdeckApp {
       this.persistedSettings.lan_access_enabled = !!payload.enabled;
       await this.refreshLanAccessRow(row);
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : String(error));
+      void uiAlert(error instanceof Error ? error.message : String(error));
       await this.refreshLanAccessRow(row);
     } finally {
       action.disabled = false;
@@ -20584,7 +20591,7 @@ class TermdeckApp {
           const error = await response.json().catch(() => ({}));
           const message = error.detail || "autosave failed";
           this.$("stat-text").textContent = message;
-          if (showFailureAlert) alert(message);
+          if (showFailureAlert) void uiAlert(message);
           return false;
         }
         if (entry.model === model && model.getVersionId() === versionId) {
@@ -20606,7 +20613,7 @@ class TermdeckApp {
       } catch (error) {
         const message = error.message || "autosave failed";
         this.$("stat-text").textContent = message;
-        if (showFailureAlert) alert(message);
+        if (showFailureAlert) void uiAlert(message);
         return false;
       }
     })();
@@ -21160,7 +21167,7 @@ class TermdeckApp {
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
       if (detail.detail?.code === "model_dependency_missing") this.showModalDependencyError(detail.detail);
-      else alert(typeof detail.detail === "string" ? detail.detail : "failed to create session");
+      else void uiAlert(typeof detail.detail === "string" ? detail.detail : "failed to create session");
       return;
     }
     const created = await res.json();
@@ -21334,7 +21341,7 @@ class TermdeckApp {
   async killAllRunningTerminals() {
     const message = "Kill all running terminals, including detached sessions? This stops only terminal processes; " +
       "session tabs, transcripts, and history are preserved.";
-    const confirmed = window.confirm(message);
+    const confirmed = await uiConfirm(message);
     if (!confirmed) return;
     try {
       const response = await fetch("/api/terminals/kill-all", { method: "POST" });
@@ -21351,7 +21358,7 @@ class TermdeckApp {
 
   async killStaleTerminals() {
     const message = "Stop running terminals older than 24 hours? Their tabs and session information will stay available for reattach.";
-    if (!window.confirm(message)) return;
+    if (!await uiConfirm(message)) return;
     const button = this.$("kill-stale-terminals-btn");
     if (button) button.disabled = true;
     try {
@@ -21453,7 +21460,7 @@ class TermdeckApp {
         return;
       }
       const details = orphans.map((entry) => this.formatTerminalProcessReportEntry(entry, true)).join("\n");
-      const confirmed = window.confirm([`Reclaim ${orphans.length} orphaned TermDeck socket${orphans.length === 1 ? "" : "s"}?`,
+      const confirmed = await uiConfirm([`Reclaim ${orphans.length} orphaned TermDeck socket${orphans.length === 1 ? "" : "s"}?`,
         "These are the processes that will be terminated:", "", details, "",
         "This terminates only processes reachable from those unlisted TermDeck sockets."].join("\n"));
       if (!confirmed) return;
@@ -21838,7 +21845,7 @@ class TermdeckApp {
 
   async forkSession(s) {
     const baseTitle = this.stripTitleStatusPrefixes(this.effectiveTitle(s)) || "terminal";
-    const rawValue = prompt(`Fork "${baseTitle}": enter a number from 1 to ${MAX_FORK_COUNT}, or enter a name for one fork.`, "1");
+    const rawValue = await uiPrompt(`Fork "${baseTitle}": enter a number from 1 to ${MAX_FORK_COUNT}, or enter a name for one fork.`, "1");
     if (rawValue === null || !rawValue.trim()) return;
     const value = rawValue.trim();
     if (!/^\d+$/.test(value)) {
@@ -21847,7 +21854,7 @@ class TermdeckApp {
     }
     const count = Number.parseInt(value, 10);
     if (count < 1 || count > MAX_FORK_COUNT) {
-      alert(`Enter a whole number from 1 to ${MAX_FORK_COUNT}, or a name for one fork.`);
+      void uiAlert(`Enter a whole number from 1 to ${MAX_FORK_COUNT}, or a name for one fork.`);
       return;
     }
     await this.createForkedSessions(s, Array.from({ length: count }, (_unused, index) => `${baseTitle} ${index + 1}`));
@@ -21868,7 +21875,7 @@ class TermdeckApp {
       created.push(await res.json());
     }
     if (!created.length) {
-      alert("fork failed");
+      void uiAlert("fork failed");
       return;
     }
     if (this.nativeVscodeMode) {
@@ -21884,7 +21891,7 @@ class TermdeckApp {
     this.$("status-name").textContent = failedAt
       ? `forked ${created.length} of ${titles.length}`
       : `forked ${created.length}`;
-    if (failedAt) alert(`Forked ${created.length} of ${titles.length}; fork ${failedAt} failed.`);
+    if (failedAt) void uiAlert(`Forked ${created.length} of ${titles.length}; fork ${failedAt} failed.`);
   }
 
   async restartSession(sessionId, permission = "") {
@@ -21927,7 +21934,7 @@ class TermdeckApp {
   async closeSession(sessionId) {
     const s = this.session(sessionId);
     if (!s) return;
-    if (!confirm(`Close "${this.effectiveTitle(s)}"? This kills the process (it moves to closed history).`)) return;
+    if (!await uiConfirm(`Close "${this.effectiveTitle(s)}"? This kills the process (it moves to closed history).`)) return;
     const wasActive = this.activeId === sessionId;
     const closeOrder = this.sessions.map((session) => session.session_id);
     const closeIndex = closeOrder.indexOf(sessionId);
@@ -21962,7 +21969,7 @@ class TermdeckApp {
   async closeSelectedSessions(sessionIds) {
     const selectedSessions = [...new Set(sessionIds)].map((sessionId) => this.session(sessionId)).filter(Boolean);
     if (!selectedSessions.length) return;
-    if (!confirm(`Close ${selectedSessions.length} selected terminals? This kills their processes and moves them to closed history.`)) return;
+    if (!await uiConfirm(`Close ${selectedSessions.length} selected terminals? This kills their processes and moves them to closed history.`)) return;
     const selectedIds = new Set(selectedSessions.map((session) => session.session_id));
     const activeWasSelected = selectedIds.has(this.activeId);
     const activeIndex = this.sessions.findIndex((session) => session.session_id === this.activeId);
@@ -21997,7 +22004,7 @@ class TermdeckApp {
   }
 
   async renameSession(s) {
-    const title = prompt("Rename terminal", this.effectiveTitle(s));
+    const title = await uiPrompt("Rename terminal", this.effectiveTitle(s));
     if (!title) return;
     await fetch(`/api/sessions/${s.session_id}/rename`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -22013,7 +22020,7 @@ class TermdeckApp {
     });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      alert(error.detail || "move terminal to project failed");
+      void uiAlert(error.detail || "move terminal to project failed");
       return;
     }
     if (this.projectSlug && this.projectSlug !== project) {
@@ -22853,7 +22860,7 @@ class TermdeckApp {
     const query = this.$("search-query").value.trim();
     const replacement = this.$("replace-with").value;
     if (!query) {
-      alert("enter a search query first");
+      void uiAlert("enter a search query first");
       return;
     }
     if (!this.lastSearchFiles.length) await this.runSearch(null, true);
@@ -22897,7 +22904,7 @@ class TermdeckApp {
     const replacement = this.$("replace-with").value;
     const paths = [...this.$("replace-preview").querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value);
     if (!paths.length) return;
-    if (!confirm(`Replace matches in ${paths.length} selected file${paths.length === 1 ? "" : "s"}?`)) return;
+    if (!await uiConfirm(`Replace matches in ${paths.length} selected file${paths.length === 1 ? "" : "s"}?`)) return;
     const res = await fetch("/api/files/replace", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ root: this.lastSearchRoot || this.searchRoot(), q: query, glob: this.fileGlobForMode("search"),
@@ -22908,12 +22915,12 @@ class TermdeckApp {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      alert(err.detail || "replace failed");
+      void uiAlert(err.detail || "replace failed");
       return;
     }
     const result = await res.json();
     this.$("replace-preview").classList.add("hidden");
-    alert(`replaced ${result.replacements} match${result.replacements === 1 ? "" : "es"} in ${result.files} file${result.files === 1 ? "" : "s"}`);
+    void uiAlert(`replaced ${result.replacements} match${result.replacements === 1 ? "" : "es"} in ${result.files} file${result.files === 1 ? "" : "s"}`);
     for (const entry of this.openFiles.values()) {
       if (entry.model && !entry.dirty) {
         entry.model.dispose();

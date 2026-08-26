@@ -67,7 +67,8 @@
   });
 
   stopButton.addEventListener("click", async () => {
-    const confirmed = window.confirm("Stop every running terminal? Work currently in progress will be interrupted. Tabs, transcripts, and history remain available and can be restarted later.");
+    const confirmed = await window.TermdeckDialogs.confirm("Stop every running terminal? Work currently in progress will be interrupted. Tabs, transcripts, and history remain available and can be restarted later.",
+      { title: "Stop all terminals", confirmLabel: "Stop all", danger: true });
     if (!confirmed) return;
     setActionsDisabled(true);
     status.textContent = "Stopping running terminals…";

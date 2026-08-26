@@ -39,6 +39,7 @@
     <div id="snapshots" class="snapshots"></div>
     <div id="status"></div>
   </main>
+  <script src="/static/dialogs.js"></script>
   <script>
     const issuesElement = document.getElementById("issues");
     const snapshotsElement = document.getElementById("snapshots");
@@ -81,7 +82,7 @@
         const button = addTextElement(card, "button", "Restore this snapshot");
         button.type = "button";
         button.addEventListener("click", async () => {
-          if (!window.confirm(`Restore ${snapshot.name}? The current state files will be preserved first.`)) return;
+          if (!await window.TermdeckDialogs.confirm(`Restore ${snapshot.name}? The current state files will be preserved first.`, { title: "Restore snapshot", confirmLabel: "Restore" })) return;
           button.disabled = true;
           statusElement.textContent = "Restoring selected snapshot and restarting TermDeck…";
           const response = await fetch("/api/state-recovery/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ snapshot: snapshot.name }) });
