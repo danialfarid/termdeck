@@ -54,6 +54,29 @@ const AGENT_CLIENT_BEHAVIORS = {
     statusRowRefresh: true,             // periodic bottom status-row repaint while following
   },
 };
+// Fallback snapshot of /api/agents, used only when the boot-time fetch fails (transient hiccup on a
+// page that otherwise loaded): without it every capability check degrades to "shell terminal" for the
+// whole browser session. The server response is authoritative and replaces this wholesale.
+const AGENT_SPEC_DEFAULTS = {
+  none: { kind: "none", label: "Shell", is_agent: false, prompt_marker: "",
+    permissions: [{ value: "default", label: "Shell permissions" }],
+    supports_resume: false, supports_fork: false, accepts_session_ref: false,
+    records_raw_replay: false, has_prompt_queue: false },
+  claude: { kind: "claude", label: "Claude", is_agent: true, prompt_marker: "❯",
+    permissions: [{ value: "default", label: "Default (Claude config)" }, { value: "accept-edits", label: "Accept edits" },
+      { value: "auto", label: "Auto" }, { value: "full-access", label: "Full access" }],
+    supports_resume: true, supports_fork: true, accepts_session_ref: true,
+    records_raw_replay: true, has_prompt_queue: false },
+  codex: { kind: "codex", label: "Codex", is_agent: true, prompt_marker: "›",
+    permissions: [{ value: "default", label: "Default (Codex config)" }, { value: "read-only", label: "Read only" },
+      { value: "workspace-write", label: "Workspace write" }, { value: "full-access", label: "Full access" }],
+    supports_resume: true, supports_fork: true, accepts_session_ref: true,
+    records_raw_replay: true, has_prompt_queue: true },
+  agy: { kind: "agy", label: "AGY", is_agent: true, prompt_marker: "",
+    permissions: [{ value: "default", label: "Default" }, { value: "full-access", label: "Full access" }],
+    supports_resume: true, supports_fork: false, accepts_session_ref: false,
+    records_raw_replay: false, has_prompt_queue: false },
+};
 const SEARCH_DEBOUNCE_MS = 500;
 const TERMINAL_SEARCH_DEBOUNCE_MS = 700;
 const TERMINAL_FIND_HIGHLIGHT_LIMIT = 2000;
@@ -495,7 +518,7 @@ class TermdeckApp {
     this.handleHostMessageBound = this.handleHostMessage.bind(this);
     this.sessions = [];
     this.closedSessions = [];
-    this.agentSpecs = {};
+    this.agentSpecs = AGENT_SPEC_DEFAULTS;
     this.initialLoadComplete = false;
     this.initialPageContentReady = false;
     this.views = new Map();
@@ -18024,7 +18047,7 @@ class TermdeckApp {
     try {
       const response = await fetch("/api/agents");
       if (response.ok) this.agentSpecs = await response.json();
-    } catch { /* served page without a reachable server; specs stay empty */ }
+    } catch { /* transient fetch failure at boot; AGENT_SPEC_DEFAULTS stays in effect */ }
   }
 
   agentSpec(kind) {
