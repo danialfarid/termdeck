@@ -15,6 +15,9 @@ const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
 // keeps using TITLE_STATUS_RE so a rendered name still matches the title the session is stored under.
 const TITLE_STATUS_PREFIX_RE = /^(?:[⠀-⣿○-◗⏳⚡✳]|\.\.\.|…)\s*/;
 const RECONNECT_MS = 1500;
+// A restarted server answers the moment its port opens, and a page reloaded into that instant can come
+// back without its terminals. Let the new instance settle before reloading onto it.
+const SERVER_RESTART_RELOAD_DELAY_MS = 5000;
 const TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS = 1800;
 const INACTIVE_TERMINAL_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 const INACTIVE_TERMINAL_OUTPUT_BATCH_BYTES = 256 * 1024;
@@ -3738,7 +3741,7 @@ class TermdeckApp {
           if (!instanceId) return;
           if (this.serverInstanceId && this.serverInstanceId !== instanceId && !this.serverRestartReloading) {
             this.serverRestartReloading = true;
-            location.reload();
+            setTimeout(() => location.reload(), SERVER_RESTART_RELOAD_DELAY_MS);
             return;
           }
           this.serverInstanceId = instanceId;

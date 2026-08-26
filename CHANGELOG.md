@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The service log is trimmed to its last 2 MB once it passes 5 MB, at startup and every 15 minutes, so an
+  always-on deck no longer accumulates an unbounded `termdeck.log`.
+
+### Fixed
+
+- Server startup no longer probes the process tree once per saved session. Reconciling dtach sockets now
+  shares one machine-wide `lsof`/`ps` sample, so a deck of ~90 terminals reaches the listening port in
+  well under a second instead of spending ~40-60s in `lsof` before uvicorn binds.
+- A page that sees the server restart now waits five seconds before reloading, instead of reloading into
+  the instant the new instance's port opened.
+
 ## [0.6.1] — 2026-08-20
 
 ### Fixed

@@ -7,6 +7,7 @@ from typing import Iterable
 
 from termdeck.agents.base import UUID_RE, AgentCli, AgentSessionState
 from termdeck.config import TermdeckConfig
+from termdeck.proc_tree import ProcTreeSnapshot
 from termdeck.transcript_turns import TurnBuilder
 from termdeck.util import TimeUtil
 
@@ -252,16 +253,16 @@ class ClaudeCli(AgentCli):
 
     # -- bindings / titles -------------------------------------------------
 
-    async def reconcile_bindings(self, manager, ms) -> None:
-        await self._reconcile_live_binding(manager, ms)
+    async def reconcile_bindings(self, manager, ms, proc_tree) -> None:
+        self._reconcile_live_binding(manager, ms, proc_tree)
         self.reconcile_stale_binding(manager, ms)
 
-    async def _reconcile_live_binding(self, manager, ms) -> bool:
+    def _reconcile_live_binding(self, manager, ms, proc_tree) -> bool:
         if not ms.detached_live:
             return False
         tracker = manager._tracker
-        candidate = await tracker.claude_resume_session_id_from_process_arguments(
-            manager._dtach_socket(ms.record.session_id))
+        candidate = tracker.claude_resume_session_id_from_process_arguments(
+            manager._dtach_socket(ms.record.session_id), proc_tree)
         if not candidate or candidate == ms.record.agent_session_id or candidate in manager._claimed_agent_ids(ms):
             return False
         cwd = Path(ms.record.cwd)
@@ -393,7 +394,8 @@ class ClaudeCli(AgentCli):
         # different id than the current binding only when the process arguments confirm it.
         existing = ms.record.agent_session_id
         if existing and found not in {None, existing}:
-            resumed = await manager._tracker.claude_resume_session_id_from_process_arguments(socket)
+            resumed = manager._tracker.claude_resume_session_id_from_process_arguments(
+                socket, await ProcTreeSnapshot.capture())
             if resumed != found:
                 return None
         return found

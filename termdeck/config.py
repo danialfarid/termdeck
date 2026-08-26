@@ -38,6 +38,11 @@ class TermdeckConfig:
     STATE_BACKUP_MAX_BYTES = 50_000_000
     STATE_BACKUP_INTERVAL_SECONDS = 3600.0
     STATE_BACKUP_PREWRITE_INTERVAL_SECONDS = 300.0
+    # The service log is append-only for the life of the machine otherwise: uvicorn logs every websocket
+    # accept, so an always-on deck adds megabytes a week and nobody reads past the last restart.
+    SERVICE_LOG_MAX_BYTES = 5_000_000
+    SERVICE_LOG_KEEP_BYTES = 2_000_000
+    SERVICE_LOG_TRIM_INTERVAL_SECONDS = 900.0
     UPLOADS_DIR = DATA_DIR / "uploads"
     API_UPLOAD_ROUTE = "/api/upload"
     UPLOAD_MAX_BYTES = 30_000_000

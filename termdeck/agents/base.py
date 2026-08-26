@@ -192,8 +192,11 @@ class AgentCli:
     def on_transcript_event(self, manager, ms, path: Path) -> None:
         """A watched transcript file changed; update this session's activity if the file is its own."""
 
-    async def reconcile_bindings(self, manager, ms) -> None:
-        """Re-derive the agent-session binding during the startup/periodic reconcile."""
+    async def reconcile_bindings(self, manager, ms, proc_tree) -> None:
+        """Re-derive the agent-session binding during the startup/periodic reconcile.
+
+        `proc_tree` is the sweep's shared ProcTreeSnapshot: answer process questions from it rather than
+        probing per session, since the whole sweep runs before the server starts listening."""
 
     def reconcile_metadata(self, manager, ms) -> None:
         """Post-binding reconcile step: titles, re-detection, anything not binding-critical."""

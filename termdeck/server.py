@@ -40,6 +40,7 @@ from termdeck.platform_paths import PlatformPaths
 from termdeck.remote_access import RemoteAccessManager, RemoteAccessStatus
 from termdeck.remote_credentials import RemoteCredentialStore
 from termdeck.search_service import ProjectSearchService
+from termdeck.service_log import ServiceLogTrimmer
 from termdeck.session_manager import TerminalSessionManager
 from termdeck.settings_store import UiSettingsStore
 from termdeck.state_backup import StateBackupManager
@@ -562,6 +563,9 @@ class TermdeckServer:
         self.state_backup = StateBackupManager(TermdeckConfig.DATA_DIR, TermdeckConfig.STATE_BACKUP_MAX_BYTES,
                                                TermdeckConfig.STATE_BACKUP_INTERVAL_SECONDS,
                                                TermdeckConfig.STATE_BACKUP_PREWRITE_INTERVAL_SECONDS)
+        self.service_log = ServiceLogTrimmer(TermdeckConfig.SERVICE_LOG_MAX_BYTES,
+                                             TermdeckConfig.SERVICE_LOG_KEEP_BYTES,
+                                             TermdeckConfig.SERVICE_LOG_TRIM_INTERVAL_SECONDS)
         self.state_recovery = self.state_backup.recovery_status()
         self.recovery_mode = bool(self.state_recovery["required"])
         self.manager: TerminalSessionManager | None = None
@@ -605,6 +609,7 @@ class TermdeckServer:
         self.lan_access: LanAccessManager | None = None
         self._lan_stop_task: asyncio.Task[None] | None = None
         self._state_backup_task: asyncio.Task | None = None
+        self._service_log_task: asyncio.Task | None = None
         self._origin_delivery_locks: dict[str, asyncio.Lock] = {}
         self._task_delivery_jobs: set[asyncio.Task] = set()
 
@@ -615,6 +620,8 @@ class TermdeckServer:
             return
         self.state_backup.create_snapshot("startup", True)
         self._state_backup_task = asyncio.create_task(self.state_backup.run_periodic_snapshots())
+        self.service_log.trim_if_oversized()
+        self._service_log_task = asyncio.create_task(self.service_log.run_periodic_trims())
         await self.manager.startup_respawn_saved_sessions()
         self.manager.start_background_tasks()
         self.transcripts.start(asyncio.get_running_loop())
@@ -632,12 +639,13 @@ class TermdeckServer:
             await self._cancel_pending_lan_stop()
             await self._required_lan_access_manager().stop()
             await self.remote_access.stop()
-            if self._state_backup_task is not None:
-                self._state_backup_task.cancel()
-                try:
-                    await self._state_backup_task
-                except asyncio.CancelledError:
-                    pass
+            for background_task in (self._state_backup_task, self._service_log_task):
+                if background_task is not None:
+                    background_task.cancel()
+                    try:
+                        await background_task
+                    except asyncio.CancelledError:
+                        pass
             self.history_index.stop()
             self.transcripts.stop()
             self.manager.stop_background_tasks()

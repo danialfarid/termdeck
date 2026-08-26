@@ -9,7 +9,7 @@ from termdeck import agents
 from termdeck.agents.claude import ClaudeCli
 from termdeck.agents.codex import CodexCli
 from termdeck.config import TermdeckConfig
-from termdeck.proc_tree import ProcTreeUtil
+from termdeck.proc_tree import ProcTreeSnapshot
 
 
 class AgentSessionTracker:
@@ -576,7 +576,7 @@ class AgentSessionTracker:
         return {path for path, _ in self._candidate_session_files(kind, cwd)}
 
     async def session_id_from_open_files(self, kind: str, socket_path: Path) -> str | None:
-        tree_pids = await ProcTreeUtil.tree_pids_for_socket(str(socket_path))
+        tree_pids = (await ProcTreeSnapshot.capture()).tree_pids_for_socket(str(socket_path))
         pids = ",".join(str(pid) for pid in tree_pids)
         if not pids:
             return None
@@ -597,10 +597,11 @@ class AgentSessionTracker:
                 best_mtime, best_id = mtime, session_id
         return best_id
 
-    async def claude_resume_session_id_from_process_arguments(self, socket_path: Path) -> str | None:
-        tree_pids = await ProcTreeUtil.tree_pids_for_socket(str(socket_path))
+    def claude_resume_session_id_from_process_arguments(self, socket_path: Path,
+                                                        proc_tree: ProcTreeSnapshot) -> str | None:
+        tree_pids = proc_tree.tree_pids_for_socket(str(socket_path))
         found: set[str] = set()
-        for process in await ProcTreeUtil.process_details(tree_pids):
+        for process in proc_tree.process_details(tree_pids):
             parts = self._command_parts(str(process["command"]))
             for index, part in enumerate(parts):
                 candidate = parts[index + 1] if part == ClaudeCli.RESUME_FLAG and index + 1 < len(parts) else \

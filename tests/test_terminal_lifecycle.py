@@ -2,7 +2,9 @@ import asyncio
 import json
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException, WebSocketDisconnect
@@ -14,7 +16,7 @@ from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.file_service import ProjectFileService
 from termdeck.models import SessionRecord
 from termdeck.config import TermdeckConfig
-from termdeck.proc_tree import ProcTreeUtil
+from termdeck.proc_tree import ProcTreeSnapshot, ProcTreeUtil
 from termdeck.pty_process import PtyProcess
 from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, TermdeckServer, UiSettings
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
@@ -27,10 +29,42 @@ def record(session_id: str = "abc123") -> SessionRecord:
                          created_at_est="2026-01-01T00:00:00", draft="", project="test")
 
 
-class ProcTreeUtilTest(unittest.TestCase):
+def process_row(pid: int, ppid: int = 1, command: str = "dtach") -> dict[str, int | float | str]:
+    return {"pid": pid, "ppid": ppid, "state": "S", "cpu_percent": 0.0, "rss_kb": 4096,
+            "elapsed": "01:00", "command": command}
+
+
+@contextmanager
+def proc_tree_probe(socket_holders: dict[str, list[int]], processes: list[dict[str, int | float | str]]):
+    """Stand in for the two subprocesses a ProcTreeSnapshot samples, counting how often they are run."""
+    socket_probes = AsyncMock(return_value=socket_holders)
+    process_probes = AsyncMock(return_value=processes)
+    with patch.object(ProcTreeUtil, "unix_socket_holders", new=socket_probes), \
+         patch.object(ProcTreeUtil, "process_table", new=process_probes):
+        yield SimpleNamespace(socket_probes=socket_probes, process_probes=process_probes)
+
+
+class ProcTreeUtilTest(unittest.IsolatedAsyncioTestCase):
     def test_descendants_include_every_process_below_each_socket_holder(self) -> None:
         rows = [(10, 1), (11, 10), (12, 11), (20, 1), (21, 20)]
         self.assertEqual(ProcTreeUtil.descendants(rows, [10, 20]), {10, 11, 12, 20, 21})
+
+    async def test_one_lsof_pass_attributes_every_named_socket_to_its_holders(self) -> None:
+        # lsof -F output: a p line opens a process and each of its files follows as an f line, plus an
+        # n line for the ones that are named sockets.
+        output = "p101\nf3\nn/deck/one.sock\nf4\nn->0x9a\np202\nf7\nn/deck/two.sock\nf8\nn/deck/one.sock\n"
+        with patch.object(ProcTreeUtil, "_run", new=AsyncMock(return_value=output)):
+            holders = await ProcTreeUtil.unix_socket_holders()
+        self.assertEqual(holders["/deck/one.sock"], [101, 202])
+        self.assertEqual(holders["/deck/two.sock"], [202])
+
+    async def test_snapshot_expands_socket_holders_into_their_whole_tree(self) -> None:
+        with proc_tree_probe({"/deck/one.sock": [10]},
+                             [process_row(10), process_row(11, ppid=10), process_row(99)]):
+            snapshot = await ProcTreeSnapshot.capture()
+        self.assertEqual(snapshot.tree_pids_for_socket("/deck/one.sock"), {10, 11})
+        self.assertEqual(snapshot.tree_pids_for_socket("/deck/missing.sock"), set())
+        self.assertEqual([process["pid"] for process in snapshot.process_details({11, 10})], [10, 11])
 
 
 class PtyEnvironmentTest(unittest.TestCase):
@@ -746,7 +780,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
             socket = Path(directory) / "abc123.sock"
             socket.touch()
             with patch.object(manager, "_dtach_socket", return_value=socket), \
-                 patch.object(ProcTreeUtil, "tree_pids_for_socket", new=AsyncMock(return_value={101})):
+                 proc_tree_probe({str(socket): [101]}, [process_row(101)]):
                 await manager.startup_respawn_saved_sessions()
         session = manager._sessions[saved.session_id]
         self.assertTrue(session.running)
@@ -762,12 +796,54 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
             socket = Path(directory) / "abc123.sock"
             socket.touch()
             with patch.object(manager, "_dtach_socket", return_value=socket), \
-                 patch.object(ProcTreeUtil, "tree_pids_for_socket", new=AsyncMock(return_value=set())):
+                 proc_tree_probe({"/elsewhere/other.sock": [7]}, [process_row(7)]):
                 await manager.startup_respawn_saved_sessions()
             self.assertFalse(socket.exists())
         session = manager._sessions[saved.session_id]
         self.assertFalse(session.running)
         self.assertTrue(session.dormant)
+
+    async def test_startup_reconciles_every_session_from_one_process_sample(self) -> None:
+        # lsof costs the same whether it is asked about one socket or all of them, and the whole sweep
+        # runs before uvicorn binds the port — so the probe count must not grow with the session count.
+        manager = TerminalSessionManager()
+        live_shell, dead_shell = record("live-shell"), record("dead-shell")
+        live_claude = record("live-claude")
+        live_claude.agent_kind = "claude"
+        saved = [live_shell, dead_shell, live_claude]
+        manager._store.load_all = lambda: saved  # type: ignore[method-assign]
+        with tempfile.TemporaryDirectory() as directory:
+            sockets = {item.session_id: Path(directory) / f"{item.session_id}.sock" for item in saved}
+            for socket in sockets.values():
+                socket.touch()
+            holders = {str(sockets["live-shell"]): [101], str(sockets["live-claude"]): [201]}
+            processes = [process_row(101), process_row(201, command="claude --resume " + "a" * 8)]
+            with patch.object(manager, "_dtach_socket", side_effect=lambda session_id: sockets[session_id]), \
+                 proc_tree_probe(holders, processes) as probes:
+                await manager.startup_respawn_saved_sessions()
+            self.assertFalse(sockets["dead-shell"].exists())
+            self.assertTrue(sockets["live-shell"].exists())
+
+        self.assertEqual(probes.socket_probes.await_count, 1)
+        self.assertEqual(probes.process_probes.await_count, 1)
+        self.assertTrue(manager._sessions["live-shell"].detached_live)
+        self.assertTrue(manager._sessions["live-claude"].detached_live)
+        self.assertFalse(manager._sessions["dead-shell"].detached_live)
+
+    async def test_startup_keeps_sockets_when_the_process_probe_returns_nothing(self) -> None:
+        # An lsof that timed out reports no holders for anything; unlinking on that would orphan every
+        # live terminal at once.
+        manager = TerminalSessionManager()
+        saved = record()
+        manager._store.load_all = lambda: [saved]  # type: ignore[method-assign]
+        with tempfile.TemporaryDirectory() as directory:
+            socket = Path(directory) / "abc123.sock"
+            socket.touch()
+            with patch.object(manager, "_dtach_socket", return_value=socket), \
+                 proc_tree_probe({}, []):
+                await manager.startup_respawn_saved_sessions()
+            self.assertTrue(socket.exists())
+        self.assertFalse(manager._sessions[saved.session_id].detached_live)
 
     async def test_active_shell_and_claude_replays_are_checkpointed_without_codex_or_agy(self) -> None:
         manager = TerminalSessionManager()

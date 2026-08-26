@@ -14,7 +14,7 @@ from termdeck import agents
 from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.claude_activity_watcher import ClaudeActivityWatcher
 from termdeck.config import TermdeckConfig
-from termdeck.proc_tree import ProcTreeUtil
+from termdeck.proc_tree import ProcTreeSnapshot
 from termdeck.draft_tracker import DraftInputTracker
 from termdeck.models import ApiFields, SessionRecord, WsMessageFields
 from termdeck.project_registry import ProjectRegistry
@@ -561,10 +561,13 @@ class TerminalSessionManager:
         # Do not launch old terminals merely because the web server came up.
         # Reconcile their dtach sockets instead: live sockets remain running
         # and are attached lazily when opened; dead sockets are safe to clear.
+        # The whole sweep reads one process/socket sample: uvicorn binds the port only after this
+        # returns, so a per-session probe would keep the browser waiting a second per session.
+        proc_tree = await ProcTreeSnapshot.capture()
         for ms in self._sessions.values():
             agent = agents.agent_cli(ms.record.agent_kind)
-            await self._reconcile_session_socket(ms)
-            await agent.reconcile_bindings(self, ms)
+            self._reconcile_session_socket(ms, proc_tree)
+            await agent.reconcile_bindings(self, ms, proc_tree)
             self._canonicalize_agent_resume_command(ms.record)
             agent.reconcile_metadata(self, ms)
             self._refresh_session_activity(ms)
@@ -1708,11 +1711,12 @@ class TerminalSessionManager:
         """Read-only inventory of every process reachable from TermDeck's dtach sockets."""
         entries: list[dict[str, object]] = []
         all_processes: list[dict[str, int | float | str]] = []
+        proc_tree = await ProcTreeSnapshot.capture()
         for socket in self._dtach_socket_paths():
             session_id = self._socket_session_id(socket)
             ms = self._sessions.get(session_id)
-            pids = await ProcTreeUtil.tree_pids_for_socket(str(socket))
-            processes = await ProcTreeUtil.process_details(pids)
+            pids = proc_tree.tree_pids_for_socket(str(socket))
+            processes = proc_tree.process_details(pids)
             if ms is not None:
                 ms.detached_live = bool(pids)
             entries.append({
@@ -1757,33 +1761,40 @@ class TerminalSessionManager:
                 failed.append(session_id)
         return {"reclaimed": reclaimed, "failed": failed, "report": await self.terminal_process_report()}
 
-    async def _reconcile_session_socket(self, ms: ManagedSession) -> None:
+    def _reconcile_session_socket(self, ms: ManagedSession, proc_tree: ProcTreeSnapshot) -> None:
         socket = self._dtach_socket(ms.record.session_id)
-        ms.detached_live = bool(await ProcTreeUtil.tree_pids_for_socket(str(socket)))
-        if not ms.detached_live:
-            await self._remove_dead_dtach_socket(socket)
+        ms.detached_live = bool(proc_tree.tree_pids_for_socket(str(socket)))
+        # The snapshot IS the fresh no-holder proof `_remove_dead_dtach_socket` would go and re-fetch, so
+        # unlink straight from it — except when the sample is empty, which says lsof failed rather than
+        # that every terminal died.
+        if not ms.detached_live and proc_tree.sampled_sockets:
+            self._unlink_socket(socket)
 
     async def _remove_dead_dtach_socket(self, socket: Path) -> bool:
         """Unlink a socket only after a fresh process-tree check proves it has no holder."""
-        if await ProcTreeUtil.tree_pids_for_socket(str(socket)):
+        if (await ProcTreeSnapshot.capture()).tree_pids_for_socket(str(socket)):
             return False
+        self._unlink_socket(socket)
+        return True
+
+    @staticmethod
+    def _unlink_socket(socket: Path) -> None:
         try:
             socket.unlink()
         except FileNotFoundError:
             pass
-        return True
 
     async def _kill_dtach_socket(self, socket: Path) -> bool:
         """Terminate one TermDeck-owned dtach tree and verify its socket is gone."""
         for signal_number in (signal.SIGTERM, signal.SIGKILL):
-            tree_pids = await ProcTreeUtil.tree_pids_for_socket(str(socket))
+            tree_pids = (await ProcTreeSnapshot.capture()).tree_pids_for_socket(str(socket))
             alive = [pid for pid in tree_pids if self._pid_alive(pid)]
             if not alive:
                 return await self._remove_dead_dtach_socket(socket)
             for pid in alive:
                 self._signal_pid(pid, signal_number)
             for _ in range(TermdeckConfig.KILL_GRACE_POLLS):
-                if not await ProcTreeUtil.tree_pids_for_socket(str(socket)):
+                if not (await ProcTreeSnapshot.capture()).tree_pids_for_socket(str(socket)):
                     return await self._remove_dead_dtach_socket(socket)
                 await asyncio.sleep(TermdeckConfig.KILL_GRACE_POLL_SECONDS)
         return await self._remove_dead_dtach_socket(socket)

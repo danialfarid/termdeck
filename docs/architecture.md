@@ -40,9 +40,15 @@ On startup, TermDeck checks each recorded socket: if it is still live it **reatt
 (`──── restarted ────`).
 
 The cost of this design is that the agent's pids are **not** reachable by walking the server's children.
-`ProcTreeUtil` recovers them from the socket instead: `lsof -t <sock>` yields the master, then a ppid walk
+`ProcTreeUtil` recovers them from the socket instead: `lsof` yields the master holding it, then a ppid walk
 expands to the shell and CLI descendants. `ResourceStatsService` uses the same trick for per-terminal
 cpu/rss.
+
+Those two probes are always taken machine-wide, as one `ProcTreeSnapshot` (`lsof -U` + `ps -ax`), and any
+sweep over many sockets shares a single sample. lsof walks every process's open files however narrow the
+question is, so a per-socket probe costs the same ~0.4s as one covering the whole machine — asking per
+session put ~57s of serialized `lsof` in front of the port at startup, since uvicorn runs the lifespan
+before it binds.
 
 ---
 
@@ -86,8 +92,9 @@ cpu/rss.
 | `filedeck/git_workflow_service.py` | Typed Git workflow operations for status, staging, commits, branches, conflicts, stashes, worktrees, and agent attribution. |
 | `filedeck/git_remote_service.py` | SSH/HTTPS Git remote listing, fetch, fast-forward pull, push, and clone transport. |
 | `search_service.py` | ripgrep wrapper: fixed-string or regex, smart-case, gitignore-aware, glob filters, find-usages. |
-| `proc_tree.py` | Socket → master pid → descendant pids. |
+| `proc_tree.py` | Socket → master pid → descendant pids, from one machine-wide sample. |
 | `stats_service.py` | Per-terminal and whole-app cpu/rss sampling. |
+| `service_log.py` | Bounds the supervisor-owned log, found from this process's stdout descriptor. |
 | `util.py` | `OscTitleParser` (OSC 0/1/2 titles across chunk boundaries) and `TimeUtil` (EST-naive timestamps). |
 
 ### Packaging
