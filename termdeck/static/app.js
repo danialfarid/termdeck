@@ -310,8 +310,12 @@ const PATH_LINK_RE = /(?:~\/|\.{1,2}\/|\/)?[\w@%+=.-]+(?:\/[\w@%+=.-]+)*\.[A-Za-
 const KNOWN_EXTS = new Set(["py", "md", "json", "js", "ts", "tsx", "css", "html", "sh", "zsh", "txt", "yaml", "yml",
   "toml", "csv", "log", "plist", "sql", "xml", "ini", "cfg", "lock", "ipynb", "rs", "go", "c", "h", "cpp", "hpp", "java"]);
 const MATERIAL_ICONS_BASE = "/static/vendor/material-icons/icons/";
-const FOLDER_ICON_CLOSED = `${MATERIAL_ICONS_BASE}folder-project.svg`;
-const FOLDER_ICON_OPEN = `${MATERIAL_ICONS_BASE}folder-project-open.svg`;
+// Folder rows use a plain grey outline rather than a Material folder variant: the tree already carries
+// colour on the FILE icons, so a coloured folder on every row competed with them for attention. Local
+// SVGs (static/icons) instead of the vendored set, because none of its 225 folder variants is neutral.
+const TERMDECK_ICONS_BASE = "/static/icons/";
+const FOLDER_ICON_CLOSED = `${TERMDECK_ICONS_BASE}folder.svg`;
+const FOLDER_ICON_OPEN = `${TERMDECK_ICONS_BASE}folder-open.svg`;
 const MATERIAL_ICONS_MAP_URL = "/static/vendor/material-icons/dist/material-icons.json";
 const HAS_VSCODE_WEBVIEW_API = typeof acquireVsCodeApi === "function";
 const IS_VSCODE_EMBEDDED = window.parent !== window;
@@ -6256,7 +6260,11 @@ class TermdeckApp {
     this.$("git-refresh").classList.toggle("hidden", !gitView);
     for (const [name, id] of [["terminals", "view-terminals"], ["project", "view-project"], ["search", "view-search"], ["git", "view-git"]]) {
       const button = this.$(id);
-      if (button) button.classList.toggle("on", name === view);
+      if (button) {
+        const selected = name === view;
+        button.classList.toggle("on", selected);
+        button.setAttribute("aria-selected", String(selected));
+      }
     }
     this.renderFileEditorChrome();
     this.$("side-split").classList.toggle("hidden", view === "terminals" || view === CLOSED_SIDE_VIEW || filesVisible);
@@ -6348,9 +6356,8 @@ class TermdeckApp {
     }
     if (this.fileHistoryOpen) this.deactivateFileHistoryTab();
     if (this.sideView === view) {
-      if (view === "project") this.focusFileNameSearch();
-      else if (view === "search") this.focusFileContentSearch();
-      else requestAnimationFrame(() => this.$("git-refresh")?.focus());
+      this.handleFileModeNavigationClick("terminals");
+      return;
     } else if (view === "search") {
       this.openSearchSidePanelFromNavigation();
     } else if (view !== "project" || !this.searchFileFromSelection()) {
@@ -16379,6 +16386,7 @@ class TermdeckApp {
     const session = view ? this.session(view.sessionId) : null;
     const eligible = !!view && view.sessionId === this.activeId && !this.historyOpen && this.activeFileKey === null &&
       !this.vscodeMode && !this.nativeVscodeMode && this.sessionSupportsTranscript(session) &&
+      view.everConnected && !view.awaitingSnapshot && !view.replaying &&
       this.terminalHasScrollableHistory(view);
     if (!eligible) {
       button.classList.add("hidden");
@@ -18176,6 +18184,12 @@ class TermdeckApp {
     const relativeDiffFontSize = Math.round(baseRelativeDiffFontSize * this.displayScale() * 100) / 100;
     document.documentElement.style.setProperty("--diff-font-size", relativeDiffFontSize + "px");
     document.documentElement.style.setProperty("--tree-font-size", treeFontSize + "px");
+    // The tree owns its own spacing scale. Row padding, indent and icon gaps used to ride on
+    // --ui-scale ("UI icons / spacing"), so resizing global chrome silently re-spaced a tree that
+    // has its own size control -- and the tree could not be tightened without shrinking the rest of
+    // the app. Derived from the tree size the same way --ui-scale is derived from the bottom bar.
+    document.documentElement.style.setProperty("--tree-scale",
+      String(this.normalizeUiScale(treeFontSize / SETTINGS_DEFAULTS.tree_font_size)));
     this.applyThemeVariables();
     for (const view of this.views.values()) {
       if (view.term.options.fontSize !== terminalFontSize) view.term.options.fontSize = terminalFontSize;

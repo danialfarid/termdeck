@@ -1,5 +1,6 @@
 window.TermDeckFileBrowser = (() => {
   const materialIconsBase = "/static/vendor/material-icons/icons/";
+  const termdeckIconsBase = "/static/icons/";
   const alwaysExcluded = [".git", "node_modules", "__pycache__", ".venv", ".idea", "_"];
   const fileIconNames = { py: "python", js: "javascript", ts: "typescript", json: "json", md: "markdown", css: "css", html: "html", yaml: "yaml", yml: "yaml", sh: "console", sql: "database", csv: "table", png: "image", jpg: "image", jpeg: "image", svg: "svg", rs: "rust", go: "go", java: "java", cpp: "cpp", c: "c", h: "h" };
   const gitStatusLabels = { "?": "untracked", M: "modified", A: "added", D: "deleted", R: "renamed", C: "copied", U: "conflicted" };
@@ -58,7 +59,8 @@ window.TermDeckFileBrowser = (() => {
       chevron.className = "codicon codicon-chevron-right tree-chevron";
       const icon = document.createElement("img");
       icon.className = "tree-type-icon tree-folder-icon";
-      icon.src = `${materialIconsBase}folder-project.svg`;
+      // Neutral grey outline, matching the main file tree -- colour belongs to the file icons.
+      icon.src = `${termdeckIconsBase}folder.svg`;
       icon.onerror = () => { icon.src = `${materialIconsBase}folder.svg`; };
       row.append(chevron, icon, name);
       row.onclick = () => onDirectory?.(row, childPath);

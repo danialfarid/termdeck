@@ -103,10 +103,12 @@
     <div id="file-type-filter-menu" class="hidden" role="dialog" aria-label="File type filters"></div>
   </div>
   <div id="sidebar-footer">
-    <button id="view-terminals" title="Terminals · click to close this section; middle-click opens this terminal in a new browser tab" aria-label="Terminals"><span class="codicon codicon-terminal"></span></button>
-    <button id="view-project" title="Files · middle/right-click opens file mode in a new tab" aria-label="Files"><span class="codicon codicon-files"></span></button>
-    <button id="view-search" title="Search &amp; replace · middle/right-click opens file mode in a new tab" aria-label="Search and replace"><span class="codicon codicon-search"></span></button>
-    <button id="view-git" title="Git · middle/right-click opens file mode in a new tab" aria-label="Git"><span class="codicon codicon-git-branch"></span></button>
+    <div id="sidebar-mode-tabs" role="tablist" aria-label="Sidebar views">
+      <button id="view-terminals" class="sidebar-mode-tab" role="tab" aria-selected="true" title="Terminals · click to close this section; middle-click opens this terminal in a new browser tab" aria-label="Terminals"><span class="codicon codicon-terminal"></span></button>
+      <button id="view-project" class="sidebar-mode-tab" role="tab" aria-selected="false" title="Files · middle/right-click opens file mode in a new tab" aria-label="Files"><span class="codicon codicon-files"></span></button>
+      <button id="view-search" class="sidebar-mode-tab" role="tab" aria-selected="false" title="Search &amp; replace · middle/right-click opens file mode in a new tab" aria-label="Search and replace"><span class="codicon codicon-search"></span></button>
+      <button id="view-git" class="sidebar-mode-tab" role="tab" aria-selected="false" title="Git · middle/right-click opens file mode in a new tab" aria-label="Git"><span class="codicon codicon-git-branch"></span></button>
+    </div>
     <span class="footer-spacer"></span>
     <button id="keys-btn" title="Keyboard shortcuts"><span class="codicon codicon-keyboard"></span></button>
     <button id="settings-gear" title="Settings"><span class="codicon codicon-settings-gear"></span></button>
