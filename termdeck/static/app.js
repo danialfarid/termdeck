@@ -15359,7 +15359,13 @@ class TermdeckApp {
     // is what buys the full 1000 rows.
     const cellHeight = term._core?._renderService?.dimensions?.css?.cell?.height || 17;
     const targetRowPlan = this.tallRowPlan(cellHeight);
-    const claudeWebglColdPrime = targetRowPlan.webgl && this.session(id)?.agent_kind === "claude";
+    // The webgl cold prime (replay at DOM height, then resize down) is disabled: a claude recording is
+    // made at the pty's height, and its output only ever SCROLLS when the cursor reaches the terminal's
+    // last row -- replayed into a much taller terminal the cursor never gets there, so every repaint
+    // overwrites in place and only the final screen survives. Measured on a real 9.5MB recording: 548
+    // rows of history through the 4000-row prime, 20,000+ rows replayed directly at the webgl height.
+    // The prime machinery is kept below but never engaged.
+    const claudeWebglColdPrime = false;
     const rowPlan = claudeWebglColdPrime ? { rows: TALL_ROWS_DOM, webgl: false } : targetRowPlan;
 
     inner.style.height = `${Math.round(rowPlan.rows * cellHeight)}px`;
