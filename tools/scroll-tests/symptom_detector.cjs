@@ -22,7 +22,8 @@ const s = (over) => ({ ...base, ...over });
   await page.evaluate(RECORDER, { ring: 400, before: 20, after: 6 });
 
   const detect = (prev, next) => page.evaluate(([p, n]) => window.__tdWatch.detect(p, n), [prev, next]);
-  const reset = () => page.evaluate(() => { window.__tdWatch.stuckSince = 0; window.__tdWatch.stuckFlagged = false; });
+  const reset = () => page.evaluate(() => { window.__tdWatch.stuckSince = 0; window.__tdWatch.stuckFlagged = false;
+    window.__tdWatch.sinkSince = 0; window.__tdWatch.sinkFlagged = false; });
 
   const cases = [];
   const check = async (name, expected, run) => {
@@ -76,6 +77,27 @@ const s = (over) => ({ ...base, ...over });
     await reset();
     return detect(s({ t: 1000, following: false, topRow: 'epoch 41 loss 0.31' }),
                   s({ t: 1100, following: false, topRow: 'epoch 47 loss 0.28' }));
+  });
+
+  // Content walking off the bottom under a hands-off view: the composer sinking as the agent writes.
+  // Reported as "I scroll all the way down and it keeps pushing the composer down".
+  await check('content sinking below the fold', 'sinking', async () => {
+    await reset();
+    // Rising rowsBelow, held past the 1.5s settle, with scroll room still left (so not `stuck`).
+    await detect(s({ t: 1000, rowsBelow: 3, nativeMax: 900, top: 700 }),
+                 s({ t: 1100, rowsBelow: 5, nativeMax: 900, top: 700 }));
+    return detect(s({ t: 2600, rowsBelow: 9, nativeMax: 900, top: 700 }),
+                  s({ t: 2700, rowsBelow: 12, nativeMax: 900, top: 700 }));
+  });
+
+  // A reader parked in history sits with content below them and it must NOT count: what separates the
+  // fault is that the gap keeps GROWING, not that it exists.
+  await check('parked reader holding steady', null, async () => {
+    await reset();
+    await detect(s({ t: 1000, following: false, rowsBelow: 40, nativeMax: 900, top: 300 }),
+                 s({ t: 1100, following: false, rowsBelow: 40, nativeMax: 900, top: 300 }));
+    return detect(s({ t: 2600, following: false, rowsBelow: 40, nativeMax: 900, top: 300 }),
+                  s({ t: 2700, following: false, rowsBelow: 40, nativeMax: 900, top: 300 }));
   });
 
   // The same movement is expected while the user is scrolling, or while a replay repaints the buffer.

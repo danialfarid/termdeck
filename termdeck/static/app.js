@@ -3302,6 +3302,7 @@ class TermdeckApp {
       if (event.persisted) scheduleLayoutFit();
     });
     this.installTerminalSizeDebugOverlay();
+    this.startScrollFaultRecorder();
     void this.initializeRemoteIdleMode();
     this.refresh().finally(() => this.connectStatusStream());
     setInterval(() => this.refresh(), SESSION_LIST_REFRESH_MS);
@@ -16177,6 +16178,81 @@ class TermdeckApp {
   // is xterm's own logical buffer tail (what SHOULD be on screen); dom is the actually-painted rows. If
   // they ever disagree, that is a termdeck repaint bug; if buf itself changes content across snapshots
   // with cols unchanged, the CLI genuinely redrew differently -- the two rule each other in or out.
+  // Continuous scroll-fault recorder. The follow faults left in this area are intermittent and live
+  // entirely in the browser's geometry, so they cannot be reproduced on demand and cannot be seen from
+  // the server. This samples the active view a few times a second, keeps a short rolling window, and
+  // posts the window either side of a fault to /api/debug/scroll-fault, which appends it to
+  // scroll-faults.jsonl in the data dir. Nothing is read back by the app and nothing is shown to the
+  // user; it exists so a fault that happens once an hour during ordinary use is still diagnosable.
+  //
+  // Detector logic is deliberately the same shape as tools/watch_symptoms.cjs, which has unit tests for
+  // it (tools/scroll-tests/symptom_detector.cjs).
+  startScrollFaultRecorder() {
+    if (this.scrollFaultTimer) return;
+    const RING = 60;            // ~12s of history at 200ms
+    const samples = [];
+    let sinkSince = 0, sinkFlagged = false, posted = 0;
+    const sampleOnce = () => {
+      const view = this.views.get(this.activeId);
+      if (!view || view.closed || !view.term || !view.container.clientHeight) return null;
+      if (!view.container.classList.contains("visible") || view.replaying) return null;
+      const buffer = view.term.buffer.active;
+      const cell = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+      if (!cell) return null;
+      const windowTop = view.container.scrollTop - view.term.element.offsetTop;
+      const first = buffer.viewportY + Math.floor(windowTop / cell);
+      const last = buffer.viewportY + Math.floor((windowTop + view.container.clientHeight - 1) / cell);
+      let lastContent = -1;
+      const floor = Math.max(0, buffer.length - 300);
+      for (let row = buffer.length - 1; row >= floor; row -= 1) {
+        if (buffer.getLine(row)?.translateToString(true).trim()) { lastContent = row; break; }
+      }
+      const now = Date.now();
+      return { t: now, id: this.activeId, title: this.session(this.activeId)?.title || "",
+               top: Math.round(view.container.scrollTop), ceiling: view.tallMaxScrollTop,
+               nativeMax: Math.round(view.container.scrollHeight - view.container.clientHeight),
+               following: view.tallFollowing, followTop: view.tallFollowTop,
+               pinned: view.tallPinnedViewportY, anchor: view.tallAnchorRow,
+               blankSkips: view.tallBlankSkips, elTop: view.term.element.offsetTop,
+               viewportY: buffer.viewportY, baseY: buffer.baseY, len: buffer.length,
+               cursorY: buffer.cursorY, absCursor: (buffer.baseY || 0) + buffer.cursorY,
+               first, last, lastContent, rowsBelow: lastContent - last,
+               // A gesture owns the view while it runs, so movement during one is never a fault.
+               gesture: !!view.tallPointerHeld ||
+                 now < Math.max(view.tallWheelActiveUntil || 0, view.tallScrollActiveUntil || 0) + 400 };
+    };
+    const report = (kind, detail, window) => {
+      if (posted >= 40) return;          // a broken build must not spam the log forever
+      posted += 1;
+      const body = JSON.stringify({ kind, detail, at: new Date().toISOString(),
+                                    ua: navigator.userAgent, window });
+      fetch("/api/debug/scroll-fault", { method: "POST", headers: { "Content-Type": "application/json" }, body })
+        .catch(() => {});
+    };
+    this.scrollFaultTimer = window.setInterval(() => {
+      const current = sampleOnce();
+      if (!current) return;
+      const prev = samples[samples.length - 1];
+      samples.push(current);
+      if (samples.length > RING) samples.shift();
+      if (!prev || prev.id !== current.id || current.gesture) { sinkSince = 0; return; }
+      // Content walking off the bottom while nobody is touching the view: the composer sinking line by
+      // line as the agent writes. A reader parked in history also has content below them, so what marks
+      // the fault is the gap GROWING, not merely existing.
+      if (current.rowsBelow > 2 && current.rowsBelow > prev.rowsBelow) {
+        if (!sinkSince) sinkSince = current.t;
+        if (current.t - sinkSince > 1500 && !sinkFlagged) {
+          sinkFlagged = true;
+          const shortBy = current.ceiling == null ? null : Math.round(current.ceiling - current.top);
+          report("sinking",
+                 `content escaping below the fold: ${current.rowsBelow} rows, following=${current.following}, ` +
+                 `${shortBy}px short of the ceiling, ${current.nativeMax - current.top}px of scroll left`,
+                 samples.slice());
+        }
+      } else if (current.rowsBelow <= 2) { sinkSince = 0; sinkFlagged = false; }
+    }, 200);
+  }
+
   captureDebugSnapshot(view, trigger) {
     if (!view || view.closed) return;
     view.debugSnapshots = view.debugSnapshots || [];

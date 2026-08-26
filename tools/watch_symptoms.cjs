@@ -12,6 +12,10 @@
 //           typed something")
 //   drift   the view is parked with no gesture in flight, and the line under the reader changed anyway
 //           ("as it adds more content it keeps losing the scroll position I am in")
+//   sinking content keeps escaping below the fold while nobody is touching the view -- the composer
+//           sinks line by line as the agent writes ("I scroll all the way down and it keeps pushing
+//           the composer down"). Intermittent, so there is also a manual trigger: Ctrl+Alt+Shift+K
+//           (or call tdMark("note") in the console) to stamp the ring the moment you SEE it.
 //
 // Start the testing Chrome once:
 //   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
@@ -50,8 +54,12 @@ const RECORDER = ({ ring, before, after }) => {
     for (let y = buffer.length - 1; y >= floor; y--) {
       if ((buffer.getLine(y)?.translateToString(true) || '').trim()) { lastContent = y; break; }
     }
-    const firstVisible = buffer.viewportY + Math.floor(container.scrollTop / cell);
-    const lastVisible = buffer.viewportY + Math.ceil((container.scrollTop + container.clientHeight) / cell) - 1;
+    // The rendered window sits at element.offsetTop inside the scroll box and scrollTop is an absolute
+    // buffer offset, so the offset has to come back out -- adding viewportY to a raw scrollTop counts
+    // the scrollback twice and reports a visible span nowhere near the screen.
+    const windowTop = container.scrollTop - view.term.element.offsetTop;
+    const firstVisible = buffer.viewportY + Math.floor(windowTop / cell);
+    const lastVisible = buffer.viewportY + Math.ceil((windowTop + container.clientHeight) / cell) - 1;
     const now = Date.now();
     return {
       t: now, id: app.activeId, title: (app.session(app.activeId) || {}).title,
@@ -106,6 +114,21 @@ const RECORDER = ({ ring, before, after }) => {
     if (s.following === false && prev.following === false && s.topRow && prev.topRow && s.topRow !== prev.topRow) {
       return { kind: 'drift', detail: `line under the reader changed: "${prev.topRow}" -> "${s.topRow}"` };
     }
+
+    // Content walking off the bottom while nobody is touching the view: the composer sinks below the
+    // fold line by line as the agent writes. Distinct from `stuck`, which needs the scrollbar to be at
+    // its limit -- here the box may still have room, the view simply is not following any more. Rising
+    // rowsBelow is what separates it from a view deliberately parked in history, which holds steady.
+    if (s.rowsBelow > 2 && s.rowsBelow > prev.rowsBelow) {
+      if (!state.sinkSince) { state.sinkSince = s.t; state.sinkFrom = prev.rowsBelow; }
+      if (s.t - state.sinkSince > 1500 && !state.sinkFlagged) {
+        state.sinkFlagged = true;
+        return { kind: 'sinking',
+                 detail: `content escaping below the fold with no gesture: ${state.sinkFrom} -> ${s.rowsBelow} rows ` +
+                         `(following=${s.following}, ${Math.round((s.ceiling ?? 0) - s.top)}px short of the ceiling, ` +
+                         `${s.nativeMax - s.top}px of scroll still available)` };
+      }
+    } else if (s.rowsBelow <= 2) { state.sinkSince = 0; state.sinkFlagged = false; }
     return null;
   };
 
@@ -118,7 +141,7 @@ const RECORDER = ({ ring, before, after }) => {
     if (!view || !view.container || !view.term) return null;
     const buffer = view.term.buffer.active;
     const cell = view.term._core?._renderService?.dimensions?.css?.cell?.height || 21;
-    return { row: buffer.viewportY + view.container.scrollTop / cell, cell };
+    return { row: buffer.viewportY + (view.container.scrollTop - view.term.element.offsetTop) / cell, cell };
   };
   let gesture = null;
   window.addEventListener('wheel', (event) => {
@@ -147,6 +170,28 @@ const RECORDER = ({ ring, before, after }) => {
       if (state.events.length > 200) state.events.shift();
     }
   }, 100);
+
+  // Manual trigger. The detectors cannot anticipate every shape of this bug, so a human who can SEE it
+  // can stamp the ring themselves: Ctrl+Alt+Shift+K, or call tdMark("note") from the console. Function
+  // keys are deliberately not used -- agent TUIs bind them; this chord is bound by nothing in the app
+  // and never reaches the shell.
+  state.mark = (note) => {
+    const s = sample();
+    const event = { seq: state.seq++, kind: 'marked', t: Date.now(),
+                    detail: note ? `manual mark: ${note}` : 'manual mark',
+                    window: state.samples.slice(-before) };
+    if (s) event.window = event.window.concat([s]);
+    state.events.push(event);
+    if (state.events.length > 200) state.events.shift();
+    setTimeout(() => { event.window = event.window.concat(state.samples.slice(-after)); }, after * 100);
+    return 'marked';
+  };
+  window.tdMark = state.mark;
+  window.addEventListener('keydown', (event) => {
+    if (event.ctrlKey && event.altKey && event.shiftKey && (event.key === 'K' || event.key === 'k')) {
+      event.preventDefault(); event.stopPropagation(); state.mark('Ctrl+Alt+Shift+K');
+    }
+  }, { capture: true });
 
   setInterval(() => {
     const s = sample();
