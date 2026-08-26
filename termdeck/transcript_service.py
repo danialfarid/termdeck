@@ -93,24 +93,27 @@ class TranscriptService:
         self._loop = loop
         observer = Observer()
         handler = _TranscriptFileHandler(self._on_file_change_from_thread)
-        # Claude's tree is already watched by ClaudeActivityWatcher. Its events
-        # are forwarded here by the session manager so macOS FSEvents does not
-        # try to register the same recursive watch twice.
-        for root in (TermdeckConfig.CODEX_SESSIONS_DIR, TermdeckConfig.AGY_SESSIONS_DIR):
+        # An agent tree with its own watcher (Claude's, via ClaudeActivityWatcher) is skipped: its
+        # events are forwarded here by the session manager, and macOS FSEvents must not register
+        # the same recursive watch twice.
+        watch_roots = [agent.sessions_root for agent in agents.AGENT_CLIS.values()
+                       if agent.is_agent and agent.sessions_root is not None and not agent.has_own_transcript_watcher]
+        for root in watch_roots:
             if root.is_dir():
                 observer.schedule(handler, str(root), recursive=True)
         observer.start()
         self._observer = observer
         # The recursive observer is useful for discovering new rollout files,
         # but macOS FSEvents can omit appends to a JSONL file that Codex keeps
-        # open. Watch the existing date directories with kqueue as well so
+        # open. Watch the existing leaf directories with kqueue as well so
         # active Markdown sessions receive each append promptly. This is
         # event-driven: it does not poll files or rescan the transcript tree.
-        if KqueueObserver is not None and TermdeckConfig.CODEX_SESSIONS_DIR.is_dir():
+        if KqueueObserver is not None and any(root.is_dir() for root in watch_roots):
             leaf_observer = KqueueObserver()
-            leaf_dirs = {path.parent for path in TermdeckConfig.CODEX_SESSIONS_DIR.rglob("*.jsonl")}
-            if TermdeckConfig.AGY_SESSIONS_DIR.is_dir():
-                leaf_dirs.update(path.parent for path in TermdeckConfig.AGY_SESSIONS_DIR.rglob("*.jsonl"))
+            leaf_dirs: set[Path] = set()
+            for root in watch_roots:
+                if root.is_dir():
+                    leaf_dirs.update(path.parent for path in root.rglob("*.jsonl"))
             for leaf in sorted(leaf_dirs):
                 leaf_observer.schedule(handler, str(leaf), recursive=False)
             if leaf_dirs:

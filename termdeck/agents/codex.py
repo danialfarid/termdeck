@@ -25,14 +25,21 @@ class CodexCli(AgentCli):
     executable = "codex"
     label = "Codex"
 
+    sessions_root = Path.home() / ".codex" / "sessions"
+    SESSION_INDEX_FILE = Path.home() / ".codex" / "session_index.jsonl"
+    NO_ALT_SCREEN_FLAG = "--no-alt-screen"
+    DAY_DIR_LOOKAROUND_DAYS = (-1, 0, 1)
+    history_indexed = True
+
     supports_resume = True
     supports_fork = True
     canonical_resume_command = True
     records_raw_replay = True
     has_prompt_queue = True
     supports_agent_rename = True
+    accepts_session_ref = True
 
-    base_flags = (TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG,)
+    base_flags = (NO_ALT_SCREEN_FLAG,)
     permission_flags = {
         "default": (),
         "read-only": ("--sandbox", "read-only"),
@@ -74,7 +81,7 @@ class CodexCli(AgentCli):
     def resume_command(self, original_command: str, agent_session_id: str) -> str:
         parts = self.command_parts(original_command)
         if not parts:
-            return f"{self.executable} {TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG} resume {agent_session_id}"
+            return f"{self.executable} {self.NO_ALT_SCREEN_FLAG} resume {agent_session_id}"
         cleaned = self._ensure_searchable_scrollback(self.strip_session_arguments(parts))
         return f"{shlex.join(cleaned)} resume {agent_session_id}"
 
@@ -108,7 +115,7 @@ class CodexCli(AgentCli):
         if cached is not None and cached.exists():
             return cached
         try:
-            for path in TermdeckConfig.CODEX_SESSIONS_DIR.rglob(f"rollout-*-{agent_session_id}.jsonl"):
+            for path in self.sessions_root.rglob(f"rollout-*-{agent_session_id}.jsonl"):
                 self._rollout_paths[agent_session_id] = path
                 return path
         except OSError:
@@ -129,12 +136,12 @@ class CodexCli(AgentCli):
     @staticmethod
     def _recent_day_dirs() -> list[Path]:
         today = TimeUtil.today_est()
-        days = [today + timedelta(days=offset) for offset in TermdeckConfig.CODEX_DAY_DIR_LOOKAROUND_DAYS]
-        return [TermdeckConfig.CODEX_SESSIONS_DIR / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}"
+        days = [today + timedelta(days=offset) for offset in CodexCli.DAY_DIR_LOOKAROUND_DAYS]
+        return [CodexCli.sessions_root / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}"
                 for day in days]
 
     def owns_transcript_path(self, path: Path) -> bool:
-        root = TermdeckConfig.CODEX_SESSIONS_DIR
+        root = self.sessions_root
         return path.is_relative_to(root) or path.is_relative_to(root.resolve())
 
     def session_id_from_path(self, path: Path) -> str | None:
@@ -385,10 +392,10 @@ class CodexCli(AgentCli):
 
     def _ensure_searchable_scrollback(self, parts: list[str]) -> list[str]:
         # The alternate screen keeps output out of scrollback; TermDeck needs it searchable.
-        if TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG in parts:
+        if self.NO_ALT_SCREEN_FLAG in parts:
             return parts
         command_index = next((index for index, token in enumerate(parts)
                               if Path(token).name == self.executable), None)
         if command_index is None:
             return parts
-        return [*parts[:command_index + 1], TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG, *parts[command_index + 1:]]
+        return [*parts[:command_index + 1], self.NO_ALT_SCREEN_FLAG, *parts[command_index + 1:]]

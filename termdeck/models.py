@@ -1,14 +1,6 @@
 from dataclasses import asdict, dataclass
-from enum import Enum
 
 from termdeck.config import TermdeckConfig
-
-
-class AgentKind(str, Enum):
-    CLAUDE = "claude"
-    CODEX = "codex"
-    AGY = "agy"
-    NONE = "none"
 
 
 @dataclass

@@ -24,12 +24,23 @@ class ClaudeCli(AgentCli):
     executable = "claude"
     label = "Claude"
 
+    sessions_root = Path.home() / ".claude" / "projects"
+    RESUME_FLAG = "--resume"
+    FORK_FLAG = "--fork-session"
+    NAME_FLAG = "--name"
+    RESTART_REPAINT_DELAY_SECONDS = 1.5
+    history_indexed = True
+    # ClaudeActivityWatcher already watches the projects tree recursively; registering the same
+    # root with the transcript service's FSEvents observer would double-register it on macOS.
+    has_own_transcript_watcher = True
+
     supports_resume = True
     supports_fork = True
     fork_tracks_parent = True
     canonical_resume_command = True
     records_raw_replay = True
     supports_agent_rename = True
+    accepts_session_ref = True
 
     permission_flags = {
         "default": (),
@@ -53,11 +64,11 @@ class ClaudeCli(AgentCli):
     subagent_file_marker = b'"isSidechain":true'
 
     def new_session_resume_arguments(self, session_ref: str, tracker) -> tuple[str, ...]:
-        return (TermdeckConfig.CLAUDE_RESUME_FLAG, session_ref)
+        return (self.RESUME_FLAG, session_ref)
 
     def project_dir(self, cwd: Path) -> Path:
         munged = "".join(ch if ch.isalnum() else "-" for ch in str(cwd))
-        return TermdeckConfig.CLAUDE_PROJECTS_DIR / munged
+        return self.sessions_root / munged
 
     def transcript_path(self, cwd: Path | None, agent_session_id: str) -> Path | None:
         if cwd is None:
@@ -72,7 +83,7 @@ class ClaudeCli(AgentCli):
         return [(path, path.stem) for path in project_dir.glob("*.jsonl") if UUID_RE.match(path.stem)]
 
     def owns_transcript_path(self, path: Path) -> bool:
-        root = TermdeckConfig.CLAUDE_PROJECTS_DIR
+        root = self.sessions_root
         return path.is_relative_to(root) or path.is_relative_to(root.resolve())
 
     def session_id_from_path(self, path: Path) -> str | None:
@@ -371,7 +382,7 @@ class ClaudeCli(AgentCli):
             self.initialize_subagent_state(manager, ms)
 
     def restart_screen_repaint_delay(self, raw_replay_enabled: bool) -> float | None:
-        return TermdeckConfig.CLAUDE_RAW_REPLAY_RESTART_REPAINT_DELAY_SECONDS if raw_replay_enabled else None
+        return self.RESTART_REPAINT_DELAY_SECONDS if raw_replay_enabled else None
 
     def restart_permission(self, manager, ms) -> str:
         return manager._tracker.claude_session_permission_mode(
@@ -453,18 +464,18 @@ class ClaudeCli(AgentCli):
 
     def resume_command(self, original_command: str, agent_session_id: str) -> str:
         cleaned = self.strip_flag_with_value(self.command_parts(original_command),
-                                             TermdeckConfig.CLAUDE_RESUME_FLAG)
+                                             self.RESUME_FLAG)
         if not cleaned:
             cleaned = [self.executable]
-        return f"{shlex.join(cleaned)} {TermdeckConfig.CLAUDE_RESUME_FLAG} {agent_session_id}"
+        return f"{shlex.join(cleaned)} {self.RESUME_FLAG} {agent_session_id}"
 
     def fork_command(self, original_command: str, agent_session_id: str, session_name: str = "") -> str:
         cleaned = self.strip_flag_with_value(self.command_parts(original_command),
-                                             TermdeckConfig.CLAUDE_RESUME_FLAG)
-        cleaned = self.strip_flag_with_value(cleaned, TermdeckConfig.CLAUDE_NAME_FLAG)
+                                             self.RESUME_FLAG)
+        cleaned = self.strip_flag_with_value(cleaned, self.NAME_FLAG)
         if not cleaned:
             cleaned = [self.executable]
-        cleaned.extend((TermdeckConfig.CLAUDE_RESUME_FLAG, agent_session_id, TermdeckConfig.CLAUDE_FORK_FLAG))
+        cleaned.extend((self.RESUME_FLAG, agent_session_id, self.FORK_FLAG))
         if session_name.strip():
-            cleaned.extend((TermdeckConfig.CLAUDE_NAME_FLAG, " ".join(session_name.splitlines()).strip()))
+            cleaned.extend((self.NAME_FLAG, " ".join(session_name.splitlines()).strip()))
         return shlex.join(cleaned)

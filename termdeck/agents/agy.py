@@ -18,6 +18,11 @@ class AgyCli(AgentCli):
     kind = "agy"
     executable = "agy"
     label = "AGY"
+
+    sessions_root = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+    CONVERSATION_FLAG = "--conversation"
+    ACTIVITY_KEEPALIVE_SECONDS = 20.0
+    RESTART_REPAINT_DELAY_SECONDS = 0.35
     model_aliases = ("agd", "agy-cli", "agycli", "gemini", "antigravity", "antigravity-cli", "antigravitycli")
 
     # Restarted terminals resume via --conversation; attaching to an EXISTING agy session from
@@ -36,7 +41,7 @@ class AgyCli(AgentCli):
         cleaned = self.strip_session_arguments(self.command_parts(original_command))
         if not cleaned:
             cleaned = [self.executable]
-        cleaned.extend((TermdeckConfig.AGY_CONVERSATION_FLAG, agent_session_id))
+        cleaned.extend((self.CONVERSATION_FLAG, agent_session_id))
         return shlex.join(cleaned)
 
     def strip_session_arguments(self, parts: list[str]) -> list[str]:
@@ -46,17 +51,17 @@ class AgyCli(AgentCli):
             if skip_next:
                 skip_next = False
                 continue
-            if token == TermdeckConfig.AGY_CONVERSATION_FLAG:
+            if token == self.CONVERSATION_FLAG:
                 skip_next = True
                 continue
-            if token.startswith(f"{TermdeckConfig.AGY_CONVERSATION_FLAG}=") or token in {"-c", "--continue"}:
+            if token.startswith(f"{self.CONVERSATION_FLAG}=") or token in {"-c", "--continue"}:
                 continue
             cleaned.append(token)
         return cleaned
 
     @staticmethod
     def session_dir(agent_session_id: str) -> Path:
-        return TermdeckConfig.AGY_SESSIONS_DIR / agent_session_id
+        return AgyCli.sessions_root / agent_session_id
 
     def transcript_path(self, cwd: Path | None, agent_session_id: str) -> Path | None:
         directory = self.session_dir(agent_session_id) / ".system_generated" / "logs"
@@ -67,10 +72,10 @@ class AgyCli(AgentCli):
         return live_transcript if live_transcript.is_file() else None
 
     def candidate_session_files(self, cwd: Path) -> list[tuple[Path, str]]:
-        if not TermdeckConfig.AGY_SESSIONS_DIR.is_dir():
+        if not AgyCli.sessions_root.is_dir():
             return []
         pairs: list[tuple[Path, str]] = []
-        for entry in TermdeckConfig.AGY_SESSIONS_DIR.iterdir():
+        for entry in AgyCli.sessions_root.iterdir():
             if not entry.is_dir() or not UUID_RE.fullmatch(entry.name):
                 continue
             path = self.transcript_path(cwd, entry.name)
@@ -79,11 +84,11 @@ class AgyCli(AgentCli):
         return pairs
 
     def owns_transcript_path(self, path: Path) -> bool:
-        root = TermdeckConfig.AGY_SESSIONS_DIR
+        root = AgyCli.sessions_root
         return path.is_relative_to(root) or path.is_relative_to(root.resolve())
 
     def session_id_from_path(self, path: Path) -> str | None:
-        for root in (TermdeckConfig.AGY_SESSIONS_DIR, TermdeckConfig.AGY_SESSIONS_DIR.resolve()):
+        for root in (AgyCli.sessions_root, AgyCli.sessions_root.resolve()):
             try:
                 relative = path.relative_to(root)
             except ValueError:
@@ -163,16 +168,16 @@ class AgyCli(AgentCli):
     def refresh_persisted_activity(self, manager, ms) -> None:
         ms.agent_state.transcript_active = manager._tracker.agy_session_is_active(ms.record.agent_session_id)
         if ms.agent_state.transcript_active:
-            ms.agent_state.transcript_active_until = time.monotonic() + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
+            ms.agent_state.transcript_active_until = time.monotonic() + self.ACTIVITY_KEEPALIVE_SECONDS
 
     def refresh_transcript_activity(self, ms, active: bool, observed_at: float | None = None) -> None:
         now = time.monotonic() if observed_at is None else observed_at
         if active:
             ms.agent_state.transcript_active = True
-            ms.agent_state.transcript_active_until = now + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
+            ms.agent_state.transcript_active_until = now + self.ACTIVITY_KEEPALIVE_SECONDS
             return
         if ms.agent_state.transcript_active and now < ms.agent_state.transcript_active_until:
-            ms.agent_state.transcript_active_until = now + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
+            ms.agent_state.transcript_active_until = now + self.ACTIVITY_KEEPALIVE_SECONDS
             return
         ms.agent_state.transcript_active = False
         ms.agent_state.transcript_active_until = 0.0
@@ -212,7 +217,7 @@ class AgyCli(AgentCli):
             manager._broadcast_status(ms)
 
     def restart_screen_repaint_delay(self, raw_replay_enabled: bool) -> float | None:
-        return TermdeckConfig.AGY_RESTART_REPAINT_DELAY_SECONDS
+        return self.RESTART_REPAINT_DELAY_SECONDS
 
     def detection_should_retry(self, ms) -> bool:
         return ms.detect_attempts < 20

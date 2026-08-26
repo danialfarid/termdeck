@@ -238,7 +238,7 @@ class HistorySearchIndex:
             self._sync_path(path)
 
     def _sync_all(self) -> None:
-        for root in (TermdeckConfig.CODEX_SESSIONS_DIR, TermdeckConfig.CLAUDE_PROJECTS_DIR):
+        for root in self._indexed_roots():
             if not root.is_dir():
                 continue
             for path in root.rglob("*.jsonl"):
@@ -424,11 +424,16 @@ class HistorySearchIndex:
         terms = re.findall(r"[\w]+", query, re.UNICODE)
         return " AND ".join(terms)
 
-    @staticmethod
-    def _validate_source_path(path: Path) -> None:
-        roots = (TermdeckConfig.CODEX_SESSIONS_DIR.resolve(), TermdeckConfig.CLAUDE_PROJECTS_DIR.resolve())
+    @classmethod
+    def _validate_source_path(cls, path: Path) -> None:
+        roots = tuple(root.resolve() for root in cls._indexed_roots())
         if not any(path.is_relative_to(root) for root in roots):
             raise ValueError("history source is outside the agent history directories")
+
+    @staticmethod
+    def _indexed_roots() -> tuple[Path, ...]:
+        return tuple(agent.sessions_root for agent in agents.AGENT_CLIS.values()
+                     if agent.history_indexed and agent.sessions_root is not None)
 
     @staticmethod
     def _agent_for_path(path: Path) -> AgentCli:

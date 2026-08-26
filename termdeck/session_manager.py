@@ -156,7 +156,7 @@ class TerminalSessionManager:
         self._claude_full_raw_replay_enabled = True
         self._claude_raw_replay_total_bytes = 0
         self._claude_activity_watcher = ClaudeActivityWatcher(
-            TermdeckConfig.CLAUDE_PROJECTS_DIR, self._on_claude_file_change_from_thread)
+            agents.agent_cli("claude").sessions_root, self._on_claude_file_change_from_thread)
 
     def attach_transcript_service(self, service) -> None:
         self._transcript_service = service

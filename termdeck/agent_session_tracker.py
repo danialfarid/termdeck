@@ -6,6 +6,8 @@ import shlex
 from pathlib import Path
 
 from termdeck import agents
+from termdeck.agents.claude import ClaudeCli
+from termdeck.agents.codex import CodexCli
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeUtil
 
@@ -39,7 +41,7 @@ class AgentSessionTracker:
     def codex_thread_name(self, session_id: str | None) -> str | None:
         if not session_id:
             return None
-        path = TermdeckConfig.CODEX_SESSION_INDEX_FILE
+        path = CodexCli.SESSION_INDEX_FILE
         try:
             mtime_ns = path.stat().st_mtime_ns
         except OSError:
@@ -78,7 +80,7 @@ class AgentSessionTracker:
             return title
         needle = f"-{session_id}.jsonl"
         try:
-            path = next(TermdeckConfig.CODEX_SESSIONS_DIR.rglob(f"rollout-*{needle}"), None)
+            path = next(CodexCli.sessions_root.rglob(f"rollout-*{needle}"), None)
         except OSError:
             return None
         if path is None:
@@ -242,7 +244,7 @@ class AgentSessionTracker:
         reference = reference.strip()
         if not reference:
             return None
-        path = TermdeckConfig.CODEX_SESSION_INDEX_FILE
+        path = CodexCli.SESSION_INDEX_FILE
         try:
             mtime_ns = path.stat().st_mtime_ns
         except OSError:
@@ -253,7 +255,7 @@ class AgentSessionTracker:
             if reference in self._codex_thread_names:
                 return reference
             try:
-                return reference if next(TermdeckConfig.CODEX_SESSIONS_DIR.rglob(f"rollout-*{reference}.jsonl"), None) else None
+                return reference if next(CodexCli.sessions_root.rglob(f"rollout-*{reference}.jsonl"), None) else None
             except OSError:
                 return None
         matches = [session_id for session_id, name in self._codex_thread_names.items() if name == reference]
@@ -601,8 +603,8 @@ class AgentSessionTracker:
         for process in await ProcTreeUtil.process_details(tree_pids):
             parts = self._command_parts(str(process["command"]))
             for index, part in enumerate(parts):
-                candidate = parts[index + 1] if part == TermdeckConfig.CLAUDE_RESUME_FLAG and index + 1 < len(parts) else \
-                    part.removeprefix(f"{TermdeckConfig.CLAUDE_RESUME_FLAG}=") if part.startswith(f"{TermdeckConfig.CLAUDE_RESUME_FLAG}=") else ""
+                candidate = parts[index + 1] if part == ClaudeCli.RESUME_FLAG and index + 1 < len(parts) else \
+                    part.removeprefix(f"{ClaudeCli.RESUME_FLAG}=") if part.startswith(f"{ClaudeCli.RESUME_FLAG}=") else ""
                 if self._UUID_RE.fullmatch(candidate):
                     found.add(candidate)
         return next(iter(found)) if len(found) == 1 else None

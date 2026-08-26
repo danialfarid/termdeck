@@ -45,6 +45,11 @@ class AgentCli:
     model_aliases: tuple[str, ...] = () # extra names accepted in the create-session model field
     is_agent = True                     # False only for the shell null object
 
+    # -- transcript tree ---------------------------------------------------
+    sessions_root: Path | None = None   # root of the CLI's on-disk transcript tree
+    history_indexed = False             # the tree is scanned into the history search index
+    has_own_transcript_watcher = False  # something else already watches the tree for changes
+
     # -- capabilities -----------------------------------------------------
     supports_resume = False             # a dead terminal can respawn onto its old agent session
     supports_fork = False               # an agent session can be forked into a new terminal
@@ -54,6 +59,7 @@ class AgentCli:
     has_prompt_queue = False            # Tab queues the composer draft instead of completing
     supports_agent_rename = False       # TermDeck can push its tab title into the CLI's own session name
     detection_claims_new_files = False  # new transcript files are claimable without recent local input
+    accepts_session_ref = False         # the create dialog can attach to an existing session by id/name
 
     # -- command lifecycle ------------------------------------------------
     base_flags: tuple[str, ...] = ()    # always-on flags injected right after the executable
@@ -294,6 +300,7 @@ class AgentCli:
                 "permissions": [{"value": value, "label": label} for value, label in self.ui_permission_options],
                 "prompt_marker": self.prompt_marker,
                 "supports_resume": self.supports_resume, "supports_fork": self.supports_fork,
+                "accepts_session_ref": self.accepts_session_ref,
                 "records_raw_replay": self.records_raw_replay, "has_prompt_queue": self.has_prompt_queue}
 
     @staticmethod

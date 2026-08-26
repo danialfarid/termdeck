@@ -176,12 +176,17 @@ driven by the flags and methods above.
 
 ## Migration phases (each a self-contained commit, tests green between)
 
-Status 2026-08-26: phases 1–3 DONE, phase 5's data-driven half DONE (`/api/agents`,
-`this.agentSpecs`, MODEL_PERMISSIONS/labels/markers/replay-flag sites). REMAINING: phase 4
-(activity/attention/input/per-agent `ms.agent_state`); the rest of phase 5 (move the codex/claude
-behavior quirks — collapse anchor, reflow deferral, status-row refresh, focus refresh, history
-model-name heuristics — behind `AGENT_CLIENT_BEHAVIORS` hooks); phase 6 (delete `AgentKind`, move
-per-CLI constants out of `TermdeckConfig`).
+Status 2026-08-26: ALL PHASES DONE. The `AgentKind` enum is gone; kinds are registry-validated
+strings. Per-agent runtime state lives in `ms.agent_state` (see `new_session_state`). Client-side
+quirks are flags in `AGENT_CLIENT_BEHAVIORS` in app.js. Per-CLI constants (session trees, resume
+flags, keepalives) live on the adapter classes; generic services derive watch/index roots from
+`sessions_root` + `history_indexed` + `has_own_transcript_watcher`. Deliberately NOT moved: the
+`CLAUDE_RAW_REPLAY_*` recording limits in `TermdeckConfig` and the `claude_raw_replay_*` /
+`full_claude_raw_replay` field and protocol names — the recording feature is generic (gated by
+`records_raw_replay`), only its historical naming is claude-flavored; renaming would churn the ws
+protocol and the scroll-test tooling for zero behavior. `AgentSessionTracker` remains as the
+claude/codex/agy filesystem helper the adapters call — a NEW agent does not need it; implement the
+AgentCli hooks directly.
 
 1. **Package + registry** — new `termdeck/agents/`, no call sites yet.
 2. **Command lifecycle** — `command_for_new_session`, `_permission_flags`,

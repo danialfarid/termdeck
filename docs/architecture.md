@@ -58,7 +58,8 @@ cpu/rss.
 | `server.py` | `TermdeckServer` — HTTP + WebSocket surface. Session CRUD, file and search APIs, static UI, one WebSocket per terminal. |
 | `session_manager.py` | `TerminalSessionManager` — creates, respawns, and tears down terminals; broadcasts pty output to attached client queues; owns the resume logic. |
 | `pty_process.py` | `PtyProcess` — one command on one pty. Non-blocking reads pumped into the event loop, buffered writes, winsize, signals. |
-| `models.py` | `SessionRecord`, `AgentKind`, and the WebSocket/API field-name constants mirrored by `static/app.js`. |
+| `models.py` | `SessionRecord` and the WebSocket/API field-name constants mirrored by `static/app.js`. |
+| `agents/` | One `AgentCli` class per agent CLI (claude/codex/agy + shell null object) — commands, transcript trees, parsing, activity, input, detection. See `docs/agent-cli-api.md`. |
 
 ### Persistence
 

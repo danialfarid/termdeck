@@ -12,7 +12,7 @@ from tests.environment import TEST_DATA_DIRECTORY
 from termdeck import agents
 from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.file_service import ProjectFileService
-from termdeck.models import AgentKind, SessionRecord
+from termdeck.models import SessionRecord
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeUtil
 from termdeck.pty_process import PtyProcess
@@ -300,6 +300,13 @@ class AgentCliRegistryTest(unittest.TestCase):
                 "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox", "read-only"),
             "codex --sandbox read-only --no-alt-screen")
 
+    def test_every_agent_answers_the_store_discovery_surface(self) -> None:
+        # Exercises the real filesystem paths (day-dir globs and friends) that mocks skip.
+        for kind, agent in agents.AGENT_CLIS.items():
+            candidates = agent.candidate_session_files(Path.home())
+            self.assertIsInstance(candidates, list, kind)
+            self.assertIsNone(agent.transcript_path(Path.home(), "ffffffff-ffff-ffff-ffff-ffffffffffff"), kind)
+
     def test_claude_fork_command_carries_name(self) -> None:
         self.assertEqual(
             agents.agent_cli("claude").fork_command("claude --resume aa11", "bb22", "my fork"),
@@ -338,7 +345,7 @@ class TerminalRestartIdentityTest(unittest.TestCase):
     @staticmethod
     def claude_session(agent_session_id: str | None) -> ManagedSession:
         session_record = record("claude-tab")
-        session_record.agent_kind = AgentKind.CLAUDE.value
+        session_record.agent_kind = "claude"
         session_record.agent_session_id = agent_session_id
         session_record.command = "claude --permission-mode auto --resume stale-parent"
         return ManagedSession(session_record)
@@ -537,7 +544,7 @@ class ClaudeRenameBindingReconciliationTest(unittest.IsolatedAsyncioTestCase):
         saved.command = "claude --resume current-session"
         session = ManagedSession(saved)
         session.detached_live = True
-        session.detect_kind = AgentKind.CLAUDE
+        session.detect_kind = "claude"
         session.last_input_monotonic = 99.0
         session.last_agent_submit_monotonic = 99.0
         manager._sessions[saved.session_id] = session
@@ -555,16 +562,16 @@ class ClaudeRenameBindingReconciliationTest(unittest.IsolatedAsyncioTestCase):
     async def test_codex_detection_does_not_bind_an_already_claimed_parent(self) -> None:
         manager = TerminalSessionManager()
         parent = record("codex-parent")
-        parent.agent_kind = AgentKind.CODEX.value
+        parent.agent_kind = "codex"
         parent.agent_session_id = "parent-session"
         parent.command = "codex resume parent-session"
         child = record("codex-child")
-        child.agent_kind = AgentKind.CODEX.value
+        child.agent_kind = "codex"
         child.command = "codex fork parent-session"
         child_session = ManagedSession(child)
         manager._sessions = {parent.session_id: ManagedSession(parent), child.session_id: child_session}
         child_session.detached_live = True
-        child_session.detect_kind = AgentKind.CODEX
+        child_session.detect_kind = "codex"
         child_session.detect_baseline = set()
         child_session.pending_agent_rename = "codex child"
         manager._tracker.session_id_from_open_files = AsyncMock(return_value="parent-session")
@@ -615,7 +622,7 @@ class CodexSessionActivityTest(unittest.TestCase):
                 json.dumps({"type": "event_msg", "payload": {"type": "task_started"}}),
                 json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}),
             ]))
-            with patch.object(TermdeckConfig, "CODEX_SESSIONS_DIR", root):
+            with patch.object(agents.CodexCli, "sessions_root", root):
                 self.assertTrue(AgentSessionTracker().codex_session_is_active("019f9a3e-1915-7bd3-8183-cce1db8a1e20"))
                 path.write_text("\n".join([
                     json.dumps({"type": "event_msg", "payload": {"type": "task_started"}}),
@@ -691,7 +698,7 @@ class AgySessionActivityTest(unittest.TestCase):
             self._transcript(directory, session_id,
                              {"type": "USER_INPUT", "source": "USER_EXPLICIT",
                               "content": "<USER_REQUEST>run diagnostics</USER_REQUEST>"})
-            with patch.object(TermdeckConfig, "AGY_SESSIONS_DIR", Path(directory)):
+            with patch.object(agents.AgyCli, "sessions_root", Path(directory)):
                 self.assertTrue(AgentSessionTracker().agy_session_is_active(session_id))
 
     def test_content_event_without_thinking_marks_session_as_inactive(self) -> None:
@@ -701,7 +708,7 @@ class AgySessionActivityTest(unittest.TestCase):
                              {"type": "USER_INPUT", "source": "USER_EXPLICIT",
                               "content": "<USER_REQUEST>run diagnostics</USER_REQUEST>"},
                              {"type": "AGENT_RESPONSE", "content": "<AGENT_RESPONSE>done</AGENT_RESPONSE>"})
-            with patch.object(TermdeckConfig, "AGY_SESSIONS_DIR", Path(directory)):
+            with patch.object(agents.AgyCli, "sessions_root", Path(directory)):
                 self.assertFalse(AgentSessionTracker().agy_session_is_active(session_id))
 
     def test_in_progress_status_marks_session_as_active(self) -> None:
@@ -710,7 +717,7 @@ class AgySessionActivityTest(unittest.TestCase):
             self._transcript(directory, session_id,
                              {"type": "PLANNER_RESPONSE", "source": "MODEL", "status": "IN_PROGRESS",
                               "content": "Thinking about file matches."})
-            with patch.object(TermdeckConfig, "AGY_SESSIONS_DIR", Path(directory)):
+            with patch.object(agents.AgyCli, "sessions_root", Path(directory)):
                 self.assertTrue(AgentSessionTracker().agy_session_is_active(session_id))
 
     def test_transcript_full_preferred_for_activity_detection(self) -> None:
@@ -722,7 +729,7 @@ class AgySessionActivityTest(unittest.TestCase):
             (root / "transcript_full.jsonl").write_text(
                 json.dumps({"type": "USER_INPUT", "source": "USER_EXPLICIT", "content": "<USER_REQUEST>run diagnostics</USER_REQUEST>"})
             )
-            with patch.object(TermdeckConfig, "AGY_SESSIONS_DIR", Path(directory)):
+            with patch.object(agents.AgyCli, "sessions_root", Path(directory)):
                 self.assertTrue(AgentSessionTracker().agy_session_is_active(session_id))
 
 
@@ -766,13 +773,13 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         manager = TerminalSessionManager()
         shell = ManagedSession(record("checkpoint-shell"))
         claude_record = record("checkpoint-claude")
-        claude_record.agent_kind = AgentKind.CLAUDE.value
+        claude_record.agent_kind = "claude"
         claude = ManagedSession(claude_record)
         codex_record = record("checkpoint-codex")
-        codex_record.agent_kind = AgentKind.CODEX.value
+        codex_record.agent_kind = "codex"
         codex = ManagedSession(codex_record)
         agy_record = record("checkpoint-agy")
-        agy_record.agent_kind = AgentKind.AGY.value
+        agy_record.agent_kind = "agy"
         agy = ManagedSession(agy_record)
         for session in (shell, claude, codex, agy):
             session.detached_live = True
@@ -832,7 +839,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
     async def test_claude_checkpoint_appends_only_new_raw_output(self) -> None:
         manager = TerminalSessionManager()
         claude_record = record("append-claude")
-        claude_record.agent_kind = AgentKind.CLAUDE.value
+        claude_record.agent_kind = "claude"
         claude = ManagedSession(claude_record)
         claude.detached_live = True
         manager._sessions[claude.record.session_id] = claude
@@ -858,7 +865,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         manager = TerminalSessionManager()
         shell_record = record("restore-shell")
         claude_record = record("restore-claude")
-        claude_record.agent_kind = AgentKind.CLAUDE.value
+        claude_record.agent_kind = "claude"
         manager._store.load_all = lambda: [shell_record, claude_record]  # type: ignore[method-assign]
 
         with tempfile.TemporaryDirectory() as directory, \
@@ -958,7 +965,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_codex_repaint_resizes_the_live_pty(self) -> None:
         manager, session, proc = self._session_whose_screen_was_stripped()
-        session.record.agent_kind = AgentKind.CODEX.value
+        session.record.agent_kind = "codex"
 
         self.assertTrue(manager.request_screen_repaint(session.record.session_id))
         await session.screen_repaint_task
@@ -998,7 +1005,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
     async def test_rename_codex_session_sends_codex_rename_command(self) -> None:
         manager = TerminalSessionManager()
         saved = record()
-        saved.agent_kind = AgentKind.CODEX.value
+        saved.agent_kind = "codex"
         saved.agent_session_id = "codex-thread-id"
         session = ManagedSession(saved)
 
