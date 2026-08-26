@@ -261,23 +261,21 @@ class TerminalSessionManager:
             return None
         return ms, replay_kind, compaction_generation, target, write_payload, pending_payload, replace
 
-    def _pending_replay_checkpoint_snapshots(self, active_only: bool, replay_kinds: set[str] | None = None
+    def _pending_replay_checkpoint_snapshots(self, active_only: bool
                                              ) -> list[tuple[ManagedSession, str, int, Path, bytes, bytes, bool]]:
         snapshots: list[tuple[ManagedSession, str, int, Path, bytes, bytes, bool]] = []
         for ms in self._sessions.values():
             if active_only and not ms.running:
                 continue
             agent = agents.agent_cli(ms.record.agent_kind)
-            wanted = lambda kind: replay_kinds is None or kind in replay_kinds
-            if wanted(self.SCROLLBACK_REPLAY_KIND) and not agent.is_agent and ms.buffer:
+            if not agent.is_agent and ms.buffer:
                 snapshot = self._replay_checkpoint_snapshot(
                     ms, self.SCROLLBACK_REPLAY_KIND, self._scrollback_path(ms.record.session_id), bytes(ms.buffer),
                     ms.scrollback_checkpoint_pending, TermdeckConfig.SCROLLBACK_BYTES,
                     ms.scrollback_compaction_generation, ms.scrollback_checkpoint_compaction_generation)
                 if snapshot is not None:
                     snapshots.append(snapshot)
-            if wanted(self.RAW_REPLAY_KIND) and self._claude_raw_replay_enabled and \
-                    agent.records_raw_replay and ms.claude_raw_replay_buffer:
+            if self._claude_raw_replay_enabled and agent.records_raw_replay and ms.claude_raw_replay_buffer:
                 snapshot = self._replay_checkpoint_snapshot(
                     ms, self.RAW_REPLAY_KIND, self._claude_raw_replay_path(ms.record.session_id),
                     self._claude_raw_replay_bytes(ms), ms.claude_raw_replay_checkpoint_pending,
@@ -303,9 +301,9 @@ class TerminalSessionManager:
         if replaced and ms.claude_raw_replay_compaction_generation == compaction_generation:
             ms.claude_raw_replay_checkpoint_compaction_generation = compaction_generation
 
-    async def _checkpoint_active_replays(self, replay_kinds: set[str] | None = None) -> None:
+    async def _checkpoint_active_replays(self) -> None:
         for ms, replay_kind, compaction_generation, target, payload, pending_payload, replace in \
-                self._pending_replay_checkpoint_snapshots(True, replay_kinds):
+                self._pending_replay_checkpoint_snapshots(True):
             try:
                 writer = self._write_replay_checkpoint_atomically if replace else self._append_replay_checkpoint_bytes
                 await asyncio.to_thread(writer, target, payload)
@@ -328,8 +326,7 @@ class TerminalSessionManager:
         covers every event in its window, so the write rate is capped by the window no matter how much
         output arrives, and each flush appends only the bytes accumulated since the last one.
         """
-        if not self._claude_raw_replay_enabled or not ms.running or \
-                not agents.agent_cli(ms.record.agent_kind).records_raw_replay:
+        if not ms.running:
             return
         if self._replay_checkpoint_debounce_task is not None and not self._replay_checkpoint_debounce_task.done():
             return
@@ -341,17 +338,7 @@ class TerminalSessionManager:
 
     async def _checkpoint_replays_after_debounce(self) -> None:
         await asyncio.sleep(TermdeckConfig.REPLAY_CHECKPOINT_DEBOUNCE_SECONDS)
-        # Raw-replay sessions only: shell scrollback is not what this window exists to protect, and
-        # leaving it to the periodic tick keeps an idle-but-noisy shell from driving these flushes.
-        await self._checkpoint_active_replays(replay_kinds={self.RAW_REPLAY_KIND})
-
-    def _checkpoint_all_replays(self) -> None:
-        for ms, replay_kind, compaction_generation, target, payload, pending_payload, replace in \
-                self._pending_replay_checkpoint_snapshots(False):
-            writer = self._write_replay_checkpoint_atomically if replace else self._append_replay_checkpoint_bytes
-            writer(target, payload)
-            self._record_replay_checkpoint_success(
-                ms, replay_kind, compaction_generation, pending_payload, replace)
+        await self._checkpoint_active_replays()
 
     @classmethod
     def _claude_raw_replay_partial_title_prefix_length(cls, data: bytes) -> int:
@@ -1043,6 +1030,8 @@ class TerminalSessionManager:
                 ms.scrollback_compaction_generation += 1
             if ms.last_repaint_offset is not None:
                 ms.last_repaint_offset = max(0, ms.last_repaint_offset - overflow)
+        if durable_scrollback:
+            self._schedule_replay_checkpoint(ms)
 
     def _append_output_path(self, ms: ManagedSession, data: bytes) -> None:
         output_path = ms.output_path
@@ -1889,8 +1878,12 @@ class TerminalSessionManager:
         return {"killed": killed, "failed": failed, "threshold_seconds": max_age_seconds}
 
     def detach_for_shutdown(self) -> None:
+        # Deliberately does NOT checkpoint replays. A shutdown hook only runs when the process is stopped
+        # politely, which is the case that was never at risk; the ways a server actually dies -- SIGKILL,
+        # a crash-looping restart, power loss -- skip it entirely. Relying on one hid that gap and cost a
+        # real submitted prompt. Replays are durable because they are written incrementally as work
+        # happens, so there is nothing left here to flush.
         self._persist()
-        self._checkpoint_all_replays()
 
     def list_sessions(self, project: str | None, worktree_id: str | None = None) -> list[dict[str, object]]:
         return [self.session_summary(ms) for ms in self._sessions.values()
