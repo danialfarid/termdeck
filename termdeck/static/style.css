@@ -614,16 +614,10 @@ body:not(.vscode-mode) .terminal-group-label .group-attention { margin-left: 0; 
 .terminal-group-members .session-item.terminal-icons-hidden .session-spinner { left: 7px; }
 .terminal-group > .session-item { border-radius: 0; margin-bottom: 0; }
 .terminal-group > .session-item + .session-item { border-top: 1px solid rgba(127, 140, 160, 0.12); }
-#files-section { flex: none; height: 55%; border-top: none; min-width: 0; }
-#files-section:not(.floating) { position: relative; width: auto; }
-#files-section.floating { position: absolute; left: 0; z-index: 30; width: var(--files-panel-width, 500px); height: auto !important; min-height: 0; flex: none !important; background: var(--panel); border: 1px solid var(--border); border-left: 0; border-radius: 0 8px 8px 0; box-shadow: 10px 0 24px rgba(0, 0, 0, 0.28); padding-bottom: 0; }
-#files-section-resizer { display: none; position: absolute; right: -5px; top: 0; bottom: 0; width: 12px; cursor: col-resize; touch-action: none; z-index: 25; }
-#files-section-resizer::after { content: ""; position: absolute; top: 8px; bottom: 8px; left: 4px; width: 2px; border-radius: 2px; background: transparent; }
-#files-section:hover #files-section-resizer::after, body.dragging-file-search-panel-resize #files-section-resizer::after { background: var(--accent); }
-#files-section-resizer:hover::after { background: var(--accent); }
-#files-section-resizer:hover, body.dragging-file-search-panel-resize #files-section-resizer { background: rgba(0, 0, 0, 0.01); }
-#files-section.floating #files-section-resizer { display: block; }
-#files-section:not(.floating) #files-section-resizer { display: none; }
+/* The panel is a column of the sidebar, never an overlay: the sidebar widens to the panel
+   width and the workspace shifts over, so nothing paints on top of the terminal list,
+   the sidebar chrome, or the editor. The sidebar resizer is its width handle. */
+#files-section { position: relative; flex: none; width: auto; height: 55%; border-top: none; min-width: 0; }
 #files-section-header { display: none; align-items: center; gap: 4px; padding: 2px 4px; border-bottom: 1px solid var(--border); margin-bottom: 2px; flex: none; }
 #files-section.with-git #files-section-header { display: flex; }
 #git-branch-controls { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 1; }
@@ -635,7 +629,6 @@ body:not(.vscode-mode) .terminal-group-label .group-attention { margin-left: 0; 
 #side-split::after { content: ""; position: absolute; top: 2px; left: 8px; right: 8px; height: 2px; background: var(--border); border-radius: 2px; }
 #side-split:hover::after, body.dragging-side #side-split::after { background: var(--accent); }
 body.dragging-side { user-select: none; cursor: row-resize; }
-body.dragging-file-search-panel-resize { user-select: none; cursor: col-resize; }
 .side-view input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 5px 8px; font-size: var(--tree-font-size); font-family: Menlo, monospace; outline: none; margin: 0 4px 6px; flex: none; }
 .side-section-label { font-size: calc(var(--tree-font-size) - 2px); }
 .side-view input:focus { border-color: var(--accent); }

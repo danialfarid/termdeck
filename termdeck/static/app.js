@@ -15,16 +15,16 @@ const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~";
 const TERMINAL_ICON_AGENT_KINDS = ["codex", "claude", "agy", "none"];
 const TERMINAL_ICON_AGENT_LABELS = { codex: "Codex", claude: "Claude", agy: "AGY", none: "Shell" };
-const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 18, project_font_size: 18, terminal_font_size: 18,
+const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_font_size: 18, project_font_size: 18, terminal_font_size: 18,
   ui_font_size: 11, system_font_size: 13, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
   show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, defer_inactive_terminal_output: false, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
-  files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
+  show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
-  files_side_panel_last_tab: "project", file_search_history: [], files_panel_width_initialized: false,
+  files_side_panel_last_tab: "project", file_search_history: [],
   file_tab_max_visible: 20, file_tab_order: "opened", lsp_enabled: true, lsp_command_overrides: {},
   lan_access_enabled: false };
 const MODEL_PERMISSIONS = {
@@ -195,7 +195,10 @@ const TERMINAL_ATTENTION_ANIMATION_MS = 2600;
 const TERMINAL_ATTENTION_TEXT_MARKERS = ["esc to cancel", "tab to amend"];
 const KEYBOARD_SHORTCUT_SECTIONS = ["Terminal", "Files", "General"];
 // Files viewer, file search, and terminal search share one files-section panel and one shortcut.
-const FILEDECK_DEFAULT_SIDEBAR_WIDTH = 300;
+// The panel needs more room than the terminal list, so an unresized sidebar grows by this ratio
+// while it is open; the workspace shifts over by the same amount rather than being covered.
+const FILES_PANEL_WIDTH_RATIO = 1.5;
+const FILES_PANEL_MIN_WIDTH = 300;
 const FILES_SIDE_PANEL_TABS = ["project", "search", "git"];
 const CLOSED_SIDE_VIEW = "closed";
 const ALL_WORKTREES_ID = "all";
@@ -614,7 +617,6 @@ class TermdeckApp {
     this.filesSidePanelCycleView = null;
     this.filesSidePanelCycleTransition = false;
     this.fileTypeFilterMenuMode = "name";
-    this.filesPanelWidthInitialized = false;
     const savedFilesTab = localStorage.getItem(FILES_SIDE_PANEL_LAST_TAB_KEY);
     this.lastFilesSidePanelTab = FILES_SIDE_PANEL_TABS.includes(savedFilesTab) ? savedFilesTab : "project";
     this.searchWord = false;
@@ -720,7 +722,6 @@ class TermdeckApp {
     this.notebookSearchIndex = 0;
     this.notebookTitleTimer = 0;
     this.notebookResizePointerId = null;
-    this.filesPanelResizePointerId = null;
     this.selectionActionState = null;
     this.selectionCopyHistoryIndex = 0;
     this.selectionActionUpdateFrame = 0;
@@ -775,28 +776,23 @@ class TermdeckApp {
     } else if (fileModeRoute && this.requestedNavigationPath && urlParams.has("history")) {
       this.initialNav = { kind: "file-history-path", selector: this.requestedNavigationPath,
         mode: ["all", "local", "git"].includes(urlParams.get("history")) ? urlParams.get("history") : "all",
-        selection: (urlParams.get("history_selection") || "").split(",").filter(Boolean), view: requestedFileView,
-        pinned: urlParams.get("pinned") === "1" };
+        selection: (urlParams.get("history_selection") || "").split(",").filter(Boolean), view: requestedFileView };
     }
     else if (urlParams.get("f") && urlParams.has("history")) {
       this.initialNav = { kind: "file-history", key: urlParams.get("f"),
         mode: ["all", "local", "git"].includes(urlParams.get("history")) ? urlParams.get("history") : "all",
-        selection: (urlParams.get("history_selection") || "").split(",").filter(Boolean), view: requestedFileView,
-        pinned: urlParams.get("pinned") === "1" };
+        selection: (urlParams.get("history_selection") || "").split(",").filter(Boolean), view: requestedFileView };
     } else if (urlParams.get("f")) {
       this.initialNav = {
         kind: "open-file",
         key: urlParams.get("f"),
         view: requestedFileView,
-        pinned: urlParams.get("pinned") === "1",
         return_to: String(urlParams.get("rt") || "").trim(),
       };
     } else if (fileModeRoute && this.requestedNavigationPath) {
-      this.initialNav = { kind: "path", selector: this.requestedNavigationPath, view: requestedFileView,
-        pinned: urlParams.get("pinned") === "1" };
+      this.initialNav = { kind: "path", selector: this.requestedNavigationPath, view: requestedFileView };
     } else if (fileModeRoute || gitModeRoute || ["project", "search", "git"].includes(urlParams.get("view"))) {
-      this.initialNav = { kind: "files", view: requestedFileView, q: urlParams.get("q") || "",
-        pinned: urlParams.get("pinned") === "1" };
+      this.initialNav = { kind: "files", view: requestedFileView, q: urlParams.get("q") || "" };
     }
     else if (urlParams.get("q")) {
       this.initialNav = { kind: "search", q: urlParams.get("q"), glob: urlParams.get("glob") || "",
@@ -921,7 +917,6 @@ class TermdeckApp {
     this.syncMobileVisualViewport();
     const scrollingElement = document.scrollingElement;
     if (scrollingElement) scrollingElement.scrollTop = 0;
-    this.positionFloatingFilesPanel();
     this.scheduleTerminalLayoutFit();
   }
 
@@ -1851,7 +1846,7 @@ class TermdeckApp {
     this.renderList();
   }
 
-  groupSelectedSessionsFromDrop(sessionIds, targetId, after = false) {
+  async groupSelectedSessionsFromDrop(sessionIds, targetId, after = false) {
     const selectedWorktreeId = this.stateWorktreeId();
     const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id) && id !== targetId &&
       this.worktreeIdForSession(this.session(id)) === selectedWorktreeId);
@@ -2053,7 +2048,7 @@ class TermdeckApp {
     this.renderList();
   }
 
-  groupSessionsFromDrop(draggedId, targetId, after = false) {
+  async groupSessionsFromDrop(draggedId, targetId, after = false) {
     const state = this.getProjectState();
     const sessionGroups = { ...(state.session_groups || {}) };
     const draggedGroupId = sessionGroups[draggedId] || null;
@@ -2551,7 +2546,6 @@ class TermdeckApp {
     if (!project) return;
     const params = new URLSearchParams();
     params.set("view", view === "tree" ? "project" : view);
-    params.set("pinned", "1");
     const selectedWorktreeId = this.worktreeId && this.worktreeId !== ALL_WORKTREES_ID && root === this.worktreeRoot()
       ? this.worktreeId : "root";
     const basePath = view === "git"
@@ -2799,10 +2793,8 @@ class TermdeckApp {
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        if (!this.closeUnpinnedFilesPanelAndFocusEditor()) {
-          queryInput.value = "";
-          this.setExplorerMode("tree");
-        }
+        queryInput.value = "";
+        this.setExplorerMode("tree");
       }
     });
     queryInput.addEventListener("input", () => this.debouncedSearch());
@@ -2834,10 +2826,8 @@ class TermdeckApp {
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        if (!this.closeUnpinnedFilesPanelAndFocusEditor()) {
-          nameInput.value = "";
-          this.setExplorerMode("tree");
-        }
+        nameInput.value = "";
+        this.setExplorerMode("tree");
       }
     });
     nameInput.addEventListener("input", () => this.debouncedNameSearch());
@@ -2879,23 +2869,12 @@ class TermdeckApp {
       this.rerenderTree();
     };
     this.updateHideDotButton();
-    this.updateFilesPinButton();
     this.$("git-refresh").onclick = () => void this.loadGitSidePanel();
     this.$("files-tree").addEventListener("contextmenu", (e) => {
       const row = e.target.closest(".tree-row");
       if (row && row.dataset.rel) this.openTreeContextMenu(e, row);
     });
-    this.$("main").addEventListener("pointerdown", (e) => {
-      if (e.target.closest("#editor-area, #terminal-area, #history-area")) this.dismissUnpinnedFilesPanel();
-    });
     this.initResizer("sidebar-resizer", "sidebar_width", false, 236, 520);
-    const filesPanelResizer = this.$("files-section-resizer");
-    if (filesPanelResizer) {
-      filesPanelResizer.onpointerdown = this.startFilesPanelResize.bind(this);
-      filesPanelResizer.onpointermove = this.resizeFilesPanelFromPointer.bind(this);
-      filesPanelResizer.onpointerup = this.finishFilesPanelResize.bind(this);
-      filesPanelResizer.onpointercancel = this.finishFilesPanelResize.bind(this);
-    }
     this.initSideSplit();
     if (!this.vscodeMode) {
       this.updateRecentFilesWatch();
@@ -3282,11 +3261,6 @@ class TermdeckApp {
         this.navigateBackFromActiveFile();
         return;
       }
-      if (e.key === "Escape" && this.closeUnpinnedFilesPanelAndFocusEditor()) {
-        e.preventDefault();
-        e.stopPropagation();
-        return;
-      }
       if (this.isTypingTarget(e)) return;
       const treeVisible = !this.$("files-section").classList.contains("hidden") &&
         !this.$("files-tree").classList.contains("hidden");
@@ -3321,7 +3295,6 @@ class TermdeckApp {
     this.lastNavJson = JSON.stringify(startupNav);
     history.replaceState(startupNav, "", this.navUrl(startupNav));
     const scheduleLayoutFit = () => {
-      this.positionFloatingFilesPanel();
       this.scheduleTerminalLayoutFit();
     };
     new ResizeObserver(scheduleLayoutFit).observe(this.$("terminal-area"));
@@ -3369,20 +3342,17 @@ class TermdeckApp {
       navigationPath = this.relativeNavigationPathForFileKey(state.key);
       if (!navigationPath && state.key) params.set("f", state.key);
       if (state.view && state.view !== "project") params.set("view", state.view);
-      if (state.pinned) params.set("pinned", "1");
     } else if (state.kind === "file-history") {
       navigationPath = this.relativeNavigationPathForFileKey(state.key);
       if (!navigationPath && state.key) params.set("f", state.key);
       params.set("history", state.mode || "all");
       if (state.selection?.length) params.set("history_selection", state.selection.join(","));
       if (state.view && state.view !== "project") params.set("view", state.view);
-      if (state.pinned) params.set("pinned", "1");
     } else if (state.kind === "file-history-path") {
       navigationPath = this.encodedRelativeFilePath(state.selector);
       params.set("history", state.mode || "all");
       if (state.selection?.length) params.set("history_selection", state.selection.join(","));
       if (state.view && state.view !== "project") params.set("view", state.view);
-      if (state.pinned) params.set("pinned", "1");
     } else if (state.kind === "git-diff") {
       params.set("git_path", state.path);
       params.set("git_scope", state.scope || "working");
@@ -3394,7 +3364,6 @@ class TermdeckApp {
       navigationPath = this.encodedRelativeFilePath(state.selector);
     } else if (state.kind === "files") {
       if (state.view) params.set("view", state.view);
-      if (state.pinned) params.set("pinned", "1");
       if (state.q) params.set("q", state.q);
     } else if (state.kind === "search") {
       params.set("q", state.q);
@@ -3475,10 +3444,8 @@ class TermdeckApp {
         const root = this.worktreeRoot();
         if (root) {
           const view = FILES_SIDE_PANEL_TABS.includes(state.view) ? state.view : this.lastFilesSidePanelTab;
-          if (state.pinned) this.setFilesPinned(true);
           this.setSideView(FILES_SIDE_PANEL_TABS.includes(view) ? view : "project", false);
-          this.replaceNav({ kind: "file", key: `${root}|${selector}`, view,
-            pinned: !!this.settings.files_pinned });
+          this.replaceNav({ kind: "file", key: `${root}|${selector}`, view });
           void this.openFile(root, selector, null, null, { pinned: true, history: false, view });
         }
       }
@@ -3488,7 +3455,6 @@ class TermdeckApp {
       const root = this.worktreeRoot();
       if (root && state.selector) {
         const view = FILES_SIDE_PANEL_TABS.includes(state.view) ? state.view : this.lastFilesSidePanelTab;
-        if (state.pinned) this.setFilesPinned(true);
         this.setSideView(FILES_SIDE_PANEL_TABS.includes(view) ? view : "project", false);
         void this.openFileHistoryForPath(root, state.selector, state.mode || "all",
           { history: false, selection: state.selection || [], view });
@@ -3501,7 +3467,6 @@ class TermdeckApp {
       const root = state.key.slice(0, separator);
       const path = state.key.slice(separator + 1);
       const view = FILES_SIDE_PANEL_TABS.includes(state.view) ? state.view : this.lastFilesSidePanelTab;
-      if (state.pinned) this.setFilesPinned(true);
       this.setSideView(FILES_SIDE_PANEL_TABS.includes(view) ? view : "project", false);
       void this.openFileHistoryForPath(root, path, state.mode || "all", { history: false, selection: state.selection || [], view });
       return;
@@ -3521,13 +3486,11 @@ class TermdeckApp {
       if (separator <= 0) return;
       const root = String(state.key).slice(0, separator);
       const path = String(state.key).slice(separator + 1);
-      if (state.pinned) this.setFilesPinned(true);
       this.setSideView(["project", "search", "git"].includes(state.view) ? state.view : "project", false);
       void this.openFile(root, path, null, null, { pinned: true, history: false });
       return;
     }
     if (state.kind === "files") {
-      if (state.pinned) this.setFilesPinned(true);
       const view = ["project", "search", "git"].includes(state.view) ? state.view : "project";
       if (view === "git" && this.gitReviewOpen) this.closeGitReview(false);
       this.setSideView(view, false);
@@ -3540,7 +3503,7 @@ class TermdeckApp {
         void this.activateFile(key, null, { history: false });
       } else if (location.pathname.startsWith("/f/") && this.openFiles.size) {
         const key = [...this.openFiles.keys()].at(-1);
-        this.replaceNav({ kind: "file", key, view, pinned: !!this.settings.files_pinned });
+        this.replaceNav({ kind: "file", key, view });
         void this.activateFile(key, null, { history: false, view });
       }
       return;
@@ -3567,7 +3530,6 @@ class TermdeckApp {
         this.activate(state.id, { history: false, reveal: true });
       } else if (state.kind === "file" && this.openFiles.has(state.key)) {
         const view = FILES_SIDE_PANEL_TABS.includes(state.view) ? state.view : this.lastFilesSidePanelTab;
-        if (state.pinned) this.setFilesPinned(true);
         this.setSideView(FILES_SIDE_PANEL_TABS.includes(view) ? view : "project", false);
         this.activateFile(state.key, null, { history: false, view });
       } else if (state.kind === "search") {
@@ -5588,10 +5550,7 @@ class TermdeckApp {
       label.textContent = "name";
       row.append(icon, title, label);
       row.title = `Activate ${result.title}`;
-      row.onclick = () => {
-        this.activate(result.open_session_id, { reveal: true });
-        if (!this.settings.files_pinned) this.setSideView("terminals", false);
-      };
+      row.onclick = () => this.activate(result.open_session_id, { reveal: true });
       section.appendChild(row);
     }
     container.appendChild(section);
@@ -6272,7 +6231,7 @@ class TermdeckApp {
     });
   }
 
-  setSideView(view, allowToggle = true, allowFloating = true) {
+  setSideView(view, allowToggle = true) {
     if (this.vscodeMode && view !== "terminals") return;
     if (!this.filesSidePanelCycleTransition) this.filesSidePanelCycleView = null;
     const nextView = allowToggle && this.sideView === view
@@ -6291,13 +6250,11 @@ class TermdeckApp {
     }
     if (!filesVisible || view === "git") this.closeFileTypeFilterMenu();
     const gitView = view === "git";
-    const filesPinned = filesVisible && (!!this.settings.files_pinned || gitView);
     this.settings.side_full = filesVisible;
     this.$("files-section").classList.toggle("hidden", !filesVisible);
     this.$("session-list").classList.toggle("hidden", view === CLOSED_SIDE_VIEW);
     this.$("files-section").classList.toggle("with-search", view === "search");
     this.$("files-section").classList.toggle("with-git", view === "git");
-    this.$("files-section").classList.toggle("floating", filesVisible && !filesPinned);
     this.$("file-header-controls")?.classList.toggle("hidden", !filesVisible || gitView);
     this.$("git-branch-controls").classList.toggle("hidden", !gitView);
     this.$("git-refresh").classList.toggle("hidden", !gitView);
@@ -6307,7 +6264,7 @@ class TermdeckApp {
     }
     this.renderFileEditorChrome();
     this.$("side-split").classList.toggle("hidden", view === "terminals" || view === CLOSED_SIDE_VIEW || filesVisible);
-    this.applySettings({ fitTerminals: !filesVisible || filesPinned });
+    this.applySettings();
     this.applySideLayout();
     if (view === "project" || view === "search") {
       const session = this.session(this.activeId);
@@ -6322,7 +6279,7 @@ class TermdeckApp {
       this.disconnectFileTreeWatch();
     }
     if (!filesVisible) {
-      this.scheduleTerminalFitAfterSidebarChange();
+      this.scheduleTerminalLayoutFit();
       return;
     }
     if (view === "project") {
@@ -6335,7 +6292,7 @@ class TermdeckApp {
       this.setExplorerMode("git");
       void this.loadGitSidePanel();
     }
-    this.scheduleTerminalFitAfterSidebarChange();
+    this.scheduleTerminalLayoutFit();
   }
 
   focusFileNameSearch() {
@@ -6408,7 +6365,7 @@ class TermdeckApp {
       return;
     }
     if (this.sideView === "git") {
-      this.pushNav({ kind: "files", view: "git", pinned: !!this.settings.files_pinned });
+      this.pushNav({ kind: "files", view: "git" });
       if (this.activeFileKey === null && this.openFiles.size) {
         const key = [...this.openFiles.keys()].at(-1);
         void this.activateFile(key, null, { history: false });
@@ -6416,8 +6373,7 @@ class TermdeckApp {
       return;
     }
     if (this.activeFileKey !== null && this.openFiles.has(this.activeFileKey)) {
-      this.pushNav({ kind: "file", key: this.activeFileKey, view: this.sideView,
-        pinned: !!this.settings.files_pinned });
+      this.pushNav({ kind: "file", key: this.activeFileKey, view: this.sideView });
       return;
     }
     if (this.openFiles.size) {
@@ -6425,7 +6381,7 @@ class TermdeckApp {
       void this.activateFile(key, null);
       return;
     }
-    const state = { kind: "files", view: this.sideView, pinned: !!this.settings.files_pinned };
+    const state = { kind: "files", view: this.sideView };
     if (this.sideView === "search" && this.$("search-query").value.trim()) state.q = this.$("search-query").value.trim();
     this.pushNav(state);
   }
@@ -8169,7 +8125,7 @@ class TermdeckApp {
     this.renderTopbar();
     this.applyMainLayout();
     if (restoreFocus) {
-      this.pushNav({ kind: "files", view: "git", pinned: !!this.settings.files_pinned });
+      this.pushNav({ kind: "files", view: "git" });
       requestAnimationFrame(() => this.focusActiveEditor());
     }
   }
@@ -8533,60 +8489,6 @@ class TermdeckApp {
     if (entry) void this.openFileHistoryForPath(entry.root, entry.path, "git");
   }
 
-  updateFilesPinButton() {
-    const button = this.$("files-pin-toggle");
-    if (!button) return;
-    const pinned = !!this.settings.files_pinned;
-    button.classList.toggle("on", pinned);
-    button.title = pinned ? "Unpin panel (it will close after opening a file)" :
-      "Keep this panel open after opening a file";
-    button.setAttribute("aria-label", pinned ? "Unpin file panel" : "Pin file panel");
-    button.setAttribute("aria-pressed", String(pinned));
-    const icon = button.querySelector(".codicon");
-    if (icon) icon.className = `codicon ${pinned ? "codicon-pinned" : "codicon-pin"}`;
-  }
-
-  setFilesPinned(pinned) {
-    const nextPinned = !!pinned;
-    if (this.settings.files_pinned === nextPinned) return;
-    this.settings.files_pinned = nextPinned;
-    localStorage.setItem("termdeck.files_pinned", nextPinned ? "1" : "0");
-    if (nextPinned && !this.filesPanelWidthInitialized) {
-      this.settings.files_width = FILEDECK_DEFAULT_SIDEBAR_WIDTH;
-      this.filesPanelWidthInitialized = true;
-      this.settings.files_panel_width_initialized = true;
-      localStorage.setItem("termdeck.files_panel_width_v2", "1");
-    }
-    const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
-    this.$("files-section").classList.toggle("floating", filesVisible && !nextPinned && this.sideView !== "git");
-    this.updateFilesPinButton();
-    this.applySideLayout();
-    this.applySettings({ fitTerminals: !filesVisible || nextPinned });
-    this.scheduleTerminalFitAfterSidebarChange();
-    this.saveSettings();
-  }
-
-  toggleFilesPinned() {
-    this.setFilesPinned(!this.settings.files_pinned);
-  }
-
-  dismissUnpinnedFilesPanel() {
-    if (this.settings.files_pinned || !FILES_SIDE_PANEL_TABS.includes(this.sideView)) return;
-    this.setSideView(this.activeFileKey !== null ? CLOSED_SIDE_VIEW : "terminals", false);
-  }
-
-  closeUnpinnedFilesPanelAndFocusEditor() {
-    if (this.settings.files_pinned || !FILES_SIDE_PANEL_TABS.includes(this.sideView)) return false;
-    this.setSideView(this.activeFileKey !== null ? CLOSED_SIDE_VIEW : "terminals", false);
-    requestAnimationFrame(() => this.focusActiveEditor());
-    return true;
-  }
-
-  scheduleTerminalFitAfterSidebarChange() {
-    if (FILES_SIDE_PANEL_TABS.includes(this.sideView) && !this.settings.files_pinned && this.sideView !== "git") return;
-    this.scheduleTerminalLayoutFit();
-  }
-
   scheduleFinalTerminalFitAfterSidebarResize() {
     if (this.sidebarResizeFinalFitFrame) cancelAnimationFrame(this.sidebarResizeFinalFitFrame);
     this.sidebarResizeFinalFitFrame = requestAnimationFrame(() => {
@@ -8598,29 +8500,6 @@ class TermdeckApp {
         this.fitActive();
       });
     });
-  }
-
-  positionFloatingFilesPanel(fileWidth = null) {
-    const section = this.$("files-section");
-    if (!section || !section.classList.contains("floating") || section.classList.contains("hidden")) {
-      if (section) {
-        section.style.top = "";
-        section.style.bottom = "";
-        section.style.width = "";
-      }
-      return;
-    }
-    const sidebar = this.$("sidebar");
-    const header = this.$("sidebar-header");
-    const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
-    const requestedWidth = Number(fileWidth) || Math.max(Number(this.settings.files_width) || 0, normalWidth * 2);
-    const availableWidth = Math.max(normalWidth, window.innerWidth - sidebar.getBoundingClientRect().left - 20);
-    const filesPinned = !!this.settings.files_pinned;
-    section.style.top = filesPinned ? `${header?.offsetHeight || 0}px` : "0px";
-    const footer = this.$("sidebar-footer");
-    section.style.bottom = `${footer?.offsetHeight || 0}px`;
-    section.style.width = `${Math.min(requestedWidth, availableWidth)}px`;
-    document.documentElement.style.setProperty("--files-panel-width", `${Math.min(requestedWidth, availableWidth)}px`);
   }
 
   scheduleTerminalLayoutFit() {
@@ -8705,17 +8584,26 @@ class TermdeckApp {
     else requestAnimationFrame(() => this.focusActiveEditor());
   }
 
-  openFilesSidePanelView(view, pinned = false) {
+  openFilesSidePanelView(view) {
     if (this.vscodeMode || !FILES_SIDE_PANEL_TABS.includes(view)) return;
     if (this.sideView === view) {
       this.setSideView(this.activeFileKey !== null ? CLOSED_SIDE_VIEW : "terminals", false);
       requestAnimationFrame(() => this.focusActiveEditor());
       return;
     }
-    if (pinned) this.setFilesPinned(true);
     this.setSideView(view, false);
     if (view === "project") this.focusFileNameSearch();
     else if (view === "search") this.focusFileContentSearch();
+  }
+
+  // How wide the sidebar becomes while the files/search/git panel is open: the width the user
+  // dragged, or half again the terminal list's width when they have not chosen one. Capped so
+  // the panel can never crowd out the workspace it sits beside.
+  filesPanelWidth() {
+    const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
+    const chosenWidth = Number(this.settings.files_panel_width) || Math.round(normalWidth * FILES_PANEL_WIDTH_RATIO);
+    return Math.min(Math.max(chosenWidth, FILES_PANEL_MIN_WIDTH),
+      Math.max(normalWidth, Math.floor(window.innerWidth * 0.75)));
   }
 
   applySideLayout() {
@@ -8724,15 +8612,6 @@ class TermdeckApp {
     this.$("session-list").classList.toggle("collapsed", full);
     if (!sectionId) return;
     const section = this.$(sectionId);
-    if (section.classList.contains("floating")) {
-      section.style.height = "auto";
-      section.style.flex = "none";
-      this.positionFloatingFilesPanel();
-      return;
-    }
-    section.style.top = "";
-    section.style.bottom = "";
-    section.style.width = "";
     if (full) {
       section.style.height = "";
       section.style.flex = "1";
@@ -9925,8 +9804,7 @@ class TermdeckApp {
   fileHistoryNavigationState() {
     const view = FILES_SIDE_PANEL_TABS.includes(this.sideView) ? this.sideView : this.lastFilesSidePanelTab;
     return { kind: "file-history", key: this.fileHistoryTabKey || this.activeFileKey, mode: this.fileHistoryMode,
-      selection: [...this.fileHistorySelections], view: FILES_SIDE_PANEL_TABS.includes(view) ? view : "project",
-      pinned: !!this.settings.files_pinned };
+      selection: [...this.fileHistorySelections], view: FILES_SIDE_PANEL_TABS.includes(view) ? view : "project" };
   }
 
   syncFileHistorySurface() {
@@ -10047,8 +9925,7 @@ class TermdeckApp {
     this.applyMainLayout();
     this.renderFileEditorChrome();
     if (updateNavigation && navigationKey !== null && this.openFiles.has(navigationKey)) {
-      this.pushNav({ kind: "file", key: navigationKey, view: this.sideView,
-        pinned: !!this.settings.files_pinned });
+      this.pushNav({ kind: "file", key: navigationKey, view: this.sideView });
     }
   }
 
@@ -18078,10 +17955,15 @@ class TermdeckApp {
       delete incoming.virtual_tall_webgl;
       delete incoming.claude_raw_replay_experimental;
       delete incoming.claude_full_raw_replay_experimental;
+      // The panel used to float over the workspace, and its stored width was a floating-overlay
+      // width with a 2x-sidebar minimum. It is now the sidebar's own width, so that value is
+      // discarded and re-derived from the sidebar; the server drops the keys on its next write.
+      delete incoming.files_pinned;
+      delete incoming.files_width;
+      delete incoming.files_panel_width_initialized;
       this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
       this.initializeBrowserRendererSettings();
       this.persistedSettings = this.copySettings(this.settings);
-      this.filesPanelWidthInitialized = !!this.settings.files_panel_width_initialized;
       this.lastFilesSidePanelTab = FILES_SIDE_PANEL_TABS.includes(this.settings.files_side_panel_last_tab)
         ? this.settings.files_side_panel_last_tab : "project";
       if (!this.settings.md_prompt_queues || typeof this.settings.md_prompt_queues !== "object") this.settings.md_prompt_queues = {};
@@ -18224,16 +18106,7 @@ class TermdeckApp {
     const sidebar = this.$("sidebar");
     const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
     const normalWidth = Number(s.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
-    if (filesVisible && s.files_pinned && !this.filesPanelWidthInitialized) {
-      s.files_width = FILEDECK_DEFAULT_SIDEBAR_WIDTH;
-      this.filesPanelWidthInitialized = true;
-      s.files_panel_width_initialized = true;
-      localStorage.setItem("termdeck.files_panel_width_v2", "1");
-      this.saveSettings();
-    }
-    const pinnedFileWidth = Math.max(Number(s.files_width) || 0, FILEDECK_DEFAULT_SIDEBAR_WIDTH);
-    const floatingFileWidth = Math.max(Number(s.files_width) || 0, normalWidth * 2);
-    const activeSidebarWidth = filesVisible && s.files_pinned ? pinnedFileWidth : normalWidth;
+    const activeSidebarWidth = filesVisible ? this.filesPanelWidth() : normalWidth;
     const sidebarLeft = sidebar.getBoundingClientRect().left || 0;
     const sidebarRight = sidebarLeft + activeSidebarWidth;
     const maximumNotebookLeft = Math.max(0, window.innerWidth - 334);
@@ -18246,7 +18119,6 @@ class TermdeckApp {
     sidebar.style.minWidth = activeSidebarWidth + "px";
     document.documentElement.style.setProperty("--history-sidebar-width", `${normalWidth}px`);
     document.documentElement.style.setProperty("--notebook-panel-left", `${notebookLeft}px`);
-    this.positionFloatingFilesPanel(floatingFileWidth);
     document.documentElement.style.setProperty("--sidebar-font-size", sidebarFontSize + "px");
     document.documentElement.style.setProperty("--project-font-size", projectFontSize + "px");
     document.documentElement.style.setProperty("--terminal-font-size", terminalFontSize + "px");
@@ -19744,10 +19616,9 @@ class TermdeckApp {
       }
       const move = (ev) => {
         const width = fromRight ? window.innerWidth - ev.clientX : ev.clientX;
-        const resizingFiles = handleId === "sidebar-resizer" && this.settings.files_pinned &&
-          FILES_SIDE_PANEL_TABS.includes(this.sideView);
-        const targetKey = resizingFiles ? "files_width" : key;
-        const targetMin = resizingFiles ? Math.max(minWidth, FILEDECK_DEFAULT_SIDEBAR_WIDTH) : minWidth;
+        const resizingFiles = handleId === "sidebar-resizer" && FILES_SIDE_PANEL_TABS.includes(this.sideView);
+        const targetKey = resizingFiles ? "files_panel_width" : key;
+        const targetMin = resizingFiles ? Math.max(minWidth, FILES_PANEL_MIN_WIDTH) : minWidth;
         const targetMax = resizingFiles ? Math.max(maxWidth, Math.floor(window.innerWidth * 0.75)) : maxWidth;
         this.settings[targetKey] = Math.max(targetMin, Math.min(targetMax, Math.round(width)));
         this.applySettings({ fitTerminals: false });
@@ -19764,42 +19635,6 @@ class TermdeckApp {
       document.addEventListener("mousemove", move);
       document.addEventListener("mouseup", up);
     };
-  }
-
-  startFilesPanelResize(event) {
-    if (event.button !== 0 || this.vscodeMode) return;
-    const section = this.$("files-section");
-    if (!section || section.classList.contains("hidden") || !section.classList.contains("floating")) return;
-    event.preventDefault();
-    this.filesPanelResizePointerId = event.pointerId;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    document.body.classList.add("dragging-file-search-panel-resize");
-  }
-
-  resizeFilesPanelFromPointer(event) {
-    if (event.pointerId !== this.filesPanelResizePointerId) return;
-    const section = this.$("files-section");
-    const sidebar = this.$("sidebar");
-    if (!section || !sidebar || !section.classList.contains("floating")) return;
-    const sidebarRect = sidebar.getBoundingClientRect();
-    const leftOffset = sidebarRect?.left || 0;
-    const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
-    const minWidth = Math.max(normalWidth * 2, 280);
-    const maxWidth = Math.max(minWidth, Math.floor(window.innerWidth - leftOffset - 12));
-    const nextWidth = Math.max(minWidth, Math.min(maxWidth, Math.round(event.clientX - leftOffset)));
-    section.style.width = `${nextWidth}px`;
-    this.settings.files_width = nextWidth;
-    document.documentElement.style.setProperty("--files-panel-width", `${nextWidth}px`);
-    this.scheduleTerminalFitAfterSidebarChange();
-  }
-
-  finishFilesPanelResize(event) {
-    if (event.pointerId !== this.filesPanelResizePointerId) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    this.filesPanelResizePointerId = null;
-    document.body.classList.remove("dragging-file-search-panel-resize");
-    this.applySettings({ fitTerminals: false });
-    this.saveSettings();
   }
 
   async reloadTree(rootOverride) {
@@ -20573,7 +20408,7 @@ class TermdeckApp {
       const returnTo = (this.session(fallback) ? fallback : fallbackFromFile && this.session(fallbackFromFile) ? fallbackFromFile : "");
       const fromCurrentFile = current?.kind === "file" && String(current.return_to || "") === returnTo;
       const fromFileMode = ["files", "file", "open-file", "file-history", "file-history-path"].includes(current?.kind);
-      const fileState = { kind: "file", key, view: this.sideView, pinned: !!this.settings.files_pinned };
+      const fileState = { kind: "file", key, view: this.sideView };
       if (returnTo && !fromCurrentFile && !fromFileMode) {
         const returnState = { kind: "term", id: returnTo };
         const historyScroll = this.historyScrollBySession.get(returnTo);
@@ -20587,8 +20422,7 @@ class TermdeckApp {
         this.pushNav(fileState);
       }
     }
-    else if (options.history !== false) this.replaceNav({ kind: "file", key, view: this.sideView,
-      pinned: !!this.settings.files_pinned });
+    else if (options.history !== false) this.replaceNav({ kind: "file", key, view: this.sideView });
     this.applyMainLayout();
     this.renderList();
     this.renderTopbar();
@@ -20840,8 +20674,7 @@ class TermdeckApp {
       if (remaining.length) {
         const nextKey = remaining[remaining.length - 1];
         await this.activateFile(nextKey, null, { history: false });
-        this.replaceNav({ kind: "file", key: nextKey, view: this.sideView,
-          pinned: !!this.settings.files_pinned });
+        this.replaceNav({ kind: "file", key: nextKey, view: this.sideView });
         this.saveSettings();
         return;
       }

@@ -477,7 +477,8 @@ class NotebookNote(BaseModel):
 
 class UiSettings(BaseModel):
     sidebar_width: int = 250
-    files_width: int = 380
+    # Sidebar width while the files/search/git panel is open; 0 derives it from sidebar_width.
+    files_panel_width: int = 0
     sidebar_font_size: int = 18
     project_font_size: int = 18
     terminal_font_size: int = 18
@@ -531,7 +532,6 @@ class UiSettings(BaseModel):
     notebook_notes: list[NotebookNote] = []
     notebook_active_note_id: str = ""
     notebook_notes_initialized: bool = False
-    files_pinned: bool = False
     show_terminal_age: bool = True
     sidebar_text_color: str = "#d5dbe5"
     side_full: bool = False
@@ -543,7 +543,6 @@ class UiSettings(BaseModel):
     selected_worktrees: dict[str, str] = {}
     files_side_panel_last_tab: str = "project"
     file_search_history: list[dict[str, str | bool]] = []
-    files_panel_width_initialized: bool = False
     file_tab_max_visible: int = 20
     file_tab_order: str = "opened"
     lsp_enabled: bool = True
