@@ -3320,8 +3320,12 @@ class TermdeckApp {
     if (this.projectSlug === "evently-demo" && new URLSearchParams(location.search).get("demo") === "evently") {
       params.set("demo", "evently");
     }
+    // A state that names a side-panel tab picks the route itself. Consulting the pathname for those
+    // is what pinned the URL to /g/: once git had been opened, every later switch to files or search
+    // saw "/g/" and kept it, so the address never moved off git mode.
+    const tabbedView = FILES_SIDE_PANEL_TABS.includes(state.view) ? state.view : "";
     const gitModeNavigation = state.kind === "git-diff" || state.kind !== "term" && state.kind !== "file-history" &&
-      (location.pathname.startsWith("/g/") || (state.kind === "files" && state.view === "git"));
+      (tabbedView ? tabbedView === "git" : location.pathname.startsWith("/g/"));
     const fileModeNavigation = state.kind !== "term" &&
       (location.pathname.startsWith("/f/") || state.kind === "files" || state.kind === "file" ||
        state.kind === "open-file" || state.kind === "file-history");
