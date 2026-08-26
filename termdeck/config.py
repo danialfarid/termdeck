@@ -25,6 +25,12 @@ class TermdeckConfig:
     SCROLLBACK_SUFFIX = ".bin"
     CLAUDE_RAW_REPLAY_SUFFIX = ".claude-replay.bin"
     REPLAY_CHECKPOINT_INTERVAL_SECONDS = 30.0
+    # Activity-driven checkpoint delay for agent sessions that record a raw replay. The periodic interval
+    # above is a backstop; on its own it means a crash can lose everything since the last tick, including
+    # a prompt just submitted. Any input or output schedules a flush this far out, and further activity
+    # inside the window joins that same flush rather than postponing it, so a streaming agent costs at
+    # most one append per window instead of one per write.
+    REPLAY_CHECKPOINT_DEBOUNCE_SECONDS = 1.0
     CLAUDE_RAW_REPLAY_SESSION_BYTES = 24_000_000
     CLAUDE_RAW_REPLAY_TOTAL_BYTES = 100_000_000
     TERMINAL_HISTORY_RESET_SEQUENCE = b"\x1b[3J\x1b[2J\x1b[H"

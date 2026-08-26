@@ -147,6 +147,7 @@ class TerminalSessionManager:
         self._status_queues: set[asyncio.Queue] = set()
         self._draft_persist_task: asyncio.Task | None = None
         self._replay_checkpoint_task: asyncio.Task[None] | None = None
+        self._replay_checkpoint_debounce_task: asyncio.Task[None] | None = None
         self._background_loop: asyncio.AbstractEventLoop | None = None
         self._agent_activity_refresh_handles: dict[Path, asyncio.TimerHandle] = {}
         self._claude_activity_confirmation_handles: dict[Path, asyncio.TimerHandle] = {}
@@ -175,6 +176,9 @@ class TerminalSessionManager:
         if self._replay_checkpoint_task is not None:
             self._replay_checkpoint_task.cancel()
             self._replay_checkpoint_task = None
+        if self._replay_checkpoint_debounce_task is not None:
+            self._replay_checkpoint_debounce_task.cancel()
+            self._replay_checkpoint_debounce_task = None
         for handle in self._agent_activity_refresh_handles.values():
             handle.cancel()
         self._agent_activity_refresh_handles.clear()
@@ -257,20 +261,23 @@ class TerminalSessionManager:
             return None
         return ms, replay_kind, compaction_generation, target, write_payload, pending_payload, replace
 
-    def _pending_replay_checkpoint_snapshots(self, active_only: bool) -> list[tuple[ManagedSession, str, int, Path, bytes, bytes, bool]]:
+    def _pending_replay_checkpoint_snapshots(self, active_only: bool, replay_kinds: set[str] | None = None
+                                             ) -> list[tuple[ManagedSession, str, int, Path, bytes, bytes, bool]]:
         snapshots: list[tuple[ManagedSession, str, int, Path, bytes, bytes, bool]] = []
         for ms in self._sessions.values():
             if active_only and not ms.running:
                 continue
             agent = agents.agent_cli(ms.record.agent_kind)
-            if not agent.is_agent and ms.buffer:
+            wanted = lambda kind: replay_kinds is None or kind in replay_kinds
+            if wanted(self.SCROLLBACK_REPLAY_KIND) and not agent.is_agent and ms.buffer:
                 snapshot = self._replay_checkpoint_snapshot(
                     ms, self.SCROLLBACK_REPLAY_KIND, self._scrollback_path(ms.record.session_id), bytes(ms.buffer),
                     ms.scrollback_checkpoint_pending, TermdeckConfig.SCROLLBACK_BYTES,
                     ms.scrollback_compaction_generation, ms.scrollback_checkpoint_compaction_generation)
                 if snapshot is not None:
                     snapshots.append(snapshot)
-            if self._claude_raw_replay_enabled and agent.records_raw_replay and ms.claude_raw_replay_buffer:
+            if wanted(self.RAW_REPLAY_KIND) and self._claude_raw_replay_enabled and \
+                    agent.records_raw_replay and ms.claude_raw_replay_buffer:
                 snapshot = self._replay_checkpoint_snapshot(
                     ms, self.RAW_REPLAY_KIND, self._claude_raw_replay_path(ms.record.session_id),
                     self._claude_raw_replay_bytes(ms), ms.claude_raw_replay_checkpoint_pending,
@@ -296,9 +303,9 @@ class TerminalSessionManager:
         if replaced and ms.claude_raw_replay_compaction_generation == compaction_generation:
             ms.claude_raw_replay_checkpoint_compaction_generation = compaction_generation
 
-    async def _checkpoint_active_replays(self) -> None:
+    async def _checkpoint_active_replays(self, replay_kinds: set[str] | None = None) -> None:
         for ms, replay_kind, compaction_generation, target, payload, pending_payload, replace in \
-                self._pending_replay_checkpoint_snapshots(True):
+                self._pending_replay_checkpoint_snapshots(True, replay_kinds):
             try:
                 writer = self._write_replay_checkpoint_atomically if replace else self._append_replay_checkpoint_bytes
                 await asyncio.to_thread(writer, target, payload)
@@ -312,6 +319,31 @@ class TerminalSessionManager:
         while True:
             await asyncio.sleep(TermdeckConfig.REPLAY_CHECKPOINT_INTERVAL_SECONDS)
             await self._checkpoint_active_replays()
+
+    def _schedule_replay_checkpoint(self, ms: ManagedSession) -> None:
+        """Flush this session's replay shortly after activity instead of waiting for the periodic tick.
+
+        Deliberately a trailing throttle rather than a resetting debounce: a continuously streaming agent
+        would keep pushing a resetting timer out forever and never checkpoint at all. One scheduled flush
+        covers every event in its window, so the write rate is capped by the window no matter how much
+        output arrives, and each flush appends only the bytes accumulated since the last one.
+        """
+        if not self._claude_raw_replay_enabled or not ms.running or \
+                not agents.agent_cli(ms.record.agent_kind).records_raw_replay:
+            return
+        if self._replay_checkpoint_debounce_task is not None and not self._replay_checkpoint_debounce_task.done():
+            return
+        # Output is also handled while spawning, before the loop is running; the periodic task covers that.
+        loop = self._background_loop
+        if loop is None or not loop.is_running():
+            return
+        self._replay_checkpoint_debounce_task = loop.create_task(self._checkpoint_replays_after_debounce())
+
+    async def _checkpoint_replays_after_debounce(self) -> None:
+        await asyncio.sleep(TermdeckConfig.REPLAY_CHECKPOINT_DEBOUNCE_SECONDS)
+        # Raw-replay sessions only: shell scrollback is not what this window exists to protect, and
+        # leaving it to the periodic tick keeps an idle-but-noisy shell from driving these flushes.
+        await self._checkpoint_active_replays(replay_kinds={self.RAW_REPLAY_KIND})
 
     def _checkpoint_all_replays(self) -> None:
         for ms, replay_kind, compaction_generation, target, payload, pending_payload, replace in \
@@ -407,6 +439,7 @@ class TerminalSessionManager:
             ms.claude_raw_replay_compaction_generation += 1
         self._claude_raw_replay_total_bytes += len(ms.claude_raw_replay_buffer) - previous_bytes
         self._enforce_claude_raw_replay_total_limit()
+        self._schedule_replay_checkpoint(ms)
 
     def _seed_claude_raw_replay_from_durable_buffer(self, ms: ManagedSession) -> None:
         if not agents.agent_cli(ms.record.agent_kind).records_raw_replay or ms.claude_raw_replay_buffer or not ms.buffer:
@@ -1323,6 +1356,9 @@ class TerminalSessionManager:
         ms.last_input_monotonic = time.monotonic()
         ms.last_activity_at = time.time()
         ms.record.last_activity_at = ms.last_activity_at
+        # A submitted prompt is the thing most worth not losing, and the agent's echo of it lands well
+        # inside the debounce window, so the flush this schedules captures the input itself.
+        self._schedule_replay_checkpoint(ms)
         agent.post_write_input(self, ms, text)
         if attention_cleared:
             self._broadcast_status(ms)
