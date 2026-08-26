@@ -3,13 +3,12 @@ import collections
 import json
 import re
 import shlex
-from datetime import timedelta
 from pathlib import Path
 
+from termdeck import agents
 from termdeck.config import TermdeckConfig
 from termdeck.models import AgentKind
 from termdeck.proc_tree import ProcTreeUtil
-from termdeck.util import TimeUtil
 
 
 class AgentSessionTracker:
@@ -19,11 +18,7 @@ class AgentSessionTracker:
     attributing unrelated concurrent Claude activity in the same cwd."""
 
     _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-    _CODEX_ROLLOUT_UUID_RE = re.compile(
-        r"rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
     _LSOF_PATH_LINE_PREFIX = "n"
-    _CODEX_SUBAGENT_MARKER = b'"source":{"subagent"'
-    _CLAUDE_SIDECHAIN_MARKER = b'"isSidechain":true'
     _SUBAGENT_SNIFF_BYTES = 2048
     _SUBAGENT_TAIL_BYTES = 256 * 1024
     _AGY_ACTIVITY_TAIL_BYTES = 256 * 1024
@@ -152,22 +147,12 @@ class AgentSessionTracker:
     def codex_session_path(self, session_id: str | None) -> Path | None:
         if not session_id:
             return None
-        try:
-            return next(TermdeckConfig.CODEX_SESSIONS_DIR.rglob(f"rollout-*{session_id}.jsonl"), None)
-        except OSError:
-            return None
+        return agents.agent_cli("codex").transcript_path(None, session_id)
 
     def session_activity_timestamp(self, kind: AgentKind, cwd: Path, session_id: str | None) -> float:
         if not session_id:
             return 0.0
-        if kind is AgentKind.CODEX:
-            path = self.codex_session_path(session_id)
-        elif kind is AgentKind.CLAUDE:
-            path = self.claude_project_dir(cwd) / f"{session_id}.jsonl"
-        elif kind is AgentKind.AGY:
-            path = self.agy_session_transcript(session_id)
-        else:
-            return 0.0
+        path = agents.agent_cli(kind.value).transcript_path(cwd, session_id)
         if path is None:
             return 0.0
         try:
@@ -279,7 +264,9 @@ class AgentSessionTracker:
         cached = self._subagent_file_cache.get(path)
         if cached is not None:
             return cached
-        marker = self._CODEX_SUBAGENT_MARKER if kind is AgentKind.CODEX else self._CLAUDE_SIDECHAIN_MARKER
+        marker = agents.agent_cli(kind.value).subagent_file_marker
+        if not marker:
+            return False
         try:
             with path.open("rb") as handle:
                 head = handle.read(self._SUBAGENT_SNIFF_BYTES)
@@ -292,32 +279,11 @@ class AgentSessionTracker:
         return is_subagent
 
     def claude_project_dir(self, cwd: Path) -> Path:
-        munged = "".join(ch if ch.isalnum() else "-" for ch in str(cwd))
-        return TermdeckConfig.CLAUDE_PROJECTS_DIR / munged
-
-    @staticmethod
-    def agy_session_dir(session_id: str) -> Path:
-        return TermdeckConfig.AGY_SESSIONS_DIR / session_id
+        return agents.agent_cli("claude").project_dir(cwd)
 
     @staticmethod
     def agy_session_transcript(session_id: str, prefer_full: bool = True) -> Path | None:
-        directory = TermdeckConfig.AGY_SESSIONS_DIR / session_id / ".system_generated" / "logs"
-        full_transcript = directory / "transcript_full.jsonl"
-        live_transcript = directory / "transcript.jsonl"
-        if prefer_full and full_transcript.is_file():
-            return full_transcript
-        return live_transcript if live_transcript.is_file() else full_transcript if full_transcript.is_file() else None
-
-    @staticmethod
-    def _agy_session_id_from_path(path: Path) -> str | None:
-        try:
-            relative = path.relative_to(TermdeckConfig.AGY_SESSIONS_DIR)
-        except ValueError:
-            return None
-        if not relative.parts:
-            return None
-        session_id = relative.parts[0]
-        return session_id if AgentSessionTracker._UUID_RE.fullmatch(session_id) else None
+        return agents.agent_cli("agy").transcript_path(None, session_id)
 
     @staticmethod
     def _title_words(title: str | None) -> set[str]:
@@ -656,15 +622,9 @@ class AgentSessionTracker:
                 candidates.append((mtime, session_id))
         return max(candidates, default=(0.0, None))[1]
 
-    def _session_id_for_path(self, kind: AgentKind, path: Path) -> str | None:
-        if kind is AgentKind.CODEX and path.is_relative_to(TermdeckConfig.CODEX_SESSIONS_DIR):
-            match = self._CODEX_ROLLOUT_UUID_RE.search(path.name)
-            return match.group(1) if match else None
-        if kind is AgentKind.CLAUDE and path.is_relative_to(TermdeckConfig.CLAUDE_PROJECTS_DIR):
-            return path.stem if self._UUID_RE.match(path.stem) else None
-        if kind is AgentKind.AGY and path.is_relative_to(TermdeckConfig.AGY_SESSIONS_DIR):
-            return self._agy_session_id_from_path(path)
-        return None
+    @staticmethod
+    def _session_id_for_path(kind: AgentKind, path: Path) -> str | None:
+        return agents.agent_cli(kind.value).session_id_from_path(path)
 
     @staticmethod
     async def _run_capture(*argv: str) -> str:
@@ -695,40 +655,9 @@ class AgentSessionTracker:
         except FileNotFoundError:
             return 0.0
 
-    def _candidate_session_files(self, kind: AgentKind, cwd: Path) -> list[tuple[Path, str]]:
-        if kind is AgentKind.CLAUDE:
-            project_dir = self.claude_project_dir(cwd)
-            if not project_dir.is_dir():
-                return []
-            return [(path, path.stem) for path in project_dir.glob(TermdeckConfig.JSONL_GLOB)
-                    if self._UUID_RE.match(path.stem)]
-        if kind is AgentKind.CODEX:
-            pairs: list[tuple[Path, str]] = []
-            for day_dir in self._codex_recent_day_dirs():
-                if not day_dir.is_dir():
-                    continue
-                for path in day_dir.glob(TermdeckConfig.JSONL_GLOB):
-                    match = self._CODEX_ROLLOUT_UUID_RE.search(path.name)
-                    if match:
-                        pairs.append((path, match.group(1)))
-            return pairs
-        if kind is AgentKind.AGY and TermdeckConfig.AGY_SESSIONS_DIR.is_dir():
-            pairs: list[tuple[Path, str]] = []
-            for entry in TermdeckConfig.AGY_SESSIONS_DIR.iterdir():
-                if not entry.is_dir() or not self._UUID_RE.fullmatch(entry.name):
-                    continue
-                path = self.agy_session_transcript(entry.name, prefer_full=True)
-                if path is not None:
-                    pairs.append((path, entry.name))
-            return pairs
-        return []
-
     @staticmethod
-    def _codex_recent_day_dirs() -> list[Path]:
-        today = TimeUtil.today_est()
-        days = [today + timedelta(days=offset) for offset in TermdeckConfig.CODEX_DAY_DIR_LOOKAROUND_DAYS]
-        return [TermdeckConfig.CODEX_SESSIONS_DIR / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}"
-                for day in days]
+    def _candidate_session_files(kind: AgentKind, cwd: Path) -> list[tuple[Path, str]]:
+        return agents.agent_cli(kind.value).candidate_session_files(cwd)
 
     @staticmethod
     def _command_parts(command: str) -> list[str]:

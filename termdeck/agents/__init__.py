@@ -35,3 +35,10 @@ def detect_agent_cli(command: str) -> AgentCli:
         if agent.is_agent and agent.executable in tokens:
             return agent
     return AGENT_CLIS[ShellCli.kind]
+
+
+def agent_for_transcript_path(path: Path) -> AgentCli | None:
+    for agent in AGENT_CLIS.values():
+        if agent.is_agent and agent.owns_transcript_path(path):
+            return agent
+    return None

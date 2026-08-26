@@ -1,5 +1,21 @@
+import datetime as dt
+import re
 import shlex
 from pathlib import Path
+from typing import Iterable
+
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _coerce_timestamp(value: object) -> float | None:
+    try:
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return None
 
 
 class AgentCli:
@@ -88,6 +104,53 @@ class AgentCli:
                 continue
             tail.append(token)
         return shlex.join([*parts[:command_index + 1], *flags, *tail])
+
+    # -- transcript store --------------------------------------------------
+    # Head marker identifying a subagent/sidechain transcript file (b"" = the CLI has none).
+    subagent_file_marker: bytes = b""
+
+    def transcript_path(self, cwd: Path | None, agent_session_id: str) -> Path | None:
+        """The CLI's own on-disk transcript for one session, or None if it does not exist."""
+        return None
+
+    def candidate_session_files(self, cwd: Path) -> list[tuple[Path, str]]:
+        """(transcript path, session id) pairs a new session in cwd could bind to."""
+        return []
+
+    def owns_transcript_path(self, path: Path) -> bool:
+        return False
+
+    def session_id_from_path(self, path: Path) -> str | None:
+        return None
+
+    # -- transcript parsing ------------------------------------------------
+    def parse_transcript_lines(self, lines: Iterable[str]) -> list[dict[str, object]]:
+        """Raw jsonl transcript lines -> turn dicts (see TurnBuilder)."""
+        return []
+
+    def is_user_payload(self, payload: dict[str, object]) -> bool:
+        return False
+
+    def user_payload_timestamp(self, payload: dict[str, object]) -> float | None:
+        """Epoch timestamp of a user payload, when the line carries one."""
+        if not self.is_user_payload(payload):
+            return None
+        return _coerce_timestamp(payload.get("timestamp"))
+
+    def payload_text(self, payload: dict[str, object]) -> str:
+        return ""
+
+    def conversation_payload_text(self, payload: dict[str, object]) -> str:
+        return ""
+
+    def is_conversation_payload(self, payload: dict[str, object]) -> bool:
+        return False
+
+    def title_from_payload(self, payload: dict[str, object]) -> str:
+        return ""
+
+    def cwd_from_payload(self, path: Path, payload: dict[str, object]) -> str:
+        return str(payload.get("cwd", ""))
 
     def client_descriptor(self) -> dict[str, object]:
         return {"kind": self.kind, "label": self.label, "is_agent": self.is_agent,

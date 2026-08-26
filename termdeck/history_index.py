@@ -6,8 +6,9 @@ import sqlite3
 import threading
 from pathlib import Path
 
+from termdeck import agents
+from termdeck.agents.base import AgentCli
 from termdeck.config import TermdeckConfig
-from termdeck.models import AgentKind
 
 
 class HistorySearchIndex:
@@ -326,13 +327,14 @@ class HistorySearchIndex:
         metadata: tuple[str, str, str, str] | None = None,
     ) -> tuple[str, str, str, str, list[tuple[int, int, int, int, str, str]]]:
         if metadata is None:
-            agent_kind = AgentKind.CLAUDE.value if path.is_relative_to(TermdeckConfig.CLAUDE_PROJECTS_DIR.resolve()) else AgentKind.CODEX.value
+            agent_kind = self._agent_for_path(path).kind
             session_match = self._CODEX_UUID_RE.search(path.name)
             session_id = session_match.group(1) if session_match else path.stem
             cwd = ""
             title = ""
         else:
             agent_kind, session_id, cwd, title = metadata
+        agent = agents.agent_cli(agent_kind)
         first_prompt = ""
         documents: list[tuple[int, int, int, int, str, str]] = []
         chunk: list[tuple[int, str]] = []
@@ -351,12 +353,12 @@ class HistorySearchIndex:
                         continue
                     if not isinstance(payload, dict):
                         continue
-                    cwd = cwd or self._cwd_from_payload(agent_kind, path, payload)
-                    title = self._title_from_payload(agent_kind, payload) or title
-                    text = self._payload_text(agent_kind, payload)
+                    cwd = cwd or agent.cwd_from_payload(path, payload)
+                    title = agent.title_from_payload(payload) or title
+                    text = agent.payload_text(payload)
                     if text:
-                        scope = "conversation" if self._is_conversation_payload(agent_kind, payload) else "all"
-                        scoped_text = self._conversation_payload_text(agent_kind, payload) if scope == "conversation" else text
+                        scope = "conversation" if agent.is_conversation_payload(payload) else "all"
+                        scoped_text = agent.conversation_payload_text(payload) if scope == "conversation" else text
                         if scope == "conversation" and not scoped_text:
                             scope = "all"
                             scoped_text = text
@@ -376,7 +378,7 @@ class HistorySearchIndex:
                             documents.append((chunk[0][0], chunk[-1][0], chunk_start_byte, chunk_end_byte,
                                                chunk_scope, "\n".join(item[1] for item in chunk)))
                             chunk = []
-                        if not first_prompt and self._is_user_payload(agent_kind, payload) and not self._is_boilerplate(text):
+                        if not first_prompt and agent.is_user_payload(payload) and not self._is_boilerplate(text):
                             first_prompt = text
         except OSError:
             return agent_kind, session_id, cwd, title, []
@@ -429,101 +431,10 @@ class HistorySearchIndex:
             raise ValueError("history source is outside the agent history directories")
 
     @staticmethod
-    def _cwd_from_payload(agent_kind: str, path: Path, payload: dict[str, object]) -> str:
-        if agent_kind == AgentKind.CODEX.value:
-            body = payload.get("payload")
-            return str(body.get("cwd", "")) if isinstance(body, dict) else ""
-        return str(payload.get("cwd", ""))
-
-    @staticmethod
-    def _title_from_payload(agent_kind: str, payload: dict[str, object]) -> str:
-        if agent_kind == AgentKind.CODEX.value:
-            body = payload.get("payload")
-            return str(body.get("thread_name", "")) if isinstance(body, dict) and body.get("type") == "thread_name_updated" else ""
-        return str(payload.get("aiTitle", "")) if payload.get("type") == "ai-title" else ""
-
-    @classmethod
-    def _payload_text(cls, agent_kind: str, payload: dict[str, object]) -> str:
-        if agent_kind == AgentKind.CODEX.value:
-            body = payload.get("payload")
-            if not isinstance(body, dict):
-                return ""
-            body_type = body.get("type")
-            if body_type == "agent_message":
-                return str(body.get("message", ""))
-            if body_type == "user_message":
-                return cls._content_text(body.get("message") or body.get("text"))
-            if body_type == "message":
-                return cls._content_text(body.get("content"))
-            if body_type in ("custom_tool_call", "function_call"):
-                return cls._content_text(body.get("input") or body.get("arguments"))
-            if body_type in ("custom_tool_call_output", "function_call_output"):
-                return cls._content_text(body.get("output") or body.get("result"))
-            return ""
-        if payload.get("type") in ("user", "assistant"):
-            message = payload.get("message")
-            return cls._content_text(message.get("content")) if isinstance(message, dict) else ""
-        if payload.get("type") in ("tool_use", "tool_result"):
-            return cls._content_text(payload.get("input") or payload.get("content"))
-        return ""
-
-    @classmethod
-    def _conversation_payload_text(cls, agent_kind: str, payload: dict[str, object]) -> str:
-        """Return only user/assistant prose, excluding tool and thinking blocks."""
-        if agent_kind == AgentKind.CODEX.value:
-            body = payload.get("payload")
-            if not isinstance(body, dict):
-                return ""
-            body_type = body.get("type")
-            if body_type == "agent_message":
-                return cls._conversation_content_text(body.get("message"))
-            if body_type == "user_message":
-                return cls._conversation_content_text(body.get("message") or body.get("text"))
-            if body_type == "message" and body.get("role") in ("user", "assistant"):
-                return cls._conversation_content_text(body.get("content"))
-            return ""
-        if payload.get("type") in ("user", "assistant"):
-            message = payload.get("message")
-            return cls._conversation_content_text(message.get("content") if isinstance(message, dict) else message)
-        return ""
-
-    @staticmethod
-    def _is_conversation_payload(agent_kind: str, payload: dict[str, object]) -> bool:
-        if agent_kind == AgentKind.CODEX.value:
-            body = payload.get("payload")
-            if not isinstance(body, dict):
-                return False
-            body_type = body.get("type")
-            return body_type in ("agent_message", "user_message") or (
-                body_type == "message" and body.get("role") in ("user", "assistant")
-            )
-        return payload.get("type") in ("user", "assistant")
-
-    @classmethod
-    def _conversation_content_text(cls, value: object) -> str:
-        if isinstance(value, str):
-            return value.strip()
-        if isinstance(value, list):
-            parts: list[str] = []
-            for item in value:
-                if isinstance(item, dict) and item.get("type") in ("thinking", "tool_use", "tool_result"):
-                    continue
-                text = cls._conversation_content_text(item)
-                if text:
-                    parts.append(text)
-            return "\n".join(parts)
-        if isinstance(value, dict):
-            item_type = value.get("type")
-            if item_type in ("thinking", "tool_use", "tool_result"):
-                return ""
-            if item_type in ("text", "input_text", "output_text") and "text" in value:
-                return cls._conversation_content_text(value["text"])
-            for key in ("text", "content", "message"):
-                if key in value:
-                    text = cls._conversation_content_text(value[key])
-                    if text:
-                        return text
-        return ""
+    def _agent_for_path(path: Path) -> AgentCli:
+        # Only Claude and Codex trees are indexed; anything else in the roots reads as Codex,
+        # matching the sources the scanner enqueues.
+        return agents.agent_for_transcript_path(path) or agents.agent_cli("codex")
 
     @classmethod
     def _line_text(cls, path: Path, raw_line: str, conversation_only: bool = False) -> str:
@@ -533,36 +444,10 @@ class HistorySearchIndex:
             return raw_line.strip()
         if not isinstance(payload, dict):
             return ""
-        agent_kind = AgentKind.CLAUDE.value if path.is_relative_to(TermdeckConfig.CLAUDE_PROJECTS_DIR.resolve()) else AgentKind.CODEX.value
+        agent = cls._agent_for_path(path)
         if conversation_only:
-            return cls._conversation_payload_text(agent_kind, payload)
-        return cls._payload_text(agent_kind, payload) or raw_line.strip()
-
-    @classmethod
-    def _content_text(cls, value: object) -> str:
-        if isinstance(value, str):
-            return value.strip()
-        if isinstance(value, (int, float, bool)):
-            return str(value)
-        if isinstance(value, list):
-            return "\n".join(text for item in value if (text := cls._content_text(item)))
-        if isinstance(value, dict):
-            for key in ("text", "content", "message", "input", "output", "result"):
-                if key in value:
-                    text = cls._content_text(value[key])
-                    if text:
-                        return text
-            return json.dumps(value, ensure_ascii=False)
-        return ""
-
-    @staticmethod
-    def _is_user_payload(agent_kind: str, payload: dict[str, object]) -> bool:
-        if agent_kind == AgentKind.CODEX.value:
-            body = payload.get("payload")
-            return isinstance(body, dict) and (
-                (body.get("type") == "message" and body.get("role") == "user") or body.get("type") == "user_message"
-            )
-        return payload.get("type") == "user"
+            return agent.conversation_payload_text(payload)
+        return agent.payload_text(payload) or raw_line.strip()
 
     @staticmethod
     def _is_boilerplate(text: str) -> bool:

@@ -250,7 +250,6 @@ class TermdeckConfig:
     CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
     CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
     AGY_SESSIONS_DIR = Path.home() / ".gemini" / "antigravity-cli" / "brain"
-    JSONL_GLOB = "*.jsonl"
     CODEX_DAY_DIR_LOOKAROUND_DAYS = (-1, 0, 1)
     AGENT_DETECT_INITIAL_DELAY_SECONDS = 3.0
     AGENT_DETECT_STARTUP_TIMEOUT_SECONDS = 60.0

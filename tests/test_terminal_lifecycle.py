@@ -410,7 +410,6 @@ class NewAgentCommandModelTest(unittest.TestCase):
 
 class CodexTranscriptParsingTest(unittest.TestCase):
     def test_current_codex_agent_message_format_is_parsed_without_duplicate_response(self) -> None:
-        service = TranscriptService()
         lines = [
             json.dumps({"type": "response_item", "payload": {
                 "type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}],
@@ -425,14 +424,13 @@ class CodexTranscriptParsingTest(unittest.TestCase):
             }}),
         ]
 
-        turns = service._parse_codex_lines(lines)
+        turns = agents.agent_cli("codex").parse_transcript_lines(lines)
 
         self.assertEqual([turn["role"] for turn in turns], ["user", "assistant"])
         self.assertEqual(turns[-1]["text"], "hello")
         self.assertTrue(turns[-1]["final"])
 
     def test_codex_commentary_is_not_marked_as_final_answer(self) -> None:
-        service = TranscriptService()
         lines = [
             json.dumps({"type": "response_item", "payload": {
                 "type": "message", "role": "assistant", "phase": "commentary",
@@ -444,13 +442,12 @@ class CodexTranscriptParsingTest(unittest.TestCase):
             }}),
         ]
 
-        turns = service._parse_codex_lines(lines)
+        turns = agents.agent_cli("codex").parse_transcript_lines(lines)
 
         self.assertFalse(turns[0]["final"])
         self.assertTrue(turns[1]["final"])
 
     def test_codex_agent_message_and_response_item_with_different_metadata_are_one_turn(self) -> None:
-        service = TranscriptService()
         text = "I’ll inspect the transcript before changing the renderer."
         lines = [
             json.dumps({"type": "event_msg", "payload": {
@@ -462,7 +459,7 @@ class CodexTranscriptParsingTest(unittest.TestCase):
             }}),
         ]
 
-        turns = service._parse_codex_lines(lines)
+        turns = agents.agent_cli("codex").parse_transcript_lines(lines)
 
         self.assertEqual(len(turns), 1)
         self.assertEqual(turns[0]["text"], text)
@@ -472,10 +469,9 @@ class CodexTranscriptParsingTest(unittest.TestCase):
 
 class ClaudeTranscriptParsingTest(unittest.TestCase):
     def test_terminal_clear_line_prefix_is_removed_from_user_prompt(self) -> None:
-        service = TranscriptService()
         lines = [json.dumps({"type": "user", "message": {"content": "\x15Should we increase max workers?"}})]
 
-        turns = service._parse_claude_lines(lines)
+        turns = agents.agent_cli("claude").parse_transcript_lines(lines)
 
         self.assertEqual(turns[0]["text"], "Should we increase max workers?")
 
