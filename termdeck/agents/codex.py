@@ -28,7 +28,8 @@ class CodexCli(AgentCli):
         "workspace-write": ("--sandbox", "workspace-write"),
         "full-access": ("--dangerously-bypass-approvals-and-sandbox",),
     }
-    ui_permissions = ("default", "read-only", "workspace-write", "full-access")
+    ui_permission_options = (("default", "Default (Codex config)"), ("read-only", "Read only"),
+                             ("workspace-write", "Workspace write"), ("full-access", "Full access"))
     permission_switch_flags = ("--dangerously-bypass-approvals-and-sandbox",)
     permission_value_flags = ("--sandbox",)
 

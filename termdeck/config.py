@@ -62,6 +62,7 @@ class TermdeckConfig:
     FILEBROWSER_STATIC_DIR = Path(__file__).resolve().parent.parent / "filebrowser" / "static"
     FILEBROWSER_STATIC_ROUTE = "/filebrowser/static"
     FILEBROWSER_STATIC_NAME = "filebrowser-static"
+    API_AGENTS_ROUTE = "/api/agents"
     API_SESSIONS_ROUTE = "/api/sessions"
     API_TERMINAL_TASK_ROUTE = "/api/terminals/task"
     API_TERMINAL_TASK_PROMPT_ROUTE = "/api/terminals/task/{session_id}/prompt"

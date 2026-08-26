@@ -21,7 +21,7 @@ class AgyCli(AgentCli):
         "default": (),
         "full-access": ("--dangerously-skip-permissions",),
     }
-    ui_permissions = ("default", "full-access")
+    ui_permission_options = (("default", "Default"), ("full-access", "Full access"))
     permission_switch_flags = ("--dangerously-skip-permissions",)
 
     def resume_command(self, original_command: str, agent_session_id: str) -> str:

@@ -46,8 +46,8 @@ class AgentCli:
     base_flags: tuple[str, ...] = ()    # always-on flags injected right after the executable
     # Permission vocabulary (canonical names plus accepted aliases) -> CLI flags.
     permission_flags: dict[str, tuple[str, ...]] = {"default": ()}
-    # The subset of permission names the client UI offers when creating a session.
-    ui_permissions: tuple[str, ...] = ("default",)
+    # (value, label) pairs the client UI offers when creating a session.
+    ui_permission_options: tuple[tuple[str, str], ...] = (("default", "Default"),)
     # Tokens removed when swapping a saved command's permission: standalone switches, and
     # flags that consume the following token as their value.
     permission_switch_flags: tuple[str, ...] = ()
@@ -154,7 +154,8 @@ class AgentCli:
 
     def client_descriptor(self) -> dict[str, object]:
         return {"kind": self.kind, "label": self.label, "is_agent": self.is_agent,
-                "ui_permissions": list(self.ui_permissions), "prompt_marker": self.prompt_marker,
+                "permissions": [{"value": value, "label": label} for value, label in self.ui_permission_options],
+                "prompt_marker": self.prompt_marker,
                 "supports_resume": self.supports_resume, "supports_fork": self.supports_fork,
                 "records_raw_replay": self.records_raw_replay, "has_prompt_queue": self.has_prompt_queue}
 
@@ -186,6 +187,7 @@ class ShellCli(AgentCli):
     kind = "none"
     label = "Shell"
     is_agent = False
+    ui_permission_options = (("default", "Shell permissions"),)
 
     def model_arguments(self, model_name: str) -> tuple[str, ...]:
         raise ValueError("model_name is only supported for agent terminals")

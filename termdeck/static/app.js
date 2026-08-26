@@ -34,24 +34,11 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_fo
   files_side_panel_last_tab: "project", file_search_history: [],
   file_tab_max_visible: 20, file_tab_order: "opened", lsp_enabled: true, lsp_command_overrides: {},
   lan_access_enabled: false };
-const MODEL_PERMISSIONS = {
-  codex: [
-    { value: "default", label: "Default (Codex config)" },
-    { value: "read-only", label: "Read only" },
-    { value: "workspace-write", label: "Workspace write" },
-    { value: "full-access", label: "Full access" },
-  ],
-  claude: [
-    { value: "default", label: "Default (Claude config)" },
-    { value: "accept-edits", label: "Accept edits" },
-    { value: "auto", label: "Auto" },
-    { value: "full-access", label: "Full access" },
-  ],
-  agy: [
-    { value: "default", label: "Default" },
-    { value: "full-access", label: "Full access" },
-  ],
-  none: [{ value: "default", label: "Shell permissions" }],
+// Per-agent knobs that only exist client-side (scroll/repaint quirks and the like). Everything
+// data-shaped about an agent (labels, permissions, markers, capability flags) comes from
+// /api/agents — one AgentCli class per agent on the server. See docs/agent-cli-api.md.
+const AGENT_CLIENT_BEHAVIORS = {
+  codex: { skipAttachScreenRepaint: true },
 };
 const SEARCH_DEBOUNCE_MS = 500;
 const TERMINAL_SEARCH_DEBOUNCE_MS = 700;
@@ -490,6 +477,7 @@ class TermdeckApp {
     this.handleHostMessageBound = this.handleHostMessage.bind(this);
     this.sessions = [];
     this.closedSessions = [];
+    this.agentSpecs = {};
     this.initialLoadComplete = false;
     this.initialPageContentReady = false;
     this.views = new Map();
@@ -2717,7 +2705,7 @@ class TermdeckApp {
         if (!this.sectionCollapsed("recent_files_collapsed")) void this.refreshRecentFiles(true);
       }
     });
-    await this.loadSettings();
+    await Promise.all([this.loadAgentSpecs(), this.loadSettings()]);
     this.initializeMobileSidebar();
     this.loadSearchHistory();
     await this.loadProjects();
@@ -3348,18 +3336,15 @@ class TermdeckApp {
     } else if (state.kind === "file" || state.kind === "open-file") {
       navigationPath = this.relativeNavigationPathForFileKey(state.key);
       if (!navigationPath && state.key) params.set("f", state.key);
-      if (state.view && state.view !== "project") params.set("view", state.view);
     } else if (state.kind === "file-history") {
       navigationPath = this.relativeNavigationPathForFileKey(state.key);
       if (!navigationPath && state.key) params.set("f", state.key);
       params.set("history", state.mode || "all");
       if (state.selection?.length) params.set("history_selection", state.selection.join(","));
-      if (state.view && state.view !== "project") params.set("view", state.view);
     } else if (state.kind === "file-history-path") {
       navigationPath = this.encodedRelativeFilePath(state.selector);
       params.set("history", state.mode || "all");
       if (state.selection?.length) params.set("history_selection", state.selection.join(","));
-      if (state.view && state.view !== "project") params.set("view", state.view);
     } else if (state.kind === "git-diff") {
       params.set("git_path", state.path);
       params.set("git_scope", state.scope || "working");
@@ -3370,7 +3355,6 @@ class TermdeckApp {
     } else if (state.kind === "path") {
       navigationPath = this.encodedRelativeFilePath(state.selector);
     } else if (state.kind === "files") {
-      if (state.view) params.set("view", state.view);
       if (state.q) params.set("q", state.q);
     } else if (state.kind === "search") {
       params.set("q", state.q);
@@ -3379,6 +3363,10 @@ class TermdeckApp {
       if (state.case_sensitive) params.set("c", "1");
       if (state.regex) params.set("re", "1");
     }
+    // /f/ and /g/ already say which tab is open; the param is only needed for a tab the route
+    // cannot express, which today is search on a file route and git on a file-history route.
+    const routeView = gitModeNavigation ? "git" : "project";
+    if (tabbedView && tabbedView !== routeView) params.set("view", tabbedView);
     const qs = params.toString();
     return `${basePath}${navigationPath ? `/${navigationPath}` : ""}${qs ? `?${qs}` : ""}${fragment}`;
   }
@@ -3857,8 +3845,9 @@ class TermdeckApp {
     const session = this.session(this.activeId);
     const groupName = this.terminalGroupNameForSession(this.activeId) || "Evently workspace";
     const settingsOpen = !this.$("settings-popover")?.classList.contains("hidden");
+    const themeListOpen = settingsOpen && !!this.$("settings-popover")?.querySelector(".settings-theme-row.expanded");
     let feature = "Persistent terminal workspace";
-    if (settingsOpen) feature = "Remote access: Google relay or local Wi-Fi";
+    if (settingsOpen) feature = themeListOpen ? `Theme gallery: ${this.themeLabel()}` : "Remote access: Google relay or local Wi-Fi";
     else if (this.settings.notebook_open) feature = "Notes: save context for follow-up work";
     else if (this.sideView === "git") feature = "Git history, blame, and changed-file review";
     else if (this.sideView === "search") feature = "Search across files and agents";
@@ -5806,7 +5795,7 @@ class TermdeckApp {
     } else {
       icon.innerHTML = '<span class="codicon codicon-terminal"></span>';
     }
-    icon.title = s.agent_kind === "claude" ? "Claude" : s.agent_kind === "codex" ? "Codex" : s.agent_kind === "agy" ? "AGY" : "Shell terminal";
+    icon.title = this.agentSpec(s.agent_kind)?.is_agent ? this.agentLabel(s.agent_kind) : "Shell terminal";
     icon.classList.toggle("claude-terminal-icon", s.agent_kind === "claude");
     icon.classList.toggle("codex-terminal-icon", s.agent_kind === "codex");
     icon.classList.toggle("agy-terminal-icon", s.agent_kind === "agy");
@@ -8809,9 +8798,6 @@ class TermdeckApp {
 
   positionContextMenu(menu, x, y) {
     menu.classList.remove("hidden");
-    // Every opener funnels through here, so clearing the marker leaves it owned by whoever
-    // sets it after positioning — no other menu can be mistaken for the stats one.
-    menu.dataset.menuKind = "";
     menu.style.left = Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 10)) + "px";
     menu.style.top = Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 10)) + "px";
   }
@@ -8970,7 +8956,7 @@ class TermdeckApp {
         () => this.openModal(null, session.session_id), "add");
       this.addContextItem(menu, this.shortcutLabel("Restart", "restart-terminal"),
         () => this.restartSession(session.session_id), "refresh");
-      const permissions = MODEL_PERMISSIONS[session.agent_kind || "none"] || MODEL_PERMISSIONS.none;
+      const permissions = this.agentPermissions(session.agent_kind);
       if (permissions.length > 1) {
         this.addContextSubmenu(menu, "Restart with permission", permissions.map((entry) => ({
           label: entry.label,
@@ -10609,7 +10595,7 @@ class TermdeckApp {
   historyModelLabel(session, turns = []) {
     const model = this.historyModel(session, turns);
     if (this.historyModelIsGeneric(model)) {
-      const label = model === "codex" ? "Codex" : model === "claude" ? "Claude" : model === "agy" ? "AGY" : "Shell";
+      const label = this.agentLabel(model, "Shell");
       return label;
     }
     const label = this.historyModelModelLabel(model);
@@ -10665,7 +10651,7 @@ class TermdeckApp {
   }
 
   sessionSupportsTranscript(session = this.session(this.activeId)) {
-    return !!session && ["codex", "claude", "agy"].includes(session.agent_kind);
+    return !!session && !!this.agentSpec(session.agent_kind)?.is_agent;
   }
 
   usesTranscriptFirstSession(session = this.session(this.activeId)) {
@@ -11554,8 +11540,7 @@ class TermdeckApp {
   }
 
   terminalPastePayload(view, text) {
-    const agentKind = this.session(view.sessionId)?.agent_kind;
-    const agentTerminal = agentKind === "codex" || agentKind === "claude" || agentKind === "agy";
+    const agentTerminal = !!this.agentSpec(this.session(view.sessionId)?.agent_kind)?.is_agent;
     const bracketed = agentTerminal || !view.term.modes || view.term.modes.bracketedPasteMode !== false;
     return bracketed ? `\x1b[200~${text}\x1b[201~` : text;
   }
@@ -11612,7 +11597,7 @@ class TermdeckApp {
     const cursorRow = baseY + Number(buffer.cursorY || 0);
     const firstRow = Math.max(baseY, cursorRow - 8);
     const lastRow = Math.min(buffer.length - 1, cursorRow + 8);
-    const promptMarker = session?.agent_kind === "claude" ? "❯" : session?.agent_kind === "codex" ? "›" : "";
+    const promptMarker = this.agentSpec(session?.agent_kind)?.prompt_marker || "";
     if (!promptMarker) return true;
     for (let row = firstRow; row <= lastRow; row += 1) {
       if ((buffer.getLine(row)?.translateToString(true) || "").trimStart().startsWith(promptMarker)) return true;
@@ -11645,16 +11630,16 @@ class TermdeckApp {
     if (this.activeId === view.sessionId && this.activeFileKey === null && !this.historyOpen) view.term.focus();
     this.sendTrackedInput(view, this.terminalPastePayload(view, text));
     this.$("status-name").textContent = "selected text pasted into " +
-      (TERMINAL_ICON_AGENT_LABELS[this.session(view.sessionId)?.agent_kind] || "agent");
+      this.agentLabel(this.session(view.sessionId)?.agent_kind, "agent");
     return true;
   }
 
   sendTrackedInput(view, data) {
     const pastedInput = this.isPastedTerminalInput(data);
     const session = this.session(view.sessionId);
-    const submittedText = (data === "\r" || data === "\n") && session && session.agent_kind !== "none"
+    const submittedText = (data === "\r" || data === "\n") && session && this.agentSpec(session.agent_kind)?.is_agent
       ? view.promptDraft.trim() : "";
-    const queueText = data === "\t" && this.session(view.sessionId)?.agent_kind === "codex" && view.promptDraft.trim()
+    const queueText = data === "\t" && this.agentSpec(session?.agent_kind)?.has_prompt_queue && view.promptDraft.trim()
       ? view.promptDraft
       : "";
     view.promptSubmitEntered = false;
@@ -14135,7 +14120,7 @@ class TermdeckApp {
     const title = this.titlePresentation(session).text.trim();
     const cwd = String(session.cwd || "").replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop() || "";
     const name = title || cwd || session.session_id;
-    return (TERMINAL_ICON_AGENT_LABELS[session.agent_kind] || session.agent_kind) + " · " + name;
+    return this.agentLabel(session.agent_kind, session.agent_kind) + " · " + name;
   }
 
   pasteSelectionIntoAgent(sessionId, text = "") {
@@ -15671,10 +15656,10 @@ class TermdeckApp {
     const hasPopulatedBuffer = view.everConnected && !view.closed && view.term?.buffer?.active?.baseY > 0;
     // A fresh client has no trustworthy terminal screen after a server restart. Ask the live agent to
     // repaint it; a reconnect that already has a populated xterm buffer can skip the SIGWINCH nudge.
-    const screenRepaint = hasPopulatedBuffer || this.session(id)?.agent_kind === "codex" ? 0 : 1;
-    const haveBuffer = hasPopulatedBuffer ? 1 : 0;
     const agentKindForReplay = this.session(id)?.agent_kind;
-    const fullClaudeRawReplay = !hasPopulatedBuffer && (agentKindForReplay === "claude" || agentKindForReplay === "codex") ? 1 : 0;
+    const screenRepaint = hasPopulatedBuffer || this.agentBehavior(agentKindForReplay)?.skipAttachScreenRepaint ? 0 : 1;
+    const haveBuffer = hasPopulatedBuffer ? 1 : 0;
+    const fullClaudeRawReplay = !hasPopulatedBuffer && this.agentSpec(agentKindForReplay)?.records_raw_replay ? 1 : 0;
     // repaint_preserved_buffer is deliberately not sent: it only ever meant "this client restored a
     // client-side snapshot, so make the agent repaint over it", and that snapshot path is gone. The
     // server defaults the flag to false when the parameter is absent.
@@ -17936,6 +17921,30 @@ class TermdeckApp {
     this.views.delete(id);
   }
 
+  async loadAgentSpecs() {
+    try {
+      const response = await fetch("/api/agents");
+      if (response.ok) this.agentSpecs = await response.json();
+    } catch { /* served page without a reachable server; specs stay empty */ }
+  }
+
+  agentSpec(kind) {
+    return this.agentSpecs[kind || "none"] || null;
+  }
+
+  agentBehavior(kind) {
+    return AGENT_CLIENT_BEHAVIORS[kind] || null;
+  }
+
+  agentLabel(kind, fallback = "agent") {
+    return this.agentSpec(kind)?.label || TERMINAL_ICON_AGENT_LABELS[kind] || fallback;
+  }
+
+  agentPermissions(kind, fallbackKind = "none") {
+    return this.agentSpec(kind)?.permissions || this.agentSpec(fallbackKind)?.permissions
+      || [{ value: "default", label: "Default" }];
+  }
+
   async loadSettings() {
     try {
       const res = await fetch("/api/settings");
@@ -18872,6 +18881,8 @@ class TermdeckApp {
     pop.appendChild(this.buildRemoteAccessRow());
     pop.appendChild(this.buildLanAccessRow());
     pop.appendChild(this.buildTerminalIconSettingsRow());
+    if (!this.touchMobileLayoutEnabled()) pop.appendChild(this.buildFontSizeEditRow());
+    if (this.lspClient) pop.appendChild(this.lspClient.buildSettingsSection(anchor));
     // The readout is the entry point to the maintenance menu, so hiding it hides both.
     pop.appendChild(this.buildToggleRow("Resource monitor & maintenance",
       () => (this.settings.show_stats ? "shown" : "hidden"),
@@ -18882,8 +18893,6 @@ class TermdeckApp {
     pop.appendChild(this.buildToggleRow("WebGL renderer (this browser, reload)",
       () => (this.standardTallWebglEnabled() ? "on" : "off"),
       () => { this.setBrowserBooleanSetting(BROWSER_TALL_WEBGL_KEY, !this.standardTallWebglEnabled()); }, null, false));
-    if (!this.touchMobileLayoutEnabled()) pop.appendChild(this.buildFontSizeEditRow());
-    if (this.lspClient) pop.appendChild(this.lspClient.buildSettingsSection(anchor));
     pop.appendChild(this.buildActionRow("Export settings", "download",
       () => { pop.classList.add("hidden"); this.exportSettings(); }));
     this.positionPopover(pop, anchor);
@@ -18975,6 +18984,7 @@ class TermdeckApp {
       this.applySettings();
       this.saveSettings();
       updateToggle();
+      this.updateEventlyDemoFeatureBanner();
     };
     const moveSelection = (delta) => {
       const currentIndex = THEME_DEFINITIONS.findIndex((theme) => theme.id === this.settings.theme);
@@ -20986,7 +20996,7 @@ class TermdeckApp {
       ? groupId : null;
     this.modalAfterSessionId = !this.modalGroupId && afterSessionId && this.session(afterSessionId) ? afterSessionId : null;
     const model = this.settings.last_model || DEFAULT_COMMAND;
-    this.$("modal-model").value = MODEL_PERMISSIONS[model] ? model : DEFAULT_COMMAND;
+    this.$("modal-model").value = this.agentSpecs[model] ? model : DEFAULT_COMMAND;
     this.updateModalPermissions();
     this.updateModalSessionSuggestions();
     this.$("modal-project-add-btn").classList.toggle("hidden", !!this.vscodeMode);
@@ -21009,7 +21019,7 @@ class TermdeckApp {
     const model = this.$("modal-model").value;
     const permission = this.$("modal-permission");
     permission.textContent = "";
-    for (const option of MODEL_PERMISSIONS[model] || MODEL_PERMISSIONS.codex) {
+    for (const option of this.agentPermissions(model, "codex")) {
       const el = document.createElement("option");
       el.value = option.value;
       el.textContent = option.label;
@@ -21246,19 +21256,16 @@ class TermdeckApp {
     }
   }
 
+  // Ownership is read off the menu's own content rather than a flag: every other opener rebuilds
+  // #context-menu from scratch, so its heading disappears on its own and can never go stale.
   statsMaintenanceMenuOpen() {
     const menu = this.$("context-menu");
-    return !menu.classList.contains("hidden") && menu.dataset.menuKind === "stats-maintenance";
+    return !menu.classList.contains("hidden") && !!menu.querySelector(".stats-maintenance-title");
   }
 
   toggleStatsMaintenanceMenu(anchor) {
-    if (!this.statsMaintenanceMenuOpen()) {
-      this.openStatsMaintenanceMenu(anchor);
-      return;
-    }
-    const menu = this.$("context-menu");
-    menu.classList.add("hidden");
-    menu.dataset.menuKind = "";
+    if (this.statsMaintenanceMenuOpen()) this.$("context-menu").classList.add("hidden");
+    else this.openStatsMaintenanceMenu(anchor);
   }
 
   // Maintenance hangs off the CPU/memory readout: the actions are all about what the server is
@@ -21268,7 +21275,7 @@ class TermdeckApp {
     menu.textContent = "";
     menu.classList.remove("hidden");
     const title = document.createElement("div");
-    title.className = "file-tab-settings-title";
+    title.className = "file-tab-settings-title stats-maintenance-title";
     title.textContent = "Maintenance";
     menu.appendChild(title);
     this.addContextItem(menu, "Terminal process report", () => void this.showTerminalProcessReport(), "list-tree");
@@ -21277,7 +21284,6 @@ class TermdeckApp {
     this.addContextItem(menu, "Kill all running terminals", () => void this.killAllRunningTerminals(), "close-all");
     const rect = anchor.getBoundingClientRect();
     this.positionContextMenu(menu, rect.right - menu.offsetWidth, rect.top - menu.offsetHeight - 4);
-    menu.dataset.menuKind = "stats-maintenance";
   }
 
   async killStaleTerminals() {

@@ -30,7 +30,8 @@ class ClaudeCli(AgentCli):
         "dont-ask": ("--permission-mode", "dontAsk"),
         "plan": ("--permission-mode", "plan"),
     }
-    ui_permissions = ("default", "accept-edits", "auto", "full-access")
+    ui_permission_options = (("default", "Default (Claude config)"), ("accept-edits", "Accept edits"),
+                             ("auto", "Auto"), ("full-access", "Full access"))
     permission_switch_flags = ("--dangerously-skip-permissions",)
     permission_value_flags = ("--permission-mode",)
 

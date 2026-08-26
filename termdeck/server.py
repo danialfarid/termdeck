@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from termdeck import agents
 from termdeck.config import TermdeckConfig
 from termdeck.file_history_service import FileHistoryService
 from termdeck.file_service import ProjectFileService
@@ -670,6 +671,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_WORKTREES_ROUTE, response_model=None)(self._add_worktree)
         app.delete(TermdeckConfig.API_WORKTREE_ROUTE, response_model=None)(self._delete_worktree)
         app.post(TermdeckConfig.API_PROJECT_FOLDER_PICKER_ROUTE, response_model=None)(self._pick_project_folder)
+        app.get(TermdeckConfig.API_AGENTS_ROUTE, response_model=None)(self._list_agent_clis)
         app.get(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._list_sessions)
         app.post(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._create_session)
         app.post(TermdeckConfig.API_TERMINAL_TASK_ROUTE, response_model=None)(self._run_terminal_task)
@@ -1690,6 +1692,10 @@ class TermdeckServer:
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {"cancelled": False, "project": project}
+
+    @staticmethod
+    async def _list_agent_clis() -> dict[str, dict[str, object]]:
+        return {kind: agent.client_descriptor() for kind, agent in agents.AGENT_CLIS.items()}
 
     async def _list_sessions(self, project: str = "", worktree_id: str = "") -> list[dict[str, object]]:
         return self.manager.list_sessions(project or None, worktree_id or None)
