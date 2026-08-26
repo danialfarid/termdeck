@@ -10,6 +10,7 @@ import time
 import uuid
 from pathlib import Path
 
+from termdeck import agents
 from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.claude_activity_watcher import ClaudeActivityWatcher
 from termdeck.config import TermdeckConfig
@@ -131,7 +132,6 @@ class ManagedSession:
 
 
 class TerminalSessionManager:
-    CODEX_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
     CODEX_ACTIVITY_FALLBACK_CHECK_SECONDS = 1.0
     ATTENTION_TEXT_CARRY_CHARS = 4096
     ATTENTION_MARKERS = ("esc to cancel", "tab to amend")
@@ -600,164 +600,26 @@ class TerminalSessionManager:
 
     def command_for_new_session(self, model: str, permission: str, session_ref: str, model_name: str = "") -> str:
         raw_model = model.strip().strip("\"'").lower()
-        normalized = {
-            "agd": AgentKind.AGY.value,
-            "agy-cli": AgentKind.AGY.value,
-            "agycli": AgentKind.AGY.value,
-            "gemini": AgentKind.AGY.value,
-            "antigravity": AgentKind.AGY.value,
-            "antigravity-cli": AgentKind.AGY.value,
-            "antigravitycli": AgentKind.AGY.value,
-        }.get(raw_model, raw_model)
-        selected_model = normalized or AgentKind.CODEX.value
-        selected_permission = permission.strip().lower() or "default"
-        reference = session_ref.strip()
-        normalized_model_name = model_name.strip()
-        if selected_model == AgentKind.AGY.value:
-            permission_flags = {
-                "default": (),
-                "full-access": ("--dangerously-skip-permissions",),
-            }
-            if selected_permission not in permission_flags:
-                raise ValueError(f"unknown agy permission: {permission}")
-            if reference:
-                raise ValueError("agy terminal currently supports new sessions only")
-            parts = ["agy", *permission_flags[selected_permission]]
-            if normalized_model_name:
-                parts.extend(("--model", normalized_model_name))
-            return shlex.join(parts)
-        if selected_model == AgentKind.NONE.value:
-            if reference:
-                raise ValueError("a shell terminal cannot resume an agent session")
-            if normalized_model_name:
-                raise ValueError("model_name is only supported for codex")
-            return ""
-        if selected_model == AgentKind.CODEX.value:
-            permission_flags = {
-                "default": (),
-                "read-only": ("--sandbox", "read-only"),
-                "workspace-write": ("--sandbox", "workspace-write"),
-                "full-access": ("--dangerously-bypass-approvals-and-sandbox",),
-            }
-            if selected_permission not in permission_flags:
-                raise ValueError(f"unknown codex permission: {permission}")
-            parts = ["codex", TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG, *permission_flags[selected_permission]]
-            if normalized_model_name:
-                model_id, reasoning_effort = self._codex_model_parts(normalized_model_name)
-                if reasoning_effort:
-                    parts.extend(("-c", f'model_reasoning_effort="{reasoning_effort}"'))
-                parts.extend(("--model", model_id))
-            if reference:
-                resolved_reference = self._tracker.codex_session_id_for_reference(reference)
-                if resolved_reference is None:
-                    raise ValueError(f"no saved Codex session found with ID or name: {reference}")
-                parts.extend(("resume", resolved_reference))
-            return shlex.join(parts)
-        if selected_model == AgentKind.CLAUDE.value:
-            permission_flags = {
-                "default": (),
-                "accept-edits": ("--permission-mode", "acceptEdits"),
-                "auto": ("--permission-mode", "auto"),
-                "full-access": ("--dangerously-skip-permissions",),
-            }
-            if selected_permission not in permission_flags:
-                raise ValueError(f"unknown claude permission: {permission}")
-            parts = ["claude", *permission_flags[selected_permission]]
-            if normalized_model_name:
-                parts.extend(("--model", normalized_model_name))
-            if reference:
-                parts.extend(("--resume", reference))
-            return shlex.join(parts)
-        raise ValueError(f"unknown model: {model}")
-
-    @classmethod
-    def _codex_model_parts(cls, model_name: str) -> tuple[str, str]:
-        parts = model_name.split()
-        if len(parts) > 1 and parts[-1].lower() in cls.CODEX_REASONING_EFFORTS:
-            return " ".join(parts[:-1]), parts[-1].lower()
-        return model_name, ""
-
-    @staticmethod
-    def _command_parts(command: str) -> list[str]:
+        kind = agents.resolve_model_alias(raw_model) or agents.CodexCli.kind
         try:
-            return shlex.split(command)
+            agent = agents.agent_cli(kind)
         except ValueError:
-            return command.split()
-
-    @staticmethod
-    def _permission_flags(kind: AgentKind, permission: str) -> tuple[str, ...] | None:
-        requested = permission.strip().lower() or "default"
-        if kind is AgentKind.CLAUDE:
-            options = {
-                "default": (),
-                "accept-edits": ("--permission-mode", "acceptEdits"),
-                "acceptedits": ("--permission-mode", "acceptEdits"),
-                "auto": ("--permission-mode", "auto"),
-                "full-access": ("--dangerously-skip-permissions",),
-                "bypasspermissions": ("--dangerously-skip-permissions",),
-                "manual": ("--permission-mode", "manual"),
-                "dontask": ("--permission-mode", "dontAsk"),
-                "dont-ask": ("--permission-mode", "dontAsk"),
-                "plan": ("--permission-mode", "plan"),
-            }
-        elif kind is AgentKind.CODEX:
-            options = {
-                "default": (),
-                "read-only": ("--sandbox", "read-only"),
-                "workspace-write": ("--sandbox", "workspace-write"),
-                "full-access": ("--dangerously-bypass-approvals-and-sandbox",),
-            }
-        elif kind is AgentKind.AGY:
-            options = {
-                "default": (),
-                "full-access": ("--dangerously-skip-permissions",),
-            }
-        else:
-            return () if requested == "default" else None
-        return options.get(requested)
+            raise ValueError(f"unknown model: {model}") from None
+        return agent.build_command(permission, model_name.strip(), session_ref.strip(), self._tracker)
 
     def _set_restart_permission(self, record: SessionRecord, permission: str) -> None:
-        kind = AgentKind(record.agent_kind)
-        if kind is AgentKind.NONE:
+        agent = agents.agent_cli(record.agent_kind)
+        if not agent.is_agent:
             return
-        normalized_permission = permission.strip().lower() or "default"
-        flags = self._permission_flags(kind, normalized_permission)
-        if flags is None:
-            raise ValueError(f"unknown {record.agent_kind} permission: {permission}")
-        permissions = list(flags)
-        parts = self._command_parts(record.command)
-        if not parts:
-            return
-        command_index = next((index for index, token in enumerate(parts) if Path(token).name == kind.value), None)
-        if command_index is None:
-            return
-        preamble = parts[:command_index + 1]
-        tail = parts[command_index + 1:]
-        filtered = []
-        skip_next = False
-        for index, token in enumerate(tail):
-            if skip_next:
-                skip_next = False
-                continue
-            if token == "--permission-mode":
-                skip_next = True
-                continue
-            if token in {"--dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox"}:
-                continue
-            if token == "--sandbox" and index + 1 < len(tail) and tail[index + 1] in {"read-only", "workspace-write"}:
-                skip_next = True
-                continue
-            filtered.append(token)
-        updated = preamble + list(permissions) + filtered
-        record.command = shlex.join(updated)
+        record.command = agent.set_permission(record.command, permission)
 
     def _canonicalize_agent_resume_command(self, record: SessionRecord) -> None:
         if not record.agent_session_id:
             return
-        kind = AgentKind(record.agent_kind)
-        if kind not in (AgentKind.CODEX, AgentKind.CLAUDE):
+        agent = agents.agent_cli(record.agent_kind)
+        if not agent.canonical_resume_command:
             return
-        record.command = self._tracker.build_resume_command(kind, record.command, record.agent_session_id)
+        record.command = agent.resume_command(record.command, record.agent_session_id)
 
     def _set_agent_session_binding(self, ms: ManagedSession, agent_session_id: str) -> None:
         ms.record.agent_session_id = agent_session_id
@@ -767,7 +629,7 @@ class TerminalSessionManager:
                 agent_rename: str | None = None, project: str | None = None,
                 output_path: str = "", worktree: WorktreeMetadata | None = None,
                 worktree_id: str = "root", fork_parent_agent_session_id: str | None = None) -> ManagedSession:
-        kind = self._tracker.detect_agent_kind(clean_command)
+        kind = AgentKind(agents.detect_agent_cli(clean_command).kind)
         project_name = project.strip() if project and project.strip() else self.registry.ensure_project_for_cwd(cwd_path)
         record = SessionRecord(session_id=uuid.uuid4().hex[:12], title=title.strip() or self._auto_title(clean_command, cwd_path),
                                title_user_set=bool(title.strip()), command=clean_command, cwd=str(cwd_path),
@@ -791,9 +653,9 @@ class TerminalSessionManager:
 
     def fork_session(self, session_id: str, title: str, worktree: WorktreeMetadata | None = None) -> ManagedSession:
         src = self._sessions[session_id].record
-        kind = AgentKind(src.agent_kind)
-        if kind is not AgentKind.NONE and src.agent_session_id:
-            initial = self._tracker.build_fork_command(kind, src.command, src.agent_session_id, title)
+        agent = agents.agent_cli(src.agent_kind)
+        if agent.is_agent and src.agent_session_id:
+            initial = agent.fork_command(src.command, src.agent_session_id, title)
         else:
             initial = None
         source_worktree = worktree
@@ -802,9 +664,9 @@ class TerminalSessionManager:
                                                src.worktree_base_ref, src.worktree_base_commit, src.worktree_managed,
                                                src.worktree_id)
         return self._create(src.command, Path(src.cwd), title, initial_command=initial,
-                            agent_rename=title if kind in (AgentKind.CODEX, AgentKind.CLAUDE) else None, project=src.project,
+                            agent_rename=title if agent.supports_fork else None, project=src.project,
                             worktree=source_worktree, worktree_id=source_worktree.worktree_id if source_worktree else src.worktree_id,
-                            fork_parent_agent_session_id=src.agent_session_id if kind is AgentKind.CLAUDE else None)
+                            fork_parent_agent_session_id=src.agent_session_id if agent.fork_tracks_parent else None)
 
     @staticmethod
     def _auto_title(command: str, cwd: Path) -> str:
@@ -825,7 +687,7 @@ class TerminalSessionManager:
         if initial_command is not None and not reattach:
             command = initial_command
         elif resume and not reattach and kind is not AgentKind.NONE and ms.record.agent_session_id:
-            command = self._tracker.build_resume_command(kind, ms.record.command, ms.record.agent_session_id)
+            command = agents.agent_cli(ms.record.agent_kind).resume_command(ms.record.command, ms.record.agent_session_id)
         baseline = self._tracker.snapshot_session_files(kind, Path(ms.record.cwd)) if kind is not AgentKind.NONE else set()
         if reattach and screen_repaint:
             ms.repaint_activity_suppressed_until_monotonic = max(

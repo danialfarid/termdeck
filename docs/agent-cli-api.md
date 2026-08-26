@@ -1,0 +1,194 @@
+# Agent CLI API — one class per agent
+
+Goal: adding a new agent CLI (a `claude`/`codex`-like tool) means writing **one Python class**,
+registering it in one list, and optionally adding one small client behavior object + icon. No
+scattered `if kind == CLAUDE` branches.
+
+## Why
+
+As of the checkpoint before this refactor there were ~300 agent-kind branch sites:
+`session_manager.py` (115), `history_index.py` (39), `transcript_service.py` (35),
+`agent_session_tracker.py` (28), `server.py` (19), `app.js` (65). Payload parsing was duplicated
+between `transcript_service` and `history_index`. Per-agent session state (claude_*, codex_*,
+agy_* fields) accreted directly on `ManagedSession`.
+
+## The inventory (what "agent things" exist)
+
+Every per-agent behavior in the codebase falls into one of these concerns:
+
+1. **Identity & detection** — kind string, executable name, model-field aliases
+   (`gemini` → agy), detecting the kind from a shell command's tokens.
+2. **Command lifecycle** — building the spawn command (permission flags, model flags, fixed
+   flags like codex `--no-alt-screen`), resume command, fork command, stripping session args
+   for restart, swapping permission flags on a saved command.
+3. **Transcript store discovery** — where the CLI writes its session files
+   (`~/.claude/projects/<munged-cwd>/`, `~/.codex/sessions/Y/M/D/`, agy brain dir), resolving
+   the transcript path for (cwd, agent_session_id), enumerating candidate session files for
+   new-session detection, extracting the session id from a path, detection retry policy.
+4. **Transcript parsing** — jsonl payload → turns, user-payload predicate, payload text,
+   conversation text, title/cwd extraction, user timestamps. Used by BOTH the transcript
+   service (live view) and the history index (search) — single implementation.
+5. **Activity / processing** — is the agent working (transcript activity, subagent scans,
+   OSC-title spinner), keepalive windows, interrupted state.
+6. **Titles / attention / rename** — session title sources, "needs permission" detection from
+   the title, rename mechanism (claude `--name` flag / codex `/rename` command).
+7. **Input interpretation** — what Enter/Ctrl-C/Tab mean for this CLI (prompt submitted,
+   interrupt, queue prompt).
+8. **Terminal replay** — whether raw pty recordings are kept and replayed
+   (`records_raw_replay`), restart divider policy.
+9. **Client presentation & behavior** — label, icon, permission options offered in the UI,
+   composer prompt marker, replay flags on the websocket URL, JS-only quirks (codex
+   command-collapse anchor, claude status-row refresh).
+
+## Design
+
+### Python: `termdeck/agents/` package
+
+```
+termdeck/agents/
+  __init__.py    # registry: AGENT_CLIS, agent_cli(kind), detect_agent_cli(command),
+                 # resolve_model_alias(name)
+  base.py        # AgentCli base class; ShellCli (kind="none") null object
+  claude.py      # ClaudeCli
+  codex.py       # CodexCli
+  agy.py         # AgyCli
+```
+
+- Adapters are **stateless singletons** (small path caches allowed). All session state stays
+  on `ManagedSession`; per-agent state moves into `ms.agent_state = agent.new_session_state()`
+  (phase 4).
+- `ShellCli` is a **null object**: every method has shell-sane defaults so orchestration code
+  never writes `if kind != NONE`. Use `agent.is_agent` where the distinction matters.
+- **Capability flags, not identity checks.** `if ms.record.agent_kind in (CLAUDE, CODEX)`
+  becomes `if agent.records_raw_replay` / `agent.supports_fork` / etc. New agents opt into
+  behaviors by flipping flags, and orchestration code never learns their names.
+- The `AgentKind` enum dies at the end of the migration; kinds are plain strings validated
+  against the registry (an enum is exactly the closed world this refactor removes).
+
+### The base class surface
+
+```python
+class AgentCli:
+    # -- identity --------------------------------------------------------
+    kind: str                       # "claude" — serialized in SessionRecord.agent_kind
+    executable: str                 # binary name; also the command-detection token
+    label: str                      # "Claude" — UI display name
+    model_aliases: tuple[str, ...]  # extra names accepted in the create-session model field
+    is_agent: bool = True           # False only for ShellCli
+
+    # -- capabilities ----------------------------------------------------
+    supports_resume: bool = False
+    supports_fork: bool = False
+    records_raw_replay: bool = False   # keep+replay raw pty recordings
+    has_prompt_queue: bool = False     # Tab queues the composer draft (codex)
+
+    # -- command lifecycle ----------------------------------------------
+    base_flags: tuple[str, ...] = ()            # always-on flags (codex --no-alt-screen)
+    permission_flags: dict[str, tuple[str, ...]] # permission name (+aliases) -> CLI flags
+    ui_permissions: tuple[str, ...]              # subset offered by the client UI
+    def model_arguments(self, model_name) -> tuple[str, ...]
+    def resolve_session_reference(self, reference) -> str      # codex: name -> id via index
+    def build_command(self, permission, model_name, session_ref) -> str
+    def resume_command(self, original_command, agent_session_id) -> str
+    def fork_command(self, original_command, agent_session_id, session_name="") -> str
+    def strip_session_arguments(self, parts) -> list[str]
+    def set_permission(self, command, permission) -> str
+
+    # -- transcript store ------------------------------------------------
+    def transcript_path(self, cwd, agent_session_id) -> Path | None
+    def candidate_session_files(self, cwd) -> list[tuple[Path, str]]
+    def owns_transcript_path(self, path) -> bool
+    def session_id_from_path(self, path) -> str | None
+    detect_retry_seconds: float = 1.0
+    def detection_active(self, attempts, deadline_monotonic) -> bool
+
+    # -- transcript parsing (shared by live view + search index) ---------
+    def parse_transcript_lines(self, lines) -> list[dict]
+    def is_user_payload(self, payload) -> bool
+    def payload_text(self, payload) -> str
+    def is_conversation_payload(self, payload) -> bool
+    def conversation_payload_text(self, payload) -> str
+    def title_from_payload(self, payload) -> str
+    def cwd_from_payload(self, path, payload) -> str
+
+    # -- activity / titles / attention / rename --------------------------
+    def refresh_activity(self, ms, tracker) -> None
+    def is_processing(self, ms) -> bool
+    def title_requires_attention(self, title) -> bool
+    def session_title(self, cwd, agent_session_id) -> str | None
+    async def rename_after_fork(self, manager, ms, title) -> None
+
+    # -- input interpretation --------------------------------------------
+    def interpret_input(self, ms, text) -> InputSignals   # prompt_submitted / interrupt / queue
+
+    # -- per-agent session state (phase 4) -------------------------------
+    def new_session_state(self) -> object | None
+
+    # -- client -----------------------------------------------------------
+    prompt_marker: str = ""          # composer row marker ("❯" claude, "›" codex)
+    def client_descriptor(self) -> dict   # everything app.js needs, served at /api/agents
+```
+
+### Registry
+
+```python
+# termdeck/agents/__init__.py — adding an agent is: write the class, add it here.
+AGENT_CLIS: dict[str, AgentCli] = {a.kind: a for a in (ShellCli(), ClaudeCli(), CodexCli(), AgyCli())}
+
+def agent_cli(kind: str) -> AgentCli           # raises on unknown kind
+def detect_agent_cli(command: str) -> AgentCli # by executable token; ShellCli fallback
+def resolve_model_alias(name: str) -> str      # "gemini" -> "agy"; unknown -> unchanged
+```
+
+Explicit dict, no metaclass/auto-registration magic — debuggable, and one obvious place to look.
+
+### Client: served registry + one behavior object per agent
+
+- `GET /api/agents` returns `{kind: client_descriptor()}`: label, ui_permissions,
+  prompt_marker, records_raw_replay, has_prompt_queue, supports_fork. app.js loads it at
+  bootstrap into `this.agentSpecs` and all data-driven sites read from it
+  (labels, permission menus, composer markers, ws replay flags).
+- JS-only quirks live in one `AGENT_CLIENT_BEHAVIORS = { codex: {...}, claude: {...} }`
+  registry near the top of app.js (command-collapse anchor, reflow deferral, status-row
+  refresh, focus refresh). Generic code calls optional hooks:
+  `this.agentBehavior(view)?.afterPromptSubmit?.(view)`.
+- Icons: `TERMINAL_TYPE_SVGS[kind]` stays a lookup table — adding an icon is adding one entry.
+
+### What a new agent looks like
+
+```python
+# termdeck/agents/aider.py
+class AiderCli(AgentCli):
+    kind = "aider"
+    executable = "aider"
+    label = "Aider"
+    supports_resume = True
+    permission_flags = {"default": (), "full-access": ("--yes-always",)}
+    ui_permissions = ("default", "full-access")
+    def transcript_path(self, cwd, sid): ...
+    def parse_transcript_lines(self, lines): ...
+    def is_user_payload(self, payload): ...
+```
+
+Register it in `AGENT_CLIS`, add an SVG to `TERMINAL_TYPE_SVGS`, done. Everything else
+(spawn, detection loop, replay, activity polling, search indexing, UI menus) is generic code
+driven by the flags and methods above.
+
+## Migration phases (each a self-contained commit, tests green between)
+
+1. **Package + registry** — new `termdeck/agents/`, no call sites yet.
+2. **Command lifecycle** — `command_for_new_session`, `_permission_flags`,
+   `_set_restart_permission`, `build_resume_command`, `build_fork_command`,
+   `detect_agent_kind`, model aliases → adapters. Old copies deleted.
+3. **Store discovery + parsing** — `transcript_service.source_path`, `_parse_lines`,
+   `_latest_user_timestamp`, `history_index` payload helpers, tracker
+   `_candidate_session_files` → adapters (history_index now shares the same parsing).
+4. **Activity / attention / input / state** — `refresh_activity`, `is_processing`,
+   `title_requires_attention`, `interpret_input`, per-agent `ms.agent_state`.
+5. **Client** — `/api/agents`, `this.agentSpecs`, `AGENT_CLIENT_BEHAVIORS`, migrate the 65
+   app.js sites.
+6. **Cleanup** — delete `AgentKind`, move per-CLI constants out of `TermdeckConfig` into the
+   adapter classes.
+
+Rule for every phase: no shims, no dual paths — when a concern moves into the adapter, the old
+branchy implementation is deleted in the same commit.

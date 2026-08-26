@@ -21,7 +21,6 @@ class AgentSessionTracker:
     _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     _CODEX_ROLLOUT_UUID_RE = re.compile(
         r"rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
-    _COMMAND_SPLIT_RE = re.compile(r"[\s;|&()]+")
     _LSOF_PATH_LINE_PREFIX = "n"
     _CODEX_SUBAGENT_MARKER = b'"source":{"subagent"'
     _CLAUDE_SIDECHAIN_MARKER = b'"isSidechain":true'
@@ -291,16 +290,6 @@ class AgentSessionTracker:
         if len(self._subagent_file_cache) > self._SUBAGENT_FILE_CACHE_SIZE:
             self._subagent_file_cache.clear()
         return is_subagent
-
-    def detect_agent_kind(self, command: str) -> AgentKind:
-        tokens = {Path(token).name for token in self._COMMAND_SPLIT_RE.split(command) if token}
-        if AgentKind.CLAUDE.value in tokens:
-            return AgentKind.CLAUDE
-        if AgentKind.CODEX.value in tokens:
-            return AgentKind.CODEX
-        if AgentKind.AGY.value in tokens:
-            return AgentKind.AGY
-        return AgentKind.NONE
 
     def claude_project_dir(self, cwd: Path) -> Path:
         munged = "".join(ch if ch.isalnum() else "-" for ch in str(cwd))
@@ -741,29 +730,6 @@ class AgentSessionTracker:
         return [TermdeckConfig.CODEX_SESSIONS_DIR / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}"
                 for day in days]
 
-    def build_resume_command(self, kind: AgentKind, original_command: str, agent_session_id: str) -> str:
-        if kind is AgentKind.CLAUDE:
-            parts = self._command_parts(original_command)
-            cleaned = self._strip_resume_flag(parts, TermdeckConfig.CLAUDE_RESUME_FLAG)
-            if not cleaned:
-                return f"claude {TermdeckConfig.CLAUDE_RESUME_FLAG} {agent_session_id}"
-            return f"{shlex.join(cleaned)} {TermdeckConfig.CLAUDE_RESUME_FLAG} {agent_session_id}"
-        if kind is AgentKind.CODEX:
-            parts = self._command_parts(original_command)
-            if not parts:
-                return TermdeckConfig.CODEX_RESUME_TEMPLATE.format(agent_session_id=agent_session_id)
-            cleaned = self._strip_codex_session_arguments(parts)
-            cleaned = self._ensure_codex_searchable_scrollback(cleaned)
-            return f"{shlex.join(cleaned)} resume {agent_session_id}"
-        if kind is AgentKind.AGY:
-            parts = self._command_parts(original_command)
-            cleaned = self._strip_agy_session_arguments(parts)
-            if not cleaned:
-                cleaned = [AgentKind.AGY.value]
-            cleaned.extend((TermdeckConfig.AGY_CONVERSATION_FLAG, agent_session_id))
-            return shlex.join(cleaned)
-        return original_command
-
     @staticmethod
     def _command_parts(command: str) -> list[str]:
         try:
@@ -771,98 +737,3 @@ class AgentSessionTracker:
         except ValueError:
             return command.split()
 
-    @staticmethod
-    def _strip_resume_flag(parts: list[str], resume_flag: str) -> list[str]:
-        cleaned: list[str] = []
-        skip_next = False
-        for token in parts:
-            if skip_next:
-                skip_next = False
-                continue
-            if token == resume_flag:
-                skip_next = True
-            else:
-                cleaned.append(token)
-        return cleaned
-
-    @staticmethod
-    def _strip_agy_session_arguments(parts: list[str]) -> list[str]:
-        cleaned: list[str] = []
-        skip_next = False
-        for token in parts:
-            if skip_next:
-                skip_next = False
-                continue
-            if token == TermdeckConfig.AGY_CONVERSATION_FLAG:
-                skip_next = True
-                continue
-            if token.startswith(f"{TermdeckConfig.AGY_CONVERSATION_FLAG}=") or token in {"-c", "--continue"}:
-                continue
-            cleaned.append(token)
-        return cleaned
-
-    def _strip_positional_session_token(self, parts: list[str], command: str, subcommand: str) -> list[str]:
-        cleaned: list[str] = []
-        encountered_command = False
-        skip_next = False
-        for token in parts:
-            if skip_next:
-                skip_next = False
-                continue
-            if not encountered_command and Path(token).name == command:
-                encountered_command = True
-                cleaned.append(token)
-                continue
-            if token == subcommand and encountered_command:
-                skip_next = True
-                continue
-            cleaned.append(token)
-        return cleaned
-
-    @staticmethod
-    def _strip_codex_session_arguments(parts: list[str]) -> list[str]:
-        cleaned: list[str] = []
-        command_seen = False
-        skip_session_id = False
-        for token in parts:
-            if skip_session_id:
-                skip_session_id = False
-                continue
-            if not command_seen:
-                cleaned.append(token)
-                command_seen = Path(token).name == "codex"
-                continue
-            if token in {"fork", "resume"}:
-                skip_session_id = True
-                continue
-            cleaned.append(token)
-        return cleaned
-
-    @staticmethod
-    def _ensure_codex_searchable_scrollback(parts: list[str]) -> list[str]:
-        if TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG in parts:
-            return parts
-        command_index = next((index for index, token in enumerate(parts) if Path(token).name == AgentKind.CODEX.value), None)
-        if command_index is None:
-            return parts
-        return [*parts[:command_index + 1], TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG, *parts[command_index + 1:]]
-
-    def build_fork_command(self, kind: AgentKind, original_command: str, agent_session_id: str,
-                           session_name: str = "") -> str:
-        if kind is AgentKind.CLAUDE:
-            parts = self._command_parts(original_command)
-            cleaned = self._strip_resume_flag(parts, TermdeckConfig.CLAUDE_RESUME_FLAG)
-            cleaned = self._strip_resume_flag(cleaned, TermdeckConfig.CLAUDE_NAME_FLAG)
-            if not cleaned:
-                cleaned = ["claude"]
-            cleaned.extend((TermdeckConfig.CLAUDE_RESUME_FLAG, agent_session_id, TermdeckConfig.CLAUDE_FORK_FLAG))
-            if session_name.strip():
-                cleaned.extend((TermdeckConfig.CLAUDE_NAME_FLAG, " ".join(session_name.splitlines()).strip()))
-            return shlex.join(cleaned)
-        if kind is AgentKind.CODEX:
-            parts = self._command_parts(original_command)
-            cleaned = self._strip_codex_session_arguments(parts) if parts else [AgentKind.CODEX.value]
-            cleaned = self._ensure_codex_searchable_scrollback(cleaned)
-            cleaned.extend(("fork", agent_session_id))
-            return shlex.join(cleaned)
-        return original_command

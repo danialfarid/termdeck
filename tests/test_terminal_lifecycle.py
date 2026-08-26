@@ -9,6 +9,7 @@ from fastapi import HTTPException, WebSocketDisconnect
 from watchdog.events import DirModifiedEvent, FileModifiedEvent, FileMovedEvent
 
 from tests.environment import TEST_DATA_DIRECTORY
+from termdeck import agents
 from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.file_service import ProjectFileService
 from termdeck.models import AgentKind, SessionRecord
@@ -274,26 +275,51 @@ class SessionSizePersistenceTest(unittest.TestCase):
         self.assertEqual((session.record.cols, session.record.rows), (162, 61))
         self.assertEqual(len(persists), 1)
 
-class AgentSessionTrackerResumeCommandTest(unittest.TestCase):
+class AgentCliRegistryTest(unittest.TestCase):
+    def test_detect_agent_cli_by_command_token(self) -> None:
+        self.assertEqual(agents.detect_agent_cli("claude --resume aa11").kind, "claude")
+        self.assertEqual(agents.detect_agent_cli("/usr/bin/codex resume bb22").kind, "codex")
+        self.assertEqual(agents.detect_agent_cli("echo claude-like && ls").kind, "none")
+        self.assertEqual(agents.detect_agent_cli("").kind, "none")
+
+    def test_model_aliases_resolve_to_agy(self) -> None:
+        for alias in ("gemini", "agd", "antigravity"):
+            self.assertEqual(agents.resolve_model_alias(alias), "agy")
+        self.assertEqual(agents.resolve_model_alias("claude"), "claude")
+
+    def test_unknown_permission_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            agents.agent_cli("codex").build_command("nonsense", "", "", None)
+
+    def test_set_permission_swaps_existing_flags(self) -> None:
+        self.assertEqual(
+            agents.agent_cli("claude").set_permission("claude --permission-mode auto --foo", "full-access"),
+            "claude --dangerously-skip-permissions --foo")
+        self.assertEqual(
+            agents.agent_cli("codex").set_permission(
+                "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox", "read-only"),
+            "codex --sandbox read-only --no-alt-screen")
+
+    def test_claude_fork_command_carries_name(self) -> None:
+        self.assertEqual(
+            agents.agent_cli("claude").fork_command("claude --resume aa11", "bb22", "my fork"),
+            "claude --resume bb22 --fork-session --name 'my fork'")
+
+
+class AgentCliResumeCommandTest(unittest.TestCase):
     def test_build_codex_resume_command_keeps_existing_flags(self) -> None:
-        tracker = AgentSessionTracker()
         command = "codex --sandbox workspace-write resume aa11 --foo"
-        self.assertEqual(tracker.build_resume_command(
-            AgentKind.CODEX, command, "bb22"),
+        self.assertEqual(agents.agent_cli("codex").resume_command(command, "bb22"),
             "codex --no-alt-screen --sandbox workspace-write --foo resume bb22")
 
     def test_build_codex_resume_command_with_path_keeps_flags(self) -> None:
-        tracker = AgentSessionTracker()
         command = "/usr/bin/codex --dangerously-bypass-approvals-and-sandbox resume aa11"
-        self.assertEqual(tracker.build_resume_command(
-            AgentKind.CODEX, command, "bb22"),
+        self.assertEqual(agents.agent_cli("codex").resume_command(command, "bb22"),
             "/usr/bin/codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume bb22")
 
     def test_build_claude_resume_command_strips_old_resume_flag(self) -> None:
-        tracker = AgentSessionTracker()
         command = "claude --permission-mode auto --resume aa11"
-        self.assertEqual(tracker.build_resume_command(
-            AgentKind.CLAUDE, command, "bb22"),
+        self.assertEqual(agents.agent_cli("claude").resume_command(command, "bb22"),
             "claude --permission-mode auto --resume bb22")
 
     def test_latest_claude_permission_mode_comes_from_transcript(self) -> None:
