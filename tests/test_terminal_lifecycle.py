@@ -872,7 +872,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse((Path(directory) / "checkpoint-codex.bin").exists())
             self.assertFalse((Path(directory) / "checkpoint-agy.bin").exists())
 
-    async def test_inactive_shell_replay_is_not_periodically_checkpointed(self) -> None:
+    async def test_inactive_shell_replay_is_not_checkpointed(self) -> None:
         manager = TerminalSessionManager()
         shell = ManagedSession(record("inactive-shell"))
         manager._sessions[shell.record.session_id] = shell

@@ -146,7 +146,6 @@ class TerminalSessionManager:
         self._sessions: dict[str, ManagedSession] = {}
         self._status_queues: set[asyncio.Queue] = set()
         self._draft_persist_task: asyncio.Task | None = None
-        self._replay_checkpoint_task: asyncio.Task[None] | None = None
         self._replay_checkpoint_debounce_task: asyncio.Task[None] | None = None
         self._background_loop: asyncio.AbstractEventLoop | None = None
         self._agent_activity_refresh_handles: dict[Path, asyncio.TimerHandle] = {}
@@ -168,14 +167,9 @@ class TerminalSessionManager:
     def start_background_tasks(self) -> None:
         self._background_loop = asyncio.get_running_loop()
         self._claude_activity_watcher.start()
-        if self._replay_checkpoint_task is None or self._replay_checkpoint_task.done():
-            self._replay_checkpoint_task = asyncio.create_task(self._periodically_checkpoint_active_replays())
 
     def stop_background_tasks(self) -> None:
         self._claude_activity_watcher.stop()
-        if self._replay_checkpoint_task is not None:
-            self._replay_checkpoint_task.cancel()
-            self._replay_checkpoint_task = None
         if self._replay_checkpoint_debounce_task is not None:
             self._replay_checkpoint_debounce_task.cancel()
             self._replay_checkpoint_debounce_task = None
@@ -301,7 +295,9 @@ class TerminalSessionManager:
         if replaced and ms.claude_raw_replay_compaction_generation == compaction_generation:
             ms.claude_raw_replay_checkpoint_compaction_generation = compaction_generation
 
-    async def _checkpoint_active_replays(self) -> None:
+    async def _checkpoint_active_replays(self) -> int:
+        """Write every running session's pending replay bytes. Returns how many writes succeeded."""
+        written = 0
         for ms, replay_kind, compaction_generation, target, payload, pending_payload, replace in \
                 self._pending_replay_checkpoint_snapshots(True):
             try:
@@ -312,33 +308,50 @@ class TerminalSessionManager:
                 continue
             self._record_replay_checkpoint_success(
                 ms, replay_kind, compaction_generation, pending_payload, replace)
-
-    async def _periodically_checkpoint_active_replays(self) -> None:
-        while True:
-            await asyncio.sleep(TermdeckConfig.REPLAY_CHECKPOINT_INTERVAL_SECONDS)
-            await self._checkpoint_active_replays()
+            written += 1
+        return written
 
     def _schedule_replay_checkpoint(self, ms: ManagedSession) -> None:
-        """Flush this session's replay shortly after activity instead of waiting for the periodic tick.
+        """Write this session's replay shortly after the activity that changed it.
 
-        Deliberately a trailing throttle rather than a resetting debounce: a continuously streaming agent
-        would keep pushing a resetting timer out forever and never checkpoint at all. One scheduled flush
-        covers every event in its window, so the write rate is capped by the window no matter how much
-        output arrives, and each flush appends only the bytes accumulated since the last one.
+        This is the only thing that makes a replay durable, so it has to be conclusive on its own: there
+        is no periodic sweep behind it and no shutdown hook to catch a straggler.
         """
         if not ms.running:
             return
-        if self._replay_checkpoint_debounce_task is not None and not self._replay_checkpoint_debounce_task.done():
+        self._arm_replay_checkpoint()
+
+    def _arm_replay_checkpoint(self) -> None:
+        """Start the one pending flush, if there isn't one already.
+
+        Deliberately a trailing throttle rather than a resetting debounce: a continuously streaming
+        session would keep pushing a resetting timer out forever and never be written at all. One armed
+        flush covers every session and every event in its window, so the write rate is capped by the
+        window however much output arrives, and each write appends only the bytes since the last one.
+        """
+        task = self._replay_checkpoint_debounce_task
+        if task is not None and not task.done():
             return
-        # Output is also handled while spawning, before the loop is running; the periodic task covers that.
+        # _background_loop is unset until start_background_tasks runs; fall back to whatever loop is
+        # actually running so output handled before then (a spawn banner) is not left unwritten.
         loop = self._background_loop
         if loop is None or not loop.is_running():
-            return
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
         self._replay_checkpoint_debounce_task = loop.create_task(self._checkpoint_replays_after_debounce())
 
     async def _checkpoint_replays_after_debounce(self) -> None:
         await asyncio.sleep(TermdeckConfig.REPLAY_CHECKPOINT_DEBOUNCE_SECONDS)
-        await self._checkpoint_active_replays()
+        written = await self._checkpoint_active_replays()
+        # Output that arrived while the flush itself was running was not scheduled, because this task was
+        # still pending -- and there is nothing behind this to sweep it up later. Re-arm so the writes
+        # converge instead of waiting on the next keystroke. Only after progress: if every write just
+        # failed (a full disk), pending stays pending and re-arming would spin on the error once a second.
+        if written and self._pending_replay_checkpoint_snapshots(True):
+            self._replay_checkpoint_debounce_task = None
+            self._arm_replay_checkpoint()
 
     @classmethod
     def _claude_raw_replay_partial_title_prefix_length(cls, data: bytes) -> int:
