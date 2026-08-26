@@ -176,6 +176,13 @@ driven by the flags and methods above.
 
 ## Migration phases (each a self-contained commit, tests green between)
 
+Status 2026-08-26: phases 1–3 DONE, phase 5's data-driven half DONE (`/api/agents`,
+`this.agentSpecs`, MODEL_PERMISSIONS/labels/markers/replay-flag sites). REMAINING: phase 4
+(activity/attention/input/per-agent `ms.agent_state`); the rest of phase 5 (move the codex/claude
+behavior quirks — collapse anchor, reflow deferral, status-row refresh, focus refresh, history
+model-name heuristics — behind `AGENT_CLIENT_BEHAVIORS` hooks); phase 6 (delete `AgentKind`, move
+per-CLI constants out of `TermdeckConfig`).
+
 1. **Package + registry** — new `termdeck/agents/`, no call sites yet.
 2. **Command lifecycle** — `command_for_new_session`, `_permission_flags`,
    `_set_restart_permission`, `build_resume_command`, `build_fork_command`,
