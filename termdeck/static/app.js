@@ -676,6 +676,9 @@ class TermdeckApp {
     // A prompt can be accepted by the PTY before the agent reports
     // processing=true. Keep that hand-off visible in Markdown mode.
     this.historyPendingProcessing = new Map();
+    this.historySendLongPressTimer = 0;
+    this.historySendLongPressTriggered = false;
+    this.historySendQueuePreview = false;
     this.processingTimer = 0;
     this.pageTitleFaviconState = "plain";
     this.pageFavicon = document.querySelector('link[rel~="icon"]');
@@ -2921,6 +2924,9 @@ class TermdeckApp {
       const promptHistoryButton = this.$("history-prompt-history-btn");
       if (promptHistory && !promptHistory.classList.contains("hidden") &&
           !promptHistory.contains(e.target) && !promptHistoryButton?.contains(e.target)) this.closePromptHistory();
+      const historySendMenu = this.$("history-send-menu");
+      if (historySendMenu && !historySendMenu.classList.contains("hidden") &&
+          !historySendMenu.contains(e.target) && !e.target.closest("#history-send")) this.closeHistorySendMenu();
       const selectionActions = this.$("selection-actions");
       if (selectionActions && !selectionActions.classList.contains("hidden") && !selectionActions.contains(e.target)) {
         this.hideSelectionActions();
@@ -3016,21 +3022,52 @@ class TermdeckApp {
     this.$("terminal-find-next").onclick = () => this.moveTerminalFindMatch(1);
     this.$("terminal-find-close").onclick = () => this.closeTerminalFind();
     this.$("kill-stale-terminals-btn").onclick = () => void this.killStaleTerminals();
-    this.$("history-send").onclick = () => this.sendHistoryPrompt();
-    this.$("history-queue-btn").onclick = () => this.sendHistoryPrompt({ queue: true });
+    const historySend = this.$("history-send");
+    historySend.onclick = () => {
+      if (this.historySendLongPressTriggered) {
+        this.historySendLongPressTriggered = false;
+        return;
+      }
+      this.handleHistorySendButton();
+    };
+    historySend.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || !this.$("history-prompt").value.trim()) return;
+      clearTimeout(this.historySendLongPressTimer);
+      this.historySendLongPressTriggered = false;
+      this.historySendQueuePreview = false;
+      this.historySendLongPressTimer = window.setTimeout(() => {
+        this.historySendLongPressTimer = 0;
+        this.historySendLongPressTriggered = true;
+        this.historySendQueuePreview = true;
+        this.updateHistorySendButton();
+        if (this.openHistorySendMenu()) return;
+        this.historySendLongPressTriggered = false;
+        this.historySendQueuePreview = false;
+        this.updateHistorySendButton();
+      }, 500);
+    });
+    const clearHistorySendLongPress = () => {
+      clearTimeout(this.historySendLongPressTimer);
+      this.historySendLongPressTimer = 0;
+    };
+    historySend.addEventListener("pointerup", clearHistorySendLongPress);
+    historySend.addEventListener("pointercancel", clearHistorySendLongPress);
+    historySend.addEventListener("pointerleave", clearHistorySendLongPress);
+    historySend.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      clearHistorySendLongPress();
+      this.openHistorySendMenu();
+    });
+    this.$("history-send-queue-option").onclick = () => {
+      this.closeHistorySendMenu();
+      this.sendHistoryPrompt({ queue: true });
+    };
     this.$("history-prompt-history-btn").onclick = () => this.togglePromptHistory();
     this.$("history-prompt").addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
-        const view = this.views.get(this.activeId);
-        if (view) {
-          this.sendInput(view, "\x1b");
-          this.historyPendingProcessing.delete(this.activeId);
-          this.updateHistoryThinkingIndicator();
-          view.keepBottom = true;
-          view.pinBottomUntil = Date.now() + 3000;
-        }
+        this.interruptHistoryPrompt();
         return;
       }
       if (e.key === "Tab") {
@@ -10845,6 +10882,7 @@ class TermdeckApp {
     const processing = !!this.processingStates.get(this.activeId);
     const awaitingProcessing = this.historyPendingProcessing.has(this.activeId);
     const spinning = !!this.historyOpen && (processing || awaitingProcessing);
+    this.updateHistorySendButton(spinning);
     if (indicator) indicator.classList.toggle("hidden", !spinning);
     const duration = this.$("history-thinking-duration");
     if (duration) {
@@ -10863,6 +10901,55 @@ class TermdeckApp {
       this.processingTimer = 0;
     }
     this.updateActiveThinkingBlock();
+  }
+
+  updateHistorySendButton(stopping = !!this.historyOpen &&
+    (!!this.processingStates.get(this.activeId) || this.historyPendingProcessing.has(this.activeId))) {
+    const button = this.$("history-send");
+    if (!button) return;
+    const queuePreview = !stopping && this.historySendQueuePreview;
+    const label = stopping ? "Stop current response" : queuePreview ? "Queue prompt" : "Send prompt";
+    const icon = button.querySelector(".codicon");
+    const iconName = stopping ? "debug-stop" : this.historySendQueuePreview ? "list-ordered" : "send";
+    if (icon) icon.className = `codicon codicon-${iconName}`;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+  }
+
+  handleHistorySendButton() {
+    if (this.historyOpen && (this.processingStates.get(this.activeId) || this.historyPendingProcessing.has(this.activeId))) {
+      this.interruptHistoryPrompt();
+      return;
+    }
+    this.sendHistoryPrompt();
+  }
+
+  interruptHistoryPrompt() {
+    if (!this.historyOpen || !this.activeId) return;
+    const view = this.views.get(this.activeId);
+    if (!view) return;
+    this.sendInput(view, "\x03");
+    this.historyPendingProcessing.delete(this.activeId);
+    this.updateHistoryThinkingIndicator();
+    view.keepBottom = true;
+    view.pinBottomUntil = Date.now() + 3000;
+  }
+
+  openHistorySendMenu() {
+    const menu = this.$("history-send-menu");
+    const prompt = this.$("history-prompt");
+    if (!menu || !prompt.value.trim() || !this.historyOpen ||
+        this.processingStates.get(this.activeId) || this.historyPendingProcessing.has(this.activeId)) return false;
+    menu.classList.remove("hidden");
+    this.$("history-send-queue-option")?.focus();
+    return true;
+  }
+
+  closeHistorySendMenu() {
+    const menu = this.$("history-send-menu");
+    if (menu) menu.classList.add("hidden");
+    this.historySendQueuePreview = false;
+    this.updateHistorySendButton();
   }
 
   updateActiveThinkingBlock() {
@@ -10889,13 +10976,6 @@ class TermdeckApp {
     const count = this.$("history-queued-count");
     if (!container || !items || !count) return;
     const queued = view?.promptQueue || [];
-    const queueButton = this.$("history-queue-btn");
-    if (queueButton) {
-      queueButton.classList.toggle("on", queued.length > 0);
-      const queueLabel = queued.length ? `Queue prompt (${queued.length} pending)` : "Queue prompt after the current task";
-      queueButton.title = queueLabel;
-      queueButton.setAttribute("aria-label", queueLabel);
-    }
     container.classList.toggle("hidden", !this.historyOpen || !queued.length);
     count.textContent = queued.length ? `${queued.length} message${queued.length === 1 ? "" : "s"}` : "";
     const activeEditor = document.activeElement?.classList?.contains("history-queued-editor") ? document.activeElement : null;
@@ -11048,6 +11128,7 @@ class TermdeckApp {
     }
     if (this.historyOpen && !enabled) this.rememberHistoryScrollPosition(this.activeId);
     this.closeTerminalFind();
+    this.closeHistorySendMenu();
     this.hideSelectionActions(true);
     if (!enabled) this.closePromptHistory();
     const mode = enabled ? "markdown" : "terminal";
@@ -16392,11 +16473,11 @@ class TermdeckApp {
     return domAtBottom;
   }
 
-  terminalAtTop(view) {
+  terminalAtTop(view, topTolerance = 2) {
     if (!view || view.closed || !view.term) return false;
-    if (this.isTerminalScrollV2()) return Number(view.container.scrollTop || 0) <= 2;
+    if (this.isTerminalScrollV2()) return Number(view.container.scrollTop || 0) <= topTolerance;
     const viewport = view.container.querySelector(".xterm-viewport");
-    return viewport ? viewport.scrollTop <= 2 : Number(view.term.buffer.active.viewportY || 0) <= 0;
+    return viewport ? viewport.scrollTop <= topTolerance : Number(view.term.buffer.active.viewportY || 0) <= 0;
   }
 
   terminalHasScrollableHistory(view) {
@@ -16410,9 +16491,16 @@ class TermdeckApp {
     const button = this.$("terminal-history-more");
     if (!button) return;
     const session = view ? this.session(view.sessionId) : null;
-    const visible = !!view && view.sessionId === this.activeId && !this.historyOpen && this.activeFileKey === null &&
+    const eligible = !!view && view.sessionId === this.activeId && !this.historyOpen && this.activeFileKey === null &&
       !this.vscodeMode && !this.nativeVscodeMode && this.sessionSupportsTranscript(session) &&
-      this.terminalAtTop(view) && this.terminalHasScrollableHistory(view);
+      this.terminalHasScrollableHistory(view);
+    if (!eligible) {
+      button.classList.add("hidden");
+      return;
+    }
+    const alreadyVisible = !button.classList.contains("hidden");
+    if (view.tallPointerHeld && alreadyVisible) return;
+    const visible = this.terminalAtTop(view, alreadyVisible ? 24 : 2);
     button.classList.toggle("hidden", !visible);
   }
 
