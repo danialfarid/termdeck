@@ -341,7 +341,8 @@ const NATIVE_VSCODE_MODE = VS_CODE_MODE &&
   (NATIVE_VSCODE_PARAM ? ["1", "true", "yes", "on"].includes(NATIVE_VSCODE_PARAM) : true);
 const TERMINAL_TYPE_SVGS = {
   claude: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.25c.42 0 .76.34.76.76v4.08l3.53-2.04a.76.76 0 1 1 .76 1.31L9.52 7.4l3.53 2.04a.76.76 0 1 1-.76 1.31L8.76 8.72v4.08a.76.76 0 0 1-1.52 0V8.72l-3.53 2.04a.76.76 0 1 1-.76-1.31L6.48 7.4 2.95 5.36a.76.76 0 1 1 .76-1.31l3.53 2.04V2.01c0-.42.34-.76.76-.76Z"/></svg>',
-  codex: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zM3.5988 18.304a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1412-1.6462zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5968 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zm-12.6413 4.1347-2.0201-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805-4.783 2.7582a.7948.7948 0 0 0-.3927.6813zM9.4041 10.4976l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"/></svg>',
+  codex: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zM3.5988 18.304a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1412-1.6462zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5968 3.8558L13.1038 8.364 15.1192 7.2a.0757.075 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zm-12.6413 4.1347-2.0201-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805-4.783 2.7582a.7948.7948 0 0 0-.3927.6813zM9.4041 10.4976l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"/></svg>',
+  agy: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 1.8 14.45 9.55 22.2 12l-7.75 2.45L12 22.2l-2.45-7.75L1.8 12l7.75-2.45L12 1.8Z"/><path fill="currentColor" d="m18.55 2.15.8 2.5 2.5.8-2.5.8-.8 2.5-.8-2.5-2.5-.8 2.5-.8.8-2.5Z" opacity=".7"/></svg>',
 };
 const makeTerminalTheme = (background, foreground, cursor, selectionBackground, ansi) => {
   const [black, red, green, yellow, blue, magenta, cyan, white, brightBlack, brightRed, brightGreen,
@@ -2968,6 +2969,10 @@ class TermdeckApp {
         };
       }
     }
+    this.$("terminal-history-more").onclick = () => {
+      this.setHistoryMode(true);
+      this.refocusActiveInputAfterToolbarAction();
+    };
     this.updateShortcutTitles();
     this.$("history-edits-toggle").onclick = () => this.toggleHistoryEdits();
     this.$("history-scroll-bottom").onmousedown = (event) => event.preventDefault();
@@ -3842,8 +3847,11 @@ class TermdeckApp {
     if (!caption) return;
     const session = this.session(this.activeId);
     const groupName = this.terminalGroupNameForSession(this.activeId) || "Evently workspace";
+    const settingsOpen = !this.$("settings-popover")?.classList.contains("hidden");
     let feature = "Persistent terminal workspace";
-    if (this.sideView === "git") feature = "Git history and changed-file review";
+    if (settingsOpen) feature = "Remote access: Google relay or local Wi-Fi";
+    else if (this.settings.notebook_open) feature = "Notes: save context for follow-up work";
+    else if (this.sideView === "git") feature = "Git history, blame, and changed-file review";
     else if (this.sideView === "search") feature = "Search across files and agents";
     else if (this.activeFileKey !== null) feature = "File editing, history, and usages";
     else if (this.historyOpen) feature = "Markdown transcript and cross-agent review";
@@ -10815,6 +10823,7 @@ class TermdeckApp {
       terminalScrollButton.classList.toggle("hidden", historyMode || fileMode || gitReviewMode);
     }
     this.$("history-btn").classList.toggle("hidden", fileMode || gitReviewMode);
+    this.updateTerminalHistoryMoreButton();
     this.syncFileHistorySurface();
     this.renderHistoryMeta();
     this.updateHistoryThinkingIndicator();
@@ -15119,6 +15128,7 @@ class TermdeckApp {
     container.addEventListener("scroll", () => {
       const view = this.views.get(id);
       if (!view || view.closed) return;
+      this.updateTerminalHistoryMoreButton(view);
       // Our own scrolls must not read as the user scrolling, or following would flip on every write.
       // Matching on value ALONE is wrong: the user scrolling to the bottom lands on exactly the ceiling
       // we last set ourselves, so a real gesture was being discarded as an echo -- which is what left the
@@ -15474,6 +15484,7 @@ class TermdeckApp {
     });
     term.onScroll(() => {
       if (!view.container.classList.contains("visible")) return;
+      this.updateTerminalHistoryMoreButton(view);
       if (this.isTerminalScrollV2()) {
         if (!view.v2Programmatic) {
           if (this.xtermAtBottom(view)) {
@@ -16376,6 +16387,30 @@ class TermdeckApp {
     const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
     const domAtBottom = maxScrollTop - viewport.scrollTop <= 2;
     return domAtBottom;
+  }
+
+  terminalAtTop(view) {
+    if (!view || view.closed || !view.term) return false;
+    if (this.isTerminalScrollV2()) return Number(view.container.scrollTop || 0) <= 2;
+    const viewport = view.container.querySelector(".xterm-viewport");
+    return viewport ? viewport.scrollTop <= 2 : Number(view.term.buffer.active.viewportY || 0) <= 0;
+  }
+
+  terminalHasScrollableHistory(view) {
+    if (!view || view.closed || !view.term) return false;
+    const buffer = view.term.buffer.active;
+    return Number(buffer.baseY || 0) > 0 || Number(buffer.length || 0) > Number(view.term.rows || 0) ||
+      view.container.scrollHeight - view.container.clientHeight > 2;
+  }
+
+  updateTerminalHistoryMoreButton(view = this.views.get(this.activeId)) {
+    const button = this.$("terminal-history-more");
+    if (!button) return;
+    const session = view ? this.session(view.sessionId) : null;
+    const visible = !!view && view.sessionId === this.activeId && !this.historyOpen && this.activeFileKey === null &&
+      !this.vscodeMode && !this.nativeVscodeMode && this.sessionSupportsTranscript(session) &&
+      this.terminalAtTop(view) && this.terminalHasScrollableHistory(view);
+    button.classList.toggle("hidden", !visible);
   }
 
   isTerminalScrollV2() {
@@ -17674,6 +17709,7 @@ class TermdeckApp {
         // of following a bogus position: the very next write (the real redraw) fires this callback again
         // with a trustworthy cursor.
         this.tallUpdateMaxScrollTop(view);
+        this.updateTerminalHistoryMoreButton(view);
         // Any gesture in flight -- wheel, scrollbar drag, autoscroll -- owns the view until it settles.
         const userScrolling = view.tallPointerHeld ||
           Date.now() < Math.max(view.tallWheelActiveUntil || 0, view.tallScrollActiveUntil || 0);
@@ -18917,6 +18953,7 @@ class TermdeckApp {
       { label: "Kill all running terminals", buttonText: "kill", run: () => { pop.classList.add("hidden"); void this.killAllRunningTerminals(); } },
     ], anchor));
     this.positionPopover(pop, anchor);
+    this.updateEventlyDemoFeatureBanner();
   }
 
   buildActionRow(labelText, buttonText, run) {
