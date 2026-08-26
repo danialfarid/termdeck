@@ -1,10 +1,17 @@
 import shlex
+import time
 from pathlib import Path
 from typing import Iterable
 
-from termdeck.agents.base import UUID_RE, AgentCli
+from termdeck.agents.base import UUID_RE, AgentCli, AgentSessionState
 from termdeck.config import TermdeckConfig
 from termdeck.transcript_turns import TurnBuilder
+
+
+class AgySessionState(AgentSessionState):
+    def __init__(self) -> None:
+        self.transcript_active = False
+        self.transcript_active_until = 0.0
 
 
 class AgyCli(AgentCli):
@@ -16,6 +23,7 @@ class AgyCli(AgentCli):
     # Restarted terminals resume via --conversation; attaching to an EXISTING agy session from
     # the create dialog is unsupported (new_session_resume_arguments raises), as is forking.
     supports_resume = True
+    detection_claims_new_files = True
 
     permission_flags = {
         "default": (),
@@ -143,3 +151,71 @@ class AgyCli(AgentCli):
     @staticmethod
     def _turn_title(event_type: str) -> str:
         return event_type.replace("_", " ").title()
+
+    # -- activity / processing ---------------------------------------------
+
+    def new_session_state(self) -> AgySessionState:
+        return AgySessionState()
+
+    def is_processing(self, ms) -> bool:
+        return bool(ms.processing or ms.agent_state.transcript_active)
+
+    def refresh_persisted_activity(self, manager, ms) -> None:
+        ms.agent_state.transcript_active = manager._tracker.agy_session_is_active(ms.record.agent_session_id)
+        if ms.agent_state.transcript_active:
+            ms.agent_state.transcript_active_until = time.monotonic() + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
+
+    def refresh_transcript_activity(self, ms, active: bool, observed_at: float | None = None) -> None:
+        now = time.monotonic() if observed_at is None else observed_at
+        if active:
+            ms.agent_state.transcript_active = True
+            ms.agent_state.transcript_active_until = now + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
+            return
+        if ms.agent_state.transcript_active and now < ms.agent_state.transcript_active_until:
+            ms.agent_state.transcript_active_until = now + TermdeckConfig.AGY_ACTIVITY_KEEPALIVE_SECONDS
+            return
+        ms.agent_state.transcript_active = False
+        ms.agent_state.transcript_active_until = 0.0
+
+    def refresh_activity_for_status(self, manager, ms) -> None:
+        if not ms.agent_state.transcript_active:
+            return
+        if time.monotonic() < ms.agent_state.transcript_active_until:
+            return
+        ms.agent_state.transcript_active = False
+        ms.agent_state.transcript_active_until = 0.0
+
+    def on_transcript_event(self, manager, ms, path: Path) -> None:
+        if self.session_id_from_path(path) != ms.record.agent_session_id:
+            return
+        previous = manager._processing_state(ms)
+        active = manager._tracker._agy_session_is_active(path)
+        self.refresh_transcript_activity(ms, active, time.monotonic())
+        if manager._processing_state(ms) != previous:
+            manager._broadcast_status(ms)
+
+    def reconcile_metadata(self, manager, ms) -> None:
+        # AGY session-id detection commonly outlasts the startup window; retry it for a
+        # detached-live terminal that still has no binding.
+        if not ms.detached_live or ms.record.agent_session_id:
+            return
+        ms.detect_kind = self.kind
+        ms.detect_baseline = manager._tracker.snapshot_session_files(self.kind, Path(ms.record.cwd))
+        manager._schedule_detection(ms, TermdeckConfig.AGENT_DETECT_INITIAL_DELAY_SECONDS)
+
+    def pre_write_input(self, manager, ms, text: str, draft_before: str) -> None:
+        if "\r" in text or "\n" in text:
+            self.refresh_transcript_activity(ms, True)
+
+    def post_write_input(self, manager, ms, text: str) -> None:
+        if "\r" in text or "\n" in text:
+            manager._broadcast_status(ms)
+
+    def restart_screen_repaint_delay(self, raw_replay_enabled: bool) -> float | None:
+        return TermdeckConfig.AGY_RESTART_REPAINT_DELAY_SECONDS
+
+    def detection_should_retry(self, ms) -> bool:
+        return ms.detect_attempts < 20
+
+    def on_agent_session_bound(self, manager, ms) -> None:
+        ms.agent_state.transcript_active = manager._tracker.agy_session_is_active(ms.record.agent_session_id)

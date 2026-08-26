@@ -7,7 +7,6 @@ from pathlib import Path
 
 from termdeck import agents
 from termdeck.config import TermdeckConfig
-from termdeck.models import AgentKind
 from termdeck.proc_tree import ProcTreeUtil
 
 
@@ -149,10 +148,10 @@ class AgentSessionTracker:
             return None
         return agents.agent_cli("codex").transcript_path(None, session_id)
 
-    def session_activity_timestamp(self, kind: AgentKind, cwd: Path, session_id: str | None) -> float:
+    def session_activity_timestamp(self, kind: str, cwd: Path, session_id: str | None) -> float:
         if not session_id:
             return 0.0
-        path = agents.agent_cli(kind.value).transcript_path(cwd, session_id)
+        path = agents.agent_cli(kind).transcript_path(cwd, session_id)
         if path is None:
             return 0.0
         try:
@@ -260,11 +259,11 @@ class AgentSessionTracker:
         matches = [session_id for session_id, name in self._codex_thread_names.items() if name == reference]
         return matches[-1] if matches else None
 
-    def _is_subagent_session_file(self, kind: AgentKind, path: Path) -> bool:
+    def _is_subagent_session_file(self, kind: str, path: Path) -> bool:
         cached = self._subagent_file_cache.get(path)
         if cached is not None:
             return cached
-        marker = agents.agent_cli(kind.value).subagent_file_marker
+        marker = agents.agent_cli(kind).subagent_file_marker
         if not marker:
             return False
         try:
@@ -489,7 +488,7 @@ class AgentSessionTracker:
         if not normalized_title:
             return None
         candidates: list[tuple[float, str]] = []
-        for path, session_id in self._candidate_session_files(AgentKind.CLAUDE, cwd):
+        for path, session_id in self._candidate_session_files("claude", cwd):
             if session_id in claimed_ids:
                 continue
             try:
@@ -571,10 +570,10 @@ class AgentSessionTracker:
             sequence > ai_title_sequence for sequence in pending_tool_sequences.values())
         return ai_title, has_current_pending_tool
 
-    def snapshot_session_files(self, kind: AgentKind, cwd: Path) -> set[Path]:
+    def snapshot_session_files(self, kind: str, cwd: Path) -> set[Path]:
         return {path for path, _ in self._candidate_session_files(kind, cwd)}
 
-    async def session_id_from_open_files(self, kind: AgentKind, socket_path: Path) -> str | None:
+    async def session_id_from_open_files(self, kind: str, socket_path: Path) -> str | None:
         tree_pids = await ProcTreeUtil.tree_pids_for_socket(str(socket_path))
         pids = ",".join(str(pid) for pid in tree_pids)
         if not pids:
@@ -611,7 +610,7 @@ class AgentSessionTracker:
     def claude_session_id_from_recent_file_activity(self, cwd: Path, after_timestamp: float,
                                                      claimed_ids: set[str]) -> str | None:
         candidates: list[tuple[float, str]] = []
-        for path, session_id in self._candidate_session_files(AgentKind.CLAUDE, cwd):
+        for path, session_id in self._candidate_session_files("claude", cwd):
             if session_id in claimed_ids:
                 continue
             try:
@@ -623,8 +622,8 @@ class AgentSessionTracker:
         return max(candidates, default=(0.0, None))[1]
 
     @staticmethod
-    def _session_id_for_path(kind: AgentKind, path: Path) -> str | None:
-        return agents.agent_cli(kind.value).session_id_from_path(path)
+    def _session_id_for_path(kind: str, path: Path) -> str | None:
+        return agents.agent_cli(kind).session_id_from_path(path)
 
     @staticmethod
     async def _run_capture(*argv: str) -> str:
@@ -637,7 +636,7 @@ class AgentSessionTracker:
             return ""
         return stdout.decode()
 
-    def absorb_and_find_new_session_file(self, kind: AgentKind, cwd: Path, baseline: set[Path],
+    def absorb_and_find_new_session_file(self, kind: str, cwd: Path, baseline: set[Path],
                                          claimed_ids: set[str], claim_allowed: bool) -> str | None:
         new_candidates: list[tuple[Path, str]] = []
         for path, session_id in self._candidate_session_files(kind, cwd):
@@ -656,8 +655,8 @@ class AgentSessionTracker:
             return 0.0
 
     @staticmethod
-    def _candidate_session_files(kind: AgentKind, cwd: Path) -> list[tuple[Path, str]]:
-        return agents.agent_cli(kind.value).candidate_session_files(cwd)
+    def _candidate_session_files(kind: str, cwd: Path) -> list[tuple[Path, str]]:
+        return agents.agent_cli(kind).candidate_session_files(cwd)
 
     @staticmethod
     def _command_parts(command: str) -> list[str]:

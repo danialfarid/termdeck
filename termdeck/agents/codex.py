@@ -1,13 +1,23 @@
 import re
 import shlex
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Iterable
 
-from termdeck.agents.base import AgentCli
+from termdeck.agents.base import AgentCli, AgentSessionState
 from termdeck.config import TermdeckConfig
 from termdeck.transcript_turns import TurnBuilder
 from termdeck.util import TimeUtil
+
+
+class CodexSessionState(AgentSessionState):
+    def __init__(self) -> None:
+        self.transcript_active = False
+        self.activity_checked_monotonic = 0.0
+        self.activity_signature: tuple[int | None, int, int] | None = None
+        self.pending_rename: str | None = None
+        self.pending_rename_deadline = 0.0
 
 
 class CodexCli(AgentCli):
@@ -20,6 +30,7 @@ class CodexCli(AgentCli):
     canonical_resume_command = True
     records_raw_replay = True
     has_prompt_queue = True
+    supports_agent_rename = True
 
     base_flags = (TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG,)
     permission_flags = {
@@ -254,6 +265,123 @@ class CodexCli(AgentCli):
     def cwd_from_payload(self, path: Path, payload: dict[str, object]) -> str:
         body = payload.get("payload")
         return str(body.get("cwd", "")) if isinstance(body, dict) else ""
+
+    # -- activity / processing ---------------------------------------------
+
+    ACTIVITY_FALLBACK_CHECK_SECONDS = 1.0
+
+    def new_session_state(self) -> CodexSessionState:
+        return CodexSessionState()
+
+    def is_processing(self, ms) -> bool:
+        return bool(ms.processing or ms.agent_state.transcript_active)
+
+    def activity_signature(self, manager, ms) -> tuple[int | None, int, int] | None:
+        if not ms.record.agent_session_id:
+            return None
+        path = self.transcript_path(None, ms.record.agent_session_id)
+        if path is None:
+            return None
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return getattr(stat, "st_ino", None), stat.st_size, stat.st_mtime_ns
+
+    def refresh_persisted_activity(self, manager, ms) -> None:
+        ms.agent_state.transcript_active = manager._tracker.codex_session_is_active(ms.record.agent_session_id)
+        ms.agent_state.activity_signature = self.activity_signature(manager, ms)
+
+    def refresh_activity_for_status(self, manager, ms) -> None:
+        # Fallback poll: FSEvents can drop appends to a rollout Codex keeps open, so a signature
+        # change observed at status time re-derives the active flag from the transcript tail.
+        if not ms.running or not ms.agent_state.transcript_active or not ms.record.agent_session_id:
+            return
+        now = time.monotonic()
+        if now - ms.agent_state.activity_checked_monotonic < self.ACTIVITY_FALLBACK_CHECK_SECONDS:
+            return
+        ms.agent_state.activity_checked_monotonic = now
+        signature = self.activity_signature(manager, ms)
+        if signature is None or signature == ms.agent_state.activity_signature:
+            return
+        ms.agent_state.activity_signature = signature
+        ms.agent_state.transcript_active = manager._tracker.codex_session_is_active(ms.record.agent_session_id)
+        manager._sync_processing_started(ms)
+
+    def on_transcript_event(self, manager, ms, path: Path) -> None:
+        if not path.name.endswith(f"-{ms.record.agent_session_id}.jsonl"):
+            return
+        previous = manager._processing_state(ms)
+        ms.agent_state.transcript_active = manager._tracker.codex_session_is_active(ms.record.agent_session_id)
+        ms.agent_state.activity_signature = self.activity_signature(manager, ms)
+        if manager._processing_state(ms) != previous:
+            manager._broadcast_status(ms)
+
+    def session_title(self, tracker, cwd: Path, agent_session_id: str | None) -> str | None:
+        return tracker.codex_session_title(agent_session_id)
+
+    # -- input / rename / detection ----------------------------------------
+
+    def pre_write_input(self, manager, ms, text: str, draft_before: str) -> None:
+        if "\r" not in text and "\n" not in text:
+            return
+        command = self.submitted_command(text, draft_before)
+        if command.lower().startswith("/rename") and (len(command) == 7 or command[7].isspace()):
+            candidate = command[7:].strip()
+            if candidate:
+                ms.agent_state.pending_rename = candidate
+                ms.agent_state.pending_rename_deadline = time.monotonic() + 30.0
+        submitted = text in {"\r", "\n"} and bool(command) and not command.startswith("/")
+        if submitted and not ms.agent_state.transcript_active:
+            ms.agent_state.transcript_active = True
+            ms.agent_state.activity_signature = self.activity_signature(manager, ms)
+            ms.agent_state.activity_checked_monotonic = time.monotonic()
+            manager._broadcast_status(ms)
+
+    def on_api_prompt_submitted(self, manager, ms, queue: bool) -> None:
+        if not queue:
+            ms.agent_state.transcript_active = True
+            manager._broadcast_status(ms)
+
+    def _before_send_rename(self, ms, title: str) -> None:
+        ms.agent_state.pending_rename = title
+        ms.agent_state.pending_rename_deadline = time.monotonic() + 30.0
+
+    def reconcile_rename(self, manager, ms, previous_title: str | None) -> bool:
+        """Persist a Codex `/rename` after its durable index and OSC title agree.
+
+        The terminal confirmation text is presentation output and is not parsed.
+        A pending command supplies the expected name; the OSC transition also
+        lets us recover a rename that was entered before this listener existed.
+        """
+        if not ms.record.agent_session_id:
+            return False
+        candidate = manager._tracker.codex_thread_name(ms.record.agent_session_id)
+        if not candidate:
+            return False
+        live_title = manager._display_title(ms.cli_title)
+        old_live_title = manager._display_title(previous_title)
+        expected = ms.agent_state.pending_rename
+        expected_matches = bool(expected and candidate == expected and live_title == expected)
+        transition_matches = bool(old_live_title and live_title and old_live_title != live_title and
+                                  candidate == live_title and ms.record.title == old_live_title)
+        if not expected_matches and not transition_matches:
+            if ms.agent_state.pending_rename and time.monotonic() >= ms.agent_state.pending_rename_deadline:
+                ms.agent_state.pending_rename = None
+            return False
+        ms.agent_state.pending_rename = None
+        if ms.record.title == candidate:
+            return False
+        ms.record.title = candidate
+        ms.record.title_user_set = True
+        manager._persist()
+        return True
+
+    def on_agent_session_bound(self, manager, ms) -> None:
+        if ms.cli_title is None:
+            ms.cli_title = manager._tracker.codex_session_title(ms.record.agent_session_id)
+        ms.agent_state.transcript_active = manager._tracker.codex_session_is_active(ms.record.agent_session_id)
+        ms.agent_state.activity_signature = self.activity_signature(manager, ms)
 
     def _ensure_searchable_scrollback(self, parts: list[str]) -> list[str]:
         # The alternate screen keeps output out of scrollback; TermDeck needs it searchable.

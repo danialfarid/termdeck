@@ -596,10 +596,11 @@ class ClaudeRenameBindingReconciliationTest(unittest.IsolatedAsyncioTestCase):
             manager._tracker.claude_project_dir = MagicMock(return_value=Path(directory))
             manager._tracker.claude_explicit_session_title = MagicMock(return_value=None)
             manager._tracker.claude_session_id_for_explicit_title = MagicMock(return_value="live-session")
-            manager._initialize_claude_subagent_state = MagicMock()
             manager._persist = MagicMock()
 
-            self.assertTrue(manager._reconcile_stale_claude_session_binding(session))
+            claude = agents.agent_cli("claude")
+            with patch.object(claude, "initialize_subagent_state"):
+                self.assertTrue(claude.reconcile_stale_binding(manager, session))
 
         self.assertEqual(saved.agent_session_id, "live-session")
         self.assertEqual(saved.command, "claude --resume live-session")
