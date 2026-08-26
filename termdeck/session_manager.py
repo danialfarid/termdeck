@@ -279,7 +279,7 @@ class TerminalSessionManager:
                     ms.scrollback_compaction_generation, ms.scrollback_checkpoint_compaction_generation)
                 if snapshot is not None:
                     snapshots.append(snapshot)
-            if self._claude_raw_replay_enabled and ms.record.agent_kind == AgentKind.CLAUDE.value and ms.claude_raw_replay_buffer:
+            if self._claude_raw_replay_enabled and ms.record.agent_kind in (AgentKind.CLAUDE.value, AgentKind.CODEX.value) and ms.claude_raw_replay_buffer:
                 snapshot = self._replay_checkpoint_snapshot(
                     ms, AgentKind.CLAUDE.value, self._claude_raw_replay_path(ms.record.session_id),
                     self._claude_raw_replay_bytes(ms), ms.claude_raw_replay_checkpoint_pending,
@@ -401,7 +401,8 @@ class TerminalSessionManager:
                 candidate.claude_raw_replay_compaction_generation += 1
 
     def _append_claude_raw_replay(self, ms: ManagedSession, data: bytes) -> None:
-        if not self._claude_raw_replay_enabled or ms.record.agent_kind != AgentKind.CLAUDE.value:
+        if not self._claude_raw_replay_enabled or \
+                ms.record.agent_kind not in (AgentKind.CLAUDE.value, AgentKind.CODEX.value):
             return
         filtered = self._collapse_claude_raw_replay_titles(ms, data)
         if not filtered:
@@ -417,7 +418,7 @@ class TerminalSessionManager:
         self._enforce_claude_raw_replay_total_limit()
 
     def _seed_claude_raw_replay_from_durable_buffer(self, ms: ManagedSession) -> None:
-        if ms.record.agent_kind != AgentKind.CLAUDE.value or ms.claude_raw_replay_buffer or not ms.buffer:
+        if ms.record.agent_kind not in (AgentKind.CLAUDE.value, AgentKind.CODEX.value) or ms.claude_raw_replay_buffer or not ms.buffer:
             return
         replay = self._replay_bytes(ms)[-TermdeckConfig.CLAUDE_RAW_REPLAY_SESSION_BYTES:]
         ms.claude_raw_replay_buffer.extend(replay)
@@ -521,7 +522,7 @@ class TerminalSessionManager:
                 ms.buffer.extend(replay)
                 if requires_compaction:
                     ms.scrollback_compaction_generation += 1
-            if self._claude_raw_replay_enabled and record.agent_kind == AgentKind.CLAUDE.value:
+            if self._claude_raw_replay_enabled and record.agent_kind in (AgentKind.CLAUDE.value, AgentKind.CODEX.value):
                 claude_replay_path = self._claude_raw_replay_path(record.session_id)
                 if claude_replay_path.exists():
                     replay, requires_compaction = self._read_replay_checkpoint_tail(
@@ -1791,7 +1792,8 @@ class TerminalSessionManager:
         ms = self._sessions[session_id]
         self._recover_title_from_buffer(ms)
         preserve_client_buffer = have_buffer
-        claude_raw_replay_active = self._claude_raw_replay_enabled and ms.record.agent_kind == AgentKind.CLAUDE.value
+        claude_raw_replay_active = self._claude_raw_replay_enabled and \
+            ms.record.agent_kind in (AgentKind.CLAUDE.value, AgentKind.CODEX.value)
         use_full_claude_raw_replay = self._claude_full_raw_replay_enabled and full_claude_raw_replay
         # Full means the ENTIRE recording, not the longest single screen frame: a frame is one repaint,
         # so serving only one showed at most a screenful of conversation on a fresh page -- "history is
@@ -2104,7 +2106,7 @@ class TerminalSessionManager:
         self._persist()
         if not await self._terminate_proc(ms):
             raise RuntimeError(f"could not stop dtach session before restart: {session_id}")
-        if ms.record.agent_kind == AgentKind.CLAUDE.value:
+        if ms.record.agent_kind in (AgentKind.CLAUDE.value, AgentKind.CODEX.value):
             self._clear_claude_terminal_history_for_restart(ms)
         self._spawn(ms, resume=True)
 

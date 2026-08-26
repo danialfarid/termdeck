@@ -64,6 +64,7 @@ TESTS=(
   composer_cap
   find_reveals_match
   fold_keeps_composer
+  codex_tab_return
   scroll_round_trip
   short_session_scrollback
   parked_under_chunks

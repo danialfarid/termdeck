@@ -9815,8 +9815,9 @@ class TermdeckApp {
     const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
     const tabTitle = this.activePageTabTitle(entry, s);
     const pageTitle = this.vscodeMode ? "TermDeck" : (tabTitle ? `${tabTitle} — TermDeck` : "TermDeck");
-    const processing = !entry && !!s && this.titlePresentation(s).spinning;
-    const unread = !entry && !!s && !processing && this.unreadSessions.has(s.session_id);
+    const terminalPage = !entry && this.sideView === "terminals";
+    const processing = terminalPage && !!s && this.titlePresentation(s).spinning;
+    const unread = terminalPage && !!s && !processing && this.unreadSessions.has(s.session_id);
     this.updateDocumentTitle(pageTitle, processing ? "processing" : unread ? "unread" : "plain");
     const statusEl = this.$("status-name");
     if (entry) {
@@ -15779,7 +15780,8 @@ class TermdeckApp {
     // repaint it; a reconnect that already has a populated xterm buffer can skip the SIGWINCH nudge.
     const screenRepaint = hasPopulatedBuffer || this.session(id)?.agent_kind === "codex" ? 0 : 1;
     const haveBuffer = hasPopulatedBuffer ? 1 : 0;
-    const fullClaudeRawReplay = !hasPopulatedBuffer && this.session(id)?.agent_kind === "claude" ? 1 : 0;
+    const agentKindForReplay = this.session(id)?.agent_kind;
+    const fullClaudeRawReplay = !hasPopulatedBuffer && (agentKindForReplay === "claude" || agentKindForReplay === "codex") ? 1 : 0;
     // repaint_preserved_buffer is deliberately not sent: it only ever meant "this client restored a
     // client-side snapshot, so make the agent repaint over it", and that snapshot path is gone. The
     // server defaults the flag to false when the parameter is absent.
@@ -16505,8 +16507,8 @@ class TermdeckApp {
       return;
     }
     const alreadyVisible = !button.classList.contains("hidden");
-    if (view.tallPointerHeld && alreadyVisible) return;
     const visible = this.terminalAtTop(view, alreadyVisible ? 24 : 2);
+    if (view.tallPointerHeld && alreadyVisible && visible) return;
     button.classList.toggle("hidden", !visible);
   }
 
