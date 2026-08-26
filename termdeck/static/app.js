@@ -109,6 +109,9 @@ const TALL_BOTTOM_TOLERANCE_PX = 2;
 // How far below the top edge the cursor's row is held when following is capped (see tallFollowTarget):
 // enough rows for the composer's own top border to stay on screen above the cursor line.
 const TALL_FOLLOW_CURSOR_TOP_MARGIN_ROWS = 3;
+// How long after a fold glue before its one re-placement runs (see the glue's comment): long enough
+// for a mid-redraw state to have resolved, short enough that a misfire's dip stays sub-second.
+const TALL_GLUE_RECHECK_MS = 800;
 // How long after the last scroll event a gesture is still considered in progress, and how long of a
 // quiet period settles it. Both cover a scrollbar drag pausing mid-gesture without ending it.
 const TALL_SCROLL_ACTIVE_MS = 250;
@@ -17186,9 +17189,25 @@ class TermdeckApp {
       let glueFold = false;
       if (!userSettled && wholeCell) {
         const previousCursorPx = view.tallFollowCursorPx;
-        glueFold = previousCursorPx != null && capPx <= previousCursorPx - 2 * wholeCell &&
+        glueFold = !view.replaying && !view.awaitingSnapshot &&
+          previousCursorPx != null && capPx <= previousCursorPx - 2 * wholeCell &&
           !this.tallCursorRegionMostlyBlank(view);
         view.tallFollowCursorPx = capPx;
+        if (glueFold) {
+          // A write callback can land mid-redraw (the attach repaint walks the cursor high through the
+          // frame it rebuilds), and that instant is indistinguishable from a real fold -- acting on it
+          // put the view at the top or middle of the page on a tab switch, permanently when the redraw's
+          // completion was the last write. Rather than trying to tell the two apart, any glue gets one
+          // re-placement after the dust settles: a real fold re-confirms and nothing moves, a mid-redraw
+          // misfire finds the regrown bottom and drives back down.
+          clearTimeout(view.tallGlueRecheckTimer);
+          view.tallGlueRecheckTimer = setTimeout(() => {
+            view.tallGlueRecheckTimer = 0;
+            if (view.closed || view.tallFollowing === false) return;
+            this.tallUpdateMaxScrollTop(view);
+            this.scrollTallContainerToCursor(view);
+          }, TALL_GLUE_RECHECK_MS);
+        }
         if (glueFold) {
           const baseRows = Number(view.term.buffer.active.baseY || 0);
           const undampedBottom = Math.max(0, (baseRows + this.tallEffectiveBottomRow(view) + 1) *

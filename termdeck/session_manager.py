@@ -490,25 +490,24 @@ class TerminalSessionManager:
         return longest_frame + ms.claude_raw_replay_last_title
 
     def _clear_claude_terminal_history_for_restart(self, ms: ManagedSession) -> None:
-        ms.buffer.clear()
-        self._discard_claude_raw_replay(ms)
+        # History survives the restart. This used to discard the raw recording and hard-reset every
+        # surface, so a restarted claude's terminal began life with only whatever the resumed process
+        # repainted -- days of scrollback gone from the tab and from every future replay. The recording
+        # and durable buffer are kept; the spawn path's own divider mechanism then scrolls the old
+        # screen into scrollback (see _spawn), the "restarted" rule lands between old and new, and the
+        # resumed claude paints its fresh screen below. Only the parse carries and repaint bookkeeping
+        # reset, since they describe the terminated process's stream.
         ms.title_carry = b""
         ms.osc_query_carry = b""
         ms.scrollback_sync_carry = b""
+        ms.claude_raw_replay_title_carry = b""
         ms.screen_lives_only_in_stripped_sync_frames = False
         ms.last_repaint_offset = None
         ms.output_missed_while_detached = False
         ms.cold_attach_repaint_done = False
-        ms.terminal_history_cleared_for_spawn = True
         if ms.screen_repaint_task is not None and not ms.screen_repaint_task.done():
             ms.screen_repaint_task.cancel()
         ms.screen_repaint_task = None
-        reset_sequence = TermdeckConfig.TERMINAL_HISTORY_RESET_SEQUENCE
-        self._append_claude_raw_replay(ms, reset_sequence)
-        self._append_collapsing_repaints(ms, reset_sequence)
-        self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.TERMINAL_RESET})
-        for queue in list(ms.client_queues):
-            queue.put_nowait(reset_sequence)
 
     async def startup_respawn_saved_sessions(self) -> None:
         for record in self._store.load_all():
@@ -835,7 +834,17 @@ class TerminalSessionManager:
             )
         skip_existing_history_separator = (reattach and preserve_claude_raw_replay) or \
             ms.terminal_history_cleared_for_spawn
-        if ms.buffer and not skip_existing_history_separator:
+        if ms.claude_raw_replay_buffer and not skip_existing_history_separator:
+            # Preserves the old screen across the respawn: the divider prints below the content, the
+            # cursor is sent to the terminal's OWN last row -- \x1b[9999;1H clamps to the bottom on
+            # every client, whatever its height, where the server's pty row count says nothing about a
+            # taller client terminal -- and newlines from there scroll content and divider into
+            # scrollback before the resumed TUI's home-and-erase can wipe them. The pty's rows bound
+            # how deep the TUI can have painted, so that many newlines always carries everything.
+            divider = TermdeckConfig.REATTACH_DIVIDER if reattach else TermdeckConfig.RESPAWN_DIVIDER
+            payload = "\r\n" + divider + "\x1b[9999;1H" + "\r\n" * (ms.rows + 4)
+            self._handle_output(ms, payload.encode(), mark_activity=False)
+        elif ms.buffer and not skip_existing_history_separator:
             divider = TermdeckConfig.REATTACH_DIVIDER if reattach else TermdeckConfig.RESPAWN_DIVIDER
             self._handle_output(ms, ("\r\n" * ms.rows + divider + "\r\n").encode(), mark_activity=False)
         elif not reattach:

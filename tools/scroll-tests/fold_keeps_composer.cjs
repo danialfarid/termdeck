@@ -44,10 +44,16 @@ const BASE = `http://127.0.0.1:${PORT}`;
       const absoluteCursorTop = (buffer.baseY + buffer.cursorY) * cell;
       return absoluteCursorTop - view.container.scrollTop;
     };
-    window.__foldProbe = { baseline: sample(), webgl: !!view.tallWebgl, samples: [] };
+    window.__foldProbe = { baseline: null, webgl: !!view.tallWebgl, samples: [] };
     const tick = () => {
-      window.__foldProbe.samples.push({ at: performance.now(), cursorTop: sample(), scrollTop: view.container.scrollTop,
-        ceiling: view.tallMaxScrollTop, innerHeight: view.tallInnerHeight });
+      const cursorTop = sample();
+      // The seed clears the screen before repainting; a frame caught in that gap reads cursorTop 0 and
+      // must not become the baseline or a sample -- it poisoned the whole measurement once.
+      if (cursorTop > 0) {
+        if (window.__foldProbe.baseline == null) window.__foldProbe.baseline = cursorTop;
+        window.__foldProbe.samples.push({ at: performance.now(), cursorTop, scrollTop: view.container.scrollTop,
+          ceiling: view.tallMaxScrollTop, innerHeight: view.tallInnerHeight });
+      }
       window.__foldProbe.frame = requestAnimationFrame(tick);
     };
     tick();
