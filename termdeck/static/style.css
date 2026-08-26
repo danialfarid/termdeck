@@ -548,7 +548,7 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 #sidebar-footer button.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 #sidebar-footer .codicon { font-size: 15px; }
 #sidebar-mode-tabs { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
-#sidebar-mode-tabs > .sidebar-mode-tab { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 calc(28px * var(--ui-scale)); width: calc(28px * var(--ui-scale)); height: calc(28px * var(--ui-scale)); aspect-ratio: 1; padding: 0; line-height: 1; }
+#sidebar-mode-tabs > .sidebar-mode-tab { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 calc(28px * var(--ui-scale)); width: calc(28px * var(--ui-scale)); height: calc((28px * var(--ui-scale)) - 2px); aspect-ratio: auto; padding: 0; line-height: 1; }
 body.vscode-mode #files-section,
 body.vscode-native-mode #files-section,
 body.vscode-mode #side-split,

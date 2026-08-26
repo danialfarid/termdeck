@@ -104,7 +104,9 @@ class TermdeckConfig:
     API_HISTORY_SEARCH_ROUTE = "/api/history-search"
     API_HISTORY_CONTEXT_ROUTE = "/api/history-context"
     API_SETTINGS_ROUTE = "/api/settings"
-    API_SCROLL_FAULT_ROUTE = "/api/debug/scroll-fault"
+    API_DIAGNOSTICS_ROUTE = "/api/debug/diagnostics"
+    DIAGNOSTICS_DIR_NAME = "diagnostics"
+    DIAGNOSTICS_MAX_BYTES = 32 * 1024 * 1024
     API_SETTING_ROUTE = "/api/settings/{setting_name}"
     API_SETTING_ENTRY_ROUTE = "/api/settings/{setting_name}/{entry_key}"
     API_REMOTE_STATUS_ROUTE = "/api/remote/status"

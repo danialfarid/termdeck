@@ -256,6 +256,7 @@ const DESKTOP_KEYBINDINGS = [
   { id: "open-move-menu", label: "Open active terminal Move to menu", def: "Alt+m", section: "Terminal" },
   { id: "undo-terminal-edit", label: "Undo terminal composer edit", def: "Meta+z", section: "Terminal" },
   { id: "open-terminal-new-tab", label: "Open active terminal in a new browser tab", def: "Meta+Alt+o", section: "Terminal" },
+  { id: "toggle-diagnostics-recording", label: "Record diagnostics for a bug report", def: "Ctrl+Alt+Shift+k", section: "Terminal" },
   { id: "save-file", label: "Save open file", def: "Meta+s", section: "Files" },
   { id: "file-history-previous-change", label: "File history: previous change", def: "Alt+Shift+ArrowUp", section: "Files" },
   { id: "file-history-next-change", label: "File history: next change", def: "Alt+Shift+ArrowDown", section: "Files" },
@@ -299,6 +300,7 @@ const VSCODE_KEYBINDINGS = [
   { id: "prev-terminal", label: "Previous terminal", def: "Ctrl+Alt+ArrowUp", section: "Terminal" },
   { id: "next-terminal", label: "Next terminal", def: "Ctrl+Alt+ArrowDown", section: "Terminal" },
   { id: "open-terminal-new-tab", label: "Open active terminal in a new browser tab", def: "Ctrl+Alt+o", section: "Terminal" },
+  { id: "toggle-diagnostics-recording", label: "Record diagnostics for a bug report", def: "Ctrl+Alt+Shift+k", section: "Terminal" },
   { id: "toggle-notebook", label: "Quick notebook", def: "Ctrl+Alt+n", section: "General" },
   { id: "open-files-new-tab", label: "Open files in a new browser tab", def: "Ctrl+Alt+d", section: "Files" },
   { id: "open-search-new-tab", label: "Open file search in a new browser tab", def: "Ctrl+Alt+f", section: "Files" },
@@ -3339,7 +3341,6 @@ class TermdeckApp {
       if (event.persisted) scheduleLayoutFit();
     });
     this.installTerminalSizeDebugOverlay();
-    this.startScrollFaultRecorder();
     void this.initializeRemoteIdleMode();
     this.refresh().finally(() => this.connectStatusStream());
     setInterval(() => this.refresh(), SESSION_LIST_REFRESH_MS);
@@ -16216,80 +16217,231 @@ class TermdeckApp {
   // is xterm's own logical buffer tail (what SHOULD be on screen); dom is the actually-painted rows. If
   // they ever disagree, that is a termdeck repaint bug; if buf itself changes content across snapshots
   // with cols unchanged, the CLI genuinely redrew differently -- the two rule each other in or out.
-  // Continuous scroll-fault recorder. The follow faults left in this area are intermittent and live
-  // entirely in the browser's geometry, so they cannot be reproduced on demand and cannot be seen from
-  // the server. This samples the active view a few times a second, keeps a short rolling window, and
-  // posts the window either side of a fault to /api/debug/scroll-fault, which appends it to
-  // scroll-faults.jsonl in the data dir. Nothing is read back by the app and nothing is shown to the
-  // user; it exists so a fault that happens once an hour during ordinary use is still diagnosable.
+  // Opt-in diagnostic session recorder, off by default.
   //
-  // Detector logic is deliberately the same shape as tools/watch_symptoms.cjs, which has unit tests for
-  // it (tools/scroll-tests/symptom_detector.cjs).
-  startScrollFaultRecorder() {
-    if (this.scrollFaultTimer) return;
-    const RING = 60;            // ~12s of history at 200ms
-    const samples = [];
-    let sinkSince = 0, sinkFlagged = false, posted = 0;
-    const sampleOnce = () => {
-      const view = this.views.get(this.activeId);
-      if (!view || view.closed || !view.term || !view.container.clientHeight) return null;
-      if (!view.container.classList.contains("visible") || view.replaying) return null;
-      const buffer = view.term.buffer.active;
-      const cell = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-      if (!cell) return null;
-      const windowTop = view.container.scrollTop - view.term.element.offsetTop;
-      const first = buffer.viewportY + Math.floor(windowTop / cell);
-      const last = buffer.viewportY + Math.floor((windowTop + view.container.clientHeight - 1) / cell);
-      let lastContent = -1;
-      const floor = Math.max(0, buffer.length - 300);
-      for (let row = buffer.length - 1; row >= floor; row -= 1) {
-        if (buffer.getLine(row)?.translateToString(true).trim()) { lastContent = row; break; }
-      }
-      const now = Date.now();
-      return { t: now, id: this.activeId, title: this.session(this.activeId)?.title || "",
-               top: Math.round(view.container.scrollTop), ceiling: view.tallMaxScrollTop,
-               nativeMax: Math.round(view.container.scrollHeight - view.container.clientHeight),
-               following: view.tallFollowing, followTop: view.tallFollowTop,
-               pinned: view.tallPinnedViewportY, anchor: view.tallAnchorRow,
-               blankSkips: view.tallBlankSkips, elTop: view.term.element.offsetTop,
-               viewportY: buffer.viewportY, baseY: buffer.baseY, len: buffer.length,
-               cursorY: buffer.cursorY, absCursor: (buffer.baseY || 0) + buffer.cursorY,
-               first, last, lastContent, rowsBelow: lastContent - last,
-               // A gesture owns the view while it runs, so movement during one is never a fault.
-               gesture: !!view.tallPointerHeld ||
-                 now < Math.max(view.tallWheelActiveUntil || 0, view.tallScrollActiveUntil || 0) + 400 };
-    };
-    const report = (kind, detail, window) => {
-      if (posted >= 40) return;          // a broken build must not spam the log forever
-      posted += 1;
-      const body = JSON.stringify({ kind, detail, at: new Date().toISOString(),
-                                    ua: navigator.userAgent, window });
-      fetch("/api/debug/scroll-fault", { method: "POST", headers: { "Content-Type": "application/json" }, body })
-        .catch(() => {});
-    };
-    this.scrollFaultTimer = window.setInterval(() => {
-      const current = sampleOnce();
-      if (!current) return;
-      const prev = samples[samples.length - 1];
-      samples.push(current);
-      if (samples.length > RING) samples.shift();
-      if (!prev || prev.id !== current.id || current.gesture) { sinkSince = 0; return; }
-      // Content walking off the bottom while nobody is touching the view: the composer sinking line by
-      // line as the agent writes. A reader parked in history also has content below them, so what marks
-      // the fault is the gap GROWING, not merely existing.
-      if (current.rowsBelow > 2 && current.rowsBelow > prev.rowsBelow) {
-        if (!sinkSince) sinkSince = current.t;
-        if (current.t - sinkSince > 1500 && !sinkFlagged) {
-          sinkFlagged = true;
-          const shortBy = current.ceiling == null ? null : Math.round(current.ceiling - current.top);
-          report("sinking",
-                 `content escaping below the fold: ${current.rowsBelow} rows, following=${current.following}, ` +
-                 `${shortBy}px short of the ceiling, ${current.nativeMax - current.top}px of scroll left`,
-                 samples.slice());
-        }
-      } else if (current.rowsBelow <= 2) { sinkSince = 0; sinkFlagged = false; }
-    }, 200);
+  // The faults left in this app are intermittent, live in the browser rather than the server, and are
+  // reported in prose ("it keeps pushing the composer down") long after the state that caused them is
+  // gone. This records a session instead: what the user did, what the app did in response, and what the
+  // geometry looked like throughout, batched to /api/debug/diagnostics and appended to one file per
+  // recording under diagnostics/ in the data dir. Hand that file over with a bug report.
+  //
+  // While OFF it costs nothing: no interval, no listeners, no wrappers -- every hook is installed on
+  // start and removed on stop, so the only cost in normal use is one boolean check that never runs
+  // because nothing calls into it. Recording is deliberately visible (see the badge): a tool that
+  // watches the UI should never be running unnoticed.
+  //
+  // Deliberately NOT recorded: terminal output and typed input. A terminal carries credentials and
+  // private source, and a log meant to be shared must not. Sizes, row counts and timings only.
+  diagnosticsRecording() { return !!this.diagState; }
+
+  toggleDiagnosticsRecorder() {
+    if (this.diagState) this.stopDiagnosticsRecorder();
+    else this.startDiagnosticsRecorder();
+    return this.diagnosticsRecording();
   }
+
+  // One entry point for everything below. Cheap and safe to call from anywhere: when not recording it
+  // is a single truthiness test, and it never throws into its caller.
+  diagLog(kind, data) {
+    const state = this.diagState;
+    if (!state) return;
+    try {
+      state.pending.push({ t: Date.now() - state.startedAt, kind, ...data });
+      state.count += 1;
+      if (state.pending.length >= 200) this.flushDiagnostics();
+      if (state.count % 25 === 0) this.updateDiagnosticsBadge();
+    } catch { /* a diagnostic must never break the thing it is diagnosing */ }
+  }
+
+  startDiagnosticsRecorder() {
+    if (this.diagState) return;
+    const id = `${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    const state = { id, startedAt: Date.now(), pending: [], count: 0, faults: 0, samples: [], undo: [] };
+    this.diagState = state;
+    this.showDiagnosticsBadge();
+
+    // --- what the user did, and what the app decided -------------------------------------------------
+    // Wrapping methods on the instance keeps the instrumentation in one place instead of scattering log
+    // calls through the app, and makes "stop" a genuine restore rather than a disabled flag.
+    const wrap = (name, describe) => {
+      const original = this[name];
+      if (typeof original !== "function") return;
+      this[name] = (...args) => {
+        this.diagLog(name, describe ? describe.apply(this, args) || {} : {});
+        return original.apply(this, args);
+      };
+      state.undo.push(() => { this[name] = original; });
+    };
+    wrap("activate", (id) => ({ session: String(id || "").slice(0, 12) }));
+    wrap("setSideView", (view) => ({ view }));
+    wrap("applySettings", () => ({}));
+    wrap("scrollTallContainerToCursor", (view, settled) => ({ settled: !!settled, top: Math.round(view?.container?.scrollTop ?? -1) }));
+    wrap("tallSetScrollTop", (view, value) => ({ to: Math.round(value), from: Math.round(view?.container?.scrollTop ?? -1) }));
+    wrap("tallUpdateMaxScrollTop", (view) => ({ ceiling: view?.tallMaxScrollTop }));
+    wrap("runKeybindingAction", (actionId) => ({ actionId }));
+    wrap("toggleHistory", () => ({}));
+
+    // Follow/park transitions, which is the decision most of these reports come down to.
+    const origSettle = this.tallApplySettledScroll?.bind(this);
+    if (origSettle) {
+      this.tallApplySettledScroll = (view) => {
+        const before = view?.tallFollowing;
+        const result = origSettle(view);
+        if (view && before !== view.tallFollowing) {
+          this.diagLog("follow", { from: String(before), to: String(view.tallFollowing), ...this.diagGeometry(view) });
+        }
+        return result;
+      };
+      state.undo.push(() => { this.tallApplySettledScroll = origSettle; });
+    }
+
+    // --- things that go wrong on their own ------------------------------------------------------------
+    const onError = (event) => this.diagLog("error", {
+      message: String(event.message || event.reason || "").slice(0, 300),
+      source: String(event.filename || "").split("/").pop(), line: event.lineno });
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onError);
+    state.undo.push(() => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onError);
+    });
+
+    // --- raw input, as shape only ---------------------------------------------------------------------
+    const onWheel = (event) => this.diagLog("wheel", { dy: Math.round(event.deltaY) });
+    const onPointer = (event) => this.diagLog("pointerdown", { target: (event.target?.className || "").toString().slice(0, 40) });
+    const onVisibility = () => this.diagLog("visibility", { hidden: document.hidden });
+    window.addEventListener("wheel", onWheel, { capture: true, passive: true });
+    window.addEventListener("pointerdown", onPointer, { capture: true, passive: true });
+    document.addEventListener("visibilitychange", onVisibility);
+    state.undo.push(() => {
+      window.removeEventListener("wheel", onWheel, { capture: true });
+      window.removeEventListener("pointerdown", onPointer, { capture: true });
+      document.removeEventListener("visibilitychange", onVisibility);
+    });
+
+    // --- periodic geometry, plus the scroll-fault detector ---------------------------------------------
+    let sinkSince = 0, sinkFlagged = 0;
+    state.timer = window.setInterval(() => {
+      const view = this.views.get(this.activeId);
+      if (!view || view.closed || !view.term || !view.container.clientHeight) return;
+      if (!view.container.classList.contains("visible")) return;
+      const geometry = this.diagGeometry(view);
+      if (!geometry) return;
+      const prev = state.samples[state.samples.length - 1];
+      state.samples.push(geometry);
+      if (state.samples.length > 40) state.samples.shift();
+      // Heartbeat, so a log always has context even when nothing is flagged.
+      if (state.count % 20 === 0 || !prev) this.diagLog("geometry", geometry);
+      if (!prev || prev.session !== geometry.session || geometry.gesture) { sinkSince = 0; return; }
+      // Content escaping below a STATIONARY view: the composer sinking as the agent writes. A moving
+      // view is just scrolling -- see tools/scroll-tests/symptom_detector.cjs.
+      if (geometry.rowsBelow > 2 && geometry.rowsBelow > prev.rowsBelow && geometry.top === prev.top) {
+        if (!sinkSince) sinkSince = Date.now();
+        if (Date.now() - sinkSince > 1500 && !sinkFlagged) {
+          sinkFlagged = 1;
+          state.faults += 1;
+          this.diagLog("FAULT.sinking", { detail: `${geometry.rowsBelow} rows below the fold, following=${geometry.following}`,
+                                          window: state.samples.slice() });
+          this.updateDiagnosticsBadge();
+        }
+      } else if (geometry.rowsBelow <= 2) { sinkSince = 0; sinkFlagged = 0; }
+    }, 250);
+
+    state.flushTimer = window.setInterval(() => this.flushDiagnostics(), 3000);
+    this.diagLog("start", { ua: navigator.userAgent, screen: `${window.innerWidth}x${window.innerHeight}`,
+                            dpr: window.devicePixelRatio, settings: this.diagSettingsSummary() });
+  }
+
+  stopDiagnosticsRecorder() {
+    const state = this.diagState;
+    if (!state) return;
+    this.diagLog("stop", { events: state.count, faults: state.faults,
+                           seconds: Math.round((Date.now() - state.startedAt) / 1000) });
+    clearInterval(state.timer);
+    clearInterval(state.flushTimer);
+    for (const undo of state.undo.reverse()) { try { undo(); } catch { /* restore the rest anyway */ } }
+    this.flushDiagnostics(true);
+    this.diagState = null;
+    this.diagBadge?.remove();
+    this.diagBadge = null;
+    const path = `diagnostics/${state.id}.jsonl`;
+    this.$("status-name").textContent =
+      `diagnostics saved: ${path} (${state.count} events, ${state.faults} fault${state.faults === 1 ? "" : "s"})`;
+    return path;
+  }
+
+  flushDiagnostics(final = false) {
+    const state = this.diagState;
+    if (!state || (!state.pending.length && !final)) return;
+    const events = state.pending;
+    state.pending = [];
+    fetch("/api/debug/diagnostics", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: state.id, events }),
+      keepalive: final,          // a final flush has to survive the page going away
+    }).catch(() => { /* losing a batch must not stop the recording */ });
+  }
+
+  // Everything that decides where the view sits, in one shape. Sizes and counts only -- never content.
+  diagGeometry(view) {
+    const buffer = view.term.buffer.active;
+    const cell = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+    if (!cell) return null;
+    const windowTop = view.container.scrollTop - view.term.element.offsetTop;
+    const first = buffer.viewportY + Math.floor(windowTop / cell);
+    const last = buffer.viewportY + Math.floor((windowTop + view.container.clientHeight - 1) / cell);
+    const cursor = (buffer.baseY || 0) + buffer.cursorY;
+    let lastContent = cursor;
+    for (let row = Math.min(buffer.length - 1, cursor + 400); row > cursor; row -= 1) {
+      if (buffer.getLine(row)?.translateToString(true).trim()) { lastContent = row; break; }
+    }
+    const now = Date.now();
+    return {
+      session: String(this.activeId || "").slice(0, 12), agent: this.session(this.activeId)?.agent_kind,
+      top: Math.round(view.container.scrollTop), ceiling: view.tallMaxScrollTop,
+      nativeMax: Math.round(view.container.scrollHeight - view.container.clientHeight),
+      following: view.tallFollowing, pinned: view.tallPinnedViewportY, anchor: view.tallAnchorRow,
+      replaying: !!view.replaying, queued: view.outputQueue?.length || 0,
+      elTop: view.term.element.offsetTop, cell: Math.round(cell * 10) / 10,
+      viewportY: buffer.viewportY, baseY: buffer.baseY, len: buffer.length,
+      cursor, first, last, lastContent, rowsBelow: lastContent - last,
+      gesture: !!view.tallPointerHeld ||
+        now < Math.max(view.tallWheelActiveUntil || 0, view.tallScrollActiveUntil || 0) + 1500,
+    };
+  }
+
+  diagSettingsSummary() {
+    const s = this.settings || {};
+    return { tall_webgl: s.tall_webgl, terminal_font_size: s.terminal_font_size,
+             tree_font_size: s.tree_font_size, bottom_font_size: s.bottom_font_size,
+             history_mode: s.history_mode, theme: s.theme };
+  }
+
+  // Plain, non-interactive, and impossible to miss: recording must never be a thing you forgot is on.
+  showDiagnosticsBadge() {
+    if (this.diagBadge) return;
+    const badge = document.createElement("div");
+    badge.id = "diagnostics-badge";
+    badge.title = "Recording diagnostics. Stop from the maintenance menu (click the CPU/memory readout).";
+    Object.assign(badge.style, {
+      position: "fixed", bottom: "6px", left: "50%", transform: "translateX(-50%)", zIndex: "99999",
+      font: "11px -apple-system, system-ui, sans-serif", letterSpacing: ".3px",
+      color: "#ffd7d7", background: "rgba(150, 40, 45, .92)", border: "1px solid rgba(255,120,120,.5)",
+      borderRadius: "10px", padding: "3px 10px", pointerEvents: "none",
+    });
+    document.body.appendChild(badge);
+    this.diagBadge = badge;
+    this.updateDiagnosticsBadge();
+  }
+
+  updateDiagnosticsBadge() {
+    const state = this.diagState;
+    if (!this.diagBadge || !state) return;
+    const seconds = Math.round((Date.now() - state.startedAt) / 1000);
+    this.diagBadge.textContent = `● REC diagnostics · ${seconds}s · ${state.count} events` +
+      (state.faults ? ` · ${state.faults} fault${state.faults === 1 ? "" : "s"}` : "");
+  }
+
 
   captureDebugSnapshot(view, trigger) {
     if (!view || view.closed) return;
@@ -21410,6 +21562,12 @@ class TermdeckApp {
     this.addContextItem(menu, "Reclaim orphan terminals", () => void this.reclaimOrphanTerminals(), "debug-disconnect");
     this.addContextItem(menu, "Kill terminals older than 24 hours", () => void this.killStaleTerminals(), "trash");
     this.addContextItem(menu, "Kill all running terminals", () => void this.killAllRunningTerminals(), "close-all");
+    // Diagnostics belong here for the same reason the rest do: this is where you come when the app is
+    // misbehaving. Off by default and free when off -- see toggleDiagnosticsRecorder.
+    this.addContextItem(menu,
+      this.diagnosticsRecording() ? "Stop recording diagnostics" : "Record diagnostics for a bug report",
+      () => this.toggleDiagnosticsRecorder(),
+      this.diagnosticsRecording() ? "debug-stop" : "record");
     const rect = anchor.getBoundingClientRect();
     this.positionContextMenu(menu, rect.right - menu.offsetWidth, rect.top - menu.offsetHeight - 4);
   }
@@ -21726,6 +21884,7 @@ class TermdeckApp {
       const session = this.session(this.activeId);
       if (session) this.openTerminalInNewTab(session);
     }
+    else if (actionId === "toggle-diagnostics-recording") this.toggleDiagnosticsRecorder();
     else if (actionId === "save-file") { if (this.activeFileKey !== null) this.saveActiveFile(); }
     else if (actionId === "file-history-previous-change") this.navigateFileHistoryDiff(-1);
     else if (actionId === "file-history-next-change") this.navigateFileHistoryDiff(1);

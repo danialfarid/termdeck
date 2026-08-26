@@ -72,7 +72,7 @@ const RECORDER = ({ ring, before, after }) => {
       lastContent, showing: `${firstVisible}..${lastVisible}`, rowsBelow: lastContent - lastVisible,
       // A gesture owns the view while it runs, so anything that moves during one is not a fault.
       gesture: !!view.tallPointerHeld ||
-        now < Math.max(view.tallWheelActiveUntil || 0, view.tallScrollActiveUntil || 0) + 400,
+        now < Math.max(view.tallWheelActiveUntil || 0, view.tallScrollActiveUntil || 0) + 1500,
       // The first line the reader can actually read, not literally the top row: an agent's UI leaves
       // blank rows scattered through the view, and on a blank top row a literal reading is "" for every
       // sample, which silently disables drift detection exactly where it is needed.
@@ -119,7 +119,8 @@ const RECORDER = ({ ring, before, after }) => {
     // fold line by line as the agent writes. Distinct from `stuck`, which needs the scrollbar to be at
     // its limit -- here the box may still have room, the view simply is not following any more. Rising
     // rowsBelow is what separates it from a view deliberately parked in history, which holds steady.
-    if (s.rowsBelow > 2 && s.rowsBelow > prev.rowsBelow) {
+    // Stationary view only: content escaping below a view that is itself moving is just scrolling.
+    if (s.rowsBelow > 2 && s.rowsBelow > prev.rowsBelow && s.top === prev.top) {
       if (!state.sinkSince) { state.sinkSince = s.t; state.sinkFrom = prev.rowsBelow; }
       if (s.t - state.sinkSince > 1500 && !state.sinkFlagged) {
         state.sinkFlagged = true;

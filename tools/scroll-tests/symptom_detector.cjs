@@ -100,6 +100,16 @@ const s = (over) => ({ ...base, ...over });
                   s({ t: 2700, following: false, rowsBelow: 40, nativeMax: 900, top: 300 }));
   });
 
+  // The capture that sent this investigation down a blind alley: the reader was scrolling up with a
+  // trackpad, so the fold legitimately walked away from them. A moving view is never this fault.
+  await check('scrolling up is not sinking', null, async () => {
+    await reset();
+    await detect(s({ t: 1000, following: false, rowsBelow: 3, nativeMax: 900, top: 700 }),
+                 s({ t: 1100, following: false, rowsBelow: 5, nativeMax: 900, top: 676 }));
+    return detect(s({ t: 2600, following: false, rowsBelow: 9, nativeMax: 900, top: 640 }),
+                  s({ t: 2700, following: false, rowsBelow: 12, nativeMax: 900, top: 616 }));
+  });
+
   // The same movement is expected while the user is scrolling, or while a replay repaints the buffer.
   await check('line changed during a gesture', null, async () => {
     await reset();

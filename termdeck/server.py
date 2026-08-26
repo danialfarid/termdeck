@@ -794,7 +794,7 @@ class TermdeckServer:
         app.put(TermdeckConfig.API_LSP_ENABLED_ROUTE, response_model=None)(self._put_lsp_enabled)
         app.post(TermdeckConfig.API_LSP_APPLY_WORKSPACE_EDIT_ROUTE, response_model=None)(self._apply_lsp_workspace_edit)
         app.get(TermdeckConfig.API_STATS_ROUTE, response_model=None)(self._resource_stats)
-        app.post(TermdeckConfig.API_SCROLL_FAULT_ROUTE, response_model=None)(self._record_scroll_fault)
+        app.post(TermdeckConfig.API_DIAGNOSTICS_ROUTE, response_model=None)(self._record_diagnostics)
         app.websocket(TermdeckConfig.STATUS_WS_ROUTE)(self._ws_status)
         app.websocket(TermdeckConfig.FILE_TREE_WS_ROUTE)(self._ws_file_tree)
         app.websocket(TermdeckConfig.TRANSCRIPT_WS_ROUTE)(self._ws_transcript)
@@ -2792,21 +2792,34 @@ class TermdeckServer:
     async def _reclaim_orphan_terminals(self) -> dict[str, object]:
         return await self.manager.reclaim_orphan_dtach_sessions()
 
-    async def _record_scroll_fault(self, report: dict) -> dict[str, object]:
-        """Append one client-detected scroll fault to a log the developer can read later.
+    async def _record_diagnostics(self, batch: dict) -> dict[str, object]:
+        """Append one batch of client diagnostic events to this recording's file.
 
-        These faults are intermittent and live only in the browser's geometry, so the alternative is
-        asking someone to catch one in the act with devtools open. The client records continuously and
-        posts the window either side of a fault here instead; nothing is read back by the app.
+        The faults being chased here are intermittent, live in the browser rather than the server, and
+        are described in prose long after the state that caused them is gone. A recording is the whole
+        session instead -- what was done, what the app decided, and the geometry throughout -- written
+        as JSONL so it can be read with grep and handed over with a bug report.
+
+        The recording id comes from the client and becomes the filename, so it is reduced to safe
+        characters here rather than trusted: an id is not a path.
         """
-        path = TermdeckConfig.DATA_DIR / "scroll-faults.jsonl"
+        recording = re.sub(r"[^0-9A-Za-z._-]", "-", str(batch.get("id") or ""))[:64]
+        events = batch.get("events")
+        if not recording or not isinstance(events, list):
+            return {"ok": False}
+        directory = TermdeckConfig.DATA_DIR / TermdeckConfig.DIAGNOSTICS_DIR_NAME
+        path = directory / f"{recording}.jsonl"
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            directory.mkdir(parents=True, exist_ok=True)
+            # A runaway recorder must not fill the disk; the cap ends the file rather than the session.
+            if path.exists() and path.stat().st_size > TermdeckConfig.DIAGNOSTICS_MAX_BYTES:
+                return {"ok": False, "full": True}
             with path.open("a") as handle:
-                handle.write(json.dumps(report, separators=(",", ":"))[:200_000] + "\n")
+                for event in events:
+                    handle.write(json.dumps(event, separators=(",", ":"), default=str)[:100_000] + "\n")
         except OSError:
             return {"ok": False}
-        return {"ok": True}
+        return {"ok": True, "path": str(path)}
 
     async def _ws_terminal(self, websocket: WebSocket, session_id: str) -> None:
         if not self.manager.has_session(session_id):
