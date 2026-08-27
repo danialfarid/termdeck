@@ -1531,13 +1531,116 @@ class ClaudeActivityDetailTest(unittest.TestCase):
         claude, ms = self._session("abc")
         ms.agent_state.main_active = False
         ms.agent_state.subagent_states = {Path("/a"): True, Path("/b"): True, Path("/c"): False}
-        self.assertEqual(claude.activity_detail(ms), {"main": False, "subagents": 2})
+        self.assertEqual(claude.activity_detail(ms), {"main": False, "subagents": 2, "background_jobs": 0})
         ms.agent_state.main_active = True
-        self.assertEqual(claude.activity_detail(ms), {"main": True, "subagents": 2})
+        ms.agent_state.background_tasks = {"b1": "/tmp/b1.output"}
+        self.assertEqual(claude.activity_detail(ms), {"main": True, "subagents": 2, "background_jobs": 1})
 
     def test_detail_is_none_before_binding_and_main_false_when_interrupted(self) -> None:
         claude, ms = self._session(None)
         self.assertIsNone(claude.activity_detail(ms))
         claude, ms = self._session("abc", interrupted=True)
         ms.agent_state.main_active = True
-        self.assertEqual(claude.activity_detail(ms), {"main": False, "subagents": 0})
+        self.assertEqual(claude.activity_detail(ms), {"main": False, "subagents": 0, "background_jobs": 0})
+
+
+class ClaudeBackgroundTaskScanTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.claude = agents.agent_cli("claude")
+        self.state = self.claude.new_session_state()
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.parent = Path(self.dir.name) / "session.jsonl"
+        self.parent.write_text("")
+
+    def _output_path(self, task_id, running=True):
+        path = Path(self.dir.name) / f"{task_id}.output"
+        path.write_text("some output\n" + ("" if running else "\n[exited with code 0]\n"))
+        return str(path)
+
+    def _append(self, *lines):
+        with self.parent.open("a") as fh:
+            for line in lines:
+                fh.write(line + "\n")
+
+    def _launch(self, task_id, output):
+        text = (f"Command running in background with ID: {task_id}. Output is being written to: "
+                f"{output}. You will be notified when it completes.")
+        return json.dumps({"type": "user", "message": {"role": "user", "content": [
+            {"tool_use_id": "t1", "type": "tool_result", "content": text}]}})
+
+    def _notification(self, task_id):
+        return json.dumps({"type": "user", "message": {"role": "user", "content":
+            f"<task-notification>\n<task-id>{task_id}</task-id>\n<status>completed</status>\n</task-notification>"}})
+
+    def _task_stop(self, task_id):
+        return json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "TaskStop", "input": {"task_id": task_id}}]}})
+
+    def test_incremental_launch_then_notification(self) -> None:
+        self._append(self._launch("job1", self._output_path("job1")))
+        self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
+        self.assertEqual(set(self.state.background_tasks), {"job1"})
+        self.assertFalse(self.claude.scan_background_tasks(self.state, self.parent))  # nothing appended
+        self._append(self._notification("job1"))
+        self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
+        self.assertEqual(self.state.background_tasks, {})
+
+    def test_task_stop_removes_and_quotes_do_not_launch(self) -> None:
+        quoted = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "it said Command running in background with ID: ghost."}]}})
+        self._append(self._launch("job2", self._output_path("job2")), quoted)
+        self.claude.scan_background_tasks(self.state, self.parent)
+        self.assertEqual(set(self.state.background_tasks), {"job2"})
+        self._append(self._task_stop("job2"))
+        self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
+        self.assertEqual(self.state.background_tasks, {})
+
+    def test_full_scan_verifies_output_files(self) -> None:
+        self._append(self._launch("live", self._output_path("live", running=True)),
+                     self._launch("dead", self._output_path("dead", running=False)),
+                     self._launch("gone", str(Path(self.dir.name) / "missing.output")),
+                     self._launch("told", self._output_path("told", running=True)),
+                     self._notification("told"))
+        self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
+        self.assertEqual(set(self.state.background_tasks), {"live"})
+
+    def test_partial_last_line_is_deferred_until_newline(self) -> None:
+        line = self._launch("job3", self._output_path("job3"))
+        with self.parent.open("a") as fh:
+            fh.write(line[:40])
+        self.claude.scan_background_tasks(self.state, self.parent)
+        self.assertEqual(self.state.background_tasks, {})
+        with self.parent.open("a") as fh:
+            fh.write(line[40:] + "\n")
+        self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
+        self.assertEqual(set(self.state.background_tasks), {"job3"})
+
+    def test_killed_marker_ends_task_without_notification(self) -> None:
+        output = self._output_path("job4")
+        self._append(self._launch("job4", output))
+        self.claude.scan_background_tasks(self.state, self.parent)
+        self.assertEqual(set(self.state.background_tasks), {"job4"})
+        Path(output).write_text("partial output\n[killed]\n")
+        self._append(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "unrelated turn"}]}}))
+        self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
+        self.assertEqual(self.state.background_tasks, {})
+
+    def test_monitor_event_notification_does_not_end_task(self) -> None:
+        self._append(self._launch("job5", self._output_path("job5")))
+        self.claude.scan_background_tasks(self.state, self.parent)
+        event_notification = json.dumps({"type": "queue-operation", "operation": "enqueue", "content":
+            "<task-notification>\n<task-id>job5</task-id>\n<summary>Monitor event: \"x\"</summary>\n<event>line</event>\n</task-notification>"})
+        self._append(event_notification)
+        self.assertFalse(self.claude.scan_background_tasks(self.state, self.parent))
+        self.assertEqual(set(self.state.background_tasks), {"job5"})
+
+    def test_queue_operation_terminal_notification_ends_task(self) -> None:
+        self._append(self._launch("job6", self._output_path("job6")))
+        self.claude.scan_background_tasks(self.state, self.parent)
+        terminal = json.dumps({"type": "queue-operation", "operation": "enqueue", "content":
+            "<task-notification>\n<task-id>job6</task-id>\n<status>completed</status>\n</task-notification>"})
+        self._append(terminal)
+        self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
+        self.assertEqual(self.state.background_tasks, {})

@@ -172,9 +172,9 @@ body:not(.vscode-mode) .session-item:has(.terminal-type-icon.on) .status-dot.att
 .session-item.has-activity .session-activity-dots { position: absolute; left: calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); bottom: calc(3px * var(--ui-scale)); display: flex; align-items: center; gap: 10px; font-size: calc(var(--sidebar-font-size) * 0.72); line-height: 1; color: var(--dim); }
 .session-activity-chip { display: inline-flex; align-items: center; gap: 4px; cursor: default; }
 .session-activity-count { font-variant-numeric: tabular-nums; }
-.session-activity-dot { width: 0.5em; height: 0.5em; border-radius: 50%; background: currentColor; }
+.session-activity-dot { width: 0.5em; height: 0.5em; border-radius: 50%; background: currentColor; will-change: opacity, transform; animation: termdeck-status-beacon 1.8s ease-in-out infinite; }
 .session-activity-chip.activity-subagents { color: #b07ce8; }
-.session-activity-chip.activity-subagents .session-activity-dot { will-change: opacity, transform; animation: termdeck-status-beacon 1.8s ease-in-out infinite; }
+.session-activity-chip.activity-background_jobs { color: #e0a63f; }
 .terminal-type-icon.on { display: inline-flex; }
 .terminal-type-icon svg { display: block; width: calc(var(--terminal-icon-size, 14px) - 1px); height: calc(var(--terminal-icon-size, 14px) - 1px); }
 .codex-terminal-icon svg { width: calc(var(--terminal-icon-size, 14px) - 2px); height: calc(var(--terminal-icon-size, 14px) - 2px); }

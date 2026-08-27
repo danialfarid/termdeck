@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import shlex
 import time
@@ -18,6 +19,8 @@ class ClaudeSessionState(AgentSessionState):
         self.activity_signatures: dict[Path, tuple[int, int, int]] = {}
         self.subagents_active = False
         self.main_active = False
+        self.background_tasks: dict[str, str] = {}  # task id -> output file path
+        self.background_scan_offset = 0             # transcript bytes already scanned
 
 
 class ClaudeCli(AgentCli):
@@ -200,7 +203,140 @@ class ClaudeCli(AgentCli):
             return None
         state = ms.agent_state
         return {"main": bool(state.main_active and not ms.record.claude_interrupted),
-                "subagents": sum(1 for active in state.subagent_states.values() if active)}
+                "subagents": sum(1 for active in state.subagent_states.values() if active),
+                "background_jobs": len(state.background_tasks)}
+
+    _BACKGROUND_LAUNCH_PREFIX = "Command running in background with ID:"
+    _BACKGROUND_LAUNCH_RE = re.compile(r"Command running in background with ID: (\w+)")
+    _BACKGROUND_OUTPUT_RE = re.compile(r"Output is being written to: (\S+\.output)")
+    _TASK_NOTIFICATION_ID_RE = re.compile(r"<task-id>([\w-]+)</task-id>")
+
+    def scan_background_tasks(self, state, parent: Path) -> bool:
+        """Track claude's backgrounded shell tasks from the parent transcript; returns True on change.
+
+        Launch tool_results and completion task-notifications both land in the main transcript,
+        so the transcript watcher's own change events keep this current without polling. Only
+        bytes appended since the previous scan are read; offset 0 (or a shrunk file) means a
+        full reconstruction, where each surviving task is verified against its output file --
+        the harness appends "[exited with code N]" there, which catches every task that ended
+        while nobody was watching (server downtime, killed CLI)."""
+        try:
+            size = parent.stat().st_size
+        except OSError:
+            changed = bool(state.background_tasks)
+            state.background_tasks = {}
+            state.background_scan_offset = 0
+            return changed
+        full_scan = state.background_scan_offset == 0 or state.background_scan_offset > size
+        offset = 0 if full_scan else state.background_scan_offset
+        before = dict(state.background_tasks)
+        tasks: dict[str, str] = {} if full_scan else dict(state.background_tasks)
+        try:
+            with parent.open("rb") as fh:
+                fh.seek(offset)
+                data = fh.read()
+        except OSError:
+            return False
+        if data and not data.endswith(b"\n"):
+            # A line caught mid-write stays unscanned until its newline lands.
+            data = data[:data.rfind(b"\n") + 1]
+        state.background_scan_offset = offset + len(data)
+        known_before_scan = set(tasks)
+        for raw in data.split(b"\n"):
+            if b"Command running in background with ID" in raw:
+                self._record_background_launch(raw, tasks)
+            if b"<task-notification>" in raw:
+                self._remove_notified_background_tasks(raw, tasks)
+            # TaskStop kills a task without a completion notification; its tool_use lives in
+            # an assistant event.
+            if b'"TaskStop"' in raw:
+                self._drop_stopped_background_task(raw, tasks)
+        # The transcript alone under-reports endings (a kill leaves no notification, and
+        # compaction can drop one), so every task tracked before this scan is re-verified
+        # against its output file. A task first seen in this incremental scan is exempt:
+        # its output file may not exist yet.
+        def still_running(task_id: str, output: str) -> bool:
+            if not full_scan and task_id not in known_before_scan:
+                return True
+            return bool(output) and not self._background_task_finished(Path(output))
+        tasks = {task_id: output for task_id, output in tasks.items() if still_running(task_id, output)}
+        state.background_tasks = tasks
+        return tasks != before
+
+    @staticmethod
+    def _user_event_content(raw: bytes):
+        """message.content of a user-type transcript event, or None for anything else."""
+        try:
+            event = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(event, dict) or event.get("type") != "user":
+            return None
+        return (event.get("message") or {}).get("content")
+
+    def _record_background_launch(self, raw: bytes, tasks: dict[str, str]) -> None:
+        # Only a tool_result whose text STARTS with the launch phrase counts -- the same words
+        # quoted in conversation text (echoed output, summaries) must not resurrect a task.
+        content = self._user_event_content(raw)
+        for part in content if isinstance(content, list) else []:
+            if not isinstance(part, dict) or part.get("type") != "tool_result":
+                continue
+            text = part.get("content")
+            if isinstance(text, list):
+                text = " ".join(p.get("text", "") for p in text if isinstance(p, dict))
+            if not isinstance(text, str) or not text.startswith(self._BACKGROUND_LAUNCH_PREFIX):
+                continue
+            match = self._BACKGROUND_LAUNCH_RE.search(text)
+            output = self._BACKGROUND_OUTPUT_RE.search(text)
+            if match:
+                tasks[match.group(1)] = output.group(1) if output else ""
+
+    def _remove_notified_background_tasks(self, raw: bytes, tasks: dict[str, str]) -> None:
+        # Notifications land as queue-operation events (top-level content) and again as user
+        # events on delivery. Only a terminal notification carries a <status> tag -- a Monitor
+        # event notification reuses the same task-id without one and must not end the task.
+        try:
+            event = json.loads(raw)
+        except ValueError:
+            return
+        if not isinstance(event, dict):
+            return
+        if event.get("type") == "queue-operation":
+            content = event.get("content")
+        elif event.get("type") == "user":
+            content = (event.get("message") or {}).get("content")
+        else:
+            return
+        if isinstance(content, list):
+            content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+        if not isinstance(content, str) or "<task-notification>" not in content or "<status>" not in content:
+            return
+        for task_id in self._TASK_NOTIFICATION_ID_RE.findall(content):
+            tasks.pop(task_id, None)
+
+    def _drop_stopped_background_task(self, raw: bytes, tasks: dict[str, str]) -> None:
+        try:
+            event = json.loads(raw)
+        except ValueError:
+            return
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            return
+        content = (event.get("message") or {}).get("content")
+        for part in content if isinstance(content, list) else []:
+            if isinstance(part, dict) and part.get("type") == "tool_use" and part.get("name") == "TaskStop":
+                task_id = (part.get("input") or {}).get("task_id")
+                if isinstance(task_id, str):
+                    tasks.pop(task_id, None)
+
+    @staticmethod
+    def _background_task_finished(output: Path) -> bool:
+        try:
+            with output.open("rb") as fh:
+                fh.seek(max(0, output.stat().st_size - 256))
+                tail = fh.read()
+        except OSError:
+            return True  # output file cleaned up -> the task is long gone
+        return b"[exited with code" in tail or b"[killed]" in tail
 
     def initialize_subagent_state(self, manager, ms) -> None:
         if not ms.record.agent_session_id:
@@ -212,6 +348,8 @@ class ClaudeCli(AgentCli):
         ms.agent_state.subagent_states = states
         ms.agent_state.subagents_active = not ms.record.claude_interrupted and any(states.values())
         ms.agent_state.activity_signatures = self._activity_signatures(parent, set(states))
+        ms.agent_state.background_scan_offset = 0
+        self.scan_background_tasks(ms.agent_state, parent)
 
     @staticmethod
     def _file_signature(path: Path) -> tuple[int, int, int] | None:
@@ -247,6 +385,7 @@ class ClaudeCli(AgentCli):
         ms.agent_state.subagent_states = tracker.claude_subagent_states(Path(ms.record.cwd), ms.record.agent_session_id)
         ms.agent_state.subagents_active = not ms.record.claude_interrupted and any(ms.agent_state.subagent_states.values())
         ms.agent_state.activity_signatures = self._activity_signatures(parent, set(ms.agent_state.subagent_states))
+        self.scan_background_tasks(ms.agent_state, parent)
 
     def on_project_file_change(self, manager, path: Path) -> None:
         """Update the parent or subagent state that generated a filesystem event under the projects tree."""
@@ -266,10 +405,12 @@ class ClaudeCli(AgentCli):
             previous_processing = manager._processing_state(ms)
             title_changed = False
             attention_changed = False
+            background_changed = False
             if is_parent:
                 ms.agent_state.main_active = not ms.record.claude_interrupted and path.is_file() and tracker.claude_session_is_active(path)
                 title_changed = self.sync_explicit_title(manager, ms)
                 attention_changed = self._refresh_attention_from_transcript(manager, ms)
+                background_changed = self.scan_background_tasks(ms.agent_state, path)
             elif path.is_file():
                 ms.agent_state.subagent_states[path] = tracker.claude_subagent_is_active(path)
             else:
@@ -279,7 +420,7 @@ class ClaudeCli(AgentCli):
             current_processing = manager._processing_state(ms)
             if current_processing != previous_processing:
                 manager._broadcast_processing(ms, current_processing)
-            if current_processing != previous_processing or title_changed or attention_changed:
+            if current_processing != previous_processing or title_changed or attention_changed or background_changed:
                 manager._broadcast_status(ms)
 
     # -- bindings / titles -------------------------------------------------
