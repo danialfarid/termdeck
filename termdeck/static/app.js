@@ -2766,7 +2766,16 @@ class TermdeckApp {
     });
     await Promise.all([this.loadAgentSpecs(), this.loadSettings()]);
     if (this.settings.notify_attention !== false || this.settings.notify_agent_idle !== false) {
-      this.maybeRequestNotificationPermission();
+      // Chrome ignores a permission request that arrives without a user gesture, so a
+      // page-load request leaves the permission stuck at "default" forever. Ask again on
+      // the first real gesture, where the prompt is actually allowed to appear.
+      const requestOnFirstGesture = () => {
+        this.maybeRequestNotificationPermission();
+        window.removeEventListener("pointerdown", requestOnFirstGesture, true);
+        window.removeEventListener("keydown", requestOnFirstGesture, true);
+      };
+      window.addEventListener("pointerdown", requestOnFirstGesture, true);
+      window.addEventListener("keydown", requestOnFirstGesture, true);
     }
     this.initializeMobileSidebar();
     this.loadSearchHistory();
