@@ -161,11 +161,11 @@ Explicit dict, no metaclass/auto-registration magic — debuggable, and one obvi
   `GET /api/sessions/{id}/usage` as `{context_tokens, output_tokens, context_window, total_tokens}`.
 - **Notifications**: `notifier.AgentNotifier` observes every status payload and fires macOS
   notifications on attention/idle transitions (UiSettings `notify_attention` / `notify_agent_idle`).
-- **GeminiCli** (`gemini-cli`): proof that the API survives a foreign format — whole-document
-  JSON sessions rewritten in place under `~/.gemini/tmp/<sha256(cwd)>/chats/`, parsed by joining
-  the tail-reader's lines back into a document; `supports_resume` off because gemini resumes by
-  per-project index. The bare model name "gemini" still maps to AgyCli (antigravity) because
-  Google refuses gemini-cli sign-in on this account.
+- **GeminiCli was built and then retired** (`termdeck/agents/_/gemini.py`): Google deprecated
+  gemini-cli outright in favor of the Antigravity suite, which AgyCli already covers ("gemini"
+  stays an agy model alias). The retired adapter remains a worked example of a foreign format —
+  whole-document JSON sessions rewritten in place, parsed by joining the tail-reader's lines back
+  into a document.
 
 ### What a new agent looks like
 

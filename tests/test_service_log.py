@@ -5,7 +5,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from termdeck.service_log import ServiceLogTrimmer
 
 # Runs as the supervisor does: stdout redirected into a file with O_APPEND, which is what makes an
 # in-place trim safe. The child trims its own log and then writes, so the assertions see both halves.

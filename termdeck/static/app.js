@@ -80,11 +80,6 @@ const AGENT_SPEC_DEFAULTS = {
     permissions: [{ value: "default", label: "Default" }, { value: "full-access", label: "Full access" }],
     supports_resume: true, supports_fork: false, accepts_session_ref: false,
     records_raw_replay: false, has_prompt_queue: false },
-  gemini: { kind: "gemini", label: "Gemini", is_agent: true, prompt_marker: "",
-    permissions: [{ value: "default", label: "Default" }, { value: "auto-edit", label: "Auto edit" },
-      { value: "plan", label: "Plan" }, { value: "full-access", label: "Full access (YOLO)" }],
-    supports_resume: false, supports_fork: false, accepts_session_ref: false,
-    records_raw_replay: false, has_prompt_queue: false },
 };
 const SEARCH_DEBOUNCE_MS = 500;
 const TERMINAL_SEARCH_DEBOUNCE_MS = 700;
