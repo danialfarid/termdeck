@@ -33,6 +33,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_fo
   show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
+  notify_attention: true, notify_agent_idle: false,
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
   files_side_panel_last_tab: "project", file_search_history: [],
   file_tab_max_visible: 20, file_tab_order: "opened", lsp_enabled: true, lsp_command_overrides: {},
@@ -78,6 +79,11 @@ const AGENT_SPEC_DEFAULTS = {
   agy: { kind: "agy", label: "AGY", is_agent: true, prompt_marker: "",
     permissions: [{ value: "default", label: "Default" }, { value: "full-access", label: "Full access" }],
     supports_resume: true, supports_fork: false, accepts_session_ref: false,
+    records_raw_replay: false, has_prompt_queue: false },
+  gemini: { kind: "gemini", label: "Gemini", is_agent: true, prompt_marker: "",
+    permissions: [{ value: "default", label: "Default" }, { value: "auto-edit", label: "Auto edit" },
+      { value: "plan", label: "Plan" }, { value: "full-access", label: "Full access (YOLO)" }],
+    supports_resume: false, supports_fork: false, accepts_session_ref: false,
     records_raw_replay: false, has_prompt_queue: false },
 };
 const SEARCH_DEBOUNCE_MS = 500;
@@ -3970,6 +3976,10 @@ class TermdeckApp {
     }
     if (processingChanged || (spinning && this.historyPendingProcessing.has(session.session_id))) {
       this.updateProcessingState(session.session_id, spinning);
+    }
+    // A finished turn is when the transcript's newest usage report changes.
+    if (processingChanged && !spinning && session.session_id === this.activeId) {
+      void this.refreshSessionUsage(session.session_id);
     }
     if (session.needs_attention && !previousNeedsAttention) {
       this.triggerSessionAttention(session.session_id);
@@ -14805,6 +14815,7 @@ class TermdeckApp {
       this.persistUnreadSessionDelta([previousId, id].filter(Boolean), false);
     }
     this.rememberRecentlyOpenedTerminal(id);
+    void this.refreshSessionUsage(id);
     if (selected && !this.titlePresentation(selected).spinning) this.viewedCompletedSessions.add(id);
     else this.viewedCompletedSessions.delete(id);
     if (selected) {
@@ -18128,6 +18139,42 @@ class TermdeckApp {
       || [{ value: "default", label: "Default" }];
   }
 
+  formatTokenCount(value) {
+    if (!Number.isFinite(value) || value <= 0) return "";
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+    if (value >= 10_000) return `${Math.round(value / 1000)}k`;
+    if (value >= 1_000) return `${(value / 1000).toFixed(1)}k`;
+    return String(value);
+  }
+
+  // The live context size (and window, where the CLI reports one) for the active session,
+  // shown in the status bar. Refreshed on activation and whenever a turn finishes.
+  async refreshSessionUsage(id = this.activeId) {
+    const element = this.$("status-usage");
+    if (!element) return;
+    const session = this.session(id);
+    if (!session?.agent_session_id || !this.agentSpec(session.agent_kind)?.is_agent) {
+      element.classList.add("hidden");
+      return;
+    }
+    element.classList.add("hidden");
+    let usage = {};
+    try {
+      const response = await fetch(`/api/sessions/${id}/usage`);
+      if (response.ok) usage = await response.json();
+    } catch { /* transient; nothing to show */ }
+    if (id !== this.activeId) return;
+    const context = this.formatTokenCount(Number(usage.context_tokens));
+    if (!context) { element.classList.add("hidden"); return; }
+    const window_ = this.formatTokenCount(Number(usage.context_window));
+    element.textContent = window_ ? `ctx ${context}/${window_}` : `ctx ${context}`;
+    const output = this.formatTokenCount(Number(usage.output_tokens));
+    const total = this.formatTokenCount(Number(usage.total_tokens));
+    element.title = [`context ${context} tokens`, output && `last turn output ${output}`,
+      total && `session total ${total}`].filter(Boolean).join(" · ");
+    element.classList.remove("hidden");
+  }
+
   async loadSettings() {
     try {
       const res = await fetch("/api/settings");
@@ -19076,6 +19123,13 @@ class TermdeckApp {
     pop.appendChild(this.buildToggleRow("Resource monitor & maintenance",
       () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));
+    // Server-side macOS notifications (see notifier.AgentNotifier).
+    pop.appendChild(this.buildToggleRow("Notify when an agent needs attention",
+      () => (this.settings.notify_attention !== false ? "on" : "off"),
+      () => { this.settings.notify_attention = this.settings.notify_attention === false; }));
+    pop.appendChild(this.buildToggleRow("Notify when an agent finishes a long run",
+      () => (this.settings.notify_agent_idle ? "on" : "off"),
+      () => { this.settings.notify_agent_idle = !this.settings.notify_agent_idle; }));
     if (this.touchMobileLayoutEnabled()) pop.appendChild(this.buildMobileDisplayScaleRow());
     // Experiment switch: see tallRowPlan(). GPU rendering, at the cost of a much shorter scrollable
     // canvas -- the whole trade is explained there.

@@ -348,6 +348,8 @@ body.dragging { user-select: none; cursor: col-resize; }
 #lsp-status.installable:hover, #lsp-status.installable:focus { opacity: 1; outline: none; text-decoration-color: currentColor; }
 #terminal-age { flex: none; padding-left: 8px; border-left: 1px solid var(--border); color: var(--dim); font: var(--ui-font-size) Menlo, monospace; white-space: nowrap; opacity: 0.9; }
 #terminal-age.hidden { display: none; }
+#status-usage { flex: none; padding-left: 8px; border-left: 1px solid var(--border); color: var(--dim); font: var(--ui-font-size) Menlo, monospace; white-space: nowrap; opacity: 0.9; }
+#status-usage.hidden { display: none; }
 #history-meta { max-width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font: var(--ui-font-size) Menlo, monospace; opacity: 0.9; }
 #history-meta.hidden { display: none; }
 #history-btn, #attach-btn, #terminal-resync-btn, #scroll-bottom-btn, #reveal-session-btn, #file-history-toggle, #editor-wrap-toggle, #file-split-toggle, #notebook-toggle, #problems-toggle, #conversation-outline-toggle { background: none; border: 1px solid transparent; color: var(--dim); border-radius: 5px; height: 23px; min-width: 26px; cursor: pointer; }
