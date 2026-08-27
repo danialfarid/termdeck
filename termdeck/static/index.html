@@ -271,16 +271,14 @@
     </div>
       <div id="history-composer">
       <div id="history-prompt-wrap">
-        <textarea id="history-prompt" rows="1" placeholder="Continue this session…" spellcheck="false"></textarea>
-      <div id="history-prompt-help"><span id="history-prompt-help-text">Enter submit · Hold Send to queue · Tab queue · ↑↓ edit queued · Shift+Enter newline</span><span id="history-model" class="hidden"></span></div>
+        <textarea id="history-prompt" rows="2" placeholder="Continue this session…" spellcheck="false"></textarea>
+      <div id="history-prompt-help"><span id="history-prompt-help-text">Enter submit · Tab queue · ↑↓ edit queued · Shift+Enter newline</span><span id="history-model" class="hidden"></span></div>
       </div>
       <div id="history-composer-actions">
         <button id="history-send" title="Send prompt" aria-label="Send prompt"><span class="codicon codicon-send"></span></button>
+        <button id="history-queue" title="Queue prompt" aria-label="Queue prompt"><span class="codicon codicon-list-ordered"></span></button>
         <button id="history-prompt-history-btn" title="Recent prompts" aria-label="Recent prompts" aria-expanded="false"><span class="codicon codicon-history"></span></button>
       </div>
-    </div>
-    <div id="history-send-menu" class="hidden" role="menu" aria-label="Send prompt options">
-      <button id="history-send-queue-option" type="button" role="menuitem"><span class="codicon codicon-list-ordered"></span>Queue instead</button>
     </div>
     <div id="history-prompt-history" class="hidden" role="dialog" aria-label="Recent prompts">
       <div id="history-prompt-history-head">Recent prompts</div>

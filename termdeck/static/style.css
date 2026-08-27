@@ -422,14 +422,17 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 #history-body { flex: 1; overflow-y: auto; overflow-anchor: none; padding: 12px calc(16px + 1ch) 40px; }
 #history-composer { display: flex; align-items: stretch; gap: 8px; flex: none; padding: 10px 12px 12px; border-top: 1px solid var(--border); background: var(--panel); }
 #history-prompt-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-#history-prompt { width: 100%; min-height: 32px; height: 32px; max-height: 150px; resize: none; overflow-y: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 10px; outline: none; font: var(--code-font-size)/1.45 Menlo, monospace; }
+#history-prompt { width: 100%; min-height: calc(var(--code-font-size) * 1.45 * 2 + 18px); height: auto; max-height: 150px; resize: none; overflow-y: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 10px; outline: none; font: var(--code-font-size)/1.45 Menlo, monospace; }
 #history-prompt:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--active-border); }
 #history-prompt.image-drop-target { border-color: var(--accent); background: var(--active-bg); box-shadow: 0 0 0 2px var(--active-border); }
 #history-model { flex: none; max-width: 48%; margin-left: auto; }
 #history-prompt-help { display: flex; align-items: center; gap: 8px; color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; padding: 4px 0 0 2px; }
 #history-prompt-help-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#history-composer-actions { display: flex; flex-direction: column; justify-content: space-between; gap: 0; flex: none; padding-top: 6px; }
-#history-send { flex: none; width: 38px; height: 32px; padding: 0; border-radius: 5px; cursor: pointer; }
+#history-composer-actions { display: flex; flex-direction: column; justify-content: space-between; gap: 4px; flex: none; padding-top: 6px; }
+#history-send { flex: none; width: 38px; height: 30px; padding: 0; border-radius: 5px; cursor: pointer; }
+#history-queue { flex: none; width: 38px; height: 24px; padding: 0; border-radius: 5px; cursor: pointer; border: 1px solid var(--border); background: var(--panel2); color: var(--dim); }
+#history-queue:hover { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
+#history-queue .codicon { font-size: 12px; }
 #history-prompt-history-btn { align-self: center; flex: none; width: 38px; height: 17px; margin: 0; padding: 0; border-radius: 4px; cursor: pointer; opacity: 0.78; }
 #history-prompt-history-btn { border: 1px solid var(--border); background: none; color: var(--dim); }
 #history-send { border: 1px solid var(--accent); background: var(--accent); color: #06232b; }
@@ -438,11 +441,6 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 #history-prompt-history-btn.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 #history-prompt-history-btn .codicon { font-size: 9px; }
 #history-send .codicon { font-size: 13px; }
-#history-send-menu { position: absolute; right: 12px; bottom: 70px; z-index: 9; padding: 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel2); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42); }
-#history-send-menu.hidden { display: none; }
-#history-send-menu button { display: inline-flex; align-items: center; gap: 6px; min-height: 26px; padding: 4px 8px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text); cursor: pointer; font: calc(var(--ui-font-size) - 1px)/1.1 Menlo, monospace; }
-#history-send-menu button:hover, #history-send-menu button:focus { border-color: var(--active-border); background: var(--active-bg); color: var(--accent); outline: none; }
-#history-send-menu .codicon { font-size: 12px; }
 #history-prompt-history { position: absolute; z-index: 8; right: 12px; bottom: 76px; width: min(620px, calc(100% - 24px)); max-height: min(46vh, 360px); overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); box-shadow: 0 12px 35px rgba(0, 0, 0, 0.45); }
 #history-prompt-history.hidden { display: none; }
 #history-prompt-history-head { padding: 7px 10px 5px; border-bottom: 1px solid var(--border); color: var(--dim); font: 600 calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; text-transform: uppercase; letter-spacing: 0.06em; }
