@@ -1707,7 +1707,7 @@ Object.assign(TermdeckApp.prototype, {
       if (empty) empty.remove();
       if (olderPage.length) {
         const scratch = document.createElement("div");
-        this.renderHistoryTurns(olderPage, { target: scratch, preserveExpanded: true });
+        this.renderHistoryTurns(olderPage, { target: scratch });
         while (scratch.firstChild) body.insertBefore(scratch.firstChild, body.firstChild);
         await new Promise((resolve) => requestAnimationFrame(() => {
           body.scrollTop += body.scrollHeight - previousHeight;
@@ -2299,6 +2299,20 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // Identity for re-finding a rendered element across a full rebuild. Purely DOM-side:
+  // after paged history loads, body.children and historyTurns segment differently mid-array,
+  // so index-based correlation attributes state to the wrong turns. Digits are collapsed
+  // ("Thinking · 12 operations" grows while streaming) and volatile classes dropped;
+  // same-key elements align by document order.
+  historyElementPreserveKey(element) {
+    const classes = [...(element.classList || [])].filter((name) => name !== "active").join(" ");
+    const label = element.matches?.("details")
+      ? element.querySelector(":scope > summary")?.textContent || ""
+      : (element.textContent || "").slice(0, 80);
+    return `${classes}|${label.replace(/\d+/g, "#")}`;
+  },
+
+
   toggleHistoryEdits() {
     this.historyEditsCollapsed = !this.historyEditsCollapsed;
     for (const event of this.$("history-body").querySelectorAll(".history-event.edit")) {
@@ -2381,16 +2395,12 @@ Object.assign(TermdeckApp.prototype, {
   renderHistoryTurns(turns, options = {}) {
     const body = options.target || this.$("history-body");
     const append = options.append === true;
-    const preserveExpanded = options.preserveExpanded === true;
-    const previousExpanded = preserveExpanded ? [...body.querySelectorAll("details")].map((item) => item.open) : [];
-    let eventIndex = 0;
+    const expandedByKey = options.expandedByKey || null;
     for (const turn of turns) {
       if (turn.kind && turn.kind !== "message") {
         const event = document.createElement("details");
         event.className = "history-event " + turn.kind;
         event.open = turn.kind === "edit" ? !this.historyEditsCollapsed : turn.kind === "plan" ? true : turn.expanded === true;
-        if (!this.historyEditsCollapsed && preserveExpanded && previousExpanded[eventIndex] !== undefined) event.open = previousExpanded[eventIndex];
-        eventIndex += 1;
         const summary = document.createElement("summary");
         if (turn.kind === "thinking" && Array.isArray(turn.items)) {
           const thinkingTitle = document.createElement("span");
@@ -2475,6 +2485,9 @@ Object.assign(TermdeckApp.prototype, {
           content.textContent = turn.text || "";
           event.append(summary, content);
         }
+        // The element is fully built here (summary included), so its preserve key is final.
+        const preservedOpen = expandedByKey?.get(this.historyElementPreserveKey(event));
+        if (preservedOpen?.length) event.open = preservedOpen.shift();
         body.appendChild(event);
         continue;
       }
@@ -2520,10 +2533,12 @@ Object.assign(TermdeckApp.prototype, {
       snapshot.anchorIndex = children.length - 1;
       snapshot.anchorOffset = children[snapshot.anchorIndex].getBoundingClientRect().top - bodyTop;
     }
-    if (snapshot.anchorIndex >= 0 && turns[snapshot.anchorIndex]) {
-      snapshot.anchorKey = this.historyTurnKey(turns[snapshot.anchorIndex]);
-      snapshot.anchorOccurrence = turns.slice(0, snapshot.anchorIndex + 1)
-        .filter((turn) => this.historyTurnKey(turn) === snapshot.anchorKey).length - 1;
+    if (snapshot.anchorIndex >= 0 && children[snapshot.anchorIndex]) {
+      // Keyed off the DOM, not the turns array: after paged loads the two segment
+      // differently mid-array, and a turns-index anchor lands on the wrong element.
+      snapshot.anchorKey = this.historyElementPreserveKey(children[snapshot.anchorIndex]);
+      snapshot.anchorOccurrence = children.slice(0, snapshot.anchorIndex + 1)
+        .filter((child) => this.historyElementPreserveKey(child) === snapshot.anchorKey).length - 1;
     }
     return snapshot;
   },
@@ -2545,15 +2560,17 @@ Object.assign(TermdeckApp.prototype, {
       body.scrollTop = body.scrollHeight;
       return;
     }
-    let anchorIndex = snapshot.anchorIndex;
-    if (snapshot.anchorKey && Array.isArray(turns)) {
+    let anchor = null;
+    if (snapshot.anchorKey) {
       let occurrence = 0;
-      anchorIndex = turns.findIndex((turn) => {
-        if (this.historyTurnKey(turn) !== snapshot.anchorKey) return false;
-        return occurrence++ === snapshot.anchorOccurrence;
-      });
+      for (const child of body.children) {
+        if (this.historyElementPreserveKey(child) !== snapshot.anchorKey) continue;
+        if (occurrence++ === snapshot.anchorOccurrence) { anchor = child; break; }
+      }
     }
-    const anchor = anchorIndex >= 0 ? body.children[anchorIndex] : null;
+    // The anchor element itself may have mutated past key recognition (streaming changes
+    // its text); its old index is still the best guess -- prefix elements rarely move.
+    if (!anchor && snapshot.anchorIndex >= 0) anchor = body.children[snapshot.anchorIndex] || null;
     if (anchor) {
       const bodyTop = body.getBoundingClientRect().top;
       const currentOffset = anchor.getBoundingClientRect().top - bodyTop;
@@ -2655,6 +2672,19 @@ Object.assign(TermdeckApp.prototype, {
         this.renderHistoryTurns(turns.slice(this.historyTurns.length), { target: body });
       }
     } else if (!canAppend) {
+      // Expanded state must be captured BEFORE the clear below wipes the DOM, keyed by the
+      // stable turn identity: streaming mutates earlier turns (forcing this full rebuild),
+      // and an expanded thinking block collapsing mid-read also throws away the reader's
+      // scroll position with it.
+      const expandedByKey = new Map();
+      if (preserveScroll && this.historyLoaded) {
+        for (const child of body.children) {
+          if (!child.matches?.("details")) continue;
+          const key = this.historyElementPreserveKey(child);
+          if (!expandedByKey.has(key)) expandedByKey.set(key, []);
+          expandedByKey.get(key).push(child.open);
+        }
+      }
       body.textContent = "";
       if (!turns.length) {
         const empty = document.createElement("div");
@@ -2662,7 +2692,7 @@ Object.assign(TermdeckApp.prototype, {
         empty.textContent = "no transcript found yet (send a message first, or the session id isn't resolved)";
         body.appendChild(empty);
       } else {
-        this.renderHistoryTurns(turns, { preserveExpanded: preserveScroll });
+        this.renderHistoryTurns(turns, { expandedByKey });
       }
     } else {
       this.renderHistoryTurns(turns.slice(this.historyTurns.length), { append: true });

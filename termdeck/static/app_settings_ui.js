@@ -814,45 +814,18 @@ Object.assign(TermdeckApp.prototype, {
     pop.appendChild(this.buildToggleRow("Resource monitor & maintenance",
       () => (this.settings.show_stats ? "shown" : "hidden"),
       () => { this.settings.show_stats = !this.settings.show_stats; }));
-    // Server-side macOS notifications (see notifier.AgentNotifier).
-    pop.appendChild(this.buildToggleRow("Notify when an agent needs attention",
-      () => (this.settings.notify_attention !== false ? "on" : "off"),
+    // One switch drives both notification kinds (attention + finished runs); the two
+    // underlying settings keys stay separate because the server-side notifier reads them.
+    const agentNotificationsEnabled = () =>
+      this.settings.notify_attention !== false || this.settings.notify_agent_idle !== false;
+    pop.appendChild(this.buildToggleRow("Notify on attention & finished runs",
+      () => (agentNotificationsEnabled() ? "on" : "off"),
       () => {
-        this.settings.notify_attention = this.settings.notify_attention === false;
-        if (this.settings.notify_attention) this.maybeRequestNotificationPermission();
+        const next = !agentNotificationsEnabled();
+        this.settings.notify_attention = next;
+        this.settings.notify_agent_idle = next;
+        if (next) this.maybeRequestNotificationPermission();
       }));
-    pop.appendChild(this.buildToggleRow("Notify when an agent finishes a long run",
-      () => (this.settings.notify_agent_idle !== false ? "on" : "off"),
-      () => {
-        this.settings.notify_agent_idle = this.settings.notify_agent_idle === false;
-        if (this.settings.notify_agent_idle) this.maybeRequestNotificationPermission();
-      }));
-    if (typeof Notification !== "undefined") {
-      // The toggles above are inert until Chrome itself grants notifications, and Chrome only
-      // shows its prompt on a user gesture -- this button IS that gesture. Once granted it
-      // doubles as an end-to-end test (macOS can still mute Chrome system-wide).
-      const permissionButtonText = () => Notification.permission === "granted" ? "send test"
-        : Notification.permission === "denied" ? "blocked" : "enable";
-      const permissionRow = this.buildActionRow("Browser notification permission", permissionButtonText(), async () => {
-        const button = permissionRow.querySelector("button");
-        if (Notification.permission === "default") {
-          await Notification.requestPermission();
-          button.textContent = permissionButtonText();
-          if (Notification.permission !== "granted") return;
-        }
-        if (Notification.permission === "granted") {
-          try {
-            new Notification("TermDeck test notification",
-              { body: "If you can read this, agent notifications will reach you." });
-          } catch { /* notification construction can throw in odd embedding contexts */ }
-          return;
-        }
-        this.$("status-name").textContent =
-          "notifications blocked — allow them for this site in the browser's site settings (icon left of the address bar)";
-      });
-      permissionRow.title = "If a test notification never appears even when granted, check macOS System Settings → Notifications for this browser.";
-      pop.appendChild(permissionRow);
-    }
     if (this.touchMobileLayoutEnabled()) pop.appendChild(this.buildMobileDisplayScaleRow());
     // Experiment switch: see tallRowPlan(). GPU rendering, at the cost of a much shorter scrollable
     // canvas -- the whole trade is explained there.
