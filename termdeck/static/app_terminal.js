@@ -3324,6 +3324,7 @@ Object.assign(TermdeckApp.prototype, {
       const notification = new Notification(`${title} ${body}`, {
         tag: `termdeck-${session.session_id}`,
         body: `TermDeck${this.projectSlug ? ` · ${this.projectSlug}` : ""}`,
+        icon: "/static/termdeck-192.png",
       });
       notification.onclick = () => {
         window.focus();
