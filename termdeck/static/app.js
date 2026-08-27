@@ -16363,14 +16363,37 @@ class TermdeckApp {
     clearInterval(state.timer);
     clearInterval(state.flushTimer);
     for (const undo of state.undo.reverse()) { try { undo(); } catch { /* restore the rest anyway */ } }
-    this.flushDiagnostics(true);
+    const pending = this.flushDiagnostics(true);
     this.diagState = null;
     this.diagBadge?.remove();
     this.diagBadge = null;
-    const path = `diagnostics/${state.id}.jsonl`;
+    const relative = `diagnostics/${state.id}.jsonl`;
     this.$("status-name").textContent =
-      `diagnostics saved: ${path} (${state.count} events, ${state.faults} fault${state.faults === 1 ? "" : "s"})`;
-    return path;
+      `diagnostics saved: ${relative} (${state.count} events, ${state.faults} fault${state.faults === 1 ? "" : "s"})`;
+    // A recording nobody can find is a recording nobody sends. The dialog waits on the final flush --
+    // offering to open a file the server has not finished writing reads as a bug.
+    void Promise.resolve(pending).then(() => this.showDiagnosticsSavedDialog(state, relative));
+    return relative;
+  }
+
+  async showDiagnosticsSavedDialog(state, relative) {
+    // The absolute path comes back on every write, so the last one is already known -- no extra
+    // round trip, and nothing to get wrong about where the data directory lives.
+    const absolute = this.diagLastPath || relative;
+    const seconds = Math.round((Date.now() - state.startedAt) / 1000);
+    const summary = `Recorded ${state.count} events over ${seconds}s` +
+      (state.faults ? `, including ${state.faults} detected fault${state.faults === 1 ? "" : "s"}.` : ".") +
+      `\n\nSaved to:\n${absolute}\n\nAttach this file to the bug report. It contains actions, app state ` +
+      `and geometry only -- no terminal output and no typed input.`;
+    const open = await uiConfirm(summary, { title: "Diagnostics recording saved",
+                                            confirmLabel: "Open file", cancelLabel: "Close" });
+    if (!open) return;
+    const directory = absolute.slice(0, absolute.lastIndexOf("/"));
+    const name = absolute.slice(absolute.lastIndexOf("/") + 1);
+    if (!await this.openFileExternally(directory, name)) {
+      await uiAlert(`Could not open it from here. The file is at:\n${absolute}`,
+                    { title: "Diagnostics recording", confirmLabel: "OK" });
+    }
   }
 
   flushDiagnostics(final = false) {
@@ -16378,11 +16401,13 @@ class TermdeckApp {
     if (!state || (!state.pending.length && !final)) return;
     const events = state.pending;
     state.pending = [];
-    fetch("/api/debug/diagnostics", {
+    return fetch("/api/debug/diagnostics", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: state.id, events }),
       keepalive: final,          // a final flush has to survive the page going away
-    }).catch(() => { /* losing a batch must not stop the recording */ });
+    }).then((response) => response.json())
+      .then((result) => { if (result?.path) this.diagLastPath = result.path; })
+      .catch(() => { /* losing a batch must not stop the recording */ });
   }
 
   // Everything that decides where the view sits, in one shape. Sizes and counts only -- never content.
@@ -17504,6 +17529,15 @@ class TermdeckApp {
         this.tallSetScrollTop(view, view.tallMaxScrollTop);
       }
       view.tallFollowTop = Math.max(wholeTarget, Math.min(view.container.scrollTop, view.tallMaxScrollTop));
+      // Re-baseline the follow-break guard even when no scroll was needed. That guard (see
+      // drainTerminalWrites) parks a following view when scrollTop has drifted from where this code last
+      // PUT it, and tallSetScrollTop is the only thing that records that place -- so every branch above
+      // that decides "already correct, nothing to do" used to leave the baseline at whatever it was
+      // before the user scrolled away. The very next write then measured the view against a position it
+      // had legitimately left long ago, declared that something had moved it, and parked it silently.
+      // Captured in a diagnostics recording: follow re-engaged at the bottom with no scroll write, and
+      // by the next sample it was parked again with scrollTop untouched, the composer sinking from there.
+      this.tallNoteFollowBaseline(view);
       this.tallSyncBufferToScroll(view);
       return;
     }
@@ -17538,6 +17572,17 @@ class TermdeckApp {
     // Where a following view belongs as of this placement. The settle handler needs it kept, because the
     // ceiling keeps moving afterwards -- see tallApplySettledScroll.
     view.tallFollowTop = Math.max(target, Math.min(view.container.scrollTop, view.tallMaxScrollTop));
+    this.tallNoteFollowBaseline(view);
+  }
+
+  // The place a following view was last deliberately left, for the follow-break guard to measure drift
+  // against. Recorded on every placement, including the ones that move nothing: "the view is already
+  // where it belongs" is exactly as much a placement as scrolling it there, and only recording the
+  // latter let a stale baseline park a view that had not moved at all.
+  tallNoteFollowBaseline(view) {
+    if (!view || view.closed) return;
+    view.tallLastProgrammaticTop = Math.round(view.container.scrollTop);
+    view.tallProgrammaticAt = performance.now();
   }
 
   // Every piece of tall-scroll state is derived from buffer contents, so all of it is meaningless the
