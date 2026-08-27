@@ -817,10 +817,16 @@ Object.assign(TermdeckApp.prototype, {
     // Server-side macOS notifications (see notifier.AgentNotifier).
     pop.appendChild(this.buildToggleRow("Notify when an agent needs attention",
       () => (this.settings.notify_attention !== false ? "on" : "off"),
-      () => { this.settings.notify_attention = this.settings.notify_attention === false; }));
+      () => {
+        this.settings.notify_attention = this.settings.notify_attention === false;
+        if (this.settings.notify_attention) this.maybeRequestNotificationPermission();
+      }));
     pop.appendChild(this.buildToggleRow("Notify when an agent finishes a long run",
-      () => (this.settings.notify_agent_idle ? "on" : "off"),
-      () => { this.settings.notify_agent_idle = !this.settings.notify_agent_idle; }));
+      () => (this.settings.notify_agent_idle !== false ? "on" : "off"),
+      () => {
+        this.settings.notify_agent_idle = this.settings.notify_agent_idle === false;
+        if (this.settings.notify_agent_idle) this.maybeRequestNotificationPermission();
+      }));
     if (this.touchMobileLayoutEnabled()) pop.appendChild(this.buildMobileDisplayScaleRow());
     // Experiment switch: see tallRowPlan(). GPU rendering, at the cost of a much shorter scrollable
     // canvas -- the whole trade is explained there.
@@ -3019,11 +3025,30 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // The dialog's model list comes from the served agent registry, so a newly registered
+  // AgentCli appears here without touching index.html. Agents first, shell last.
+  populateModalModelOptions() {
+    const select = this.$("modal-model");
+    const specs = Object.values(this.agentSpecs);
+    const ordered = [...specs.filter((spec) => spec.is_agent), ...specs.filter((spec) => !spec.is_agent)];
+    if (!ordered.length) return;
+    const previous = select.value;
+    select.textContent = "";
+    for (const spec of ordered) {
+      const option = document.createElement("option");
+      option.value = spec.kind;
+      option.textContent = spec.label || spec.kind;
+      select.appendChild(option);
+    }
+    if (ordered.some((spec) => spec.kind === previous)) select.value = previous;
+  },
+
   openModal(groupId = null, afterSessionId = null, initialAgentText = "") {
     this.pendingNewAgentSelection = this.normalizeSelectionText(initialAgentText);
     this.modalGroupId = !this.vscodeMode && groupId && this.terminalGroups().some((group) => group.id === groupId)
       ? groupId : null;
     this.modalAfterSessionId = !this.modalGroupId && afterSessionId && this.session(afterSessionId) ? afterSessionId : null;
+    this.populateModalModelOptions();
     const model = this.settings.last_model || DEFAULT_COMMAND;
     this.$("modal-model").value = this.agentSpecs[model] ? model : DEFAULT_COMMAND;
     this.updateModalPermissions();

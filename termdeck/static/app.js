@@ -33,7 +33,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_fo
   show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
-  notify_attention: true, notify_agent_idle: false,
+  notify_attention: true, notify_agent_idle: true,
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
   files_side_panel_last_tab: "project", file_search_history: [],
   file_tab_max_visible: 20, file_tab_order: "opened", lsp_enabled: true, lsp_command_overrides: {},
@@ -533,6 +533,7 @@ class TermdeckApp {
     this.sessions = [];
     this.closedSessions = [];
     this.agentSpecs = AGENT_SPEC_DEFAULTS;
+    this.agentRunStartedAt = new Map();
     this.initialLoadComplete = false;
     this.initialPageContentReady = false;
     this.views = new Map();
@@ -2761,6 +2762,9 @@ class TermdeckApp {
       }
     });
     await Promise.all([this.loadAgentSpecs(), this.loadSettings()]);
+    if (this.settings.notify_attention !== false || this.settings.notify_agent_idle !== false) {
+      this.maybeRequestNotificationPermission();
+    }
     this.initializeMobileSidebar();
     this.loadSearchHistory();
     await this.loadProjects();
@@ -3984,8 +3988,21 @@ class TermdeckApp {
     if (processingChanged && !spinning && session.session_id === this.activeId) {
       void this.refreshSessionUsage(session.session_id);
     }
+    // Desktop notifications live HERE, in the page, because macOS refuses osascript
+    // notifications from the launchd-run server outright ("not allowed for this application");
+    // the browser has a real permission prompt and follows the user to every machine.
+    if (spinning && !this.agentRunStartedAt.has(session.session_id)) {
+      this.agentRunStartedAt.set(session.session_id, Date.now());
+    } else if (!spinning && this.agentRunStartedAt.has(session.session_id)) {
+      const ranForMs = Date.now() - this.agentRunStartedAt.get(session.session_id);
+      this.agentRunStartedAt.delete(session.session_id);
+      if (processingChanged && ranForMs >= 5000 && this.settings.notify_agent_idle !== false) {
+        this.notifyAgentEvent(session, "finished");
+      }
+    }
     if (session.needs_attention && !previousNeedsAttention) {
       this.triggerSessionAttention(session.session_id);
+      if (this.settings.notify_attention !== false) this.notifyAgentEvent(session, "needs your attention");
     } else if (previousExitCode == null && session.exit_code != null && !session.dormant && session.exit_code !== 0) {
       this.triggerSessionAttention(session.session_id);
     }

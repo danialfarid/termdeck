@@ -23,18 +23,18 @@ class AgentNotifier:
     def __init__(self, load_preferences) -> None:
         self._load_preferences = load_preferences
 
-    def observe_status(self, ms, processing: bool, display_title: str) -> None:
+    def observe_status(self, ms, processing: bool, display_title: str, watched: bool = False) -> None:
         attention = bool(ms.attention_required)
         if attention != ms.notified_attention:
             ms.notified_attention = attention
-            if attention and ms.running and self._enabled("notify_attention", True):
+            if attention and ms.running and not watched and self._enabled("notify_attention", True):
                 self._fire(display_title, "needs your attention")
         if processing and not ms.notified_processing:
             ms.notified_processing_since = time.monotonic()
         if not processing and ms.notified_processing:
             ran_for = time.monotonic() - ms.notified_processing_since
-            if ran_for >= self.MIN_PROCESSING_SECONDS_FOR_IDLE_NOTICE and \
-                    self._enabled("notify_agent_idle", False):
+            if ran_for >= self.MIN_PROCESSING_SECONDS_FOR_IDLE_NOTICE and not watched and \
+                    self._enabled("notify_agent_idle", True):
                 self._fire(display_title, "finished")
         ms.notified_processing = processing
 

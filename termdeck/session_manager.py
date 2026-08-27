@@ -570,7 +570,8 @@ class TerminalSessionManager:
         agents.agent_cli(ms.record.agent_kind).refresh_activity_for_status(self, ms)
         processing = self._sync_processing_started(ms)
         if self.notifier is not None:
-            self.notifier.observe_status(ms, processing, self._display_title(ms.cli_title) or ms.record.title)
+            self.notifier.observe_status(ms, processing, self._display_title(ms.cli_title) or ms.record.title,
+                                         watched=bool(self._status_queues))
         return {
             WsMessageFields.TYPE: WsMessageFields.SESSION_STATUS,
             WsMessageFields.SESSION_ID: ms.record.session_id,
@@ -1536,7 +1537,8 @@ class TerminalSessionManager:
         agents.agent_cli(ms.record.agent_kind).refresh_activity_for_status(self, ms)
         processing = self._sync_processing_started(ms)
         if self.notifier is not None:
-            self.notifier.observe_status(ms, processing, self._display_title(ms.cli_title) or ms.record.title)
+            self.notifier.observe_status(ms, processing, self._display_title(ms.cli_title) or ms.record.title,
+                                         watched=bool(self._status_queues))
         summary: dict[str, object] = dict(ms.record.to_dict())
         summary[ApiFields.RUNNING] = ms.running
         summary[ApiFields.EXIT_CODE] = ms.exit_code

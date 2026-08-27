@@ -57,7 +57,7 @@ class AgentNotifierTest(unittest.TestCase):
             notifier.observe_status(ms, False, "tab-1")
         fire.assert_called_once_with("tab-1", "finished")
 
-    def test_idle_notice_defaults_off(self) -> None:
+    def test_idle_notice_defaults_on_but_defers_to_a_watching_page(self) -> None:
         notifier = self._notifier({})
         ms = session()
         with patch.object(notifier, "_fire") as fire, patch("termdeck.notifier.time") as clock:
@@ -65,6 +65,14 @@ class AgentNotifierTest(unittest.TestCase):
             notifier.observe_status(ms, True, "tab-1")
             clock.monotonic.return_value = 200.0
             notifier.observe_status(ms, False, "tab-1")
+        fire.assert_called_once_with("tab-1", "finished")
+        # A connected status websocket means a page is watching; the browser notifies instead.
+        ms = session()
+        with patch.object(notifier, "_fire") as fire, patch("termdeck.notifier.time") as clock:
+            clock.monotonic.return_value = 100.0
+            notifier.observe_status(ms, True, "tab-1", watched=True)
+            clock.monotonic.return_value = 200.0
+            notifier.observe_status(ms, False, "tab-1", watched=True)
         fire.assert_not_called()
 
     def test_broken_preferences_loader_falls_back_to_defaults(self) -> None:

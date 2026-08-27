@@ -525,7 +525,7 @@ class UiSettings(BaseModel):
     tall_webgl: bool = True
     # macOS user notifications on agent transitions (see notifier.AgentNotifier).
     notify_attention: bool = True
-    notify_agent_idle: bool = False
+    notify_agent_idle: bool = True
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
     md_prompt_drafts: dict[str, str] = {}

@@ -3259,6 +3259,29 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  maybeRequestNotificationPermission() {
+    if (typeof Notification === "undefined" || Notification.permission !== "default") return;
+    void Notification.requestPermission();
+  },
+
+  notifyAgentEvent(session, body) {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    // The one you are looking at needs no banner.
+    if (document.hasFocus() && session.session_id === this.activeId) return;
+    const title = this.titlePresentation(session).text || session.title || "terminal";
+    try {
+      const notification = new Notification(`${title} ${body}`, {
+        tag: `termdeck-${session.session_id}`,
+        body: `TermDeck${this.projectSlug ? ` · ${this.projectSlug}` : ""}`,
+      });
+      notification.onclick = () => {
+        window.focus();
+        this.activate(session.session_id);
+        notification.close();
+      };
+    } catch { /* notification construction can throw in odd embedding contexts */ }
+  },
+
   formatTokenCount(value) {
     if (!Number.isFinite(value) || value <= 0) return "";
     if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
