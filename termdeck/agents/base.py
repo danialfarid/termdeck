@@ -61,6 +61,9 @@ class AgentCli:
     supports_agent_rename = False       # TermDeck can push its tab title into the CLI's own session name
     detection_claims_new_files = False  # new transcript files are claimable without recent local input
     accepts_session_ref = False         # the create dialog can attach to an existing session by id/name
+    # The CLI has no session ids at all (state is per-directory, like aider): skip session
+    # detection, and let restart respawn without an identity to wait for.
+    sessionless = False
 
     # -- command lifecycle ------------------------------------------------
     base_flags: tuple[str, ...] = ()    # always-on flags injected right after the executable
@@ -342,7 +345,7 @@ class AgentCli:
                 "permissions": [{"value": value, "label": label} for value, label in self.ui_permission_options],
                 "prompt_marker": self.prompt_marker,
                 "supports_resume": self.supports_resume, "supports_fork": self.supports_fork,
-                "accepts_session_ref": self.accepts_session_ref,
+                "accepts_session_ref": self.accepts_session_ref, "sessionless": self.sessionless,
                 "records_raw_replay": self.records_raw_replay, "has_prompt_queue": self.has_prompt_queue}
 
     @staticmethod

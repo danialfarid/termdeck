@@ -161,6 +161,14 @@ Explicit dict, no metaclass/auto-registration magic — debuggable, and one obvi
   `GET /api/sessions/{id}/usage` as `{context_tokens, output_tokens, context_window, total_tokens}`.
 - **Notifications**: `notifier.AgentNotifier` observes every status payload and fires macOS
   notifications on attention/idle transitions (UiSettings `notify_attention` / `notify_agent_idle`).
+- **AiderCli** (`aider`): the sessionless archetype — aider has no session ids, just one chat
+  history per directory that `--restore-chat-history` reloads, so `sessionless = True` turns off
+  detection, the restart identity gate, and the new-binding prompt wait; a respawn in the same
+  cwd IS the resume.
+- **OpencodeCli** (`opencode`): sessions live in a sqlite database, not files, so every
+  file-shaped base hook stays unimplemented and the adapter uses read-only queries for
+  detection (the `detection_fallback_session_id` hook), titles, and token usage; resume is
+  `opencode -s <id>`, fork adds `--fork`.
 - **GeminiCli was built and then retired** (`termdeck/agents/_/gemini.py`): Google deprecated
   gemini-cli outright in favor of the Antigravity suite, which AgyCli already covers ("gemini"
   stays an agy model alias). The retired adapter remains a worked example of a foreign format —

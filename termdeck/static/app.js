@@ -80,6 +80,14 @@ const AGENT_SPEC_DEFAULTS = {
     permissions: [{ value: "default", label: "Default" }, { value: "full-access", label: "Full access" }],
     supports_resume: true, supports_fork: false, accepts_session_ref: false,
     records_raw_replay: false, has_prompt_queue: false },
+  aider: { kind: "aider", label: "Aider", is_agent: true, prompt_marker: "",
+    permissions: [{ value: "default", label: "Default (confirm actions)" }, { value: "auto", label: "Auto-approve (--yes-always)" }],
+    supports_resume: true, supports_fork: false, accepts_session_ref: false, sessionless: true,
+    records_raw_replay: false, has_prompt_queue: false },
+  opencode: { kind: "opencode", label: "OpenCode", is_agent: true, prompt_marker: "┃",
+    permissions: [{ value: "default", label: "Default" }],
+    supports_resume: true, supports_fork: true, accepts_session_ref: true,
+    records_raw_replay: true, has_prompt_queue: false },
 };
 const SEARCH_DEBOUNCE_MS = 500;
 const TERMINAL_SEARCH_DEBOUNCE_MS = 700;

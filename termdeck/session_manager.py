@@ -370,7 +370,7 @@ class TerminalSessionManager:
             ms.exit_code = TermdeckConfig.EXIT_CODE_SPAWN_FAILED
             self._handle_output(ms, TermdeckConfig.SPAWN_ERROR_TEMPLATE.format(error=spawn_error).encode())
             return
-        if agent.is_agent:
+        if agent.is_agent and not agent.sessionless:
             ms.detect_kind = agent.kind
             ms.detect_baseline = baseline
             ms.detect_deadline_monotonic = time.monotonic() + TermdeckConfig.AGENT_DETECT_STARTUP_TIMEOUT_SECONDS
@@ -1057,7 +1057,8 @@ class TerminalSessionManager:
         session detection and that rename to finish before writing the prompt,
         otherwise the two commands can race in the new composer.
         """
-        if not agents.agent_cli(ms.record.agent_kind).is_agent or not ms.running:
+        agent = agents.agent_cli(ms.record.agent_kind)
+        if not agent.is_agent or agent.sessionless or not ms.running:
             return
         waiting_for_new_agent = ms.record.agent_session_id is None
         if ms.record.agent_session_id is None and ms.pending_agent_rename:
@@ -1188,7 +1189,7 @@ class TerminalSessionManager:
         agent = agents.agent_cli(ms.record.agent_kind)
         if ms.detect_task is not None:
             ms.detect_task.cancel()
-        if agent.is_agent and not ms.record.agent_session_id and \
+        if agent.is_agent and not agent.sessionless and not ms.record.agent_session_id and \
                 ms.exit_code is None and not ms.dormant:
             raise RuntimeError(f"agent session identity is still resolving; wait before restarting: {session_id}")
         self._canonicalize_agent_resume_command(ms.record)
