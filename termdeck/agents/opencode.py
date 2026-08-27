@@ -30,8 +30,14 @@ class OpencodeCli(AgentCli):
     canonical_resume_command = True
     accepts_session_ref = True
     records_raw_replay = True
+    fullscreen_tui = True
 
     prompt_marker = "┃"
+    # Terminal frame with opencode's block cursor.
+    icon_svg = ('<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" '
+                'rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><rect x="6.5" y="8.5" '
+                'width="5" height="7" fill="currentColor"/><path d="M14 15.5h3.5" stroke="currentColor" '
+                'stroke-width="2" stroke-linecap="round"/></svg>')
 
     def _query(self, sql: str, parameters: tuple = ()) -> list[tuple]:
         if not self.DB_PATH.exists():

@@ -64,6 +64,10 @@ class AgentCli:
     # The CLI has no session ids at all (state is per-directory, like aider): skip session
     # detection, and let restart respawn without an identity to wait for.
     sessionless = False
+    # Full-screen TUI that manages its own scrolling. The client sizes the pty to the visible
+    # viewport instead of the tall canvas: given hundreds of rows, such a TUI top-anchors the
+    # conversation and bottom-anchors the composer, leaving the visible window on a blank gap.
+    fullscreen_tui = False
 
     # -- command lifecycle ------------------------------------------------
     base_flags: tuple[str, ...] = ()    # always-on flags injected right after the executable
@@ -78,6 +82,9 @@ class AgentCli:
 
     # -- client presentation ---------------------------------------------
     prompt_marker = ""                  # composer-row marker used to locate the input line
+    # Inline SVG markup for the sidebar terminal icon (single-color, fill="currentColor").
+    # Empty means the client falls back to its generic terminal glyph.
+    icon_svg = ""
 
     def normalized_permission_flags(self, permission: str) -> tuple[str, ...]:
         requested = (permission or "").strip().lower() or "default"
@@ -350,9 +357,10 @@ class AgentCli:
     def client_descriptor(self) -> dict[str, object]:
         return {"kind": self.kind, "label": self.label, "is_agent": self.is_agent,
                 "permissions": [{"value": value, "label": label} for value, label in self.ui_permission_options],
-                "prompt_marker": self.prompt_marker,
+                "prompt_marker": self.prompt_marker, "icon_svg": self.icon_svg,
                 "supports_resume": self.supports_resume, "supports_fork": self.supports_fork,
                 "accepts_session_ref": self.accepts_session_ref, "sessionless": self.sessionless,
+                "fullscreen_tui": self.fullscreen_tui,
                 "records_raw_replay": self.records_raw_replay, "has_prompt_queue": self.has_prompt_queue}
 
     @staticmethod

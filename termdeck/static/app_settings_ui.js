@@ -1432,19 +1432,24 @@ Object.assign(TermdeckApp.prototype, {
     const updateButtons = () => {
       for (const [kind, button] of buttons) {
         const enabled = this.terminalIconEnabledForAgent(kind);
-        const labelText = TERMINAL_ICON_AGENT_LABELS[kind];
-        button.textContent = labelText;
+        const labelText = this.agentLabel(kind, "Shell");
+        const iconSvg = this.agentSpec(kind)?.icon_svg || '<span class="codicon codicon-terminal"></span>';
+        button.innerHTML = `<span class="terminal-icon-toggle-glyph" aria-hidden="true">${iconSvg}</span><span>${labelText}</span>`;
         button.classList.toggle("on", enabled);
         button.setAttribute("aria-pressed", String(enabled));
         button.title = `${labelText} terminal icons: ${enabled ? "on" : "off"}`;
         button.setAttribute("aria-label", button.title);
       }
     };
-    for (const kind of TERMINAL_ICON_AGENT_KINDS) {
+    // Registry-driven like the create dialog: agents first, shell last.
+    const specs = Object.values(this.agentSpecs);
+    const iconKinds = [...specs.filter((spec) => spec.is_agent), ...specs.filter((spec) => !spec.is_agent)]
+      .map((spec) => spec.kind);
+    for (const kind of iconKinds) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "theme-toggle terminal-icon-agent-toggle";
-      button.title = `${TERMINAL_ICON_AGENT_LABELS[kind]} terminal icon`;
+      button.title = `${this.agentLabel(kind, "Shell")} terminal icon`;
       button.setAttribute("aria-label", button.title);
       button.onclick = () => {
         this.setTerminalIconEnabledForAgent(kind, !this.terminalIconEnabledForAgent(kind));

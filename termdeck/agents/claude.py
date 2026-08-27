@@ -61,6 +61,10 @@ class ClaudeCli(AgentCli):
     permission_value_flags = ("--permission-mode",)
 
     prompt_marker = "❯"
+    icon_svg = ('<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.25c.42 0 '
+                '.76.34.76.76v4.08l3.53-2.04a.76.76 0 1 1 .76 1.31L9.52 7.4l3.53 2.04a.76.76 0 1 1-.76 '
+                '1.31L8.76 8.72v4.08a.76.76 0 0 1-1.52 0V8.72l-3.53 2.04a.76.76 0 1 1-.76-1.31L6.48 7.4 '
+                '2.95 5.36a.76.76 0 1 1 .76-1.31l3.53 2.04V2.01c0-.42.34-.76.76-.76Z"/></svg>')
 
     subagent_file_marker = b'"isSidechain":true'
 

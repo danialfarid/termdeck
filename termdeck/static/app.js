@@ -23,14 +23,12 @@ const INACTIVE_TERMINAL_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 const INACTIVE_TERMINAL_OUTPUT_BATCH_BYTES = 256 * 1024;
 const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~";
-const TERMINAL_ICON_AGENT_KINDS = ["codex", "claude", "agy", "none"];
-const TERMINAL_ICON_AGENT_LABELS = { codex: "Codex", claude: "Claude", agy: "AGY", none: "Shell" };
 const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_font_size: 18, project_font_size: 18, terminal_font_size: 18,
   ui_font_size: 11, system_font_size: 13, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, files_tab_font_size: 11, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: {}, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   notify_attention: true, notify_agent_idle: true,
@@ -61,32 +59,40 @@ const AGENT_CLIENT_BEHAVIORS = {
 // Fallback snapshot of /api/agents, used only when the boot-time fetch fails (transient hiccup on a
 // page that otherwise loaded): without it every capability check degrades to "shell terminal" for the
 // whole browser session. The server response is authoritative and replaces this wholesale.
+// Icon SVGs mirror AgentCli.icon_svg on the server so sidebar icons survive that fallback too.
+const FALLBACK_ICON_SVGS = {
+  claude: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.25c.42 0 .76.34.76.76v4.08l3.53-2.04a.76.76 0 1 1 .76 1.31L9.52 7.4l3.53 2.04a.76.76 0 1 1-.76 1.31L8.76 8.72v4.08a.76.76 0 0 1-1.52 0V8.72l-3.53 2.04a.76.76 0 1 1-.76-1.31L6.48 7.4 2.95 5.36a.76.76 0 1 1 .76-1.31l3.53 2.04V2.01c0-.42.34-.76.76-.76Z"/></svg>',
+  codex: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zM3.5988 18.304a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1412-1.6462zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5968 3.8558L13.1038 8.364 15.1192 7.2a.0757.075 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zm-12.6413 4.1347-2.0201-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805-4.783 2.7582a.7948.7948 0 0 0-.3927.6813zM9.4041 10.4976l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"/></svg>',
+  agy: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 1.8 14.45 9.55 22.2 12l-7.75 2.45L12 22.2l-2.45-7.75L1.8 12l7.75-2.45L12 1.8Z"/><path fill="currentColor" d="m18.55 2.15.8 2.5 2.5.8-2.5.8-.8 2.5-.8-2.5-2.5-.8 2.5-.8.8-2.5Z" opacity=".7"/></svg>',
+  aider: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8.8" cy="12" r="6.4" fill="currentColor"/><circle cx="15.2" cy="12" r="6.4" fill="currentColor" opacity=".45"/></svg>',
+  opencode: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><rect x="6.5" y="8.5" width="5" height="7" fill="currentColor"/><path d="M14 15.5h3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+};
 const AGENT_SPEC_DEFAULTS = {
-  none: { kind: "none", label: "Shell", is_agent: false, prompt_marker: "",
+  none: { kind: "none", label: "Shell", is_agent: false, prompt_marker: "", icon_svg: "",
     permissions: [{ value: "default", label: "Shell permissions" }],
     supports_resume: false, supports_fork: false, accepts_session_ref: false,
     records_raw_replay: false, has_prompt_queue: false },
-  claude: { kind: "claude", label: "Claude", is_agent: true, prompt_marker: "❯",
+  claude: { kind: "claude", label: "Claude", is_agent: true, prompt_marker: "❯", icon_svg: FALLBACK_ICON_SVGS.claude,
     permissions: [{ value: "default", label: "Default (Claude config)" }, { value: "accept-edits", label: "Accept edits" },
       { value: "auto", label: "Auto" }, { value: "full-access", label: "Full access" }],
     supports_resume: true, supports_fork: true, accepts_session_ref: true,
     records_raw_replay: true, has_prompt_queue: false },
-  codex: { kind: "codex", label: "Codex", is_agent: true, prompt_marker: "›",
+  codex: { kind: "codex", label: "Codex", is_agent: true, prompt_marker: "›", icon_svg: FALLBACK_ICON_SVGS.codex,
     permissions: [{ value: "default", label: "Default (Codex config)" }, { value: "read-only", label: "Read only" },
       { value: "workspace-write", label: "Workspace write" }, { value: "full-access", label: "Full access" }],
     supports_resume: true, supports_fork: true, accepts_session_ref: true,
     records_raw_replay: true, has_prompt_queue: true },
-  agy: { kind: "agy", label: "AGY", is_agent: true, prompt_marker: "",
+  agy: { kind: "agy", label: "AGY", is_agent: true, prompt_marker: "", icon_svg: FALLBACK_ICON_SVGS.agy,
     permissions: [{ value: "default", label: "Default" }, { value: "full-access", label: "Full access" }],
     supports_resume: true, supports_fork: false, accepts_session_ref: false,
     records_raw_replay: false, has_prompt_queue: false },
-  aider: { kind: "aider", label: "Aider", is_agent: true, prompt_marker: "",
+  aider: { kind: "aider", label: "Aider", is_agent: true, prompt_marker: "", icon_svg: FALLBACK_ICON_SVGS.aider,
     permissions: [{ value: "default", label: "Default (confirm actions)" }, { value: "auto", label: "Auto-approve (--yes-always)" }],
     supports_resume: true, supports_fork: false, accepts_session_ref: false, sessionless: true,
     records_raw_replay: false, has_prompt_queue: false },
-  opencode: { kind: "opencode", label: "OpenCode", is_agent: true, prompt_marker: "┃",
+  opencode: { kind: "opencode", label: "OpenCode", is_agent: true, prompt_marker: "┃", icon_svg: FALLBACK_ICON_SVGS.opencode,
     permissions: [{ value: "default", label: "Default" }],
-    supports_resume: true, supports_fork: true, accepts_session_ref: true,
+    supports_resume: true, supports_fork: true, accepts_session_ref: true, fullscreen_tui: true,
     records_raw_replay: true, has_prompt_queue: false },
 };
 const SEARCH_DEBOUNCE_MS = 500;
@@ -397,11 +403,6 @@ const VS_CODE_MODE = HAS_VSCODE_WEBVIEW_API || IS_VSCODE_EMBEDDED || URL_HINTS_V
   REFERRER_IS_VSCODE;
 const NATIVE_VSCODE_MODE = VS_CODE_MODE &&
   (NATIVE_VSCODE_PARAM ? ["1", "true", "yes", "on"].includes(NATIVE_VSCODE_PARAM) : true);
-const TERMINAL_TYPE_SVGS = {
-  claude: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.25c.42 0 .76.34.76.76v4.08l3.53-2.04a.76.76 0 1 1 .76 1.31L9.52 7.4l3.53 2.04a.76.76 0 1 1-.76 1.31L8.76 8.72v4.08a.76.76 0 0 1-1.52 0V8.72l-3.53 2.04a.76.76 0 1 1-.76-1.31L6.48 7.4 2.95 5.36a.76.76 0 1 1 .76-1.31l3.53 2.04V2.01c0-.42.34-.76.76-.76Z"/></svg>',
-  codex: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zM3.5988 18.304a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1412-1.6462zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5968 3.8558L13.1038 8.364 15.1192 7.2a.0757.075 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zm-12.6413 4.1347-2.0201-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805-4.783 2.7582a.7948.7948 0 0 0-.3927.6813zM9.4041 10.4976l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"/></svg>',
-  agy: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 1.8 14.45 9.55 22.2 12l-7.75 2.45L12 22.2l-2.45-7.75L1.8 12l7.75-2.45L12 1.8Z"/><path fill="currentColor" d="m18.55 2.15.8 2.5 2.5.8-2.5.8-.8 2.5-.8-2.5-2.5-.8 2.5-.8.8-2.5Z" opacity=".7"/></svg>',
-};
 const makeTerminalTheme = (background, foreground, cursor, selectionBackground, ansi) => {
   const [black, red, green, yellow, blue, magenta, cyan, white, brightBlack, brightRed, brightGreen,
     brightYellow, brightBlue, brightMagenta, brightCyan, brightWhite] = ansi;
@@ -4109,7 +4110,7 @@ class TermdeckApp {
 
   terminalIconAgentKind(agentKind) {
     const kind = String(agentKind || "none").toLowerCase();
-    return TERMINAL_ICON_AGENT_KINDS.includes(kind) ? kind : "none";
+    return this.agentSpecs[kind] ? kind : "none";
   }
 
   terminalIconEnabledForAgent(agentKind) {

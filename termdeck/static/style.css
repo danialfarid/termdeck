@@ -1483,9 +1483,12 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
 .remote-access-open.hidden, .lan-access-open.hidden { display: none; }
 .terminal-icon-settings-row { align-items: flex-start; }
 .terminal-icon-agent-row { margin-top: 5px !important; }
-.terminal-icon-settings-controls { width: 100%; flex-wrap: nowrap; justify-content: stretch; gap: 5px; }
-.terminal-icon-agent-toggle { flex: 1 1 0; min-width: 0; padding: 0 4px !important; font-size: calc(var(--system-font-size) - 2px) !important; white-space: nowrap; }
+.terminal-icon-settings-controls { width: 100%; flex-wrap: wrap; justify-content: stretch; gap: 5px; }
+.terminal-icon-agent-toggle { flex: 1 1 0; min-width: 0; padding: 0 4px !important; font-size: calc(var(--system-font-size) - 2px) !important; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
 .terminal-icon-agent-toggle.on { border-color: var(--active-border); background: var(--active-bg); color: var(--accent); }
+.terminal-icon-toggle-glyph { display: inline-flex; align-items: center; }
+.terminal-icon-toggle-glyph svg { display: block; width: 12px; height: 12px; }
+.terminal-icon-toggle-glyph .codicon { font-size: 12px; }
 #settings-popover > .settings-row:first-child { margin-top: 0; }
 .theme-toggle { width: auto !important; padding: 0 10px; text-transform: capitalize; }
 #keys-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; z-index: 12; }

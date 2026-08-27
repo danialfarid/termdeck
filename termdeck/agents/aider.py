@@ -18,6 +18,10 @@ class AiderCli(AgentCli):
     sessionless = True
     supports_resume = True   # respawning the same command in the same cwd IS the resume
 
+    # Two overlapping circles: pair programming.
+    icon_svg = ('<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8.8" cy="12" r="6.4" fill='
+                '"currentColor"/><circle cx="15.2" cy="12" r="6.4" fill="currentColor" opacity=".45"/></svg>')
+
     base_flags = ("--restore-chat-history",)
     permission_flags = {
         "default": (),

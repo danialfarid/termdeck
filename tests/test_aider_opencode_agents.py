@@ -19,6 +19,18 @@ CREATE TABLE session (
 """
 
 
+class DescriptorPresentationTest(unittest.TestCase):
+    def test_every_agent_ships_an_icon_and_the_tui_flag(self) -> None:
+        for cli in agents.AGENT_CLIS.values():
+            descriptor = cli.client_descriptor()
+            self.assertIn("icon_svg", descriptor, cli.kind)
+            self.assertIn("fullscreen_tui", descriptor, cli.kind)
+            if cli.is_agent:
+                self.assertIn("<svg", str(descriptor["icon_svg"]), cli.kind)
+        self.assertTrue(agents.agent_cli("opencode").fullscreen_tui)
+        self.assertFalse(agents.agent_cli("claude").fullscreen_tui)
+
+
 class AiderAgentTest(unittest.TestCase):
     def test_command_building_and_capabilities(self) -> None:
         aider = agents.agent_cli("aider")

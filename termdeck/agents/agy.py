@@ -27,6 +27,11 @@ class AgyCli(AgentCli):
     # Antigravity suite, and this is its replacement.
     model_aliases = ("agd", "agy-cli", "agycli", "gemini", "antigravity", "antigravity-cli", "antigravitycli")
 
+    icon_svg = ('<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 1.8 14.45 '
+                '9.55 22.2 12l-7.75 2.45L12 22.2l-2.45-7.75L1.8 12l7.75-2.45L12 1.8Z"/><path fill='
+                '"currentColor" d="m18.55 2.15.8 2.5 2.5.8-2.5.8-.8 2.5-.8-2.5-2.5-.8 2.5-.8.8-2.5Z" '
+                'opacity=".7"/></svg>')
+
     # Restarted terminals resume via --conversation; attaching to an EXISTING agy session from
     # the create dialog is unsupported (new_session_resume_arguments raises), as is forking.
     supports_resume = True

@@ -711,11 +711,7 @@ Object.assign(TermdeckApp.prototype, {
     const icon = document.createElement("span");
     icon.className = "terminal-type-icon";
     icon.setAttribute("aria-hidden", "true");
-    if (TERMINAL_TYPE_SVGS[s.agent_kind]) {
-      icon.innerHTML = TERMINAL_TYPE_SVGS[s.agent_kind];
-    } else {
-      icon.innerHTML = '<span class="codicon codicon-terminal"></span>';
-    }
+    icon.innerHTML = this.agentSpec(s.agent_kind)?.icon_svg || '<span class="codicon codicon-terminal"></span>';
     icon.title = this.agentSpec(s.agent_kind)?.is_agent ? this.agentLabel(s.agent_kind) : "Shell terminal";
     for (const kind of Object.keys(this.agentSpecs)) {
       if (kind !== "none") icon.classList.toggle(`${kind}-terminal-icon`, s.agent_kind === kind);

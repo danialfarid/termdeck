@@ -154,7 +154,10 @@ Explicit dict, no metaclass/auto-registration magic — debuggable, and one obvi
   registry near the top of app.js (command-collapse anchor, reflow deferral, status-row
   refresh, focus refresh). Generic code calls optional hooks:
   `this.agentBehavior(view)?.afterPromptSubmit?.(view)`.
-- Icons: `TERMINAL_TYPE_SVGS[kind]` stays a lookup table — adding an icon is adding one entry.
+- Icons: `AgentCli.icon_svg` (inline single-color SVG, `fill="currentColor"`) travels in the
+  descriptor. The sidebar terminal icon, and the per-agent toggles in the "Show terminal icons"
+  settings row, are both built from the registry — a new adapter's icon appears in both without
+  client changes. Empty means the generic codicon terminal glyph.
 
 ### Later additions (post-migration)
 
@@ -170,7 +173,11 @@ Explicit dict, no metaclass/auto-registration magic — debuggable, and one obvi
 - **OpencodeCli** (`opencode`): sessions live in a sqlite database, not files, so every
   file-shaped base hook stays unimplemented and the adapter uses read-only queries for
   detection (the `detection_fallback_session_id` hook), titles, and token usage; resume is
-  `opencode -s <id>`, fork adds `--fork`.
+  `opencode -s <id>`, fork adds `--fork`. It is also the `fullscreen_tui = True` archetype: its
+  TUI manages its own scrolling and must see the real viewport height, so the client sizes the
+  pty to the visible rows instead of the tall canvas (on a tall pty it top-anchors the
+  conversation and bottom-anchors the composer, leaving the visible window on the blank gap
+  between them).
 - **GeminiCli was built and then retired** (`termdeck/agents/_/gemini.py`): Google deprecated
   gemini-cli outright in favor of the Antigravity suite, which AgyCli already covers ("gemini"
   stays an agy model alias). The retired adapter remains a worked example of a foreign format —
@@ -193,7 +200,7 @@ class AiderCli(AgentCli):
     def is_user_payload(self, payload): ...
 ```
 
-Register it in `AGENT_CLIS`, add an SVG to `TERMINAL_TYPE_SVGS`, done. Everything else
+Register it in `AGENT_CLIS`, set `icon_svg` on the class, done. Everything else
 (spawn, detection loop, replay, activity polling, search indexing, UI menus) is generic code
 driven by the flags and methods above.
 

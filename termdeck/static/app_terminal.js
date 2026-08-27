@@ -1172,10 +1172,28 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // A fullscreen_tui agent (opencode) must see the real visible height. On the tall canvas it
+  // top-anchors the conversation and bottom-anchors the composer, so the ~200-row blank gap
+  // between them is what fills the visible window (measured: "hi" and its reply painted at the
+  // top of a 253-row screen, viewport parked on the cursor at the bottom). The canvas stays
+  // tall; only the pty is viewport-sized, so the TUI lays out inside the top of the canvas and
+  // the cursor-following viewport parks right on it. Returns 0 while layout is unmeasured.
+  fullscreenTuiPtyRows(view) {
+    if (!this.agentSpec(this.session(view.sessionId)?.agent_kind)?.fullscreen_tui) return null;
+    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+    const height = view.container.clientHeight;
+    if (!cellHeight || !height) return 0;
+    return Math.max(2, Math.floor(height / cellHeight));
+  },
+
+
   sendResize(view, cols, rows, resend = false, takeOwnership = false) {
     if (this.sidebarResizeInProgress || view.suppressResizeToServer || !this.terminalPageCanResize() ||
         view.closed || view.sessionId !== this.activeId || !view.container.classList.contains("visible") ||
         this.activeFileKey !== null || this.historyOpen) return;
+    const tuiRows = this.fullscreenTuiPtyRows(view);
+    if (tuiRows === 0) return;              // no measured height yet; a later resize will land
+    if (tuiRows != null) rows = tuiRows;
     if (view.ws && view.ws.readyState === WebSocket.OPEN &&
         (resend || view.lastSentCols !== cols || view.lastSentRows !== rows)) {
       view.lastSentCols = cols;
@@ -1617,7 +1635,7 @@ Object.assign(TermdeckApp.prototype, {
     this.applySettings({ fitTerminals: false });
     this.tallFit(view);
     const takeoverCols = view.term.cols;
-    const takeoverRows = view.term.rows;
+    const takeoverRows = this.fullscreenTuiPtyRows(view) || view.term.rows;
     this.$("status-name").textContent = "resyncing terminal…";
     // Explicit user action, so this is the one place allowed to take the size from another window.
     view.suppressResizeToServer = false;
@@ -3249,7 +3267,7 @@ Object.assign(TermdeckApp.prototype, {
 
 
   agentLabel(kind, fallback = "agent") {
-    return this.agentSpec(kind)?.label || TERMINAL_ICON_AGENT_LABELS[kind] || fallback;
+    return this.agentSpec(kind)?.label || fallback;
   },
 
 
@@ -3327,7 +3345,7 @@ Object.assign(TermdeckApp.prototype, {
       const legacyTerminalIconsEnabled = incoming.show_terminal_icons === true;
       const storedTerminalIconAgents = incoming.terminal_icon_agents && typeof incoming.terminal_icon_agents === "object"
         ? incoming.terminal_icon_agents : {};
-      incoming.terminal_icon_agents = Object.fromEntries(TERMINAL_ICON_AGENT_KINDS.map((kind) => [kind,
+      incoming.terminal_icon_agents = Object.fromEntries(Object.keys(this.agentSpecs).map((kind) => [kind,
         Object.prototype.hasOwnProperty.call(storedTerminalIconAgents, kind)
           ? !!storedTerminalIconAgents[kind] : legacyTerminalIconsEnabled]));
       if (incoming.code_font_size == null) incoming.code_font_size = incoming.viewer_font_size || SETTINGS_DEFAULTS.code_font_size;
