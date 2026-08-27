@@ -1531,17 +1531,17 @@ class ClaudeActivityDetailTest(unittest.TestCase):
         claude, ms = self._session("abc")
         ms.agent_state.main_active = False
         ms.agent_state.subagent_states = {Path("/a"): True, Path("/b"): True, Path("/c"): False}
-        self.assertEqual(claude.activity_detail(ms), {"main": False, "subagents": 2, "background_jobs": 0})
+        self.assertEqual(claude.activity_detail(ms), {"main": False, "subagents": 2, "background_jobs": 0, "monitors": 0})
         ms.agent_state.main_active = True
         ms.agent_state.background_tasks = {"b1": "/tmp/b1.output"}
-        self.assertEqual(claude.activity_detail(ms), {"main": True, "subagents": 2, "background_jobs": 1})
+        self.assertEqual(claude.activity_detail(ms), {"main": True, "subagents": 2, "background_jobs": 1, "monitors": 0})
 
     def test_detail_is_none_before_binding_and_main_false_when_interrupted(self) -> None:
         claude, ms = self._session(None)
         self.assertIsNone(claude.activity_detail(ms))
         claude, ms = self._session("abc", interrupted=True)
         ms.agent_state.main_active = True
-        self.assertEqual(claude.activity_detail(ms), {"main": False, "subagents": 0, "background_jobs": 0})
+        self.assertEqual(claude.activity_detail(ms), {"main": False, "subagents": 0, "background_jobs": 0, "monitors": 0})
 
 
 class ClaudeBackgroundTaskScanTest(unittest.TestCase):
@@ -1644,3 +1644,44 @@ class ClaudeBackgroundTaskScanTest(unittest.TestCase):
         self._append(terminal)
         self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
         self.assertEqual(self.state.background_tasks, {})
+
+    def _monitor_launch(self, task_id):
+        text = (f"Monitor started (task {task_id}, persistent — runs until TaskStop or session end). "
+                "You will be notified on each event.")
+        return json.dumps({"type": "user", "message": {"role": "user", "content": [
+            {"tool_use_id": "t2", "type": "tool_result", "content": text}]}})
+
+    def test_monitor_tracked_until_output_end_marker(self) -> None:
+        from unittest.mock import patch
+        output = Path(self._output_path("mon1"))
+        with patch.object(type(self.claude), "_task_output_path", staticmethod(lambda parent, task_id: output)):
+            self._append(self._monitor_launch("mon1"))
+            self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
+            self.assertEqual(set(self.state.monitor_tasks), {"mon1"})
+            self.assertEqual(self.state.background_tasks, {})
+            event = json.dumps({"type": "queue-operation", "operation": "enqueue", "content":
+                "<task-notification>\n<task-id>mon1</task-id>\n<summary>Monitor event: \"x\"</summary>\n</task-notification>"})
+            self._append(event)
+            self.assertFalse(self.claude.scan_background_tasks(self.state, self.parent))
+            self.assertEqual(set(self.state.monitor_tasks), {"mon1"})
+            output.write_text("events...\n[exited with code 0]\n")
+            self._append(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "later turn"}]}}))
+            self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
+            self.assertEqual(self.state.monitor_tasks, {})
+
+    def test_task_stop_removes_monitor(self) -> None:
+        from unittest.mock import patch
+        output = Path(self._output_path("mon2"))
+        with patch.object(type(self.claude), "_task_output_path", staticmethod(lambda parent, task_id: output)):
+            self._append(self._monitor_launch("mon2"))
+            self.claude.scan_background_tasks(self.state, self.parent)
+            self._append(self._task_stop("mon2"))
+            self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
+            self.assertEqual(self.state.monitor_tasks, {})
+
+    def test_task_output_path_derivation(self) -> None:
+        import os
+        parent = Path("/Users/x/.claude/projects/-Users-x-proj/abcd-1234.jsonl")
+        self.assertEqual(self.claude._task_output_path(parent, "tid9"),
+                         Path(f"/tmp/claude-{os.getuid()}/-Users-x-proj/abcd-1234/tasks/tid9.output"))

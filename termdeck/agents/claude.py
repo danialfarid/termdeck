@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 import shlex
 import time
@@ -20,6 +21,7 @@ class ClaudeSessionState(AgentSessionState):
         self.subagents_active = False
         self.main_active = False
         self.background_tasks: dict[str, str] = {}  # task id -> output file path
+        self.monitor_tasks: dict[str, str] = {}     # monitor task id -> output file path
         self.background_scan_offset = 0             # transcript bytes already scanned
 
 
@@ -204,11 +206,14 @@ class ClaudeCli(AgentCli):
         state = ms.agent_state
         return {"main": bool(state.main_active and not ms.record.claude_interrupted),
                 "subagents": sum(1 for active in state.subagent_states.values() if active),
-                "background_jobs": len(state.background_tasks)}
+                "background_jobs": len(state.background_tasks),
+                "monitors": len(state.monitor_tasks)}
 
     _BACKGROUND_LAUNCH_PREFIX = "Command running in background with ID:"
     _BACKGROUND_LAUNCH_RE = re.compile(r"Command running in background with ID: (\w+)")
     _BACKGROUND_OUTPUT_RE = re.compile(r"Output is being written to: (\S+\.output)")
+    _MONITOR_LAUNCH_PREFIX = "Monitor started (task "
+    _MONITOR_LAUNCH_RE = re.compile(r"Monitor started \(task (\w+)")
     _TASK_NOTIFICATION_ID_RE = re.compile(r"<task-id>([\w-]+)</task-id>")
 
     def scan_background_tasks(self, state, parent: Path) -> bool:
@@ -223,14 +228,16 @@ class ClaudeCli(AgentCli):
         try:
             size = parent.stat().st_size
         except OSError:
-            changed = bool(state.background_tasks)
+            changed = bool(state.background_tasks or state.monitor_tasks)
             state.background_tasks = {}
+            state.monitor_tasks = {}
             state.background_scan_offset = 0
             return changed
         full_scan = state.background_scan_offset == 0 or state.background_scan_offset > size
         offset = 0 if full_scan else state.background_scan_offset
-        before = dict(state.background_tasks)
+        before = (dict(state.background_tasks), dict(state.monitor_tasks))
         tasks: dict[str, str] = {} if full_scan else dict(state.background_tasks)
+        monitors: dict[str, str] = {} if full_scan else dict(state.monitor_tasks)
         try:
             with parent.open("rb") as fh:
                 fh.seek(offset)
@@ -241,16 +248,18 @@ class ClaudeCli(AgentCli):
             # A line caught mid-write stays unscanned until its newline lands.
             data = data[:data.rfind(b"\n") + 1]
         state.background_scan_offset = offset + len(data)
-        known_before_scan = set(tasks)
+        known_before_scan = set(tasks) | set(monitors)
         for raw in data.split(b"\n"):
             if b"Command running in background with ID" in raw:
                 self._record_background_launch(raw, tasks)
+            if b"Monitor started (task " in raw:
+                self._record_monitor_launch(raw, monitors, parent)
             if b"<task-notification>" in raw:
-                self._remove_notified_background_tasks(raw, tasks)
+                self._remove_notified_background_tasks(raw, tasks, monitors)
             # TaskStop kills a task without a completion notification; its tool_use lives in
             # an assistant event.
             if b'"TaskStop"' in raw:
-                self._drop_stopped_background_task(raw, tasks)
+                self._drop_stopped_background_task(raw, tasks, monitors)
         # The transcript alone under-reports endings (a kill leaves no notification, and
         # compaction can drop one), so every task tracked before this scan is re-verified
         # against its output file. A task first seen in this incremental scan is exempt:
@@ -259,9 +268,11 @@ class ClaudeCli(AgentCli):
             if not full_scan and task_id not in known_before_scan:
                 return True
             return bool(output) and not self._background_task_finished(Path(output))
-        tasks = {task_id: output for task_id, output in tasks.items() if still_running(task_id, output)}
-        state.background_tasks = tasks
-        return tasks != before
+        state.background_tasks = {task_id: output for task_id, output in tasks.items()
+                                  if still_running(task_id, output)}
+        state.monitor_tasks = {task_id: output for task_id, output in monitors.items()
+                               if still_running(task_id, output)}
+        return (state.background_tasks, state.monitor_tasks) != before
 
     @staticmethod
     def _user_event_content(raw: bytes):
@@ -291,7 +302,30 @@ class ClaudeCli(AgentCli):
             if match:
                 tasks[match.group(1)] = output.group(1) if output else ""
 
-    def _remove_notified_background_tasks(self, raw: bytes, tasks: dict[str, str]) -> None:
+    def _record_monitor_launch(self, raw: bytes, monitors: dict[str, str], parent: Path) -> None:
+        # The Monitor launch result names no output file; its path follows the task-output
+        # convention (same tasks dir every other task of this agent session uses), derived
+        # from the transcript path's project dir + session id.
+        content = self._user_event_content(raw)
+        for part in content if isinstance(content, list) else []:
+            if not isinstance(part, dict) or part.get("type") != "tool_result":
+                continue
+            text = part.get("content")
+            if isinstance(text, list):
+                text = " ".join(p.get("text", "") for p in text if isinstance(p, dict))
+            if not isinstance(text, str) or not text.startswith(self._MONITOR_LAUNCH_PREFIX):
+                continue
+            match = self._MONITOR_LAUNCH_RE.search(text)
+            if match:
+                monitors[match.group(1)] = str(self._task_output_path(parent, match.group(1)))
+
+    @staticmethod
+    def _task_output_path(parent: Path, task_id: str) -> Path:
+        return (Path("/tmp") / f"claude-{os.getuid()}"
+                / parent.parent.name / parent.stem / "tasks" / f"{task_id}.output")
+
+    def _remove_notified_background_tasks(self, raw: bytes, tasks: dict[str, str],
+                                          monitors: dict[str, str]) -> None:
         # Notifications land as queue-operation events (top-level content) and again as user
         # events on delivery. Only a terminal notification carries a <status> tag -- a Monitor
         # event notification reuses the same task-id without one and must not end the task.
@@ -313,8 +347,10 @@ class ClaudeCli(AgentCli):
             return
         for task_id in self._TASK_NOTIFICATION_ID_RE.findall(content):
             tasks.pop(task_id, None)
+            monitors.pop(task_id, None)
 
-    def _drop_stopped_background_task(self, raw: bytes, tasks: dict[str, str]) -> None:
+    def _drop_stopped_background_task(self, raw: bytes, tasks: dict[str, str],
+                                      monitors: dict[str, str]) -> None:
         try:
             event = json.loads(raw)
         except ValueError:
@@ -327,6 +363,7 @@ class ClaudeCli(AgentCli):
                 task_id = (part.get("input") or {}).get("task_id")
                 if isinstance(task_id, str):
                     tasks.pop(task_id, None)
+                    monitors.pop(task_id, None)
 
     @staticmethod
     def _background_task_finished(output: Path) -> bool:

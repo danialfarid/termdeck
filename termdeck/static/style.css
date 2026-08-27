@@ -175,6 +175,7 @@ body:not(.vscode-mode) .session-item:has(.terminal-type-icon.on) .status-dot.att
 .session-activity-dot { width: 0.5em; height: 0.5em; border-radius: 50%; background: currentColor; will-change: opacity, transform; animation: termdeck-status-beacon 1.8s ease-in-out infinite; }
 .session-activity-chip.activity-subagents { color: #b07ce8; }
 .session-activity-chip.activity-background_jobs { color: #e0a63f; }
+.session-activity-chip.activity-monitors { color: #58c4dd; }
 .terminal-type-icon.on { display: inline-flex; }
 .terminal-type-icon svg { display: block; width: calc(var(--terminal-icon-size, 14px) - 1px); height: calc(var(--terminal-icon-size, 14px) - 1px); }
 .codex-terminal-icon svg { width: calc(var(--terminal-icon-size, 14px) - 2px); height: calc(var(--terminal-icon-size, 14px) - 2px); }
