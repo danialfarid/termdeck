@@ -3393,6 +3393,15 @@ class TermdeckApp {
       if (state.case_sensitive) params.set("c", "1");
       if (state.regex) params.set("re", "1");
     }
+    // The all-projects root has no project route to extend: "/" + "/<segment>" forms a
+    // protocol-relative URL whose HOST is the segment, and pushState throws on it -- aborting
+    // boot when the startup state restores a terminal, and aborting activate() at the root
+    // view. A bare "/<segment>" is not a served route either, so the root keeps its path:
+    // files fall back to the ?f= param and a terminal keeps its name in the fragment.
+    if (basePath === "/" && navigationPath) {
+      if (state.key) params.set("f", state.key);
+      navigationPath = "";
+    }
     // /f/ and /g/ already say which tab is open; the param is only needed for a tab the route
     // cannot express, which today is search on a file route and git on a file-history route.
     const routeView = gitModeNavigation ? "git" : "project";

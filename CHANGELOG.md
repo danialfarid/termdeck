@@ -43,6 +43,8 @@ All notable changes to this project are documented here. The format follows
   rows rendering with mixed character widths and overlapping glyphs after output arrived while hidden.
 - Activity dots no longer disappear for a few seconds whenever the session list refreshes.
 - A running Claude `/compact` no longer shows the session as idle while it works (bounded at 15 minutes).
+- Opening a terminal from the all-projects root view no longer aborts with a history SecurityError, which
+  could leave the page stuck on boot (empty session list) when the last-visited state was a terminal there.
 
 - Server startup no longer probes the process tree once per saved session. Reconciling dtach sockets now
   shares one machine-wide `lsof`/`ps` sample, so a deck of ~90 terminals reaches the listening port in
