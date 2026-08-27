@@ -162,7 +162,11 @@ stall the pty reader.
 
 ## Frontend
 
-`termdeck/static/app.js` is a single plain-JS application class — no framework, no bundler, no build step.
+The client is one plain-JS application class — no framework, no bundler, no build step — split across
+ordered files: `static/app.js` declares `TermdeckApp` (constants, constructor, sessions/sidebar core),
+`app_search_git.js`, `app_markdown_files.js`, `app_terminal.js` (the tall-scroll engine),
+`app_settings_ui.js`, and `app_misc_ui.js` attach method groups to its prototype, and `app_boot.js`
+instantiates it. index.html loads them in that order.
 Third-party components are vendored under `static/vendor/` so the app works fully offline and no CDN can
 change behaviour under you:
 

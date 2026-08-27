@@ -488,6 +488,14 @@
 <script src="/static/lsp_transport.js"></script>
 <script src="/static/lsp_conversions.js"></script>
 <script src="/static/lsp_client.js"></script>
+<!-- One class, split across files: app.js declares TermdeckApp (constants, constructor, core);
+     the app_*.js files attach method groups to its prototype; app_boot.js instantiates. Order matters. -->
 <script src="/static/app.js"></script>
+<script src="/static/app_search_git.js"></script>
+<script src="/static/app_markdown_files.js"></script>
+<script src="/static/app_terminal.js"></script>
+<script src="/static/app_settings_ui.js"></script>
+<script src="/static/app_misc_ui.js"></script>
+<script src="/static/app_boot.js"></script>
 </body>
 </html>

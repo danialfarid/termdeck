@@ -1,6 +1,8 @@
 # Agent guide: debugging TermDeck (especially visual/scroll bugs)
 
-TermDeck is a web UI (FastAPI server in `termdeck/`, single-page client in `termdeck/static/app.js`)
+TermDeck is a web UI (FastAPI server in `termdeck/`, single-page client in `termdeck/static/app*.js` —
+one `TermdeckApp` class split across ordered files: `app.js` declares it, the `app_*.js` chunks attach
+method groups to its prototype, `app_boot.js` instantiates; see index.html for the load order)
 that hosts many persistent terminal sessions (dtach-backed ptys, xterm.js in the browser). The live
 instance runs on **port 8530 from this working tree**: static-file edits are live on the next page
 reload; Python edits need a server restart (launchd restarts it if you kill the listener; sessions and

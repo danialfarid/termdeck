@@ -28,7 +28,8 @@ class ProtocolMirrorTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.app_js = (Path(__file__).resolve().parent.parent / "termdeck" / "static" / "app.js").read_text()
+        static = Path(__file__).resolve().parent.parent / "termdeck" / "static"
+        cls.app_js = "\n".join(path.read_text() for path in sorted(static.glob("app*.js")))
 
     def _mirrored(self, value: str) -> bool:
         if f'"{value}"' in self.app_js or f"'{value}'" in self.app_js:
