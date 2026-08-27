@@ -88,6 +88,9 @@ class ManagedSession:
         # by the AgentCli, None for plain shells.
         self.agent_state = agents.agent_cli(record.agent_kind).new_session_state()
         self.processing_started_at: float | None = None
+        self.notified_attention = False
+        self.notified_processing = False
+        self.notified_processing_since = 0.0
         self.attention_required = False
         self.attention_text_carry = ""
         # Set once a Claude Code hook reports for this session. Hooks are an explicit signal from the
@@ -151,6 +154,7 @@ class TerminalSessionManager:
         self._claude_activity_confirmation_handles: dict[Path, asyncio.TimerHandle] = {}
         self._transcript_service = None
         self._history_index = None
+        self.notifier = None
         self._claude_raw_replay_enabled = True
         self._claude_full_raw_replay_enabled = True
         self._claude_raw_replay_total_bytes = 0
@@ -162,6 +166,9 @@ class TerminalSessionManager:
 
     def attach_history_index(self, index) -> None:
         self._history_index = index
+
+    def attach_notifier(self, notifier) -> None:
+        self.notifier = notifier
 
     def start_background_tasks(self) -> None:
         self._background_loop = asyncio.get_running_loop()
@@ -921,6 +928,8 @@ class TerminalSessionManager:
         self._refresh_session_activity(ms)
         agents.agent_cli(ms.record.agent_kind).refresh_activity_for_status(self, ms)
         processing = self._sync_processing_started(ms)
+        if self.notifier is not None:
+            self.notifier.observe_status(ms, processing, self._display_title(ms.cli_title) or ms.record.title)
         return {
             WsMessageFields.TYPE: WsMessageFields.SESSION_STATUS,
             WsMessageFields.SESSION_ID: ms.record.session_id,
@@ -1906,6 +1915,8 @@ class TerminalSessionManager:
         self._refresh_session_activity(ms)
         agents.agent_cli(ms.record.agent_kind).refresh_activity_for_status(self, ms)
         processing = self._sync_processing_started(ms)
+        if self.notifier is not None:
+            self.notifier.observe_status(ms, processing, self._display_title(ms.cli_title) or ms.record.title)
         summary: dict[str, object] = dict(ms.record.to_dict())
         summary[ApiFields.RUNNING] = ms.running
         summary[ApiFields.EXIT_CODE] = ms.exit_code
@@ -1925,6 +1936,11 @@ class TerminalSessionManager:
         record = self._sessions[session_id].record
         transcript_session_id = record.agent_session_id or record.fork_parent_agent_session_id
         return record.agent_kind, record.cwd, transcript_session_id
+
+    def session_usage(self, session_id: str) -> dict[str, int | None]:
+        record = self._sessions[session_id].record
+        usage = agents.agent_cli(record.agent_kind).latest_usage(Path(record.cwd), record.agent_session_id)
+        return usage or {}
 
     def session_draft(self, session_id: str) -> str:
         return self._sessions[session_id].record.draft

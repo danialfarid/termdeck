@@ -316,8 +316,11 @@ class AgentCliRegistryTest(unittest.TestCase):
         self.assertEqual(agents.detect_agent_cli("").kind, "none")
 
     def test_model_aliases_resolve_to_agy(self) -> None:
+        # "gemini" deliberately stays an antigravity alias (gemini-cli sign-in is deprecated
+        # on this account); Google's own CLI is addressed as "gemini-cli".
         for alias in ("gemini", "agd", "antigravity"):
             self.assertEqual(agents.resolve_model_alias(alias), "agy")
+        self.assertEqual(agents.resolve_model_alias("gemini-cli"), "gemini")
         self.assertEqual(agents.resolve_model_alias("claude"), "claude")
 
     def test_unknown_permission_raises(self) -> None:

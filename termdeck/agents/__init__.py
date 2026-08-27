@@ -9,10 +9,11 @@ from termdeck.agents.agy import AgyCli
 from termdeck.agents.base import AgentCli, ShellCli
 from termdeck.agents.claude import ClaudeCli
 from termdeck.agents.codex import CodexCli
+from termdeck.agents.gemini import GeminiCli
 
 # Detection priority follows this order (shell is the fallback, never matched by token).
 AGENT_CLIS: dict[str, AgentCli] = {agent.kind: agent
-                                   for agent in (ShellCli(), ClaudeCli(), CodexCli(), AgyCli())}
+                                   for agent in (ShellCli(), ClaudeCli(), CodexCli(), AgyCli(), GeminiCli())}
 
 _MODEL_ALIASES = {alias: agent.kind for agent in AGENT_CLIS.values() for alias in agent.model_aliases}
 _COMMAND_SPLIT_RE = re.compile(r"[\s;|&()]+")

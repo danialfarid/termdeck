@@ -36,6 +36,7 @@ from termdeck.lsp_protocol import LanguageServerConnection, LanguageServerProtoc
 from termdeck.lsp_service import LanguageServerManager, LanguageServerRegistry, LanguageServerUnavailableError
 from termdeck.lsp_workspace_edit import LspWorkspaceEditService
 from termdeck.models import ApiFields, WsMessageFields
+from termdeck.notifier import AgentNotifier
 from termdeck.platform_paths import PlatformPaths
 from termdeck.remote_access import RemoteAccessManager, RemoteAccessStatus
 from termdeck.remote_credentials import RemoteCredentialStore
@@ -522,6 +523,9 @@ class UiSettings(BaseModel):
     transcript_first_surface: str = "terminal"
     # Declared explicitly or it is silently dropped when settings are saved.
     tall_webgl: bool = True
+    # macOS user notifications on agent transitions (see notifier.AgentNotifier).
+    notify_attention: bool = True
+    notify_agent_idle: bool = False
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
     md_prompt_drafts: dict[str, str] = {}
@@ -593,6 +597,8 @@ class TermdeckServer:
         if self.manager is not None:
             self.transcripts.add_file_change_listener(self.manager.notify_agent_transcript_changed)
         self.settings_store = UiSettingsStore(TermdeckConfig.SETTINGS_FILE, self.state_backup)
+        if self.manager is not None:
+            self.manager.attach_notifier(AgentNotifier(self.settings_store.load))
         self.lsp_workspace_edits = LspWorkspaceEditService(self.files, self.file_history)
         self.language_servers = LanguageServerManager(
             self.files, self.lsp_workspace_edits, self._lsp_command_overrides, self._lsp_enabled)
@@ -702,6 +708,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_SERVER_RESTART_ROUTE, response_model=None)(self._restart_server)
         app.get(TermdeckConfig.API_TERMINAL_PROCESSES_ROUTE, response_model=None)(self._terminal_process_report)
         app.post(TermdeckConfig.API_RECLAIM_ORPHAN_TERMINALS_ROUTE, response_model=None)(self._reclaim_orphan_terminals)
+        app.get(TermdeckConfig.API_SESSION_USAGE_ROUTE, response_model=None)(self._session_usage)
         app.get(TermdeckConfig.API_SESSION_HISTORY_ROUTE, response_model=None)(self._session_history)
         app.get(TermdeckConfig.API_SESSION_HISTORY_PAGE_ROUTE, response_model=None)(self._session_history_page)
         app.get(TermdeckConfig.API_TERMINAL_LAYOUT_ROUTE, response_model=None)(self._get_terminal_layout)
@@ -2614,6 +2621,11 @@ class TermdeckServer:
         placement_failed = sum(1 for result in results if "placement_error" in result)
         return {"requested": len(results), "created": created, "prompt_submitted": submitted,
                 "failed": len(results) - submitted, "placement_failed": placement_failed, "items": results}
+
+    async def _session_usage(self, session_id: str) -> dict[str, int | None]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        return await asyncio.to_thread(self.manager.session_usage, session_id)
 
     async def _session_history(self, session_id: str) -> list[dict[str, object]]:
         if not self.manager.has_session(session_id):

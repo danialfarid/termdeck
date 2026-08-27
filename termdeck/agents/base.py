@@ -1,5 +1,6 @@
 import asyncio
 import datetime as dt
+import json
 import re
 import shlex
 import time
@@ -170,6 +171,44 @@ class AgentCli:
 
     def cwd_from_payload(self, path: Path, payload: dict[str, object]) -> str:
         return str(payload.get("cwd", ""))
+
+    # -- token usage -------------------------------------------------------
+    USAGE_TAIL_BYTES = 512 * 1024
+
+    def usage_from_payload(self, payload: dict[str, object]) -> dict[str, int | None] | None:
+        """Normalized token usage carried by one transcript line, or None.
+
+        Keys: context_tokens (prompt side of the newest request — effectively the live context
+        size), output_tokens (newest turn), context_window and total_tokens where the CLI
+        reports them.
+        """
+        return None
+
+    def latest_usage(self, cwd: Path | None, agent_session_id: str | None) -> dict[str, int | None] | None:
+        """Newest usage report in the session transcript, from a bounded tail read."""
+        if not agent_session_id:
+            return None
+        path = self.transcript_path(cwd, agent_session_id)
+        if path is None:
+            return None
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                handle.seek(max(0, handle.tell() - self.USAGE_TAIL_BYTES))
+                lines = handle.read().decode(errors="replace").splitlines()
+        except OSError:
+            return None
+        for line in reversed(lines):
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            usage = self.usage_from_payload(payload)
+            if usage is not None:
+                return usage
+        return None
 
     # -- activity / processing / attention ---------------------------------
     # These hooks receive the TerminalSessionManager ("manager") and a ManagedSession ("ms");

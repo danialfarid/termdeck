@@ -272,6 +272,27 @@ class CodexCli(AgentCli):
         body = payload.get("payload")
         return str(body.get("cwd", "")) if isinstance(body, dict) else ""
 
+    def usage_from_payload(self, payload: dict[str, object]) -> dict[str, int | None] | None:
+        body = payload.get("payload")
+        if not isinstance(body, dict) or body.get("type") != "token_count":
+            return None
+        info = body.get("info")
+        if not isinstance(info, dict):
+            return None
+        last = info.get("last_token_usage")
+        total = info.get("total_token_usage")
+        def count(source: object, key: str) -> int:
+            value = source.get(key) if isinstance(source, dict) else None
+            return int(value) if isinstance(value, (int, float)) else 0
+        window = info.get("model_context_window")
+        return {
+            # Codex's input_tokens already include the cached portion.
+            "context_tokens": count(last, "input_tokens"),
+            "output_tokens": count(last, "output_tokens"),
+            "context_window": int(window) if isinstance(window, (int, float)) else None,
+            "total_tokens": count(total, "total_tokens") or None,
+        }
+
     # -- activity / processing ---------------------------------------------
 
     ACTIVITY_FALLBACK_CHECK_SECONDS = 1.0

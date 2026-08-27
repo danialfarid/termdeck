@@ -152,6 +152,26 @@ class ClaudeCli(AgentCli):
     def title_from_payload(self, payload: dict[str, object]) -> str:
         return str(payload.get("aiTitle", "")) if payload.get("type") == "ai-title" else ""
 
+    def usage_from_payload(self, payload: dict[str, object]) -> dict[str, int | None] | None:
+        if payload.get("type") != "assistant":
+            return None
+        message = payload.get("message")
+        usage = message.get("usage") if isinstance(message, dict) else None
+        if not isinstance(usage, dict):
+            return None
+        def count(key: str) -> int:
+            value = usage.get(key)
+            return int(value) if isinstance(value, (int, float)) else 0
+        return {
+            # The prompt side of the newest request is the live context: fresh input plus
+            # everything served from or written to the prompt cache.
+            "context_tokens": count("input_tokens") + count("cache_creation_input_tokens") +
+                              count("cache_read_input_tokens"),
+            "output_tokens": count("output_tokens"),
+            "context_window": None,
+            "total_tokens": None,
+        }
+
     # -- activity / processing ---------------------------------------------
 
     def new_session_state(self) -> ClaudeSessionState:

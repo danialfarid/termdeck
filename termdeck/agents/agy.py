@@ -23,6 +23,9 @@ class AgyCli(AgentCli):
     CONVERSATION_FLAG = "--conversation"
     ACTIVITY_KEEPALIVE_SECONDS = 20.0
     RESTART_REPAINT_DELAY_SECONDS = 0.35
+    # "gemini" stays an antigravity alias: Google's gemini-cli refuses sign-in on this account
+    # ("migrate to the Antigravity suite"), so the model field keeps meaning the working CLI.
+    # The GeminiCli adapter is reached by running `gemini` directly or via model "gemini-cli".
     model_aliases = ("agd", "agy-cli", "agycli", "gemini", "antigravity", "antigravity-cli", "antigravitycli")
 
     # Restarted terminals resume via --conversation; attaching to an EXISTING agy session from
