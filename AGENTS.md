@@ -86,9 +86,12 @@ per-sequence handler work), not transfer.
 
 ## Gotchas that have burned agents
 
-- **Half the scroll tests hardcode port 8536** (no argv). Running them "against" another port silently
-  tests whatever instance is on 8536 — possibly another agent's, with different settings. Check the
-  test's `BASE` before trusting a run; sed-patch a copy if needed.
+- **Every scroll test takes `[port]` argv (or `TERMDECK_TEST_PORT`)** since 2026-08-26; suite tests
+  default to 8536, the ad-hoc live probes to 8530. If a run produces all-zero geometry it is passing
+  vacuously — print the measured state and read it.
+- **The live server serves `static/` from the working tree.** Any page a test loads mid-edit gets your
+  half-written app.js; never edit client files while a scroll-suite run is in flight, and treat a run
+  that overlapped edits as void.
 - **zsh `clear` sends ED3** and erases the scrollback your test just seeded. Use
   `printf '\033[2J\033[H'` to clear the screen and keep history.
 - **The echoed command line matches string needles.** Seed search targets with `printf 'THE-%s' NEEDLE`
@@ -106,8 +109,11 @@ per-sequence handler work), not transfer.
 
 ## Verifying
 
-- Scroll suite: `tools/scroll-tests/run-all.sh` (throwaway instance on 8536, ~15 min, pre-release
-  gate). Individual tests: `node tools/scroll-tests/<name>.cjs [port]` — port arg only where supported.
-- Python: `uv run python -m pytest tests/ -q` (bare `python3` lacks the deps).
+- Scroll suite: `tools/scroll-tests/run-all.sh [port]` boots its own throwaway instance (~15 min,
+  pre-release gate). Individual tests: `node tools/scroll-tests/<name>.cjs [port]`.
+- Python: `uv run python -m pytest tests/ -q` (bare `python3` lacks the deps). This includes the
+  protocol-mirror tripwire (models.py field names vs app.js) and per-agent adapter tests.
+- CI (`.github/workflows/ci.yml`) runs lint, unit tests, client `node --check`, doctor, and a boot
+  smoke on pushes to main and release-* branches.
 - Anything user-visible: reproduce the user's exact recipe on :8530 with a fresh page load before
   declaring victory, and state plainly what was and wasn't verified.

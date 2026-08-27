@@ -154,6 +154,19 @@ Explicit dict, no metaclass/auto-registration magic — debuggable, and one obvi
   `this.agentBehavior(view)?.afterPromptSubmit?.(view)`.
 - Icons: `TERMINAL_TYPE_SVGS[kind]` stays a lookup table — adding an icon is adding one entry.
 
+### Later additions (post-migration)
+
+- **Token usage**: `usage_from_payload(payload)` normalizes a transcript line's token report;
+  `latest_usage(cwd, id)` tail-reads the transcript for the newest one. Served at
+  `GET /api/sessions/{id}/usage` as `{context_tokens, output_tokens, context_window, total_tokens}`.
+- **Notifications**: `notifier.AgentNotifier` observes every status payload and fires macOS
+  notifications on attention/idle transitions (UiSettings `notify_attention` / `notify_agent_idle`).
+- **GeminiCli** (`gemini-cli`): proof that the API survives a foreign format — whole-document
+  JSON sessions rewritten in place under `~/.gemini/tmp/<sha256(cwd)>/chats/`, parsed by joining
+  the tail-reader's lines back into a document; `supports_resume` off because gemini resumes by
+  per-project index. The bare model name "gemini" still maps to AgyCli (antigravity) because
+  Google refuses gemini-cli sign-in on this account.
+
 ### What a new agent looks like
 
 ```python
