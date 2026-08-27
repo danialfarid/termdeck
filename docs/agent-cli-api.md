@@ -170,6 +170,13 @@ Explicit dict, no metaclass/auto-registration magic — debuggable, and one obvi
   history per directory that `--restore-chat-history` reloads, so `sessionless = True` turns off
   detection, the restart identity gate, and the new-binding prompt wait; a respawn in the same
   cwd IS the resume.
+- **Output-driven processing** (`processing_from_output = True`, aider + opencode): neither CLI
+  emits the spinner-marked titles `ms.processing` keys on, but both animate their own UI while
+  working and are silent at rest (measured: output every second of a turn, nothing at idle). The
+  base `on_pty_output` arms a keepalive window on each chunk — ignoring input echo, resize
+  repaints, and the reattach-repaint suppression window — `is_processing` reads it, and the
+  manager's `_schedule_output_activity_expiry` broadcasts the idle transition when silence
+  outlasts the window. Requires `new_session_state()` returning an `OutputActivityState`.
 - **OpencodeCli** (`opencode`): sessions live in a sqlite database, not files, so every
   file-shaped base hook stays unimplemented and the adapter uses read-only queries for
   detection (the `detection_fallback_session_id` hook), titles, and token usage; resume is

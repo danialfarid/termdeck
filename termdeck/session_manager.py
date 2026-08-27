@@ -83,6 +83,8 @@ class ManagedSession:
         self.detect_deadline_monotonic = 0.0
         self.last_input_monotonic = 0.0
         self.last_agent_submit_monotonic = 0.0
+        self.last_resize_monotonic = 0.0
+        self.output_activity_expiry_task: asyncio.Task | None = None
         self.last_activity_at = record.last_activity_at
         self.last_activity_broadcast_monotonic = 0.0
         # Per-agent runtime state (activity flags, signatures, pending renames); shape is owned
@@ -635,6 +637,33 @@ class TerminalSessionManager:
 
         ms.processing_expiry_task = asyncio.create_task(expire())
 
+    def _schedule_output_activity_expiry(self, ms: ManagedSession) -> None:
+        """Broadcast the idle transition once an output-driven agent's activity window lapses.
+
+        The arming side rides _handle_output (output keeps extending the window); silence is the
+        one thing no output event can announce, so a task has to watch for it -- the same reason
+        _schedule_processing_expiry exists for the title-driven agents."""
+        if ms.output_activity_expiry_task is not None and not ms.output_activity_expiry_task.done():
+            return
+        agent = agents.agent_cli(ms.record.agent_kind)
+
+        async def expire() -> None:
+            try:
+                while ms.running:
+                    remaining = agent.output_activity_remaining(ms)
+                    if remaining > 0:
+                        await asyncio.sleep(remaining + 0.05)
+                        continue
+                    current = self._processing_state(ms)
+                    if not current:
+                        self._broadcast_processing(ms, False)
+                        self._broadcast_status(ms)
+                    return
+            except asyncio.CancelledError:
+                return
+
+        ms.output_activity_expiry_task = asyncio.create_task(expire())
+
     def _broadcast_processing(self, ms: ManagedSession, processing: bool) -> None:
         self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.PROCESSING,
                                      WsMessageFields.PROCESSING: processing})
@@ -742,6 +771,11 @@ class TerminalSessionManager:
         previous_processing = self._processing_state(ms)
         cli_title, ms.title_carry = OscTitleParser.extract_latest_title(ms.title_carry, data)
         agent = agents.agent_cli(ms.record.agent_kind)
+        agent.on_pty_output(self, ms)
+        output_processing_started = agent.processing_from_output and not previous_processing and \
+            self._processing_state(ms)
+        if output_processing_started:
+            self._schedule_output_activity_expiry(ms)
         title_renamed = False
         attention_changed = False
         if cli_title is not None and cli_title.strip():
@@ -758,7 +792,7 @@ class TerminalSessionManager:
         else:
             attention_changed = self._update_attention_from_output(ms, data)
             title_renamed = agent.reconcile_rename(self, ms, previous_title)
-            if attention_changed or title_renamed:
+            if attention_changed or title_renamed or output_processing_started:
                 self._broadcast_status(ms)
         if ms.client_queues:
             for queue in list(ms.client_queues):
@@ -789,6 +823,8 @@ class TerminalSessionManager:
         ms.exit_code = exit_code
         if ms.processing_expiry_task is not None and not ms.processing_expiry_task.done():
             ms.processing_expiry_task.cancel()
+        if ms.output_activity_expiry_task is not None and not ms.output_activity_expiry_task.done():
+            ms.output_activity_expiry_task.cancel()
         self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.EXIT, WsMessageFields.CODE: exit_code,
                                      WsMessageFields.DORMANT: ms.dormant})
         self._broadcast_status(ms)
@@ -1172,6 +1208,8 @@ class TerminalSessionManager:
         if size_changed and not force and len(ms.client_queues) > 1:
             return False, ms.record.cols, ms.record.rows
         ms.cols, ms.rows = cols, rows
+        if size_changed:
+            ms.last_resize_monotonic = time.monotonic()
         if size_changed and ms.proc is not None:
             ms.proc.resize(cols, rows)
         if size_changed:

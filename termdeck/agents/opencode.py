@@ -3,7 +3,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from termdeck.agents.base import AgentCli
+from termdeck.agents.base import AgentCli, OutputActivityState
 from termdeck.util import TimeUtil
 
 
@@ -31,6 +31,9 @@ class OpencodeCli(AgentCli):
     accepts_session_ref = True
     records_raw_replay = True
     fullscreen_tui = True
+    # Titles name the session ("OC | <title>"), never a spinner; the TUI animates continuously
+    # while generating and is silent at rest (measured), so output flow is the working signal.
+    processing_from_output = True
 
     prompt_marker = "┃"
     # Terminal frame with opencode's block cursor.
@@ -38,6 +41,9 @@ class OpencodeCli(AgentCli):
                 'rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><rect x="6.5" y="8.5" '
                 'width="5" height="7" fill="currentColor"/><path d="M14 15.5h3.5" stroke="currentColor" '
                 'stroke-width="2" stroke-linecap="round"/></svg>')
+
+    def new_session_state(self) -> OutputActivityState:
+        return OutputActivityState()
 
     def _query(self, sql: str, parameters: tuple = ()) -> list[tuple]:
         if not self.DB_PATH.exists():

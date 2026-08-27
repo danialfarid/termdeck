@@ -19,6 +19,13 @@ class AgentSessionState:
     """
 
 
+class OutputActivityState(AgentSessionState):
+    """State for agents whose processing signal is pty output flow (processing_from_output)."""
+
+    def __init__(self) -> None:
+        self.output_active_until = 0.0  # monotonic deadline; output before it means "still working"
+
+
 def _coerce_timestamp(value: object) -> float | None:
     try:
         if isinstance(value, (int, float)):
@@ -228,9 +235,37 @@ class AgentCli:
         """Fresh runtime state for one session of this agent; None when the agent keeps none."""
         return None
 
+    # Processing state comes from pty output flow instead of spinner-marked titles: the CLI
+    # animates its own UI while working (aider's waiting spinner, opencode's TUI) and is silent
+    # at rest, and never emits the braille/circle title glyphs ms.processing keys on. Set with
+    # new_session_state() returning an OutputActivityState.
+    processing_from_output = False
+    OUTPUT_ACTIVITY_KEEPALIVE_SECONDS = 4.0
+    # Output within this window of user input is treated as echo/repaint, not agent work.
+    OUTPUT_ACTIVITY_INPUT_SUPPRESS_SECONDS = 1.0
+    # A resize triggers a full TUI repaint that says nothing about the agent working.
+    OUTPUT_ACTIVITY_RESIZE_SUPPRESS_SECONDS = 1.5
+
     def is_processing(self, ms) -> bool:
         """Whether the agent behind this session is actively working (attention gate is the caller's)."""
-        return bool(ms.processing)
+        return bool(ms.processing) or self.output_activity_remaining(ms) > 0.0
+
+    def on_pty_output(self, manager, ms) -> None:
+        """Raw pty output arrived; cheap per-chunk accounting only (this runs on every chunk)."""
+        if not self.processing_from_output or ms.agent_state is None:
+            return
+        now = time.monotonic()
+        if now < ms.repaint_activity_suppressed_until_monotonic or \
+                now - ms.last_input_monotonic < self.OUTPUT_ACTIVITY_INPUT_SUPPRESS_SECONDS or \
+                now - ms.last_resize_monotonic < self.OUTPUT_ACTIVITY_RESIZE_SUPPRESS_SECONDS:
+            return
+        ms.agent_state.output_active_until = now + self.OUTPUT_ACTIVITY_KEEPALIVE_SECONDS
+
+    def output_activity_remaining(self, ms) -> float:
+        """Seconds until the output-driven processing evidence lapses; <= 0 when inactive."""
+        if not self.processing_from_output or ms.agent_state is None:
+            return 0.0
+        return ms.agent_state.output_active_until - time.monotonic()
 
     def refresh_persisted_activity(self, manager, ms) -> None:
         """Rebuild activity state for a session reconciled as detached-live with a bound agent id."""

@@ -1,4 +1,4 @@
-from termdeck.agents.base import AgentCli
+from termdeck.agents.base import AgentCli, OutputActivityState
 
 
 class AiderCli(AgentCli):
@@ -17,6 +17,9 @@ class AiderCli(AgentCli):
 
     sessionless = True
     supports_resume = True   # respawning the same command in the same cwd IS the resume
+    # No spinner-marked titles; the waiting spinner and streamed reply are the working signal
+    # (measured: output every second of a turn, silence at rest).
+    processing_from_output = True
 
     # Two overlapping circles: pair programming.
     icon_svg = ('<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8.8" cy="12" r="6.4" fill='
@@ -30,3 +33,6 @@ class AiderCli(AgentCli):
     }
     ui_permission_options = (("default", "Default (confirm actions)"), ("auto", "Auto-approve (--yes-always)"))
     permission_switch_flags = ("--yes-always",)
+
+    def new_session_state(self) -> OutputActivityState:
+        return OutputActivityState()

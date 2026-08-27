@@ -50,6 +50,52 @@ class FullscreenTuiTrimTest(unittest.TestCase):
         self.assertEqual(bytes(buffer), b"456789")
 
 
+class OutputActivityProcessingTest(unittest.TestCase):
+    def _ms(self, agent):
+        return SimpleNamespace(processing=False, agent_state=agent.new_session_state(),
+                               repaint_activity_suppressed_until_monotonic=0.0,
+                               last_input_monotonic=0.0, last_resize_monotonic=0.0)
+
+    def test_output_arms_processing_and_it_lapses_in_silence(self) -> None:
+        oc = agents.agent_cli("opencode")
+        ms = self._ms(oc)
+        with patch("termdeck.agents.base.time") as clock:
+            clock.monotonic.return_value = 100.0
+            self.assertFalse(oc.is_processing(ms))
+            oc.on_pty_output(None, ms)
+            self.assertTrue(oc.is_processing(ms))
+            self.assertGreater(oc.output_activity_remaining(ms), 0.0)
+            clock.monotonic.return_value = 103.9
+            self.assertTrue(oc.is_processing(ms))
+            clock.monotonic.return_value = 104.1
+            self.assertFalse(oc.is_processing(ms))
+
+    def test_echo_resize_and_reattach_repaints_do_not_arm(self) -> None:
+        aider = agents.agent_cli("aider")
+        ms = self._ms(aider)
+        with patch("termdeck.agents.base.time") as clock:
+            clock.monotonic.return_value = 100.0
+            ms.last_input_monotonic = 99.5      # typing echo
+            aider.on_pty_output(None, ms)
+            self.assertFalse(aider.is_processing(ms))
+            ms.last_input_monotonic = 0.0
+            ms.last_resize_monotonic = 99.0     # resize-triggered TUI repaint
+            aider.on_pty_output(None, ms)
+            self.assertFalse(aider.is_processing(ms))
+            ms.last_resize_monotonic = 0.0
+            ms.repaint_activity_suppressed_until_monotonic = 101.0  # reattach repaint window
+            aider.on_pty_output(None, ms)
+            self.assertFalse(aider.is_processing(ms))
+            ms.repaint_activity_suppressed_until_monotonic = 0.0
+            aider.on_pty_output(None, ms)
+            self.assertTrue(aider.is_processing(ms))
+
+    def test_title_driven_agents_are_untouched(self) -> None:
+        claude = agents.agent_cli("claude")
+        self.assertFalse(claude.processing_from_output)
+        self.assertEqual(claude.output_activity_remaining(SimpleNamespace(agent_state=None)), 0.0)
+
+
 class AiderAgentTest(unittest.TestCase):
     def test_command_building_and_capabilities(self) -> None:
         aider = agents.agent_cli("aider")
