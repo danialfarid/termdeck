@@ -1221,11 +1221,9 @@ Object.assign(TermdeckApp.prototype, {
     (!!this.processingStates.get(this.activeId) || this.historyPendingProcessing.has(this.activeId))) {
     const button = this.$("history-send");
     if (!button) return;
-    const queuePreview = !stopping && this.historySendQueuePreview;
-    const label = stopping ? "Stop current response" : queuePreview ? "Queue prompt" : "Send prompt";
+    const label = stopping ? "Stop current response" : "Send prompt";
     const icon = button.querySelector(".codicon");
-    const iconName = stopping ? "debug-stop" : this.historySendQueuePreview ? "list-ordered" : "send";
-    if (icon) icon.className = `codicon codicon-${iconName}`;
+    if (icon) icon.className = `codicon codicon-${stopping ? "debug-stop" : "send"}`;
     button.title = label;
     button.setAttribute("aria-label", label);
   },
@@ -1246,28 +1244,23 @@ Object.assign(TermdeckApp.prototype, {
     if (!view) return;
     this.sendInput(view, "\x03");
     this.historyPendingProcessing.delete(this.activeId);
+    // Stop means stop: the interrupt's idle transition must not auto-dispatch the queue.
+    // The first queued prompt moves into the composer so the user decides whether it still
+    // goes; the hold lifts on their next send or queue action.
+    if (view.promptQueue?.length) {
+      view.promptQueueHold = true;
+      if (!this.$("history-prompt").value.trim()) {
+        const item = view.promptQueue.shift();
+        this.persistMarkdownPromptQueue(view);
+        this.renderHistoryQueue(view);
+        this.persistMarkdownPromptDraft(view, String(item?.draftText ?? item?.text ?? ""));
+        this.showPromptDraft(view);
+        this.$("status-name").textContent = "stopped · queued prompt moved to composer";
+      }
+    }
     this.updateHistoryThinkingIndicator();
     view.keepBottom = true;
     view.pinBottomUntil = Date.now() + 3000;
-  },
-
-
-  openHistorySendMenu() {
-    const menu = this.$("history-send-menu");
-    const prompt = this.$("history-prompt");
-    if (!menu || !prompt.value.trim() || !this.historyOpen ||
-        this.processingStates.get(this.activeId) || this.historyPendingProcessing.has(this.activeId)) return false;
-    menu.classList.remove("hidden");
-    this.$("history-send-queue-option")?.focus();
-    return true;
-  },
-
-
-  closeHistorySendMenu() {
-    const menu = this.$("history-send-menu");
-    if (menu) menu.classList.add("hidden");
-    this.historySendQueuePreview = false;
-    this.updateHistorySendButton();
   },
 
 
@@ -1458,7 +1451,6 @@ Object.assign(TermdeckApp.prototype, {
     }
     if (this.historyOpen && !enabled) this.rememberHistoryScrollPosition(this.activeId);
     this.closeTerminalFind();
-    this.closeHistorySendMenu();
     this.hideSelectionActions(true);
     if (!enabled) this.closePromptHistory();
     const mode = enabled ? "markdown" : "terminal";
@@ -1770,6 +1762,7 @@ Object.assign(TermdeckApp.prototype, {
     if (!text.trim()) return;
     const view = this.views.get(this.activeId);
     if (!view) return;
+    view.promptQueueHold = false;
     if (options.queue) {
       view.promptQueue.push({ text });
       this.persistMarkdownPromptQueue(view);

@@ -738,9 +738,6 @@ class TermdeckApp {
     // A prompt can be accepted by the PTY before the agent reports
     // processing=true. Keep that hand-off visible in Markdown mode.
     this.historyPendingProcessing = new Map();
-    this.historySendLongPressTimer = 0;
-    this.historySendLongPressTriggered = false;
-    this.historySendQueuePreview = false;
     this.processingTimer = 0;
     this.pageTitleFaviconState = "plain";
     this.pageFavicon = document.querySelector('link[rel~="icon"]');
@@ -2953,9 +2950,6 @@ class TermdeckApp {
       const promptHistoryButton = this.$("history-prompt-history-btn");
       if (promptHistory && !promptHistory.classList.contains("hidden") &&
           !promptHistory.contains(e.target) && !promptHistoryButton?.contains(e.target)) this.closePromptHistory();
-      const historySendMenu = this.$("history-send-menu");
-      if (historySendMenu && !historySendMenu.classList.contains("hidden") &&
-          !historySendMenu.contains(e.target) && !e.target.closest("#history-send")) this.closeHistorySendMenu();
       const selectionActions = this.$("selection-actions");
       if (selectionActions && !selectionActions.classList.contains("hidden") && !selectionActions.contains(e.target)) {
         this.hideSelectionActions();
@@ -3057,46 +3051,8 @@ class TermdeckApp {
       event.preventDefault();
       this.toggleStatsMaintenanceMenu(event.currentTarget);
     };
-    const historySend = this.$("history-send");
-    historySend.onclick = () => {
-      if (this.historySendLongPressTriggered) {
-        this.historySendLongPressTriggered = false;
-        return;
-      }
-      this.handleHistorySendButton();
-    };
-    historySend.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0 || !this.$("history-prompt").value.trim()) return;
-      clearTimeout(this.historySendLongPressTimer);
-      this.historySendLongPressTriggered = false;
-      this.historySendQueuePreview = false;
-      this.historySendLongPressTimer = window.setTimeout(() => {
-        this.historySendLongPressTimer = 0;
-        this.historySendLongPressTriggered = true;
-        this.historySendQueuePreview = true;
-        this.updateHistorySendButton();
-        if (this.openHistorySendMenu()) return;
-        this.historySendLongPressTriggered = false;
-        this.historySendQueuePreview = false;
-        this.updateHistorySendButton();
-      }, 500);
-    });
-    const clearHistorySendLongPress = () => {
-      clearTimeout(this.historySendLongPressTimer);
-      this.historySendLongPressTimer = 0;
-    };
-    historySend.addEventListener("pointerup", clearHistorySendLongPress);
-    historySend.addEventListener("pointercancel", clearHistorySendLongPress);
-    historySend.addEventListener("pointerleave", clearHistorySendLongPress);
-    historySend.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
-      clearHistorySendLongPress();
-      this.openHistorySendMenu();
-    });
-    this.$("history-send-queue-option").onclick = () => {
-      this.closeHistorySendMenu();
-      this.sendHistoryPrompt({ queue: true });
-    };
+    this.$("history-send").onclick = () => this.handleHistorySendButton();
+    this.$("history-queue").onclick = () => this.sendHistoryPrompt({ queue: true });
     this.$("history-prompt-history-btn").onclick = () => this.togglePromptHistory();
     this.$("history-prompt").addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
@@ -4303,7 +4259,7 @@ class TermdeckApp {
   }
 
   dispatchNextMarkdownPrompt(view) {
-    if (!view || view.closed || view.promptQueueDispatching || !view.promptQueue.length ||
+    if (!view || view.closed || view.promptQueueHold || view.promptQueueDispatching || !view.promptQueue.length ||
         this.processingStates.get(view.sessionId) || this.session(view.sessionId)?.processing === true ||
         this.historyPendingProcessing.has(view.sessionId) || !view.ws || view.ws.readyState !== WebSocket.OPEN) return false;
     const item = view.promptQueue.shift();
