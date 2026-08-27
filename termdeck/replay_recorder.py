@@ -263,10 +263,20 @@ class ReplayRecorder:
         return bytes(output)
 
     @classmethod
-    def _trim_front(cls, replay_buffer: bytearray, minimum_bytes: int) -> int:
+    def _trim_front(cls, replay_buffer: bytearray, minimum_bytes: int, boot_boundary_only: bool = False) -> int:
         if minimum_bytes <= 0 or not replay_buffer:
             return 0
         minimum_bytes = min(minimum_bytes, len(replay_buffer))
+        if boot_boundary_only:
+            # A fullscreen TUI diff-paints from its boot onward and never issues a full clear, so a
+            # sync-update frame is NOT a safe cut: everything painted before it would be missing from
+            # the replayed screen. The only self-contained restart of such a stream is a respawn's
+            # fresh boot, so cut there even when that trims far more than asked; with no respawn in
+            # the buffer, cut the minimum and accept the broken replay over unbounded memory.
+            divider = replay_buffer.find(TermdeckConfig.RESPAWN_DIVIDER.encode(), minimum_bytes)
+            remove_bytes = divider if divider >= 0 else minimum_bytes
+            del replay_buffer[:remove_bytes]
+            return remove_bytes
         search_end = min(len(replay_buffer), minimum_bytes + 1_000_000)
         boundaries = [replay_buffer.find(TermdeckConfig.SYNC_UPDATE_START, minimum_bytes, search_end),
                       replay_buffer.find(cls.CLEAR, minimum_bytes, search_end)]
@@ -284,7 +294,8 @@ class ReplayRecorder:
         for candidate in candidates:
             if overflow <= 0:
                 break
-            removed = self._trim_front(candidate.raw_replay_buffer, overflow)
+            removed = self._trim_front(candidate.raw_replay_buffer, overflow,
+                                       boot_boundary_only=agents.agent_cli(candidate.record.agent_kind).fullscreen_tui)
             self._total_bytes -= removed
             overflow -= removed
             if removed:
@@ -301,7 +312,8 @@ class ReplayRecorder:
         ms.raw_replay_checkpoint_pending.extend(filtered)
         session_overflow = len(ms.raw_replay_buffer) - TermdeckConfig.RAW_REPLAY_SESSION_BYTES
         if session_overflow > 0:
-            self._trim_front(ms.raw_replay_buffer, session_overflow)
+            self._trim_front(ms.raw_replay_buffer, session_overflow,
+                             boot_boundary_only=agents.agent_cli(ms.record.agent_kind).fullscreen_tui)
             ms.raw_replay_compaction_generation += 1
         self._total_bytes += len(ms.raw_replay_buffer) - previous_bytes
         self.enforce_total_limit()

@@ -31,6 +31,25 @@ class DescriptorPresentationTest(unittest.TestCase):
         self.assertFalse(agents.agent_cli("claude").fullscreen_tui)
 
 
+class FullscreenTuiTrimTest(unittest.TestCase):
+    def test_trim_cuts_at_a_respawn_boot_not_a_sync_frame(self) -> None:
+        from termdeck.config import TermdeckConfig
+        from termdeck.replay_recorder import ReplayRecorder
+        sync = TermdeckConfig.SYNC_UPDATE_START
+        divider = TermdeckConfig.RESPAWN_DIVIDER.encode()
+        buffer = bytearray(b"boot" + sync + b"frame1" + sync + b"frame2" + divider + b"boot2" + sync + b"frame3")
+        removed = ReplayRecorder._trim_front(buffer, 2, boot_boundary_only=True)
+        self.assertEqual(bytes(buffer), divider + b"boot2" + sync + b"frame3")
+        self.assertGreater(removed, 2)
+
+    def test_trim_without_a_respawn_falls_back_to_the_minimum_cut(self) -> None:
+        from termdeck.replay_recorder import ReplayRecorder
+        buffer = bytearray(b"0123456789")
+        removed = ReplayRecorder._trim_front(buffer, 4, boot_boundary_only=True)
+        self.assertEqual(removed, 4)
+        self.assertEqual(bytes(buffer), b"456789")
+
+
 class AiderAgentTest(unittest.TestCase):
     def test_command_building_and_capabilities(self) -> None:
         aider = agents.agent_cli("aider")

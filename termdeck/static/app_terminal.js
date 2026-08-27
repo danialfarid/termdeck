@@ -223,7 +223,16 @@ Object.assign(TermdeckApp.prototype, {
     // painted rows needs the keyboard. Bridging the container's bottom edge back into arrow keys the way
     // the normal screen bridges into scrollback would fix that, but it needs the app-cursor-keys mode off
     // xterm's private coreService to pick the right escape sequence, so it is left alone here.
-    term.attachCustomWheelEventHandler(() => false);
+    //
+    // The one exception is a fullscreen_tui agent on its alternate screen: its pty is viewport-sized
+    // (see fullscreenTuiPtyRows), so the container has nothing to scroll over and the app itself owns
+    // scrolling -- the wheel must reach it. Letting xterm process the event does that on either path:
+    // with mouse tracking on it reports the wheel to the pty, without it the alternate screen turns
+    // wheel into arrow keys. Gated on the alternate screen so the launching shell's ordinary output
+    // still scrolls through the container.
+    term.attachCustomWheelEventHandler(() =>
+      term.buffer.active.type === "alternate" &&
+      !!this.agentSpec(this.session(id)?.agent_kind)?.fullscreen_tui);
     term.open(inner);
     // Real cell height is only known once xterm has measured the font, which happens synchronously inside
     // open(). The row count is an explicit pixel height rather than something derived from the container
@@ -760,6 +769,9 @@ Object.assign(TermdeckApp.prototype, {
         this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
           this.refreshTerminal(view);
           view.replaying = false;
+          // The replayed recording can carry paints from earlier pty sizes; a fullscreen_tui app
+          // will never touch the rows below its current screen again, so blank them now.
+          this.clearFullscreenTuiCanvasBelow(view);
           // Replay finished, so the cursor finally describes the real screen: take the geometry and the
           // follow position from it once, rather than from every intermediate frame.
           this.tallUpdateMaxScrollTop(view);
@@ -1187,6 +1199,19 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // Everything below a fullscreen_tui app's last row must stay blank. The app diff-paints on the
+  // assumption that a real terminal cropped those rows on shrink and grew blank ones on expand, but
+  // this canvas is taller than the pty and keeps whatever an earlier size painted there -- measured:
+  // boot-era paints lingering hundreds of rows below the app, which a viewport-rows increase would
+  // expose inside the UI because the app "knows" grown rows are blank and never paints them.
+  clearFullscreenTuiCanvasBelow(view) {
+    const rows = this.fullscreenTuiPtyRows(view);
+    if (!rows || view.replaying || rows >= view.term.rows) return;
+    // DECSC/DECRC around an absolute move + erase-below, so the app's cursor stays put.
+    view.term.write(`\x1b7\x1b[${rows + 1};1H\x1b[J\x1b8`);
+  },
+
+
   sendResize(view, cols, rows, resend = false, takeOwnership = false) {
     if (this.sidebarResizeInProgress || view.suppressResizeToServer || !this.terminalPageCanResize() ||
         view.closed || view.sessionId !== this.activeId || !view.container.classList.contains("visible") ||
@@ -1196,9 +1221,11 @@ Object.assign(TermdeckApp.prototype, {
     if (tuiRows != null) rows = tuiRows;
     if (view.ws && view.ws.readyState === WebSocket.OPEN &&
         (resend || view.lastSentCols !== cols || view.lastSentRows !== rows)) {
+      const tuiRowsChanged = tuiRows != null && view.lastSentRows !== rows;
       view.lastSentCols = cols;
       view.lastSentRows = rows;
       view.ws.send(JSON.stringify({ type: "resize", cols, rows, force: takeOwnership }));
+      if (tuiRowsChanged) this.clearFullscreenTuiCanvasBelow(view);
       if (view.claudeWebglColdPrimePending && rows === TALL_ROWS_DOM) this.startClaudeWebglColdPrime(view);
     }
   },
@@ -1974,7 +2001,13 @@ Object.assign(TermdeckApp.prototype, {
       if (!hasPaintedInitialSnapshot) view.forceResizeAfterFit = false;
       view.forceResizeAfterFit = false;
       this.refreshTerminalAppearance(view, forceResizeThisFrame);
-      if (forceResizeThisFrame && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
+      // A height-only change never alters the tall terminal's own cols/rows, so term.onResize stays
+      // silent -- but a fullscreen_tui pty is sized from the container height, so its capped rows can
+      // change with no other resize signal. Re-send whenever the cap drifted from what the pty has.
+      const tuiRowsDrifted = (this.fullscreenTuiPtyRows(view) ?? view.lastSentRows) !== view.lastSentRows;
+      if ((forceResizeThisFrame || tuiRowsDrifted) && view.term.cols >= 2 && view.term.rows >= 2) {
+        this.sendResize(view, view.term.cols, view.term.rows, forceResizeThisFrame);
+      }
       if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
     });
   },
