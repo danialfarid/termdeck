@@ -114,6 +114,8 @@ class AgentCli:
     # -- activity / titles / attention / rename --------------------------
     def refresh_activity(self, ms, tracker) -> None
     def is_processing(self, ms) -> bool
+    def activity_detail(self, ms) -> dict | None   # {"main": bool, "<kind>": count} per background-activity kind;
+                                                   # rides status payloads as "activity", client renders one dot per kind
     def title_requires_attention(self, title) -> bool
     def session_title(self, cwd, agent_session_id) -> str | None
     async def rename_after_fork(self, manager, ms, title) -> None
