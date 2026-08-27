@@ -712,6 +712,10 @@ class TermdeckApp {
     this.sessionTitleEls = new Map();
     this.sessionSpinnerEls = new Map();
     this.sessionActivityEls = new Map();
+    // Activity detail arrives only over the status websocket; /api/sessions doesn't carry it,
+    // so it must survive refresh() replacing the session objects (same reason processingStates
+    // and sessionModelById are maps, not session fields).
+    this.sessionActivityById = new Map();
     this.sessionStatusEls = new Map();
     this.sessionRowEls = new Map();
     this.terminalAgeRefreshTimer = 0;
@@ -3944,8 +3948,9 @@ class TermdeckApp {
     if (Object.prototype.hasOwnProperty.call(message, "agent_kind")) session.agent_kind = message.agent_kind;
     let activityDetailChanged = false;
     if (Object.prototype.hasOwnProperty.call(message, "activity")) {
-      activityDetailChanged = JSON.stringify(session.activity || null) !== JSON.stringify(message.activity || null);
-      session.activity = message.activity;
+      const previousActivity = this.sessionActivityById.get(session.session_id) || null;
+      activityDetailChanged = JSON.stringify(previousActivity) !== JSON.stringify(message.activity || null);
+      this.sessionActivityById.set(session.session_id, message.activity || null);
     }
     if (Object.prototype.hasOwnProperty.call(message, "last_activity_at")) {
       session.last_activity_at = message.last_activity_at;
@@ -4057,7 +4062,7 @@ class TermdeckApp {
   updateSessionActivityDots(id) {
     const host = this.sessionActivityEls.get(id);
     if (!host) return;
-    const entries = this.activityDotEntries(this.session(id)?.activity);
+    const entries = this.activityDotEntries(this.sessionActivityById.get(id));
     const signature = JSON.stringify(entries);
     if (host.dataset.signature === signature) return;
     host.dataset.signature = signature;
