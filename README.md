@@ -40,8 +40,8 @@ parallel agents and coordinating work between them.
 - **Keep every prompt and session.** Unsent drafts are restored, submitted prompts stay in history, live terminals
   survive browser and server restarts, and saved Codex and Claude sessions resume after a computer restart.
 - **Manage every coding agent together.** Run Codex, Claude Code, AGY/Antigravity, Aider, OpenCode, and shells;
-  then group, reorder, fork, rename, search, close, reopen, and monitor them from one deck — each with its own
-  sidebar icon. Supporting another agent CLI is a single adapter class.
+  then group, reorder, fork, rename, search, close, reopen, and monitor them from one deck. Supporting another
+  agent CLI is a single adapter class.
 - **Watch delegated work in the background.** Background commands, persistent monitors, and subagents appear as
   live activity dots under the owning session, so you can see parallel work without opening every terminal.
 - **Hand work between agents.** Select terminal, transcript, file, or note text and use **Ask an agent**, or use the
@@ -335,9 +335,8 @@ transcript read directly from the CLI's own session file:
 - Code edits and thinking blocks shown as collapsible sections
 - Live working state, elapsed time, model name, reasoning effort, and context/status information
 - A prompt composer at the bottom: **Enter** submits, **Shift+Enter** newline, **Esc** interrupts
-- Queue prompts even while the agent is still responding; queued prompts are listed, editable in place, and
-  removable. Stopping a response holds the queue and returns the first queued prompt to the composer so you
-  decide whether it still goes
+- Queue follow-up prompts while the agent is still working — they run one after another, and stay editable
+  until sent
 - Live context usage for the active session (`ctx 118k/258k`) in the bottom toolbar
 - Persisted prompt history from both terminal and conversation mode
 - A conversation outline (**⌥O**) for jumping to earlier prompts and responses
@@ -481,8 +480,8 @@ Catppuccin, Rosé Pine, Ayu, and high-contrast themes. Font sizes are independen
 title, terminal list, terminal, editor, file tree, tabs, diffs, icons, and bottom controls; an in-place editor
 puts the relevant slider over each visible UI region. Panel widths are drag-resizable and remembered.
 
-Sidebar terminal icons can be toggled per agent kind, and a single switch controls desktop notifications for
-agent attention and finished runs (the browser asks for notification permission on your first click).
+A single switch controls desktop notifications for agent attention and finished runs, and sidebar terminal
+icons can be toggled per agent kind.
 
 Interface settings, keybindings, notes, copied-text history, open files, and layout are stored server-side in
 `~/.termdeck/settings.json`. The Maintenance submenu can export settings, show a terminal process report,
