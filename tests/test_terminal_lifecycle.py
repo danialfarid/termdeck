@@ -2,6 +2,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -710,6 +711,36 @@ class ClaudeSessionActivityTest(unittest.TestCase):
             path = self._transcript(directory, self._assistant({"type": "text", "text": "all done"}),
                                     self._user_text("/compact"),
                                     {"type": "system", "subtype": "local_command", "content": "limit reached"})
+            self.assertFalse(AgentSessionTracker().claude_session_is_active(path))
+
+    def test_running_compaction_keeps_the_spinner_running(self) -> None:
+        # A compaction in flight writes NOTHING else: no OSC title updates and no transcript appends
+        # between the command and the summary it finishes with. The command with no result after it is
+        # therefore the only evidence the tab is still working.
+        with tempfile.TemporaryDirectory() as directory:
+            command = self._user_text("<command-name>/compact</command-name>")
+            command["timestamp"] = datetime.now(timezone.utc).isoformat()
+            path = self._transcript(directory, self._assistant({"type": "text", "text": "all done"}), command)
+            self.assertTrue(AgentSessionTracker().claude_session_is_active(path))
+
+    def test_stale_compaction_stops_the_spinner(self) -> None:
+        # Bounded, so a compaction that died without writing its result leaves the tab idle instead of
+        # spinning for the life of the session -- the failure isCompactSummary once caused.
+        with tempfile.TemporaryDirectory() as directory:
+            command = self._user_text("<command-name>/compact</command-name>")
+            command["timestamp"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+            path = self._transcript(directory, self._assistant({"type": "text", "text": "all done"}), command)
+            self.assertFalse(AgentSessionTracker().claude_session_is_active(path))
+
+    def test_finished_compaction_summary_stops_the_spinner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            command = self._user_text("<command-name>/compact</command-name>")
+            command["timestamp"] = datetime.now(timezone.utc).isoformat()
+            summary = self._user_text("This session is being continued from a previous conversation...")
+            summary["isCompactSummary"] = True
+            path = self._transcript(directory, self._assistant({"type": "text", "text": "all done"}),
+                                    command, summary,
+                                    {"type": "system", "subtype": "local_command", "content": "done"})
             self.assertFalse(AgentSessionTracker().claude_session_is_active(path))
 
     def test_finished_answer_reads_as_idle(self) -> None:

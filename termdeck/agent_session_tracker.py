@@ -3,6 +3,7 @@ import collections
 import json
 import re
 import shlex
+from datetime import datetime, timezone
 from pathlib import Path
 
 from termdeck import agents
@@ -28,6 +29,9 @@ class AgentSessionTracker:
     _CLAUDE_PERMISSION_MODES = {"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
     _CLAUDE_INTERRUPT_TEXT_PREFIX = "[Request interrupted by user"
     _CLAUDE_LOCAL_COMMAND_MARKERS = ("<command-name>", "<local-command-")
+    # How long a /compact with nothing after it still counts as running. Long enough for a big
+    # conversation, short enough that a compaction which died leaves the tab idle rather than spinning.
+    _CLAUDE_COMPACTION_MAX_SECONDS = 15 * 60.0
     _CLI_TITLE_CACHE_SIZE = 120
     _SUBAGENT_FILE_CACHE_SIZE = 2000
 
@@ -338,6 +342,40 @@ class AgentSessionTracker:
                    for text in texts)
 
     @staticmethod
+    def _claude_event_is_recent(event: dict, max_age_seconds: float) -> bool:
+        """Whether a transcript event's own ISO timestamp is younger than max_age_seconds.
+
+        A missing or unparsable timestamp counts as recent: the caller uses this only to expire a state
+        it has already decided is otherwise true, and guessing "stale" there would silently drop the
+        very signal it is guarding.
+        """
+        stamp = event.get("timestamp")
+        if not isinstance(stamp, str) or not stamp:
+            return True
+        try:
+            when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - when).total_seconds() < max_age_seconds
+
+    @staticmethod
+    def _claude_user_event_is_compaction(message: dict) -> bool:
+        """True for the local-command event Claude writes when /compact starts.
+
+        Compaction is the one local command that then works for minutes, and it is invisible from
+        everywhere else: measured on 2.1.235, Claude writes no OSC title updates and appends nothing at
+        all to the transcript between this event and the summary it produces when it finishes. So this
+        event, with nothing after it, IS the "still compacting" signal -- the same reasoning that makes
+        every other local command a skip makes this one a match.
+        """
+        content = message.get("content")
+        texts = [content] if isinstance(content, str) else \
+            [part.get("text") or "" for part in content or [] if isinstance(part, dict)]
+        return any("/compact" in text for text in texts)
+
+    @staticmethod
     def _claude_user_event_is_non_prompt_metadata(message: dict) -> bool:
         content = message.get("content")
         if isinstance(content, str):
@@ -364,10 +402,19 @@ class AgentSessionTracker:
             lines = raw.decode(errors="replace").splitlines()
         except OSError:
             return False
+        # Set while walking back past a local command's own result. /compact is the one local command
+        # that then works for minutes with no other trace (measured: no OSC title updates and no
+        # transcript appends until it finishes), so the command event with nothing after it means
+        # "still compacting" -- but the SAME shape with a result after it means it already stopped,
+        # including the common "Not enough messages to compact." refusal that lands within a second.
+        local_command_finished = False
         for line in reversed(lines):
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if event.get("type") == "system" and event.get("subtype") == "local_command":
+                local_command_finished = True
                 continue
             message = event.get("message") or {}
             if event.get("type") == "user":
@@ -375,8 +422,16 @@ class AgentSessionTracker:
                 # session is being continued from a previous conversation..."). It is a user event with
                 # real prose, so without this it reads as a freshly submitted prompt and the session
                 # shows as working forever once a compact finishes.
-                if event.get("isMeta") or event.get("isCompactSummary") or \
-                        AgentSessionTracker._claude_user_event_is_local_command(message) or \
+                if event.get("isMeta") or event.get("isCompactSummary"):
+                    continue
+                # Reached before the generic local-command skip below, which would otherwise hide it.
+                # Bounded by the event's own timestamp: a compaction that has produced nothing for this
+                # long is not running any more, and an unbounded match would leave the tab spinning
+                # forever the way isCompactSummary once did.
+                if AgentSessionTracker._claude_user_event_is_compaction(message):
+                    return not local_command_finished and AgentSessionTracker._claude_event_is_recent(
+                        event, AgentSessionTracker._CLAUDE_COMPACTION_MAX_SECONDS)
+                if AgentSessionTracker._claude_user_event_is_local_command(message) or \
                         AgentSessionTracker._claude_user_event_is_non_prompt_metadata(message):
                     continue
                 if AgentSessionTracker._claude_user_event_is_interruption(message):
