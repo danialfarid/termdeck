@@ -140,4 +140,5 @@ class ApiFields:
     DETACHED = "detached"
     CLI_TITLE = "cli_title"
     NEEDS_ATTENTION = "needs_attention"
+    ACTIVITY = "activity"
     DELETED = "deleted"

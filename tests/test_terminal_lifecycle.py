@@ -1485,3 +1485,28 @@ class ReplayTitleCollapseTest(unittest.TestCase):
         replay = self._replay(b"\x1b]0;done\x07content\x1b]0;partial")
         self.assertTrue(replay.startswith(b"content\x1b]0;partial"))
         self.assertTrue(replay.endswith(b"\x1b]0;done\x07"))
+
+
+class ClaudeActivityDetailTest(unittest.TestCase):
+    def _session(self, session_id, interrupted=False):
+        from types import SimpleNamespace
+        claude = agents.agent_cli("claude")
+        ms = SimpleNamespace(record=SimpleNamespace(agent_session_id=session_id,
+                                                    claude_interrupted=interrupted),
+                             agent_state=claude.new_session_state())
+        return claude, ms
+
+    def test_detail_reports_main_and_active_subagent_count(self) -> None:
+        claude, ms = self._session("abc")
+        ms.agent_state.main_active = False
+        ms.agent_state.subagent_states = {Path("/a"): True, Path("/b"): True, Path("/c"): False}
+        self.assertEqual(claude.activity_detail(ms), {"main": False, "subagents": 2})
+        ms.agent_state.main_active = True
+        self.assertEqual(claude.activity_detail(ms), {"main": True, "subagents": 2})
+
+    def test_detail_is_none_before_binding_and_main_false_when_interrupted(self) -> None:
+        claude, ms = self._session(None)
+        self.assertIsNone(claude.activity_detail(ms))
+        claude, ms = self._session("abc", interrupted=True)
+        ms.agent_state.main_active = True
+        self.assertEqual(claude.activity_detail(ms), {"main": False, "subagents": 0})

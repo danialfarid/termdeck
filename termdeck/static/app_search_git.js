@@ -851,6 +851,11 @@ Object.assign(TermdeckApp.prototype, {
     if (showDesktopBrandIndicator) item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
     else if (useTextStatusIndicator) item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
     else item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
+    const activityDots = document.createElement("span");
+    activityDots.className = "session-activity-dots";
+    item.append(activityDots);
+    this.sessionActivityEls.set(s.session_id, activityDots);
+    this.updateSessionActivityDots(s.session_id);
     this.bindTerminalSearchHoverPopup(item, searchMatch);
     item.title = `${item.dataset.baseTitle}\nlast activity ${this.terminalAgeAgoLabel(s)}\n${this.terminalAgeExactTimestamp(s)}`;
     item.onclick = (event) => {
@@ -1045,6 +1050,7 @@ Object.assign(TermdeckApp.prototype, {
     }
     this.sessionTitleEls.clear();
     this.sessionSpinnerEls.clear();
+    this.sessionActivityEls.clear();
     this.sessionStatusEls.clear();
     this.sessionRowEls.clear();
     if (this.worktreeId === ALL_WORKTREES_ID) this.renderAllWorktreesInto(list);

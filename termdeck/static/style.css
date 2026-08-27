@@ -161,6 +161,20 @@ body:not(.vscode-mode) .session-item:has(.terminal-type-icon.on) .status-dot.att
 .session-spinner.on .session-spinner-orbit { will-change: transform; animation: termdeck-session-orbit 3.2s linear infinite; }
 .session-spinner.on .session-spinner-rect-tail { will-change: transform; animation: termdeck-session-rectangle 1.7s linear infinite; }
 .terminal-type-icon { position: absolute; left: 2px; top: 50%; display: none; align-items: center; justify-content: center; width: var(--terminal-icon-size, 14px); height: var(--terminal-icon-size, 14px); margin: 0; color: var(--text); opacity: 0.82; overflow: visible; pointer-events: none; transform: translateY(-50%); }
+/* Background-activity dots (AgentCli.activity_detail): a reserved band below the row's
+   icon+text. The band grows the row via padding-bottom, so every top-50% anchored
+   indicator gets pulled up by exactly half the band to stay centered on the text line. */
+.session-item.has-activity { --activity-band: calc(var(--sidebar-font-size) * 0.75 + 4px); padding-bottom: calc(5px * var(--ui-scale) + var(--activity-band)); }
+.session-item.has-activity .status-dot,
+.session-item.has-activity .session-spinner,
+.session-item.has-activity .terminal-type-icon { top: calc(50% - var(--activity-band) / 2); }
+.session-activity-dots { display: none; }
+.session-item.has-activity .session-activity-dots { position: absolute; left: calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); bottom: calc(3px * var(--ui-scale)); display: flex; align-items: center; gap: 10px; font-size: calc(var(--sidebar-font-size) * 0.72); line-height: 1; color: var(--dim); }
+.session-activity-chip { display: inline-flex; align-items: center; gap: 4px; cursor: default; }
+.session-activity-count { font-variant-numeric: tabular-nums; }
+.session-activity-dot { width: 0.5em; height: 0.5em; border-radius: 50%; background: currentColor; }
+.session-activity-chip.activity-subagents { color: #b07ce8; }
+.session-activity-chip.activity-subagents .session-activity-dot { will-change: opacity, transform; animation: termdeck-status-beacon 1.8s ease-in-out infinite; }
 .terminal-type-icon.on { display: inline-flex; }
 .terminal-type-icon svg { display: block; width: calc(var(--terminal-icon-size, 14px) - 1px); height: calc(var(--terminal-icon-size, 14px) - 1px); }
 .codex-terminal-icon svg { width: calc(var(--terminal-icon-size, 14px) - 2px); height: calc(var(--terminal-icon-size, 14px) - 2px); }

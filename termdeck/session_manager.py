@@ -585,6 +585,7 @@ class TerminalSessionManager:
             ApiFields.DETACHED: ms.detached_live and not ms.attached,
             WsMessageFields.PROCESSING: processing,
             ApiFields.NEEDS_ATTENTION: ms.attention_required,
+            ApiFields.ACTIVITY: agents.agent_cli(ms.record.agent_kind).activity_detail(ms),
             "processing_since": ms.processing_started_at,
             "last_activity_at": ms.last_activity_at,
         }

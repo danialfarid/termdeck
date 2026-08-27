@@ -231,6 +231,13 @@ class AgentCli:
     def refresh_activity_for_status(self, manager, ms) -> None:
         """Cheap freshness pass right before a status/summary payload is built."""
 
+    def activity_detail(self, ms) -> dict[str, object] | None:
+        """Structured breakdown of what is running (e.g. main thread vs subagents), or None.
+
+        Read from state the transcript watchers already maintain — never poll here; this runs
+        on every status payload."""
+        return None
+
     def on_transcript_event(self, manager, ms, path: Path) -> None:
         """A watched transcript file changed; update this session's activity if the file is its own."""
 

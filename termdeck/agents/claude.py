@@ -191,6 +191,13 @@ class ClaudeCli(AgentCli):
     def refresh_persisted_activity(self, manager, ms) -> None:
         self.initialize_subagent_state(manager, ms)
 
+    def activity_detail(self, ms) -> dict[str, object] | None:
+        if not ms.record.agent_session_id:
+            return None
+        state = ms.agent_state
+        return {"main": bool(state.main_active and not ms.record.claude_interrupted),
+                "subagents": sum(1 for active in state.subagent_states.values() if active)}
+
     def initialize_subagent_state(self, manager, ms) -> None:
         if not ms.record.agent_session_id:
             return

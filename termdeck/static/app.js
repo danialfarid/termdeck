@@ -710,6 +710,7 @@ class TermdeckApp {
     this.sessionActivityAt = new Map();
     this.sessionTitleEls = new Map();
     this.sessionSpinnerEls = new Map();
+    this.sessionActivityEls = new Map();
     this.sessionStatusEls = new Map();
     this.sessionRowEls = new Map();
     this.terminalAgeRefreshTimer = 0;
@@ -3940,6 +3941,11 @@ class TermdeckApp {
     if (Object.prototype.hasOwnProperty.call(message, "cli_title") && message.cli_title) session.cli_title = message.cli_title;
     if (Object.prototype.hasOwnProperty.call(message, "agent_session_id")) session.agent_session_id = message.agent_session_id;
     if (Object.prototype.hasOwnProperty.call(message, "agent_kind")) session.agent_kind = message.agent_kind;
+    let activityDetailChanged = false;
+    if (Object.prototype.hasOwnProperty.call(message, "activity")) {
+      activityDetailChanged = JSON.stringify(session.activity || null) !== JSON.stringify(message.activity || null);
+      session.activity = message.activity;
+    }
     if (Object.prototype.hasOwnProperty.call(message, "last_activity_at")) {
       session.last_activity_at = message.last_activity_at;
       const activity = Number(message.last_activity_at || 0);
@@ -3984,6 +3990,7 @@ class TermdeckApp {
     if (processingChanged || (spinning && this.historyPendingProcessing.has(session.session_id))) {
       this.updateProcessingState(session.session_id, spinning);
     }
+    if (activityDetailChanged) this.updateSessionActivityDots(session.session_id);
     // A finished turn is when the transcript's newest usage report changes.
     if (processingChanged && !spinning && session.session_id === this.activeId) {
       void this.refreshSessionUsage(session.session_id);
@@ -4028,6 +4035,44 @@ class TermdeckApp {
     const spinner = this.sessionSpinnerEls.get(id);
     if (spinner) spinner.classList.toggle("on", spinning);
     this.updateSessionTextStatus(id, spinning);
+  }
+
+  // One entry per background-activity kind reported by AgentCli.activity_detail — "main"
+  // is the spinner's job and stays out. Keys are generic on purpose: a future
+  // {"background_jobs": 2} needs no client change to get its own dot.
+  activityDotEntries(activity) {
+    if (!activity) return [];
+    const entries = [];
+    for (const [key, value] of Object.entries(activity)) {
+      if (key === "main") continue;
+      const count = Number(value);
+      if (!(count > 0)) continue;
+      const noun = key.replace(/_/g, " ");
+      entries.push({ key, count, label: `${count} ${count === 1 ? noun.replace(/s$/, "") : noun} running` });
+    }
+    return entries;
+  }
+
+  updateSessionActivityDots(id) {
+    const host = this.sessionActivityEls.get(id);
+    if (!host) return;
+    const entries = this.activityDotEntries(this.session(id)?.activity);
+    const signature = JSON.stringify(entries);
+    if (host.dataset.signature === signature) return;
+    host.dataset.signature = signature;
+    host.replaceChildren(...entries.map((entry) => {
+      const chip = document.createElement("span");
+      chip.className = `session-activity-chip activity-${entry.key}`;
+      chip.title = entry.label;
+      const count = document.createElement("span");
+      count.className = "session-activity-count";
+      count.textContent = String(entry.count);
+      const dot = document.createElement("span");
+      dot.className = "session-activity-dot";
+      chip.append(count, dot);
+      return chip;
+    }));
+    host.closest(".session-item")?.classList.toggle("has-activity", entries.length > 0);
   }
 
   updateSessionTextStatus(id, spinning = !!this.processingStates.get(id)) {
@@ -4310,6 +4355,7 @@ class TermdeckApp {
       const spinner = this.sessionSpinnerEls.get(s.session_id);
       if (spinner) spinner.classList.toggle("on", presentation.spinning);
       this.updateSessionTextStatus(s.session_id, presentation.spinning);
+      this.updateSessionActivityDots(s.session_id);
       if (title) {
         const item = title.closest(".session-item");
         if (item) {
