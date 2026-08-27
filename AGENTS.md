@@ -119,3 +119,11 @@ per-sequence handler work), not transfer.
   smoke on pushes to main and release-* branches.
 - Anything user-visible: reproduce the user's exact recipe on :8530 with a fresh page load before
   declaring victory, and state plainly what was and wasn't verified.
+
+## Documenting changes
+
+- Every user-facing addition, change, or fix goes into `CHANGELOG.md` under `[Unreleased]` in the same
+  commit that ships it (Keep a Changelog sections: Added / Changed / Fixed / Removed). Write the entry as
+  the capability or behavior the user gets, not the implementation.
+- If it changes what TermDeck can do (a new agent, a new surface, a new workflow), also check whether the
+  README's feature list and guide sections need a matching update. UI layout tweaks stay out of the README.

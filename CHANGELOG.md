@@ -8,10 +8,41 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Aider and OpenCode agent support: spawn with permission modes, activity tracking, Markdown transcripts,
+  and restart recovery (OpenCode resumes with `-s <session-id>` and forks with `--fork`; Aider has no session
+  IDs and restores its own conversation via an always-passed `--restore-chat-history`).
+- Live activity dots under each session row showing what a Claude session is running in the background:
+  active subagents, backgrounded shell commands, and persistent monitors, each with a count and hover
+  description — derived from transcript state the watchers already maintain, never from polling.
+- Browser desktop notifications when an agent needs attention or finishes a run longer than five seconds,
+  controlled by one settings switch. Notification permission is requested on the first click or keypress,
+  where the browser actually allows the prompt to appear.
+- A web app manifest makes TermDeck installable as a browser app; notifications from the installed app carry
+  the TermDeck name and icon instead of the raw localhost origin, and carry the icon either way.
+- Live context usage for the active agent session (`ctx 118k/258k`) in the bottom toolbar.
+- Per-agent sidebar terminal icons, each toggleable in settings; the icon set is defined by the agent
+  adapters, so a new agent brings its own.
+- The Markdown-mode prompt queue works for every agent kind and accepts prompts while a response is still
+  streaming, via a dedicated queue button beside send.
+- An agent-CLI adapter API: supporting a new agent CLI is one Python class plus an optional client behavior
+  entry (`docs/agent-cli-api.md`).
 - The service log is trimmed to its last 2 MB once it passes 5 MB, at startup and every 15 minutes, so an
   always-on deck no longer accumulates an unbounded `termdeck.log`.
 
+### Changed
+
+- Stopping a response in Markdown mode now holds the prompt queue and returns the first queued prompt to the
+  composer, instead of the interrupt immediately auto-dispatching the next queued prompt.
+
 ### Fixed
+
+- Expanded thinking blocks and the reading position in Markdown mode survive live transcript updates. The
+  rebuild that streaming routinely forces re-derived both from element indexes that stop matching the turn
+  list after paged history loads; both are now keyed off the rendered elements themselves.
+- Switching from Markdown mode back to the terminal repaints with a cleared glyph atlas, fixing scrollback
+  rows rendering with mixed character widths and overlapping glyphs after output arrived while hidden.
+- Activity dots no longer disappear for a few seconds whenever the session list refreshes.
+- A running Claude `/compact` no longer shows the session as idle while it works (bounded at 15 minutes).
 
 - Server startup no longer probes the process tree once per saved session. Reconciling dtach sockets now
   shares one machine-wide `lsof`/`ps` sample, so a deck of ~90 terminals reaches the listening port in

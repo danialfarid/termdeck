@@ -334,11 +334,10 @@ transcript read directly from the CLI's own session file:
 - Prose rendered as Markdown instead of TUI-wrapped text — selectable and copyable properly
 - Code edits and thinking blocks shown as collapsible sections
 - Live working state, elapsed time, model name, reasoning effort, and context/status information
-- A two-line prompt composer with dedicated **Send** and **Queue** buttons: **Enter** submits,
-  **Shift+Enter** newline, **Esc** interrupts
-- Queue prompts (the queue button or **Tab**) even while the agent is still responding; queued prompts are
-  listed, editable in place, and removable. Stopping a response holds the queue and returns the first queued
-  prompt to the composer so you decide whether it still goes
+- A prompt composer at the bottom: **Enter** submits, **Shift+Enter** newline, **Esc** interrupts
+- Queue prompts even while the agent is still responding; queued prompts are listed, editable in place, and
+  removable. Stopping a response holds the queue and returns the first queued prompt to the composer so you
+  decide whether it still goes
 - Live context usage for the active session (`ctx 118k/258k`) in the bottom toolbar
 - Persisted prompt history from both terminal and conversation mode
 - A conversation outline (**⌥O**) for jumping to earlier prompts and responses
