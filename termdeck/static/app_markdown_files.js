@@ -1481,6 +1481,15 @@ Object.assign(TermdeckApp.prototype, {
       if (view) {
         if (this.nativeVscodeMode) this.postVscodeNativeSession(this.session(this.activeId), true);
         else view.term.focus();
+        // Output keeps flowing into the hidden zero-height surface while Markdown mode is up,
+        // and glyphs drawn there can bake stale cell metrics into the renderer's atlas --
+        // rows come back with mixed widths and overlapping characters. One atlas-clearing
+        // repaint after the layout fits settle redraws everything at the current metrics.
+        setTimeout(() => {
+          if (!view.closed && this.activeId === view.sessionId && !this.historyOpen) {
+            this.refreshTerminalAppearance(view, true);
+          }
+        }, 500);
       }
     }
   },
