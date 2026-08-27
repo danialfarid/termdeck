@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Iterable
 
 from termdeck.agents.base import AgentCli, AgentSessionState
-from termdeck.config import TermdeckConfig
 from termdeck.transcript_turns import TurnBuilder
 from termdeck.util import TimeUtil
 

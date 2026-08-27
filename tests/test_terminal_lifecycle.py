@@ -20,7 +20,6 @@ from termdeck.proc_tree import ProcTreeSnapshot, ProcTreeUtil
 from termdeck.pty_process import PtyProcess
 from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, TermdeckServer, UiSettings
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
-from termdeck.transcript_service import TranscriptService
 
 
 def record(session_id: str = "abc123") -> SessionRecord:

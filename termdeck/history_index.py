@@ -8,7 +8,6 @@ from pathlib import Path
 
 from termdeck import agents
 from termdeck.agents.base import AgentCli
-from termdeck.config import TermdeckConfig
 
 
 class HistorySearchIndex:

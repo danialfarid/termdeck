@@ -10,7 +10,6 @@ from watchdog.observers import Observer
 
 from termdeck import agents
 from termdeck.agents.base import AgentCli
-from termdeck.config import TermdeckConfig
 from termdeck.platform_paths import PlatformPaths
 from termdeck.transcript_turns import TurnBuilder
 

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release-*"]
   pull_request:
   workflow_dispatch:
 
@@ -58,6 +58,16 @@ jobs:
 
       - name: Doctor reports all required programs present
         run: termdeck doctor
+
+      - name: Unit tests
+        run: |
+          python -m pip install pytest
+          python -m pytest tests/ -q
+
+      - name: Client syntax
+        run: |
+          node --check termdeck/static/app.js
+          for f in tools/scroll-tests/*.cjs tools/*.cjs; do node --check "$f"; done
 
       - name: Server boots and serves the UI
         env:
