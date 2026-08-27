@@ -5,7 +5,8 @@
 // like fresh scrolling, schedules another settle, and pulses forever. This reproduces that by re-asserting
 // the drag position whenever the app moves it, exactly as a held thumb does, and counts app moves.
 const { chromium } = require('playwright');
-const BASE = 'http://127.0.0.1:8536';
+const PORT = process.argv[2] || process.env.TERMDECK_TEST_PORT || '8536';
+const BASE = `http://127.0.0.1:${PORT}`;
 
 (async () => {
   const r = await fetch(`${BASE}/api/sessions`, {

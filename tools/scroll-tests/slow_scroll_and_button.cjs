@@ -2,7 +2,8 @@
 //    at-bottom tolerance and yanked straight back down).
 // 2. The scroll-to-bottom button must actually return the container to the bottom.
 const { chromium } = require('playwright');
-const BASE = 'http://127.0.0.1:8536';
+const PORT = process.argv[2] || process.env.TERMDECK_TEST_PORT || '8536';
+const BASE = `http://127.0.0.1:${PORT}`;
 
 (async () => {
   const r = await fetch(`${BASE}/api/sessions`, {

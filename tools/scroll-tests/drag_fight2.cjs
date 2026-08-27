@@ -5,7 +5,8 @@
 // still below it, the browser re-drags to the pointer, and the two alternate -- the tearing. So the
 // assertion is "zero clamps while the drag is moving, exactly one once it stops".
 const { chromium } = require('playwright');
-const BASE = 'http://127.0.0.1:8536';
+const PORT = process.argv[2] || process.env.TERMDECK_TEST_PORT || '8536';
+const BASE = `http://127.0.0.1:${PORT}`;
 
 (async () => {
   const r = await fetch(`${BASE}/api/sessions`, {

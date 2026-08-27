@@ -1,12 +1,14 @@
 // Reproduce Safari behaviour with WebKit: does the wheel scroll at all, and does the view survive
 // being dragged to the bottom?
 const { webkit } = require('playwright');
+const PORT = process.argv[2] || process.env.TERMDECK_TEST_PORT || '8530';
+const BASE = `http://127.0.0.1:${PORT}`;
 const ID = process.argv[2];
 (async () => {
   const br = await webkit.launch({ headless: true });
   const p = await br.newPage({ viewport: { width: 1600, height: 1000 } });
   const errs = []; p.on('pageerror', e => errs.push(e.message));
-  await p.goto('http://127.0.0.1:8530/p/stock', { waitUntil: 'domcontentloaded' });
+  await p.goto(BASE + '/p/stock', { waitUntil: 'domcontentloaded' });
   await p.waitForTimeout(9000);
   await p.evaluate(i => window.__td.activate(i), ID);
   await p.waitForTimeout(9000);

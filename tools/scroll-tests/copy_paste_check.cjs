@@ -1,7 +1,8 @@
 // Cmd+C while scrolled back must not move the view or drop the selection; plain typing still returns
 // to the prompt.
 const { chromium } = require('playwright');
-const BASE = 'http://127.0.0.1:8536';
+const PORT = process.argv[2] || process.env.TERMDECK_TEST_PORT || '8536';
+const BASE = `http://127.0.0.1:${PORT}`;
 
 (async () => {
   const res = await fetch(`${BASE}/api/sessions`, {
