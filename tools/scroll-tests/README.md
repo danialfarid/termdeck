@@ -78,3 +78,12 @@ Two lessons the tests themselves taught, both of which produced false PASSes:
   nothing; measuring at animation frames misses a clamp that runs inside the scroll handler.
 - Verify a test can fail. Several of these passed against known-broken code until the assertion was
   corrected -- disable the fix and confirm the test goes red before trusting it green.
+
+## Known-stale assertions (2026-08-26)
+
+- `scroll_sources` phase B expects `tallPinnedViewportY === null` after a direct
+  `scrollTop = scrollHeight` autoscroll to the bottom. The app has never cleared the pin on that
+  path in the whole-buffer layout (verified identical against the pre-refactor baseline) — the pin
+  clears when a FOLLOW placement runs, and a programmatic scroll does not re-engage follow. Either
+  the app should release the parked state on reaching the bottom, or this assertion should assert
+  the actual contract; until decided, this test fails on that one check.

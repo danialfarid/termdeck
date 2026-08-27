@@ -15164,81 +15164,9 @@ class TermdeckApp {
       // The scroll position is the buffer position in this mode, so it has to be honoured immediately
       // rather than waiting for the gesture to settle -- the rendered window is what makes the scroll
       // visible at all.
-      if (this.wholeBufferScrollEnabled()) {
-        this.tallSyncBufferToScroll(view);
-        scheduleTallSettle();
-        return;
-      }
+      this.tallSyncBufferToScroll(view);
       scheduleTallSettle();
     }, { passive: true });
-    // The scrollback bridge for the CSS's overflow-y:hidden on .xterm-viewport (see style.css). That rule
-    // takes xterm's own viewport out of the scroll chain so there's a single scroll surface, but the
-    // scrollback it used to scroll through is still real content that has to stay reachable -- this hands
-    // it whatever delta the container can't absorb, so one continuous gesture runs container-first and
-    // then into scrollback, rather than the reverse order the browser's chaining used to impose.
-    //
-    // Deliberately edge-only, and non-passive only where it actually acts: while the container still has
-    // room in the direction being scrolled, this returns without touching the event, leaving the browser's
-    // native scrolling (and its trackpad momentum, which a manual scrollTop-per-event implementation
-    // cannot reproduce) to handle the common case untouched.
-    container.addEventListener("wheel", (event) => {
-      const view = this.views.get(id);
-      if (!view || view.closed || !event.deltaY) return;
-      const buffer = view.term.buffer.active;
-      const up = event.deltaY < 0;
-      // Absorb downward overscroll rather than letting the browser take it and correcting afterwards.
-      // .term-inner is a fixed FORCE_ROWS tall no matter how little content exists, so the browser's own
-      // max scroll sits thousands of pixels below the last line, and a scroll past the end used to be
-      // painted out there and then yanked back by the "scroll" listener's clamp -- the visible bounce at
-      // the bottom. Worst on a nearly empty terminal, where the ceiling can be 0 and the overshoot is the
-      // full canvas. Clamping the gesture here means the overshoot is never painted at all. Trackpad
-      // momentum keeps firing wheel events, so this has to absorb those too, which it does by staying on
-      // the clamp branch once scrollTop has reached the ceiling.
-      //
-      // Only when there is no scrollback left to spend, though. Scrolling up past the top of the container
-      // hands the rest of the gesture to xterm's viewport (see the bridge below), and from then on the
-      // container sits at its ceiling with the viewport parked above baseY -- so on the way back down this
-      // clamp matched every single event and returned before the bridge could give the scrollback back.
-      // On a short session, where the ceiling is 0, that made downward scrolling impossible: the view
-      // could be scrolled up into history and never returned. Reported as "shows up at the top, cannot
-      // scroll down".
-      const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-      if (!cellHeight) return;
-      // No bridge needed when the container already spans the whole buffer: native scrolling reaches
-      // every line, pixel by pixel, which is the entire point of that mode.
-      if (this.wholeBufferScrollEnabled()) return;
-      const ceiling = view.tallMaxScrollTop == null ? Infinity : view.tallMaxScrollTop;
-      // The container is the outer surface in BOTH directions, and that symmetry is the whole point. It
-      // used to hold only going up: going down, the buffer viewport was advanced whenever any scrollback
-      // was pending, which is true for the entire time a view is parked -- so downward scrolling was
-      // quantised to whole lines while the container still had smooth pixels to give. Scrolling the same
-      // number of notches up and then back down proved it: four each way landed 4.76 rows (one whole
-      // notch) from where it started, and eight each way through scrollback landed 8 rows out.
-      const room = up ? container.scrollTop : ceiling - container.scrollTop;
-      if (Math.abs(event.deltaY) <= room) return;      // the container can absorb this on its own
-      if (up ? buffer.viewportY <= 0 : buffer.viewportY >= buffer.baseY) {
-        // Nothing beyond the container in this direction. Absorb the overshoot rather than letting the
-        // browser paint past the last line and yanking it back afterwards -- the bounce at the bottom.
-        if (!up && ceiling !== Infinity) {
-          event.preventDefault();
-          if (container.scrollTop !== ceiling) this.tallSetScrollTop(view, ceiling);
-        }
-        return;
-      }
-      event.preventDefault();
-      // One continuous position expressed across two surfaces. xterm scrolls whole lines only, so a 100px
-      // notch over a 21px row (4.76 rows) snapped to 4 or 5 -- measured per notch as 4,5,5,4,5,5,5,5,4,3
-      // against a steady 4.76 once the container took over, which is what "jumpy" is. The container takes
-      // the spill up to its own edge and keeps the leftover sub-row as its offset, so the remainder lives
-      // in the position itself rather than in a variable that can drift out of step with it.
-      const spill = event.deltaY - (up ? -room : room);
-      const edge = up ? 0 : ceiling;
-      const pendingRows = spill / cellHeight;
-      const wholeLines = Math.floor(pendingRows);
-      const subRow = pendingRows - wholeLines;
-      if (wholeLines) view.term.scrollLines(wholeLines);
-      this.tallSetScrollTop(view, edge + subRow * cellHeight);
-    }, { passive: false });
     const term = new Terminal({
       fontSize: this.scaledSettingSize("terminal_font_size"), fontFamily: '"SF Mono", Menlo, monospace', letterSpacing: -0.2, theme: this.terminalDisplayTheme(),
       // scrollOnUserInput must be off: it scrolls xterm's own viewport to the buffer bottom on every
@@ -17418,7 +17346,7 @@ class TermdeckApp {
   // at the bottom and stay reachable by scrolling, because the CEILING is deliberately not capped.
   tallFollowCursorCap(view, cellHeight) {
     const buffer = view.term.buffer.active;
-    const baseRows = this.wholeBufferScrollEnabled() ? Number(buffer.baseY || 0) : 0;
+    const baseRows = Number(buffer.baseY || 0);
     return Math.max(0, (baseRows + Number(buffer.cursorY || 0) - TALL_FOLLOW_CURSOR_TOP_MARGIN_ROWS) *
       cellHeight);
   }
@@ -17427,7 +17355,7 @@ class TermdeckApp {
     // Same frame as the ceiling: absolute over the buffer when the scroll box spans it, rendered-window
     // relative otherwise -- see tallUpdateMaxScrollTop.
     const buffer = view.term.buffer.active;
-    const baseRows = this.wholeBufferScrollEnabled() ? Number(buffer.baseY || 0) : 0;
+    const baseRows = Number(buffer.baseY || 0);
     const bottomTarget = Math.max(0, (baseRows + this.tallEffectiveBottomRow(view) + 1) * cellHeight -
       view.container.clientHeight);
     return Math.min(bottomTarget, this.tallFollowCursorCap(view, cellHeight));
@@ -17440,139 +17368,104 @@ class TermdeckApp {
   // the capped position is exactly the behavior that keeps the composer in view.
   scrollTallContainerToCursor(view, userSettled = false) {
     if (!view || view.closed || view.tallMaxScrollTop == null) return;
-    if (this.wholeBufferScrollEnabled()) {
-      // The newest line is the bottom of the box. The buffer viewport is derived from the scroll
-      // position rather than forced to baseY: the box ends at the content bottom, so a screen shorter
-      // than the viewport puts scrollback in the visible span above it, and a rendered window parked at
-      // baseY would leave that span blank. Reaching the bottom also ends the parked state completely --
-      // pin, anchor and marker -- for the same reason the other branch clears them: following and
-      // parked are mutually exclusive, and a stale pin is what the release gate flags.
-      view.tallPinnedViewportY = null;
-      view.tallAnchorRow = null;
-      this.tallReleaseAnchorMarker(view);
-      const wholeCell = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-      // Capped so the cursor's row stays on screen -- see tallFollowTarget.
-      const capPx = wholeCell ? Math.max(0, this.tallFollowCursorCap(view, wholeCell)) : Infinity;
-      // A TUI that deletes earlier lines (Codex folding commands into "Ran 2", Claude rewriting its
-      // output) moves the composer's row UP in one write. The damped ceiling holds its old value for a
-      // while by design, so without this the view stood still, the composer floated up the screen, and
-      // only the damper's late shrink snapped it back to the bottom -- a visible float-then-snap on
-      // every fold. A cursor that moved up at least two rows since the last placement is that fold, not
-      // the one-row flicker of a redrawing composer, so the shrink is applied at once: the ceiling is
-      // fast-forwarded past its damper (which otherwise also makes the drive-down rule below shove the
-      // glued view straight back to the stale value) and the view moves with the composer in the same
-      // write. One-row moves stay with the damper on purpose.
-      let glueFold = false;
-      if (!userSettled && wholeCell) {
-        const previousCursorPx = view.tallFollowCursorPx;
-        glueFold = !view.replaying && !view.awaitingSnapshot &&
-          previousCursorPx != null && capPx <= previousCursorPx - 2 * wholeCell &&
-          !this.tallCursorRegionMostlyBlank(view);
-        view.tallFollowCursorPx = capPx;
-        if (glueFold) {
-          // A write callback can land mid-redraw (the attach repaint walks the cursor high through the
-          // frame it rebuilds), and that instant is indistinguishable from a real fold -- acting on it
-          // put the view at the top or middle of the page on a tab switch, permanently when the redraw's
-          // completion was the last write. Rather than trying to tell the two apart, any glue gets one
-          // re-placement after the dust settles: a real fold re-confirms and nothing moves, a mid-redraw
-          // misfire finds the regrown bottom and drives back down.
-          clearTimeout(view.tallGlueRecheckTimer);
-          view.tallGlueRecheckTimer = setTimeout(() => {
-            view.tallGlueRecheckTimer = 0;
-            if (view.closed || view.tallFollowing === false) return;
-            this.tallUpdateMaxScrollTop(view);
-            this.scrollTallContainerToCursor(view);
-          }, TALL_GLUE_RECHECK_MS);
-        }
-        if (glueFold) {
-          const baseRows = Number(view.term.buffer.active.baseY || 0);
-          const undampedBottom = Math.max(0, (baseRows + this.tallEffectiveBottomRow(view) + 1) *
-            wholeCell - view.container.clientHeight);
-          if (undampedBottom < view.tallMaxScrollTop) {
-            view.tallMaxScrollTop = undampedBottom;
-            view.tallCeilingShrinkSince = null;
-          }
-        }
-      }
-      const wholeTarget = Math.min(view.tallMaxScrollTop, capPx);
-      let wholeTop = view.container.scrollTop;
-      const codexCollapseSettling = Date.now() < Number(view.codexCollapseSettleUntil || 0);
-      if (glueFold && wholeTop > wholeTarget) {
-        this.tallSetScrollTop(view, wholeTarget);
-        wholeTop = view.container.scrollTop;
-      }
-      if (userSettled) {
-        if (wholeTop < wholeTarget) this.tallSetScrollTop(view, wholeTarget);
-        else if (wholeTop > view.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
-          this.tallSetScrollTop(view, view.tallMaxScrollTop);
-        }
-      } else if (wholeTop < wholeTarget) {
-        this.tallSetScrollTop(view, wholeTarget);
-      } else if (wholeTop > capPx && !codexCollapseSettling) {
-        // The cursor's row is above the visible top: this is the one case a write may pull the view UP
-        // (a popup taller than the screen just opened under the composer). A cursor that is merely
-        // higher than usual but still on screen is NOT one -- a TUI repaint walks the cursor through the
-        // frame it is redrawing, and pty chunking can land a write callback mid-repaint, so chasing
-        // every transient cursor position bounced the view up and down under ordinary typing.
-        this.tallSetScrollTop(view, wholeTarget);
-      } else if (wholeTop > capPx) {
-        this.scheduleTallGeometrySettle(view, view.codexCollapseSettleUntil - Date.now());
-      } else if (wholeTop > view.tallMaxScrollTop + (wholeCell || TALL_OVERSHOOT_DEADZONE_PX)) {
-        // A WRITE-driven placement corrects past-the-ceiling rests beyond ONE row, not the gesture
-        // deadzone: the deadzone exists so a user's small overshoot is not visibly snapped back, but
-        // here nobody is touching the view (gestures are guarded out above) -- the ceiling shrank
-        // underneath a following view, e.g. a response finished and its streaming UI folded while the
-        // tab was elsewhere. Left alone, the view rested up to a deadzone past the content with blank
-        // rows below it, looking parked mid-page while claiming to follow. The single row of grace is
-        // for a composer that settles one row shorter after a redraw -- correcting that 21px is itself
-        // the jutter jump_on_shrink pins down.
-        this.tallSetScrollTop(view, view.tallMaxScrollTop);
-      }
-      view.tallFollowTop = Math.max(wholeTarget, Math.min(view.container.scrollTop, view.tallMaxScrollTop));
-      // Re-baseline the follow-break guard even when no scroll was needed. That guard (see
-      // drainTerminalWrites) parks a following view when scrollTop has drifted from where this code last
-      // PUT it, and tallSetScrollTop is the only thing that records that place -- so every branch above
-      // that decides "already correct, nothing to do" used to leave the baseline at whatever it was
-      // before the user scrolled away. The very next write then measured the view against a position it
-      // had legitimately left long ago, declared that something had moved it, and parked it silently.
-      // Captured in a diagnostics recording: follow re-engaged at the bottom with no scroll write, and
-      // by the next sample it was parked again with scrollTop untouched, the composer sinking from there.
-      this.tallNoteFollowBaseline(view);
-      this.tallSyncBufferToScroll(view);
-      return;
-    }
-    // Following means showing the newest output, so xterm's own viewport has to be back at the bottom.
-    // While parked it is deliberately left short of baseY (see tallHoldAnchorRow) -- that is what stops
-    // it auto-scrolling -- and leaving it there would pin the canvas to stale rows no matter where the
-    // container scrolls. Clearing the pin matters just as much: it is the flag that says "parked".
-    const buffer = view.term.buffer.active;
-    if (Number(buffer.viewportY || 0) < Number(buffer.baseY || 0)) view.term.scrollToBottom();
+    // The newest line is the bottom of the box. The buffer viewport is derived from the scroll
+    // position rather than forced to baseY: the box ends at the content bottom, so a screen shorter
+    // than the viewport puts scrollback in the visible span above it, and a rendered window parked at
+    // baseY would leave that span blank. Reaching the bottom also ends the parked state completely --
+    // pin, anchor and marker -- for the same reason the other branch clears them: following and
+    // parked are mutually exclusive, and a stale pin is what the release gate flags.
     view.tallPinnedViewportY = null;
     view.tallAnchorRow = null;
     this.tallReleaseAnchorMarker(view);
-    // Move down to the bottom when behind it, but do not drag the view back up out of a small overshoot
-    // (see TALL_OVERSHOOT_DEADZONE_PX) -- that correction is itself the visible snap. Capped so the
-    // cursor's row stays on screen -- see tallFollowTarget.
-    const domCell = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-    const target = domCell
-      ? Math.min(view.tallMaxScrollTop, this.tallFollowCursorCap(view, domCell))
-      : view.tallMaxScrollTop;
-    const top = view.container.scrollTop;
+    const wholeCell = view.term._core?._renderService?.dimensions?.css?.cell?.height;
+    // Capped so the cursor's row stays on screen -- see tallFollowTarget.
+    const capPx = wholeCell ? Math.max(0, this.tallFollowCursorCap(view, wholeCell)) : Infinity;
+    // A TUI that deletes earlier lines (Codex folding commands into "Ran 2", Claude rewriting its
+    // output) moves the composer's row UP in one write. The damped ceiling holds its old value for a
+    // while by design, so without this the view stood still, the composer floated up the screen, and
+    // only the damper's late shrink snapped it back to the bottom -- a visible float-then-snap on
+    // every fold. A cursor that moved up at least two rows since the last placement is that fold, not
+    // the one-row flicker of a redrawing composer, so the shrink is applied at once: the ceiling is
+    // fast-forwarded past its damper (which otherwise also makes the drive-down rule below shove the
+    // glued view straight back to the stale value) and the view moves with the composer in the same
+    // write. One-row moves stay with the damper on purpose.
+    let glueFold = false;
+    if (!userSettled && wholeCell) {
+      const previousCursorPx = view.tallFollowCursorPx;
+      glueFold = !view.replaying && !view.awaitingSnapshot &&
+        previousCursorPx != null && capPx <= previousCursorPx - 2 * wholeCell &&
+        !this.tallCursorRegionMostlyBlank(view);
+      view.tallFollowCursorPx = capPx;
+      if (glueFold) {
+        // A write callback can land mid-redraw (the attach repaint walks the cursor high through the
+        // frame it rebuilds), and that instant is indistinguishable from a real fold -- acting on it
+        // put the view at the top or middle of the page on a tab switch, permanently when the redraw's
+        // completion was the last write. Rather than trying to tell the two apart, any glue gets one
+        // re-placement after the dust settles: a real fold re-confirms and nothing moves, a mid-redraw
+        // misfire finds the regrown bottom and drives back down.
+        clearTimeout(view.tallGlueRecheckTimer);
+        view.tallGlueRecheckTimer = setTimeout(() => {
+          view.tallGlueRecheckTimer = 0;
+          if (view.closed || view.tallFollowing === false) return;
+          this.tallUpdateMaxScrollTop(view);
+          this.scrollTallContainerToCursor(view);
+        }, TALL_GLUE_RECHECK_MS);
+      }
+      if (glueFold) {
+        const baseRows = Number(view.term.buffer.active.baseY || 0);
+        const undampedBottom = Math.max(0, (baseRows + this.tallEffectiveBottomRow(view) + 1) *
+          wholeCell - view.container.clientHeight);
+        if (undampedBottom < view.tallMaxScrollTop) {
+          view.tallMaxScrollTop = undampedBottom;
+          view.tallCeilingShrinkSince = null;
+        }
+      }
+    }
+    const wholeTarget = Math.min(view.tallMaxScrollTop, capPx);
+    let wholeTop = view.container.scrollTop;
     const codexCollapseSettling = Date.now() < Number(view.codexCollapseSettleUntil || 0);
+    if (glueFold && wholeTop > wholeTarget) {
+      this.tallSetScrollTop(view, wholeTarget);
+      wholeTop = view.container.scrollTop;
+    }
     if (userSettled) {
-      if (top < target) this.tallSetScrollTop(view, target);
-      else if (top > view.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
+      if (wholeTop < wholeTarget) this.tallSetScrollTop(view, wholeTarget);
+      else if (wholeTop > view.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
         this.tallSetScrollTop(view, view.tallMaxScrollTop);
       }
-    } else if (top < target || (!codexCollapseSettling && top > target + TALL_OVERSHOOT_DEADZONE_PX)) {
-      this.tallSetScrollTop(view, target);
-    } else if (top > target + TALL_OVERSHOOT_DEADZONE_PX) {
+    } else if (wholeTop < wholeTarget) {
+      this.tallSetScrollTop(view, wholeTarget);
+    } else if (wholeTop > capPx && !codexCollapseSettling) {
+      // The cursor's row is above the visible top: this is the one case a write may pull the view UP
+      // (a popup taller than the screen just opened under the composer). A cursor that is merely
+      // higher than usual but still on screen is NOT one -- a TUI repaint walks the cursor through the
+      // frame it is redrawing, and pty chunking can land a write callback mid-repaint, so chasing
+      // every transient cursor position bounced the view up and down under ordinary typing.
+      this.tallSetScrollTop(view, wholeTarget);
+    } else if (wholeTop > capPx) {
       this.scheduleTallGeometrySettle(view, view.codexCollapseSettleUntil - Date.now());
+    } else if (wholeTop > view.tallMaxScrollTop + (wholeCell || TALL_OVERSHOOT_DEADZONE_PX)) {
+      // A WRITE-driven placement corrects past-the-ceiling rests beyond ONE row, not the gesture
+      // deadzone: the deadzone exists so a user's small overshoot is not visibly snapped back, but
+      // here nobody is touching the view (gestures are guarded out above) -- the ceiling shrank
+      // underneath a following view, e.g. a response finished and its streaming UI folded while the
+      // tab was elsewhere. Left alone, the view rested up to a deadzone past the content with blank
+      // rows below it, looking parked mid-page while claiming to follow. The single row of grace is
+      // for a composer that settles one row shorter after a redraw -- correcting that 21px is itself
+      // the jutter jump_on_shrink pins down.
+      this.tallSetScrollTop(view, view.tallMaxScrollTop);
     }
-    // Where a following view belongs as of this placement. The settle handler needs it kept, because the
-    // ceiling keeps moving afterwards -- see tallApplySettledScroll.
-    view.tallFollowTop = Math.max(target, Math.min(view.container.scrollTop, view.tallMaxScrollTop));
+    view.tallFollowTop = Math.max(wholeTarget, Math.min(view.container.scrollTop, view.tallMaxScrollTop));
+    // Re-baseline the follow-break guard even when no scroll was needed. That guard (see
+    // drainTerminalWrites) parks a following view when scrollTop has drifted from where this code last
+    // PUT it, and tallSetScrollTop is the only thing that records that place -- so every branch above
+    // that decides "already correct, nothing to do" used to leave the baseline at whatever it was
+    // before the user scrolled away. The very next write then measured the view against a position it
+    // had legitimately left long ago, declared that something had moved it, and parked it silently.
+    // Captured in a diagnostics recording: follow re-engaged at the bottom with no scroll write, and
+    // by the next sample it was parked again with scrollTop untouched, the composer sinking from there.
     this.tallNoteFollowBaseline(view);
+    this.tallSyncBufferToScroll(view);
   }
 
   // The place a following view was last deliberately left, for the follow-break guard to measure drift
@@ -17725,14 +17618,11 @@ class TermdeckApp {
     if (!cellHeight) { view.tallAnchorRow = null; view.tallPinnedViewportY = null; return; }
     const buffer = view.term.buffer.active;
     const viewportY = Number(buffer.viewportY || 0);
-    // Two coordinate systems, one anchor. Whole-buffer scrollTop is already an absolute buffer offset --
-    // adding viewportY on top double-counted the scrollback the viewport shows and produced anchors past
-    // the end of the buffer (captured live: anchor 11237 on a 5814-row buffer, a marker that no trim
-    // could ever move). Otherwise the container spans only the rendered window and the buffer row is
-    // viewport plus container offset.
-    const anchorRow = this.wholeBufferScrollEnabled()
-      ? Math.max(0, Math.min(Number(buffer.length || 1) - 1, Math.round(view.container.scrollTop / cellHeight)))
-      : viewportY + Math.round(view.container.scrollTop / cellHeight);
+    // scrollTop is an absolute buffer offset in this layout -- adding viewportY on top double-counted
+    // the scrollback the viewport shows and produced anchors past the end of the buffer (captured live:
+    // anchor 11237 on a 5814-row buffer, a marker that no trim could ever move).
+    const anchorRow = Math.max(0, Math.min(Number(buffer.length || 1) - 1,
+      Math.round(view.container.scrollTop / cellHeight)));
     view.tallAnchorRow = anchorRow;
     view.tallPinnedViewportY = viewportY;
     // A row index only means something until the scrollback fills. From then on every new line trims one
@@ -17764,56 +17654,28 @@ class TermdeckApp {
   tallHoldAnchorRow(view) {
     if (!view || view.closed || view.tallPinnedViewportY == null) return;
     const marker = view.tallAnchorMarker;
-    if (this.wholeBufferScrollEnabled()) {
-      // Absolute coordinates make this hold a different job. The content under a fixed scrollTop only
-      // changes when trimming renumbers the buffer, so the marker's movement is exactly the correction
-      // scrollTop needs -- and with no trimming, nothing moves at all. What DOES go wrong without this
-      // branch: xterm auto-scrolls its own viewport to the bottom on output, the geometry pass then
-      // positions the rendered window there, and the window walks down the box write after write while
-      // scrollTop stands still -- observed live as the content sliding down toward the prompt under a
-      // parked reader. Re-deriving the viewport from the scroll position (the same mapping every user
-      // scroll uses) puts the window back and renders the history rows the visible span actually needs.
-      const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-      if (!cellHeight) return;
-      if (marker && !marker.isDisposed && view.tallAnchorRow != null) {
-        const drift = Number(marker.line || 0) - view.tallAnchorRow;
-        if (drift !== 0) {
-          view.tallAnchorRow = Number(marker.line || 0);
-          this.tallSetScrollTop(view, Math.max(0, view.container.scrollTop + drift * cellHeight));
-        }
-      } else if (marker && marker.isDisposed) {
-        // The anchored line was trimmed away; hold the index the reader is at instead.
-        this.tallReleaseAnchorMarker(view);
-        view.tallAnchorRow = Math.round(view.container.scrollTop / cellHeight);
-      }
-      this.tallSyncBufferToScroll(view);
-      return;
-    }
-    if (marker && marker.isDisposed) {
-      // The anchored line has finally fallen out of the scrollback: there is no longer a line to hold, so
-      // adopt wherever the view is now rather than chasing content that no longer exists.
-      this.tallCaptureAnchorRow(view);
-      return;
-    }
-    // Where the viewport has to sit for the anchored LINE to stay on the same screen row. Trimming moves
-    // the marker, so this target moves with it; without a marker (registerMarker can decline) it falls
-    // back to the fixed index, which is right up until the buffer fills.
-    const desired = marker && view.tallAnchorGap != null
-      ? Math.max(0, marker.line - view.tallAnchorGap)
-      : view.tallPinnedViewportY;
-    const current = Number(view.term.buffer.active.viewportY || 0);
-    if (current === desired) { view.tallPinnedViewportY = desired; return; }
-    view.term.scrollLines(desired - current);
-    const settled = Number(view.term.buffer.active.viewportY || 0);
-    view.tallPinnedViewportY = settled;
-    if (settled === desired) return;
-    // xterm could not go back that far. Absorb whatever it could not give us with the container, so the
-    // line still lands where the reader left it.
+    // Absolute coordinates make this hold a different job. The content under a fixed scrollTop only
+    // changes when trimming renumbers the buffer, so the marker's movement is exactly the correction
+    // scrollTop needs -- and with no trimming, nothing moves at all. What DOES go wrong without this
+    // branch: xterm auto-scrolls its own viewport to the bottom on output, the geometry pass then
+    // positions the rendered window there, and the window walks down the box write after write while
+    // scrollTop stands still -- observed live as the content sliding down toward the prompt under a
+    // parked reader. Re-deriving the viewport from the scroll position (the same mapping every user
+    // scroll uses) puts the window back and renders the history rows the visible span actually needs.
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-    if (cellHeight) {
-      this.tallSetScrollTop(view, view.container.scrollTop - (settled - desired) * cellHeight);
+    if (!cellHeight) return;
+    if (marker && !marker.isDisposed && view.tallAnchorRow != null) {
+      const drift = Number(marker.line || 0) - view.tallAnchorRow;
+      if (drift !== 0) {
+        view.tallAnchorRow = Number(marker.line || 0);
+        this.tallSetScrollTop(view, Math.max(0, view.container.scrollTop + drift * cellHeight));
+      }
+    } else if (marker && marker.isDisposed) {
+      // The anchored line was trimmed away; hold the index the reader is at instead.
+      this.tallReleaseAnchorMarker(view);
+      view.tallAnchorRow = Math.round(view.container.scrollTop / cellHeight);
     }
-    view.tallAnchorRow = settled + Math.round(view.container.scrollTop / (cellHeight || 21));
+    this.tallSyncBufferToScroll(view);
   }
 
   // `inner` (see term.open() below) is always a full FORCE_ROWS tall in CSS regardless of how much of it
@@ -17872,8 +17734,7 @@ class TermdeckApp {
     // clipping them out of view. In whole-buffer mode the scroll position is absolute over the buffer,
     // so the bottom counts the scrollback above the screen too; otherwise the container spans only the
     // rendered window and the bottom stays in its frame.
-    const whole = this.wholeBufferScrollEnabled();
-    const baseRows = whole ? Number(view.term.buffer.active.baseY || 0) : 0;
+    const baseRows = Number(view.term.buffer.active.baseY || 0);
     const bottomPx = (baseRows + this.tallEffectiveBottomRow(view) + 1) * cellHeight;
     const next = Math.max(0, bottomPx - view.container.clientHeight);
     // Hard bound, enforced at once: no state of the CURRENT buffer can justify a ceiling past its last
@@ -17882,7 +17743,7 @@ class TermdeckApp {
     // view past the end of the content in the meantime (captured live: ceiling 31981 on a 799-row
     // buffer, the visible window ~400 rows past the newest line, output "pushing the content up" through
     // a blank screen).
-    const boundRows = whole ? Number(view.term.buffer.active.length || 0) : (view.term.rows || 0);
+    const boundRows = Number(view.term.buffer.active.length || 0);
     const hardMax = Math.max(0, boundRows * cellHeight - view.container.clientHeight);
     let current = view.tallMaxScrollTop;
     if (current != null && current > hardMax) {
@@ -19480,7 +19341,6 @@ class TermdeckApp {
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
     if (!inner || !cellHeight) return;
     if (view.tallWebgl) this.syncWebglCanvasToDevicePixels(view);
-    const whole = this.wholeBufferScrollEnabled();
     const fullPx = Math.round((view.term.rows || TALL_ROWS_DOM) * cellHeight);
     if (view.term.element && view.term.element.style.height !== `${fullPx}px`) {
       view.term.element.style.height = `${fullPx}px`;
@@ -19491,9 +19351,9 @@ class TermdeckApp {
     // blank rows the forced height leaves under the cursor, and a box sized to it opens a fresh session
     // as one mostly-empty page with the ceiling -- and the following view -- parked in the blank space
     // at its bottom, the real content out of sight above the fold.
-    const baseRows = whole ? Number(view.term.buffer.active.baseY || 0) : 0;
+    const baseRows = Number(view.term.buffer.active.baseY || 0);
     const contentPx = Math.round((baseRows + this.tallEffectiveBottomRow(view) + 1) * cellHeight);
-    const capPx = whole ? Math.round(this.tallBufferRows(view) * cellHeight) : fullPx;
+    const capPx = Math.round(this.tallBufferRows(view) * cellHeight);
     // Never shorter than the viewport, never taller than the terminal itself.
     const desired = Math.max(view.container.clientHeight || 0, Math.min(capPx, contentPx));
     const current = view.tallInnerHeight || 0;
@@ -19523,7 +19383,7 @@ class TermdeckApp {
       view.tallInnerHeight = height;
       inner.style.height = `${height}px`;
     }
-    if (whole) this.tallPositionRenderedWindow(view, cellHeight);
+    this.tallPositionRenderedWindow(view, cellHeight);
   }
 
   // Attaching to a terminal forces it to repaint itself, permanently (formerly the attach_repaint
@@ -19615,7 +19475,7 @@ class TermdeckApp {
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
     if (!cellHeight) return null;
     const buffer = view.term.buffer.active;
-    const baseRows = this.wholeBufferScrollEnabled() ? Number(buffer.baseY || 0) : 0;
+    const baseRows = Number(buffer.baseY || 0);
     return { cursorScreenTop: (baseRows + Number(buffer.cursorY || 0)) * cellHeight - view.container.scrollTop };
   }
 
@@ -19623,19 +19483,18 @@ class TermdeckApp {
     if (!anchor || view.tallFollowing === false || !view.container.clientHeight) return;
     const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
     if (!cellHeight) return;
-    const whole = this.wholeBufferScrollEnabled();
     const buffer = view.term.buffer.active;
-    const baseRows = whole ? Number(buffer.baseY || 0) : 0;
+    const baseRows = Number(buffer.baseY || 0);
     const cursorTop = (baseRows + Number(buffer.cursorY || 0)) * cellHeight;
     const nextTop = Math.max(0, cursorTop - anchor.cursorScreenTop);
     const bottomPx = (baseRows + this.tallEffectiveBottomRow(view) + 1) * cellHeight;
-    const boundRows = whole ? Number(buffer.length || 0) : Number(view.term.rows || 0);
+    const boundRows = Number(buffer.length || 0);
     const hardMax = Math.max(0, boundRows * cellHeight - view.container.clientHeight);
     view.tallMaxScrollTop = Math.min(hardMax, Math.max(0, bottomPx - view.container.clientHeight));
     view.tallCeilingShrinkSince = null;
     view.tallFollowTop = nextTop;
     this.tallSetScrollTop(view, nextTop);
-    if (whole) this.tallSyncBufferToScroll(view);
+    this.tallSyncBufferToScroll(view);
   }
 
   // A status-bar line is not enough on its own: the status text is rewritten constantly by other
@@ -19681,18 +19540,11 @@ class TermdeckApp {
     return DEFER_INACTIVE_TERMINAL_OUTPUT;
   }
 
-  // Permanent, formerly the scroll_whole_buffer experiment. The scrollbar used to represent the rendered
-  // canvas rather than history -- the thumb stopped resizing once you passed it, dragging to the bottom
-  // landed mid-content, and releasing snapped. With the scroll box spanning the whole buffer and the
-  // rendered rows positioned inside it, the thumb means what it looks like it means, and the canvas row
-  // count stops governing how far you can scroll -- which is also what puts WebGL and a long history on
-  // speaking terms. Kept as a function because every branch point still reads it, and the other arm of
-  // each of those branches is now dead code awaiting a dedicated removal pass.
-  wholeBufferScrollEnabled() {
-    return true;
-  }
-
   // Rows of history the scroll box spans. Everything above the rendered window plus the window itself.
+  // The scroll box spanning the whole buffer (formerly the scroll_whole_buffer experiment) is the only
+  // layout: scrollTop is an absolute buffer offset, the rendered rows are positioned inside the box, so
+  // the scrollbar thumb means what it looks like it means and the canvas row count stops governing how
+  // far you can scroll -- which is also what puts WebGL and a long history on speaking terms.
   tallBufferRows(view) {
     const buffer = view.term.buffer.active;
     return Math.max(view.term.rows || 0, Number(buffer.baseY || 0) + (view.term.rows || 0));

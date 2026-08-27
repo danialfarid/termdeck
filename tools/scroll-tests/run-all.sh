@@ -72,6 +72,18 @@ TESTS=(
   returns_to_bottom
 )
 
+# A crashed fixture leaks its sessions (and their dtach shells), and the leftovers slow every
+# later page load until formerly-green tests time out. Reset the instance between tests so each
+# one gets the empty project it was written against.
+reset_instance() {
+  local ids
+  ids=$(curl -s "http://127.0.0.1:$PORT/api/sessions" | python3 -c \
+    "import json,sys; print(' '.join(s['session_id'] for s in json.load(sys.stdin)))" 2>/dev/null)
+  for id in ${=ids}; do
+    curl -s -X DELETE "http://127.0.0.1:$PORT/api/sessions/$id" -o /dev/null
+  done
+}
+
 typeset -a failed
 for name in "${TESTS[@]}"; do
   printf "%-30s " "$name"
@@ -81,6 +93,7 @@ for name in "${TESTS[@]}"; do
     echo "FAIL   ($DATA_DIR/$name.out)"
     failed+=("$name")
   fi
+  reset_instance
 done
 
 # Needs no instance: it drives the fault detector with fabricated samples.
