@@ -18,6 +18,7 @@ from termdeck.draft_tracker import DraftInputTracker
 from termdeck.models import ApiFields, SessionRecord, WsMessageFields
 from termdeck.project_registry import ProjectRegistry
 from termdeck.pty_process import PtyProcess
+from termdeck.replay_recorder import ReplayRecorder
 from termdeck.session_store import ClosedSessionStore, SessionStore
 from termdeck.state_backup import StateBackupManager
 from termdeck.util import OscTitleParser, TimeUtil
@@ -61,15 +62,15 @@ class ManagedSession:
         self.repaint_activity_suppressed_until_monotonic = 0.0
         self.scrollback_sync_carry = b""
         self.screen_lives_only_in_stripped_sync_frames = False
-        self.claude_raw_replay_buffer = bytearray()
-        self.claude_raw_replay_title_carry = b""
-        self.claude_raw_replay_last_title = b""
+        self.raw_replay_buffer = bytearray()
+        self.raw_replay_title_carry = b""
+        self.raw_replay_last_title = b""
         self.scrollback_checkpoint_pending = bytearray()
         self.scrollback_compaction_generation = 0
         self.scrollback_checkpoint_compaction_generation = 0
-        self.claude_raw_replay_checkpoint_pending = bytearray()
-        self.claude_raw_replay_compaction_generation = 0
-        self.claude_raw_replay_checkpoint_compaction_generation = 0
+        self.raw_replay_checkpoint_pending = bytearray()
+        self.raw_replay_compaction_generation = 0
+        self.raw_replay_checkpoint_compaction_generation = 0
         self.terminal_history_cleared_for_spawn = False
         # Whether attach_client has already treated a cold (no-strip-witnessed-yet) claude/codex attach as
         # needing a repaint. Scoped to a single occurrence per process lifetime so a burst of simultaneous
@@ -126,17 +127,6 @@ class ManagedSession:
 
 
 class TerminalSessionManager:
-    SCROLLBACK_REPLAY_KIND = "scrollback"
-    RAW_REPLAY_KIND = "raw-replay"
-    CLAUDE_RAW_REPLAY_TITLE_PREFIXES = (b"\x1b]0;", b"\x1b]1;", b"\x1b]2;")
-    CLAUDE_RAW_REPLAY_BEL = b"\x07"
-    CLAUDE_RAW_REPLAY_ST = b"\x1b\\"
-    CLAUDE_RAW_REPLAY_CLEAR = b"\x1b[2J"
-    CLAUDE_RAW_REPLAY_HOME = b"\x1b[H"
-    CLAUDE_RAW_REPLAY_ERASE_LINE = b"\x1b[2K"
-    CLAUDE_RAW_REPLAY_CURSOR_DOWN = b"\x1b[1B"
-    CLAUDE_RAW_REPLAY_CLEAR_ROW = CLAUDE_RAW_REPLAY_ERASE_LINE + CLAUDE_RAW_REPLAY_CURSOR_DOWN
-
     """Creates, respawns, and tears down terminal sessions; broadcasts pty output to attached websocket queues;
     persists session records and resolves claude/codex agent session ids so a server restart can resume them."""
 
@@ -148,16 +138,13 @@ class TerminalSessionManager:
         self._sessions: dict[str, ManagedSession] = {}
         self._status_queues: set[asyncio.Queue] = set()
         self._draft_persist_task: asyncio.Task | None = None
-        self._replay_checkpoint_debounce_task: asyncio.Task[None] | None = None
         self._background_loop: asyncio.AbstractEventLoop | None = None
         self._agent_activity_refresh_handles: dict[Path, asyncio.TimerHandle] = {}
         self._claude_activity_confirmation_handles: dict[Path, asyncio.TimerHandle] = {}
         self._transcript_service = None
         self._history_index = None
         self.notifier = None
-        self._claude_raw_replay_enabled = True
-        self._claude_full_raw_replay_enabled = True
-        self._claude_raw_replay_total_bytes = 0
+        self.replay = ReplayRecorder(self)
         self._claude_activity_watcher = ClaudeActivityWatcher(
             agents.agent_cli("claude").sessions_root, self._on_claude_file_change_from_thread)
 
@@ -176,9 +163,7 @@ class TerminalSessionManager:
 
     def stop_background_tasks(self) -> None:
         self._claude_activity_watcher.stop()
-        if self._replay_checkpoint_debounce_task is not None:
-            self._replay_checkpoint_debounce_task.cancel()
-            self._replay_checkpoint_debounce_task = None
+        self.replay.stop()
         for handle in self._agent_activity_refresh_handles.values():
             handle.cancel()
         self._agent_activity_refresh_handles.clear()
@@ -211,335 +196,6 @@ class TerminalSessionManager:
         self._claude_activity_confirmation_handles.pop(path, None)
         agents.agent_cli("claude").on_project_file_change(self, path)
 
-    @staticmethod
-    def _claude_raw_replay_path(session_id: str) -> Path:
-        return TermdeckConfig.SCROLLBACK_DIR / f"{session_id}{TermdeckConfig.CLAUDE_RAW_REPLAY_SUFFIX}"
-
-    @staticmethod
-    def _scrollback_path(session_id: str) -> Path:
-        return TermdeckConfig.SCROLLBACK_DIR / f"{session_id}{TermdeckConfig.SCROLLBACK_SUFFIX}"
-
-    @staticmethod
-    def _write_replay_checkpoint_atomically(target: Path, payload: bytes) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-        try:
-            temporary.write_bytes(payload)
-            temporary.replace(target)
-        finally:
-            if temporary.exists():
-                temporary.unlink()
-
-    @staticmethod
-    def _append_replay_checkpoint_bytes(target: Path, payload: bytes) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("ab") as checkpoint_file:
-            checkpoint_file.write(payload)
-            checkpoint_file.flush()
-            os.fsync(checkpoint_file.fileno())
-
-    @staticmethod
-    def _read_replay_checkpoint_tail(target: Path, byte_limit: int) -> tuple[bytes, bool]:
-        target_bytes = target.stat().st_size
-        with target.open("rb") as checkpoint_file:
-            if target_bytes > byte_limit:
-                checkpoint_file.seek(-byte_limit, os.SEEK_END)
-            return checkpoint_file.read(), target_bytes > byte_limit
-
-    @staticmethod
-    def _replay_checkpoint_snapshot(ms: ManagedSession, replay_kind: str, target: Path, full_payload: bytes,
-                                    pending: bytearray, byte_limit: int, compaction_generation: int,
-                                    checkpoint_compaction_generation: int) -> tuple[ManagedSession, str, int, Path, bytes, bytes, bool] | None:
-        if not pending and compaction_generation == checkpoint_compaction_generation and target.exists():
-            return None
-        pending_payload = bytes(pending)
-        target_bytes = target.stat().st_size if target.exists() else 0
-        replace = not target.exists() or compaction_generation != checkpoint_compaction_generation or \
-            target_bytes + len(pending_payload) > byte_limit
-        write_payload = full_payload if replace else pending_payload
-        if not write_payload:
-            return None
-        return ms, replay_kind, compaction_generation, target, write_payload, pending_payload, replace
-
-    def _pending_replay_checkpoint_snapshots(self, active_only: bool
-                                             ) -> list[tuple[ManagedSession, str, int, Path, bytes, bytes, bool]]:
-        snapshots: list[tuple[ManagedSession, str, int, Path, bytes, bytes, bool]] = []
-        for ms in self._sessions.values():
-            if active_only and not ms.running:
-                continue
-            agent = agents.agent_cli(ms.record.agent_kind)
-            if not agent.is_agent and ms.buffer:
-                snapshot = self._replay_checkpoint_snapshot(
-                    ms, self.SCROLLBACK_REPLAY_KIND, self._scrollback_path(ms.record.session_id), bytes(ms.buffer),
-                    ms.scrollback_checkpoint_pending, TermdeckConfig.SCROLLBACK_BYTES,
-                    ms.scrollback_compaction_generation, ms.scrollback_checkpoint_compaction_generation)
-                if snapshot is not None:
-                    snapshots.append(snapshot)
-            if self._claude_raw_replay_enabled and agent.records_raw_replay and ms.claude_raw_replay_buffer:
-                snapshot = self._replay_checkpoint_snapshot(
-                    ms, self.RAW_REPLAY_KIND, self._claude_raw_replay_path(ms.record.session_id),
-                    self._claude_raw_replay_bytes(ms), ms.claude_raw_replay_checkpoint_pending,
-                    TermdeckConfig.CLAUDE_RAW_REPLAY_SESSION_BYTES, ms.claude_raw_replay_compaction_generation,
-                    ms.claude_raw_replay_checkpoint_compaction_generation)
-                if snapshot is not None:
-                    snapshots.append(snapshot)
-        return snapshots
-
-    @staticmethod
-    def _record_replay_checkpoint_success(ms: ManagedSession, replay_kind: str, compaction_generation: int,
-                                          pending_payload: bytes, replaced: bool) -> None:
-        if replay_kind == TerminalSessionManager.SCROLLBACK_REPLAY_KIND:
-            pending = ms.scrollback_checkpoint_pending
-            if bytes(pending[:len(pending_payload)]) == pending_payload:
-                del pending[:len(pending_payload)]
-            if replaced and ms.scrollback_compaction_generation == compaction_generation:
-                ms.scrollback_checkpoint_compaction_generation = compaction_generation
-            return
-        pending = ms.claude_raw_replay_checkpoint_pending
-        if bytes(pending[:len(pending_payload)]) == pending_payload:
-            del pending[:len(pending_payload)]
-        if replaced and ms.claude_raw_replay_compaction_generation == compaction_generation:
-            ms.claude_raw_replay_checkpoint_compaction_generation = compaction_generation
-
-    async def _checkpoint_active_replays(self) -> int:
-        """Write every running session's pending replay bytes. Returns how many writes succeeded."""
-        written = 0
-        for ms, replay_kind, compaction_generation, target, payload, pending_payload, replace in \
-                self._pending_replay_checkpoint_snapshots(True):
-            try:
-                writer = self._write_replay_checkpoint_atomically if replace else self._append_replay_checkpoint_bytes
-                await asyncio.to_thread(writer, target, payload)
-            except OSError as checkpoint_error:
-                print(f"termdeck replay checkpoint failed for {ms.record.session_id}: {checkpoint_error}", flush=True)
-                continue
-            self._record_replay_checkpoint_success(
-                ms, replay_kind, compaction_generation, pending_payload, replace)
-            written += 1
-        return written
-
-    def _schedule_replay_checkpoint(self, ms: ManagedSession) -> None:
-        """Write this session's replay shortly after the activity that changed it.
-
-        This is the only thing that makes a replay durable, so it has to be conclusive on its own: there
-        is no periodic sweep behind it and no shutdown hook to catch a straggler.
-        """
-        if not ms.running:
-            return
-        self._arm_replay_checkpoint()
-
-    def _arm_replay_checkpoint(self) -> None:
-        """Start the one pending flush, if there isn't one already.
-
-        Deliberately a trailing throttle rather than a resetting debounce: a continuously streaming
-        session would keep pushing a resetting timer out forever and never be written at all. One armed
-        flush covers every session and every event in its window, so the write rate is capped by the
-        window however much output arrives, and each write appends only the bytes since the last one.
-        """
-        task = self._replay_checkpoint_debounce_task
-        if task is not None and not task.done():
-            return
-        # _background_loop is unset until start_background_tasks runs; fall back to whatever loop is
-        # actually running so output handled before then (a spawn banner) is not left unwritten.
-        loop = self._background_loop
-        if loop is None or not loop.is_running():
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                return
-        self._replay_checkpoint_debounce_task = loop.create_task(self._checkpoint_replays_after_debounce())
-
-    async def _checkpoint_replays_after_debounce(self) -> None:
-        await asyncio.sleep(TermdeckConfig.REPLAY_CHECKPOINT_DEBOUNCE_SECONDS)
-        written = await self._checkpoint_active_replays()
-        # Output that arrived while the flush itself was running was not scheduled, because this task was
-        # still pending -- and there is nothing behind this to sweep it up later. Re-arm so the writes
-        # converge instead of waiting on the next keystroke. Only after progress: if every write just
-        # failed (a full disk), pending stays pending and re-arming would spin on the error once a second.
-        if written and self._pending_replay_checkpoint_snapshots(True):
-            self._replay_checkpoint_debounce_task = None
-            self._arm_replay_checkpoint()
-
-    @classmethod
-    def _claude_raw_replay_partial_title_prefix_length(cls, data: bytes) -> int:
-        partial_length = 0
-        for prefix in cls.CLAUDE_RAW_REPLAY_TITLE_PREFIXES:
-            for length in range(1, len(prefix)):
-                if data.endswith(prefix[:length]):
-                    partial_length = max(partial_length, length)
-        return partial_length
-
-    @classmethod
-    def _collapse_claude_raw_replay_titles(cls, ms: ManagedSession, data: bytes) -> bytes:
-        combined = ms.claude_raw_replay_title_carry + data
-        ms.claude_raw_replay_title_carry = b""
-        output = bytearray()
-        position = 0
-        while position < len(combined):
-            title_starts = [combined.find(prefix, position) for prefix in cls.CLAUDE_RAW_REPLAY_TITLE_PREFIXES]
-            title_starts = [title_start for title_start in title_starts if title_start >= 0]
-            if not title_starts:
-                partial_length = cls._claude_raw_replay_partial_title_prefix_length(combined[position:])
-                content_end = len(combined) - partial_length
-                output.extend(combined[position:content_end])
-                if partial_length:
-                    ms.claude_raw_replay_title_carry = combined[content_end:]
-                break
-            title_start = min(title_starts)
-            output.extend(combined[position:title_start])
-            bel_index = combined.find(cls.CLAUDE_RAW_REPLAY_BEL, title_start + 4)
-            st_index = combined.find(cls.CLAUDE_RAW_REPLAY_ST, title_start + 4)
-            title_end_candidates = []
-            if bel_index >= 0:
-                title_end_candidates.append(bel_index + len(cls.CLAUDE_RAW_REPLAY_BEL))
-            if st_index >= 0:
-                title_end_candidates.append(st_index + len(cls.CLAUDE_RAW_REPLAY_ST))
-            if not title_end_candidates:
-                ms.claude_raw_replay_title_carry = combined[title_start:]
-                break
-            title_end = min(title_end_candidates)
-            ms.claude_raw_replay_last_title = combined[title_start:title_end]
-            position = title_end
-        return bytes(output)
-
-    @classmethod
-    def _trim_claude_raw_replay_front(cls, replay_buffer: bytearray, minimum_bytes: int) -> int:
-        if minimum_bytes <= 0 or not replay_buffer:
-            return 0
-        minimum_bytes = min(minimum_bytes, len(replay_buffer))
-        search_end = min(len(replay_buffer), minimum_bytes + 1_000_000)
-        boundaries = [replay_buffer.find(TermdeckConfig.SYNC_UPDATE_START, minimum_bytes, search_end),
-                      replay_buffer.find(cls.CLAUDE_RAW_REPLAY_CLEAR, minimum_bytes, search_end)]
-        boundaries = [boundary for boundary in boundaries if boundary >= 0]
-        remove_bytes = min(boundaries) if boundaries else minimum_bytes
-        del replay_buffer[:remove_bytes]
-        return remove_bytes
-
-    def _enforce_claude_raw_replay_total_limit(self) -> None:
-        overflow = self._claude_raw_replay_total_bytes - TermdeckConfig.CLAUDE_RAW_REPLAY_TOTAL_BYTES
-        if overflow <= 0:
-            return
-        candidates = sorted((ms for ms in self._sessions.values() if ms.claude_raw_replay_buffer),
-                            key=lambda candidate: candidate.last_activity_at)
-        for candidate in candidates:
-            if overflow <= 0:
-                break
-            removed = self._trim_claude_raw_replay_front(candidate.claude_raw_replay_buffer, overflow)
-            self._claude_raw_replay_total_bytes -= removed
-            overflow -= removed
-            if removed:
-                candidate.claude_raw_replay_compaction_generation += 1
-
-    def _append_claude_raw_replay(self, ms: ManagedSession, data: bytes) -> None:
-        if not self._claude_raw_replay_enabled or \
-                not agents.agent_cli(ms.record.agent_kind).records_raw_replay:
-            return
-        filtered = self._collapse_claude_raw_replay_titles(ms, data)
-        if not filtered:
-            return
-        previous_bytes = len(ms.claude_raw_replay_buffer)
-        ms.claude_raw_replay_buffer.extend(filtered)
-        ms.claude_raw_replay_checkpoint_pending.extend(filtered)
-        session_overflow = len(ms.claude_raw_replay_buffer) - TermdeckConfig.CLAUDE_RAW_REPLAY_SESSION_BYTES
-        if session_overflow > 0:
-            self._trim_claude_raw_replay_front(ms.claude_raw_replay_buffer, session_overflow)
-            ms.claude_raw_replay_compaction_generation += 1
-        self._claude_raw_replay_total_bytes += len(ms.claude_raw_replay_buffer) - previous_bytes
-        self._enforce_claude_raw_replay_total_limit()
-        self._schedule_replay_checkpoint(ms)
-
-    def _seed_claude_raw_replay_from_durable_buffer(self, ms: ManagedSession) -> None:
-        if not agents.agent_cli(ms.record.agent_kind).records_raw_replay or ms.claude_raw_replay_buffer or not ms.buffer:
-            return
-        replay = self._replay_bytes(ms)[-TermdeckConfig.CLAUDE_RAW_REPLAY_SESSION_BYTES:]
-        ms.claude_raw_replay_buffer.extend(replay)
-        self._claude_raw_replay_total_bytes += len(replay)
-        ms.claude_raw_replay_compaction_generation += 1
-
-    def _discard_claude_raw_replay(self, ms: ManagedSession) -> None:
-        self._claude_raw_replay_total_bytes = max(
-            0, self._claude_raw_replay_total_bytes - len(ms.claude_raw_replay_buffer))
-        ms.claude_raw_replay_buffer.clear()
-        ms.claude_raw_replay_title_carry = b""
-        ms.claude_raw_replay_last_title = b""
-        ms.claude_raw_replay_checkpoint_pending.clear()
-        ms.claude_raw_replay_compaction_generation += 1
-
-    @staticmethod
-    def _claude_raw_replay_bytes(ms: ManagedSession) -> bytes:
-        return bytes(ms.claude_raw_replay_buffer) + ms.claude_raw_replay_last_title
-
-    @classmethod
-    def _claude_raw_replay_clear_frame_rows(cls, frame: bytes) -> int:
-        if not frame.startswith(cls.CLAUDE_RAW_REPLAY_HOME):
-            return 0
-        body = frame[len(cls.CLAUDE_RAW_REPLAY_HOME):]
-        row_bytes = len(cls.CLAUDE_RAW_REPLAY_CLEAR_ROW)
-        if not body or len(body) % row_bytes:
-            return 0
-        rows = len(body) // row_bytes
-        return rows if rows >= 2 and body == cls.CLAUDE_RAW_REPLAY_CLEAR_ROW * rows else 0
-
-    @classmethod
-    def _claude_raw_screen_replay_frames(cls, ms: ManagedSession) -> list[bytes]:
-        replay = bytes(ms.claude_raw_replay_buffer)
-        if not replay:
-            return []
-        replay_start = 0
-        for divider in (TermdeckConfig.RESPAWN_DIVIDER.encode(), TermdeckConfig.REATTACH_DIVIDER.encode()):
-            divider_position = replay.rfind(divider)
-            if divider_position >= replay_start:
-                replay_start = divider_position + len(divider)
-        home_positions: list[int] = []
-        home_position = replay.find(cls.CLAUDE_RAW_REPLAY_HOME, replay_start)
-        while home_position >= 0:
-            home_positions.append(home_position)
-            home_position = replay.find(cls.CLAUDE_RAW_REPLAY_HOME,
-                                        home_position + len(cls.CLAUDE_RAW_REPLAY_HOME))
-        frames: list[bytes] = []
-        for content_index in range(1, len(home_positions)):
-            clear_start = home_positions[content_index - 1]
-            content_start = home_positions[content_index]
-            if not cls._claude_raw_replay_clear_frame_rows(replay[clear_start:content_start]):
-                continue
-            content_end = home_positions[content_index + 1] if content_index + 1 < len(home_positions) else len(replay)
-            content = replay[content_start:content_end]
-            if len(content) > len(cls.CLAUDE_RAW_REPLAY_HOME):
-                frames.append(content)
-        return frames
-
-    @classmethod
-    def _latest_claude_raw_screen_replay(cls, ms: ManagedSession) -> bytes:
-        frames = cls._claude_raw_screen_replay_frames(ms)
-        return (frames[-1] + ms.claude_raw_replay_last_title) if frames else b""
-
-    @classmethod
-    def _full_claude_raw_screen_replay(cls, ms: ManagedSession) -> bytes:
-        frames = cls._claude_raw_screen_replay_frames(ms)
-        if not frames:
-            return b""
-        longest_frame = max(frames, key=lambda frame: len(cls._searchable_terminal_text(frame).splitlines()))
-        return longest_frame + ms.claude_raw_replay_last_title
-
-    def _clear_claude_terminal_history_for_restart(self, ms: ManagedSession) -> None:
-        # History survives the restart. This used to discard the raw recording and hard-reset every
-        # surface, so a restarted claude's terminal began life with only whatever the resumed process
-        # repainted -- days of scrollback gone from the tab and from every future replay. The recording
-        # and durable buffer are kept; the spawn path's own divider mechanism then scrolls the old
-        # screen into scrollback (see _spawn), the "restarted" rule lands between old and new, and the
-        # resumed claude paints its fresh screen below. Only the parse carries and repaint bookkeeping
-        # reset, since they describe the terminated process's stream.
-        ms.title_carry = b""
-        ms.osc_query_carry = b""
-        ms.scrollback_sync_carry = b""
-        ms.claude_raw_replay_title_carry = b""
-        ms.screen_lives_only_in_stripped_sync_frames = False
-        ms.last_repaint_offset = None
-        ms.output_missed_while_detached = False
-        ms.cold_attach_repaint_done = False
-        if ms.screen_repaint_task is not None and not ms.screen_repaint_task.done():
-            ms.screen_repaint_task.cancel()
-        ms.screen_repaint_task = None
-
     async def startup_respawn_saved_sessions(self) -> None:
         for record in self._store.load_all():
             agent = agents.agent_cli(record.agent_kind)
@@ -547,23 +203,8 @@ class TerminalSessionManager:
             ms.attention_required = agent.transcript_requires_attention(self, ms)
             self._sessions[record.session_id] = ms
             ms.lazy_start_pending = True
-            saved = self._scrollback_path(record.session_id)
-            if not agent.is_agent and saved.exists():
-                replay, requires_compaction = self._read_replay_checkpoint_tail(saved, TermdeckConfig.SCROLLBACK_BYTES)
-                ms.buffer.extend(replay)
-                if requires_compaction:
-                    ms.scrollback_compaction_generation += 1
-            if self._claude_raw_replay_enabled and agent.records_raw_replay:
-                claude_replay_path = self._claude_raw_replay_path(record.session_id)
-                if claude_replay_path.exists():
-                    replay, requires_compaction = self._read_replay_checkpoint_tail(
-                        claude_replay_path, TermdeckConfig.CLAUDE_RAW_REPLAY_SESSION_BYTES)
-                    ms.claude_raw_replay_buffer.extend(replay)
-                    self._claude_raw_replay_total_bytes += len(replay)
-                    if requires_compaction:
-                        ms.claude_raw_replay_compaction_generation += 1
-                self._seed_claude_raw_replay_from_durable_buffer(ms)
-        self._enforce_claude_raw_replay_total_limit()
+            self.replay.restore_saved_buffers(ms)
+        self.replay.enforce_total_limit()
         # Do not launch old terminals merely because the web server came up.
         # Reconcile their dtach sockets instead: live sockets remain running
         # and are attached lazily when opened; dead sockets are safe to clear.
@@ -674,7 +315,7 @@ class TerminalSessionManager:
         return f"{head} · {cwd.name}"
 
     def _spawn(self, ms: ManagedSession, resume: bool, initial_command: str | None = None,
-               screen_repaint: bool = True, preserve_claude_raw_replay: bool = False) -> None:
+               screen_repaint: bool = True, preserve_raw_replay: bool = False) -> None:
         ms.lazy_start_pending = False
         agent = agents.agent_cli(ms.record.agent_kind)
         agent.before_spawn(self, ms)
@@ -694,9 +335,9 @@ class TerminalSessionManager:
                 time.monotonic() + TermdeckConfig.SCREEN_REPAINT_REATTACH_DELAY_SECONDS +
                 TermdeckConfig.SCREEN_REPAINT_ACTIVITY_SUPPRESSION_SECONDS,
             )
-        skip_existing_history_separator = (reattach and preserve_claude_raw_replay) or \
+        skip_existing_history_separator = (reattach and preserve_raw_replay) or \
             ms.terminal_history_cleared_for_spawn
-        if ms.claude_raw_replay_buffer and not skip_existing_history_separator:
+        if ms.raw_replay_buffer and not skip_existing_history_separator:
             # Preserves the old screen across the respawn: the divider prints below the content, the
             # cursor is sent to the terminal's OWN last row -- \x1b[9999;1H clamps to the bottom on
             # every client, whatever its height, where the server's pty row count says nothing about a
@@ -740,7 +381,7 @@ class TerminalSessionManager:
         if reattach and screen_repaint:
             self._schedule_screen_repaint(ms, TermdeckConfig.SCREEN_REPAINT_REATTACH_DELAY_SECONDS)
         elif resume and not reattach:
-            restart_repaint_delay = agent.restart_screen_repaint_delay(self._claude_raw_replay_enabled)
+            restart_repaint_delay = agent.restart_screen_repaint_delay(self.replay.enabled)
             if restart_repaint_delay is not None:
                 self._schedule_screen_repaint(ms, restart_repaint_delay)
         if resume and not reattach and ms.record.draft:
@@ -1052,7 +693,7 @@ class TerminalSessionManager:
             if ms.last_repaint_offset is not None:
                 ms.last_repaint_offset = max(0, ms.last_repaint_offset - overflow)
         if durable_scrollback:
-            self._schedule_replay_checkpoint(ms)
+            self.replay.schedule_checkpoint(ms)
 
     def _append_output_path(self, ms: ManagedSession, data: bytes) -> None:
         output_path = ms.output_path
@@ -1092,7 +733,7 @@ class TerminalSessionManager:
         if mark_activity and time.monotonic() >= ms.repaint_activity_suppressed_until_monotonic:
             ms.last_activity_at = time.time()
             ms.record.last_activity_at = ms.last_activity_at
-        self._append_claude_raw_replay(ms, data)
+        self.replay.record_output(ms, data)
         self._append_collapsing_repaints(ms, data)
         self._append_output_path(ms, data)
         previous_title = ms.cli_title
@@ -1279,44 +920,22 @@ class TerminalSessionManager:
 
     # A complete OSC 0/1/2 window-title sequence. The body excludes ESC so a match can never run across
     # the ST terminator or into a following escape.
-    _OSC_TITLE_SEQUENCE = re.compile(rb"\x1b\][012];[^\x07\x1b]*(?:\x07|\x1b\\)")
-
-    def _replay_bytes(self, ms: ManagedSession) -> bytes:
-        """The durable buffer with title churn collapsed to the final title.
-
-        A window title is screen state, not history: only the last one describes the terminal a client
-        is attaching to, the same reasoning that keeps synchronized-update frames out of the durable
-        buffer. A TUI spinner rewrites the title several times a second, and replaying every frame makes
-        the client apply each one -- sidebar text, processing state, top bar -- inside the replay write.
-        Measured on a long-lived training session: 49,777 title sequences were 99% of an 806KB replay
-        and 5.9 of its 6 seconds of load, identically in both renderers. The buffer itself is left
-        intact -- title recovery reads it -- and an unterminated title at the tail is left alone for the
-        live stream to finish.
-        """
-        data = bytes(ms.buffer)
-        last = None
-        for match in self._OSC_TITLE_SEQUENCE.finditer(data):
-            last = match.group(0)
-        if last is None:
-            return data
-        return self._OSC_TITLE_SEQUENCE.sub(b"", data) + last
-
     def attach_client(self, session_id: str, screen_repaint: bool = True, have_buffer: bool = False,
                       repaint_preserved_buffer: bool = False, full_claude_raw_replay: bool = False) -> tuple[bytes, asyncio.Queue]:
         ms = self._sessions[session_id]
         self._recover_title_from_buffer(ms)
         preserve_client_buffer = have_buffer
-        claude_raw_replay_active = self._claude_raw_replay_enabled and \
+        claude_raw_replay_active = self.replay.enabled and \
             agents.agent_cli(ms.record.agent_kind).records_raw_replay
-        use_full_claude_raw_replay = self._claude_full_raw_replay_enabled and full_claude_raw_replay
+        use_full_claude_raw_replay = self.replay.full_replay_enabled and full_claude_raw_replay
         # Full means the ENTIRE recording, not the longest single screen frame: a frame is one repaint,
         # so serving only one showed at most a screenful of conversation on a fresh page -- "history is
         # very short" -- while megabytes of recorded session sat unused beside it. Replaying the whole
         # stream reproduces exactly what a continuously attached client saw, scrollback included, and
         # starts from a clean parser state instead of mid-stream at an arbitrary repaint (the garbled
         # first paint). Titles are already collapsed at record time, so the write is parse-bound only.
-        claude_raw_replay = self._claude_raw_replay_bytes(ms) if claude_raw_replay_active and use_full_claude_raw_replay else \
-            self._latest_claude_raw_screen_replay(ms) if claude_raw_replay_active else b""
+        claude_raw_replay = self.replay.raw_bytes(ms) if claude_raw_replay_active and use_full_claude_raw_replay else \
+            self.replay.latest_screen(ms) if claude_raw_replay_active else b""
         if use_full_claude_raw_replay and not self._searchable_terminal_text(claude_raw_replay).strip():
             claude_raw_replay = b""
         use_claude_raw_replay = bool(claude_raw_replay)
@@ -1327,7 +946,7 @@ class TerminalSessionManager:
         ms.output_missed_while_detached = False
         if ms.lazy_start_pending:
             self._spawn(ms, resume=True, screen_repaint=screen_repaint and not preserve_client_buffer and
-                        not use_claude_raw_replay, preserve_claude_raw_replay=use_claude_raw_replay)
+                        not use_claude_raw_replay, preserve_raw_replay=use_claude_raw_replay)
             self._broadcast_status(ms)
         queue: asyncio.Queue = asyncio.Queue()
         ms.client_queues.add(queue)
@@ -1336,7 +955,7 @@ class TerminalSessionManager:
                     (claude_raw_replay_active and not use_claude_raw_replay):
                 self._schedule_screen_repaint(ms, TermdeckConfig.SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS)
             return b"", queue
-        replay = claude_raw_replay if use_claude_raw_replay else self._replay_bytes(ms)
+        replay = claude_raw_replay if use_claude_raw_replay else self.replay.replay_bytes(ms)
         needs_repaint = not replay if use_claude_raw_replay else ms.screen_lives_only_in_stripped_sync_frames or not replay
         # A claude/codex session that has not produced output since the last server restart never gets a
         # chance to set screen_lives_only_in_stripped_sync_frames live, even though its durable buffer has
@@ -1371,7 +990,7 @@ class TerminalSessionManager:
         ms.record.last_activity_at = ms.last_activity_at
         # A submitted prompt is the thing most worth not losing, and the agent's echo of it lands well
         # inside the debounce window, so the flush this schedules captures the input itself.
-        self._schedule_replay_checkpoint(ms)
+        self.replay.schedule_checkpoint(ms)
         agent.post_write_input(self, ms, text)
         if attention_cleared:
             self._broadcast_status(ms)
@@ -1581,7 +1200,7 @@ class TerminalSessionManager:
         if not await self._terminate_proc(ms):
             raise RuntimeError(f"could not stop dtach session before restart: {session_id}")
         if agent.records_raw_replay:
-            self._clear_claude_terminal_history_for_restart(ms)
+            self.replay.clear_for_restart(ms)
         self._spawn(ms, resume=True)
 
     def rename_session(self, session_id: str, title: str) -> None:
@@ -1624,7 +1243,7 @@ class TerminalSessionManager:
             ms.detect_task.cancel()
         if not await self._terminate_proc(ms):
             return False
-        self._discard_claude_raw_replay(ms)
+        self.replay.discard(ms)
         self._sessions.pop(session_id)
         self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DELETED})
         if not ms.record.title_user_set and ms.cli_title:
@@ -1671,7 +1290,7 @@ class TerminalSessionManager:
             ms.detect_task.cancel()
         if not await self._terminate_proc(ms):
             return False
-        self._discard_claude_raw_replay(ms)
+        self.replay.discard(ms)
         self._sessions.pop(session_id)
         self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DELETED})
         self._persist()

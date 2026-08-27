@@ -23,7 +23,8 @@ class TermdeckConfig:
     PROJECTS_FILE = DATA_DIR / "projects.json"
     SCROLLBACK_DIR = DATA_DIR / "scrollback"
     SCROLLBACK_SUFFIX = ".bin"
-    CLAUDE_RAW_REPLAY_SUFFIX = ".claude-replay.bin"
+    # Historical name on disk; the recording is generic (any agent with records_raw_replay).
+    RAW_REPLAY_SUFFIX = ".claude-replay.bin"
     # How long after input or output a replay is written to disk. This is the ONLY thing that makes a
     # replay durable -- there is no periodic sweep and no shutdown hook behind it, because a server dies
     # by SIGKILL, crash-loop or power loss far more often than it is stopped politely, and a second
@@ -31,8 +32,8 @@ class TermdeckConfig:
     # window joins that write rather than postponing it, so a streaming session costs at most one append
     # per window however much it writes, and each append carries only the bytes since the last one.
     REPLAY_CHECKPOINT_DEBOUNCE_SECONDS = 1.0
-    CLAUDE_RAW_REPLAY_SESSION_BYTES = 24_000_000
-    CLAUDE_RAW_REPLAY_TOTAL_BYTES = 100_000_000
+    RAW_REPLAY_SESSION_BYTES = 24_000_000
+    RAW_REPLAY_TOTAL_BYTES = 100_000_000
     TERMINAL_HISTORY_RESET_SEQUENCE = b"\x1b[3J\x1b[2J\x1b[H"
     STATE_BACKUP_DIR = DATA_DIR / "backups"
     STATE_BACKUP_MAX_BYTES = 50_000_000

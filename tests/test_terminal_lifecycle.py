@@ -19,6 +19,7 @@ from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot, ProcTreeUtil
 from termdeck.pty_process import PtyProcess
 from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, TermdeckServer, UiSettings
+from termdeck.replay_recorder import ReplayRecorder
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
 
 
@@ -861,11 +862,11 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
             session.detached_live = True
             manager._sessions[session.record.session_id] = session
             manager._append_collapsing_repaints(session, f"{session.record.session_id}\n".encode())
-        manager._append_claude_raw_replay(claude, b"\x1b[Hclaude replay\n")
+        manager.replay.record_output(claude, b"\x1b[Hclaude replay\n")
 
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)):
-            await manager._checkpoint_active_replays()
+            await manager.replay._checkpoint_active()
             self.assertEqual((Path(directory) / "checkpoint-shell.bin").read_bytes(), b"checkpoint-shell\n")
             self.assertTrue((Path(directory) / "checkpoint-claude.claude-replay.bin").exists())
             self.assertFalse((Path(directory) / "checkpoint-claude.bin").exists())
@@ -880,7 +881,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)):
-            await manager._checkpoint_active_replays()
+            await manager.replay._checkpoint_active()
             self.assertFalse((Path(directory) / "inactive-shell.bin").exists())
 
     async def test_shell_checkpoint_appends_only_new_output_until_its_byte_limit(self) -> None:
@@ -893,22 +894,22 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
                 patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)), \
                 patch.object(TermdeckConfig, "SCROLLBACK_BYTES", 12):
             manager._append_collapsing_repaints(shell, b"12345678")
-            await manager._checkpoint_active_replays()
+            await manager.replay._checkpoint_active()
             checkpoint = Path(directory) / "append-shell.bin"
             self.assertEqual(checkpoint.read_bytes(), b"12345678")
 
-            with patch.object(manager, "_write_replay_checkpoint_atomically",
-                              wraps=manager._write_replay_checkpoint_atomically) as replace_checkpoint, \
-                    patch.object(manager, "_append_replay_checkpoint_bytes",
-                                 wraps=manager._append_replay_checkpoint_bytes) as append_checkpoint:
+            with patch.object(manager.replay, "_write_checkpoint_atomically",
+                              wraps=manager.replay._write_checkpoint_atomically) as replace_checkpoint, \
+                    patch.object(manager.replay, "_append_checkpoint_bytes",
+                                 wraps=manager.replay._append_checkpoint_bytes) as append_checkpoint:
                 manager._append_collapsing_repaints(shell, b"abcd")
-                await manager._checkpoint_active_replays()
+                await manager.replay._checkpoint_active()
                 replace_checkpoint.assert_not_called()
                 append_checkpoint.assert_called_once_with(checkpoint, b"abcd")
             self.assertEqual(checkpoint.read_bytes(), b"12345678abcd")
 
             manager._append_collapsing_repaints(shell, b"efgh")
-            await manager._checkpoint_active_replays()
+            await manager.replay._checkpoint_active()
             self.assertEqual(checkpoint.read_bytes(), b"5678abcdefgh")
             self.assertEqual(checkpoint.stat().st_size, 12)
 
@@ -922,17 +923,17 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)):
-            manager._append_claude_raw_replay(claude, b"first frame\n")
-            await manager._checkpoint_active_replays()
+            manager.replay.record_output(claude, b"first frame\n")
+            await manager.replay._checkpoint_active()
             checkpoint = Path(directory) / "append-claude.claude-replay.bin"
             self.assertEqual(checkpoint.read_bytes(), b"first frame\n")
 
-            with patch.object(manager, "_write_replay_checkpoint_atomically",
-                              wraps=manager._write_replay_checkpoint_atomically) as replace_checkpoint, \
-                    patch.object(manager, "_append_replay_checkpoint_bytes",
-                                 wraps=manager._append_replay_checkpoint_bytes) as append_checkpoint:
-                manager._append_claude_raw_replay(claude, b"second frame\n")
-                await manager._checkpoint_active_replays()
+            with patch.object(manager.replay, "_write_checkpoint_atomically",
+                              wraps=manager.replay._write_checkpoint_atomically) as replace_checkpoint, \
+                    patch.object(manager.replay, "_append_checkpoint_bytes",
+                                 wraps=manager.replay._append_checkpoint_bytes) as append_checkpoint:
+                manager.replay.record_output(claude, b"second frame\n")
+                await manager.replay._checkpoint_active()
                 replace_checkpoint.assert_not_called()
                 append_checkpoint.assert_called_once_with(checkpoint, b"second frame\n")
             self.assertEqual(checkpoint.read_bytes(), b"first frame\nsecond frame\n")
@@ -952,7 +953,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
             claude_path.write_bytes(b"\x1b[Hclaude history\n")
             await manager.startup_respawn_saved_sessions()
             self.assertEqual(bytes(manager._sessions["restore-shell"].buffer), b"shell history\n")
-            self.assertEqual(bytes(manager._sessions["restore-claude"].claude_raw_replay_buffer),
+            self.assertEqual(bytes(manager._sessions["restore-claude"].raw_replay_buffer),
                              b"\x1b[Hclaude history\n")
             self.assertTrue(shell_path.exists())
             self.assertTrue(claude_path.exists())
@@ -1462,7 +1463,7 @@ class ReplayTitleCollapseTest(unittest.TestCase):
     def _replay(buffer: bytes) -> bytes:
         ms = MagicMock()
         ms.buffer = bytearray(buffer)
-        return TerminalSessionManager._replay_bytes(TerminalSessionManager, ms)
+        return ReplayRecorder(None).replay_bytes(ms)
 
     def test_title_spam_collapses_to_the_final_title(self) -> None:
         spam = b"".join(b"\x1b]0;spin %d\x07" % n for n in range(500))
