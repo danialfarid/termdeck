@@ -29,6 +29,9 @@ class ReplayRecorder:
     CLEAR = b"\x1b[2J"
     HOME = b"\x1b[H"
     ERASE_LINE = b"\x1b[2K"
+    # Cursor jump that marks a CLI about to redraw its whole rendered output, rather than repaint
+    # its status rows (see _preserve_screen_before_erase).
+    FULL_REDRAW_JUMP = re.compile(rb"\x1b\[(\d*)A")
     CURSOR_DOWN = b"\x1b[1B"
     CLEAR_ROW = ERASE_LINE + CURSOR_DOWN
     OSC_TITLE_SEQUENCE = re.compile(rb"\x1b\][012];[^\x07\x1b]*(?:\x07|\x1b\\)")
@@ -301,10 +304,43 @@ class ReplayRecorder:
             if removed:
                 candidate.raw_replay_compaction_generation += 1
 
+    @classmethod
+    def _preserve_screen_before_erase(cls, data: bytes) -> bytes:
+        """Scroll the screen into scrollback before a CLI erases it, in the RECORDING only.
+
+        A CLI that redraws its whole rendered output walks the cursor far up and erases line by line
+        on the way (measured on a real compaction: one ESC[112A, then 238 ESC[2K). Replayed, that
+        erase runs again and the conversation it covered is gone from the replay too. Scrolling the
+        screen out first moves those lines into scrollback, where an erase cannot reach them, so a
+        reattaching client can still scroll back to them.
+
+        A normal status repaint moves at most ~18 rows, so only the much larger jump is treated as a
+        full redraw. The live stream is untouched: this rewrites what is stored, never what a client
+        is currently watching. Costs a little accuracy in the replayed screen -- the CLI redraws
+        incrementally, assuming cells it did not rewrite still hold their old text, and those cells
+        are blank once the screen has scrolled -- which the next repaint corrects.
+        """
+        minimum = TermdeckConfig.REPLAY_PRESERVE_ERASE_MIN_ROWS
+        if not minimum:
+            return data
+        out = bytearray()
+        position = 0
+        for match in cls.FULL_REDRAW_JUMP.finditer(data):
+            rows = int(match.group(1) or 1)
+            if rows < minimum:
+                continue
+            out.extend(data[position:match.start()])
+            # Save the cursor, drop to the last row so every newline scrolls rather than just moving
+            # down, push the screen into scrollback, then put the cursor back for the CLI's own bytes.
+            out.extend(b"\x1b7\x1b[9999;1H" + b"\n" * rows + b"\x1b8")
+            position = match.start()
+        out.extend(data[position:])
+        return bytes(out)
+
     def record_output(self, ms, data: bytes) -> None:
         if not self.enabled or not agents.agent_cli(ms.record.agent_kind).records_raw_replay:
             return
-        filtered = self._collapse_titles(ms, data)
+        filtered = self._preserve_screen_before_erase(self._collapse_titles(ms, data))
         if not filtered:
             return
         previous_bytes = len(ms.raw_replay_buffer)

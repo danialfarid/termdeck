@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Reattaching to a Claude terminal that has compacted now still scrolls back to the conversation from
+  before the compaction. Compacting makes the CLI redraw everything it has rendered, which it does by
+  jumping the cursor far up and erasing line by line on the way down — and because the recording kept
+  that erase, replaying it destroyed the same conversation a second time. The recording now scrolls
+  the screen into scrollback before such a redraw, out of reach of the erase. Recording only: a live
+  client still receives exactly the bytes it always did.
+
 - A terminal no longer opens blank when its recording ended on a screen clear. A TUI erases and
   redraws in two writes, and a server restart landing between them left the erase as the last thing
   recorded — every later attach replayed it, showing the conversation cut mid tool-call with no
