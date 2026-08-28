@@ -1143,6 +1143,14 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         ])
 
 class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        # These tests mock the whole manager; the model-dependency probe is the one place a
+        # real PATH scan leaks in, and CI runners don't have the agent CLIs installed.
+        patcher = patch("termdeck.environment_check.EnvironmentCheck.missing_model_dependency",
+                        return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     async def test_terminal_websocket_repaint_requests_server_pty_redraw(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)
         server.manager = MagicMock()
