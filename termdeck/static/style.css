@@ -140,10 +140,14 @@ body:not(.vscode-mode) .session-item.active .session-title { color: var(--sideba
 .status-dot { position: absolute; left: var(--terminal-status-dot-left, 6px); top: 50%; width: var(--terminal-status-dot-size, 6px); height: var(--terminal-status-dot-size, 6px); margin-top: calc(var(--terminal-status-dot-size, 6px) * -0.5); border-radius: 50%; visibility: hidden; }
 .status-dot.unread { background: var(--accent); visibility: visible; }
 .status-dot.processing { background: var(--accent); visibility: visible; transform-origin: center; will-change: opacity, transform; animation: termdeck-status-beacon 1.8s ease-in-out infinite; }
-.status-dot.attention, .group-unread-dot.attention { background: var(--accent); visibility: visible; will-change: opacity, transform; animation: termdeck-attention-cycle 4s linear infinite; }
-.status-dot.attention::after, .group-unread-dot.attention::after { content: ""; position: absolute; left: 50%; top: 50%; width: 100%; height: 100%; box-sizing: border-box; border: 1.5px solid var(--accent); border-radius: 50%; pointer-events: none; transform: translate(-50%, -50%) scale(1); will-change: opacity, transform; animation: termdeck-attention-ray 4s ease-out infinite; }
+/* Attention runs at twice the speed of its calm counterparts throughout: a question is more urgent than
+   work in progress, and the difference has to be obvious from the corner of the eye. */
+.status-dot.attention, .group-unread-dot.attention { background: var(--accent); visibility: visible; will-change: opacity, transform; animation: termdeck-attention-cycle 2s linear infinite; }
+.status-dot.attention::after, .group-unread-dot.attention::after { content: ""; position: absolute; left: 50%; top: 50%; width: 100%; height: 100%; box-sizing: border-box; border: 1.5px solid var(--accent); border-radius: 50%; pointer-events: none; transform: translate(-50%, -50%) scale(1); will-change: opacity, transform; animation: termdeck-attention-ray 2s ease-out infinite; }
 body:not(.vscode-mode) .session-item:has(.terminal-type-icon.on) .status-dot:not(.attention) { visibility: hidden; }
-body:not(.vscode-mode) .session-item:has(.terminal-type-icon.on) .status-dot.attention { left: calc(var(--terminal-icon-size, 14px) - 1px); top: calc(50% - var(--terminal-icon-size, 14px) / 2 + 1px); width: var(--terminal-status-dot-size, 6px); height: var(--terminal-status-dot-size, 6px); margin-top: 0; z-index: 2; }
+/* In icon mode the icon itself carries the attention signal (it emits the ring below), so the corner
+   badge is redundant clutter sitting on top of it. */
+body:not(.vscode-mode) .session-item:has(.terminal-type-icon.on) .status-dot.attention { visibility: hidden; }
 .session-spinner { position: absolute; left: 7px; top: 50%; width: 8px; height: 8px; margin-top: -4px; opacity: 0; pointer-events: none; color: var(--accent); }
 .session-spinner svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .session-spinner-circle-backup { display: none; }
@@ -215,6 +219,37 @@ body:not(.vscode-mode) .session-item:has(.status-dot.processing) .terminal-type-
   will-change: opacity, transform;
   animation: termdeck-agent-icon-wave 1.8s ease-out infinite;
 }
+/* Attention in icon mode. The corner badge is easy to miss against a full sidebar, so the icon itself
+   emits the same ring the thinking state does -- from the middle of the icon, at twice the rate. Same
+   keyframes deliberately: one visual language, speed alone carries the urgency. Placed after the
+   processing rules so it wins when a session is both working and waiting. */
+body:not(.vscode-mode) .session-item:has(.status-dot.attention) .terminal-type-icon.on {
+  color: var(--accent);
+  opacity: 1;
+  animation: none;
+}
+body:not(.vscode-mode) .session-item:has(.status-dot.attention) .terminal-type-icon.on::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  /* Sized from the icon box rather than a fixed 14px, and centred by inset:0 rather than by
+     left/top:50% + translate(-50%,-50%). The icon box is a fractional width (icon size x --ui-scale,
+     e.g. 22.09px), so halving it landed the ring's edges between device pixels and the antialiasing
+     read as a one-pixel drop. inset:0 has no halving in it, so the ring is exactly concentric at any
+     size or zoom. A fine outline, chosen from a rendered comparison: a heavier band closed up around
+     the glyph and read as a disc rather than something emitted. */
+  inset: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  transform-origin: center;
+  transform: scale(0.45);
+  box-shadow: 0 0 8px currentColor, inset 0 0 4px currentColor;
+  will-change: opacity, transform;
+  animation: termdeck-agent-icon-wave-attention 1.5s ease-out infinite;
+}
 @keyframes termdeck-session-orbit {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
@@ -236,6 +271,30 @@ body:not(.vscode-mode) .session-item:has(.status-dot.processing) .terminal-type-
   60% { opacity: 0.95; }
   100% { opacity: 0; transform: translate(-50%, -50%) scale(2.2); }
 }
+/* One slow ring, then three quick ones, then a beat of rest -- a heartbeat rather than a metronome.
+   A single pseudo-element can only show one ring at a time, so the rhythm is sequential: each ring
+   restarts from the middle at full opacity and expands out. The uneven spacing is the point; an evenly
+   timed pulse reads as decoration, this reads as something asking. */
+/* Each ring holds full opacity through most of its travel and only fades at the very end -- fading from
+   the first frame is what made the old one ghostly. One slow ring, then three quick, then a beat of
+   rest: a heartbeat rather than a metronome, and the uneven spacing is what makes it read as asking. */
+/* Scale only -- the element is inset:0 on the icon, so it is already concentric and needs no
+   translate to centre it (which is what used to put it half a pixel low). */
+@keyframes termdeck-agent-icon-wave-attention {
+  0%   { opacity: 1; transform: scale(0.45); }
+  26%  { opacity: 0.9; transform: scale(1.15); }
+  38%  { opacity: 0; transform: scale(1.55); }
+  39%  { opacity: 1; transform: scale(0.45); }
+  48%  { opacity: 0.9; transform: scale(1.05); }
+  53%  { opacity: 0; transform: scale(1.55); }
+  54%  { opacity: 1; transform: scale(0.45); }
+  63%  { opacity: 0.9; transform: scale(1.05); }
+  68%  { opacity: 0; transform: scale(1.55); }
+  69%  { opacity: 1; transform: scale(0.45); }
+  78%  { opacity: 0.9; transform: scale(1.05); }
+  83%  { opacity: 0; transform: scale(1.55); }
+  84%, 100% { opacity: 0; transform: scale(0.45); }
+}
 /* Only opacity/transform animate: both are compositor-only (no repaint per frame). filter was previously
    keyframed here too, a drop-shadow that faded in/out with the pulse -- unlike opacity/transform,
    animating filter forces the browser to rasterize the element's backing store on every frame, for as
@@ -245,10 +304,18 @@ body:not(.vscode-mode) .session-item:has(.status-dot.processing) .terminal-type-
   0%, 100% { opacity: 0.55; transform: scale(0.78); }
   50% { opacity: 1; transform: scale(1.18); }
 }
+/* A question has to be caught across a deck of many tabs, so this is deliberately insistent: a slow
+   breath, then a burst of blinks. It was briefly replaced with a calm pulse after a report of "blinking
+   super fast" -- wrongly. The fault there was the badge RESTARTING this animation on every keystroke
+   (attention was cleared by input and immediately re-armed by the repaint that input caused, see
+   update_attention_from_output), which turned the burst into permanent flicker. The pattern was never
+   the problem; the churn was, and that is fixed at the source. */
 @keyframes termdeck-attention-cycle {
   0%, 45%, 50%, 52%, 60%, 68%, 76%, 100% { opacity: 1; transform: scale(1); }
   22.5%, 56%, 64%, 72% { opacity: 0.3; transform: scale(0.78); }
 }
+/* The ring fires with the blink burst above, not on its own schedule -- the two together are what reads
+   as "this one wants you" from across the sidebar. */
 @keyframes termdeck-attention-ray {
   0%, 50% { opacity: 0; transform: translate(-50%, -50%) scale(0.7); }
   52% { opacity: 0.95; transform: translate(-50%, -50%) scale(0.7); }
@@ -271,6 +338,13 @@ body:not(.vscode-mode) .session-item:has(.status-dot.processing) .terminal-type-
 .session-title-wave-text::before { content: attr(data-wave-text); }
 .session-title.session-title-working .session-title-wave-window { display: block; will-change: opacity, transform; animation: termdeck-session-title-wave-window 4s linear infinite; }
 .session-title.session-title-working .session-title-wave-text { will-change: transform; animation: termdeck-session-title-wave-text 4s linear infinite; }
+/* Attention sweeps the name too, at twice the rate, regardless of icon mode -- working state and icons
+   are alternatives, but a question earns both signals at once. */
+/* A wider, brighter beam than the working sweep: the window is the beam, so "thicker" means a wider
+   window -- and the text inside is sized 100%/window so the lit letters stay registered with the ones
+   underneath. Double the window, halve the inner width, and halve the travel numbers to match. */
+.session-title.session-title-attention .session-title-wave-window { display: block; will-change: opacity, transform; animation: termdeck-session-title-wave-window 1.5s linear infinite; }
+.session-title.session-title-attention .session-title-wave-text { will-change: transform; animation: termdeck-session-title-wave-text 1.5s linear infinite; }
 .session-title.session-title-unread { color: var(--sidebar-text-color); }
 body:not(.vscode-mode) .session-item .session-title:not(.session-title-working) { color: var(--session-age-color, var(--sidebar-text-color)); }
 body.termdeck-page-hidden * { animation-play-state: paused !important; }
@@ -1151,6 +1225,7 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
 .file-inspector-empty { padding: 12px 8px; color: var(--dim); font: var(--ui-font-size)/1.4 Menlo, monospace; }
 #monaco-host.git-blame-active .monaco-editor .margin { border-right: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border)); background: color-mix(in srgb, var(--accent) 5%, var(--term-bg)); }
 #monaco-host.git-blame-active .monaco-editor .line-numbers { box-sizing: border-box; padding-left: 5px; color: color-mix(in srgb, var(--accent) 70%, var(--dim)); cursor: help; text-align: left !important; }
+.monaco-editor .git-blame-uncommitted-gutter { width: 4px; margin-left: 2px; border-radius: 2px; background: var(--green); }
 #monaco-host.git-hunks-active .monaco-editor .lines-decorations { cursor: pointer; }
 .monaco-editor .git-hunk-decoration { box-sizing: border-box; width: 5px !important; margin-left: 2px; border-radius: 2px; }
 .monaco-editor .git-hunk-working { background: var(--accent); }
@@ -1467,10 +1542,10 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
 .settings-row input[type="color"] { width: 32px; height: 22px; padding: 2px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
 .settings-row input[type="color"]:hover, .settings-row input[type="color"]:focus { border-color: var(--accent); }
 .settings-value { min-width: 20px; text-align: center; font-family: Menlo, monospace; font-size: var(--system-font-size); }
-.settings-row + .settings-row { margin-top: 8px; }
+.settings-row + .settings-row { margin-top: 4px; }
 /* Rules between top-level entries only. The terminal-icon agent buttons are a second direct-child
    row belonging to the entry above them, so a rule there would cut one setting in half. */
-#settings-popover > .settings-row + .settings-row:not(.terminal-icon-agent-row) { margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--border); }
+#settings-popover > .settings-row + .settings-row:not(.terminal-icon-agent-row) { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--border); }
 .remote-access-settings-row, .lan-access-settings-row { align-items: flex-start; }
 .remote-access-heading, .lan-access-heading { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
 .remote-access-status, .lan-access-status { max-width: 190px; overflow: hidden; color: var(--dim); font-size: calc(var(--system-font-size) - 2px); text-overflow: ellipsis; white-space: nowrap; }
@@ -1481,8 +1556,8 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
 .remote-access-open, .lan-access-open { font-size: calc(var(--ui-font-size) + 2px) !important; }
 .remote-access-open.hidden, .lan-access-open.hidden { display: none; }
 .terminal-icon-settings-row { align-items: flex-start; }
-.terminal-icon-agent-row { margin-top: 5px !important; }
-.terminal-icon-settings-controls { width: 100%; flex-wrap: wrap; justify-content: stretch; gap: 5px; }
+.terminal-icon-agent-row { margin-top: 1px !important; }
+.terminal-icon-settings-controls { width: 100%; display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
 .terminal-icon-agent-toggle { flex: 1 1 0; min-width: 0; padding: 0 4px !important; font-size: calc(var(--system-font-size) - 2px) !important; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
 .terminal-icon-agent-toggle.on { border-color: var(--active-border); background: var(--active-bg); color: var(--accent); }
 .terminal-icon-toggle-glyph { display: inline-flex; align-items: center; }

@@ -19,6 +19,10 @@ const RECONNECT_MS = 1500;
 // back without its terminals. Let the new instance settle before reloading onto it.
 const SERVER_RESTART_RELOAD_DELAY_MS = 5000;
 const TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS = 1800;
+// How far from the top the view must travel before the "More history in Markdown" button hides again.
+// Well clear of one row: the button is re-evaluated on every write, and a row-sized nudge from the
+// parked-reader anchor must never be able to toggle it.
+const TERMINAL_HISTORY_MORE_HIDE_PX = 140;
 const INACTIVE_TERMINAL_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 const INACTIVE_TERMINAL_OUTPUT_BATCH_BYTES = 256 * 1024;
 const DEFAULT_COMMAND = "codex";
@@ -363,6 +367,10 @@ const RECENT_FILES_EVENT_DEBOUNCE_MS = 2000;
 const FILE_TREE_WS_ROUTE = "/ws/files";
 const FILE_TREE_CHANGED = "file_tree_changed";
 const QUERY_RESPONSE_RE = /^\x1b\[[?>]?[\d;]*[Rc]$/;
+// The terminal's OWN replies -- focus in/out, device-attribute and cursor-position answers, mouse
+// reports, DCS/OSC responses. Everything else on the input channel is a person: letters and Enter, but
+// also the arrow keys used to navigate a prompt. Mirrors the server's _TERMINAL_REPLY_RE.
+const TERMINAL_REPLY_RE = /\x1b\[[IO]|\x1b\[[0-9;]*n|\x1b\[[?>][0-9;]*c|\x1b\[[0-9;]*R|\x1b\[M[\s\S]{3}|\x1b\[<[0-9;]*[Mm]|\x1bP[\s\S]*?\x1b\\|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const PATH_LINK_RE = /(?:~\/|\.{1,2}\/|\/)?[\w@%+=.-]+(?:\/[\w@%+=.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+){0,2}/g;
 const KNOWN_EXTS = new Set(["py", "md", "json", "js", "ts", "tsx", "css", "html", "sh", "zsh", "txt", "yaml", "yml",
   "toml", "csv", "log", "plist", "sql", "xml", "ini", "cfg", "lock", "ipynb", "rs", "go", "c", "h", "cpp", "hpp", "java"]);
@@ -755,6 +763,7 @@ class TermdeckApp {
     this.fileBlameActiveKey = null;
     this.fileBlameRecordsByLine = new Map();
     this.fileBlameAuthorWidth = 0;
+    this.fileBlameDecorationIds = [];
     this.fileGitHunkGeneration = 0;
     this.fileGitHunkDecorationIds = [];
     this.fileGitHunksByLine = new Map();
@@ -3885,6 +3894,7 @@ class TermdeckApp {
     const groupName = this.terminalGroupNameForSession(this.activeId) || "Evently workspace";
     const settingsOpen = !this.$("settings-popover")?.classList.contains("hidden");
     const themeListOpen = settingsOpen && !!this.$("settings-popover")?.querySelector(".settings-theme-row.expanded");
+    const activityEntries = this.activityDotEntries(this.sessionActivityById.get(this.activeId));
     let feature = "Persistent terminal workspace";
     if (settingsOpen) feature = themeListOpen ? `Theme gallery: ${this.themeLabel()}` : "Remote access: Google relay or local Wi-Fi";
     else if (this.settings.notebook_open) feature = "Notes: save context for follow-up work";
@@ -3892,6 +3902,7 @@ class TermdeckApp {
     else if (this.sideView === "search") feature = "Search across files and agents";
     else if (this.activeFileKey !== null) feature = "File editing, history, and usages";
     else if (this.historyOpen) feature = "Markdown transcript and cross-agent review";
+    else if (activityEntries.length) feature = `Background activity: ${activityEntries.map((entry) => entry.label).join(" · ")}`;
     caption.textContent = `Caption: ${feature} · ${groupName} · ${session?.title || "Select a feature terminal"}`;
   }
 
@@ -3970,7 +3981,10 @@ class TermdeckApp {
     if (processingChanged || (spinning && this.historyPendingProcessing.has(session.session_id))) {
       this.updateProcessingState(session.session_id, spinning);
     }
-    if (activityDetailChanged) this.updateSessionActivityDots(session.session_id);
+    if (activityDetailChanged) {
+      this.updateSessionActivityDots(session.session_id);
+      this.updateEventlyDemoFeatureBanner();
+    }
     // A finished turn is when the transcript's newest usage report changes.
     if (processingChanged && !spinning && session.session_id === this.activeId) {
       void this.refreshSessionUsage(session.session_id);
@@ -4058,9 +4072,15 @@ class TermdeckApp {
   updateSessionTextStatus(id, spinning = !!this.processingStates.get(id)) {
     const title = this.sessionTitleEls.get(id);
     if (!title) return;
+    // The wave is the TEXT-mode stand-in for the spinning icon, and stays that way: running both at once
+    // was tried and the sweep collided with the tab text rather than reading as one signal.
     const textOnly = this.usesTextTerminalStatus(this.session(id)?.agent_kind);
     const working = textOnly && !!spinning;
     title.classList.toggle("session-title-working", working);
+    // Attention runs the title wave whatever the icon setting says. Working state and icon mode are
+    // alternatives -- the spinning icon stands in for the wave -- but a question is worth both: the
+    // icon's ring catches the eye, the wave over the name says which session wants you.
+    title.classList.toggle("session-title-attention", this.attentionSessions.has(id));
     title.classList.toggle("session-title-unread", !this.vscodeMode && !working && this.unreadSessions.has(id));
     const session = this.session(id);
     if (!this.vscodeMode && session && !working) title.style.color = this.terminalAgeColor(session);

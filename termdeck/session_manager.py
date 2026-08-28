@@ -96,6 +96,11 @@ class ManagedSession:
         self.notified_processing_since = 0.0
         self.attention_required = False
         self.attention_text_carry = ""
+        # Real keystrokes only. last_input_monotonic cannot stand in for this: a terminal's input channel
+        # also carries xterm's own protocol replies -- focus in/out, cursor-position and device-attribute
+        # answers -- which arrive constantly while nobody is touching the keyboard. Measured on an idle
+        # session, treating those as typing suppressed the attention badge permanently.
+        self.last_typing_monotonic = 0.0
         # Set once a Claude Code hook reports for this session. Hooks are an explicit signal from the
         # agent itself, so they supersede the terminal-text/title heuristics below, which only guess at
         # a permission prompt from rendered output and misfire on wrapped or partially repainted screens.
@@ -158,6 +163,21 @@ class TerminalSessionManager:
 
     def attach_notifier(self, notifier) -> None:
         self.notifier = notifier
+
+    def attach_settings_reader(self, reader) -> None:
+        """Give the manager read access to the UI settings, for the handful of behaviours a user can
+        switch. Read lazily on each use rather than cached: a setting changed in the browser has to take
+        effect without restarting the server."""
+        self._settings_reader = reader
+
+    def _ui_setting(self, name: str, default=False):
+        reader = getattr(self, "_settings_reader", None)
+        if reader is None:
+            return default
+        try:
+            return (reader() or {}).get(name, default)
+        except Exception:
+            return default
 
     def start_background_tasks(self) -> None:
         self._background_loop = asyncio.get_running_loop()
@@ -483,8 +503,11 @@ class TerminalSessionManager:
         return agents.agent_cli(ms.record.agent_kind).update_attention_from_title(self, ms, title)
 
     def _update_attention_from_output(self, ms: ManagedSession, data: bytes) -> bool:
-        if ms.attention_hook_driven:
-            return False
+        # A hook is the agent telling us directly, and it stays the only thing that CLEARS attention.
+        # But the hooks do not cover every prompt that waits on the user -- a question raised by the
+        # AskUserQuestion tool fires none of the configured matchers -- and the first hook of any kind
+        # (including the clear on every prompt submit) used to switch this path off for the session
+        # entirely. So the screen text may always RAISE attention; it can never lower it.
         return agents.agent_cli(ms.record.agent_kind).update_attention_from_output(self, ms, data)
 
     def apply_agent_attention_hook(self, agent_session_id: str, attention: bool) -> str | None:
@@ -1013,12 +1036,64 @@ class TerminalSessionManager:
         if ms is not None:
             ms.client_queues.discard(queue)
 
+    # Only the terminal's OWN replies are stripped -- focus in/out, device-attribute and cursor-position
+    # answers, mouse reports, and DCS/OSC responses. Anything left is a person: letters and Enter, but
+    # also the arrow keys someone navigates a question prompt with, which a blanket "escape sequences
+    # are not typing" rule would have thrown away along with the chatter.
+    _TERMINAL_REPLY_RE = re.compile(
+        r"\x1b\[[IO]"                    # focus in / focus out
+        r"|\x1b\[[0-9;]*n"               # device status report
+        r"|\x1b\[[?>][0-9;]*c"           # device attributes
+        r"|\x1b\[[0-9;]*R"               # cursor position report
+        r"|\x1b\[M...|\x1b\[<[0-9;]*[Mm]"  # mouse reports
+        r"|\x1bP.*?\x1b\\"               # DCS reply
+        r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)",  # OSC reply
+        re.DOTALL)
+
+    @classmethod
+    def _input_is_user_typing(cls, text: str) -> bool:
+        return bool(cls._TERMINAL_REPLY_RE.sub("", text or ""))
+
+    # Keys that ANSWER or dismiss a prompt, as opposed to merely moving around inside one. A question
+    # stays outstanding while you arrow through its options or type into it -- it is answered by Enter,
+    # abandoned by Escape, or killed by Ctrl-C. Clearing on any keystroke was wrong twice over: it
+    # dropped the badge the moment you pressed an arrow, and because the prompt is still on screen the
+    # next repaint re-armed it, restarting the animation on every key.
+    _ATTENTION_DISMISS_KEYS = ("\r", "\n", "\x03", "\x04")
+
+    @classmethod
+    def _input_dismisses_attention(cls, text: str) -> bool:
+        typed = cls._TERMINAL_REPLY_RE.sub("", text or "")
+        if not typed:
+            return False
+        if any(key in typed for key in cls._ATTENTION_DISMISS_KEYS):
+            return True
+        # A bare Escape, not the start of a longer sequence like an arrow key.
+        return typed == "\x1b"
+
+    def user_recently_typed(self, ms: ManagedSession, seconds: float) -> bool:
+        """Whether the user pressed a key on this terminal within the last `seconds`.
+
+        Keeps a prompt that is still on screen from re-raising its badge between keystrokes: typing
+        clears attention, the repaint that typing causes re-detects it, and the badge restarts its
+        animation on every character. Someone typing at a prompt does not need to be told about it.
+        """
+        last = getattr(ms, "last_typing_monotonic", 0.0) or 0.0
+        return bool(last) and (time.monotonic() - last) < seconds
+
     def write_input(self, session_id: str, text: str) -> None:
         ms = self._sessions[session_id]
         agent = agents.agent_cli(ms.record.agent_kind)
-        attention_cleared = ms.attention_required or bool(ms.attention_text_carry)
-        ms.attention_required = False
-        ms.attention_text_carry = ""
+        # A badge is dismissed by answering, not by interacting. Arrowing through a question's options
+        # leaves it just as unanswered as it was, and this channel also carries the terminal's own
+        # replies, which are not the user at all.
+        if self._input_is_user_typing(text):
+            ms.last_typing_monotonic = time.monotonic()
+        attention_cleared = self._input_dismisses_attention(text) and \
+            (ms.attention_required or bool(ms.attention_text_carry))
+        if attention_cleared:
+            ms.attention_required = False
+            ms.attention_text_carry = ""
         draft_before_input = ms.draft_tracker.draft
         agent.pre_write_input(self, ms, text, draft_before_input)
         if ms.proc is not None:

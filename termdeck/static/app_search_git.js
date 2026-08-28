@@ -820,6 +820,7 @@ Object.assign(TermdeckApp.prototype, {
     const title = document.createElement("span");
     title.className = "session-title";
     title.classList.toggle("session-title-working", useTextStatusIndicator && presentation.spinning);
+    title.classList.toggle("session-title-attention", this.attentionSessions.has(s.session_id));
     title.classList.toggle("session-title-unread",
       !this.vscodeMode && !presentation.spinning && this.unreadSessions.has(s.session_id));
     this.setSessionTitleText(title, presentation.text, useTextStatusIndicator && presentation.spinning);
@@ -829,12 +830,6 @@ Object.assign(TermdeckApp.prototype, {
     const iconStatusActive = showDesktopBrandIndicator &&
       (presentation.spinning || this.unreadSessions.has(s.session_id));
     typeIcon.classList.toggle("terminal-status-active", iconStatusActive);
-    const worktreeBadge = document.createElement("span");
-    worktreeBadge.className = "worktree-badge";
-    if (s.worktree_branch) {
-      worktreeBadge.textContent = `⎇ ${s.worktree_branch.split("/").pop()}`;
-      worktreeBadge.title = `Isolated worktree\n${s.worktree_path || ""}`;
-    }
     const close = document.createElement("button");
     close.className = "item-close";
     close.textContent = "✕";
@@ -844,9 +839,9 @@ Object.assign(TermdeckApp.prototype, {
     groupIndicator.className = "group-drop-indicator";
     groupIndicator.innerHTML = '<span class="codicon codicon-folder-library"></span><span>group</span>';
     groupIndicator.title = "Release to group with this terminal";
-    if (showDesktopBrandIndicator) item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
-    else if (useTextStatusIndicator) item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
-    else item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
+    if (showDesktopBrandIndicator) item.append(dot, typeIcon, title, groupIndicator, close);
+    else if (useTextStatusIndicator) item.append(dot, typeIcon, title, groupIndicator, close);
+    else item.append(dot, typeIcon, title, groupIndicator, close);
     const activityDots = document.createElement("span");
     activityDots.className = "session-activity-dots";
     item.append(activityDots);
@@ -4641,16 +4636,12 @@ Object.assign(TermdeckApp.prototype, {
       const group = document.createElement("span");
       group.className = "closed-group";
       group.textContent = groupName;
-      const worktree = document.createElement("span");
-      worktree.className = "worktree-badge";
-      worktree.textContent = c.worktree_branch ? `⎇ ${c.worktree_branch.split("/").pop()}` : "";
-      worktree.title = c.worktree_path || "";
       const purge = document.createElement("button");
       purge.className = "item-close";
       purge.textContent = "✕";
       purge.title = "Remove from history";
       purge.onclick = (e) => { e.stopPropagation(); this.purgeClosed(c.session_id); };
-      item.append(icon, name, worktree, group, purge);
+      item.append(icon, name, group, purge);
       this.bindTerminalSearchHoverPopup(item, searchMatch);
       item.onclick = () => {
         this.setInteractionWorktreeFromElement(item, c);

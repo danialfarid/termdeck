@@ -3529,6 +3529,7 @@ Object.assign(TermdeckApp.prototype, {
   async loadFileBlameAnnotations(entry) {
     if (!entry || !this.editor) return;
     const generation = ++this.fileBlameGeneration;
+    this.fileBlameDecorationIds = this.editor.deltaDecorations(this.fileBlameDecorationIds, []);
     this.$("stat-text").textContent = `Loading blame for ${entry.name}…`;
     const response = await fetch(`/api/files/git-blame?${new URLSearchParams({ root: entry.root, path: entry.path })}`);
     if (generation !== this.fileBlameGeneration || this.activeFileKey !== `${entry.root}|${entry.path}`) return;
@@ -3544,8 +3545,13 @@ Object.assign(TermdeckApp.prototype, {
     }
     this.fileBlameActiveKey = `${entry.root}|${entry.path}`;
     this.fileBlameRecordsByLine = new Map(records.map((record) => [Number(record.line), record]));
-    this.fileBlameAuthorWidth = Math.min(18, Math.max(7, ...records.map((record) => this.fileBlameAuthorLabel(record.author).length)));
+    const authorLabels = records.filter((record) => !this.fileBlameRecordIsUncommitted(record)).map((record) => this.fileBlameAuthorLabel(record.author));
+    this.fileBlameAuthorWidth = Math.min(4, Math.max(2, ...authorLabels.map((label) => label.length)));
     const lineNumberWidth = String(this.editor.getModel()?.getLineCount() || records.length).length;
+    this.fileBlameDecorationIds = this.editor.deltaDecorations(this.fileBlameDecorationIds, records.filter((record) => this.fileBlameRecordIsUncommitted(record)).map((record) => ({
+      range: new monaco.Range(Number(record.line), 1, Number(record.line), 1),
+      options: { linesDecorationsClassName: "git-blame-uncommitted-gutter" },
+    })));
     this.editor.updateOptions({
       lineNumbers: (lineNumber) => this.fileBlameLineNumberLabel(lineNumber),
       lineNumbersMinChars: this.fileBlameAuthorWidth + lineNumberWidth + 2,
@@ -3557,16 +3563,25 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  fileBlameRecordIsUncommitted(record) {
+    const commitId = String(record.commit_id || "").trim().toLowerCase();
+    const author = String(record.author || "").trim();
+    return /^0+$/.test(commitId) || /not committed yet|uncommitted/i.test(author);
+  },
+
+
   fileBlameAuthorLabel(author) {
     const label = String(author || "Unknown").trim() || "Unknown";
-    return label.length > 18 ? `${label.slice(0, 17)}…` : label;
+    const initials = label.split(/\s+/).map((part) => part.replace(/[^A-Za-z0-9]/g, "").charAt(0)).join("");
+    return (initials || label.replace(/[^A-Za-z0-9]/g, "").slice(0, 2) || "?").slice(0, 3).toUpperCase();
   },
 
 
   fileBlameLineNumberLabel(lineNumber) {
     const record = this.fileBlameRecordsByLine.get(lineNumber);
     if (!record) return String(lineNumber);
-    return `${this.fileBlameAuthorLabel(record.author).padEnd(this.fileBlameAuthorWidth)} ${lineNumber}`;
+    const author = this.fileBlameRecordIsUncommitted(record) ? "" : this.fileBlameAuthorLabel(record.author);
+    return `${author.padEnd(this.fileBlameAuthorWidth)} ${lineNumber}`;
   },
 
 
@@ -3578,7 +3593,7 @@ Object.assign(TermdeckApp.prototype, {
     if (!record || !element) return;
     const committedAt = record.author_time ? new Date(Number(record.author_time) * 1000).toLocaleString() : "Unknown date";
     const commitId = String(record.commit_id || "");
-    element.title = [record.author || "Unknown", committedAt, record.summary || "", commitId].filter(Boolean).join("\n");
+    element.title = [this.fileBlameRecordIsUncommitted(record) ? "Not committed yet" : record.author || "Unknown", committedAt, record.summary || "", commitId].filter(Boolean).join("\n");
   },
 
 
@@ -3587,6 +3602,7 @@ Object.assign(TermdeckApp.prototype, {
     this.fileBlameActiveKey = null;
     this.fileBlameRecordsByLine.clear();
     this.fileBlameAuthorWidth = 0;
+    if (this.editor) this.fileBlameDecorationIds = this.editor.deltaDecorations(this.fileBlameDecorationIds, []);
     this.$("monaco-host")?.classList.remove("git-blame-active");
     this.editor?.updateOptions({ lineNumbers: "on", lineNumbersMinChars: 4 });
     this.editor?.layout();

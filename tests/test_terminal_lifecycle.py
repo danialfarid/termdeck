@@ -1,6 +1,7 @@
 import asyncio
 import json
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
@@ -14,6 +15,7 @@ from watchdog.events import DirModifiedEvent, FileModifiedEvent, FileMovedEvent
 from tests.environment import TEST_DATA_DIRECTORY
 from termdeck import agents
 from termdeck.agent_session_tracker import AgentSessionTracker
+from termdeck.agents.claude import ClaudeCli
 from termdeck.file_service import ProjectFileService
 from termdeck.models import SessionRecord
 from termdeck.config import TermdeckConfig
@@ -1693,3 +1695,179 @@ class ClaudeBackgroundTaskScanTest(unittest.TestCase):
         parent = Path("/Users/x/.claude/projects/-Users-x-proj/abcd-1234.jsonl")
         self.assertEqual(self.claude._task_output_path(parent, "tid9"),
                          Path(f"/tmp/claude-{os.getuid()}/-Users-x-proj/abcd-1234/tasks/tid9.output"))
+
+
+class ClaudeAttentionFromOutputTest(unittest.TestCase):
+    """Claude's waiting-on-you prompts, as they actually arrive on the wire.
+
+    These boxes are laid out with cursor-movement escapes rather than literal spaces, so once the
+    escapes are stripped the footer's words run together. Matching has to survive that; the fixtures
+    below are written in the run-together form a live session produced.
+    """
+
+    def setUp(self) -> None:
+        self.claude = ClaudeCli()
+        self.manager = TerminalSessionManager.__new__(TerminalSessionManager)
+        self.ms = ManagedSession(record())
+        self.ms.record.agent_kind = "claude"
+
+    def _feed(self, screen: str) -> bool:
+        return self.claude.update_attention_from_output(self.manager, self.ms, screen.encode())
+
+    def test_question_prompt_raises_attention(self) -> None:
+        self.assertTrue(self._feed("1.weeklyonly 2.fullhybrid entertoselect·↑/↓tonavigate·esctocancel"))
+        self.assertTrue(self.ms.attention_required)
+
+    def test_plan_approval_raises_attention(self) -> None:
+        self.assertTrue(self._feed("wouldyouliketoproceed? esctocancel tabtoamend"))
+        self.assertTrue(self.ms.attention_required)
+
+    def test_spaced_rendering_still_raises_attention(self) -> None:
+        self.assertTrue(self._feed("Enter to select · Esc to cancel"))
+        self.assertTrue(self.ms.attention_required)
+
+    def test_ordinary_output_does_not_raise_attention(self) -> None:
+        self.assertFalse(self._feed("running tests... 134 passed. esc to interrupt"))
+        self.assertFalse(self.ms.attention_required)
+
+    def test_marker_split_across_writes_still_matches(self) -> None:
+        self.assertFalse(self._feed("choose one: enterto"))
+        self.assertTrue(self._feed("select·esctocancel"))
+        self.assertTrue(self.ms.attention_required)
+
+
+class ClaudeAttentionReArmTest(unittest.TestCase):
+    """A prompt stays on screen after it is answered, and every repaint re-sends it.
+
+    That is what turned the badge into a strobe: a keystroke clears attention, the repaint that same
+    keystroke causes re-detects it, and the badge restarts its animation per character typed.
+    """
+
+    def setUp(self) -> None:
+        self.claude = ClaudeCli()
+        self.manager = TerminalSessionManager.__new__(TerminalSessionManager)
+        self.ms = ManagedSession(record())
+        self.ms.record.agent_kind = "claude"
+        self.footer = "entertoselect·esctocancel"
+
+    def _feed(self, screen: str) -> bool:
+        return self.claude.update_attention_from_output(self.manager, self.ms, screen.encode())
+
+    def test_repaint_of_an_answered_prompt_does_not_re_arm(self) -> None:
+        self.assertTrue(self._feed(f"pick one {self.footer}"))
+        # The user answers: input clears the flag and the carry, exactly as write_input does.
+        self.ms.attention_required = False
+        self.ms.attention_text_carry = ""
+        self.ms.last_typing_monotonic = 0.0
+        # The answered prompt is still on screen, but this write only carries the tail of it.
+        self.assertFalse(self._feed("thinking..."))
+        self.assertFalse(self.ms.attention_required)
+
+    def test_typing_at_a_live_prompt_does_not_re_arm(self) -> None:
+        self.ms.last_typing_monotonic = time.monotonic()
+        self.assertFalse(self._feed(f"pick one {self.footer}"))
+        self.assertFalse(self.ms.attention_required)
+
+    def test_prompt_arriving_after_the_user_stopped_typing_still_arms(self) -> None:
+        self.ms.last_typing_monotonic = time.monotonic() - (self.claude.ATTENTION_TYPING_QUIET_SECONDS + 1)
+        self.assertTrue(self._feed(f"pick one {self.footer}"))
+        self.assertTrue(self.ms.attention_required)
+
+
+class TerminalInputClassificationTest(unittest.TestCase):
+    """A terminal's input channel carries more than keystrokes.
+
+    xterm answers device-attribute and cursor-position queries, reports focus changes and mouse moves
+    through the same path the user's typing takes. Treating those as typing silently dismissed waiting
+    prompts and, keyed the other way, suppressed the attention badge outright: the channel never went
+    quiet, so "the user is typing right now" was permanently true.
+    """
+
+    def _typing(self, text: str) -> bool:
+        return TerminalSessionManager._input_is_user_typing(text)
+
+    def test_keystrokes_count_as_typing(self) -> None:
+        for text in ("a", "hello\r", "\r", "\x03", "\x7f", "\x1b"):
+            self.assertTrue(self._typing(text), text)
+
+    def test_arrow_keys_count_as_typing(self) -> None:
+        # Navigating a question prompt is interaction; only the terminal's own replies are not.
+        for text in ("\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"):
+            self.assertTrue(self._typing(text), text)
+
+    def test_terminal_replies_do_not_count_as_typing(self) -> None:
+        for text in ("\x1b[I", "\x1b[O", "\x1b[0n", "\x1b[?1;2c", "\x1b[>0;276;0c",
+                     "\x1b[24;80R", "\x1b[<0;10;5M", "\x1b]11;rgb:1e/22/2e\x07"):
+            self.assertFalse(self._typing(text), text)
+
+    def test_a_keystroke_mixed_with_a_reply_still_counts(self) -> None:
+        self.assertTrue(self._typing("\x1b[I" + "y"))
+
+
+class AttentionDismissalTest(unittest.TestCase):
+    """What actually takes a badge down.
+
+    A question stays outstanding while you arrow through its options or type an answer into it: it is
+    answered by Enter, abandoned by Escape, or killed by Ctrl-C. Clearing on every keystroke removed the
+    badge the moment an arrow key was pressed, and -- because the prompt is still on screen -- the next
+    repaint re-armed it, restarting the animation on every key.
+    """
+
+    def _dismisses(self, text: str) -> bool:
+        return TerminalSessionManager._input_dismisses_attention(text)
+
+    def test_answering_dismisses(self) -> None:
+        for text in ("\r", "\n", "3\r", "\x03", "\x04", "\x1b"):
+            self.assertTrue(self._dismisses(text), repr(text))
+
+    def test_navigating_or_typing_does_not_dismiss(self) -> None:
+        for text in ("\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D", "y", "hello", "\x7f"):
+            self.assertFalse(self._dismisses(text), repr(text))
+
+    def test_terminal_replies_do_not_dismiss(self) -> None:
+        for text in ("\x1b[I", "\x1b[O", "\x1b[0n", "\x1b[24;80R", "\x1b[<0;10;5M"):
+            self.assertFalse(self._dismisses(text), repr(text))
+
+
+class ClaudeCancelClearsProcessingTest(unittest.TestCase):
+    """Escape cancels a Claude turn the same way Ctrl-C does.
+
+    Only Ctrl-C used to count, so a prompt cancelled with Escape left the tab spinning indefinitely:
+    the last transcript event is the user's prompt with nothing after it, Claude writes no interruption
+    marker when it never started answering, and the activity scan reads a trailing user prompt as work
+    in progress.
+    """
+
+    def setUp(self) -> None:
+        self.claude = ClaudeCli()
+        self.manager = TerminalSessionManager.__new__(TerminalSessionManager)
+        self.manager._sync_processing_started = lambda *a, **k: None
+        self.manager._broadcast_status = lambda *a, **k: None
+        self.manager._persist = lambda *a, **k: None
+        # agent_state is built from the record's kind at construction, so the kind has to be set first.
+        claude_record = record()
+        claude_record.agent_kind = "claude"
+        self.ms = ManagedSession(claude_record)
+        self.ms.agent_state.main_active = True
+
+    def _send(self, text: str) -> None:
+        self.claude.pre_write_input(self.manager, self.ms, text, "")
+
+    def test_escape_marks_the_turn_interrupted(self) -> None:
+        self._send("\x1b")
+        self.assertTrue(self.ms.record.claude_interrupted)
+        self.assertFalse(self.ms.agent_state.main_active)
+
+    def test_ctrl_c_still_marks_the_turn_interrupted(self) -> None:
+        self._send("\x03")
+        self.assertTrue(self.ms.record.claude_interrupted)
+
+    def test_arrow_keys_do_not_interrupt(self) -> None:
+        for key in ("\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"):
+            self.ms.record.claude_interrupted = False
+            self._send(key)
+            self.assertFalse(self.ms.record.claude_interrupted, key)
+
+    def test_typing_does_not_interrupt(self) -> None:
+        self._send("hello")
+        self.assertFalse(self.ms.record.claude_interrupted)

@@ -599,6 +599,7 @@ class TermdeckServer:
         self.settings_store = UiSettingsStore(TermdeckConfig.SETTINGS_FILE, self.state_backup)
         if self.manager is not None:
             self.manager.attach_notifier(AgentNotifier(self.settings_store.load))
+        self.manager.attach_settings_reader(self.settings_store.load)
         self.lsp_workspace_edits = LspWorkspaceEditService(self.files, self.file_history)
         self.language_servers = LanguageServerManager(
             self.files, self.lsp_workspace_edits, self._lsp_command_overrides, self._lsp_enabled)

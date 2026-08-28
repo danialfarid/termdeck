@@ -1736,8 +1736,13 @@ Object.assign(TermdeckApp.prototype, {
       button.classList.add("hidden");
       return;
     }
+    // Asymmetric thresholds, and the hide side is deliberately far away. This runs on every write and
+    // every xterm scroll, and the old hide threshold was 24px -- almost exactly one row -- so a reader
+    // parked at the top of a trimming buffer, where the anchor nudges scrollTop by a row at a time,
+    // crossed it back and forth and the button strobed. Showing still needs the actual top; hiding now
+    // needs a deliberate scroll away from it, which no row-sized drift can produce.
     const alreadyVisible = !button.classList.contains("hidden");
-    const visible = this.terminalAtTop(view, alreadyVisible ? 24 : 2);
+    const visible = this.terminalAtTop(view, alreadyVisible ? TERMINAL_HISTORY_MORE_HIDE_PX : 2);
     if (view.tallPointerHeld && alreadyVisible && visible) return;
     button.classList.toggle("hidden", !visible);
   },
@@ -3066,7 +3071,10 @@ Object.assign(TermdeckApp.prototype, {
         // of following a bogus position: the very next write (the real redraw) fires this callback again
         // with a trustworthy cursor.
         this.tallUpdateMaxScrollTop(view);
-        this.updateTerminalHistoryMoreButton(view);
+        // Deliberately NOT re-evaluating the history button here. It is a function of scroll position,
+        // and anything in this callback that changes the position fires a scroll event which updates it
+        // anyway. Running it per write meant it was recomputed mid-geometry-pass, from positions the
+        // view was about to leave -- which is how a row-sized nudge became a strobe.
         // Any gesture in flight -- wheel, scrollbar drag, autoscroll -- owns the view until it settles.
         const userScrolling = view.tallPointerHeld ||
           Date.now() < Math.max(view.tallWheelActiveUntil || 0, view.tallScrollActiveUntil || 0);

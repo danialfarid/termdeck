@@ -540,7 +540,13 @@ class ClaudeCli(AgentCli):
     # -- input / rename / spawn / detection --------------------------------
 
     def pre_write_input(self, manager, ms, text: str, draft_before: str) -> None:
-        interrupted = "\x03" in text
+        # Escape cancels a Claude turn exactly as Ctrl-C does, and it is the key people actually use.
+        # Only Ctrl-C counted before, so a cancelled prompt left the tab spinning forever: the last
+        # transcript event is the user's prompt with nothing after it, Claude writes no interruption
+        # marker when it never began answering, and the activity scan reads a trailing user prompt as
+        # work in progress. Measured on a live session stuck "processing" with an idle CLI.
+        # A bare Escape only -- "\x1b[" prefixes are arrow keys and the like, not a cancel.
+        interrupted = "\x03" in text or text == "\x1b"
         submitted = False
         if "\r" in text or "\n" in text:
             command = self.submitted_command(text, draft_before)
@@ -627,7 +633,21 @@ class ClaudeCli(AgentCli):
     # -- attention ---------------------------------------------------------
 
     ATTENTION_TEXT_CARRY_CHARS = 4096
-    ATTENTION_MARKERS = ("esc to cancel", "tab to amend")
+    # Matched against text with ALL whitespace removed. Claude lays these boxes out with cursor-movement
+    # escapes rather than literal spaces, so once the escapes are stripped the words run together --
+    # measured on a live prompt, the footer arrives as "entertoselect·↑/↓tonavigate·esctocancel" and a
+    # spaced marker like "esc to cancel" cannot match it. Squashing both sides matches either rendering.
+    #
+    # A group is an AND; the groups are an OR. Two prompts wait on the user and neither is the other:
+    # the plan/permission approval ends in "tab to amend", while a question (AskUserQuestion) offers a
+    # numbered list ending in "enter to select". Requiring the amend marker for everything is why a tab
+    # sitting on a question never raised its attention badge.
+    ATTENTION_MARKER_GROUPS = (("esctocancel", "tabtoamend"), ("entertoselect", "esctocancel"))
+    # Long enough to swallow the repaint a keystroke causes, short enough that a question appearing a
+    # moment after the user submits still lights up. Keyed on real keystrokes (see
+    # TerminalSessionManager.user_recently_typed); an earlier version keyed on all terminal input,
+    # which never went quiet and suppressed the badge entirely.
+    ATTENTION_TYPING_QUIET_SECONDS = 1.0
     ATTENTION_TITLE_MARKERS = ("request permission", "waiting for permission", "permission required", "needs input")
 
     def title_requires_attention(self, title: str | None) -> bool:
@@ -666,9 +686,26 @@ class ClaudeCli(AgentCli):
         text = manager._searchable_terminal_text(data)
         if not text:
             return False
-        normalized = re.sub(r"\s+", " ", f"{ms.attention_text_carry} {text}").strip().lower()
+        # Whitespace removed rather than collapsed -- see ATTENTION_MARKER_GROUPS for why. The carry is
+        # kept in the same squashed form so a marker split across two writes still joins up.
+        carry = ms.attention_text_carry
+        normalized = re.sub(r"\s+", "", f"{carry}{text}").lower()
         ms.attention_text_carry = normalized[-self.ATTENTION_TEXT_CARRY_CHARS:]
-        if ms.attention_required or not all(marker in normalized for marker in self.ATTENTION_MARKERS):
+        if ms.attention_required:
+            return False
+        # A prompt stays on the screen after it is answered or cancelled, and every repaint re-sends it.
+        # Matching anywhere in the carry therefore re-arms attention forever: keystroke clears it (see
+        # write_input), the repaint that keystroke causes re-arms it, and the badge restarts its
+        # animation on every character typed. Requiring the match to REACH INTO this write means an
+        # inherited copy alone cannot re-arm it, while a marker split across two writes still joins.
+        boundary = len(carry)
+        if not any(all(marker in normalized for marker in group) and
+                   any(normalized.rfind(marker) + len(marker) > boundary for marker in group)
+                   for group in self.ATTENTION_MARKER_GROUPS):
+            return False
+        # Nor while the user is typing into that very prompt: they are looking straight at it, and a
+        # badge that lights up between keystrokes is pure noise.
+        if manager.user_recently_typed(ms, self.ATTENTION_TYPING_QUIET_SECONDS):
             return False
         ms.attention_required = True
         return True
