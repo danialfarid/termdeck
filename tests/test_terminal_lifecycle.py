@@ -14,7 +14,6 @@ from watchdog.events import DirModifiedEvent, FileModifiedEvent, FileMovedEvent
 
 from tests.environment import TEST_DATA_DIRECTORY
 from termdeck import agents
-from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.agents.claude import ClaudeCli
 from termdeck.file_service import ProjectFileService
 from termdeck.models import SessionRecord
@@ -368,15 +367,15 @@ class AgentCliResumeCommandTest(unittest.TestCase):
             "claude --permission-mode auto --resume bb22")
 
     def test_latest_claude_permission_mode_comes_from_transcript(self) -> None:
-        tracker = AgentSessionTracker()
+        claude = agents.agent_cli('claude')
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "resolved-child.jsonl"
             path.write_text('\n'.join((
                 json.dumps({"type": "permission-mode", "permissionMode": "dontAsk"}),
                 json.dumps({"type": "permission-mode", "permissionMode": "auto"}),
             )))
-            with patch.object(tracker, "claude_project_dir", return_value=Path(temp_dir)):
-                self.assertEqual(tracker.claude_session_permission_mode(Path("/tmp"), "resolved-child"), "auto")
+            with patch.object(type(claude), "project_dir", return_value=Path(temp_dir)):
+                self.assertEqual(claude.session_permission_mode(Path("/tmp"), "resolved-child"), "auto")
 
 
 class TerminalRestartIdentityTest(unittest.TestCase):
@@ -417,7 +416,7 @@ class TerminalRestartIdentityTest(unittest.TestCase):
         session = self.claude_session("resolved-child")
         session.record.command = "claude --dangerously-skip-permissions --resume resolved-child"
         manager._sessions = {session.record.session_id: session}
-        manager._tracker.claude_session_permission_mode = MagicMock(return_value="auto")
+        patch.object(type(agents.agent_cli('claude')), 'session_permission_mode', return_value='auto').start()
         manager._persist = MagicMock()
         manager._terminate_proc = AsyncMock(return_value=True)
         manager._spawn = MagicMock()
@@ -588,14 +587,16 @@ class ClaudeRenameBindingReconciliationTest(unittest.IsolatedAsyncioTestCase):
         manager._sessions[saved.session_id] = session
         manager._tracker.session_id_from_open_files = AsyncMock(return_value=None)
         manager._tracker.absorb_and_find_new_session_file = MagicMock(return_value=None)
-        manager._tracker.claude_session_id_from_recent_file_activity = MagicMock(return_value="unrelated-session")
+        fallback = patch.object(type(agents.agent_cli("claude")), "session_id_from_recent_file_activity",
+                                return_value="unrelated-session").start()
+        self.addCleanup(patch.stopall)
 
         with patch("termdeck.session_manager.time.monotonic", return_value=100.0):
             await manager._detect_after(session, 0)
 
         self.assertEqual(saved.agent_session_id, "current-session")
         self.assertFalse(manager._tracker.absorb_and_find_new_session_file.call_args.kwargs["claim_allowed"])
-        manager._tracker.claude_session_id_from_recent_file_activity.assert_not_called()
+        fallback.assert_not_called()
 
     async def test_codex_detection_does_not_bind_an_already_claimed_parent(self) -> None:
         manager = TerminalSessionManager()
@@ -638,9 +639,9 @@ class ClaudeRenameBindingReconciliationTest(unittest.IsolatedAsyncioTestCase):
             manager._sessions[saved.session_id] = session
             current_path = Path(directory) / "stale-session.jsonl"
             current_path.write_text("{}\n")
-            manager._tracker.claude_project_dir = MagicMock(return_value=Path(directory))
-            manager._tracker.claude_explicit_session_title = MagicMock(return_value=None)
-            manager._tracker.claude_session_id_for_explicit_title = MagicMock(return_value="live-session")
+            patch.object(type(agents.agent_cli('claude')), 'project_dir', return_value=Path(directory)).start()
+            patch.object(type(agents.agent_cli('claude')), 'explicit_session_title', return_value=None).start()
+            patch.object(type(agents.agent_cli('claude')), 'session_id_for_explicit_title', return_value='live-session').start()
             manager._persist = MagicMock()
 
             claude = agents.agent_cli("claude")
@@ -661,12 +662,12 @@ class CodexSessionActivityTest(unittest.TestCase):
                 json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}),
             ]))
             with patch.object(agents.CodexCli, "sessions_root", root):
-                self.assertTrue(AgentSessionTracker().codex_session_is_active("019f9a3e-1915-7bd3-8183-cce1db8a1e20"))
+                self.assertTrue(agents.agent_cli('codex').session_is_active("019f9a3e-1915-7bd3-8183-cce1db8a1e20"))
                 path.write_text("\n".join([
                     json.dumps({"type": "event_msg", "payload": {"type": "task_started"}}),
                     json.dumps({"type": "event_msg", "payload": {"type": "task_complete"}}),
                 ]))
-                self.assertFalse(AgentSessionTracker().codex_session_is_active("019f9a3e-1915-7bd3-8183-cce1db8a1e20"))
+                self.assertFalse(agents.agent_cli('codex').session_is_active("019f9a3e-1915-7bd3-8183-cce1db8a1e20"))
 
 
 class ClaudeSessionActivityTest(unittest.TestCase):
@@ -686,34 +687,34 @@ class ClaudeSessionActivityTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 path = self._transcript(directory, self._assistant({"type": "tool_use", "name": "Bash"}),
                                         self._user_text(marker))
-                self.assertFalse(AgentSessionTracker().claude_session_is_active(path), marker)
+                self.assertFalse(agents.agent_cli('claude').transcript_is_active(path), marker)
 
     def test_submitted_prompt_still_reads_as_working(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = self._transcript(directory, self._assistant({"type": "text", "text": "done"}),
                                     self._user_text("please keep going"))
-            self.assertTrue(AgentSessionTracker().claude_session_is_active(path))
+            self.assertTrue(agents.agent_cli('claude').transcript_is_active(path))
 
     def test_tool_result_still_reads_as_working(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = self._transcript(directory, self._assistant({"type": "tool_use", "name": "Bash"}),
                                     {"type": "user", "message": {"role": "user", "content": [
                                         {"type": "tool_result", "tool_use_id": "x", "content": "ok"}]}})
-            self.assertTrue(AgentSessionTracker().claude_session_is_active(path))
+            self.assertTrue(agents.agent_cli('claude').transcript_is_active(path))
 
     def test_injected_system_reminder_does_not_keep_the_spinner_running(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             reminder = self._user_text("<system-reminder>The user named this session</system-reminder>")
             reminder["isMeta"] = True
             path = self._transcript(directory, self._assistant({"type": "text", "text": "all done"}), reminder)
-            self.assertFalse(AgentSessionTracker().claude_session_is_active(path))
+            self.assertFalse(agents.agent_cli('claude').transcript_is_active(path))
 
     def test_failed_plain_slash_command_does_not_keep_the_spinner_running(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = self._transcript(directory, self._assistant({"type": "text", "text": "all done"}),
                                     self._user_text("/compact"),
                                     {"type": "system", "subtype": "local_command", "content": "limit reached"})
-            self.assertFalse(AgentSessionTracker().claude_session_is_active(path))
+            self.assertFalse(agents.agent_cli('claude').transcript_is_active(path))
 
     def test_running_compaction_keeps_the_spinner_running(self) -> None:
         # A compaction in flight writes NOTHING else: no OSC title updates and no transcript appends
@@ -723,7 +724,7 @@ class ClaudeSessionActivityTest(unittest.TestCase):
             command = self._user_text("<command-name>/compact</command-name>")
             command["timestamp"] = datetime.now(timezone.utc).isoformat()
             path = self._transcript(directory, self._assistant({"type": "text", "text": "all done"}), command)
-            self.assertTrue(AgentSessionTracker().claude_session_is_active(path))
+            self.assertTrue(agents.agent_cli('claude').transcript_is_active(path))
 
     def test_stale_compaction_stops_the_spinner(self) -> None:
         # Bounded, so a compaction that died without writing its result leaves the tab idle instead of
@@ -732,7 +733,7 @@ class ClaudeSessionActivityTest(unittest.TestCase):
             command = self._user_text("<command-name>/compact</command-name>")
             command["timestamp"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
             path = self._transcript(directory, self._assistant({"type": "text", "text": "all done"}), command)
-            self.assertFalse(AgentSessionTracker().claude_session_is_active(path))
+            self.assertFalse(agents.agent_cli('claude').transcript_is_active(path))
 
     def test_finished_compaction_summary_stops_the_spinner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -743,13 +744,13 @@ class ClaudeSessionActivityTest(unittest.TestCase):
             path = self._transcript(directory, self._assistant({"type": "text", "text": "all done"}),
                                     command, summary,
                                     {"type": "system", "subtype": "local_command", "content": "done"})
-            self.assertFalse(AgentSessionTracker().claude_session_is_active(path))
+            self.assertFalse(agents.agent_cli('claude').transcript_is_active(path))
 
     def test_finished_answer_reads_as_idle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = self._transcript(directory, self._user_text("hello"),
                                     self._assistant({"type": "text", "text": "all done"}))
-            self.assertFalse(AgentSessionTracker().claude_session_is_active(path))
+            self.assertFalse(agents.agent_cli('claude').transcript_is_active(path))
 
 
 class AgySessionActivityTest(unittest.TestCase):
@@ -767,7 +768,7 @@ class AgySessionActivityTest(unittest.TestCase):
                              {"type": "USER_INPUT", "source": "USER_EXPLICIT",
                               "content": "<USER_REQUEST>run diagnostics</USER_REQUEST>"})
             with patch.object(agents.AgyCli, "sessions_root", Path(directory)):
-                self.assertTrue(AgentSessionTracker().agy_session_is_active(session_id))
+                self.assertTrue(agents.agent_cli('agy').session_is_active(session_id))
 
     def test_content_event_without_thinking_marks_session_as_inactive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -777,7 +778,7 @@ class AgySessionActivityTest(unittest.TestCase):
                               "content": "<USER_REQUEST>run diagnostics</USER_REQUEST>"},
                              {"type": "AGENT_RESPONSE", "content": "<AGENT_RESPONSE>done</AGENT_RESPONSE>"})
             with patch.object(agents.AgyCli, "sessions_root", Path(directory)):
-                self.assertFalse(AgentSessionTracker().agy_session_is_active(session_id))
+                self.assertFalse(agents.agent_cli('agy').session_is_active(session_id))
 
     def test_in_progress_status_marks_session_as_active(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -786,7 +787,7 @@ class AgySessionActivityTest(unittest.TestCase):
                              {"type": "PLANNER_RESPONSE", "source": "MODEL", "status": "IN_PROGRESS",
                               "content": "Thinking about file matches."})
             with patch.object(agents.AgyCli, "sessions_root", Path(directory)):
-                self.assertTrue(AgentSessionTracker().agy_session_is_active(session_id))
+                self.assertTrue(agents.agent_cli('agy').session_is_active(session_id))
 
     def test_transcript_full_preferred_for_activity_detection(self) -> None:
         session_id = "7f8f2a7a-c4c2-4ca3-a4d4-e5f6a7c9d012"
@@ -798,7 +799,7 @@ class AgySessionActivityTest(unittest.TestCase):
                 json.dumps({"type": "USER_INPUT", "source": "USER_EXPLICIT", "content": "<USER_REQUEST>run diagnostics</USER_REQUEST>"})
             )
             with patch.object(agents.AgyCli, "sessions_root", Path(directory)):
-                self.assertTrue(AgentSessionTracker().agy_session_is_active(session_id))
+                self.assertTrue(agents.agent_cli('agy').session_is_active(session_id))
 
 
 class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
@@ -1905,7 +1906,7 @@ class ClaudeCompactionCompletionTest(unittest.TestCase):
                 self._user("<command-name>/compact</command-name>"),
                 self._user("<local-command-stdout>Compacted (ctrl+o to see full summary)</local-command-stdout>"),
                 {"type": "attachment"}, {"type": "attachment"})
-            self.assertFalse(AgentSessionTracker._claude_subagent_is_active(path))
+            self.assertFalse(agents.agent_cli('claude').transcript_is_active(path))
 
     def test_compaction_in_flight_still_reads_active(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1913,7 +1914,7 @@ class ClaudeCompactionCompletionTest(unittest.TestCase):
                 directory,
                 self._assistant({"type": "text", "text": "all done"}),
                 self._user("<command-name>/compact</command-name>"))
-            self.assertTrue(AgentSessionTracker._claude_subagent_is_active(path))
+            self.assertTrue(agents.agent_cli('claude').transcript_is_active(path))
 
     def test_refused_compaction_reads_idle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1923,4 +1924,4 @@ class ClaudeCompactionCompletionTest(unittest.TestCase):
                 self._user("<command-name>/compact</command-name>"),
                 {"type": "system", "subtype": "local_command",
                  "content": "<local-command-stdout>Not enough messages to compact.</local-command-stdout>"})
-            self.assertFalse(AgentSessionTracker._claude_subagent_is_active(path))
+            self.assertFalse(agents.agent_cli('claude').transcript_is_active(path))
