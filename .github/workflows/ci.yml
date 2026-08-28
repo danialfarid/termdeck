@@ -61,12 +61,14 @@ jobs:
 
       - name: Unit tests
         run: |
-          python -m pip install pytest
+          # remote_service is the separately deployed relay; its tests import it directly,
+          # so the test environment needs its own requirements alongside the package's.
+          python -m pip install pytest -r remote_service/requirements.txt
           python -m pytest tests/ -q
 
       - name: Client syntax
         run: |
-          node --check termdeck/static/app.js
+          for f in termdeck/static/app*.js; do node --check "$f"; done
           for f in tools/scroll-tests/*.cjs tools/*.cjs; do node --check "$f"; done
 
       - name: Server boots and serves the UI
