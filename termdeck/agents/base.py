@@ -75,13 +75,6 @@ class AgentCli:
     # viewport instead of the tall canvas: given hundreds of rows, such a TUI top-anchors the
     # conversation and bottom-anchors the composer, leaving the visible window on a blank gap.
     fullscreen_tui = False
-    # Cap on the terminal height this CLI is given, or 0 to accept TermDeck's tall terminal.
-    # A CLI that redraws its whole rendered output erases everything still inside the screen, and
-    # only switches to appending once its output outgrows the screen. On a tall terminal a whole
-    # conversation stays inside the screen, so such a CLI keeps erasing it -- most visibly when a
-    # context compaction redraws a much shorter frame over it. Capping the height bounds what any
-    # single redraw can reach, the way an ordinary terminal does.
-    max_terminal_rows = 0
 
     # -- command lifecycle ------------------------------------------------
     base_flags: tuple[str, ...] = ()    # always-on flags injected right after the executable
@@ -402,7 +395,7 @@ class AgentCli:
                 "prompt_marker": self.prompt_marker, "icon_svg": self.icon_svg,
                 "supports_resume": self.supports_resume, "supports_fork": self.supports_fork,
                 "accepts_session_ref": self.accepts_session_ref, "sessionless": self.sessionless,
-                "fullscreen_tui": self.fullscreen_tui, "max_terminal_rows": self.max_terminal_rows,
+                "fullscreen_tui": self.fullscreen_tui,
                 "records_raw_replay": self.records_raw_replay, "has_prompt_queue": self.has_prompt_queue}
 
     @staticmethod

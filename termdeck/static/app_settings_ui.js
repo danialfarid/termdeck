@@ -1352,14 +1352,7 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  // agentKind lets a CLI cap its own height (AgentCli.max_terminal_rows): one that redraws its whole
-  // output erases everything still inside the screen, so a tall screen lets a single redraw reach a
-  // whole conversation. The server clamps the pty to the same cap, and this keeps the terminal that
-  // renders it the same size -- a client taller than the pty would put the CLI's cursor-home in the
-  // wrong row.
-  tallRowPlan(cellHeight, agentKind = "") {
-    const cap = Number(this.agentSpec(agentKind)?.max_terminal_rows) || 0;
-    if (cap) return { rows: cap, webgl: false };
+  tallRowPlan(cellHeight) {
     if (!this.tallWebglEnabled()) return { rows: TALL_ROWS_DOM, webgl: false };
     const safeRows = this.maxWebglSafeRows(cellHeight);
     if (safeRows < TALL_ROWS_MIN_FOR_WEBGL) return { rows: TALL_ROWS_DOM, webgl: false };

@@ -249,7 +249,6 @@ class TermdeckConfig:
     # THIS worktree spawns at this height from the very first byte (see the matching FitAddon override
     # near the top of app.js), so there is no window where the pty is briefly the normal fitted height
     # before something resizes it -- the CLI never sees anything but tall.
-    # An agent whose renderer cannot survive a tall screen overrides this via AgentCli.max_terminal_rows.
     INITIAL_ROWS = 1000
     SCROLLBACK_BYTES = 12_000_000
     SYNC_UPDATE_START = b"\x1b[?2026h"

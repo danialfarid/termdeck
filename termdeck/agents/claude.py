@@ -40,12 +40,6 @@ class ClaudeCli(AgentCli):
     # root with the transcript service's FSEvents observer would double-register it on macOS.
     has_own_transcript_watcher = True
 
-    # Measured: with the conversation inside the screen, /compact erased it and the buffer stayed
-    # pinned at the screen height; once the conversation outgrew the screen the same compact left it
-    # alone and the buffer grew. 40 keeps a redraw's reach to roughly what a normal terminal allows.
-    # Set to 0 to hand claude the tall terminal again.
-    max_terminal_rows = 40
-
     supports_resume = True
     supports_fork = True
     fork_tracks_parent = True
