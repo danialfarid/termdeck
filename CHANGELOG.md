@@ -6,13 +6,6 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Fixed
-
-- A terminal no longer opens blank when its recording ended on a screen clear. A TUI erases and
-  redraws in two writes, and a server restart landing between them left the erase as the last thing
-  recorded — every later attach replayed it, showing the conversation cut mid tool-call with no
-  composer, and no repaint could recover it because an idle agent sends nothing.
-
 ### Changed
 
 - Adding or changing an agent CLI no longer means editing shared code. Every CLI's transcript

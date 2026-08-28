@@ -337,22 +337,9 @@ class ReplayRecorder:
 
     # -- replay serving ----------------------------------------------------
 
-    # A TUI clears the screen and redraws it as two separate writes. Recording can stop between them
-    # -- a server restart is the common way -- and then the recording's last act is the erase, with
-    # the redraw never captured. Replaying that faithfully hands the client a blank screen: measured
-    # on a live session whose recording ended with ESC[H ESC[J, every attach showed the conversation
-    # cut mid tool-call with no composer, and no repaint could recover it because a TUI that is idle
-    # (or wedged) sends nothing. Dropping the orphaned erase shows the last frame that WAS captured.
-    # Repeated, because each attach that provokes a redraw can append another orphaned erase.
-    TRAILING_WIPE = re.compile(rb"(?:(?:\x1b\[[0-9;]*[Hf])?\x1b\[[0-2]?J[\s\x00]*)+$")
-
-    @classmethod
-    def _without_trailing_wipe(cls, data: bytes) -> bytes:
-        return cls.TRAILING_WIPE.sub(b"", data) if data else data
-
-    @classmethod
-    def raw_bytes(cls, ms) -> bytes:
-        return cls._without_trailing_wipe(bytes(ms.raw_replay_buffer)) + ms.raw_replay_last_title
+    @staticmethod
+    def raw_bytes(ms) -> bytes:
+        return bytes(ms.raw_replay_buffer) + ms.raw_replay_last_title
 
     @classmethod
     def _clear_frame_rows(cls, frame: bytes) -> int:
@@ -394,7 +381,7 @@ class ReplayRecorder:
 
     def latest_screen(self, ms) -> bytes:
         frames = self._screen_frames(ms)
-        return (self._without_trailing_wipe(frames[-1]) + ms.raw_replay_last_title) if frames else b""
+        return (frames[-1] + ms.raw_replay_last_title) if frames else b""
 
     def full_screen(self, ms) -> bytes:
         frames = self._screen_frames(ms)
@@ -415,7 +402,7 @@ class ReplayRecorder:
         intact -- title recovery reads it -- and an unterminated title at the tail is left alone for the
         live stream to finish.
         """
-        data = self._without_trailing_wipe(bytes(ms.buffer))
+        data = bytes(ms.buffer)
         last = None
         for match in self.OSC_TITLE_SEQUENCE.finditer(data):
             last = match.group(0)
