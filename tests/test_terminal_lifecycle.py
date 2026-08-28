@@ -1925,3 +1925,32 @@ class ClaudeCompactionCompletionTest(unittest.TestCase):
                 {"type": "system", "subtype": "local_command",
                  "content": "<local-command-stdout>Not enough messages to compact.</local-command-stdout>"})
             self.assertFalse(agents.agent_cli('claude').transcript_is_active(path))
+
+
+class ReplayTrailingWipeTest(unittest.TestCase):
+    """A recording that ends with a TUI's clear must not be replayed as a blank screen."""
+
+    def _session(self, raw: bytes):
+        ms = SimpleNamespace(raw_replay_buffer=bytearray(raw), raw_replay_last_title=b"",
+                             buffer=bytearray(raw))
+        return ms
+
+    def test_orphaned_clear_at_the_tail_is_dropped(self) -> None:
+        # The exact shape recorded from a live session whose server restarted mid-repaint:
+        # claude's painted UI, then home + erase-to-end with the redraw never captured.
+        painted = b"\x1b[H\x1b[Jconversation\r\n\xe2\x8f\xb5 composer here"
+        ms = self._session(painted + b"\x1b[H\x1b[J")
+        served = ReplayRecorder.raw_bytes(ms)
+        self.assertTrue(served.endswith(b"composer here"), served[-40:])
+        self.assertEqual(served, painted)
+
+    def test_clear_that_still_has_a_redraw_after_it_is_kept(self) -> None:
+        intact = b"old\x1b[H\x1b[Jnew screen\r\n> prompt"
+        self.assertEqual(ReplayRecorder.raw_bytes(self._session(intact)), intact)
+
+    def test_trailing_clear_with_only_whitespace_after_it_is_dropped(self) -> None:
+        ms = self._session(b"painted\x1b[2J\r\n  ")
+        self.assertEqual(ReplayRecorder.raw_bytes(ms), b"painted")
+
+    def test_empty_recording_is_unchanged(self) -> None:
+        self.assertEqual(ReplayRecorder.raw_bytes(self._session(b"")), b"")
