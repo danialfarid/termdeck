@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Compacting a Claude conversation no longer erases the conversation above it. A CLI that redraws its
+  whole rendered output erases everything still inside the screen, and only starts appending once its
+  output outgrows the screen — so TermDeck's tall terminal, which keeps a whole conversation inside
+  the screen, left Claude erasing indefinitely, and a compaction's much shorter frame took the
+  conversation with it. Agents now declare their own height cap (`AgentCli.max_terminal_rows`, 40 for
+  Claude, unset for everyone else), applied to both the spawn height and every later resize.
+
 - A terminal no longer opens blank when its recording ended on a screen clear. A TUI erases and
   redraws in two writes, and a server restart landing between them left the erase as the last thing
   recorded — every later attach replayed it, showing the conversation cut mid tool-call with no

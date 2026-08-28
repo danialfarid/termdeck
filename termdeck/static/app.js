@@ -89,6 +89,7 @@ const AGENT_SPEC_DEFAULTS = {
   claude: { kind: "claude", label: "Claude", is_agent: true, prompt_marker: "❯", icon_svg: FALLBACK_ICON_SVGS.claude,
     permissions: [{ value: "default", label: "Default (Claude config)" }, { value: "accept-edits", label: "Accept edits" },
       { value: "auto", label: "Auto" }, { value: "full-access", label: "Full access" }],
+    max_terminal_rows: 40,
     supports_resume: true, supports_fork: true, accepts_session_ref: true,
     records_raw_replay: true, has_prompt_queue: false },
   codex: { kind: "codex", label: "Codex", is_agent: true, prompt_marker: "›", icon_svg: FALLBACK_ICON_SVGS.codex,

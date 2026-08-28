@@ -377,6 +377,9 @@ class TerminalSessionManager:
                                 mark_activity=False)
         ms.terminal_history_cleared_for_spawn = False
         ms.exit_code = None
+        # The CLI draws its first frame at the spawn height, before any client resize lands.
+        ms.rows = self._agent_terminal_rows(ms, ms.rows)
+        ms.record.rows = ms.rows
         try:
             ms.proc = PtyProcess(command, Path(ms.record.cwd), ms.cols, ms.rows,
                                  functools.partial(self._handle_output, ms), functools.partial(self._handle_exit, ms),
@@ -1267,6 +1270,11 @@ class TerminalSessionManager:
             return
         proc.write(TermdeckConfig.BRACKETED_PASTE_START + ms.record.draft.encode() + TermdeckConfig.BRACKETED_PASTE_END)
 
+    def _agent_terminal_rows(self, ms: ManagedSession, rows: int) -> int:
+        """Height the CLI in this session may be given (see AgentCli.max_terminal_rows)."""
+        cap = agents.agent_cli(ms.record.agent_kind).max_terminal_rows
+        return min(rows, cap) if cap else rows
+
     def resize(self, session_id: str, cols: int, rows: int, force: bool = False) -> tuple[bool, int, int]:
         """Apply a client's terminal size, unless another client already owns it.
 
@@ -1279,6 +1287,7 @@ class TerminalSessionManager:
         Returns (applied, cols, rows) where the returned size is the one now in effect.
         """
         ms = self._sessions[session_id]
+        rows = self._agent_terminal_rows(ms, rows)
         size_changed = (ms.record.cols, ms.record.rows) != (cols, rows)
         if size_changed and not force and len(ms.client_queues) > 1:
             return False, ms.record.cols, ms.record.rows

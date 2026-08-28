@@ -246,7 +246,7 @@ Object.assign(TermdeckApp.prototype, {
     // mode takes the tallest height the GPU can back and the DOM mode, which has no texture limit at all,
     // is what buys the full 1000 rows.
     const cellHeight = term._core?._renderService?.dimensions?.css?.cell?.height || 17;
-    const targetRowPlan = this.tallRowPlan(cellHeight);
+    const targetRowPlan = this.tallRowPlan(cellHeight, this.session(id)?.agent_kind);
     // The webgl cold prime (replay at DOM height, then resize down) is disabled: a claude recording is
     // made at the pty's height, and its output only ever SCROLLS when the cursor reaches the terminal's
     // last row -- replayed into a much taller terminal the cursor never gets there, so every repaint
