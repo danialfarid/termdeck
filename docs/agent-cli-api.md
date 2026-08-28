@@ -217,13 +217,25 @@ Status 2026-08-26: ALL PHASES DONE. The `AgentKind` enum is gone; kinds are regi
 strings. Per-agent runtime state lives in `ms.agent_state` (see `new_session_state`). Client-side
 quirks are flags in `AGENT_CLIENT_BEHAVIORS` in app.js. Per-CLI constants (session trees, resume
 flags, keepalives) live on the adapter classes; generic services derive watch/index roots from
-`sessions_root` + `history_indexed` + `has_own_transcript_watcher`. Deliberately NOT moved: the
-`CLAUDE_RAW_REPLAY_*` recording limits in `TermdeckConfig` and the `claude_raw_replay_*` /
-`full_claude_raw_replay` field and protocol names — the recording feature is generic (gated by
-`records_raw_replay`), only its historical naming is claude-flavored; renaming would churn the ws
-protocol and the scroll-test tooling for zero behavior. `AgentSessionTracker` remains as the
-claude/codex/agy filesystem helper the adapters call — a NEW agent does not need it; implement the
-AgentCli hooks directly.
+`sessions_root` + `history_indexed` + `has_own_transcript_watcher`.
+
+Update 2026-08-28: no shared class holds agent-specific logic any more. `AgentSessionTracker` used
+to carry ~500 lines of `claude_*`/`codex_*`/`agy_*` transcript parsing; that all moved onto the
+adapters (Claude's transcript reader and compaction rules, Codex's thread index and rollout
+parsing, AGY's event vocabulary), each keeping its own caches on the registry singleton. The
+tracker is now ~120 agent-agnostic lines — open-file lookup, new-file claiming, subagent sniffing
+via the adapter's own `subagent_file_marker` — and names no agent. `TranscriptActivityWatcher`
+(was `ClaudeActivityWatcher`) is likewise generic: `TerminalSessionManager` builds one per agent
+that declares `has_own_transcript_watcher`, and delivers changes to `on_project_file_change`.
+
+**The rule this enforces:** shared code asks the adapter; it never branches on a kind or names one.
+A new agent implements hooks and appears in the registry — no shared file changes.
+
+Deliberately NOT renamed: the `CLAUDE_RAW_REPLAY_*` recording limits in `TermdeckConfig` and the
+`full_claude_raw_replay` websocket parameter — the recording feature is generic (gated by
+`records_raw_replay`) and only the historical wire name is claude-flavored; renaming would churn
+the ws protocol and the scroll-test tooling for zero behavior. The manager's internals around it
+are named `raw_replay_*`.
 
 1. **Package + registry** — new `termdeck/agents/`, no call sites yet.
 2. **Command lifecycle** — `command_for_new_session`, `_permission_flags`,
