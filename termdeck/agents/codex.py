@@ -1,5 +1,3 @@
-import collections
-import json
 import re
 import shlex
 import time
@@ -7,7 +5,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Iterable
 
-from termdeck.agents.base import UUID_RE, AgentCli, AgentSessionState
+from termdeck.agents.base import AgentCli, AgentSessionState
 from termdeck.transcript_turns import TurnBuilder
 from termdeck.util import TimeUtil
 
@@ -78,13 +76,8 @@ class CodexCli(AgentCli):
     subagent_file_marker = b'"source":{"subagent"'
 
     def __init__(self) -> None:
-        # One instance per kind in the registry, so these are process-wide caches with the same
-        # lifetime the transcript-reading ones had on the tracker.
         # A rollout path never changes once the session exists; cache the rglob hit.
         self._rollout_paths: dict[str, Path] = {}
-        self._thread_names: dict[str, str] = {}
-        self._session_title_cache: collections.OrderedDict[str, str] = collections.OrderedDict()
-        self._index_mtime_ns: int | None = None
 
     def model_arguments(self, model_name: str) -> tuple[str, ...]:
         # A trailing reasoning-effort word ("gpt-5.6-luna xhigh") becomes a -c override.
@@ -97,7 +90,7 @@ class CodexCli(AgentCli):
         return tuple(arguments)
 
     def new_session_resume_arguments(self, session_ref: str, tracker) -> tuple[str, ...]:
-        resolved = self.session_id_for_reference(session_ref)
+        resolved = tracker.codex_session_id_for_reference(session_ref)
         if resolved is None:
             raise ValueError(f"no saved Codex session found with ID or name: {session_ref}")
         return ("resume", resolved)
@@ -318,135 +311,6 @@ class CodexCli(AgentCli):
             "total_tokens": count(total, "total_tokens") or None,
         }
 
-    # -- session index / transcript reading ---------------------------------
-    #
-    # Codex's thread index and rollout event shapes are known only here; the shared tracker asks
-    # the adapter rather than parsing either itself.
-
-    ACTIVITY_TAIL_BYTES = 8 * 1024 * 1024
-    TITLE_CACHE_SIZE = 120
-
-    def thread_name(self, agent_session_id: str | None) -> str | None:
-        if not agent_session_id:
-            return None
-        path = self.SESSION_INDEX_FILE
-        try:
-            mtime_ns = path.stat().st_mtime_ns
-        except OSError:
-            return None
-        if mtime_ns != self._index_mtime_ns:
-            names: dict[str, str] = {}
-            try:
-                for line in path.read_text(errors="replace").splitlines():
-                    try:
-                        payload = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    thread_id = payload.get("id")
-                    thread_name = payload.get("thread_name")
-                    if isinstance(thread_id, str) and isinstance(thread_name, str) and thread_name.strip():
-                        names[thread_id] = thread_name.strip()
-            except OSError:
-                return None
-            self._thread_names = names
-            self._index_mtime_ns = mtime_ns
-        return self._thread_names.get(agent_session_id)
-
-    def _cache_session_title(self, agent_session_id: str, title: str) -> str:
-        self._session_title_cache[agent_session_id] = title
-        while len(self._session_title_cache) > self.TITLE_CACHE_SIZE:
-            self._session_title_cache.popitem(last=False)
-        return title
-
-    def stored_session_title(self, agent_session_id: str | None) -> str | None:
-        """Return the saved Codex thread name, with a rollout-derived fallback for older sessions."""
-        if not agent_session_id:
-            return None
-        cached = self._session_title_cache.get(agent_session_id)
-        if cached is not None:
-            self._session_title_cache.move_to_end(agent_session_id)
-            return cached
-        title = self.thread_name(agent_session_id)
-        if title:
-            return self._cache_session_title(agent_session_id, title)
-        needle = f"-{agent_session_id}.jsonl"
-        try:
-            path = next(self.sessions_root.rglob(f"rollout-*{needle}"), None)
-        except OSError:
-            return None
-        if path is None:
-            return None
-        first_prompt = None
-        try:
-            with path.open(errors="replace") as handle:
-                for line in handle:
-                    try:
-                        payload = json.loads(line).get("payload", {})
-                    except json.JSONDecodeError:
-                        continue
-                    if payload.get("type") == "thread_name_updated" and str(payload.get("thread_name", "")).strip():
-                        return self._cache_session_title(agent_session_id, str(payload["thread_name"]).strip())
-                    if first_prompt is None and payload.get("type") == "user_message":
-                        first_prompt = str(payload.get("message", "")).strip()
-        except OSError:
-            return None
-        if not first_prompt:
-            return None
-        markdown_match = re.search(r"(?:^|[/\s])([A-Za-z0-9][A-Za-z0-9_.-]*\.md)\b", first_prompt)
-        if markdown_match:
-            return self._cache_session_title(agent_session_id, Path(markdown_match.group(1)).stem)
-        compact = re.sub(r"\s+", " ", first_prompt)
-        return self._cache_session_title(agent_session_id, compact[:56].rstrip() + ("…" if len(compact) > 56 else ""))
-
-    def session_is_active(self, agent_session_id: str | None) -> bool:
-        if not agent_session_id:
-            return False
-        path = self.transcript_path(None, agent_session_id)
-        if path is None:
-            return False
-        try:
-            with path.open("rb") as handle:
-                handle.seek(0, 2)
-                handle.seek(max(0, handle.tell() - self.ACTIVITY_TAIL_BYTES))
-                lines = handle.read().decode(errors="replace").splitlines()
-        except OSError:
-            return False
-        state: bool | None = None
-        for line in lines:
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if payload.get("type") != "event_msg":
-                continue
-            event_type = (payload.get("payload") or {}).get("type")
-            if event_type == "task_started":
-                state = True
-            elif event_type in {"task_complete", "turn_aborted"}:
-                state = False
-        return bool(state)
-
-    def session_id_for_reference(self, reference: str) -> str | None:
-        """Resolve a Codex UUID or saved thread name to the UUID accepted by resume."""
-        reference = reference.strip()
-        if not reference:
-            return None
-        try:
-            mtime_ns = self.SESSION_INDEX_FILE.stat().st_mtime_ns
-        except OSError:
-            return None
-        if mtime_ns != self._index_mtime_ns:
-            self.thread_name("__refresh__")
-        if UUID_RE.fullmatch(reference):
-            if reference in self._thread_names:
-                return reference
-            try:
-                return reference if next(self.sessions_root.rglob(f"rollout-*{reference}.jsonl"), None) else None
-            except OSError:
-                return None
-        matches = [session_id for session_id, name in self._thread_names.items() if name == reference]
-        return matches[-1] if matches else None
-
     # -- activity / processing ---------------------------------------------
 
     ACTIVITY_FALLBACK_CHECK_SECONDS = 1.0
@@ -470,7 +334,7 @@ class CodexCli(AgentCli):
         return getattr(stat, "st_ino", None), stat.st_size, stat.st_mtime_ns
 
     def refresh_persisted_activity(self, manager, ms) -> None:
-        ms.agent_state.transcript_active = self.session_is_active(ms.record.agent_session_id)
+        ms.agent_state.transcript_active = manager._tracker.codex_session_is_active(ms.record.agent_session_id)
         ms.agent_state.activity_signature = self.activity_signature(manager, ms)
 
     def refresh_activity_for_status(self, manager, ms) -> None:
@@ -486,20 +350,20 @@ class CodexCli(AgentCli):
         if signature is None or signature == ms.agent_state.activity_signature:
             return
         ms.agent_state.activity_signature = signature
-        ms.agent_state.transcript_active = self.session_is_active(ms.record.agent_session_id)
+        ms.agent_state.transcript_active = manager._tracker.codex_session_is_active(ms.record.agent_session_id)
         manager._sync_processing_started(ms)
 
     def on_transcript_event(self, manager, ms, path: Path) -> None:
         if not path.name.endswith(f"-{ms.record.agent_session_id}.jsonl"):
             return
         previous = manager._processing_state(ms)
-        ms.agent_state.transcript_active = self.session_is_active(ms.record.agent_session_id)
+        ms.agent_state.transcript_active = manager._tracker.codex_session_is_active(ms.record.agent_session_id)
         ms.agent_state.activity_signature = self.activity_signature(manager, ms)
         if manager._processing_state(ms) != previous:
             manager._broadcast_status(ms)
 
     def session_title(self, tracker, cwd: Path, agent_session_id: str | None) -> str | None:
-        return self.stored_session_title(agent_session_id)
+        return tracker.codex_session_title(agent_session_id)
 
     # -- input / rename / detection ----------------------------------------
 
@@ -537,7 +401,7 @@ class CodexCli(AgentCli):
         """
         if not ms.record.agent_session_id:
             return False
-        candidate = self.thread_name(ms.record.agent_session_id)
+        candidate = manager._tracker.codex_thread_name(ms.record.agent_session_id)
         if not candidate:
             return False
         live_title = manager._display_title(ms.cli_title)
@@ -560,8 +424,8 @@ class CodexCli(AgentCli):
 
     def on_agent_session_bound(self, manager, ms) -> None:
         if ms.cli_title is None:
-            ms.cli_title = self.stored_session_title(ms.record.agent_session_id)
-        ms.agent_state.transcript_active = self.session_is_active(ms.record.agent_session_id)
+            ms.cli_title = manager._tracker.codex_session_title(ms.record.agent_session_id)
+        ms.agent_state.transcript_active = manager._tracker.codex_session_is_active(ms.record.agent_session_id)
         ms.agent_state.activity_signature = self.activity_signature(manager, ms)
 
     def _ensure_searchable_scrollback(self, parts: list[str]) -> list[str]:

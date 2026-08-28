@@ -1,11 +1,9 @@
 import asyncio
-import collections
 import json
 import os
 import re
 import shlex
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -182,407 +180,6 @@ class ClaudeCli(AgentCli):
             "context_window": None,
             "total_tokens": None,
         }
-
-    # -- transcript reading -------------------------------------------------
-    #
-    # Everything below reads Claude's own session files and knows Claude's event shapes. It lives
-    # here rather than in AgentSessionTracker so the shared workflow never learns those shapes:
-    # the tracker owns generic session-file services (open-file lookup, new-file claiming, caches
-    # keyed by agent kind) and asks the adapter whenever the answer depends on the CLI.
-
-    TRANSCRIPT_TAIL_BYTES = 256 * 1024
-    PERMISSION_TAIL_BYTES = 256 * 1024
-    PERMISSION_MODES = {"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
-    INTERRUPT_TEXT_PREFIX = "[Request interrupted by user"
-    LOCAL_COMMAND_MARKERS = ("<command-name>", "<local-command-")
-    LOCAL_COMMAND_OUTPUT_MARKER = "<local-command-stdout>"
-    # How long a /compact with nothing after it still counts as running. Long enough for a big
-    # conversation, short enough that a compaction which died leaves the tab idle rather than spinning.
-    COMPACTION_MAX_SECONDS = 15 * 60.0
-    TITLE_CACHE_SIZE = 120
-
-    def __init__(self) -> None:
-        # The registry holds one instance per kind, so this is a process-wide cache with the same
-        # lifetime the tracker's copy had. Keyed by (cwd, session id) because a title is a property
-        # of one transcript.
-        self._session_title_cache: collections.OrderedDict[tuple[str, str], str] = collections.OrderedDict()
-
-    def stored_session_title(self, cwd: Path, agent_session_id: str | None) -> str | None:
-        """Read Claude's durable aiTitle when the terminal has not emitted its OSC title yet."""
-        if not agent_session_id:
-            return None
-        cache_key = (str(cwd), agent_session_id)
-        path = self.project_dir(cwd) / f"{agent_session_id}.jsonl"
-        explicit_title = self._explicit_title_from_path(path)
-        if explicit_title:
-            self._session_title_cache[cache_key] = explicit_title
-            self._session_title_cache.move_to_end(cache_key)
-            return explicit_title
-        cached = self._session_title_cache.get(cache_key)
-        if cached is not None:
-            self._session_title_cache.move_to_end(cache_key)
-            return cached
-        ai_title = None
-        explicit_title = None
-        try:
-            with path.open(errors="replace") as handle:
-                for line in handle:
-                    try:
-                        payload = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if payload.get("type") == "ai-title" and str(payload.get("aiTitle", "")).strip():
-                        ai_title = str(payload["aiTitle"]).strip()
-                    elif payload.get("type") == "custom-title" and str(payload.get("customTitle", "")).strip():
-                        explicit_title = str(payload["customTitle"]).strip()
-                    elif payload.get("type") == "agent-name" and str(payload.get("agentName", "")).strip():
-                        explicit_title = str(payload["agentName"]).strip()
-        except OSError:
-            return None
-        title = explicit_title or ai_title
-        if title is not None:
-            self._session_title_cache[cache_key] = title
-            while len(self._session_title_cache) > self.TITLE_CACHE_SIZE:
-                self._session_title_cache.popitem(last=False)
-        return title
-
-    def invalidate_session_title(self, cwd: Path, agent_session_id: str | None) -> None:
-        if agent_session_id:
-            self._session_title_cache.pop((str(cwd), agent_session_id), None)
-
-    def explicit_session_title(self, cwd: Path, agent_session_id: str | None) -> str | None:
-        if not agent_session_id:
-            return None
-        return self._explicit_title_from_path(self.project_dir(cwd) / f"{agent_session_id}.jsonl")
-
-    def ai_title(self, cwd: Path, agent_session_id: str | None) -> str | None:
-        if not agent_session_id:
-            return None
-        return self._attention_state_from_path(self.project_dir(cwd) / f"{agent_session_id}.jsonl")[0]
-
-    def attention_state(self, cwd: Path, agent_session_id: str | None) -> tuple[str | None, bool]:
-        if not agent_session_id:
-            return None, False
-        return self._attention_state_from_path(self.project_dir(cwd) / f"{agent_session_id}.jsonl")
-
-    def session_permission_mode(self, cwd: Path, agent_session_id: str | None) -> str | None:
-        if not agent_session_id:
-            return None
-        path = self.project_dir(cwd) / f"{agent_session_id}.jsonl"
-        try:
-            with path.open("rb") as handle:
-                handle.seek(0, 2)
-                handle.seek(max(0, handle.tell() - self.PERMISSION_TAIL_BYTES))
-                lines = handle.read().decode(errors="replace").splitlines()
-        except OSError:
-            return None
-        for line in reversed(lines):
-            try:
-                mode = json.loads(line).get("permissionMode")
-            except json.JSONDecodeError:
-                continue
-            if mode in self.PERMISSION_MODES:
-                return mode
-        return None
-
-    @staticmethod
-    def _title_words(title: str | None) -> set[str]:
-        if not title:
-            return set()
-        return {word for word in re.split(r"[^a-z0-9]+", title.lower()) if len(word) > 1}
-
-    def _parent_for_title(self, cwd: Path, cli_title: str | None) -> Path | None:
-        project_dir = self.project_dir(cwd)
-        target_words = self._title_words(cli_title)
-        candidates: list[tuple[int, float, Path]] = []
-        try:
-            paths = project_dir.glob("*.jsonl")
-        except OSError:
-            return None
-        for path in paths:
-            try:
-                with path.open(errors="replace") as handle:
-                    ai_title = next((json.loads(line).get("aiTitle") for line in handle
-                                     if '"type":"ai-title"' in line), None)
-                score = len(target_words & self._title_words(ai_title))
-                if score:
-                    candidates.append((score, path.stat().st_mtime, path))
-            except (OSError, json.JSONDecodeError):
-                continue
-        return max(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else None
-
-    @classmethod
-    def _user_event_is_interruption(cls, message: dict) -> bool:
-        """Whether a trailing user event is Claude's own ESC record rather than a submitted prompt.
-
-        Claude appends "[Request interrupted by user]" as a user-role event when work is cancelled, so a
-        newest-event-is-user test would otherwise read a stopped session as permanently working.
-        """
-        return any(text.strip().startswith(cls.INTERRUPT_TEXT_PREFIX) for text in cls._message_texts(message))
-
-    @classmethod
-    def _user_event_is_local_command(cls, message: dict) -> bool:
-        return any(text.strip().startswith("/") or any(marker in text for marker in cls.LOCAL_COMMAND_MARKERS)
-                   for text in cls._message_texts(message))
-
-    @staticmethod
-    def _message_texts(message: dict) -> list[str]:
-        content = message.get("content")
-        if isinstance(content, str):
-            return [content]
-        return [part.get("text") or "" for part in content or [] if isinstance(part, dict)]
-
-    @staticmethod
-    def _event_is_recent(event: dict, max_age_seconds: float) -> bool:
-        """Whether a transcript event's own ISO timestamp is younger than max_age_seconds.
-
-        A missing or unparsable timestamp counts as recent: the caller uses this only to expire a state
-        it has already decided is otherwise true, and guessing "stale" there would silently drop the
-        very signal it is guarding.
-        """
-        stamp = event.get("timestamp")
-        if not isinstance(stamp, str) or not stamp:
-            return True
-        try:
-            when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-        except ValueError:
-            return True
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - when).total_seconds() < max_age_seconds
-
-    @classmethod
-    def _user_event_is_command_output(cls, message: dict) -> bool:
-        """True for the transcript entry a local command writes when it finishes."""
-        return any(cls.LOCAL_COMMAND_OUTPUT_MARKER in text for text in cls._message_texts(message))
-
-    @classmethod
-    def _user_event_is_compaction(cls, message: dict) -> bool:
-        """True for the local-command event Claude writes when /compact starts.
-
-        Compaction is the one local command that then works for minutes, and it is invisible from
-        everywhere else: measured on 2.1.235, Claude writes no OSC title updates and appends nothing at
-        all to the transcript between this event and the summary it produces when it finishes. So this
-        event, with nothing after it, IS the "still compacting" signal -- the same reasoning that makes
-        every other local command a skip makes this one a match.
-        """
-        return any("/compact" in text for text in cls._message_texts(message))
-
-    @staticmethod
-    def _user_event_is_non_prompt_metadata(message: dict) -> bool:
-        content = message.get("content")
-        if isinstance(content, str):
-            texts = [content]
-            blocks = []
-        else:
-            blocks = [part for part in content or [] if isinstance(part, dict)]
-            texts = [part.get("text") or "" for part in blocks]
-        if any(part.get("type") == "tool_result" for part in blocks):
-            return True
-        if not any(text.strip() for text in texts):
-            return True
-        return any(text.lstrip().startswith("<system-reminder>") for text in texts)
-
-    @classmethod
-    def transcript_is_active(cls, path: Path) -> bool:
-        """Infer active work from the last meaningful event in a Claude transcript.
-
-        One rule for both parent and subagent transcripts: they carry the same event shapes.
-        """
-        try:
-            with path.open("rb") as handle:
-                handle.seek(0, 2)
-                size = handle.tell()
-                handle.seek(max(0, size - cls.TRANSCRIPT_TAIL_BYTES))
-                raw = handle.read()
-            lines = raw.decode(errors="replace").splitlines()
-        except OSError:
-            return False
-        # Set while walking back past a local command's own result. /compact is the one local command
-        # that then works for minutes with no other trace (measured: no OSC title updates and no
-        # transcript appends until it finishes), so the command event with nothing after it means
-        # "still compacting" -- but the SAME shape with a result after it means it already stopped,
-        # including the common "Not enough messages to compact." refusal that lands within a second.
-        local_command_finished = False
-        for line in reversed(lines):
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "system" and event.get("subtype") in ("local_command", "compact_boundary"):
-                local_command_finished = True
-                continue
-            message = event.get("message") or {}
-            # A finished local command reports back two different ways, and only one of them is the
-            # system event above. A successful /compact writes its result as a USER event carrying
-            # <local-command-stdout> ("Compacted (ctrl+o to see full summary)"), while the refusal path
-            # writes the system event -- so matching only the latter left every SUCCESSFUL compaction
-            # looking like one still in progress, which is the tab stuck on "running".
-            if cls._user_event_is_command_output(message):
-                local_command_finished = True
-                continue
-            if event.get("type") == "user":
-                # isCompactSummary is the transcript Claude writes for itself after /compact ("This
-                # session is being continued from a previous conversation..."). It is a user event with
-                # real prose, so without this it reads as a freshly submitted prompt and the session
-                # shows as working forever once a compact finishes.
-                if event.get("isMeta") or event.get("isCompactSummary"):
-                    continue
-                # Reached before the generic local-command skip below, which would otherwise hide it.
-                # Bounded by the event's own timestamp: a compaction that has produced nothing for this
-                # long is not running any more, and an unbounded match would leave the tab spinning
-                # forever the way isCompactSummary once did.
-                if cls._user_event_is_compaction(message):
-                    return not local_command_finished and cls._event_is_recent(event, cls.COMPACTION_MAX_SECONDS)
-                if cls._user_event_is_local_command(message) or cls._user_event_is_non_prompt_metadata(message):
-                    continue
-                if cls._user_event_is_interruption(message):
-                    return False
-                return True
-            if event.get("type") != "assistant" or message.get("type") != "message":
-                continue
-            content = message.get("content") or []
-            if any(part.get("type") in {"tool_use", "thinking"} for part in content if isinstance(part, dict)):
-                return True
-            if any(part.get("type") == "text" for part in content if isinstance(part, dict)):
-                return False
-        return False
-
-    def has_active_subagents(self, cwd: Path, cli_title: str | None) -> bool:
-        parent = self._parent_for_title(cwd, cli_title)
-        if parent is None:
-            return False
-        subagents = parent.with_name(parent.stem) / "subagents"
-        try:
-            return any(self.transcript_is_active(path) for path in subagents.glob("*.jsonl"))
-        except OSError:
-            return False
-
-    def subagent_states(self, cwd: Path, agent_session_id: str) -> dict[Path, bool]:
-        subagents = self.project_dir(cwd) / agent_session_id / "subagents"
-        try:
-            return {path: self.transcript_is_active(path) for path in subagents.glob("*.jsonl")}
-        except OSError:
-            return {}
-
-    def session_id_for_title(self, cwd: Path, cli_title: str | None) -> str | None:
-        parent = self._parent_for_title(cwd, cli_title)
-        return parent.stem if parent else None
-
-    def session_id_for_explicit_title(self, cwd: Path, title: str | None, after_timestamp: float,
-                                      claimed_ids: set[str]) -> str | None:
-        normalized_title = self._normalized_title(title)
-        if not normalized_title:
-            return None
-        candidates: list[tuple[float, str]] = []
-        for path, agent_session_id in self.candidate_session_files(cwd):
-            if agent_session_id in claimed_ids:
-                continue
-            try:
-                mtime = path.stat().st_mtime
-            except OSError:
-                continue
-            if mtime < after_timestamp or self._normalized_title(self._explicit_title_from_path(path)) != normalized_title:
-                continue
-            candidates.append((mtime, agent_session_id))
-        return max(candidates, default=(0.0, None))[1]
-
-    def session_id_from_recent_file_activity(self, cwd: Path, after_timestamp: float,
-                                             claimed_ids: set[str]) -> str | None:
-        candidates: list[tuple[float, str]] = []
-        for path, agent_session_id in self.candidate_session_files(cwd):
-            if agent_session_id in claimed_ids:
-                continue
-            try:
-                mtime = path.stat().st_mtime
-            except OSError:
-                continue
-            if mtime >= after_timestamp:
-                candidates.append((mtime, agent_session_id))
-        return max(candidates, default=(0.0, None))[1]
-
-    def resume_session_id_from_process_arguments(self, socket_path: Path,
-                                                 proc_tree: ProcTreeSnapshot) -> str | None:
-        tree_pids = proc_tree.tree_pids_for_socket(str(socket_path))
-        found: set[str] = set()
-        for process in proc_tree.process_details(tree_pids):
-            parts = self.command_parts(str(process["command"]))
-            for index, part in enumerate(parts):
-                candidate = parts[index + 1] if part == self.RESUME_FLAG and index + 1 < len(parts) else \
-                    part.removeprefix(f"{self.RESUME_FLAG}=") if part.startswith(f"{self.RESUME_FLAG}=") else ""
-                if UUID_RE.fullmatch(candidate):
-                    found.add(candidate)
-        return next(iter(found)) if len(found) == 1 else None
-
-    @staticmethod
-    def _normalized_title(value: str | None) -> str:
-        return " ".join(str(value or "").split()).casefold()
-
-    @classmethod
-    def _explicit_title_from_path(cls, path: Path) -> str | None:
-        try:
-            with path.open("rb") as handle:
-                handle.seek(0, 2)
-                handle.seek(max(0, handle.tell() - cls.TRANSCRIPT_TAIL_BYTES))
-                lines = handle.read().decode(errors="replace").splitlines()
-        except OSError:
-            return None
-        for line in reversed(lines):
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "custom-title":
-                title = event.get("customTitle")
-            elif event.get("type") == "agent-name":
-                title = event.get("agentName")
-            else:
-                continue
-            if isinstance(title, str) and title.strip():
-                return title.strip()
-        return None
-
-    @classmethod
-    def _attention_state_from_path(cls, path: Path) -> tuple[str | None, bool]:
-        try:
-            with path.open("rb") as handle:
-                handle.seek(0, 2)
-                handle.seek(max(0, handle.tell() - cls.TRANSCRIPT_TAIL_BYTES))
-                lines = handle.read().decode(errors="replace").splitlines()
-        except OSError:
-            return None, False
-        ai_title = None
-        ai_title_sequence = -1
-        latest_tool_result_sequence = -1
-        pending_tool_sequences: dict[str, int] = {}
-        for sequence, line in enumerate(lines):
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            event_type = event.get("type")
-            if event_type == "ai-title":
-                title = event.get("aiTitle")
-                if isinstance(title, str) and title.strip():
-                    ai_title = title.strip()
-                    ai_title_sequence = sequence
-                continue
-            message = event.get("message") or {}
-            content = message.get("content") if isinstance(message, dict) else None
-            if not isinstance(content, list):
-                continue
-            if event_type == "assistant":
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "tool_use" and isinstance(block.get("id"), str):
-                        pending_tool_sequences[block["id"]] = sequence
-            elif event_type == "user":
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "tool_result" and isinstance(block.get("tool_use_id"), str):
-                        pending_tool_sequences.pop(block["tool_use_id"], None)
-                        latest_tool_result_sequence = sequence
-        has_current_pending_tool = ai_title_sequence > latest_tool_result_sequence and any(
-            sequence > ai_title_sequence for sequence in pending_tool_sequences.values())
-        return ai_title, has_current_pending_tool
 
     # -- activity / processing ---------------------------------------------
 
@@ -781,9 +378,10 @@ class ClaudeCli(AgentCli):
     def initialize_subagent_state(self, manager, ms) -> None:
         if not ms.record.agent_session_id:
             return
-        parent = self.project_dir(Path(ms.record.cwd)) / f"{ms.record.agent_session_id}.jsonl"
-        ms.agent_state.main_active = not ms.record.claude_interrupted and parent.is_file() and self.transcript_is_active(parent)
-        states = self.subagent_states(Path(ms.record.cwd), ms.record.agent_session_id)
+        tracker = manager._tracker
+        parent = tracker.claude_project_dir(Path(ms.record.cwd)) / f"{ms.record.agent_session_id}.jsonl"
+        ms.agent_state.main_active = not ms.record.claude_interrupted and parent.is_file() and tracker.claude_session_is_active(parent)
+        states = tracker.claude_subagent_states(Path(ms.record.cwd), ms.record.agent_session_id)
         ms.agent_state.subagent_states = states
         ms.agent_state.subagents_active = not ms.record.claude_interrupted and any(states.values())
         ms.agent_state.activity_signatures = self._activity_signatures(parent, set(states))
@@ -809,7 +407,8 @@ class ClaudeCli(AgentCli):
     def refresh_activity_for_status(self, manager, ms) -> None:
         if not ms.record.agent_session_id:
             return
-        project_dir = self.project_dir(Path(ms.record.cwd))
+        tracker = manager._tracker
+        project_dir = tracker.claude_project_dir(Path(ms.record.cwd))
         parent = project_dir / f"{ms.record.agent_session_id}.jsonl"
         subagent_dir = project_dir / ms.record.agent_session_id / "subagents"
         try:
@@ -819,19 +418,20 @@ class ClaudeCli(AgentCli):
         signatures = self._activity_signatures(parent, subagents)
         if signatures == ms.agent_state.activity_signatures:
             return
-        ms.agent_state.main_active = not ms.record.claude_interrupted and parent.is_file() and self.transcript_is_active(parent)
-        ms.agent_state.subagent_states = self.subagent_states(Path(ms.record.cwd), ms.record.agent_session_id)
+        ms.agent_state.main_active = not ms.record.claude_interrupted and parent.is_file() and tracker.claude_session_is_active(parent)
+        ms.agent_state.subagent_states = tracker.claude_subagent_states(Path(ms.record.cwd), ms.record.agent_session_id)
         ms.agent_state.subagents_active = not ms.record.claude_interrupted and any(ms.agent_state.subagent_states.values())
         ms.agent_state.activity_signatures = self._activity_signatures(parent, set(ms.agent_state.subagent_states))
         self.scan_background_tasks(ms.agent_state, parent)
 
     def on_project_file_change(self, manager, path: Path) -> None:
         """Update the parent or subagent state that generated a filesystem event under the projects tree."""
+        tracker = manager._tracker
         for ms in manager._sessions.values():
             if ms.record.agent_kind != self.kind or not ms.record.agent_session_id:
                 continue
-            parent = self.project_dir(Path(ms.record.cwd)) / f"{ms.record.agent_session_id}.jsonl"
-            subagents = self.project_dir(Path(ms.record.cwd)) / ms.record.agent_session_id / "subagents"
+            parent = tracker.claude_project_dir(Path(ms.record.cwd)) / f"{ms.record.agent_session_id}.jsonl"
+            subagents = tracker.claude_project_dir(Path(ms.record.cwd)) / ms.record.agent_session_id / "subagents"
             is_parent = path == parent
             try:
                 is_subagent = path.is_relative_to(subagents)
@@ -844,12 +444,12 @@ class ClaudeCli(AgentCli):
             attention_changed = False
             background_changed = False
             if is_parent:
-                ms.agent_state.main_active = not ms.record.claude_interrupted and path.is_file() and self.transcript_is_active(path)
+                ms.agent_state.main_active = not ms.record.claude_interrupted and path.is_file() and tracker.claude_session_is_active(path)
                 title_changed = self.sync_explicit_title(manager, ms)
                 attention_changed = self._refresh_attention_from_transcript(manager, ms)
                 background_changed = self.scan_background_tasks(ms.agent_state, path)
             elif path.is_file():
-                ms.agent_state.subagent_states[path] = self.transcript_is_active(path)
+                ms.agent_state.subagent_states[path] = tracker.claude_subagent_is_active(path)
             else:
                 ms.agent_state.subagent_states.pop(path, None)
             ms.agent_state.subagents_active = not ms.record.claude_interrupted and any(ms.agent_state.subagent_states.values())
@@ -870,7 +470,7 @@ class ClaudeCli(AgentCli):
         if not ms.detached_live:
             return False
         tracker = manager._tracker
-        candidate = self.resume_session_id_from_process_arguments(
+        candidate = tracker.claude_resume_session_id_from_process_arguments(
             manager._dtach_socket(ms.record.session_id), proc_tree)
         if not candidate or candidate == ms.record.agent_session_id or candidate in manager._claimed_agent_ids(ms):
             return False
@@ -886,23 +486,24 @@ class ClaudeCli(AgentCli):
     def reconcile_stale_binding(self, manager, ms) -> bool:
         if not ms.record.agent_session_id or not ms.cli_title:
             return False
+        tracker = manager._tracker
         cwd = Path(ms.record.cwd)
-        current_path = self.project_dir(cwd) / f"{ms.record.agent_session_id}.jsonl"
+        current_path = tracker.claude_project_dir(cwd) / f"{ms.record.agent_session_id}.jsonl"
         try:
             current_mtime = current_path.stat().st_mtime
         except OSError:
             current_mtime = 0.0
         created_at = TimeUtil.est_naive_iso_timestamp(ms.record.created_at_est)
         live_title = manager._display_title(ms.cli_title)
-        current_explicit_title = self.explicit_session_title(cwd, ms.record.agent_session_id)
-        normalized_live_title = self._normalized_title(live_title)
-        normalized_record_title = self._normalized_title(ms.record.title)
-        normalized_current_title = self._normalized_title(current_explicit_title)
+        current_explicit_title = tracker.claude_explicit_session_title(cwd, ms.record.agent_session_id)
+        normalized_live_title = tracker._normalized_claude_title(live_title)
+        normalized_record_title = tracker._normalized_claude_title(ms.record.title)
+        normalized_current_title = tracker._normalized_claude_title(current_explicit_title)
         renamed_title_points_to_another_transcript = ms.record.title_user_set and normalized_live_title and \
             normalized_record_title == normalized_live_title and normalized_current_title != normalized_live_title
         if current_mtime >= created_at and not renamed_title_points_to_another_transcript:
             return False
-        replacement = self.session_id_for_explicit_title(
+        replacement = tracker.claude_session_id_for_explicit_title(
             cwd, live_title, created_at, manager._claimed_agent_ids(ms))
         if replacement is None or replacement == ms.record.agent_session_id:
             return False
@@ -917,7 +518,7 @@ class ClaudeCli(AgentCli):
     def sync_explicit_title(self, manager, ms) -> bool:
         if not ms.record.agent_session_id:
             return False
-        explicit_title = self.explicit_session_title(Path(ms.record.cwd), ms.record.agent_session_id)
+        explicit_title = manager._tracker.claude_explicit_session_title(Path(ms.record.cwd), ms.record.agent_session_id)
         if not explicit_title or (manager._display_title(ms.cli_title) == explicit_title and ms.record.title == explicit_title):
             return False
         ms.cli_title = explicit_title
@@ -934,7 +535,7 @@ class ClaudeCli(AgentCli):
             manager._schedule_detection(ms, 0.1)
 
     def session_title(self, tracker, cwd: Path, agent_session_id: str | None) -> str | None:
-        return self.stored_session_title(cwd, agent_session_id)
+        return tracker.claude_session_title(cwd, agent_session_id)
 
     # -- input / rename / spawn / detection --------------------------------
 
@@ -975,10 +576,11 @@ class ClaudeCli(AgentCli):
 
     async def _wait_for_session_title(self, manager, ms, expected_title: str) -> None:
         normalized_title = " ".join(str(expected_title or "").splitlines()).strip()
+        tracker = manager._tracker
         for _ in range(20):
             await asyncio.sleep(0.5)
-            self.invalidate_session_title(Path(ms.record.cwd), ms.record.agent_session_id)
-            actual_title = self.stored_session_title(Path(ms.record.cwd), ms.record.agent_session_id)
+            tracker.invalidate_claude_session_title(Path(ms.record.cwd), ms.record.agent_session_id)
+            actual_title = tracker.claude_session_title(Path(ms.record.cwd), ms.record.agent_session_id)
             if actual_title != normalized_title:
                 continue
             if ms.cli_title != actual_title:
@@ -999,7 +601,7 @@ class ClaudeCli(AgentCli):
         return self.RESTART_REPAINT_DELAY_SECONDS if raw_replay_enabled else None
 
     def restart_permission(self, manager, ms) -> str:
-        return self.session_permission_mode(
+        return manager._tracker.claude_session_permission_mode(
             Path(ms.record.cwd), ms.record.agent_session_id) or ""
 
     async def verify_detected_session_id(self, manager, ms, found: str | None, socket: Path) -> str | None:
@@ -1007,7 +609,7 @@ class ClaudeCli(AgentCli):
         # different id than the current binding only when the process arguments confirm it.
         existing = ms.record.agent_session_id
         if existing and found not in {None, existing}:
-            resumed = self.resume_session_id_from_process_arguments(
+            resumed = manager._tracker.claude_resume_session_id_from_process_arguments(
                 socket, await ProcTreeSnapshot.capture())
             if resumed != found:
                 return None
@@ -1020,13 +622,13 @@ class ClaudeCli(AgentCli):
         if elapsed >= TermdeckConfig.AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS:
             return None
         submitted_at = time.time() - elapsed
-        return self.session_id_from_recent_file_activity(
+        return manager._tracker.claude_session_id_from_recent_file_activity(
             Path(ms.record.cwd), submitted_at, claimed)
 
     def on_agent_session_bound(self, manager, ms) -> None:
         self.initialize_subagent_state(manager, ms)
         if ms.cli_title is None:
-            ms.cli_title = self.stored_session_title(Path(ms.record.cwd), ms.record.agent_session_id)
+            ms.cli_title = manager._tracker.claude_session_title(Path(ms.record.cwd), ms.record.agent_session_id)
 
     # -- attention ---------------------------------------------------------
 
@@ -1057,7 +659,7 @@ class ClaudeCli(AgentCli):
     def transcript_requires_attention(self, manager, ms) -> bool:
         if not ms.record.agent_session_id:
             return False
-        title, has_pending_tool = self.attention_state(Path(ms.record.cwd), ms.record.agent_session_id)
+        title, has_pending_tool = manager._tracker.claude_attention_state(Path(ms.record.cwd), ms.record.agent_session_id)
         return has_pending_tool and self.title_requires_attention(title)
 
     def update_attention_from_title(self, manager, ms, title: str | None) -> bool:
@@ -1071,7 +673,7 @@ class ClaudeCli(AgentCli):
     def _refresh_attention_from_transcript(self, manager, ms) -> bool:
         if ms.attention_hook_driven or not ms.record.agent_session_id:
             return False
-        title, has_pending_tool = self.attention_state(Path(ms.record.cwd), ms.record.agent_session_id)
+        title, has_pending_tool = manager._tracker.claude_attention_state(Path(ms.record.cwd), ms.record.agent_session_id)
         requires_attention = has_pending_tool and self.title_requires_attention(title)
         if ms.attention_required == requires_attention:
             return False

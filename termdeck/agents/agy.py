@@ -1,4 +1,3 @@
-import json
 import shlex
 import time
 from pathlib import Path
@@ -165,83 +164,6 @@ class AgyCli(AgentCli):
     def _turn_title(event_type: str) -> str:
         return event_type.replace("_", " ").title()
 
-    # -- transcript reading -------------------------------------------------
-    #
-    # AGY's brain-file event shapes are known only here; the shared tracker asks the adapter.
-
-    ACTIVITY_TAIL_BYTES = 256 * 1024
-    TERMINAL_STATUSES = {"DONE", "COMPLETED", "ERROR", "FAILED", "INTERRUPTED", "CANCELLED", "CANCELED",
-                         "TIMEOUT", "TIME_EXCEEDED"}
-    WORKING_STATUSES = {"IN_PROGRESS", "WORKING", "PROCESSING", "RUNNING"}
-    SETTLED_EVENT_TYPES = {"CONVERSATION_HISTORY", "CHECKPOINT", "SYSTEM", "ASSISTANT_RESPONSE", "RESPONSE"}
-    WORKING_EVENT_TYPES = {"PLANNER_RESPONSE", "VIEW_FILE", "GREP_SEARCH", "RUN_COMMAND", "RUN", "PLAN",
-                           "MODEL_RESPONSE"}
-
-    def session_is_active(self, agent_session_id: str | None) -> bool:
-        if not agent_session_id:
-            return False
-        path = self.transcript_path(None, agent_session_id)
-        if path is None:
-            return False
-        return self.transcript_is_active(path)
-
-    @classmethod
-    def transcript_is_active(cls, path: Path) -> bool:
-        try:
-            size = path.stat().st_size
-        except OSError:
-            return False
-        if not size:
-            return False
-        start = max(0, size - cls.ACTIVITY_TAIL_BYTES)
-        try:
-            with path.open("rb") as handle:
-                if start > 0:
-                    handle.seek(start - 1)
-                    previous = handle.read(1)
-                    handle.seek(start)
-                else:
-                    previous = b"\n"
-                raw = handle.read()
-        except OSError:
-            return False
-        if start > 0 and previous not in (b"\n", b"\r"):
-            boundary = raw.find(b"\n")
-            if boundary < 0:
-                return False
-            raw = raw[boundary + 1:]
-        for raw_line in reversed(raw.splitlines()):
-            try:
-                payload = json.loads(raw_line.decode(errors="replace"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue
-            if not isinstance(payload, dict):
-                continue
-            event_type = str(payload.get("type") or "").upper()
-            status = str(payload.get("status") or "").upper()
-            if status in cls.TERMINAL_STATUSES:
-                return False
-            if status in cls.WORKING_STATUSES:
-                return True
-            if event_type == "USER_INPUT":
-                return True
-            if str(payload.get("source") or "") == "USER_EXPLICIT":
-                return True
-            thinking = payload.get("thinking")
-            if isinstance(thinking, str) and thinking.strip():
-                return True
-            tool_calls = payload.get("tool_calls")
-            if isinstance(tool_calls, list) and tool_calls:
-                return True
-            content = payload.get("content")
-            if isinstance(content, str) and content.strip():
-                if event_type in cls.SETTLED_EVENT_TYPES:
-                    return False
-                if event_type in cls.WORKING_EVENT_TYPES:
-                    return True
-                return False
-        return False
-
     # -- activity / processing ---------------------------------------------
 
     def new_session_state(self) -> AgySessionState:
@@ -251,7 +173,7 @@ class AgyCli(AgentCli):
         return bool(ms.processing or ms.agent_state.transcript_active)
 
     def refresh_persisted_activity(self, manager, ms) -> None:
-        ms.agent_state.transcript_active = self.session_is_active(ms.record.agent_session_id)
+        ms.agent_state.transcript_active = manager._tracker.agy_session_is_active(ms.record.agent_session_id)
         if ms.agent_state.transcript_active:
             ms.agent_state.transcript_active_until = time.monotonic() + self.ACTIVITY_KEEPALIVE_SECONDS
 
@@ -279,7 +201,7 @@ class AgyCli(AgentCli):
         if self.session_id_from_path(path) != ms.record.agent_session_id:
             return
         previous = manager._processing_state(ms)
-        active = self.transcript_is_active(path)
+        active = manager._tracker._agy_session_is_active(path)
         self.refresh_transcript_activity(ms, active, time.monotonic())
         if manager._processing_state(ms) != previous:
             manager._broadcast_status(ms)
@@ -308,4 +230,4 @@ class AgyCli(AgentCli):
         return ms.detect_attempts < 20
 
     def on_agent_session_bound(self, manager, ms) -> None:
-        ms.agent_state.transcript_active = self.session_is_active(ms.record.agent_session_id)
+        ms.agent_state.transcript_active = manager._tracker.agy_session_is_active(ms.record.agent_session_id)
