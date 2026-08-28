@@ -1048,10 +1048,22 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // Keys that answer or abandon a prompt, as opposed to moving around inside one. Mirrors the server's
+  // rule (TerminalSessionManager._input_dismisses_attention) on purpose: when the two disagree, the one
+  // that clears early hands the badge straight back to the other, and the class goes off and on -- which
+  // restarts the CSS animation. Typing an answer used to do exactly that, once per keystroke.
+  inputDismissesAttention(data) {
+    if (!data) return false;
+    const typed = data.replace(TERMINAL_REPLY_RE, "");
+    if (!typed) return false;
+    if (/[\r\n\x03\x04]/.test(typed)) return true;
+    return typed === "\x1b";
+  },
+
   sendInput(view, data) {
     const session = this.session(view.sessionId);
     if (data) view.attentionScreenDetectionSuppressed = true;
-    if (session?.needs_attention) {
+    if (session?.needs_attention && this.inputDismissesAttention(data)) {
       session.needs_attention = false;
       this.attentionServerStates.set(view.sessionId, false);
       this.clearSessionAttention(view.sessionId);
@@ -3317,8 +3329,9 @@ Object.assign(TermdeckApp.prototype, {
 
   notifyAgentEvent(session, body) {
     if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-    // The one you are looking at needs no banner.
-    if (document.hasFocus() && session.session_id === this.activeId) return;
+    // Banners are for when TermDeck isn't being looked at; while the tab is focused the deck
+    // itself already shows working, unread, and attention state.
+    if (document.hasFocus()) return;
     const title = this.titlePresentation(session).text || session.title || "terminal";
     try {
       const notification = new Notification(`${title} ${body}`, {

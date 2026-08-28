@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-27
+
 ### Added
 
 - Aider and OpenCode agent support: spawn with permission modes, activity tracking, Markdown transcripts,
@@ -14,9 +16,9 @@ All notable changes to this project are documented here. The format follows
 - Live activity dots under each session row showing what a Claude session is running in the background:
   active subagents, backgrounded shell commands, and persistent monitors, each with a count and hover
   description — derived from transcript state the watchers already maintain, never from polling.
-- Browser desktop notifications when an agent needs attention or finishes a run longer than five seconds,
-  controlled by one settings switch. Notification permission is requested on the first click or keypress,
-  where the browser actually allows the prompt to appear.
+- Browser desktop notifications when an agent needs attention or finishes a run longer than five seconds —
+  only while the TermDeck tab is not focused — controlled by one settings switch. Notification permission is
+  requested on the first click or keypress, where the browser actually allows the prompt to appear.
 - A web app manifest makes TermDeck installable as a browser app; notifications from the installed app carry
   the TermDeck name and icon instead of the raw localhost origin, and carry the icon either way.
 - Live context usage for the active agent session (`ctx 118k/258k`) in the bottom toolbar.
@@ -189,7 +191,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/danialfarid/termdeck/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/danialfarid/termdeck/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/danialfarid/termdeck/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/danialfarid/termdeck/compare/v0.4.0...v0.5.0
