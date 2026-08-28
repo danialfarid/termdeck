@@ -1871,3 +1871,56 @@ class ClaudeCancelClearsProcessingTest(unittest.TestCase):
     def test_typing_does_not_interrupt(self) -> None:
         self._send("hello")
         self.assertFalse(self.ms.record.claude_interrupted)
+
+
+class ClaudeCompactionCompletionTest(unittest.TestCase):
+    """A finished /compact must stop reading as work in progress.
+
+    The two completion paths write different entries, which is what made this subtle: the refusal
+    ("Not enough messages to compact.") writes a system/local_command event, while a SUCCESSFUL
+    compaction writes its result as a user event carrying <local-command-stdout>. Matching only the
+    system event left every successful compaction looking like one still running.
+    """
+
+    def _transcript(self, directory: str, *events: dict) -> Path:
+        path = Path(directory) / "session.jsonl"
+        path.write_text("".join(json.dumps(event) + "\n" for event in events))
+        return path
+
+    def _user(self, text: str, **extra) -> dict:
+        return {"type": "user", "message": {"role": "user", "content": text},
+                "timestamp": datetime.now(timezone.utc).isoformat(), **extra}
+
+    def _assistant(self, *blocks: dict) -> dict:
+        return {"type": "assistant", "message": {"type": "message", "role": "assistant", "content": list(blocks)}}
+
+    def test_successful_compaction_reads_idle(self) -> None:
+        # The real shape, taken from a session that was stuck on "running".
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._transcript(
+                directory,
+                {"type": "system", "subtype": "compact_boundary"},
+                self._user("This session is being continued from a previous conversation", isCompactSummary=True),
+                self._user("<local-command-caveat>Caveat: ...</local-command-caveat>", isMeta=True),
+                self._user("<command-name>/compact</command-name>"),
+                self._user("<local-command-stdout>Compacted (ctrl+o to see full summary)</local-command-stdout>"),
+                {"type": "attachment"}, {"type": "attachment"})
+            self.assertFalse(AgentSessionTracker._claude_subagent_is_active(path))
+
+    def test_compaction_in_flight_still_reads_active(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._transcript(
+                directory,
+                self._assistant({"type": "text", "text": "all done"}),
+                self._user("<command-name>/compact</command-name>"))
+            self.assertTrue(AgentSessionTracker._claude_subagent_is_active(path))
+
+    def test_refused_compaction_reads_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._transcript(
+                directory,
+                self._assistant({"type": "text", "text": "all done"}),
+                self._user("<command-name>/compact</command-name>"),
+                {"type": "system", "subtype": "local_command",
+                 "content": "<local-command-stdout>Not enough messages to compact.</local-command-stdout>"})
+            self.assertFalse(AgentSessionTracker._claude_subagent_is_active(path))

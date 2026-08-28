@@ -523,6 +523,9 @@ class UiSettings(BaseModel):
     transcript_first_surface: str = "terminal"
     # Declared explicitly or it is silently dropped when settings are saved.
     tall_webgl: bool = True
+    # Window for the sidebar's "recently used" terminal filter, in hours. Chosen from the small menu
+    # under the filter button; the default covers a working day plus the evening before.
+    recent_terminal_hours: int = 24
     # macOS user notifications on agent transitions (see notifier.AgentNotifier).
     notify_attention: bool = True
     notify_agent_idle: bool = True

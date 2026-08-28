@@ -1716,11 +1716,17 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // The button is an offer to go somewhere with MORE history than this pane, so it has to stay quiet
+  // until this pane actually holds a lot. The old test passed on a single line past the fold -- any
+  // scrollback at all, or a buffer one row taller than the screen -- so a freshly opened terminal
+  // advertised a transcript it had barely started writing. Whole screens of accumulated scrollback is
+  // both the honest signal and the cheap one: it reads two numbers already on the element.
   terminalHasScrollableHistory(view) {
     if (!view || view.closed || !view.term) return false;
-    const buffer = view.term.buffer.active;
-    return Number(buffer.baseY || 0) > 0 || Number(buffer.length || 0) > Number(view.term.rows || 0) ||
-      view.container.scrollHeight - view.container.clientHeight > 2;
+    const visible = view.container.clientHeight;
+    if (!visible) return false;
+    const scrollable = view.container.scrollHeight - visible;
+    return scrollable >= visible * TERMINAL_HISTORY_MORE_MIN_PAGES;
   },
 
 

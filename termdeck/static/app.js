@@ -23,6 +23,15 @@ const TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS = 1800;
 // Well clear of one row: the button is re-evaluated on every write, and a row-sized nudge from the
 // parked-reader anchor must never be able to toggle it.
 const TERMINAL_HISTORY_MORE_HIDE_PX = 140;
+// Screens of scrollback a terminal must hold before it offers the Markdown transcript. A fresh session
+// has none of this; a session worth reading elsewhere has plenty.
+const TERMINAL_HISTORY_MORE_MIN_PAGES = 5;
+// How far back "recently used" reaches for the sidebar's active-terminals filter, when the user has not
+// chosen otherwise. A day covers "what I was working on", including yesterday evening.
+const RECENT_TERMINAL_HOURS_DEFAULT = 24;
+const RECENT_TERMINAL_HOUR_CHOICES = [2, 6, 12, 24, 48, 168];
+// Long enough not to fire on an ordinary click, short enough to feel deliberate rather than stuck.
+const RECENT_TERMINAL_LONG_PRESS_MS = 450;
 const INACTIVE_TERMINAL_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 const INACTIVE_TERMINAL_OUTPUT_BATCH_BYTES = 256 * 1024;
 const DEFAULT_COMMAND = "codex";
@@ -32,6 +41,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_fo
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
+  recent_terminal_hours: 24,
   show_terminal_icons: false, terminal_icon_agents: {}, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
@@ -4646,10 +4656,32 @@ class TermdeckApp {
       sort.classList.toggle("on", this.hideInactiveTerminals);
       sort.innerHTML = `<span class="codicon ${this.hideInactiveTerminals ? "codicon-eye-closed" : "codicon-eye"}"></span>`;
       sort.setAttribute("aria-pressed", String(this.hideInactiveTerminals));
-      sort.title = this.hideInactiveTerminals ? "Show all terminals" : "Show active and unread terminals";
-      sort.setAttribute("aria-label", sort.title);
+      const window_ = this.recentHoursLabel(this.terminalRecentHours());
+      sort.title = (this.hideInactiveTerminals ? "Show all terminals" : "Show active terminals only") +
+        `\nLong press to set the active window (${window_})`;
+      sort.setAttribute("aria-label", sort.title.replace("\n", " · "));
+      // Click toggles; press and hold opens the window menu. The menu is a refinement you reach for
+      // occasionally, so it stays out of the path of the thing you do constantly.
+      sort.onpointerdown = (event) => {
+        if (event.button !== 0) return;
+        this.recentHoursLongPressFired = false;
+        clearTimeout(this.recentHoursLongPressTimer);
+        this.recentHoursLongPressTimer = window.setTimeout(() => {
+          this.recentHoursLongPressFired = true;
+          this.openRecentTerminalHoursMenu(this.$("active-toggle"));
+        }, RECENT_TERMINAL_LONG_PRESS_MS);
+      };
+      const cancelLongPress = () => clearTimeout(this.recentHoursLongPressTimer);
+      sort.onpointerup = cancelLongPress;
+      sort.onpointerleave = cancelLongPress;
+      sort.onpointercancel = cancelLongPress;
       sort.onclick = (event) => {
         event.stopPropagation();
+        // A long press still delivers a click on release; that one must not also flip the filter.
+        if (this.recentHoursLongPressFired) {
+          this.recentHoursLongPressFired = false;
+          return;
+        }
         this.toggleHideInactiveTerminals();
       };
       const group = document.createElement("button");
@@ -5002,9 +5034,99 @@ class TermdeckApp {
     this.renderList();
   }
 
+  // The filter keeps anything working, anything waiting on you, anything unread -- and anything you
+  // have touched recently. Without that last clause the list collapsed to whatever happened to be busy
+  // at that instant, which hides the session you were reading a minute ago the moment it finishes.
   isActiveTerminal(session) {
-    return !!session && (this.processingStates.get(session.session_id) === true ||
-      session.processing === true || session.needs_attention === true || this.unreadSessions.has(session.session_id));
+    if (!session) return false;
+    if (this.processingStates.get(session.session_id) === true || session.processing === true ||
+        session.needs_attention === true || this.unreadSessions.has(session.session_id)) return true;
+    return this.terminalUsedWithinWindow(session);
+  }
+
+  // A small menu under the filter button offering the window. Deliberately transient: it is a refinement
+  // of a filter you just switched on, not a setting you go looking for, so any click elsewhere, Escape,
+  // or a scroll dismisses it and the default stands if you ignore it.
+  openRecentTerminalHoursMenu(anchor) {
+    this.closeRecentTerminalHoursMenu();
+    if (!anchor) return;
+    const menu = document.createElement("div");
+    menu.id = "recent-hours-menu";
+    menu.setAttribute("role", "menu");
+    const heading = document.createElement("div");
+    heading.className = "recent-hours-heading";
+    heading.textContent = "recently used within";
+    menu.appendChild(heading);
+    for (const hours of RECENT_TERMINAL_HOUR_CHOICES) {
+      const option = document.createElement("button");
+      option.className = "recent-hours-option";
+      option.type = "button";
+      option.setAttribute("role", "menuitemradio");
+      const selected = hours === this.terminalRecentHours();
+      option.classList.toggle("on", selected);
+      option.setAttribute("aria-checked", String(selected));
+      option.textContent = this.recentHoursLabel(hours);
+      option.onclick = (event) => {
+        event.stopPropagation();
+        this.settings.recent_terminal_hours = hours;
+        this.saveSettings();
+        this.closeRecentTerminalHoursMenu();
+        this.renderList();
+      };
+      menu.appendChild(option);
+    }
+    document.body.appendChild(menu);
+    const rect = anchor.getBoundingClientRect();
+    menu.style.top = `${Math.round(rect.bottom + 4)}px`;
+    // Right-aligned to the button, then pulled back inside the viewport if that would overflow.
+    const left = Math.min(Math.max(6, rect.right - menu.offsetWidth), window.innerWidth - menu.offsetWidth - 6);
+    menu.style.left = `${Math.round(left)}px`;
+    this.recentHoursMenu = menu;
+    this.recentHoursDismiss = (event) => {
+      if (event.type === "keydown" && event.key !== "Escape") return;
+      if (event.type === "pointerdown" && (menu.contains(event.target) || anchor.contains(event.target))) return;
+      this.closeRecentTerminalHoursMenu();
+    };
+    // Listeners are added on the next frame: the click that opened this menu is still propagating, and
+    // catching it would close the menu in the same gesture that asked for it.
+    requestAnimationFrame(() => {
+      if (!this.recentHoursMenu) return;
+      window.addEventListener("pointerdown", this.recentHoursDismiss, true);
+      window.addEventListener("keydown", this.recentHoursDismiss, true);
+      window.addEventListener("resize", this.recentHoursDismiss, true);
+      this.$("session-list")?.addEventListener("scroll", this.recentHoursDismiss, true);
+    });
+  }
+
+  closeRecentTerminalHoursMenu() {
+    if (this.recentHoursDismiss) {
+      window.removeEventListener("pointerdown", this.recentHoursDismiss, true);
+      window.removeEventListener("keydown", this.recentHoursDismiss, true);
+      window.removeEventListener("resize", this.recentHoursDismiss, true);
+      this.$("session-list")?.removeEventListener("scroll", this.recentHoursDismiss, true);
+      this.recentHoursDismiss = null;
+    }
+    this.recentHoursMenu?.remove();
+    this.recentHoursMenu = null;
+  }
+
+  recentHoursLabel(hours) {
+    if (hours % 168 === 0) return `${hours / 168}w`;
+    if (hours % 24 === 0) return `${hours / 24}d`;
+    return `${hours}h`;
+  }
+
+  terminalRecentHours() {
+    const hours = Number(this.settings.recent_terminal_hours);
+    return Number.isFinite(hours) && hours > 0 ? hours : RECENT_TERMINAL_HOURS_DEFAULT;
+  }
+
+  terminalUsedWithinWindow(session) {
+    // last_activity_at is epoch seconds and covers input as well as output, so "used" means the session
+    // did something or had something done to it -- which is what someone scanning the list is after.
+    const last = Number(session.last_activity_at);
+    if (!Number.isFinite(last) || last <= 0) return false;
+    return (Date.now() / 1000 - last) <= this.terminalRecentHours() * 3600;
   }
 
   updateTerminalSearchGroupButton() {

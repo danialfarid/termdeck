@@ -29,6 +29,7 @@ class AgentSessionTracker:
     _CLAUDE_PERMISSION_MODES = {"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
     _CLAUDE_INTERRUPT_TEXT_PREFIX = "[Request interrupted by user"
     _CLAUDE_LOCAL_COMMAND_MARKERS = ("<command-name>", "<local-command-")
+    _CLAUDE_LOCAL_COMMAND_OUTPUT_MARKER = "<local-command-stdout>"
     # How long a /compact with nothing after it still counts as running. Long enough for a big
     # conversation, short enough that a compaction which died leaves the tab idle rather than spinning.
     _CLAUDE_COMPACTION_MAX_SECONDS = 15 * 60.0
@@ -361,6 +362,14 @@ class AgentSessionTracker:
         return (datetime.now(timezone.utc) - when).total_seconds() < max_age_seconds
 
     @staticmethod
+    def _claude_user_event_is_command_output(message: dict) -> bool:
+        """True for the transcript entry a local command writes when it finishes."""
+        content = message.get("content")
+        texts = [content] if isinstance(content, str) else \
+            [part.get("text") or "" for part in content or [] if isinstance(part, dict)]
+        return any(AgentSessionTracker._CLAUDE_LOCAL_COMMAND_OUTPUT_MARKER in text for text in texts)
+
+    @staticmethod
     def _claude_user_event_is_compaction(message: dict) -> bool:
         """True for the local-command event Claude writes when /compact starts.
 
@@ -413,10 +422,18 @@ class AgentSessionTracker:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if event.get("type") == "system" and event.get("subtype") == "local_command":
+            if event.get("type") == "system" and event.get("subtype") in ("local_command", "compact_boundary"):
                 local_command_finished = True
                 continue
             message = event.get("message") or {}
+            # A finished local command reports back two different ways, and only one of them is the
+            # system event above. A successful /compact writes its result as a USER event carrying
+            # <local-command-stdout> ("Compacted (ctrl+o to see full summary)"), while the refusal path
+            # writes the system event -- so matching only the latter left every SUCCESSFUL compaction
+            # looking like one still in progress, which is the tab stuck on "running".
+            if AgentSessionTracker._claude_user_event_is_command_output(message):
+                local_command_finished = True
+                continue
             if event.get("type") == "user":
                 # isCompactSummary is the transcript Claude writes for itself after /compact ("This
                 # session is being continued from a previous conversation..."). It is a user event with

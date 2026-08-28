@@ -2299,9 +2299,19 @@ Object.assign(TermdeckApp.prototype, {
       this.fileHistorySidebarVisible = false;
       this.syncFileHistorySurface();
     }
-    if (!this.vscodeMode && !FILES_SIDE_PANEL_TABS.includes(this.sideView)) {
-      const view = FILES_SIDE_PANEL_TABS.includes(options.view) ? options.view : this.lastFilesSidePanelTab;
-      this.setSideView(FILES_SIDE_PANEL_TABS.includes(view) ? view : "project", false);
+    // An explicitly requested panel wins even when a files tab is already showing. The nav state below
+    // records whichever tab ends up active, and navUrl routes on that -- so without this, a file opened
+    // while the git tab happened to be up was recorded as a git-view state and the address became /g/,
+    // whatever the file had to do with git.
+    if (!this.vscodeMode) {
+      const requested = FILES_SIDE_PANEL_TABS.includes(options.view) ? options.view : "";
+      if (requested) {
+        this.setSideView(requested, false);
+      } else if (!FILES_SIDE_PANEL_TABS.includes(this.sideView)) {
+        const fallback = FILES_SIDE_PANEL_TABS.includes(this.lastFilesSidePanelTab)
+          ? this.lastFilesSidePanelTab : "project";
+        this.setSideView(fallback, false);
+      }
     }
     this.closeTerminalFind();
     this.closePromptHistory();
@@ -2895,7 +2905,9 @@ Object.assign(TermdeckApp.prototype, {
       this.postVscodeFileOpen(parsed.path, parsed.line, parsed.column, s ? s.cwd : "~");
       return;
     }
-    this.openFile(s ? s.cwd : "~", parsed.path, parsed.line, null, { returnTo });
+    // A path printed by a terminal is a file to read, not a diff: name the file view so it opens under
+    // /f/ rather than inheriting /g/ from whichever side tab was last used.
+    this.openFile(s ? s.cwd : "~", parsed.path, parsed.line, null, { returnTo, view: "project" });
   },
 
 

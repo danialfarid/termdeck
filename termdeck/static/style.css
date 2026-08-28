@@ -397,6 +397,13 @@ body:not(.vscode-mode) .file-item.active .file-item-name { color: var(--sidebar-
 .closed-item .codicon { font-size: calc(var(--sidebar-font-size)); flex: none; }
 .closed-item .file-item-name { font-size: var(--system-font-size); }
 .closed-group { max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent); font: calc(var(--system-font-size) - 1px) Menlo, monospace; flex: none; }
+/* The "recently used within" menu under the sidebar's active-terminals filter. Positioned in JS against
+   the button and appended to body, so a scrolling sidebar cannot clip it. */
+#recent-hours-menu { position: fixed; z-index: 60; min-width: 148px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); }
+.recent-hours-heading { padding: 4px 8px 5px; color: var(--dim); font: calc(var(--system-font-size) - 1px)/1.2 Menlo, monospace; text-transform: lowercase; }
+.recent-hours-option { display: block; width: 100%; padding: 5px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text); font: var(--system-font-size)/1.2 Menlo, monospace; text-align: left; cursor: pointer; }
+.recent-hours-option:hover { background: var(--panel2); }
+.recent-hours-option.on { color: var(--accent); background: var(--active-bg); }
 .closed-load-more { display: block; width: calc(100% - 20px); margin: 5px 10px 3px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--dim); font: var(--system-font-size)/1.2 Menlo, monospace; cursor: pointer; }
 .closed-load-more:hover { color: var(--text); border-color: var(--accent); background: var(--active-bg); }
 .item-close { display: none; border: none; background: none; color: var(--dim); cursor: pointer; font-size: 12px; padding: 0 2px; flex: none; }
