@@ -1924,3 +1924,35 @@ class ClaudeCompactionCompletionTest(unittest.TestCase):
                 {"type": "system", "subtype": "local_command",
                  "content": "<local-command-stdout>Not enough messages to compact.</local-command-stdout>"})
             self.assertFalse(AgentSessionTracker._claude_subagent_is_active(path))
+
+
+class ReplayTrailingWipeTest(unittest.TestCase):
+    """A recording that ends with a TUI's clear must not be replayed as a blank screen."""
+
+    def _session(self, raw: bytes):
+        return SimpleNamespace(raw_replay_buffer=bytearray(raw), raw_replay_last_title=b"",
+                               buffer=bytearray(raw))
+
+    def test_orphaned_clear_at_the_tail_is_dropped(self) -> None:
+        # The exact shape recorded from a live session whose server restarted mid-repaint:
+        # claude's painted UI, then home + erase-to-end with the redraw never captured.
+        painted = b"\x1b[H\x1b[Jconversation\r\n\xe2\x8f\xb5 composer here"
+        served = ReplayRecorder.raw_bytes(self._session(painted + b"\x1b[H\x1b[J"))
+        self.assertEqual(served, painted)
+
+    def test_repeated_orphaned_clears_are_all_dropped(self) -> None:
+        painted = b"painted screen"
+        served = ReplayRecorder.raw_bytes(self._session(painted + b"\x1b[H\x1b[J\x1b[H\x1b[J"))
+        self.assertEqual(served, painted)
+
+    def test_clear_that_still_has_a_redraw_after_it_is_kept(self) -> None:
+        intact = b"old\x1b[H\x1b[Jnew screen\r\n> prompt"
+        self.assertEqual(ReplayRecorder.raw_bytes(self._session(intact)), intact)
+
+    def test_only_the_tail_is_scanned_so_a_large_buffer_is_cheap(self) -> None:
+        # A wipe further back than the scan window is left alone: it is history, not the screen.
+        buried = b"x" * (ReplayRecorder.TRAILING_WIPE_SCAN_BYTES * 4) + b"\x1b[H\x1b[J" + b"y" * 500
+        self.assertEqual(ReplayRecorder.raw_bytes(self._session(buried)), buried)
+
+    def test_empty_recording_is_unchanged(self) -> None:
+        self.assertEqual(ReplayRecorder.raw_bytes(self._session(b"")), b"")

@@ -337,9 +337,31 @@ class ReplayRecorder:
 
     # -- replay serving ----------------------------------------------------
 
-    @staticmethod
-    def raw_bytes(ms) -> bytes:
-        return bytes(ms.raw_replay_buffer) + ms.raw_replay_last_title
+    # A TUI clears the screen and redraws it as two separate writes. Recording can stop between them
+    # -- a server restart is the common way -- and then the recording's last act is the erase, with
+    # the redraw never captured. Replaying that faithfully hands the client a blank screen: measured
+    # on a live session whose recording ended with ESC[H ESC[J, every attach showed the conversation
+    # cut mid tool-call with no composer, and no repaint recovered it because a TUI that is idle (or
+    # wedged) sends nothing. Dropping the orphaned erase shows the last frame that WAS captured.
+    #
+    # Only the last few bytes are examined, never the whole recording: raw_bytes runs for every
+    # session on every output-driven checkpoint, and matching this pattern against a multi-megabyte
+    # buffer measured at 57ms per call -- enough blocking event-loop work to make typing lag.
+    TRAILING_WIPE_SCAN_BYTES = 256
+    # Repeated, because each attach that provokes a redraw can append another orphaned erase.
+    TRAILING_WIPE = re.compile(rb"(?:(?:\x1b\[[0-9;]*[Hf])?\x1b\[[0-2]?J[\s\x00]*)+$")
+
+    @classmethod
+    def _without_trailing_wipe(cls, data: bytes) -> bytes:
+        if not data:
+            return data
+        tail = data[-cls.TRAILING_WIPE_SCAN_BYTES:]
+        removed = len(tail) - len(cls.TRAILING_WIPE.sub(b"", tail))
+        return data[:len(data) - removed] if removed else data
+
+    @classmethod
+    def raw_bytes(cls, ms) -> bytes:
+        return cls._without_trailing_wipe(bytes(ms.raw_replay_buffer)) + ms.raw_replay_last_title
 
     @classmethod
     def _clear_frame_rows(cls, frame: bytes) -> int:
@@ -381,7 +403,7 @@ class ReplayRecorder:
 
     def latest_screen(self, ms) -> bytes:
         frames = self._screen_frames(ms)
-        return (frames[-1] + ms.raw_replay_last_title) if frames else b""
+        return (self._without_trailing_wipe(frames[-1]) + ms.raw_replay_last_title) if frames else b""
 
     def full_screen(self, ms) -> bytes:
         frames = self._screen_frames(ms)
@@ -402,7 +424,7 @@ class ReplayRecorder:
         intact -- title recovery reads it -- and an unterminated title at the tail is left alone for the
         live stream to finish.
         """
-        data = bytes(ms.buffer)
+        data = self._without_trailing_wipe(bytes(ms.buffer))
         last = None
         for match in self.OSC_TITLE_SEQUENCE.finditer(data):
             last = match.group(0)
