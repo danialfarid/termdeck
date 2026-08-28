@@ -6,13 +6,6 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Changed
-
-- Adding or changing an agent CLI no longer means editing shared code. Every CLI's transcript
-  parsing, title sources, activity rules and permission markers now live on that agent's own
-  adapter class, and the shared session tracker and transcript watcher became agent-agnostic
-  services that ask the adapter instead of naming a CLI.
-
 ## [0.7.0] — 2026-08-27
 
 ### Added

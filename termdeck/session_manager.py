@@ -11,7 +11,7 @@ from pathlib import Path
 
 from termdeck import agents
 from termdeck.agent_session_tracker import AgentSessionTracker
-from termdeck.transcript_activity_watcher import TranscriptActivityWatcher
+from termdeck.claude_activity_watcher import ClaudeActivityWatcher
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot
 from termdeck.draft_tracker import DraftInputTracker
@@ -72,7 +72,7 @@ class ManagedSession:
         self.raw_replay_compaction_generation = 0
         self.raw_replay_checkpoint_compaction_generation = 0
         self.terminal_history_cleared_for_spawn = False
-        # Whether attach_client has already treated a cold (no-strip-witnessed-yet) agent attach as
+        # Whether attach_client has already treated a cold (no-strip-witnessed-yet) claude/codex attach as
         # needing a repaint. Scoped to a single occurrence per process lifetime so a burst of simultaneous
         # reconnects across every open tab at once (e.g. right after a server restart) doesn't also mean a
         # simultaneous pty resize nudge for every single one of them on every future reattach.
@@ -135,7 +135,7 @@ class ManagedSession:
 
 class TerminalSessionManager:
     """Creates, respawns, and tears down terminal sessions; broadcasts pty output to attached websocket queues;
-    persists session records and resolves agent session ids so a server restart can resume them."""
+    persists session records and resolves claude/codex agent session ids so a server restart can resume them."""
 
     def __init__(self, backup_manager: StateBackupManager | None = None) -> None:
         self._store = SessionStore(TermdeckConfig.SESSIONS_FILE, backup_manager)
@@ -147,18 +147,13 @@ class TerminalSessionManager:
         self._draft_persist_task: asyncio.Task | None = None
         self._background_loop: asyncio.AbstractEventLoop | None = None
         self._agent_activity_refresh_handles: dict[Path, asyncio.TimerHandle] = {}
-        self._transcript_confirmation_handles: dict[Path, asyncio.TimerHandle] = {}
+        self._claude_activity_confirmation_handles: dict[Path, asyncio.TimerHandle] = {}
         self._transcript_service = None
         self._history_index = None
         self.notifier = None
         self.replay = ReplayRecorder(self)
-        # One watcher per agent that declares it owns its transcript tree. The manager never names
-        # an agent: it asks the registry which kinds want one and hands each its own root.
-        self._transcript_watchers = {
-            agent.kind: TranscriptActivityWatcher(
-                agent.sessions_root, functools.partial(self._on_agent_file_change_from_thread, agent.kind))
-            for agent in agents.AGENT_CLIS.values()
-            if agent.has_own_transcript_watcher and agent.sessions_root is not None}
+        self._claude_activity_watcher = ClaudeActivityWatcher(
+            agents.agent_cli("claude").sessions_root, self._on_claude_file_change_from_thread)
 
     def attach_transcript_service(self, service) -> None:
         self._transcript_service = service
@@ -186,45 +181,42 @@ class TerminalSessionManager:
 
     def start_background_tasks(self) -> None:
         self._background_loop = asyncio.get_running_loop()
-        for watcher in self._transcript_watchers.values():
-            watcher.start()
+        self._claude_activity_watcher.start()
 
     def stop_background_tasks(self) -> None:
-        for watcher in self._transcript_watchers.values():
-            watcher.stop()
+        self._claude_activity_watcher.stop()
         self.replay.stop()
         for handle in self._agent_activity_refresh_handles.values():
             handle.cancel()
         self._agent_activity_refresh_handles.clear()
-        for handle in self._transcript_confirmation_handles.values():
+        for handle in self._claude_activity_confirmation_handles.values():
             handle.cancel()
-        self._transcript_confirmation_handles.clear()
+        self._claude_activity_confirmation_handles.clear()
         self._background_loop = None
 
-    def _on_agent_file_change_from_thread(self, kind: str, path: Path) -> None:
+    def _on_claude_file_change_from_thread(self, path: Path) -> None:
         if self._history_index is not None:
             self._history_index.notify_file_changed(path)
         if self._transcript_service is not None:
             self._transcript_service.notify_file_change(path)
         if self._background_loop is not None:
-            self._background_loop.call_soon_threadsafe(self._process_agent_file_change, kind, path)
+            self._background_loop.call_soon_threadsafe(self._process_claude_file_change, path)
 
-    def _process_agent_file_change(self, kind: str, path: Path) -> None:
-        agents.agent_cli(kind).on_project_file_change(self, path)
+    def _process_claude_file_change(self, path: Path) -> None:
+        agents.agent_cli("claude").on_project_file_change(self, path)
         loop = self._background_loop
         if loop is None:
             return
-        # A second pass after the writes settle: the first one can read a half-written tail.
-        previous = self._transcript_confirmation_handles.pop(path, None)
+        previous = self._claude_activity_confirmation_handles.pop(path, None)
         if previous is not None:
             previous.cancel()
-        self._transcript_confirmation_handles[path] = loop.call_later(
+        self._claude_activity_confirmation_handles[path] = loop.call_later(
             TermdeckConfig.AGENT_TRANSCRIPT_ACTIVITY_DEBOUNCE_SECONDS,
-            self._confirm_agent_file_change, kind, path)
+            self._confirm_claude_file_change, path)
 
-    def _confirm_agent_file_change(self, kind: str, path: Path) -> None:
-        self._transcript_confirmation_handles.pop(path, None)
-        agents.agent_cli(kind).on_project_file_change(self, path)
+    def _confirm_claude_file_change(self, path: Path) -> None:
+        self._claude_activity_confirmation_handles.pop(path, None)
+        agents.agent_cli("claude").on_project_file_change(self, path)
 
     async def startup_respawn_saved_sessions(self) -> None:
         for record in self._store.load_all():
@@ -994,22 +986,20 @@ class TerminalSessionManager:
         ms = self._sessions[session_id]
         self._recover_title_from_buffer(ms)
         preserve_client_buffer = have_buffer
-        # full_claude_raw_replay keeps its name because it is a websocket query parameter the
-        # client sends; the behaviour is generic (any agent with records_raw_replay).
-        raw_replay_active = self.replay.enabled and \
+        claude_raw_replay_active = self.replay.enabled and \
             agents.agent_cli(ms.record.agent_kind).records_raw_replay
-        use_full_raw_replay = self.replay.full_replay_enabled and full_claude_raw_replay
+        use_full_claude_raw_replay = self.replay.full_replay_enabled and full_claude_raw_replay
         # Full means the ENTIRE recording, not the longest single screen frame: a frame is one repaint,
         # so serving only one showed at most a screenful of conversation on a fresh page -- "history is
         # very short" -- while megabytes of recorded session sat unused beside it. Replaying the whole
         # stream reproduces exactly what a continuously attached client saw, scrollback included, and
         # starts from a clean parser state instead of mid-stream at an arbitrary repaint (the garbled
         # first paint). Titles are already collapsed at record time, so the write is parse-bound only.
-        raw_replay = self.replay.raw_bytes(ms) if raw_replay_active and use_full_raw_replay else \
-            self.replay.latest_screen(ms) if raw_replay_active else b""
-        if use_full_raw_replay and not self._searchable_terminal_text(raw_replay).strip():
-            raw_replay = b""
-        use_raw_replay = bool(raw_replay)
+        claude_raw_replay = self.replay.raw_bytes(ms) if claude_raw_replay_active and use_full_claude_raw_replay else \
+            self.replay.latest_screen(ms) if claude_raw_replay_active else b""
+        if use_full_claude_raw_replay and not self._searchable_terminal_text(claude_raw_replay).strip():
+            claude_raw_replay = b""
+        use_claude_raw_replay = bool(claude_raw_replay)
         # Output missed while detached does not make the client's scrollback worthless, only its bottom
         # screen wrong, so keep the buffer (resetting here would discard history the client still holds)
         # and force the repaint instead, which is what makes the visible screen authoritative again.
@@ -1017,23 +1007,23 @@ class TerminalSessionManager:
         ms.output_missed_while_detached = False
         if ms.lazy_start_pending:
             self._spawn(ms, resume=True, screen_repaint=screen_repaint and not preserve_client_buffer and
-                        not use_raw_replay, preserve_raw_replay=use_raw_replay)
+                        not use_claude_raw_replay, preserve_raw_replay=use_claude_raw_replay)
             self._broadcast_status(ms)
         queue: asyncio.Queue = asyncio.Queue()
         ms.client_queues.add(queue)
         if preserve_client_buffer:
             if client_buffer_is_stale or (screen_repaint and repaint_preserved_buffer) or \
-                    (raw_replay_active and not use_raw_replay):
+                    (claude_raw_replay_active and not use_claude_raw_replay):
                 self._schedule_screen_repaint(ms, TermdeckConfig.SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS)
             return b"", queue
-        replay = raw_replay if use_raw_replay else self.replay.replay_bytes(ms)
-        needs_repaint = not replay if use_raw_replay else ms.screen_lives_only_in_stripped_sync_frames or not replay
-        # An agent session that has not produced output since the last server restart never gets a
+        replay = claude_raw_replay if use_claude_raw_replay else self.replay.replay_bytes(ms)
+        needs_repaint = not replay if use_claude_raw_replay else ms.screen_lives_only_in_stripped_sync_frames or not replay
+        # A claude/codex session that has not produced output since the last server restart never gets a
         # chance to set screen_lives_only_in_stripped_sync_frames live, even though its durable buffer has
         # always been missing the actual screen (inherent to how these TUIs paint, not something that needs
         # to be witnessed). Cover exactly that first-attach-since-restart case, once, without turning every
         # later reattach of every agent session into an unconditional pty resize.
-        if not use_raw_replay and not needs_repaint and not ms.cold_attach_repaint_done and \
+        if not use_claude_raw_replay and not needs_repaint and not ms.cold_attach_repaint_done and \
                 agents.agent_cli(ms.record.agent_kind).records_raw_replay:
             needs_repaint = True
         ms.cold_attach_repaint_done = True

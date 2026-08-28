@@ -92,7 +92,7 @@ class TranscriptService:
         self._loop = loop
         observer = Observer()
         handler = _TranscriptFileHandler(self._on_file_change_from_thread)
-        # An agent tree with its own TranscriptActivityWatcher is skipped: its
+        # An agent tree with its own watcher (Claude's, via ClaudeActivityWatcher) is skipped: its
         # events are forwarded here by the session manager, and macOS FSEvents must not register
         # the same recursive watch twice.
         watch_roots = [agent.sessions_root for agent in agents.AGENT_CLIS.values()

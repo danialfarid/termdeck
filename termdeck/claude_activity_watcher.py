@@ -5,7 +5,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 
-class _TranscriptActivityHandler(FileSystemEventHandler):
+class _ClaudeActivityHandler(FileSystemEventHandler):
     def __init__(self, callback: Callable[[Path], None]) -> None:
         super().__init__()
         self._callback = callback
@@ -33,12 +33,8 @@ class _TranscriptActivityHandler(FileSystemEventHandler):
             self._emit(event.dest_path)
 
 
-class TranscriptActivityWatcher:
-    """Delivers JSONL changes under one agent's transcript tree without periodic scanning.
-
-    Agent-agnostic: the caller supplies the root to watch and the callback to deliver to, so an
-    adapter that declares has_own_transcript_watcher gets one of these without naming itself here.
-    """
+class ClaudeActivityWatcher:
+    """Delivers Claude JSONL changes without periodically scanning transcript files."""
 
     def __init__(self, root: Path, callback: Callable[[Path], None]) -> None:
         self._root = root
@@ -49,7 +45,7 @@ class TranscriptActivityWatcher:
         if self._observer is not None or not self._root.is_dir():
             return
         observer = Observer()
-        observer.schedule(_TranscriptActivityHandler(self._callback), str(self._root), recursive=True)
+        observer.schedule(_ClaudeActivityHandler(self._callback), str(self._root), recursive=True)
         observer.start()
         self._observer = observer
 

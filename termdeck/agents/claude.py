@@ -38,7 +38,7 @@ class ClaudeCli(AgentCli):
     NAME_FLAG = "--name"
     RESTART_REPAINT_DELAY_SECONDS = 1.5
     history_indexed = True
-    # This kind gets its own TranscriptActivityWatcher over the projects tree; registering the same
+    # ClaudeActivityWatcher already watches the projects tree recursively; registering the same
     # root with the transcript service's FSEvents observer would double-register it on macOS.
     has_own_transcript_watcher = True
 

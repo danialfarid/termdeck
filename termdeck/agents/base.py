@@ -283,13 +283,6 @@ class AgentCli:
     def on_transcript_event(self, manager, ms, path: Path) -> None:
         """A watched transcript file changed; update this session's activity if the file is its own."""
 
-    def on_project_file_change(self, manager, path: Path) -> None:
-        """A file changed under this agent's own transcript tree (has_own_transcript_watcher).
-
-        Delivered for every change under sessions_root, so an implementation must decide for itself
-        which of its sessions the path belongs to.
-        """
-
     async def reconcile_bindings(self, manager, ms, proc_tree) -> None:
         """Re-derive the agent-session binding during the startup/periodic reconcile.
 
