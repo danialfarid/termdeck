@@ -5,12 +5,19 @@ from termdeck.replay_recorder import ReplayRecorder
 
 
 class PreserveScreenBeforeEraseTest(unittest.TestCase):
+    """Switched off in config; these pin the behaviour for anyone turning it back on."""
+
     def setUp(self) -> None:
         self._original = TermdeckConfig.REPLAY_PRESERVE_ERASE_MIN_ROWS
         TermdeckConfig.REPLAY_PRESERVE_ERASE_MIN_ROWS = 20
 
     def tearDown(self) -> None:
         TermdeckConfig.REPLAY_PRESERVE_ERASE_MIN_ROWS = self._original
+
+    def test_switched_off_by_default(self):
+        # A cursor jump does not say which redraw is a compaction, so scrolling at each one fills the
+        # replay with blank rows and blanks cells the CLI then declines to rewrite.
+        self.assertEqual(self._original, 0)
 
     def test_full_redraw_scrolls_the_screen_out_first(self):
         # The byte shape of a real compaction: jump far up, then erase line by line walking back.
