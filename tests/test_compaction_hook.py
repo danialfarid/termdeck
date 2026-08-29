@@ -12,7 +12,12 @@ STATUS_REPAINT = b"\x1b[8A\x1b[2Kworking\x1b[8B"
 
 
 class CompactionHookTest(unittest.TestCase):
+    """Switched off in config; these pin the behaviour for anyone turning it back on."""
+
     def setUp(self) -> None:
+        self._enabled = TermdeckConfig.COMPACTION_HOOK_ENABLED
+        TermdeckConfig.COMPACTION_HOOK_ENABLED = True
+        self.addCleanup(setattr, TermdeckConfig, "COMPACTION_HOOK_ENABLED", self._enabled)
         self.manager = TerminalSessionManager.__new__(TerminalSessionManager)
         self.ms = MagicMock()
         self.ms.record.agent_session_id = "agent-1"
@@ -25,6 +30,16 @@ class CompactionHookTest(unittest.TestCase):
 
     def carry(self, data: bytes) -> bytes:
         return self.manager._carry_screen_before_compaction_redraw(self.ms, data)
+
+    def test_switched_off_by_default(self):
+        # The hook announces an intent to compact, not a compaction, so a refused /compact used to
+        # scroll the screen away for nothing.
+        self.assertFalse(self._enabled)
+
+    def test_disabled_hook_does_not_arm(self):
+        TermdeckConfig.COMPACTION_HOOK_ENABLED = False
+        self.assertIsNone(self.manager.apply_agent_compaction_hook("agent-1"))
+        self.assertEqual(self.ms.compaction_armed_until, 0.0)
 
     def test_hook_arms_without_touching_the_screen(self):
         # Scrolling at hook time would throw the screen away while it is still being read.

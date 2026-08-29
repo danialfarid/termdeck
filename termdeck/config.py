@@ -126,14 +126,16 @@ class TermdeckConfig:
     # Claude's PreCompact hook, which fires (and is awaited) before a compaction redraws the screen
     # over the conversation. See TerminalSessionManager.apply_agent_compaction_hook.
     AGENT_HOOK_COMPACT_STATE = "compact"
-    # How long after that hook the compaction's redraw is still expected. Generous because the wait
-    # is dead time either way (a measured compaction took 12s, and a large one takes longer), and
-    # bounded because an armed session scrolls its screen away on the next big redraw, so an arm left
-    # standing would eventually spend itself on an ordinary one.
+    # OFF (0). The hook announces an INTENT to compact, not a compaction: Claude fires it before
+    # deciding, so a /compact it then refuses ("not enough context") announced a redraw that never
+    # came. The timed fallback below cannot tell that apart from a redraw it merely missed, so it
+    # scrolled a screen away for nothing -- pages of blank rows in a terminal that had just started.
+    # Waiting for the redraw instead of using the fallback is not a fix either: measured over
+    # repeated compactions, that race is lost about half the time. A correct version needs a signal
+    # that a compaction actually began (PostCompact confirms it, but only once it is over) and a
+    # scroll sized to the content rather than to the terminal's height.
+    COMPACTION_HOOK_ENABLED = False
     COMPACTION_ARM_SECONDS = 300.0
-    # How long the arm waits for the redraw before carrying the screen regardless. Short, because the
-    # redraw follows the hook within a second or two when it is seen at all, and a longer wait only
-    # widens the window in which the conversation can be erased with nothing saved.
     COMPACTION_ARM_FALLBACK_SECONDS = 2.0
     # The compaction redraw walks the cursor up over everything it has drawn before erasing it, so
     # the jump is as tall as the conversation on screen -- 112 rows in one measurement, but only a

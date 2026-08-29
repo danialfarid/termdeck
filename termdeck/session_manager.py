@@ -550,7 +550,7 @@ class TerminalSessionManager:
         erased anyway. Hooks fire for every Claude Code session on the machine; an unknown one is a
         normal no-op.
         """
-        if not agent_session_id:
+        if not agent_session_id or not TermdeckConfig.COMPACTION_HOOK_ENABLED:
             return None
         for ms in self._sessions.values():
             if ms.record.agent_session_id != agent_session_id:
