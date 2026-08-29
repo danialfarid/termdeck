@@ -105,6 +105,10 @@ class ManagedSession:
         # agent itself, so they supersede the terminal-text/title heuristics below, which only guess at
         # a permission prompt from rendered output and misfire on wrapped or partially repainted screens.
         self.attention_hook_driven = False
+        # Monotonic deadline set by Claude's PreCompact hook: the compaction's screen-clearing redraw
+        # is coming, and the first one that arrives before this expires gets the screen carried into
+        # scrollback ahead of it (see _carry_screen_before_compaction_redraw).
+        self.compaction_armed_until = 0.0
         self.output_path: Path | None = Path(record.output_path).expanduser() if record.output_path else None
         self.output_path_locked = False
 
@@ -532,31 +536,73 @@ class TerminalSessionManager:
         return None
 
     def apply_agent_compaction_hook(self, agent_session_id: str) -> str | None:
-        """A compaction is about to start: carry the screen into scrollback while it still exists.
+        """Arm the screen rescue: a compaction is starting, and its redraw will erase the screen.
 
         Compacting makes the CLI redraw everything it has rendered, walking the cursor up and erasing
         line by line, and what it redraws afterwards is a much shorter frame -- so a conversation that
         still fits the screen is erased rather than scrolled away, and is gone from the live terminal
-        and from the replay alike. Scrollback is the one place an erase cannot reach, so the same
-        payload a respawn uses to carry its old screen across (see _spawn) is written here first.
+        and from the replay alike. Scrollback is the one place an erase cannot reach.
 
-        Unlike inferring a compaction from the size of a cursor jump, the hook says so, which is why
-        this can afford to scroll a whole screen's worth exactly once instead of guessing at every
-        redraw. Hooks fire for every Claude Code session on the machine; an unknown one is a no-op.
+        Arming rather than scrolling now is what keeps that rescue invisible: the hook runs, and is
+        awaited, well before the redraw (measured at ~12s on a real compaction), and scrolling at hook
+        time throws the screen away in front of someone who has just typed /compact and is still
+        reading it. Waiting for the redraw means the screen moves at the moment it was going to be
+        erased anyway. Hooks fire for every Claude Code session on the machine; an unknown one is a
+        normal no-op.
         """
         if not agent_session_id:
             return None
         for ms in self._sessions.values():
             if ms.record.agent_session_id != agent_session_id:
                 continue
-            if not ms.raw_replay_buffer and not ms.buffer:
-                return ms.record.session_id
-            # \x1b[9999;1H clamps to the client's own last row, whatever its height, so the newlines
-            # that follow always scroll rather than merely move the cursor down.
-            payload = "\r\n" + TermdeckConfig.COMPACT_DIVIDER + "\x1b[9999;1H" + "\r\n" * (ms.rows + 4)
-            self._handle_output(ms, payload.encode(), mark_activity=False)
+            ms.compaction_armed_until = time.monotonic() + TermdeckConfig.COMPACTION_ARM_SECONDS
+            # Waiting for the redraw is a race the hook does not always win -- the same 112-row jump
+            # arrives whether or not the arm has landed, and measured over repeated compactions it is
+            # missed about half the time. So the wait is bounded: if the redraw has not come by then,
+            # the screen is carried anyway, which costs an early scroll rather than the conversation.
+            try:
+                asyncio.get_running_loop().call_later(
+                    TermdeckConfig.COMPACTION_ARM_FALLBACK_SECONDS, self._carry_screen_if_still_armed, ms)
+            except RuntimeError:
+                pass
             return ms.record.session_id
+
+    def _carry_screen_if_still_armed(self, ms: ManagedSession) -> None:
+        """The compaction's redraw never showed up in time; carry the screen before it does."""
+        if not ms.compaction_armed_until or time.monotonic() > ms.compaction_armed_until:
+            return
+        ms.compaction_armed_until = 0.0
+        if not ms.raw_replay_buffer and not ms.buffer:
+            return
+        self._handle_output(ms, self._compaction_carry_payload(ms), mark_activity=False)
         return None
+
+    def _carry_screen_before_compaction_redraw(self, ms: ManagedSession, data: bytes) -> bytes:
+        """Splice the screen into scrollback ahead of an armed compaction's redraw, once.
+
+        Only the redraw that a PreCompact hook announced is treated this way. The same cursor jump
+        outside that window is an ordinary repaint -- a real session makes over a thousand of them
+        per 24MB -- and scrolling at each one buries the history it saves under blank rows.
+        """
+        if not ms.compaction_armed_until or time.monotonic() > ms.compaction_armed_until:
+            return data
+        # The redraw shares its chunk with the spinner repaints that precede it, so this is the first
+        # jump BIG enough, not simply the first jump.
+        match = next((found for found in TermdeckConfig.COMPACTION_REDRAW_JUMP.finditer(data)
+                      if int(found.group(1) or 1) >= TermdeckConfig.COMPACTION_REDRAW_MIN_ROWS), None)
+        if match is None:
+            return data
+        ms.compaction_armed_until = 0.0
+        if not ms.raw_replay_buffer and not ms.buffer:
+            return data
+        return data[:match.start()] + self._compaction_carry_payload(ms) + data[match.start():]
+
+    @staticmethod
+    def _compaction_carry_payload(ms: ManagedSession) -> bytes:
+        # \x1b[9999;1H clamps to the client's own last row, whatever its height, so the newlines that
+        # follow always scroll rather than merely move the cursor down.
+        return ("\r\n" + TermdeckConfig.COMPACT_DIVIDER + "\x1b[9999;1H" +
+                "\r\n" * (ms.rows + 4)).encode()
 
     def _refresh_session_activity(self, ms: ManagedSession) -> None:
         transcript_activity = self._tracker.session_activity_timestamp(ms.record.agent_kind,
@@ -811,6 +857,8 @@ class TerminalSessionManager:
         data = self._answer_and_strip_color_queries(ms, data)
         if not data:
             return
+        # Ahead of the recorder and the live queues alike, so every consumer sees the rescued screen.
+        data = self._carry_screen_before_compaction_redraw(ms, data)
         if mark_activity and time.monotonic() >= ms.repaint_activity_suppressed_until_monotonic:
             ms.last_activity_at = time.time()
             ms.record.last_activity_at = ms.last_activity_at

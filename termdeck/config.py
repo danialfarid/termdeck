@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from termdeck.platform_paths import PlatformPaths
@@ -125,6 +126,22 @@ class TermdeckConfig:
     # Claude's PreCompact hook, which fires (and is awaited) before a compaction redraws the screen
     # over the conversation. See TerminalSessionManager.apply_agent_compaction_hook.
     AGENT_HOOK_COMPACT_STATE = "compact"
+    # How long after that hook the compaction's redraw is still expected. Generous because the wait
+    # is dead time either way (a measured compaction took 12s, and a large one takes longer), and
+    # bounded because an armed session scrolls its screen away on the next big redraw, so an arm left
+    # standing would eventually spend itself on an ordinary one.
+    COMPACTION_ARM_SECONDS = 300.0
+    # How long the arm waits for the redraw before carrying the screen regardless. Short, because the
+    # redraw follows the hook within a second or two when it is seen at all, and a longer wait only
+    # widens the window in which the conversation can be erased with nothing saved.
+    COMPACTION_ARM_FALLBACK_SECONDS = 2.0
+    # The compaction redraw walks the cursor up over everything it has drawn before erasing it, so
+    # the jump is as tall as the conversation on screen -- 112 rows in one measurement, but only a
+    # few dozen for a short one, which is why this cannot be set high. It does not need to be: the
+    # arm already limits matching to the moments after a compaction was announced, and the only
+    # repaints in that window are the compaction spinner's, which move at most ~18 rows.
+    COMPACTION_REDRAW_MIN_ROWS = 20
+    COMPACTION_REDRAW_JUMP = re.compile(rb"\x1b\[(\d*)A")
     API_HISTORY_SEARCH_ROUTE = "/api/history-search"
     API_HISTORY_CONTEXT_ROUTE = "/api/history-context"
     API_SETTINGS_ROUTE = "/api/settings"
