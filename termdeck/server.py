@@ -550,6 +550,7 @@ class UiSettings(BaseModel):
     recent_closed_files: list[dict[str, str]] = []
     worktree_ui_state: dict[str, dict[str, bool]] = {}
     selected_worktrees: dict[str, str] = {}
+    worktree_roots: dict[str, str] = {}
     files_side_panel_last_tab: str = "project"
     file_search_history: list[dict[str, str | bool]] = []
     file_tab_max_visible: int = 20
@@ -698,6 +699,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_TERMINAL_TASK_PROMPT_ROUTE, response_model=None)(self._follow_up_task_prompt)
         app.post(TermdeckConfig.API_TERMINALS_BATCH_ROUTE, response_model=None)(self._launch_terminal_batch)
         app.post(TermdeckConfig.API_SESSION_STOP_ROUTE, response_model=None)(self._stop_session)
+        app.post(TermdeckConfig.API_SESSION_ATTENTION_ROUTE, response_model=None)(self._dismiss_session_attention)
         app.post(TermdeckConfig.API_SESSION_RESTART_ROUTE, response_model=None)(self._restart_session)
         app.post(TermdeckConfig.API_SESSION_FORK_ROUTE, response_model=None)(self._fork_session)
         app.get(TermdeckConfig.API_SESSION_WORKTREE_REVIEW_ROUTE, response_model=None)(self._review_worktree)
@@ -1669,10 +1671,12 @@ class TermdeckServer:
         except (ValueError, OSError) as error:
             raise HTTPException(status_code=409,
                                 detail=f"project '{project}' is not a Git repository; select the folder containing .git") from error
-        title = request.branch.strip() or request.base_ref.strip() or request.name.strip() or "worktree"
+        title = request.name.strip() or request.branch.strip() or request.base_ref.strip() or "worktree"
+        commands: list[str] = []
         try:
-            return self.worktree_registry.create(project, root, title, request.branch, request.base_ref,
-                                                 request.location).to_dict()
+            record = self.worktree_registry.create(project, root, title, request.branch, request.base_ref,
+                                                   request.location, commands)
+            return {**record.to_dict(), "commands": commands}
         except WorktreeFolderExists as error:
             # Structured so the dialog can offer the folder that is in the way, when it is already a
             # worktree of this repository, instead of only reporting the clash.
@@ -1683,11 +1687,14 @@ class TermdeckServer:
                 "worktree_id": existing.worktree_id if existing else "",
                 "worktree_name": existing.name if existing else "",
                 "worktree_branch": existing.branch if existing else "",
+                "commands": commands,
             }) from error
         except (ValueError, OSError) as error:
             # A bad folder, a taken branch name or a bad base ref each explain themselves; only the
             # probe above means "this project is not a repository".
-            raise HTTPException(status_code=409, detail=str(error)) from error
+            raise HTTPException(status_code=409,
+                                detail={"error": "worktree_failed", "message": str(error),
+                                        "commands": commands}) from error
 
     async def _delete_worktree(self, worktree_id: str, request: WorktreeDeleteRequest) -> dict[str, object]:
         project = request.project.strip()
@@ -2753,6 +2760,13 @@ class TermdeckServer:
             raise HTTPException(status_code=404, detail=session_id)
         if not await self.manager.stop_session(session_id):
             raise HTTPException(status_code=409, detail="could not terminate the detached terminal process tree")
+        return self.manager.session_summary_by_id(session_id)
+
+    async def _dismiss_session_attention(self, session_id: str) -> dict[str, object]:
+        """Drop a terminal's attention badge without answering its prompt."""
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        self.manager.dismiss_attention(session_id)
         return self.manager.session_summary_by_id(session_id)
 
     async def _fork_session(self, session_id: str, request: ForkSessionRequest) -> dict[str, object]:

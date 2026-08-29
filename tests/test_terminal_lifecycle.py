@@ -520,6 +520,33 @@ class ClaudeTranscriptParsingTest(unittest.TestCase):
 
         self.assertEqual(turns[0]["text"], "Should we increase max workers?")
 
+    def test_compact_boundary_is_rendered_between_the_turns_it_separates(self) -> None:
+        # Compaction never truncates the transcript file itself -- turns on both sides of the
+        # boundary are ordinary lines. This is what makes the Markdown/history view immune to the
+        # live terminal's redraw: it reads this file, not the rendered screen.
+        lines = [
+            json.dumps({"type": "user", "message": {"content": "print 1 to 100 then say hi"}}),
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "1\n2\nhi"}]}}),
+            json.dumps({"type": "system", "subtype": "compact_boundary", "content": "Conversation compacted",
+                        "compactMetadata": {"trigger": "manual", "preTokens": 31730, "postTokens": 1583}}),
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "What's next?"}]}}),
+        ]
+
+        turns = agents.agent_cli("claude").parse_transcript_lines(lines)
+
+        self.assertEqual([t["text"] for t in turns],
+                         ["print 1 to 100 then say hi", "1\n2\nhi", "31,730 → 1,583 tokens", "What's next?"])
+        self.assertEqual(turns[2]["kind"], "compaction")
+        self.assertEqual(turns[2]["title"], "Conversation compacted")
+
+    def test_compact_boundary_without_token_metadata_still_renders(self) -> None:
+        lines = [json.dumps({"type": "system", "subtype": "compact_boundary", "content": "Conversation compacted"})]
+
+        turns = agents.agent_cli("claude").parse_transcript_lines(lines)
+
+        self.assertEqual(turns[0]["kind"], "compaction")
+        self.assertEqual(turns[0]["text"], "")
+
 
 class CliTitlePersistenceTest(unittest.TestCase):
     def _manager_with_session(self) -> tuple[TerminalSessionManager, ManagedSession, list[int]]:
@@ -1999,3 +2026,36 @@ class ClaudeInterruptReleaseTest(unittest.TestCase):
         claude, ms = self._session(Path("/nonexistent/abc.jsonl"), time.time() - 60)
         claude.release_interrupt_if_work_resumed(ms, Path("/nonexistent/abc.jsonl"), True)
         self.assertTrue(ms.record.claude_interrupted)
+
+
+class DismissAttentionTest(unittest.TestCase):
+    """Ignoring an attention badge drops it without answering the prompt."""
+
+    def _manager_with_attention(self, *, required=True, carry="esctocanceltabtoamend"):
+        manager = TerminalSessionManager()
+        session = ManagedSession(record())
+        session.attention_required = required
+        session.attention_text_carry = carry
+        manager._sessions = {session.record.session_id: session}
+        manager._broadcast_status = MagicMock()
+        return manager, session
+
+    def test_badge_and_carry_are_both_dropped(self) -> None:
+        # The carry has to go too: the prompt stays on screen and every repaint re-sends it, so
+        # matched text left behind would re-raise the badge on the next write.
+        manager, session = self._manager_with_attention()
+        manager.dismiss_attention(session.record.session_id)
+        self.assertFalse(session.attention_required)
+        self.assertEqual(session.attention_text_carry, "")
+        manager._broadcast_status.assert_called_once()
+
+    def test_dismissing_a_calm_terminal_broadcasts_nothing(self) -> None:
+        manager, session = self._manager_with_attention(required=False, carry="")
+        manager.dismiss_attention(session.record.session_id)
+        manager._broadcast_status.assert_not_called()
+
+    def test_carry_alone_still_counts_as_something_to_dismiss(self) -> None:
+        manager, session = self._manager_with_attention(required=False)
+        manager.dismiss_attention(session.record.session_id)
+        self.assertEqual(session.attention_text_carry, "")
+        manager._broadcast_status.assert_called_once()

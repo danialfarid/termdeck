@@ -1,4 +1,5 @@
 import re
+import shlex
 import shutil
 import subprocess
 import uuid
@@ -52,10 +53,9 @@ class GitWorktreeService:
     # Named for the branch, with nothing appended: a folder you can recognise. A clash is reported
     # rather than dodged, because the folder that is in the way is usually the worktree you wanted.
     def create_project_worktree(self, repository_root: str, title: str, branch: str = "", base_ref: str = "",
-                                location: str = "") -> WorktreeMetadata:
+                                location: str = "", log: list[str] | None = None) -> WorktreeMetadata:
         repository = self._repository_root(Path(repository_root).expanduser())
-        parent = self._worktree_parent(repository, location)
-        return self._create_at(repository, parent / (self._slug(title) or "worktree"), branch, base_ref)
+        return self._create_at(repository, self._worktree_path(repository, title, location), branch, base_ref, log)
 
     # Sits beside the repository as "<project>-worktrees", so a project and its worktrees stay
     # adjacent in the same parent folder rather than in a hidden shared directory.
@@ -63,24 +63,25 @@ class GitWorktreeService:
         repository = self._repository_root(Path(repository_root).expanduser())
         return repository.parent / f"{repository.name}{self.PROJECT_WORKTREE_DIRECTORY_SUFFIX}"
 
-    # The chosen folder is the parent: the worktree itself is still a uniquely named directory
-    # inside it, so picking one folder twice cannot collide.
-    def _worktree_parent(self, repository: Path, location: str) -> Path:
+    # `location` is the worktree folder itself, not a parent to put it in: the dialog shows the exact
+    # path that will be checked out, so it is honoured verbatim.
+    def _worktree_path(self, repository: Path, title: str, location: str) -> Path:
         chosen = location.strip()
         if not chosen:
-            return self.default_project_worktree_parent(repository)
-        parent = Path(chosen).expanduser()
-        if not parent.is_absolute():
+            return self.default_project_worktree_parent(repository) / (self._slug(title) or "worktree")
+        path = Path(chosen).expanduser()
+        if not path.is_absolute():
             raise ValueError(f"worktree folder must be an absolute path: {chosen}")
-        if parent == repository or repository in parent.parents:
+        if path == repository or repository in path.parents:
             raise ValueError(f"worktree folder cannot be inside the repository: {chosen}")
-        return parent
+        return path
 
     # A worktree and a branch are separate things: with no new branch name the worktree simply checks
     # out the base branch, and only an explicit name creates one.
-    def _create_at(self, repository: Path, path: Path, branch: str, base_ref: str) -> WorktreeMetadata:
+    def _create_at(self, repository: Path, path: Path, branch: str, base_ref: str,
+                   log: list[str] | None = None) -> WorktreeMetadata:
         selected_base = base_ref.strip() or self._current_branch(repository) or "HEAD"
-        base_commit = self._run_git(repository, "rev-parse", selected_base).strip()
+        base_commit = self._run_git(repository, "rev-parse", selected_base, log=log).strip()
         new_branch = branch.strip()
         if new_branch:
             self._validate_branch(new_branch)
@@ -90,7 +91,7 @@ class GitWorktreeService:
         add_arguments = ["worktree", "add"]
         if new_branch:
             add_arguments += ["-b", new_branch]
-        self._run_git(repository, *add_arguments, str(path), selected_base)
+        self._run_git(repository, *add_arguments, str(path), selected_base, log=log)
         return WorktreeMetadata(str(path), str(repository), new_branch or selected_base, selected_base, base_commit,
                                 created_branch=bool(new_branch))
 
@@ -238,7 +239,9 @@ class GitWorktreeService:
             raise ValueError(detail)
 
     @staticmethod
-    def _run_git(path: Path, *arguments: str) -> str:
+    def _run_git(path: Path, *arguments: str, log: list[str] | None = None) -> str:
+        if log is not None:
+            log.append(shlex.join(["git", "-C", str(path), *arguments]))
         result = subprocess.run(["git", "-C", str(path), *arguments], capture_output=True, text=True,
                                 timeout=30, check=False, errors="replace")
         if result.returncode != 0:

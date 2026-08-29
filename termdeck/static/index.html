@@ -448,7 +448,7 @@
     </div>
     <div class="modal-actions">
       <button id="modal-cancel" type="button">Cancel</button>
-      <button id="modal-create" type="submit">Open</button>
+      <button id="modal-create" class="modal-primary" type="submit">Open</button>
     </div>
   </form>
 </div>
@@ -456,15 +456,24 @@
   <div id="worktree-modal">
   <div class="modal-title">New worktree</div>
   <div id="worktree-modal-project"></div>
+  <label>Worktree name <span class="worktree-field-hint">(names the folder; defaults to the branch)</span><input id="worktree-name" placeholder="e.g. review" spellcheck="false" autocomplete="off"></label>
   <label for="worktree-base-ref">Branch to check out</label>
-  <select id="worktree-base-ref"></select>
-  <label>New branch <span class="worktree-field-hint">(optional; leave empty to work on the branch above)</span><input id="worktree-branch" placeholder="branch to create from it" spellcheck="false"></label>
-  <label for="worktree-location">Folder to create it in</label>
-  <div id="worktree-location-row">
-    <input id="worktree-location" placeholder="default worktree folder" spellcheck="false" autocomplete="off">
-    <button id="worktree-location-browse" type="button" title="Choose a folder">Browse…</button>
+  <div id="worktree-base-ref-field">
+    <input id="worktree-base-ref" role="combobox" aria-expanded="false" aria-controls="worktree-base-ref-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" placeholder="type to filter branches">
+    <button id="worktree-base-ref-toggle" type="button" tabindex="-1" title="Show all branches" aria-label="Show all branches"><span class="codicon codicon-chevron-down"></span></button>
+    <div id="worktree-base-ref-list" class="hidden" role="listbox" aria-label="Branches"></div>
   </div>
-  <div id="worktree-location-hint">The worktree folder is named after the branch. A branch can only be checked out in one worktree at a time.</div>
+  <label>New branch <span class="worktree-field-hint">(optional; leave empty to work on the branch above)</span><input id="worktree-branch" placeholder="branch to create from it" spellcheck="false"></label>
+  <label for="worktree-location">Worktree folder <span class="worktree-field-hint">(the exact folder the code is checked out in)</span></label>
+  <div id="worktree-location-row">
+    <input id="worktree-location" placeholder="full path of the new worktree folder" spellcheck="false" autocomplete="off">
+    <button id="worktree-location-browse" type="button" title="Choose the folder to put it in">Browse…</button>
+  </div>
+  <div id="worktree-location-hint">A branch can only be checked out in one worktree at a time.</div>
+  <div id="worktree-modal-progress" class="hidden" role="status" aria-live="polite">
+    <div id="worktree-modal-progress-head"><span class="worktree-spinner" aria-hidden="true"></span><span id="worktree-modal-progress-label">Creating worktree…</span></div>
+    <div id="worktree-modal-progress-commands"></div>
+  </div>
   <div id="worktree-modal-error" class="hidden" role="alert">
     <span id="worktree-modal-error-text"></span>
     <button id="worktree-modal-open-existing" type="button" class="hidden">Open it as is</button>
@@ -480,9 +489,12 @@
     <div class="modal-title" id="worktree-result-title">Worktree created</div>
     <div id="worktree-result-name"></div>
     <a id="worktree-result-link"></a>
-    <div id="worktree-result-hint">Click to open here. Command/Ctrl-click or middle-click opens a new tab; right-click can open a new window.</div>
+    <div id="worktree-result-hint">Click the address to open it here, or use the button below for a new tab.</div>
     <div id="worktree-result-path"></div>
-    <div class="modal-actions"><button id="worktree-result-close">Done</button></div>
+    <div class="modal-actions">
+      <a id="worktree-result-open-tab" class="modal-primary" target="_blank" rel="noopener">Open in new tab</a>
+      <button id="worktree-result-close">Done</button>
+    </div>
   </div>
 </div>
 <script src="/static/dialogs.js"></script>

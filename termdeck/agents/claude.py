@@ -106,7 +106,12 @@ class ClaudeCli(AgentCli):
         turns: list[dict[str, object]] = []
         for line in lines:
             payload = TurnBuilder.loads(line)
-            if payload is None or payload.get("type") not in (TurnBuilder.ROLE_USER, TurnBuilder.ROLE_ASSISTANT):
+            if payload is None:
+                continue
+            if payload.get("type") == "system" and payload.get("subtype") == "compact_boundary":
+                turns.append(self._compact_boundary_turn(payload))
+                continue
+            if payload.get("type") not in (TurnBuilder.ROLE_USER, TurnBuilder.ROLE_ASSISTANT):
                 continue
             message = payload.get("message")
             if not isinstance(message, dict):
@@ -133,6 +138,23 @@ class ClaudeCli(AgentCli):
                         result = block.get("content", block.get("output", ""))
                         turns.append(TurnBuilder.turn("event", TurnBuilder.format_result_value(result), "result", "Result", model=model))
         return turns
+
+    @staticmethod
+    def _compact_boundary_turn(payload: dict[str, object]) -> dict[str, object]:
+        """A compact_boundary system event marks where /compact (or auto-compaction) ran.
+
+        The transcript itself is never truncated by compaction -- every turn on either side of this
+        marker is still an ordinary line in the file, which is why parse_transcript_lines needed no
+        other change to keep showing them. Only the live terminal's rendered screen is at risk (the
+        CLI redraws over it); this view reads the transcript, so it is unaffected either way. The
+        marker is rendered so the boundary itself is visible, not left to read as one continuous turn.
+        """
+        metadata = payload.get("compactMetadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        pre_tokens, post_tokens = metadata.get("preTokens"), metadata.get("postTokens")
+        summary = f"{pre_tokens:,} → {post_tokens:,} tokens" \
+            if isinstance(pre_tokens, int) and isinstance(post_tokens, int) else ""
+        return TurnBuilder.turn("event", summary, kind="compaction", title="Conversation compacted")
 
     @staticmethod
     def _normalize_user_text(role: str, text: str) -> str:

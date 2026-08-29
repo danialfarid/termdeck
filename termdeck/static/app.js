@@ -46,7 +46,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_fo
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   notify_attention: true, notify_agent_idle: true,
-  search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
+  search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {}, worktree_roots: {},
   files_side_panel_last_tab: "project", file_search_history: [],
   file_tab_max_visible: 20, file_tab_order: "opened", lsp_enabled: true, lsp_command_overrides: {},
   lan_access_enabled: false };
@@ -171,6 +171,10 @@ const TALL_WEBGL_TEXTURE_HEADROOM = 0.65;
 // gesture (one that cleared the slack in a single step) could escape. Nothing needs the slack: every way
 // of arriving at the bottom lands on the ceiling exactly, because the clamp puts it there.
 const TALL_BOTTOM_TOLERANCE_PX = 2;
+// How many frames a follow scroll keeps re-applying while the container clamps it short (see
+// tallSetScrollTop): enough for the rows behind the growth to be laid out, few enough that a target
+// that is genuinely unreachable stops asking.
+const TALL_CLAMPED_SCROLL_RETRIES = 4;
 // How far below the top edge the cursor's row is held when following is capped (see tallFollowTarget):
 // enough rows for the composer's own top border to stay on screen above the cursor line.
 const TALL_FOLLOW_CURSOR_TOP_MARGIN_ROWS = 3;
@@ -2465,38 +2469,162 @@ class TermdeckApp {
       return;
     }
     this.$("worktree-modal-project").textContent = `${project.name} · ${this.compactProjectPath(project.root)}`;
+    this.$("worktree-name").value = "";
     this.$("worktree-branch").value = "";
     this.$("worktree-location").value = "";
+    this.worktreeBranches = [];
+    this.worktreeCurrentBranch = "";
+    this.worktreeLocationParent = "";
+    this.worktreeLocationEdited = false;
+    this.closeWorktreeBranchList();
     this.clearWorktreeModalError();
+    this.hideWorktreeProgress();
+    this.updateWorktreeCreateState();
     this.$("worktree-modal-backdrop").classList.remove("hidden");
     void this.loadWorktreeDialogOptions(rootWorktree?.branch || "");
-    requestAnimationFrame(() => this.$("worktree-base-ref").focus());
+    requestAnimationFrame(() => this.$("worktree-name").focus());
   }
 
   // Fills the dialog from the repository itself: every local branch to base the worktree on, and
   // the folder TermDeck would use, shown so it can be edited rather than left implicit.
   async loadWorktreeDialogOptions(preferredBranch = "") {
-    const select = this.$("worktree-base-ref");
-    if (!select || !this.projectSlug) return;
-    select.textContent = "";
+    if (!this.projectSlug) return;
     try {
       const response = await fetch(`/api/worktrees/branches?project=${encodeURIComponent(this.projectSlug)}`);
       if (!response.ok) return;
       const payload = await response.json();
-      const branches = Array.isArray(payload.branches) ? payload.branches : [];
-      for (const branch of branches) {
-        const option = document.createElement("option");
-        option.value = branch;
-        option.textContent = branch === payload.current ? `${branch} (current)` : branch;
-        select.appendChild(option);
-      }
-      const selected = [preferredBranch, payload.current].find((branch) => branches.includes(branch));
-      if (selected) select.value = selected;
-      const location = this.$("worktree-location");
-      if (!location.value) location.value = payload.default_location || "";
+      this.worktreeBranches = Array.isArray(payload.branches) ? payload.branches : [];
+      this.worktreeCurrentBranch = payload.current || "";
+      const selected = [preferredBranch, payload.current].find((branch) => this.worktreeBranches.includes(branch));
+      if (selected) this.$("worktree-base-ref").value = selected;
+      this.worktreeLocationParent = this.settings.worktree_roots?.[this.projectSlug] || payload.default_location || "";
+      this.syncWorktreeLocation();
+      this.updateWorktreeCreateState();
     } catch (error) {
       return;
     }
+  }
+
+  // Mirrors the server's folder rule so the field shows the path that will actually be created.
+  worktreeFolderSlug(value) {
+    return String(value || "").trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^[-._]+|[-._]+$/g, "").slice(0, 48);
+  }
+
+  // The folder field is the exact checkout path, so it tracks the name until the person edits it.
+  syncWorktreeLocation() {
+    if (this.worktreeLocationEdited || !this.worktreeLocationParent) return;
+    const title = this.$("worktree-name").value.trim() || this.$("worktree-branch").value.trim() ||
+      this.$("worktree-base-ref").value.trim();
+    this.$("worktree-location").value = `${this.worktreeLocationParent}/${this.worktreeFolderSlug(title) || "worktree"}`;
+    this.updateWorktreeCreateState();
+  }
+
+  // Only what has been typed narrows the list. Opening it filters by nothing, or the branch already
+  // in the field would hide every other branch exactly when someone wants to browse them.
+  matchingWorktreeBranches() {
+    const typed = this.worktreeBranchFilterActive ? this.$("worktree-base-ref").value.trim().toLowerCase() : "";
+    if (!typed) return this.worktreeBranches;
+    const prefix = this.worktreeBranches.filter((branch) => branch.toLowerCase().startsWith(typed));
+    const rest = this.worktreeBranches.filter((branch) => !branch.toLowerCase().startsWith(typed) &&
+      branch.toLowerCase().includes(typed));
+    return [...prefix, ...rest];
+  }
+
+  renderWorktreeBranchList() {
+    const list = this.$("worktree-base-ref-list");
+    const matches = this.matchingWorktreeBranches();
+    list.textContent = "";
+    if (!matches.length) {
+      const empty = document.createElement("div");
+      empty.className = "worktree-branch-empty";
+      empty.textContent = "no matching branch";
+      list.appendChild(empty);
+      this.worktreeBranchActiveIndex = -1;
+      return;
+    }
+    if (this.worktreeBranchActiveIndex >= matches.length) this.worktreeBranchActiveIndex = matches.length - 1;
+    for (const [index, branch] of matches.entries()) {
+      const option = document.createElement("div");
+      option.className = `worktree-branch-option${index === this.worktreeBranchActiveIndex ? " active" : ""}`;
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", String(index === this.worktreeBranchActiveIndex));
+      option.textContent = branch;
+      if (branch === this.worktreeCurrentBranch) {
+        const marker = document.createElement("span");
+        marker.className = "worktree-branch-current";
+        marker.textContent = "current";
+        option.appendChild(marker);
+      }
+      // mousedown, not click: the input's blur would close the list before a click landed.
+      option.onmousedown = (event) => {
+        event.preventDefault();
+        this.selectWorktreeBranch(branch);
+      };
+      list.appendChild(option);
+    }
+    const active = list.querySelector(".worktree-branch-option.active");
+    if (active) active.scrollIntoView({ block: "nearest" });
+  }
+
+  openWorktreeBranchList({ filtered = false } = {}) {
+    this.worktreeBranchFilterActive = filtered;
+    this.renderWorktreeBranchList();
+    this.$("worktree-base-ref-list").classList.remove("hidden");
+    this.$("worktree-base-ref").setAttribute("aria-expanded", "true");
+  }
+
+  closeWorktreeBranchList() {
+    this.worktreeBranchActiveIndex = -1;
+    this.$("worktree-base-ref-list").classList.add("hidden");
+    this.$("worktree-base-ref").setAttribute("aria-expanded", "false");
+  }
+
+  worktreeBranchListOpen() {
+    return !this.$("worktree-base-ref-list").classList.contains("hidden");
+  }
+
+  selectWorktreeBranch(branch) {
+    this.$("worktree-base-ref").value = branch;
+    this.closeWorktreeBranchList();
+    this.syncWorktreeLocation();
+    this.updateWorktreeCreateState();
+  }
+
+  // Runs before the dialog-wide Escape/Enter handler on document, so a key the list uses never
+  // reaches it: Escape would close the whole dialog and Enter would submit it.
+  handleWorktreeBranchKeydown(event) {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!this.worktreeBranchListOpen()) {
+        this.worktreeBranchActiveIndex = 0;
+        this.openWorktreeBranchList();
+        return;
+      }
+      const total = this.matchingWorktreeBranches().length;
+      if (!total) return;
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      this.worktreeBranchActiveIndex = (this.worktreeBranchActiveIndex + step + total) % total;
+      this.renderWorktreeBranchList();
+      return;
+    }
+    if (!this.worktreeBranchListOpen()) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeWorktreeBranchList();
+      return;
+    }
+    if (event.key === "Enter" && this.worktreeBranchActiveIndex >= 0) {
+      const branch = this.matchingWorktreeBranches()[this.worktreeBranchActiveIndex];
+      if (!branch) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.selectWorktreeBranch(branch);
+      return;
+    }
+    if (event.key === "Tab") this.closeWorktreeBranchList();
   }
 
   async browseWorktreeLocation() {
@@ -2514,7 +2642,11 @@ class TermdeckApp {
         void uiAlert(payload.detail || "failed to choose a folder");
         return;
       }
-      if (!payload.cancelled && payload.location) this.$("worktree-location").value = payload.location;
+      if (!payload.cancelled && payload.location) {
+        this.worktreeLocationParent = payload.location;
+        this.worktreeLocationEdited = false;
+        this.syncWorktreeLocation();
+      }
     } finally {
       button.disabled = false;
     }
@@ -2524,7 +2656,15 @@ class TermdeckApp {
     this.$("worktree-modal-backdrop").classList.add("hidden");
   }
 
+  // Blue once the dialog has what it needs: a branch to start from and somewhere to put the worktree.
+  // The button stays clickable either way, so a bad value still reports itself in the dialog.
+  updateWorktreeCreateState() {
+    const ready = !!this.$("worktree-base-ref").value.trim() && !!this.$("worktree-location").value.trim();
+    this.$("worktree-modal-create").classList.toggle("modal-primary", ready);
+  }
+
   clearWorktreeModalError() {
+    this.hideWorktreeProgress();
     this.$("worktree-modal-error").classList.add("hidden");
     this.$("worktree-modal-open-existing").classList.add("hidden");
     this.worktreeConflictSegment = "";
@@ -2535,11 +2675,13 @@ class TermdeckApp {
   showWorktreeModalError(detail) {
     const structured = detail && typeof detail === "object" ? detail : null;
     const message = structured ? structured.message : detail;
+    if (structured?.commands?.length) this.showWorktreeProgress(structured.commands, "failed");
+    else this.hideWorktreeProgress();
     this.$("worktree-modal-error-text").textContent = message || "worktree creation failed";
     this.$("worktree-modal-error").classList.remove("hidden");
     // The URL takes the same segment the create flow uses, not the internal id.
     this.worktreeConflictSegment = structured?.worktree_id
-      ? structured.worktree_branch || structured.worktree_name || structured.worktree_id : "";
+      ? structured.worktree_name || structured.worktree_branch || structured.worktree_id : "";
     const open = this.$("worktree-modal-open-existing");
     open.classList.toggle("hidden", !this.worktreeConflictSegment);
     if (this.worktreeConflictSegment) {
@@ -2555,33 +2697,101 @@ class TermdeckApp {
   }
 
   async createProjectWorktree() {
+    const name = this.$("worktree-name").value.trim();
     const baseRef = this.$("worktree-base-ref").value.trim();
     const branch = this.$("worktree-branch").value.trim();
     // Not named `location`: this function reads location.href below, and a local would shadow it.
     const folder = this.$("worktree-location").value.trim();
-    const response = await fetch("/api/worktrees", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project: this.projectSlug, branch, base_ref: baseRef, location: folder }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      this.showWorktreeModalError(payload.detail);
-      return;
+    if (this.worktreeCreateInFlight) return;
+    this.worktreeCreateInFlight = true;
+    this.clearWorktreeModalError();
+    // `git worktree add` copies a whole checkout, which is slow enough to look frozen. The commands
+    // shown while it runs are the ones the request will run; the reply replaces them with what ran.
+    this.showWorktreeProgress([this.plannedWorktreeCommand(baseRef, branch, folder)]);
+    try {
+      const response = await fetch("/api/worktrees", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project: this.projectSlug, name, branch, base_ref: baseRef, location: folder }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        this.showWorktreeModalError(payload.detail);
+        return;
+      }
+      this.rememberWorktreeRoot(payload.path || folder);
+      this.closeWorktreeModal();
+      await this.loadWorktrees();
+      const worktreeSegment = payload.name || payload.branch || payload.id;
+      const url = new URL(`/p/${encodeURIComponent(this.projectSlug)}/${encodeURIComponent(worktreeSegment)}`, location.href);
+      this.showWorktreeResult("Worktree created", `${payload.name || payload.branch} · ${payload.branch || "new branch"}`,
+        url, payload.path || "");
+    } catch (error) {
+      this.showWorktreeModalError(error.message || "worktree creation failed");
+    } finally {
+      this.worktreeCreateInFlight = false;
+      this.$("worktree-modal-create").disabled = false;
     }
-    this.closeWorktreeModal();
-    await this.loadWorktrees();
-    const worktreeSegment = payload.branch || payload.name || payload.id;
-    const url = new URL(`/p/${encodeURIComponent(this.projectSlug)}/${encodeURIComponent(worktreeSegment)}`, location.href);
-    this.$("worktree-result-title").textContent = "Worktree created";
+  }
+
+  // What the server is about to run, so the panel says something specific from the first frame.
+  plannedWorktreeCommand(baseRef, branch, folder) {
+    const quote = (value) => (/^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`);
+    const parts = ["git", "worktree", "add"];
+    if (branch) parts.push("-b", quote(branch));
+    parts.push(quote(folder), quote(baseRef));
+    return parts.join(" ");
+  }
+
+  showWorktreeProgress(commands, state = "running") {
+    const panel = this.$("worktree-modal-progress");
+    const list = this.$("worktree-modal-progress-commands");
+    this.$("worktree-modal-progress-label").textContent =
+      state === "failed" ? "Could not create the worktree" : "Creating worktree…";
+    panel.classList.toggle("failed", state === "failed");
+    list.textContent = "";
+    for (const command of commands) {
+      const row = document.createElement("div");
+      row.className = `worktree-command${state === "running" ? "" : ` ${state}`}`;
+      row.textContent = command;
+      list.appendChild(row);
+    }
+    panel.classList.remove("hidden");
+    this.$("worktree-modal-create").disabled = state === "running";
+  }
+
+  hideWorktreeProgress() {
+    this.$("worktree-modal-progress").classList.add("hidden");
+    this.$("worktree-modal-progress-commands").textContent = "";
+  }
+
+  // The folder a project's worktrees live in is remembered, so renaming the root once is enough.
+  rememberWorktreeRoot(createdPath) {
+    const parent = String(createdPath || "").replace(/\/+$/, "").split("/").slice(0, -1).join("/");
+    if (!parent || !this.projectSlug) return;
+    const roots = { ...(this.settings.worktree_roots || {}) };
+    if (roots[this.projectSlug] === parent) return;
+    roots[this.projectSlug] = parent;
+    this.settings.worktree_roots = roots;
+    this.saveSettings();
+  }
+
+  // Shared by "Worktree created" and "Project added": both offer the same address, so both need the
+  // in-page link and the new-tab link pointed at it. Setting one and not the other left the button
+  // aimed wherever the dialog last was.
+  showWorktreeResult(title, name, url, path) {
+    this.$("worktree-result-title").textContent = title;
+    this.$("worktree-result-name").textContent = name;
     const link = this.$("worktree-result-link");
-    this.$("worktree-result-name").textContent = `${payload.name || payload.branch} · ${payload.branch || "new branch"}`;
     link.href = url.href;
     link.textContent = url.href;
     link.title = url.href;
-    this.$("worktree-result-hint").textContent = "Click to open here. Command/Ctrl-click or middle-click opens a new tab; right-click can open a new window.";
-    this.$("worktree-result-path").textContent = payload.path || "";
+    const openTab = this.$("worktree-result-open-tab");
+    openTab.href = url.href;
+    openTab.title = `Open ${url.href} in a new tab`;
+    this.$("worktree-result-hint").textContent = "Click the address to open it here, or use the button below for a new tab.";
+    this.$("worktree-result-path").textContent = path;
     this.$("worktree-result-backdrop").classList.remove("hidden");
-    requestAnimationFrame(() => this.$("worktree-result-link").focus());
+    requestAnimationFrame(() => link.focus());
   }
 
   closeWorktreeResult() {
@@ -2797,16 +3007,7 @@ class TermdeckApp {
       }
       await this.loadProjects();
       const url = new URL(`/p/${encodeURIComponent(project.name)}`, location.href);
-      this.$("worktree-result-title").textContent = "Project added";
-      this.$("worktree-result-name").textContent = project.name;
-      const link = this.$("worktree-result-link");
-      link.href = url.href;
-      link.textContent = url.href;
-      link.title = url.href;
-      this.$("worktree-result-hint").textContent = "Click to open here. Command/Ctrl-click or middle-click opens a new tab; right-click can open a new window.";
-      this.$("worktree-result-path").textContent = project.root || "";
-      this.$("worktree-result-backdrop").classList.remove("hidden");
-      requestAnimationFrame(() => link.focus());
+      this.showWorktreeResult("Project added", project.name, url, project.root || "");
     } catch (error) {
       void uiAlert(error.message || "failed to choose project folder");
     } finally {
@@ -3089,6 +3290,28 @@ class TermdeckApp {
     this.$("worktree-modal-create").onclick = () => void this.createProjectWorktree();
     this.$("worktree-location-browse").onclick = () => void this.browseWorktreeLocation();
     this.$("worktree-modal-open-existing").onclick = () => this.openConflictingWorktree();
+    this.$("worktree-name").oninput = () => this.syncWorktreeLocation();
+    this.$("worktree-branch").oninput = () => this.syncWorktreeLocation();
+    // Once the path is hand-edited it stops following the name; nothing should overwrite a typed path.
+    this.$("worktree-location").oninput = () => {
+      this.worktreeLocationEdited = true;
+      this.updateWorktreeCreateState();
+    };
+    const baseRef = this.$("worktree-base-ref");
+    baseRef.oninput = () => {
+      this.worktreeBranchActiveIndex = 0;
+      this.openWorktreeBranchList({ filtered: true });
+      this.syncWorktreeLocation();
+      this.updateWorktreeCreateState();
+    };
+    baseRef.onkeydown = (event) => this.handleWorktreeBranchKeydown(event);
+    baseRef.onfocus = () => this.openWorktreeBranchList();
+    baseRef.onblur = () => this.closeWorktreeBranchList();
+    this.$("worktree-base-ref-toggle").onclick = () => {
+      if (this.worktreeBranchListOpen()) return this.closeWorktreeBranchList();
+      baseRef.focus();
+      baseRef.select();
+    };
     this.$("worktree-modal-backdrop").addEventListener("mousedown", (event) => {
       if (event.target === this.$("worktree-modal-backdrop")) this.closeWorktreeModal();
     });
@@ -4318,6 +4541,28 @@ class TermdeckApp {
     this.attentionTimers.delete(id);
     if (!this.attentionSessions.delete(id)) return;
     this.updateUnreadIndicator(id);
+  }
+
+  sessionNeedsAttention(id) {
+    if (this.attentionServerStates.has(id)) return this.attentionServerStates.get(id) === true;
+    return this.session(id)?.needs_attention === true || this.attentionSessions.has(id);
+  }
+
+  // Drop the badge without answering the prompt: the terminal still wants a human eventually, so it
+  // stays unread rather than going quiet entirely.
+  async ignoreSessionsAttention(sessionIds) {
+    const ids = [...new Set(sessionIds)].filter((id) => this.sessionNeedsAttention(id));
+    if (!ids.length) return;
+    for (const id of ids) {
+      this.clearSessionAttention(id);
+      this.attentionServerStates.set(id, false);
+      const session = this.session(id);
+      if (session) session.needs_attention = false;
+    }
+    this.setSessionsUnread(ids, true);
+    for (const id of ids) this.updateSessionRows(id);
+    await Promise.all(ids.map((id) =>
+      fetch(`/api/sessions/${encodeURIComponent(id)}/attention`, { method: "POST" }).catch(() => null)));
   }
 
   updateProcessingState(id, spinning) {

@@ -1081,6 +1081,15 @@ Object.assign(TermdeckApp.prototype, {
     }
     if (data) this.touchSessionActivity(view.sessionId);
     if (view.replaying && QUERY_RESPONSE_RE.test(data)) return;
+    // Sending input means the composer is where you are looking, so a parked view goes back to it.
+    // Typing and pasting each did this for themselves, which left every other way input reaches a
+    // terminal -- a queued prompt, a selection handed to an agent, a scripted run -- writing into a
+    // composer that stayed off screen.
+    if (data && !QUERY_RESPONSE_RE.test(data) && view.tallFollowing === false) {
+      view.tallFollowing = true;
+      view.scrollMode = "follow";
+      this.scrollTallContainerToCursor(view);
+    }
     if (view.ws && view.ws.readyState === WebSocket.OPEN) {
       view.ws.send(JSON.stringify({ type: "input", data }));
     }
@@ -2817,12 +2826,32 @@ Object.assign(TermdeckApp.prototype, {
   tallSetScrollTop(view, value) {
     if (!view || view.closed) return;
     const target = Math.max(0, Math.round(value));
-    view.tallLastProgrammaticTop = target;
     // Skip a write that changes nothing: it only adds scroll-event noise for the listener to sort out.
     if (Math.abs(view.container.scrollTop - target) > 1) {
       view.tallProgrammaticScrollPending = true;
       view.container.scrollTop = target;
     }
+    // Record where the container LANDED, not what was asked for. The follow target comes from buffer
+    // rows, which run ahead of the height the box has laid out, so a follow scroll issued by the write
+    // that grew the output is silently clamped short. The follow-break guard reads this field as "where
+    // this code last put it"; against the unreachable request, the very next write measured a gap
+    // nobody made, called it a user scroll, and parked a terminal that had never been touched -- on a
+    // fresh terminal that means parked at the top, watching the composer walk off the bottom.
+    view.tallLastProgrammaticTop = Math.round(view.container.scrollTop);
+    if (view.container.scrollTop >= target - 1) return;
+    // Re-apply while the assignment keeps landing short, so the view catches up with the rows the
+    // container is still laying out rather than waiting for the next write to drive it down.
+    cancelAnimationFrame(view.tallClampedScrollFrame || 0);
+    view.tallClampedScrollAttempts = (view.tallClampedScrollTarget === target ?
+      Number(view.tallClampedScrollAttempts || 0) : 0) + 1;
+    view.tallClampedScrollTarget = target;
+    if (view.tallClampedScrollAttempts > TALL_CLAMPED_SCROLL_RETRIES) return;
+    view.tallClampedScrollFrame = requestAnimationFrame(() => {
+      view.tallClampedScrollFrame = 0;
+      if (view.closed || view.tallFollowing === false) return;
+      if (view.tallClampedScrollTarget !== target || view.container.scrollTop >= target - 1) return;
+      this.tallSetScrollTop(view, target);
+    });
   },
 
 
@@ -2853,9 +2882,16 @@ Object.assign(TermdeckApp.prototype, {
     // than any near-window, so the settle re-followed and snapped the reader straight back to the
     // bottom. The fold glue in scrollTallContainerToCursor fast-forwards the stale ceiling at the
     // source now, so the tight tolerance can stay tight.
+    // Also at the bottom: resting on the container's own maximum. The ceiling is derived from buffer
+    // rows and leads the height the container has laid out, so a view that is physically as low as the
+    // box goes can still measure "short of the ceiling" -- which parked views that had nowhere left to
+    // scroll, permanently, since nothing but input re-follows. Scrolling up leaves the container's
+    // bottom, so a real park still reads as one.
+    const containerBottom = view.container.scrollHeight - view.container.clientHeight;
     const atBottom = ceiling == null ||
       scrollTop >= ceiling - TALL_BOTTOM_TOLERANCE_PX ||
       returnedToReachedBottom ||
+      scrollTop >= containerBottom - TALL_BOTTOM_TOLERANCE_PX ||
       (view.tallFollowing !== false && view.tallFollowTop != null &&
         scrollTop >= view.tallFollowTop - TALL_BOTTOM_TOLERANCE_PX);
     view.tallFollowing = atBottom;

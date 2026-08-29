@@ -2406,6 +2406,18 @@ Object.assign(TermdeckApp.prototype, {
     const append = options.append === true;
     const expandedByKey = options.expandedByKey || null;
     for (const turn of turns) {
+      if (turn.kind === "compaction") {
+        // Not a <details>: there is nothing to expand, and collapsing it away would defeat the
+        // point -- the boundary needs to stay visible so turns from before and after it don't read
+        // as one continuous exchange.
+        const divider = document.createElement("div");
+        divider.className = "history-compaction";
+        const label = document.createElement("span");
+        label.textContent = turn.text ? `${turn.title} · ${turn.text}` : turn.title;
+        divider.appendChild(label);
+        body.appendChild(divider);
+        continue;
+      }
       if (turn.kind && turn.kind !== "message") {
         const event = document.createElement("details");
         event.className = "history-event " + turn.kind;

@@ -61,8 +61,9 @@ class ManagedSession:
         self.osc_query_carry = b""
         self.last_repaint_offset: int | None = None
         self.repaint_activity_suppressed_until_monotonic = 0.0
-        # Rewrites status-bar walk-and-return redraws so they stop scrolling real content off the top
-        # of the buffer; see TermdeckConfig.REPAINT_FILTER_ENABLED. One instance per session only to
+        # Rewrites status-bar walk-and-return redraws so they stop wasting buffer rows on blank lines;
+        # see TermdeckConfig.REPAINT_FILTER_ENABLED for what this does and does not guarantee. One
+        # instance per session only to
         # keep its collapsed_lines counter meaningful -- the rewrite itself carries no cross-chunk state.
         self.repaint_filter = RepaintFilter() if TermdeckConfig.REPAINT_FILTER_ENABLED else None
         self.scrollback_sync_carry = b""
@@ -518,6 +519,19 @@ class TerminalSessionManager:
         # (including the clear on every prompt submit) used to switch this path off for the session
         # entirely. So the screen text may always RAISE attention; it can never lower it.
         return agents.agent_cli(ms.record.agent_kind).update_attention_from_output(self, ms, data)
+
+    def dismiss_attention(self, session_id: str) -> None:
+        """Drop the attention badge without answering the prompt, leaving the terminal unread.
+
+        The carry is cleared too: the prompt stays on screen and every repaint re-sends it, so
+        leaving the matched text behind would re-raise the badge on the next write.
+        """
+        ms = self._sessions[session_id]
+        if not ms.attention_required and not ms.attention_text_carry:
+            return
+        ms.attention_required = False
+        ms.attention_text_carry = ""
+        self._broadcast_status(ms)
 
     def apply_agent_attention_hook(self, agent_session_id: str, attention: bool) -> str | None:
         """Apply a Claude Code hook callback, returning the terminal id it matched or None.

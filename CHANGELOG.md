@@ -6,7 +6,68 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Ignore attention** in a terminal's context menu: drop the attention badge on a terminal you do
+  not want to answer yet without touching its prompt. The terminal stays unread, so it is still
+  visibly waiting for you.
+
+## [0.8.0] — 2026-08-29
+
+### Added
+
+- **A new worktree is described rather than generated.** The dialog asks for a worktree name, the branch to
+  check out, an optional new branch, and the exact folder to check out into. The branch field filters as you
+  type (prefix matches first), the folder field shows the full path and follows the name until you edit it,
+  and Browse picks the folder it goes in. Creating shows a spinner with the git commands as they run, since
+  `git worktree add` copies a whole checkout and otherwise looks frozen.
+
+- A worktree's folder is remembered per project: rename the root once — `stock-wts` instead of the default —
+  and the next worktree starts there.
+
+- Font size for the open-file tabs. The `files_tab_font_size` setting existed but nothing had read it since
+  the side-panel redesign, so the tabs borrowed the status-line size; the whole strip now scales with it.
+
+### Changed
+
+- **A worktree no longer creates a branch unless you name one.** A worktree and a branch are separate
+  things; creation forced `git worktree add -b` and invented a `termdeck/<slug>-<sha>` branch nobody asked
+  for. Leaving the new-branch field empty checks the selected branch out as it is.
+
+- A project's worktrees default to a sibling `<project>-worktrees/` folder instead of a hidden shared
+  `.termdeck-worktrees/`, and the folder is named for the worktree with nothing appended. A folder that is
+  already taken is reported in the dialog, offering to open the worktree that is in the way.
+
+- The files, search, and git side panel is part of the sidebar again instead of floating over it. It had
+  become an overlay covering the terminal list, the sidebar chrome and part of the workspace, with no way to
+  pin it — the pin button had been dropped from the markup while the code still keyed off it. The sidebar
+  now widens to half again its width and the workspace shifts over.
+
+- Switching between the files, search, and git tabs updates the address again. Once git had been opened the
+  URL stayed on `/g/`, because the mode was read from the path already showing rather than from the tab.
+
+- Settings are shorter and better ordered: font sizes and language servers follow the terminal icons, export
+  settings is its own row rather than buried under Maintenance, rules separate the entries, and the stats
+  toggle reads "Resource monitor & maintenance". Maintenance itself moved onto the CPU/memory readout —
+  click it for the process report, orphan reclaim, and both kill actions, including the bottom bar's former
+  trash button. Clicking it again closes the menu, and hovering names which number is which.
+
+- Font sizes are edited through Visualize or Samples; the inline +/- list they duplicated is gone. "Pause
+  inactive rendering" is now a code-only flag rather than a switch, being unfinished.
+
 ### Fixed
+
+- **Deleting a worktree no longer deletes a branch it did not create.** Removal ran `git branch -D`
+  unconditionally, so checking out an existing branch and later removing the worktree would have taken the
+  branch with it.
+
+- A failed worktree creation says what went wrong. Every failure — a bad path, a taken branch name, a base
+  ref that does not exist — was reported as "project is not a Git repository", and the message replaced the
+  dialog rather than appearing in it, losing what you had typed.
+
+- Icons inside the file tabs can be sized at all. Both codicon.css and Monaco's stylesheet size every icon
+  through `.codicon[class*='codicon-']`, and Monaco's copy is injected after the app's, so the tab rules
+  never applied — the history tab's icon had never rendered at its intended size.
 
 - Interrupting a busy Claude no longer leaves the session without a working indicator. Escape makes
   Claude cancel and immediately start whatever was queued behind it; the interrupt flag used to hold
@@ -14,6 +75,20 @@ All notable changes to this project are documented here. The format follows
 
 - Right-clicking near the bottom of the window now opens the context menu above the pointer instead of
   pinning it to the bottom edge, where it covered the very selection it was acting on.
+
+- A terminal you had scrolled up in now returns to the composer whenever input is sent to it, not only
+  when you type or paste into it. Sending a queued prompt, handing a selection to an agent, or driving a
+  terminal from a script left the view parked where you had scrolled it, writing into a composer that
+  stayed off screen.
+
+- A streaming agent no longer walks its composer off the bottom of the screen, most visibly on a
+  terminal whose first prompt is still short enough to fit. The follow target comes from buffer rows,
+  which run ahead of the height the box has laid out, so a follow scroll issued by the write that grew
+  the output is clamped short — and the follow-break guard, which compares the view against where the
+  code last put it, was comparing against the position it had *asked* for. The unreachable request read
+  as a scroll nobody made, so the guard parked the terminal at the top and the output ran on below it.
+  The guard now records where the container actually landed, a clamped follow scroll re-applies over
+  the next few frames, and a view resting on the container's own maximum counts as following.
 
 - Clicking a desktop notification lands on the tab showing the terminal deck and selects that
   session there, instead of whichever tab happened to post the banner — which with two tabs open
@@ -232,7 +307,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/danialfarid/termdeck/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/danialfarid/termdeck/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/danialfarid/termdeck/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/danialfarid/termdeck/compare/v0.5.0...v0.6.0

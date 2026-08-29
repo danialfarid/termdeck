@@ -4087,6 +4087,10 @@ Object.assign(TermdeckApp.prototype, {
     }
     this.addContextSubmenu(menu, this.shortcutLabel("Move to…", "open-move-menu"), moveEntries, "arrow-swap",
       { open: !!options.openMove });
+    if (sessionIds.some((id) => this.sessionNeedsAttention(id))) {
+      this.addContextItem(menu, multiple ? `Ignore attention on ${selectionLabel}` : "Ignore attention",
+        () => this.ignoreSessionsAttention(sessionIds), "bell-slash");
+    }
     this.addContextItem(menu, multiple ? this.shortcutLabel(`Close ${selectionLabel}`, "close-item")
       : this.shortcutLabel("Close", "close-item"),
     () => multiple ? this.closeSelectedSessions(sessionIds) : this.closeSession(session.session_id),
