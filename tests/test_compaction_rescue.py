@@ -71,13 +71,22 @@ class StripAnsiTest(unittest.TestCase):
 
 
 class BuildRescuePayloadTest(unittest.TestCase):
-    def test_payload_contains_divider_lines_and_forces_a_scroll(self) -> None:
-        payload = build_rescue_payload(["recovered one", "recovered two"], rows=24, divider="-- recovered --")
+    def test_payload_contains_divider_and_lines(self) -> None:
+        payload = build_rescue_payload(["recovered one", "recovered two"], divider="-- recovered --")
 
         text = payload.decode()
         self.assertIn("-- recovered --", text)
         self.assertIn("recovered one\r\nrecovered two", text)
-        self.assertTrue(payload.endswith(b"\x1b[9999;1H" + b"\r\n" * 28))
+
+    def test_payload_does_not_pad_with_blank_lines(self) -> None:
+        # A compaction has already finished and settled by the time this runs -- nothing is
+        # about to erase anything, so there is no reason to force a scroll the way the
+        # PreCompact-armed carry payload does. Regression coverage for a real live bug: this
+        # padding once flooded a session with hundreds of blank rows on every rescue.
+        payload = build_rescue_payload(["one line"], divider="-- recovered --")
+
+        self.assertNotIn(b"\x1b[9999", payload)
+        self.assertEqual(payload.count(b"\r\n"), 3)
 
 
 if __name__ == "__main__":

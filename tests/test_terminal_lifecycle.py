@@ -26,9 +26,9 @@ from termdeck.replay_recorder import ReplayRecorder
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
 
 
-def record(session_id: str = "abc123") -> SessionRecord:
+def record(session_id: str = "abc123", agent_kind: str = "none", agent_session_id: str | None = None) -> SessionRecord:
     return SessionRecord(session_id=session_id, title="session", title_user_set=True, command="",
-                         cwd="/tmp", agent_kind="none", agent_session_id=None,
+                         cwd="/tmp", agent_kind=agent_kind, agent_session_id=agent_session_id,
                          created_at_est="2026-01-01T00:00:00", draft="", project="test")
 
 
@@ -546,6 +546,104 @@ class ClaudeTranscriptParsingTest(unittest.TestCase):
 
         self.assertEqual(turns[0]["kind"], "compaction")
         self.assertEqual(turns[0]["text"], "")
+
+
+class CompactionRescueTriggerTest(unittest.TestCase):
+    """Whether a rescue fires depends on the newest compact_boundary's OWN age, not on how many
+    times this has already checked the transcript. A boundary count alone cannot distinguish
+    pre-existing history (real prior usage, or state reset by a restart) from a compaction that
+    just happened: regression coverage for two real live bugs in each direction -- old history
+    mistaken for new the moment anything touched the transcript (including just typing
+    /compact), and, from the fix for that, a fast session's whole prompt-response-compact
+    exchange collapsing into one debounced callback so the genuinely fresh compaction that had
+    just erased its own conversation was skipped as if it were old history too."""
+
+    def setUp(self) -> None:
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.enterContext(patch.object(agents.ClaudeCli, "sessions_root", Path(self.dir.name)))
+        self.enterContext(patch.object(TermdeckConfig, "COMPACTION_RESCUE_ENABLED", True))
+        self.claude = agents.agent_cli("claude")
+        self.agent_session_id = "11111111-1111-1111-1111-111111111111"
+        self.manager = TerminalSessionManager()
+        self.session = ManagedSession(record(agent_kind="claude", agent_session_id=self.agent_session_id))
+        self.manager._sessions[self.session.record.session_id] = self.session
+        self.manager.rescue_missing_compaction_lines = MagicMock()  # type: ignore[method-assign]
+        self.path = self.claude.project_dir(Path(self.session.record.cwd)) / f"{self.agent_session_id}.jsonl"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _boundary(self, age_seconds: float = 0.0, timestamp: bool = True) -> str:
+        payload = {"type": "system", "subtype": "compact_boundary", "content": "Conversation compacted"}
+        if timestamp:
+            when = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+            payload["timestamp"] = when.isoformat().replace("+00:00", "Z")
+        return json.dumps(payload)
+
+    def _assistant_line(self, text: str = "ok") -> str:
+        return json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
+
+    def test_old_pre_existing_boundary_is_not_rescued_even_as_the_first_check(self) -> None:
+        self.path.write_text(self._assistant_line() + "\n" + self._boundary(age_seconds=900) + "\n")
+
+        self.claude.on_transcript_event(self.manager, self.session, self.path)
+
+        self.manager.rescue_missing_compaction_lines.assert_not_called()
+
+    def test_fresh_boundary_is_rescued_even_as_the_first_check(self) -> None:
+        # The exact live failure: a short session whose whole exchange, compaction included,
+        # was never observed until the callback that already contains the boundary.
+        self.path.write_text(self._assistant_line() + "\n" + self._boundary(age_seconds=5) + "\n")
+
+        self.claude.on_transcript_event(self.manager, self.session, self.path)
+
+        self.manager.rescue_missing_compaction_lines.assert_called_once()
+
+    def test_missing_timestamp_is_not_rescued(self) -> None:
+        self.path.write_text(self._assistant_line() + "\n" + self._boundary(timestamp=False) + "\n")
+
+        self.claude.on_transcript_event(self.manager, self.session, self.path)
+
+        self.manager.rescue_missing_compaction_lines.assert_not_called()
+
+    def test_a_fresh_boundary_arriving_after_an_old_one_still_triggers(self) -> None:
+        self.path.write_text(self._boundary(age_seconds=900) + "\n")
+        self.claude.on_transcript_event(self.manager, self.session, self.path)  # old: no rescue
+
+        with self.path.open("a") as fh:
+            fh.write(self._assistant_line() + "\n")
+            fh.write(self._boundary(age_seconds=5) + "\n")
+        self.claude.on_transcript_event(self.manager, self.session, self.path)
+
+        self.manager.rescue_missing_compaction_lines.assert_called_once()
+
+    def test_repeat_checks_with_no_new_boundary_do_not_rescue_again(self) -> None:
+        self.path.write_text(self._assistant_line() + "\n" + self._boundary(age_seconds=5) + "\n")
+        self.claude.on_transcript_event(self.manager, self.session, self.path)
+        self.manager.rescue_missing_compaction_lines.reset_mock()
+
+        with self.path.open("a") as fh:
+            fh.write(self._assistant_line("more") + "\n")
+        self.claude.on_transcript_event(self.manager, self.session, self.path)
+
+        self.manager.rescue_missing_compaction_lines.assert_not_called()
+
+    def test_tool_output_is_offered_as_a_candidate(self) -> None:
+        # Asked to print a sequence of numbers, this model routinely reaches for a shell
+        # command over typing them out itself, leaving Claude's own text no more than "Done!"
+        # -- confirmed live, the exact scenario this covers. The actual content is tool
+        # output, not assistant text, and must not be excluded the same way user turns are.
+        tool_use = json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "seq 1 3"}}]}})
+        tool_result = json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "content": "1\n2\n3"}]}})
+        self.path.write_text("\n".join([tool_use, tool_result, self._assistant_line("Done!"),
+                                        self._boundary(age_seconds=5)]) + "\n")
+
+        self.claude.on_transcript_event(self.manager, self.session, self.path)
+
+        self.manager.rescue_missing_compaction_lines.assert_called_once()
+        candidates = self.manager.rescue_missing_compaction_lines.call_args.args[-1]
+        self.assertEqual(["1", "2", "3", "Done!"], candidates)
 
 
 class CliTitlePersistenceTest(unittest.TestCase):

@@ -12,6 +12,7 @@ from pathlib import Path
 from termdeck import agents
 from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.claude_activity_watcher import ClaudeActivityWatcher
+from termdeck.compaction_rescue import build_rescue_payload, find_missing_lines
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot
 from termdeck.draft_tracker import DraftInputTracker
@@ -622,6 +623,26 @@ class TerminalSessionManager:
         # follow always scroll rather than merely move the cursor down.
         return ("\r\n" + TermdeckConfig.COMPACT_DIVIDER + "\x1b[9999;1H" +
                 "\r\n" * (ms.rows + 4)).encode()
+
+    def rescue_missing_compaction_lines(self, ms: ManagedSession, marker_text: str, candidates: list[str]) -> None:
+        """Re-inject conversation lines a compaction's own redraw erased and never rewrote.
+
+        Called only once a compaction has actually completed (the caller found a compact_boundary
+        already landed in the transcript) -- unlike the PreCompact-armed carry above, a refused
+        /compact never gets this far, since a refusal never writes one. See compaction_rescue.py:
+        this is agent-agnostic on purpose (any future caller with its own way to detect a
+        completed compaction and gather candidate lines can reuse it), even though only Claude
+        wires it up today. Reaches live clients the same way any other output does, through
+        _handle_output below -- so someone watching sees the erase happen, then the recovered
+        lines appended a few seconds later once the transcript confirms it.
+        """
+        if not TermdeckConfig.COMPACTION_RESCUE_ENABLED or not candidates:
+            return
+        missing = find_missing_lines(candidates, bytes(ms.raw_replay_buffer), marker_text)
+        if not missing:
+            return
+        payload = build_rescue_payload(missing, TermdeckConfig.COMPACTION_RESCUE_DIVIDER)
+        self._handle_output(ms, payload, mark_activity=False)
 
     def _refresh_session_activity(self, ms: ManagedSession) -> None:
         transcript_activity = self._tracker.session_activity_timestamp(ms.record.agent_kind,

@@ -163,16 +163,29 @@ class TermdeckConfig:
     # disabled for reasons unrelated to this (PreCompact fires on intent, not completion; see their own
     # comments), not because this filter replaces them.
     REPAINT_FILTER_ENABLED = False
-    # OFF (0), pending review. Retroactive rescue: once a compact_boundary is confirmed in the
+    # ON: enabled 2026-08-29 for live trial. Retroactive rescue: once a compact_boundary is confirmed in the
     # transcript (never fires on a refused /compact, since that never writes one -- unlike
     # PreCompact, which fires on the mere intent), check the last couple of pre-compaction
-    # turns' text against the recording's own compaction redraw output and re-inject whatever
-    # never reappears. See termdeck/compaction_rescue.py. No proactive arming, no cursor-jump
-    # sizing guess: the trigger is a completed fact, not an intent, and what gets injected is
-    # exactly what came up missing, nothing blind. Independent of REPAINT_FILTER_ENABLED and
-    # COMPACTION_HOOK_ENABLED above -- this is the only one of the three verified end-to-end
-    # against a real compaction to find something a live client's terminal had actually lost.
-    COMPACTION_RESCUE_ENABLED = False
+    # assistant turns' text against the recording's own compaction redraw output and re-inject
+    # whatever never reappears. See termdeck/compaction_rescue.py. No proactive arming, no
+    # cursor-jump sizing guess: the trigger is a completed fact, not an intent, and what gets
+    # injected is exactly what came up missing, nothing blind. User turns are deliberately
+    # excluded from candidates: the composer echoes a typed prompt with absolute column jumps
+    # for its own wrap layout, which reads as "missing" under plain text matching whether or
+    # not it actually is -- caught live on the first end-to-end run, fixed by scoping to
+    # assistant text, which has no such rendering trick. The payload itself used to end with
+    # \x1b[9999;1H + rows blank lines, copied from session_manager's PreCompact-armed carry
+    # payload without reconsidering why that one needs it: that mechanism races an erase that
+    # has not happened yet and must force a full-height scroll to relocate currently-visible
+    # content before it does. This runs well after a compaction has already finished and
+    # settled, so there is nothing left to race -- the padding only flooded a live session
+    # with hundreds of blank rows on every rescue, reported directly by the user and fixed
+    # the same day. Tracking state also used to start at "0 compactions seen" on every fresh
+    # attach, so a session with real prior compaction history (the common case) could mistake
+    # old, already-settled compactions for new ones the moment anything touched the
+    # transcript, including just typing /compact -- now starts unset and syncs to whatever is
+    # already there on first contact instead of treating it as new.
+    COMPACTION_RESCUE_ENABLED = True
     COMPACTION_RESCUE_DIVIDER = "\x1b[2m──────────── recovered after compaction ────────────\x1b[0m"
     API_HISTORY_SEARCH_ROUTE = "/api/history-search"
     API_HISTORY_CONTEXT_ROUTE = "/api/history-context"

@@ -4,6 +4,7 @@ import os
 import re
 import shlex
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -24,6 +25,7 @@ class ClaudeSessionState(AgentSessionState):
         self.background_tasks: dict[str, str] = {}  # task id -> output file path
         self.monitor_tasks: dict[str, str] = {}     # monitor task id -> output file path
         self.background_scan_offset = 0             # transcript bytes already scanned
+        self.compaction_rescue_processed_count = 0  # compact_boundary events already handled
 
 
 class ClaudeCli(AgentCli):
@@ -580,6 +582,84 @@ class ClaudeCli(AgentCli):
         self.reconcile_stale_binding(manager, ms)
         if ms.record.agent_session_id is None:
             manager._schedule_detection(ms, 0.1)
+
+    # How many pre-compaction turns' text to offer as rescue candidates -- enough to cover
+    # "the last few pages" without re-parsing the whole transcript's worth of content on
+    # every compaction.
+    COMPACTION_RESCUE_LOOKBACK_TURNS = 4
+    # A boundary older than this is pre-existing history, not something that just happened --
+    # comfortably more than the slowest observed compaction (~30s) plus the debounce delay.
+    COMPACTION_RESCUE_MAX_AGE_SECONDS = 300.0
+
+    def on_transcript_event(self, manager, ms, path: Path) -> None:
+        if not TermdeckConfig.COMPACTION_RESCUE_ENABLED or not ms.record.agent_session_id:
+            return
+        if path != self.transcript_path(Path(ms.record.cwd), ms.record.agent_session_id):
+            return
+        try:
+            lines = [line.decode(errors="replace") for line in path.read_bytes().splitlines()]
+        except OSError:
+            return
+        turns = self.parse_transcript_lines(lines)
+        boundaries = [index for index, turn in enumerate(turns) if turn.get("kind") == "compaction"]
+        state = ms.agent_state
+        # Only a NEW boundary since the last check is even considered -- every later transcript
+        # write (the next prompt, its response) would otherwise re-fire this for the same one.
+        if len(boundaries) <= state.compaction_rescue_processed_count:
+            return
+        state.compaction_rescue_processed_count = len(boundaries)
+        if not self._newest_compaction_is_recent(lines):
+            # Pre-existing history rather than one that just happened -- a session can already
+            # have compactions from before this ever ran, or from before a restart reset this
+            # count to 0, and a boundary count alone cannot tell that apart from a fresh one:
+            # a fast session's whole prompt-response-compact exchange can collapse into a
+            # single debounced callback, so "is this my first time checking" is not reliable
+            # either (caught live: a short, quick compaction was skipped by that check even
+            # though it was the very compaction that had just erased its own conversation).
+            return
+        boundary_index = boundaries[-1]
+        marker_text = str(turns[boundary_index].get("title") or "")
+        lookback = turns[max(0, boundary_index - self.COMPACTION_RESCUE_LOOKBACK_TURNS):boundary_index]
+        # Assistant text and tool output, never user turns: the composer echoes a typed prompt
+        # word-by-word with absolute column jumps for its own wrap layout (no literal space
+        # between words in the bytes, just a jump implying one), so a user turn can look
+        # "missing" even when it visibly is not -- confirmed live: a submitted prompt was
+        # flagged even though nothing had actually happened to it. Tool output is included
+        # because it is often the actual answer: asked to print a sequence of numbers, this
+        # model routinely reaches for `seq` over typing them out itself (confirmed live, the
+        # same live report this fix is for), leaving Claude's own text no more than "Done!" --
+        # rescuing only assistant turns would miss exactly the content someone would notice
+        # gone. Plain command stdout formats as its own text with no rendering trick either.
+        candidates = [line for turn in lookback
+                      if (turn.get("kind") is None and turn.get("role") == "assistant") or turn.get("kind") == "result"
+                      for line in str(turn.get("text") or "").split("\n") if line.strip()]
+        if candidates:
+            manager.rescue_missing_compaction_lines(ms, marker_text, candidates)
+
+    @classmethod
+    def _newest_compaction_is_recent(cls, lines: list[str]) -> bool:
+        """Whether the transcript's last compact_boundary happened within the last few
+        minutes, using its own timestamp rather than anything about when this process
+        happened to look. A missing or unparsable timestamp counts as NOT recent: unlike
+        AgentSessionTracker's own recency check (which fails open because guessing wrong there
+        would silently drop an in-progress state), this only ever costs a missed rescue on the
+        rare malformed line, never a wrong one -- the safer default given what guessing wrong
+        the other way already did live."""
+        for line in reversed(lines):
+            payload = TurnBuilder.loads(line)
+            if payload is None:
+                continue
+            if payload.get("type") != "system" or payload.get("subtype") != "compact_boundary":
+                continue
+            stamp = payload.get("timestamp")
+            if not isinstance(stamp, str) or not stamp:
+                return False
+            try:
+                when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            return (datetime.now(timezone.utc) - when).total_seconds() <= cls.COMPACTION_RESCUE_MAX_AGE_SECONDS
+        return False
 
     def session_title(self, tracker, cwd: Path, agent_session_id: str | None) -> str | None:
         return tracker.claude_session_title(cwd, agent_session_id)

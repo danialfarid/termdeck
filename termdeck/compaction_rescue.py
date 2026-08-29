@@ -93,12 +93,16 @@ def find_missing_lines(candidates: list[str], data: bytes, marker_text: str) -> 
     return missing
 
 
-def build_rescue_payload(missing_lines: list[str], rows: int, divider: str) -> bytes:
-    """A divider plus the recovered lines, pushed into true scrollback.
+def build_rescue_payload(missing_lines: list[str], divider: str) -> bytes:
+    """A divider plus the recovered lines, appended where the cursor already is.
 
-    \\x1b[9999;1H clamps to the client's own last row whatever its height, so the newlines
-    that follow always scroll rather than merely moving the cursor down within existing
-    blank space -- same trick session_manager's own compaction-carry payload uses.
+    No \\x1b[9999;1H-and-pad-to-`rows` scroll-forcing: that trick belongs to
+    session_manager's own compaction-carry payload, which races an erase that has not
+    happened yet and must relocate currently-visible content before it does. This runs well
+    after a compaction has already finished and settled -- nothing is about to erase
+    anything -- so forcing a full-height scroll would only flood the screen with blank rows
+    for no benefit (confirmed live: this was the actual cause of a real "empty lines"
+    report, not a timing bug in when the rescue fires).
     """
     body = "\r\n".join(missing_lines)
-    return (f"\r\n{divider}\r\n{body}\r\n" + "\x1b[9999;1H" + "\r\n" * (rows + 4)).encode()
+    return f"\r\n{divider}\r\n{body}\r\n".encode()
