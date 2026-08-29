@@ -5,6 +5,19 @@ from termdeck.replay_recorder import ReplayRecorder
 
 
 class PreserveScreenBeforeEraseTest(unittest.TestCase):
+    """The scroll-ahead is switched off in config; these pin its behaviour for anyone turning it on."""
+
+    def setUp(self) -> None:
+        self._original = TermdeckConfig.REPLAY_PRESERVE_ERASE_MIN_ROWS
+        TermdeckConfig.REPLAY_PRESERVE_ERASE_MIN_ROWS = 20
+
+    def tearDown(self) -> None:
+        TermdeckConfig.REPLAY_PRESERVE_ERASE_MIN_ROWS = self._original
+
+    def test_switched_off_by_default(self):
+        # Shipped off: an upward jump does not identify the redraw worth scrolling for.
+        self.assertEqual(self._original, 0)
+
     def test_full_redraw_scrolls_the_screen_out_first(self):
         # The byte shape of a real compaction: jump far up, then erase line by line walking back.
         data = b"\x1b[112A\x1b[?25h\x1b[?25l\x1b[112B" + b"\x1b[2K\x1b[1A" * 20
@@ -48,12 +61,8 @@ class PreserveScreenBeforeEraseTest(unittest.TestCase):
 
     def test_switch_off_restores_the_old_recording_exactly(self):
         data = b"\x1b[112A" + b"\x1b[2K" * 5
-        original = TermdeckConfig.REPLAY_PRESERVE_ERASE_MIN_ROWS
         TermdeckConfig.REPLAY_PRESERVE_ERASE_MIN_ROWS = 0
-        try:
-            self.assertEqual(ReplayRecorder._preserve_screen_before_erase(data), data)
-        finally:
-            TermdeckConfig.REPLAY_PRESERVE_ERASE_MIN_ROWS = original
+        self.assertEqual(ReplayRecorder._preserve_screen_before_erase(data), data)
 
 
 if __name__ == "__main__":
