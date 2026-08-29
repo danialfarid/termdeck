@@ -109,6 +109,7 @@ class WorktreeCreateRequest(BaseModel):
     name: str = ""
     branch: str = ""
     base_ref: str = ""
+    location: str = ""
 
 
 class WorktreeDeleteRequest(BaseModel):
@@ -689,6 +690,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_WORKTREES_ROUTE, response_model=None)(self._add_worktree)
         app.delete(TermdeckConfig.API_WORKTREE_ROUTE, response_model=None)(self._delete_worktree)
         app.post(TermdeckConfig.API_PROJECT_FOLDER_PICKER_ROUTE, response_model=None)(self._pick_project_folder)
+        app.post(TermdeckConfig.API_WORKTREE_FOLDER_PICKER_ROUTE, response_model=None)(self._pick_worktree_folder)
         app.get(TermdeckConfig.API_AGENTS_ROUTE, response_model=None)(self._list_agent_clis)
         app.get(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._list_sessions)
         app.post(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._create_session)
@@ -1646,13 +1648,14 @@ class TermdeckServer:
     async def _list_worktree_branches(self, project: str = "") -> dict[str, str | list[str]]:
         project_name = project.strip()
         if not project_name:
-            return {"current": "", "branches": []}
+            return {"current": "", "branches": [], "default_location": ""}
         root = self.manager.registry.root_for(project_name)
         if root is None:
             raise HTTPException(status_code=404, detail=project_name)
         try:
             current, branches = self.worktrees.list_local_branch_names(root)
-            return {"current": current, "branches": branches}
+            return {"current": current, "branches": branches,
+                    "default_location": str(self.worktrees.default_project_worktree_parent(root))}
         except (ValueError, OSError) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
@@ -1663,11 +1666,17 @@ class TermdeckServer:
             raise HTTPException(status_code=404, detail=project)
         try:
             self.worktrees.repository_root(root)
-            title = request.branch.strip() or request.base_ref.strip() or request.name.strip() or "worktree"
-            return self.worktree_registry.create(project, root, title, request.branch, request.base_ref).to_dict()
         except (ValueError, OSError) as error:
             raise HTTPException(status_code=409,
                                 detail=f"project '{project}' is not a Git repository; select the folder containing .git") from error
+        title = request.branch.strip() or request.base_ref.strip() or request.name.strip() or "worktree"
+        try:
+            return self.worktree_registry.create(project, root, title, request.branch, request.base_ref,
+                                                 request.location).to_dict()
+        except (ValueError, OSError) as error:
+            # A bad folder, a taken branch name or a bad base ref each explain themselves; only the
+            # probe above means "this project is not a repository".
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
     async def _delete_worktree(self, worktree_id: str, request: WorktreeDeleteRequest) -> dict[str, object]:
         project = request.project.strip()
@@ -1685,10 +1694,12 @@ class TermdeckServer:
         except (ValueError, OSError) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
-    async def _pick_project_folder(self) -> dict[str, object]:
+    @staticmethod
+    async def _choose_folder(prompt: str) -> str | None:
+        """Native folder chooser. None means the person cancelled."""
         if not PlatformPaths.IS_MACOS:
             raise HTTPException(status_code=501, detail="native folder selection is only available on macOS desktop mode")
-        picker_script = 'POSIX path of (choose folder with prompt "Choose TermDeck project folder")'
+        picker_script = f'POSIX path of (choose folder with prompt "{prompt}")'
         try:
             result = await asyncio.to_thread(
                 subprocess.run,
@@ -1701,17 +1712,26 @@ class TermdeckServer:
             raise HTTPException(status_code=500, detail=f"native folder selection failed: {error}") from error
         if result.returncode != 0:
             if "User canceled" in result.stderr or "User canceled" in result.stdout:
-                return {"cancelled": True}
+                return None
             detail = result.stderr.strip() or "native folder selection failed"
             raise HTTPException(status_code=500, detail=detail)
-        root = result.stdout.strip()
-        if not root:
+        return result.stdout.strip() or None
+
+    async def _pick_project_folder(self) -> dict[str, object]:
+        root = await self._choose_folder("Choose TermDeck project folder")
+        if root is None:
             return {"cancelled": True}
         try:
             project = self.manager.registry.add_project(root)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {"cancelled": False, "project": project}
+
+    async def _pick_worktree_folder(self) -> dict[str, object]:
+        folder = await self._choose_folder("Choose the folder to create the worktree in")
+        if folder is None:
+            return {"cancelled": True}
+        return {"cancelled": False, "location": folder.rstrip("/") or folder}
 
     @staticmethod
     async def _list_agent_clis() -> dict[str, dict[str, object]]:

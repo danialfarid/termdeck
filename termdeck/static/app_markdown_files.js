@@ -5347,6 +5347,7 @@ Object.assign(TermdeckApp.prototype, {
     if (this.settings.notebook_open && this.activeNotebookNote() && !this.notebookMounted) {
       void this.mountNotebookEditor();
     }
+    this.updateEventlyDemoFeatureBanner();
   },
 
 

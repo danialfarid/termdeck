@@ -104,8 +104,9 @@ class WorktreeRegistry:
             self._save()
         return sorted(result, key=lambda item: (not item.is_root, item.name.casefold(), item.path.casefold()))
 
-    def create(self, project: str, repository_root: str, name: str, branch: str, base_ref: str) -> ProjectWorktree:
-        metadata = self.git_service.create_project_worktree(repository_root, name, branch, base_ref)
+    def create(self, project: str, repository_root: str, name: str, branch: str, base_ref: str,
+               location: str = "") -> ProjectWorktree:
+        metadata = self.git_service.create_project_worktree(repository_root, name, branch, base_ref, location)
         worktree_id = f"wt-{uuid.uuid4().hex[:12]}"
         record = ProjectWorktree(worktree_id, project, metadata.branch, metadata.path,
                                  metadata.repository, metadata.branch, metadata.base_ref, metadata.base_commit,

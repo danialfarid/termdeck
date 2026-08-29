@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Right-clicking near the bottom of the window now opens the context menu above the pointer instead of
+  pinning it to the bottom edge, where it covered the very selection it was acting on.
+
 - Clicking a desktop notification lands on the tab showing the terminal deck and selects that
   session there, instead of whichever tab happened to post the banner — which with two tabs open
   could drop you into a file view. Only one tab posts, and the session you are actually looking at
@@ -25,6 +28,15 @@ All notable changes to this project are documented here. The format follows
 - The recovery screen no longer crashes on startup. The state files it exists to repair are exactly the
   ones that leave the session manager unbuilt, and one of its collaborators was being wired up without
   checking for that.
+
+- Reattaching to a Claude terminal that has compacted now scrolls back to some of the conversation
+  from before the compaction. Compacting makes the CLI redraw everything it has rendered, which it
+  does by jumping the cursor far up and erasing line by line on the way down — and because the
+  recording kept that erase, replaying it destroyed the same conversation a second time. The
+  recording now scrolls the screen into scrollback ahead of such a redraw, out of reach of the erase.
+  Partial by nature: which redraw is a compaction is inferred from the size of the cursor jump, so
+  the top of the conversation can still be lost and some blank rows are added. Recording only: a
+  live client still receives exactly the bytes it always did.
 
 - A terminal no longer opens blank when its recording ended on a screen clear. A TUI erases and
   redraws in two writes, and a server restart landing between them left the erase as the last thing

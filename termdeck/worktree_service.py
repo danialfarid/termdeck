@@ -28,6 +28,7 @@ class GitWorktreeService:
     BRANCH_COMPONENT_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
     MAX_DIFF_BYTES = 300_000
     MAX_LOCAL_BRANCH_NAMES = 300
+    PROJECT_WORKTREE_DIRECTORY = ".termdeck-worktrees"
 
     def __init__(self, worktree_directory: Path) -> None:
         self.worktree_directory = worktree_directory.expanduser().resolve()
@@ -37,10 +38,27 @@ class GitWorktreeService:
         path_parent = self.worktree_directory / repository.name
         return self._create_at(repository, path_parent, title, branch, base_ref)
 
-    def create_project_worktree(self, repository_root: str, title: str, branch: str = "", base_ref: str = "") -> WorktreeMetadata:
+    def create_project_worktree(self, repository_root: str, title: str, branch: str = "", base_ref: str = "",
+                                location: str = "") -> WorktreeMetadata:
         repository = self._repository_root(Path(repository_root).expanduser())
-        path_parent = repository.parent / ".termdeck-worktrees" / repository.name
-        return self._create_at(repository, path_parent, title, branch, base_ref)
+        return self._create_at(repository, self._worktree_parent(repository, location), title, branch, base_ref)
+
+    def default_project_worktree_parent(self, repository_root: str | Path) -> Path:
+        repository = self._repository_root(Path(repository_root).expanduser())
+        return repository.parent / self.PROJECT_WORKTREE_DIRECTORY / repository.name
+
+    # The chosen folder is the parent: the worktree itself is still a uniquely named directory
+    # inside it, so picking one folder twice cannot collide.
+    def _worktree_parent(self, repository: Path, location: str) -> Path:
+        chosen = location.strip()
+        if not chosen:
+            return repository.parent / self.PROJECT_WORKTREE_DIRECTORY / repository.name
+        parent = Path(chosen).expanduser()
+        if not parent.is_absolute():
+            raise ValueError(f"worktree folder must be an absolute path: {chosen}")
+        if parent == repository or repository in parent.parents:
+            raise ValueError(f"worktree folder cannot be inside the repository: {chosen}")
+        return parent
 
     def _create_at(self, repository: Path, path_parent: Path, title: str, branch: str, base_ref: str) -> WorktreeMetadata:
         selected_base = base_ref.strip() or self._current_branch(repository) or "HEAD"

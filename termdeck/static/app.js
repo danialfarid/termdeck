@@ -2465,31 +2465,57 @@ class TermdeckApp {
       return;
     }
     this.$("worktree-modal-project").textContent = `${project.name} · ${this.compactProjectPath(project.root)}`;
-    this.$("worktree-base-ref").value = rootWorktree?.branch || "";
     this.$("worktree-branch").value = "";
+    this.$("worktree-location").value = "";
     this.$("worktree-modal-backdrop").classList.remove("hidden");
-    void this.loadWorktreeBranches();
+    void this.loadWorktreeDialogOptions(rootWorktree?.branch || "");
     requestAnimationFrame(() => this.$("worktree-base-ref").focus());
   }
 
-  async loadWorktreeBranches() {
-    const options = this.$("worktree-base-ref-options");
-    if (!options || !this.projectSlug) return;
+  // Fills the dialog from the repository itself: every local branch to base the worktree on, and
+  // the folder TermDeck would use, shown so it can be edited rather than left implicit.
+  async loadWorktreeDialogOptions(preferredBranch = "") {
+    const select = this.$("worktree-base-ref");
+    if (!select || !this.projectSlug) return;
+    select.textContent = "";
     try {
       const response = await fetch(`/api/worktrees/branches?project=${encodeURIComponent(this.projectSlug)}`);
       if (!response.ok) return;
       const payload = await response.json();
-      options.textContent = "";
       const branches = Array.isArray(payload.branches) ? payload.branches : [];
-      for (const branch of branches.slice(0, 300)) {
+      for (const branch of branches) {
         const option = document.createElement("option");
         option.value = branch;
-        options.appendChild(option);
+        option.textContent = branch === payload.current ? `${branch} (current)` : branch;
+        select.appendChild(option);
       }
-      const baseRef = this.$("worktree-base-ref");
-      if (!baseRef.value && payload.current) baseRef.value = payload.current;
+      const selected = [preferredBranch, payload.current].find((branch) => branches.includes(branch));
+      if (selected) select.value = selected;
+      const location = this.$("worktree-location");
+      if (!location.value) location.value = payload.default_location || "";
     } catch (error) {
       return;
+    }
+  }
+
+  async browseWorktreeLocation() {
+    const button = this.$("worktree-location-browse");
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/worktrees/pick-folder", { method: "POST" });
+      const payload = await response.json().catch(() => ({}));
+      if (response.status === 501) {
+        // Only macOS has a native chooser; elsewhere the path field is the whole interface.
+        button.classList.add("hidden");
+        return;
+      }
+      if (!response.ok) {
+        void uiAlert(payload.detail || "failed to choose a folder");
+        return;
+      }
+      if (!payload.cancelled && payload.location) this.$("worktree-location").value = payload.location;
+    } finally {
+      button.disabled = false;
     }
   }
 
@@ -2500,9 +2526,11 @@ class TermdeckApp {
   async createProjectWorktree() {
     const baseRef = this.$("worktree-base-ref").value.trim();
     const branch = this.$("worktree-branch").value.trim();
+    // Not named `location`: this function reads location.href below, and a local would shadow it.
+    const folder = this.$("worktree-location").value.trim();
     const response = await fetch("/api/worktrees", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project: this.projectSlug, branch, base_ref: baseRef }),
+      body: JSON.stringify({ project: this.projectSlug, branch, base_ref: baseRef, location: folder }),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -3028,6 +3056,7 @@ class TermdeckApp {
     this.$("modal-model").onchange = () => { this.clearModalError(); this.updateModalPermissions(); };
     this.$("worktree-modal-cancel").onclick = () => this.closeWorktreeModal();
     this.$("worktree-modal-create").onclick = () => void this.createProjectWorktree();
+    this.$("worktree-location-browse").onclick = () => void this.browseWorktreeLocation();
     this.$("worktree-modal-backdrop").addEventListener("mousedown", (event) => {
       if (event.target === this.$("worktree-modal-backdrop")) this.closeWorktreeModal();
     });

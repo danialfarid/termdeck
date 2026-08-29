@@ -64,6 +64,7 @@ class TermdeckConfig:
     API_WORKTREE_BRANCHES_ROUTE = "/api/worktrees/branches"
     API_WORKTREE_ROUTE = "/api/worktrees/{worktree_id}"
     API_PROJECT_FOLDER_PICKER_ROUTE = "/api/projects/pick-folder"
+    API_WORKTREE_FOLDER_PICKER_ROUTE = "/api/worktrees/pick-folder"
     API_STATE_RECOVERY_ROUTE = "/api/state-recovery"
     API_STATE_RECOVERY_RESTORE_ROUTE = "/api/state-recovery/restore"
     PROJECT_PAGE_ROUTE = "/p/{project_name}"

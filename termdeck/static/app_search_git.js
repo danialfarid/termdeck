@@ -3851,8 +3851,13 @@ Object.assign(TermdeckApp.prototype, {
 
   positionContextMenu(menu, x, y) {
     menu.classList.remove("hidden");
+    const height = menu.offsetHeight;
+    // A menu that will not fit below the pointer opens above it rather than being pinned to the bottom
+    // edge, where it covers what you right-clicked and lands under a video player's controls.
+    const above = y - height - 8;
+    const top = y + height > window.innerHeight - 10 && above >= 8 ? above : y;
     menu.style.left = Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 10)) + "px";
-    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 10)) + "px";
+    menu.style.top = Math.max(8, Math.min(top, window.innerHeight - height - 10)) + "px";
   },
 
 
