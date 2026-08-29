@@ -53,6 +53,7 @@ Run a TermDeck instance on 8536 with a throwaway data dir, then run any file wit
 | `find_reveals_match.cjs` | find brings the match onto the screen, scrollback included, fresh page included |
 | `fold_keeps_composer.cjs` | deleting earlier lines moves the view with the composer -- no float, no snap-back |
 | `codex_tab_return.cjs` | returning to a codex tab whose commands folded while hidden lands at the bottom |
+| `attach_settles_at_bottom.cjs` | a bad attach paint recovers to the composer; a gesture in that window wins |
 | `symptom_detector.cjs` | the live fault recorder can fire, and does not fire on look-alike states |
 | `overtravel_detector.cjs` | the wheel-accounting detector fires on interference, not on clean gestures |
 

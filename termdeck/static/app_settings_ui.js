@@ -1214,6 +1214,9 @@ Object.assign(TermdeckApp.prototype, {
     view.initialCodexRepaintWatchdogTimer = 0;
     view.initialCodexRepaintPending = false;
     this.refreshTerminal(view);
+    // The redraw this attach asked for has stopped painting, so give the follow settle a fresh window to
+    // correct whatever the last frame of it left behind (see extendAttachFollowSettle).
+    this.extendAttachFollowSettle(view);
     this.finishInitialPageContentLoading(view.sessionId);
   },
 

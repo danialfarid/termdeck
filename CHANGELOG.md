@@ -8,12 +8,22 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- Reattaching to a Claude terminal that has compacted now still scrolls back to the conversation from
-  before the compaction. Compacting makes the CLI redraw everything it has rendered, which it does by
-  jumping the cursor far up and erasing line by line on the way down — and because the recording kept
-  that erase, replaying it destroyed the same conversation a second time. The recording now scrolls
-  the screen into scrollback before such a redraw, out of reach of the erase. Recording only: a live
-  client still receives exactly the bytes it always did.
+- Clicking a desktop notification lands on the tab showing the terminal deck and selects that
+  session there, instead of whichever tab happened to post the banner — which with two tabs open
+  could drop you into a file view. Only one tab posts, and no tab posts while TermDeck is focused
+  in any window.
+
+- Coming back to a terminal after a restart no longer opens it part-way up the conversation. An attach
+  is several paints, not one — the recording replays, then the agent redraws its own screen over the
+  tail of it — and a redraw that walks the cursor high reads either as a fold or as "somebody moved
+  this view", both of which park the tab mid-history and stay there once that redraw was the last
+  write. A tab that was following now keeps re-asserting the composer for a few seconds after
+  attaching, until the paints go quiet. Scrolling, dragging, PageUp or jumping to a find match inside
+  that window ends it on the spot: it only ever corrects positions nobody asked for.
+
+- The recovery screen no longer crashes on startup. The state files it exists to repair are exactly the
+  ones that leave the session manager unbuilt, and one of its collaborators was being wired up without
+  checking for that.
 
 - A terminal no longer opens blank when its recording ended on a screen clear. A TUI erases and
   redraws in two writes, and a server restart landing between them left the erase as the last thing

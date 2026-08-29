@@ -46,6 +46,7 @@ Object.assign(TermdeckApp.prototype, {
       const wheelView = this.views.get(id);
       if (wheelView) {
         wheelView.tallUserScrollIntentPending = true;
+        this.endAttachFollowSettle(wheelView);
         // Stopping the follow has to be IMMEDIATE, and cannot wait for the debounce below. A streaming
         // agent delivers a write every ~20-50ms, and each write while following snaps back to the bottom
         // -- so a scroll-up was being undone within a frame or two, long before the 150ms settle fired,
@@ -157,6 +158,7 @@ Object.assign(TermdeckApp.prototype, {
       if (!view || view.closed) return;
       view.tallPointerHeld = true;
       view.tallUserScrollIntentPending = true;
+      this.endAttachFollowSettle(view);
       window.addEventListener("pointerup", releaseTallPointer, true);
       window.addEventListener("pointercancel", releaseTallPointer, true);
     }, { capture: true, passive: true });
@@ -290,6 +292,7 @@ Object.assign(TermdeckApp.prototype, {
                    viewportAnchorRestore: null, viewportAnchorRestoreTimer: 0,
                    lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [],
                    tallGeometrySettleTimer: 0, tallGeometrySettleAt: 0,
+                   attachSettleTimer: 0, attachSettleDeadline: 0, userScrolledSinceAttach: false,
                    preserveRowsFromBottom: 0, reconnectReset: false,
                    promptDraft: this.session(id)?.draft || "", markdownPromptDraft: this.markdownPromptDraftForSession(id),
                    promptPaste: false, promptEscape: "", promptEditing: false,
@@ -343,6 +346,9 @@ Object.assign(TermdeckApp.prototype, {
       view.v2Programmatic = false;
       view.userScrollIntent = true;
       view.scrollMode = "preserve";
+      // Browsing is an answer to the question the post-attach window exists to ask, so it closes it --
+      // PageUp on a tab that has just loaded must not be undone half a second later.
+      this.endAttachFollowSettle(view);
     };
     const markManualScroll = () => {
       if (this.isTerminalScrollV2()) {
@@ -811,6 +817,11 @@ Object.assign(TermdeckApp.prototype, {
               view.scrollMode = "follow";
               this.scheduleV2Fit(view);
               this.scrollTerminalV2ToBottom(view);
+              // The replay is only the first of this attach's paints -- the agent's own redraw follows,
+              // and a lazily respawned session reprints its whole conversation over the tail of it. Keep
+              // re-asserting the bottom until those settle, so a tab that was following when the page
+              // was left comes back at the composer instead of wherever the last frame landed.
+              this.beginAttachFollowSettle(view);
             } else {
               view.keepBottom = true;
               view.pinBottomUntil = Date.now() + 5000;
@@ -2691,6 +2702,77 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // Opens the post-attach window (see TALL_ATTACH_SETTLE_WINDOW_MS), once per connection, after that
+  // connection's replay has drained.
+  beginAttachFollowSettle(view) {
+    if (!view || view.closed) return;
+    view.userScrolledSinceAttach = false;
+    view.attachSettleDeadline = Date.now() + TALL_ATTACH_SETTLE_WINDOW_MS;
+    this.scheduleAttachFollowSettle(view);
+  },
+
+
+  // Extends the window past the agent's own attach redraw -- the paint most likely to leave the view
+  // somewhere nobody chose, and the one whose completion can be this attach's last write. Deliberately
+  // NOT beginAttachFollowSettle: a user who scrolled away while the redraw was still painting has
+  // already answered the question this window exists to ask, and re-opening it would overrule them.
+  extendAttachFollowSettle(view) {
+    if (!view || view.closed || view.userScrolledSinceAttach) return;
+    view.attachSettleDeadline = Math.max(view.attachSettleDeadline,
+      Date.now() + TALL_ATTACH_SETTLE_WINDOW_MS);
+    this.scheduleAttachFollowSettle(view);
+  },
+
+
+  // Ends the window immediately. The user touching the scroll is the whole answer to "is this position
+  // deliberate": from that moment nothing here may move the view, whether they scrolled away or back.
+  endAttachFollowSettle(view) {
+    if (!view) return;
+    view.userScrolledSinceAttach = true;
+    view.attachSettleDeadline = 0;
+    clearTimeout(view.attachSettleTimer);
+    view.attachSettleTimer = 0;
+  },
+
+
+  scheduleAttachFollowSettle(view) {
+    if (!view || view.closed || view.attachSettleTimer || view.userScrolledSinceAttach) return;
+    if (Date.now() >= view.attachSettleDeadline) return;
+    view.attachSettleTimer = setTimeout(() => {
+      view.attachSettleTimer = 0;
+      this.applyAttachFollowSettle(view);
+      this.scheduleAttachFollowSettle(view);
+    }, TALL_ATTACH_SETTLE_INTERVAL_MS);
+  },
+
+
+  // Re-asserts the follow position of a tab that is still settling after an attach. Everything here is a
+  // reason to WAIT rather than to give up -- the window keeps ticking and the next pass sees a quieter
+  // terminal -- except a user gesture, which ends the window outright (endAttachFollowSettle).
+  applyAttachFollowSettle(view) {
+    if (!view || view.closed || view.userScrolledSinceAttach) return;
+    if (view.replaying || view.awaitingSnapshot || view.outputWriteInFlight || view.outputQueue.length) return;
+    // A hidden pane reports scrollTop 0 and clientHeight 0: nothing about a position is decidable there,
+    // which is the same reason the write callback refuses to decide anything while a tab is backgrounded.
+    if (!view.container.classList.contains("visible") || !view.container.clientHeight) return;
+    if (view.tallPointerHeld ||
+        Date.now() < Math.max(view.tallWheelActiveUntil || 0, view.tallScrollActiveUntil || 0)) return;
+    // Parked, with nothing the user did to explain it: the only things that can have parked this view
+    // inside the window are the write callback's follow-break guard reading a redraw's jump as "somebody
+    // moved this", or a mid-redraw fold glue landing it short. Both are misreads of a paint, and both are
+    // permanent once the redraw was the last write -- there is no further output to drive the view down.
+    if (view.tallFollowing === false) {
+      view.tallFollowing = true;
+      view.tallPinnedViewportY = null;
+      view.tallAnchorRow = null;
+      this.tallReleaseAnchorMarker(view);
+    }
+    view.scrollMode = "follow";
+    this.tallUpdateMaxScrollTop(view, true);
+    this.scrollTallContainerToCursor(view);
+  },
+
+
   scheduleTallGeometrySettle(view, delay) {
     if (!view || view.closed) return;
     const settleDelay = Math.max(0, Number(delay) || 0);
@@ -3277,6 +3359,7 @@ Object.assign(TermdeckApp.prototype, {
     clearTimeout(view.claudeInitialReplayCheckTimer);
     clearTimeout(view.initialCodexRepaintTimer);
     clearTimeout(view.initialCodexRepaintWatchdogTimer);
+    clearTimeout(view.attachSettleTimer);
     clearTimeout(view.claudeStatusRowRefreshTimer);
     clearTimeout(view.historyModelRefreshTimer);
     clearTimeout(view.promptSubmissionReflowGuardTimer);
@@ -3341,11 +3424,56 @@ Object.assign(TermdeckApp.prototype, {
     void Notification.requestPermission();
   },
 
+  // Every open tab receives the same status stream, so each would post its own copy of the same
+  // banner. The OS collapses them (they share a tag) but the click focuses whichever tab happened
+  // to post -- which is how clicking a notification landed on a tab showing a file. Exactly one
+  // tab posts, chosen by how good a landing spot it is: a tab already showing the terminal deck
+  // claims first, a tab on a file or editor yields to it.
+  NOTIFICATION_CLAIM_WINDOW_MS: 4000,
+  NOTIFICATION_DECK_CLAIM_DELAY_MS: 150,
+  NOTIFICATION_OTHER_CLAIM_DELAY_MS: 500,
+  NOTIFICATION_FOCUS_STALE_MS: 3000,
+  NOTIFICATION_FOCUS_KEY: "termdeck-focused-at",
+
+  // A tab cannot see whether a SIBLING tab is focused, so the focused one leaves a timestamp the
+  // others read. Without it, sitting in one TermDeck tab still produced banners from the others.
+  markDeckFocused() {
+    try { localStorage.setItem(this.NOTIFICATION_FOCUS_KEY, String(Date.now())); } catch { /* private mode */ }
+  },
+
+  deckFocusedInAnotherTab() {
+    try {
+      const at = Number(localStorage.getItem(this.NOTIFICATION_FOCUS_KEY) || 0);
+      return at > 0 && Date.now() - at < this.NOTIFICATION_FOCUS_STALE_MS;
+    } catch { return false; }
+  },
+
+  // First writer inside the window wins; a failed read (private mode) posts rather than go silent.
+  claimAgentNotification(key) {
+    try {
+      const now = Date.now();
+      if (now - Number(localStorage.getItem(key) || 0) < this.NOTIFICATION_CLAIM_WINDOW_MS) return false;
+      localStorage.setItem(key, String(now));
+      return true;
+    } catch { return true; }
+  },
+
   notifyAgentEvent(session, body) {
     if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-    // Banners are for when TermDeck isn't being looked at; while the tab is focused the deck
-    // itself already shows working, unread, and attention state.
-    if (document.hasFocus()) return;
+    // Banners are for when TermDeck isn't being looked at; while a tab is focused the deck itself
+    // already shows working, unread, and attention state.
+    if (document.hasFocus()) { this.markDeckFocused(); return; }
+    const key = `termdeck-notify:${session.session_id}:${body}`;
+    const delay = this.activeFileKey === null
+      ? this.NOTIFICATION_DECK_CLAIM_DELAY_MS : this.NOTIFICATION_OTHER_CLAIM_DELAY_MS;
+    // The delay is also what lets a focused sibling's timestamp land before anyone claims.
+    window.setTimeout(() => {
+      if (this.deckFocusedInAnotherTab() || !this.claimAgentNotification(key)) return;
+      this.postAgentNotification(session, body);
+    }, delay);
+  },
+
+  postAgentNotification(session, body) {
     const title = this.titlePresentation(session).text || session.title || "terminal";
     try {
       const notification = new Notification(`${title} ${body}`, {
@@ -3355,6 +3483,7 @@ Object.assign(TermdeckApp.prototype, {
       });
       notification.onclick = () => {
         window.focus();
+        // activate() leaves any open file, selects the row, and pushes the terminal's own URL.
         this.activate(session.session_id);
         notification.close();
       };

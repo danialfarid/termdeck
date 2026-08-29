@@ -202,6 +202,16 @@ const CODEX_INITIAL_REPAINT_MAX_MS = 700;
 // How long to wait after attaching before deciding the terminal really has nothing to show. Long enough
 // for a replay to arrive and paint, short enough that a genuinely blank pane is not left sitting there.
 const TALL_BLANK_REPAINT_MS = 900;
+// A freshly attached tab is not one paint but several: the saved recording replays, then the agent
+// redraws its own screen over the tail of it (a lazily respawned codex reprints its whole conversation),
+// and every frame in between is a position this view can be left at if the last one lands wrong -- the
+// cursor walking high through a redraw reads as a fold, the resulting jump reads as "something moved
+// this view", and the tab ends up parked mid-history with nothing left to drive it down. So a following
+// view re-asserts its position for a bounded window after attaching, once the writes go quiet. Anything
+// the user does with the scroll ends the window on the spot: this only ever corrects positions nobody
+// asked for.
+const TALL_ATTACH_SETTLE_WINDOW_MS = 8000;
+const TALL_ATTACH_SETTLE_INTERVAL_MS = 400;
 // How many consecutive "looks mid-redraw" frames may be skipped before the measurement is taken anyway.
 const TALL_MAX_BLANK_SKIPS = 4;
 const TALL_ROWS_MAX = 1000;
@@ -2770,8 +2780,13 @@ class TermdeckApp {
       this.flushPendingSearchHistoryRecord();
     });
     document.body.classList.toggle("termdeck-page-hidden", document.hidden);
+    // Sibling tabs read this stamp to tell whether TermDeck is being looked at somewhere else
+    // before any of them posts a desktop notification.
+    if (document.hasFocus()) this.markDeckFocused();
+    window.addEventListener("focus", () => this.markDeckFocused());
     document.addEventListener("visibilitychange", () => {
       document.body.classList.toggle("termdeck-page-hidden", document.hidden);
+      if (!document.hidden && document.hasFocus()) this.markDeckFocused();
       if (document.visibilityState === "hidden") {
         this.disconnectRecentFilesWatch();
         this.flushPendingSettingsSave();

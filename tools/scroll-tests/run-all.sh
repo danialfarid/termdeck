@@ -65,6 +65,7 @@ TESTS=(
   find_reveals_match
   fold_keeps_composer
   codex_tab_return
+  attach_settles_at_bottom
   scroll_round_trip
   short_session_scrollback
   parked_under_chunks

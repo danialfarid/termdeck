@@ -157,6 +157,9 @@ Object.assign(TermdeckApp.prototype, {
     // gone. Typing resumes following (see the key handler in ensureView). Anchoring to the match's row
     // keeps it pinned even as new output pushes lines into scrollback underneath it.
     view.tallFollowing = false;
+    // As deliberate as a gesture, so it closes the post-attach settle window too -- otherwise finding a
+    // match on a tab that has just loaded gets undone a few hundred milliseconds later.
+    this.endAttachFollowSettle(view);
     this.tallCaptureAnchorRow(view);
   },
 
