@@ -122,6 +122,9 @@ class TermdeckConfig:
     # `state=attention` marks the tab as waiting on the user, `state=clear` releases it.
     API_AGENT_HOOK_ROUTE = "/api/agent-hook"
     AGENT_HOOK_ATTENTION_STATE = "attention"
+    # Claude's PreCompact hook, which fires (and is awaited) before a compaction redraws the screen
+    # over the conversation. See TerminalSessionManager.apply_agent_compaction_hook.
+    AGENT_HOOK_COMPACT_STATE = "compact"
     API_HISTORY_SEARCH_ROUTE = "/api/history-search"
     API_HISTORY_CONTEXT_ROUTE = "/api/history-context"
     API_SETTINGS_ROUTE = "/api/settings"
@@ -299,6 +302,7 @@ class TermdeckConfig:
     )
     OSC_QUERY_CARRY_MAX = 8
     SPAWN_BANNER_TEMPLATE = "\x1b[2m[termdeck] spawn: {command}\x1b[0m\r\n"
+    COMPACT_DIVIDER = "\x1b[2m──────────── compacted ────────────\x1b[0m"
     RESPAWN_DIVIDER = "\x1b[2m──────────── restarted ────────────\x1b[0m"
     REATTACH_DIVIDER = "\x1b[2m──────────── reconnected (kept running) ────────────\x1b[0m"
     SPAWN_ERROR_TEMPLATE = "\x1b[31m[termdeck] spawn failed: {error}\x1b[0m\r\n"

@@ -2530,6 +2530,9 @@ class TermdeckServer:
         not the TermDeck one). Hooks run for every Claude Code session on the machine; one that does not
         belong to a terminal here is a normal no-op.
         """
+        if state == TermdeckConfig.AGENT_HOOK_COMPACT_STATE:
+            matched = self.manager.apply_agent_compaction_hook(request.session_id)
+            return {"matched_session_id": matched, "compacting": True}
         attention = state == TermdeckConfig.AGENT_HOOK_ATTENTION_STATE
         matched = self.manager.apply_agent_attention_hook(request.session_id, attention)
         return {"matched_session_id": matched, "attention": attention}

@@ -531,6 +531,33 @@ class TerminalSessionManager:
             return ms.record.session_id
         return None
 
+    def apply_agent_compaction_hook(self, agent_session_id: str) -> str | None:
+        """A compaction is about to start: carry the screen into scrollback while it still exists.
+
+        Compacting makes the CLI redraw everything it has rendered, walking the cursor up and erasing
+        line by line, and what it redraws afterwards is a much shorter frame -- so a conversation that
+        still fits the screen is erased rather than scrolled away, and is gone from the live terminal
+        and from the replay alike. Scrollback is the one place an erase cannot reach, so the same
+        payload a respawn uses to carry its old screen across (see _spawn) is written here first.
+
+        Unlike inferring a compaction from the size of a cursor jump, the hook says so, which is why
+        this can afford to scroll a whole screen's worth exactly once instead of guessing at every
+        redraw. Hooks fire for every Claude Code session on the machine; an unknown one is a no-op.
+        """
+        if not agent_session_id:
+            return None
+        for ms in self._sessions.values():
+            if ms.record.agent_session_id != agent_session_id:
+                continue
+            if not ms.raw_replay_buffer and not ms.buffer:
+                return ms.record.session_id
+            # \x1b[9999;1H clamps to the client's own last row, whatever its height, so the newlines
+            # that follow always scroll rather than merely move the cursor down.
+            payload = "\r\n" + TermdeckConfig.COMPACT_DIVIDER + "\x1b[9999;1H" + "\r\n" * (ms.rows + 4)
+            self._handle_output(ms, payload.encode(), mark_activity=False)
+            return ms.record.session_id
+        return None
+
     def _refresh_session_activity(self, ms: ManagedSession) -> None:
         transcript_activity = self._tracker.session_activity_timestamp(ms.record.agent_kind,
                                                                         Path(ms.record.cwd), ms.record.agent_session_id)
