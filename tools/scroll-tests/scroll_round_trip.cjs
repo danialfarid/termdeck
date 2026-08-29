@@ -55,14 +55,12 @@ const READ = (i) => {
   await p.mouse.move(box.x, box.y);
 
   const roundTrip = async (label, notches, settleIntoScrollback) => {
-    // Detach from the bottom first; optionally go all the way into scrollback, which is the path that
-    // splits across two surfaces and where the asymmetry lives. In whole-buffer mode scrollTop 0 IS the
-    // absolute top of everything -- no headroom left for the up-notches, which made the trip asymmetric
-    // by construction -- so the deep start sits a little below it there instead.
+    // Detach from the bottom first. scrollTop 0 IS the absolute top of everything in the whole-buffer
+    // layout -- no headroom left for the up-notches, which made the trip asymmetric by construction --
+    // so the deep start sits a little below it instead.
     await p.evaluate(({ i, deep }) => {
       const v = window.__td.views.get(i);
-      const whole = window.__td.wholeBufferScrollEnabled && window.__td.wholeBufferScrollEnabled();
-      v.container.scrollTop = deep ? (whole ? 1600 : 0) : Math.max(0, (v.tallMaxScrollTop || 0) / 2);
+      v.container.scrollTop = deep ? 1600 : Math.max(0, (v.tallMaxScrollTop || 0) / 2);
     }, { i: ID, deep: settleIntoScrollback });
     await p.waitForTimeout(700);
     if (settleIntoScrollback) {

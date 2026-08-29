@@ -2,7 +2,8 @@
 // to reach at all -- not "small enough to ignore", but zero. Checked on a sparse terminal and a full one,
 // and the terminal must still be 1000 rows with all content intact.
 const { chromium } = require('playwright');
-const BASE = 'http://127.0.0.1:8536';
+const PORT = process.argv[2] || process.env.TERMDECK_TEST_PORT || '8536';
+const BASE = `http://127.0.0.1:${PORT}`;
 
 (async () => {
   const mk = async (title) => {

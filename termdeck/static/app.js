@@ -1,5 +1,12 @@
 // Status/title/processing changes arrive through /ws/status. This slower
 // fallback only reconciles session-list metadata such as created/closed tabs.
+// In-app dialogs (dialogs.js) stand in for window.confirm / alert / prompt: the native ones block the
+// event loop, cannot be styled or positioned, and can be permanently suppressed by the browser's
+// "prevent this page from creating more dialogs" checkbox. confirm/prompt must be awaited; alert may be
+// dropped where the caller does not depend on dismissal.
+const uiConfirm = (...args) => window.TermdeckDialogs.confirm(...args);
+const uiAlert = (...args) => window.TermdeckDialogs.alert(...args);
+const uiPrompt = (...args) => window.TermdeckDialogs.prompt(...args);
 const SESSION_LIST_REFRESH_MS = 30000;
 const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
 // Same status glyphs as TITLE_STATUS_RE, plus the leading ellipsis codex shows while working. Used only
@@ -8,41 +15,99 @@ const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
 // keeps using TITLE_STATUS_RE so a rendered name still matches the title the session is stored under.
 const TITLE_STATUS_PREFIX_RE = /^(?:[⠀-⣿○-◗⏳⚡✳]|\.\.\.|…)\s*/;
 const RECONNECT_MS = 1500;
+// A restarted server answers the moment its port opens, and a page reloaded into that instant can come
+// back without its terminals. Let the new instance settle before reloading onto it.
+const SERVER_RESTART_RELOAD_DELAY_MS = 5000;
 const TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS = 1800;
+// How far from the top the view must travel before the "More history in Markdown" button hides again.
+// Well clear of one row: the button is re-evaluated on every write, and a row-sized nudge from the
+// parked-reader anchor must never be able to toggle it.
+const TERMINAL_HISTORY_MORE_HIDE_PX = 140;
+// Screens of scrollback a terminal must hold before it offers the Markdown transcript. A fresh session
+// has none of this; a session worth reading elsewhere has plenty.
+const TERMINAL_HISTORY_MORE_MIN_PAGES = 5;
+// How far back "recently used" reaches for the sidebar's active-terminals filter, when the user has not
+// chosen otherwise. A day covers "what I was working on", including yesterday evening.
+const RECENT_TERMINAL_HOURS_DEFAULT = 24;
+const RECENT_TERMINAL_HOUR_CHOICES = [2, 6, 12, 24, 48, 168];
+// Long enough not to fire on an ordinary click, short enough to feel deliberate rather than stuck.
+const RECENT_TERMINAL_LONG_PRESS_MS = 450;
+const INACTIVE_TERMINAL_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
+const INACTIVE_TERMINAL_OUTPUT_BATCH_BYTES = 256 * 1024;
 const DEFAULT_COMMAND = "codex";
 const DEFAULT_CWD = "~";
-const TERMINAL_ICON_AGENT_KINDS = ["codex", "claude", "agy", "none"];
-const TERMINAL_ICON_AGENT_LABELS = { codex: "Codex", claude: "Claude", agy: "AGY", none: "Shell" };
-const SETTINGS_DEFAULTS = { sidebar_width: 250, files_width: 380, sidebar_font_size: 18, project_font_size: 18, terminal_font_size: 18,
-  ui_font_size: 11, system_font_size: 13, files_tab_font_size: 11, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
+const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_font_size: 18, project_font_size: 18, terminal_font_size: 18,
+  ui_font_size: 11, system_font_size: 13, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, files_tab_font_size: 11, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  show_terminal_icons: false, terminal_icon_agents: { codex: false, claude: false, agy: false, none: false }, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", attach_repaint: true, tall_webgl: false, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  recent_terminal_hours: 24,
+  show_terminal_icons: false, terminal_icon_agents: {}, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
-  files_pinned: false, show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
-  search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {},
-  files_side_panel_last_tab: "project", file_search_history: [], files_panel_width_initialized: false,
+  show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
+  notify_attention: true, notify_agent_idle: true,
+  search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {}, worktree_roots: {},
+  files_side_panel_last_tab: "project", file_search_history: [],
   file_tab_max_visible: 20, file_tab_order: "opened", lsp_enabled: true, lsp_command_overrides: {},
   lan_access_enabled: false };
-const MODEL_PERMISSIONS = {
-  codex: [
-    { value: "default", label: "Default (Codex config)" },
-    { value: "read-only", label: "Read only" },
-    { value: "workspace-write", label: "Workspace write" },
-    { value: "full-access", label: "Full access" },
-  ],
-  claude: [
-    { value: "default", label: "Default (Claude config)" },
-    { value: "accept-edits", label: "Accept edits" },
-    { value: "auto", label: "Auto" },
-    { value: "full-access", label: "Full access" },
-  ],
-  agy: [
-    { value: "default", label: "Default" },
-    { value: "full-access", label: "Full access" },
-  ],
-  none: [{ value: "default", label: "Shell permissions" }],
+// Per-agent knobs that only exist client-side (scroll/repaint quirks and the like). Everything
+// data-shaped about an agent (labels, permissions, markers, capability flags) comes from
+// /api/agents — one AgentCli class per agent on the server. See docs/agent-cli-api.md.
+const AGENT_CLIENT_BEHAVIORS = {
+  codex: {
+    skipAttachScreenRepaint: true,      // repaint after attach double-paints codex's own redraw
+    deferReflowAfterPrompt: true,       // hold reflow while codex redraws around a submitted prompt
+    viewportAnchor: true,               // marker-anchored scroll hold across "Ran N" command folds
+    focusTailRefresh: true,             // repaint the tail after focus; codex skips it while unfocused
+    tailRepair: true,                   // detect+repair a mis-rendered tail after collapse writes
+    repaintRestoreScroll: true,         // restore scroll target itself after a full repaint
+    commandCollapse: true,              // watch for command-fold byte sequences and re-anchor
+    blankRepaintDespiteScrollback: true, // codex can present a blank screen even with scrollback
+    commandTranscriptShortcut: true,    // ctrl+t opens codex's own transcript overlay
+  },
+  claude: {
+    attentionScreenDetection: true,     // scan the visible screen for permission-prompt markers
+    statusRowRefresh: true,             // periodic bottom status-row repaint while following
+  },
+};
+// Fallback snapshot of /api/agents, used only when the boot-time fetch fails (transient hiccup on a
+// page that otherwise loaded): without it every capability check degrades to "shell terminal" for the
+// whole browser session. The server response is authoritative and replaces this wholesale.
+// Icon SVGs mirror AgentCli.icon_svg on the server so sidebar icons survive that fallback too.
+const FALLBACK_ICON_SVGS = {
+  claude: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.25c.42 0 .76.34.76.76v4.08l3.53-2.04a.76.76 0 1 1 .76 1.31L9.52 7.4l3.53 2.04a.76.76 0 1 1-.76 1.31L8.76 8.72v4.08a.76.76 0 0 1-1.52 0V8.72l-3.53 2.04a.76.76 0 1 1-.76-1.31L6.48 7.4 2.95 5.36a.76.76 0 1 1 .76-1.31l3.53 2.04V2.01c0-.42.34-.76.76-.76Z"/></svg>',
+  codex: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zM3.5988 18.304a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1412-1.6462zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5968 3.8558L13.1038 8.364 15.1192 7.2a.0757.075 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zm-12.6413 4.1347-2.0201-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805-4.783 2.7582a.7948.7948 0 0 0-.3927.6813zM9.4041 10.4976l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"/></svg>',
+  agy: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 1.8 14.45 9.55 22.2 12l-7.75 2.45L12 22.2l-2.45-7.75L1.8 12l7.75-2.45L12 1.8Z"/><path fill="currentColor" d="m18.55 2.15.8 2.5 2.5.8-2.5.8-.8 2.5-.8-2.5-2.5-.8 2.5-.8.8-2.5Z" opacity=".7"/></svg>',
+  aider: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8.8" cy="12" r="6.4" fill="currentColor"/><circle cx="15.2" cy="12" r="6.4" fill="currentColor" opacity=".45"/></svg>',
+  opencode: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><rect x="6.5" y="8.5" width="5" height="7" fill="currentColor"/><path d="M14 15.5h3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+};
+const AGENT_SPEC_DEFAULTS = {
+  none: { kind: "none", label: "Shell", is_agent: false, prompt_marker: "", icon_svg: "",
+    permissions: [{ value: "default", label: "Shell permissions" }],
+    supports_resume: false, supports_fork: false, accepts_session_ref: false,
+    records_raw_replay: false, has_prompt_queue: false },
+  claude: { kind: "claude", label: "Claude", is_agent: true, prompt_marker: "❯", icon_svg: FALLBACK_ICON_SVGS.claude,
+    permissions: [{ value: "default", label: "Default (Claude config)" }, { value: "accept-edits", label: "Accept edits" },
+      { value: "auto", label: "Auto" }, { value: "full-access", label: "Full access" }],
+    supports_resume: true, supports_fork: true, accepts_session_ref: true,
+    records_raw_replay: true, has_prompt_queue: false },
+  codex: { kind: "codex", label: "Codex", is_agent: true, prompt_marker: "›", icon_svg: FALLBACK_ICON_SVGS.codex,
+    permissions: [{ value: "default", label: "Default (Codex config)" }, { value: "read-only", label: "Read only" },
+      { value: "workspace-write", label: "Workspace write" }, { value: "full-access", label: "Full access" }],
+    supports_resume: true, supports_fork: true, accepts_session_ref: true,
+    records_raw_replay: true, has_prompt_queue: true },
+  agy: { kind: "agy", label: "AGY", is_agent: true, prompt_marker: "", icon_svg: FALLBACK_ICON_SVGS.agy,
+    permissions: [{ value: "default", label: "Default" }, { value: "full-access", label: "Full access" }],
+    supports_resume: true, supports_fork: false, accepts_session_ref: false,
+    records_raw_replay: false, has_prompt_queue: false },
+  aider: { kind: "aider", label: "Aider", is_agent: true, prompt_marker: "", icon_svg: FALLBACK_ICON_SVGS.aider,
+    permissions: [{ value: "default", label: "Default (confirm actions)" }, { value: "auto", label: "Auto-approve (--yes-always)" }],
+    supports_resume: true, supports_fork: false, accepts_session_ref: false, sessionless: true,
+    records_raw_replay: false, has_prompt_queue: false },
+  opencode: { kind: "opencode", label: "OpenCode", is_agent: true, prompt_marker: "┃", icon_svg: FALLBACK_ICON_SVGS.opencode,
+    permissions: [{ value: "default", label: "Default" }],
+    supports_resume: true, supports_fork: true, accepts_session_ref: true, fullscreen_tui: true,
+    records_raw_replay: true, has_prompt_queue: false },
 };
 const SEARCH_DEBOUNCE_MS = 500;
 const TERMINAL_SEARCH_DEBOUNCE_MS = 700;
@@ -61,6 +126,20 @@ const TERMINAL_FIND_DECORATIONS = Object.freeze({
 // renderer too (CSS could only ever style the DOM renderer's selection layer).
 const TERMINAL_FIND_SELECTION_BACKGROUND = TERMINAL_FIND_DECORATIONS.activeMatchBackground;
 const TERMINAL_FIND_SELECTION_FOREGROUND = "#ffffff";
+const MOBILE_TERMINAL_LONG_PRESS_MS = 450;
+const MOBILE_TERMINAL_SELECTION_MOVE_TOLERANCE = 12;
+const MOBILE_TERMINAL_SELECTION_BACKGROUND = "#287fd1";
+const MOBILE_TERMINAL_SELECTION_FOREGROUND = "#ffffff";
+const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
+const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
+// Unfinished experiment: hold back writes to hidden terminals and catch them up on activation.
+// No setting and no toggle — flip this constant to work on it. See drainTerminalWrites().
+const DEFER_INACTIVE_TERMINAL_OUTPUT = false;
+const MOBILE_DISPLAY_SCALE_KEY = "termdeck.mobile_display_scale";
+const SERVER_LOCAL_SETTING_KEYS = new Set(["tall_webgl"]);
+const MOBILE_DISPLAY_SCALE_MIN = 0.8;
+const MOBILE_DISPLAY_SCALE_MAX = 1.6;
+const MOBILE_DISPLAY_SCALE_STEP = 0.1;
 // Tall-terminal row budget. WebGL backs the terminal with one drawing buffer sized to the FULL terminal
 // in DEVICE pixels, so the real ceiling is MAX_TEXTURE_SIZE / (cellHeight * devicePixelRatio). That dpr
 // term is why a row count measured safe on one machine is wrong on another: a retina display needs twice
@@ -92,9 +171,16 @@ const TALL_WEBGL_TEXTURE_HEADROOM = 0.65;
 // gesture (one that cleared the slack in a single step) could escape. Nothing needs the slack: every way
 // of arriving at the bottom lands on the ceiling exactly, because the clamp puts it there.
 const TALL_BOTTOM_TOLERANCE_PX = 2;
+// How many frames a follow scroll keeps re-applying while the container clamps it short (see
+// tallSetScrollTop): enough for the rows behind the growth to be laid out, few enough that a target
+// that is genuinely unreachable stops asking.
+const TALL_CLAMPED_SCROLL_RETRIES = 4;
 // How far below the top edge the cursor's row is held when following is capped (see tallFollowTarget):
 // enough rows for the composer's own top border to stay on screen above the cursor line.
 const TALL_FOLLOW_CURSOR_TOP_MARGIN_ROWS = 3;
+// How long after a fold glue before its one re-placement runs (see the glue's comment): long enough
+// for a mid-redraw state to have resolved, short enough that a misfire's dip stays sub-second.
+const TALL_GLUE_RECHECK_MS = 800;
 // How long after the last scroll event a gesture is still considered in progress, and how long of a
 // quiet period settles it. Both cover a scrollbar drag pausing mid-gesture without ending it.
 const TALL_SCROLL_ACTIVE_MS = 250;
@@ -113,12 +199,30 @@ const TALL_OVERSHOOT_DEADZONE_PX = 72;
 // redrawing itself reports one row fewer for a frame at a time, and reacting to each dip makes the box
 // oscillate; growth is always applied immediately, so nothing is ever unreachable while this waits.
 const TALL_SHRINK_SETTLE_MS = 400;
+const CODEX_COLLAPSE_SHRINK_SETTLE_MS = 1200;
+const CODEX_COMMAND_COLLAPSE_BYTES = new TextEncoder().encode("ctrl + t to view transcript");
+const CODEX_INITIAL_REPAINT_SETTLE_MS = 140;
+const CODEX_INITIAL_REPAINT_MAX_MS = 700;
 // How long to wait after attaching before deciding the terminal really has nothing to show. Long enough
 // for a replay to arrive and paint, short enough that a genuinely blank pane is not left sitting there.
 const TALL_BLANK_REPAINT_MS = 900;
+// A freshly attached tab is not one paint but several: the saved recording replays, then the agent
+// redraws its own screen over the tail of it (a lazily respawned codex reprints its whole conversation),
+// and every frame in between is a position this view can be left at if the last one lands wrong -- the
+// cursor walking high through a redraw reads as a fold, the resulting jump reads as "something moved
+// this view", and the tab ends up parked mid-history with nothing left to drive it down. So a following
+// view re-asserts its position for a bounded window after attaching, once the writes go quiet. Anything
+// the user does with the scroll ends the window on the spot: this only ever corrects positions nobody
+// asked for.
+const TALL_ATTACH_SETTLE_WINDOW_MS = 8000;
+const TALL_ATTACH_SETTLE_INTERVAL_MS = 400;
 // How many consecutive "looks mid-redraw" frames may be skipped before the measurement is taken anyway.
 const TALL_MAX_BLANK_SKIPS = 4;
 const TALL_ROWS_MAX = 1000;
+const CLAUDE_WEBGL_COLD_PRIME_MIN_MS = 900;
+const CLAUDE_WEBGL_COLD_PRIME_IDLE_MS = 220;
+const CLAUDE_WEBGL_COLD_PRIME_MAX_MS = 2400;
+const CLAUDE_WEBGL_COLD_PRIME_RETRY_MS = 60;
 const HISTORY_BACKGROUND_TARGET_TURNS = 320;
 const HISTORY_BACKGROUND_PAGE_TURNS = 160;
 const HISTORY_BACKGROUND_LOAD_DELAY_MS = 180;
@@ -142,7 +246,6 @@ const TERMINAL_TAIL_REPAIR_LINES = 16;
 const TERMINAL_RENDER_CHECK_INTERVAL_MS = 3000;
 const TERMINAL_RENDER_CONFIRM_DELAY_MS = 700;
 const TERMINAL_RENDER_REPAIR_COOLDOWN_MS = 10000;
-const TERMINAL_ACTIVATION_REFLOW_IDLE_MS = 1200;
 const TERMINAL_VIEWPORT_RESTORE_IDLE_MS = 260;
 const TERMINAL_VIEWPORT_RESTORE_TIMEOUT_MS = 3000;
 const TERMINAL_VIEWPORT_ANCHOR_ROWS = 12;
@@ -155,16 +258,12 @@ const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
 // Three checks, well spread out, not five packed inside the first 600ms: only a genuine geometry change
 // sends a pty resize, so a tight burst cannot interrupt an agent CLI's multi-line composer redraw.
 const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [150, 800, 2000];
-const CODEX_REFLOW_FOLLOWUP_DELAYS_MS = [1500, 3500, 6000];
-const CODEX_REFLOW_FOLLOWUP_BUSY_RETRY_MS = 500;
-const CODEX_REFLOW_FOLLOWUP_BUSY_RETRIES = 8;
 const TERMINAL_DEBUG_SNAPSHOT_LIMIT = 50;
 const SELECTION_SEARCH_MAX_CHARS = 1000;
 const SELECTION_ACTION_DELAY_MS = 500;
 const IMAGE_ATTACHMENT_MIME_RE = /^image\//i;
 const IMAGE_ATTACHMENT_EXTENSION_RE = /\.(?:avif|bmp|gif|heic|jpeg|jpg|png|svg|tif|tiff|webp)$/i;
 const MAX_FORK_COUNT = 25;
-const TERMINAL_CLAUDE_IDLE_RECONNECT_MS = 5 * 60 * 1000;
 const CLAUDE_STATUS_ROW_REFRESH_INTERVAL_MS = 500;
 const CODEX_PROMPT_REFLOW_GUARD_MS = 1800;
 const AGENT_PASTE_RETRY_DELAY_MS = 250;
@@ -175,7 +274,10 @@ const TERMINAL_ATTENTION_ANIMATION_MS = 2600;
 const TERMINAL_ATTENTION_TEXT_MARKERS = ["esc to cancel", "tab to amend"];
 const KEYBOARD_SHORTCUT_SECTIONS = ["Terminal", "Files", "General"];
 // Files viewer, file search, and terminal search share one files-section panel and one shortcut.
-const FILEDECK_DEFAULT_SIDEBAR_WIDTH = 300;
+// The panel needs more room than the terminal list, so an unresized sidebar grows by this ratio
+// while it is open; the workspace shifts over by the same amount rather than being covered.
+const FILES_PANEL_WIDTH_RATIO = 1.5;
+const FILES_PANEL_MIN_WIDTH = 300;
 const FILES_SIDE_PANEL_TABS = ["project", "search", "git"];
 const CLOSED_SIDE_VIEW = "closed";
 const ALL_WORKTREES_ID = "all";
@@ -200,12 +302,17 @@ const DESKTOP_KEYBINDINGS = [
   { id: "open-move-menu", label: "Open active terminal Move to menu", def: "Alt+m", section: "Terminal" },
   { id: "undo-terminal-edit", label: "Undo terminal composer edit", def: "Meta+z", section: "Terminal" },
   { id: "open-terminal-new-tab", label: "Open active terminal in a new browser tab", def: "Meta+Alt+o", section: "Terminal" },
+  { id: "toggle-diagnostics-recording", label: "Record diagnostics for a bug report", def: "Ctrl+Alt+Shift+k", section: "Terminal" },
   { id: "save-file", label: "Save open file", def: "Meta+s", section: "Files" },
+  { id: "file-history-previous-change", label: "File history: previous change", def: "Alt+Shift+ArrowUp", section: "Files" },
+  { id: "file-history-next-change", label: "File history: next change", def: "Alt+Shift+ArrowDown", section: "Files" },
+  { id: "file-history-apply-change", label: "File history: apply change to current file", def: "Alt+Shift+ArrowRight", section: "Files" },
   { id: "prev-terminal", label: "Previous terminal", def: "Meta+Alt+ArrowUp", section: "Terminal" },
   { id: "next-terminal", label: "Next terminal", def: "Meta+Alt+ArrowDown", section: "Terminal" },
   { id: "cycle-side-panel", label: "Files / Search / Git (4th press closes)", def: "Meta+Shift+e", section: "Files" },
   { id: "open-files-panel", label: "Open files panel", def: "Meta+Shift+d", section: "Files" },
   { id: "open-file-search", label: "Open file-content search", def: "Meta+Shift+f", section: "Files" },
+  { id: "open-git-panel", label: "Open Git panel", def: "Meta+Shift+g", section: "Files" },
   { id: "open-files-new-tab", label: "Open files in a new browser tab", def: "Meta+Alt+d", section: "Files" },
   { id: "open-search-new-tab", label: "Open file search in a new browser tab", def: "Meta+Alt+f", section: "Files" },
   { id: "open-terminal-search", label: "Search terminal names and output", def: "Meta+Shift+s", section: "Terminal" },
@@ -226,6 +333,9 @@ const DESKTOP_KEYBINDINGS = [
   { id: "toggle-problems", label: "Problems panel", def: "Alt+Shift+p", section: "Files" },
   { id: "conversation-outline", label: "Outline", def: "Alt+o", section: "General" },
 ];
+const FILE_HISTORY_SHORTCUT_ACTIONS = new Set([
+  "file-history-previous-change", "file-history-next-change", "file-history-apply-change",
+]);
 const VSCODE_KEYBINDINGS = [
   { id: "new-terminal", label: "New terminal", def: "Ctrl+Alt+b", section: "Terminal" },
   { id: "close-item", label: "Close active terminal", def: "Ctrl+Alt+Backspace", section: "Terminal" },
@@ -236,6 +346,7 @@ const VSCODE_KEYBINDINGS = [
   { id: "prev-terminal", label: "Previous terminal", def: "Ctrl+Alt+ArrowUp", section: "Terminal" },
   { id: "next-terminal", label: "Next terminal", def: "Ctrl+Alt+ArrowDown", section: "Terminal" },
   { id: "open-terminal-new-tab", label: "Open active terminal in a new browser tab", def: "Ctrl+Alt+o", section: "Terminal" },
+  { id: "toggle-diagnostics-recording", label: "Record diagnostics for a bug report", def: "Ctrl+Alt+Shift+k", section: "Terminal" },
   { id: "toggle-notebook", label: "Quick notebook", def: "Ctrl+Alt+n", section: "General" },
   { id: "open-files-new-tab", label: "Open files in a new browser tab", def: "Ctrl+Alt+d", section: "Files" },
   { id: "open-search-new-tab", label: "Open file search in a new browser tab", def: "Ctrl+Alt+f", section: "Files" },
@@ -270,7 +381,8 @@ const FONT_MIN = 8, FONT_MAX = 32;
 const INLINE_SIZE_SETTING_DEFINITIONS = [
   { key: "sidebar_font_size", label: "Terminal list" }, { key: "project_font_size", label: "Project title" },
   { key: "terminal_icon_size", label: "Terminal icons" }, { key: "terminal_font_size", label: "Terminal" },
-  { key: "ui_font_size", label: "Status" }, { key: "system_font_size", label: "Menus / lists" }, { key: "files_tab_font_size", label: "Files / Search tabs" }, { key: "code_font_size", label: "Code" },
+  { key: "ui_font_size", label: "Status line" }, { key: "system_font_size", label: "Menus / lists" }, { key: "code_font_size", label: "Code" },
+  { key: "files_tab_font_size", label: "File tabs" },
   { key: "bottom_font_size", label: "UI icons / spacing" }, { key: "diff_font_size", label: "Diff" },
   { key: "tree_font_size", label: "Tree / search" },
 ];
@@ -279,12 +391,20 @@ const RECENT_FILES_EVENT_DEBOUNCE_MS = 2000;
 const FILE_TREE_WS_ROUTE = "/ws/files";
 const FILE_TREE_CHANGED = "file_tree_changed";
 const QUERY_RESPONSE_RE = /^\x1b\[[?>]?[\d;]*[Rc]$/;
+// The terminal's OWN replies -- focus in/out, device-attribute and cursor-position answers, mouse
+// reports, DCS/OSC responses. Everything else on the input channel is a person: letters and Enter, but
+// also the arrow keys used to navigate a prompt. Mirrors the server's _TERMINAL_REPLY_RE.
+const TERMINAL_REPLY_RE = /\x1b\[[IO]|\x1b\[[0-9;]*n|\x1b\[[?>][0-9;]*c|\x1b\[[0-9;]*R|\x1b\[M[\s\S]{3}|\x1b\[<[0-9;]*[Mm]|\x1bP[\s\S]*?\x1b\\|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const PATH_LINK_RE = /(?:~\/|\.{1,2}\/|\/)?[\w@%+=.-]+(?:\/[\w@%+=.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+){0,2}/g;
 const KNOWN_EXTS = new Set(["py", "md", "json", "js", "ts", "tsx", "css", "html", "sh", "zsh", "txt", "yaml", "yml",
   "toml", "csv", "log", "plist", "sql", "xml", "ini", "cfg", "lock", "ipynb", "rs", "go", "c", "h", "cpp", "hpp", "java"]);
 const MATERIAL_ICONS_BASE = "/static/vendor/material-icons/icons/";
-const FOLDER_ICON_CLOSED = `${MATERIAL_ICONS_BASE}folder-project.svg`;
-const FOLDER_ICON_OPEN = `${MATERIAL_ICONS_BASE}folder-project-open.svg`;
+// Folder rows use a plain grey outline rather than a Material folder variant: the tree already carries
+// colour on the FILE icons, so a coloured folder on every row competed with them for attention. Local
+// SVGs (static/icons) instead of the vendored set, because none of its 225 folder variants is neutral.
+const TERMDECK_ICONS_BASE = "/static/icons/";
+const FOLDER_ICON_CLOSED = `${TERMDECK_ICONS_BASE}folder.svg`;
+const FOLDER_ICON_OPEN = `${TERMDECK_ICONS_BASE}folder-open.svg`;
 const MATERIAL_ICONS_MAP_URL = "/static/vendor/material-icons/dist/material-icons.json";
 const HAS_VSCODE_WEBVIEW_API = typeof acquireVsCodeApi === "function";
 const IS_VSCODE_EMBEDDED = window.parent !== window;
@@ -315,10 +435,6 @@ const VS_CODE_MODE = HAS_VSCODE_WEBVIEW_API || IS_VSCODE_EMBEDDED || URL_HINTS_V
   REFERRER_IS_VSCODE;
 const NATIVE_VSCODE_MODE = VS_CODE_MODE &&
   (NATIVE_VSCODE_PARAM ? ["1", "true", "yes", "on"].includes(NATIVE_VSCODE_PARAM) : true);
-const TERMINAL_TYPE_SVGS = {
-  claude: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.25c.42 0 .76.34.76.76v4.08l3.53-2.04a.76.76 0 1 1 .76 1.31L9.52 7.4l3.53 2.04a.76.76 0 1 1-.76 1.31L8.76 8.72v4.08a.76.76 0 0 1-1.52 0V8.72l-3.53 2.04a.76.76 0 1 1-.76-1.31L6.48 7.4 2.95 5.36a.76.76 0 1 1 .76-1.31l3.53 2.04V2.01c0-.42.34-.76.76-.76Z"/></svg>',
-  codex: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zM3.5988 18.304a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1412-1.6462zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5968 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zm-12.6413 4.1347-2.0201-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805-4.783 2.7582a.7948.7948 0 0 0-.3927.6813zM9.4041 10.4976l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"/></svg>',
-};
 const makeTerminalTheme = (background, foreground, cursor, selectionBackground, ansi) => {
   const [black, red, green, yellow, blue, magenta, cyan, white, brightBlack, brightRed, brightGreen,
     brightYellow, brightBlue, brightMagenta, brightCyan, brightWhite] = ansi;
@@ -449,7 +565,10 @@ class TermdeckApp {
     this.handleHostMessageBound = this.handleHostMessage.bind(this);
     this.sessions = [];
     this.closedSessions = [];
+    this.agentSpecs = AGENT_SPEC_DEFAULTS;
+    this.agentRunStartedAt = new Map();
     this.initialLoadComplete = false;
+    this.initialPageContentReady = false;
     this.views = new Map();
     this.openFiles = new Map();
     this.lspClient = null;
@@ -459,6 +578,9 @@ class TermdeckApp {
     this.activeId = null;
     this.activeFileKey = null;
     this.fileHistoryOpen = false;
+    this.fileHistoryTabKey = null;
+    this.fileHistoryLoadedKey = null;
+    this.fileHistorySidebarVisible = false;
     this.fileHistoryMode = "all";
     this.fileHistorySelections = [];
     this.fileHistoryVersions = [];
@@ -471,7 +593,11 @@ class TermdeckApp {
     this.fileHistoryActiveComparison = null;
     this.fileHistoryDiffBlocks = [];
     this.fileHistoryDiffBlockIndex = -1;
+    this.fileHistoryDiffPending = false;
     this.historyOpen = false;
+    this.mobileTerminalSurfaceSessions = new Set();
+    this.terminalLayoutTransitionGeneration = 0;
+    this.terminalLayoutTransitioning = false;
     this.historyRefreshTimer = 0;
     this.historyLoadBusy = false;
     this.historyWs = null;
@@ -530,16 +656,39 @@ class TermdeckApp {
     this.gitSelectionAnchorPath = "";
     this.gitFocusedFile = null;
     this.gitReviewOpen = false;
+    this.gitPendingReview = null;
     this.gitReviewDiffEditor = null;
+    this.gitReviewTextEditor = null;
     this.gitReviewModels = [];
     this.gitReviewGeneration = 0;
     this.gitReviewDiffIndex = -1;
+    this.gitReviewDiffPending = false;
     this.gitReviewSideBySide = true;
+    this.gitConflictReview = null;
+    this.gitConflictSource = "theirs";
+    this.gitConflictResolutionInProgress = false;
     this.gitGraphGeneration = 0;
     this.gitExpandedCommitId = "";
     this.gitCommitDetails = new Map();
     this.gitCommitDetailGeneration = 0;
     this.gitHistoryLimit = 25;
+    this.gitHistoryScopePaths = [];
+    this.gitPendingHistoryScope = null;
+    this.gitHistoryQuery = "";
+    this.gitHistoryFilters = { author: "", since: "", until: "", revision: "", path: "" };
+    this.gitHistoryFiltersOpen = false;
+    this.gitHistorySearchTimer = 0;
+    this.gitGraphPathsKey = "";
+    this.gitGraphError = "";
+    this.gitComparison = null;
+    this.gitPullRequestRoot = "";
+    this.gitPullRequestState = "open";
+    this.gitPullRequests = [];
+    this.gitPullRequestDetail = null;
+    this.gitPullRequestLoading = false;
+    this.gitPullRequestLoaded = false;
+    this.gitPullRequestError = "";
+    this.gitPullRequestGeneration = 0;
     this.gitStashesCollapsed = localStorage.getItem("termdeck.git_stashes_collapsed") === "1";
     this.recentFiles = [];
     this.recentFilesRoot = null;
@@ -555,7 +704,6 @@ class TermdeckApp {
     this.filesSidePanelCycleView = null;
     this.filesSidePanelCycleTransition = false;
     this.fileTypeFilterMenuMode = "name";
-    this.filesPanelWidthInitialized = false;
     const savedFilesTab = localStorage.getItem(FILES_SIDE_PANEL_LAST_TAB_KEY);
     this.lastFilesSidePanelTab = FILES_SIDE_PANEL_TABS.includes(savedFilesTab) ? savedFilesTab : "project";
     this.searchWord = false;
@@ -565,7 +713,6 @@ class TermdeckApp {
     this.searchGeneration = 0;
     this.searchHistory = [];
     this.searchHistorySelection = -1;
-    this.searchHistoryBackIndex = null;
     this.pendingSearchHistoryState = null;
     this.searchHistoryRecordTimer = 0;
     this.searchSelection = { content: -1, name: -1 };
@@ -596,6 +743,11 @@ class TermdeckApp {
     this.sessionActivityAt = new Map();
     this.sessionTitleEls = new Map();
     this.sessionSpinnerEls = new Map();
+    this.sessionActivityEls = new Map();
+    // Activity detail arrives only over the status websocket; /api/sessions doesn't carry it,
+    // so it must survive refresh() replacing the session objects (same reason processingStates
+    // and sessionModelById are maps, not session fields).
+    this.sessionActivityById = new Map();
     this.sessionStatusEls = new Map();
     this.sessionRowEls = new Map();
     this.terminalAgeRefreshTimer = 0;
@@ -631,6 +783,15 @@ class TermdeckApp {
     this.secondaryDiffEditor = null;
     this.secondaryFileKey = null;
     this.fileInspectorMode = null;
+    this.fileBlameGeneration = 0;
+    this.fileBlameActiveKey = null;
+    this.fileBlameRecordsByLine = new Map();
+    this.fileBlameAuthorWidth = 0;
+    this.fileBlameDecorationIds = [];
+    this.fileGitHunkGeneration = 0;
+    this.fileGitHunkDecorationIds = [];
+    this.fileGitHunksByLine = new Map();
+    this.fileGitHunkRefreshTimer = 0;
     this.fileOutlineTimer = 0;
     this.problemsOpen = false;
     this.problemsRefreshTimer = 0;
@@ -651,13 +812,10 @@ class TermdeckApp {
     this.notebookSearchIndex = 0;
     this.notebookTitleTimer = 0;
     this.notebookResizePointerId = null;
-    this.filesPanelResizePointerId = null;
     this.selectionActionState = null;
     this.selectionCopyHistoryIndex = 0;
     this.selectionActionUpdateFrame = 0;
     this.selectionActionUpdateTimer = 0;
-    this.lastDormantSessionClickId = null;
-    this.lastDormantSessionClickAt = 0;
     this.pendingNewAgentSelection = "";
     this.nativeSessionIds = new Set();
     this.sessionModelById = new Map();
@@ -703,29 +861,28 @@ class TermdeckApp {
     if (urlParams.get("t")) this.initialNav = { kind: "term", id: urlParams.get("t") };
     else if (gitModeRoute && urlParams.get("git_path")) {
       this.initialNav = { kind: "git-diff", path: urlParams.get("git_path"), scope: urlParams.get("git_scope") || "working",
-        revision: urlParams.get("git_revision") || "", previous_path: urlParams.get("git_previous_path") || "" };
+        revision: urlParams.get("git_revision") || "", previous_path: urlParams.get("git_previous_path") || "",
+        base: urlParams.get("git_base") || "", target: urlParams.get("git_target") || "" };
     } else if (fileModeRoute && this.requestedNavigationPath && urlParams.has("history")) {
       this.initialNav = { kind: "file-history-path", selector: this.requestedNavigationPath,
         mode: ["all", "local", "git"].includes(urlParams.get("history")) ? urlParams.get("history") : "all",
-        selection: (urlParams.get("history_selection") || "").split(",").filter(Boolean) };
+        selection: (urlParams.get("history_selection") || "").split(",").filter(Boolean), view: requestedFileView };
     }
     else if (urlParams.get("f") && urlParams.has("history")) {
       this.initialNav = { kind: "file-history", key: urlParams.get("f"),
         mode: ["all", "local", "git"].includes(urlParams.get("history")) ? urlParams.get("history") : "all",
-        selection: (urlParams.get("history_selection") || "").split(",").filter(Boolean) };
+        selection: (urlParams.get("history_selection") || "").split(",").filter(Boolean), view: requestedFileView };
     } else if (urlParams.get("f")) {
       this.initialNav = {
         kind: "open-file",
         key: urlParams.get("f"),
         view: requestedFileView,
-        pinned: urlParams.get("pinned") === "1",
         return_to: String(urlParams.get("rt") || "").trim(),
       };
     } else if (fileModeRoute && this.requestedNavigationPath) {
-      this.initialNav = { kind: "path", selector: this.requestedNavigationPath };
+      this.initialNav = { kind: "path", selector: this.requestedNavigationPath, view: requestedFileView };
     } else if (fileModeRoute || gitModeRoute || ["project", "search", "git"].includes(urlParams.get("view"))) {
-      this.initialNav = { kind: "files", view: requestedFileView, q: urlParams.get("q") || "",
-        pinned: urlParams.get("pinned") === "1" };
+      this.initialNav = { kind: "files", view: requestedFileView, q: urlParams.get("q") || "" };
     }
     else if (urlParams.get("q")) {
       this.initialNav = { kind: "search", q: urlParams.get("q"), glob: urlParams.get("glob") || "",
@@ -739,6 +896,93 @@ class TermdeckApp {
 
   touchMobileLayoutEnabled() {
     return window.matchMedia("(max-width: 900px), (hover: none) and (pointer: coarse)").matches;
+  }
+
+  browserBooleanSetting(storageKey, fallback) {
+    const stored = localStorage.getItem(storageKey);
+    return stored == null ? !!fallback : stored === "1";
+  }
+
+  setBrowserBooleanSetting(storageKey, enabled) {
+    localStorage.setItem(storageKey, enabled ? "1" : "0");
+  }
+
+  initializeBrowserRendererSettings() {
+    if (localStorage.getItem(BROWSER_TALL_WEBGL_KEY) == null) {
+      this.setBrowserBooleanSetting(BROWSER_TALL_WEBGL_KEY, true);
+    }
+  }
+
+  mobileDisplayScale() {
+    const stored = Number(localStorage.getItem(MOBILE_DISPLAY_SCALE_KEY));
+    if (!Number.isFinite(stored) || stored <= 0) return 1;
+    return Math.max(MOBILE_DISPLAY_SCALE_MIN, Math.min(MOBILE_DISPLAY_SCALE_MAX, stored));
+  }
+
+  displayScale() {
+    return this.touchMobileLayoutEnabled() ? this.mobileDisplayScale() : 1;
+  }
+
+  scaledSettingSize(key) {
+    const configured = this.touchMobileLayoutEnabled() ? SETTINGS_DEFAULTS[key] : this.settings[key];
+    const base = Number(configured) || SETTINGS_DEFAULTS[key];
+    return Math.round(base * this.displayScale() * 100) / 100;
+  }
+
+  setMobileDisplayScale(scale) {
+    const normalized = Math.max(MOBILE_DISPLAY_SCALE_MIN, Math.min(MOBILE_DISPLAY_SCALE_MAX,
+      Math.round(Number(scale) / MOBILE_DISPLAY_SCALE_STEP) * MOBILE_DISPLAY_SCALE_STEP));
+    localStorage.setItem(MOBILE_DISPLAY_SCALE_KEY, String(normalized));
+    this.applySettings();
+  }
+
+  mobileSidebarPinned() {
+    return localStorage.getItem(MOBILE_SIDEBAR_PINNED_KEY) === "1";
+  }
+
+  syncMobileSidebarControls() {
+    const pinned = this.mobileSidebarPinned();
+    document.body.classList.toggle("mobile-sidebar-pinned", pinned);
+    const pin = this.$("mobile-sidebar-pin");
+    if (!pin) return;
+    pin.setAttribute("aria-pressed", String(pinned));
+    pin.title = pinned ? "Unpin sidebar" : "Keep sidebar open after selection";
+    pin.setAttribute("aria-label", pin.title);
+    const icon = pin.querySelector(".codicon");
+    icon?.classList.toggle("codicon-pin", !pinned);
+    icon?.classList.toggle("codicon-pinned", pinned);
+  }
+
+  setMobileSidebarCollapsed(collapsed) {
+    if (!this.touchMobileLayoutEnabled()) return;
+    const next = !!collapsed && !this.mobileSidebarPinned();
+    document.body.classList.toggle("mobile-sidebar-collapsed", next);
+    document.body.scrollTo({ left: 0, behavior: "auto" });
+    requestAnimationFrame(() => {
+      this.syncMobileVisualViewport();
+      this.scheduleTerminalLayoutFit();
+    });
+  }
+
+  collapseMobileSidebarAfterSelection() {
+    if (this.touchMobileLayoutEnabled() && !this.mobileSidebarPinned()) this.setMobileSidebarCollapsed(true);
+  }
+
+  initializeMobileSidebar() {
+    if (!this.touchMobileLayoutEnabled()) return;
+    document.body.classList.add("mobile-touch-layout");
+    document.body.classList.remove("mobile-sidebar-collapsed");
+    this.syncMobileSidebarControls();
+    this.$("mobile-sidebar-collapse").onclick = () => this.setMobileSidebarCollapsed(true);
+    this.$("mobile-sidebar-toggle").onclick = () => this.setMobileSidebarCollapsed(false);
+    this.$("mobile-display-smaller").onclick = () => this.setMobileDisplayScale(this.mobileDisplayScale() - MOBILE_DISPLAY_SCALE_STEP);
+    this.$("mobile-display-larger").onclick = () => this.setMobileDisplayScale(this.mobileDisplayScale() + MOBILE_DISPLAY_SCALE_STEP);
+    this.$("mobile-sidebar-pin").onclick = () => {
+      const pinned = !this.mobileSidebarPinned();
+      localStorage.setItem(MOBILE_SIDEBAR_PINNED_KEY, pinned ? "1" : "0");
+      this.syncMobileSidebarControls();
+      if (pinned) this.setMobileSidebarCollapsed(false);
+    };
   }
 
   syncMobileVisualViewport() {
@@ -760,7 +1004,6 @@ class TermdeckApp {
     this.syncMobileVisualViewport();
     const scrollingElement = document.scrollingElement;
     if (scrollingElement) scrollingElement.scrollTop = 0;
-    this.positionFloatingFilesPanel();
     this.scheduleTerminalLayoutFit();
   }
 
@@ -1368,8 +1611,8 @@ class TermdeckApp {
     return this.terminalGroupsForWorktree(worktreeId).find((group) => group.id === groupId)?.name || "";
   }
 
-  createTerminalGroup() {
-    const name = prompt("Name for the terminal group", "New group");
+  async createTerminalGroup() {
+    const name = await uiPrompt("Name for the terminal group", "New group");
     if (!name || !name.trim()) return;
     const groups = this.terminalGroups();
     const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
@@ -1378,10 +1621,10 @@ class TermdeckApp {
     this.renderList();
   }
 
-  renameTerminalGroup(groupId) {
+  async renameTerminalGroup(groupId) {
     const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
     if (!group) return;
-    const name = prompt("Rename terminal group", group.name);
+    const name = await uiPrompt("Rename terminal group", group.name);
     if (!name || !name.trim() || name.trim() === group.name) return;
     const groups = this.terminalGroups().map((candidate) => candidate.id === groupId
       ? { ...candidate, name: name.trim() } : candidate);
@@ -1390,9 +1633,9 @@ class TermdeckApp {
     this.renderList();
   }
 
-  deleteTerminalGroup(groupId) {
+  async deleteTerminalGroup(groupId) {
     const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
-    if (!group || !confirm(`Delete group "${group.name}"? Terminals will remain ungrouped.`)) return;
+    if (!group || !await uiConfirm(`Delete group "${group.name}"? Terminals will remain ungrouped.`)) return;
     this.applyLocalProjectStatePatch(this.terminalGroupDeletionPatch(groupId));
     this.queueTerminalGroupDelete(groupId);
     this.renderList();
@@ -1519,7 +1762,11 @@ class TermdeckApp {
     this.sidebarSelectedSessionIds.clear();
     this.applySidebarSelectionStyles();
     this.applySidebarFileSelectionStyles();
-    void this.activateFile(key, null, { fromOpenFiles: true });
+    void this.activateFile(key, null, { fromOpenFiles: true }).then(() => {
+      if (!event.shiftKey && !multiSelect && this.activeFileKey === key && this.openFiles.get(key)?.model) {
+        this.collapseMobileSidebarAfterSelection();
+      }
+    });
   }
 
   selectContextMenuFileKeys(key) {
@@ -1568,6 +1815,7 @@ class TermdeckApp {
     this.applySidebarSelectionStyles();
     this.applySidebarFileSelectionStyles();
     this.activate(sessionId);
+    if (!event.shiftKey && !multiSelect) this.collapseMobileSidebarAfterSelection();
   }
 
   selectedSessionIdsForDrag(sessionId) {
@@ -1645,7 +1893,7 @@ class TermdeckApp {
     })));
     const failure = responses.find((response) => !response.ok);
     if (failure) {
-      alert(`move ${sessions.length === 1 ? "terminal" : "terminals"} to project failed (${failure.status})`);
+      void uiAlert(`move ${sessions.length === 1 ? "terminal" : "terminals"} to project failed (${failure.status})`);
       await this.refresh();
       return;
     }
@@ -1685,7 +1933,7 @@ class TermdeckApp {
     this.renderList();
   }
 
-  groupSelectedSessionsFromDrop(sessionIds, targetId, after = false) {
+  async groupSelectedSessionsFromDrop(sessionIds, targetId, after = false) {
     const selectedWorktreeId = this.stateWorktreeId();
     const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id) && id !== targetId &&
       this.worktreeIdForSession(this.session(id)) === selectedWorktreeId);
@@ -1703,7 +1951,7 @@ class TermdeckApp {
       this.moveSelectedSessionsIntoGroup([...ids, targetId], sourceGroupIds[0], targetId, after);
       return;
     }
-    const name = prompt("Name for the new terminal group", `${this.effectiveTitle(target)} group`);
+    const name = await uiPrompt("Name for the new terminal group", `${this.effectiveTitle(target)} group`);
     if (!name || !name.trim()) return;
     const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
     const allIds = [...ids, targetId];
@@ -1887,7 +2135,7 @@ class TermdeckApp {
     this.renderList();
   }
 
-  groupSessionsFromDrop(draggedId, targetId, after = false) {
+  async groupSessionsFromDrop(draggedId, targetId, after = false) {
     const state = this.getProjectState();
     const sessionGroups = { ...(state.session_groups || {}) };
     const draggedGroupId = sessionGroups[draggedId] || null;
@@ -1911,7 +2159,7 @@ class TermdeckApp {
     const dragged = this.session(draggedId), target = this.session(targetId);
     if (!dragged || !target) return;
     const suggestion = `${this.effectiveTitle(target)} group`;
-    const name = prompt("Name for the new terminal group", suggestion);
+    const name = await uiPrompt("Name for the new terminal group", suggestion);
     if (!name || !name.trim()) return;
     const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
     const layout = this.terminalLayout().filter((entry) => entry !== `session:${draggedId}` && entry !== `session:${targetId}`);
@@ -1929,13 +2177,13 @@ class TermdeckApp {
     this.createTerminalGroupFromSessions([sessionId]);
   }
 
-  createTerminalGroupFromSessions(sessionIds) {
+  async createTerminalGroupFromSessions(sessionIds) {
     const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id));
     if (!ids.length) return;
     const firstSession = this.session(ids[0]);
     const suggestion = ids.length === 1 ? `${this.effectiveTitle(firstSession)} group`
       : `${this.effectiveTitle(firstSession)} + ${ids.length - 1} group`;
-    const name = prompt("Name for the new terminal group", suggestion);
+    const name = await uiPrompt("Name for the new terminal group", suggestion);
     if (!name || !name.trim()) return;
     const state = this.getProjectState();
     const sessionGroups = { ...(state.session_groups || {}) };
@@ -1975,8 +2223,8 @@ class TermdeckApp {
     if (!sessions.length) return;
     const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
     const label = group?.name || "this group";
-    if (!confirm(`Close all ${sessions.length} terminals in "${label}"?`)) return;
-    if (!confirm(`Confirm closing all terminals in "${label}". Running agents will be stopped.`)) return;
+    if (!await uiConfirm(`Close all ${sessions.length} terminals in "${label}"?`)) return;
+    if (!await uiConfirm(`Confirm closing all terminals in "${label}". Running agents will be stopped.`)) return;
     const responses = await Promise.all(sessions.map((session) => fetch(`/api/sessions/${session.session_id}`, { method: "DELETE" })));
     if (responses.some((response) => response.ok)) this.restoreLastClosedTerminalNeedsConfirmation = false;
     this.refresh();
@@ -2146,6 +2394,7 @@ class TermdeckApp {
     this.saveSettings();
     localStorage.setItem(`termdeck.${this.projectSlug}.worktree_id`, this.worktreeId);
     history.pushState({ kind: "init" }, "", this.navUrl({ kind: "init" }));
+    if (this.fileHistoryTabKey !== null) this.closeFileHistory(false);
     this.activeId = null;
     this.activeFileKey = null;
     this.openFiles.clear();
@@ -2216,35 +2465,190 @@ class TermdeckApp {
     if (!project) return;
     const rootWorktree = this.worktrees.find((worktree) => worktree.is_root);
     if (rootWorktree && rootWorktree.git_repository === false) {
-      alert(`Project "${project.name}" is not a Git repository. Select the repository folder containing .git first.`);
+      void uiAlert(`Project "${project.name}" is not a Git repository. Select the repository folder containing .git first.`);
       return;
     }
     this.$("worktree-modal-project").textContent = `${project.name} · ${this.compactProjectPath(project.root)}`;
-    this.$("worktree-base-ref").value = rootWorktree?.branch || "";
+    this.$("worktree-name").value = "";
     this.$("worktree-branch").value = "";
+    this.$("worktree-location").value = "";
+    this.worktreeBranches = [];
+    this.worktreeCurrentBranch = "";
+    this.worktreeLocationParent = "";
+    this.worktreeLocationEdited = false;
+    this.closeWorktreeBranchList();
+    this.clearWorktreeModalError();
+    this.hideWorktreeProgress();
+    this.updateWorktreeCreateState();
     this.$("worktree-modal-backdrop").classList.remove("hidden");
-    void this.loadWorktreeBranches();
-    requestAnimationFrame(() => this.$("worktree-base-ref").focus());
+    void this.loadWorktreeDialogOptions(rootWorktree?.branch || "");
+    requestAnimationFrame(() => this.$("worktree-name").focus());
   }
 
-  async loadWorktreeBranches() {
-    const options = this.$("worktree-base-ref-options");
-    if (!options || !this.projectSlug) return;
+  // Fills the dialog from the repository itself: every local branch to base the worktree on, and
+  // the folder TermDeck would use, shown so it can be edited rather than left implicit.
+  async loadWorktreeDialogOptions(preferredBranch = "") {
+    if (!this.projectSlug) return;
     try {
       const response = await fetch(`/api/worktrees/branches?project=${encodeURIComponent(this.projectSlug)}`);
       if (!response.ok) return;
       const payload = await response.json();
-      options.textContent = "";
-      const branches = Array.isArray(payload.branches) ? payload.branches : [];
-      for (const branch of branches.slice(0, 300)) {
-        const option = document.createElement("option");
-        option.value = branch;
-        options.appendChild(option);
-      }
-      const baseRef = this.$("worktree-base-ref");
-      if (!baseRef.value && payload.current) baseRef.value = payload.current;
+      this.worktreeBranches = Array.isArray(payload.branches) ? payload.branches : [];
+      this.worktreeCurrentBranch = payload.current || "";
+      const selected = [preferredBranch, payload.current].find((branch) => this.worktreeBranches.includes(branch));
+      if (selected) this.$("worktree-base-ref").value = selected;
+      this.worktreeLocationParent = this.settings.worktree_roots?.[this.projectSlug] || payload.default_location || "";
+      this.syncWorktreeLocation();
+      this.updateWorktreeCreateState();
     } catch (error) {
       return;
+    }
+  }
+
+  // Mirrors the server's folder rule so the field shows the path that will actually be created.
+  worktreeFolderSlug(value) {
+    return String(value || "").trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^[-._]+|[-._]+$/g, "").slice(0, 48);
+  }
+
+  // The folder field is the exact checkout path, so it tracks the name until the person edits it.
+  syncWorktreeLocation() {
+    if (this.worktreeLocationEdited || !this.worktreeLocationParent) return;
+    const title = this.$("worktree-name").value.trim() || this.$("worktree-branch").value.trim() ||
+      this.$("worktree-base-ref").value.trim();
+    this.$("worktree-location").value = `${this.worktreeLocationParent}/${this.worktreeFolderSlug(title) || "worktree"}`;
+    this.updateWorktreeCreateState();
+  }
+
+  // Only what has been typed narrows the list. Opening it filters by nothing, or the branch already
+  // in the field would hide every other branch exactly when someone wants to browse them.
+  matchingWorktreeBranches() {
+    const typed = this.worktreeBranchFilterActive ? this.$("worktree-base-ref").value.trim().toLowerCase() : "";
+    if (!typed) return this.worktreeBranches;
+    const prefix = this.worktreeBranches.filter((branch) => branch.toLowerCase().startsWith(typed));
+    const rest = this.worktreeBranches.filter((branch) => !branch.toLowerCase().startsWith(typed) &&
+      branch.toLowerCase().includes(typed));
+    return [...prefix, ...rest];
+  }
+
+  renderWorktreeBranchList() {
+    const list = this.$("worktree-base-ref-list");
+    const matches = this.matchingWorktreeBranches();
+    list.textContent = "";
+    if (!matches.length) {
+      const empty = document.createElement("div");
+      empty.className = "worktree-branch-empty";
+      empty.textContent = "no matching branch";
+      list.appendChild(empty);
+      this.worktreeBranchActiveIndex = -1;
+      return;
+    }
+    if (this.worktreeBranchActiveIndex >= matches.length) this.worktreeBranchActiveIndex = matches.length - 1;
+    for (const [index, branch] of matches.entries()) {
+      const option = document.createElement("div");
+      option.className = `worktree-branch-option${index === this.worktreeBranchActiveIndex ? " active" : ""}`;
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", String(index === this.worktreeBranchActiveIndex));
+      option.textContent = branch;
+      if (branch === this.worktreeCurrentBranch) {
+        const marker = document.createElement("span");
+        marker.className = "worktree-branch-current";
+        marker.textContent = "current";
+        option.appendChild(marker);
+      }
+      // mousedown, not click: the input's blur would close the list before a click landed.
+      option.onmousedown = (event) => {
+        event.preventDefault();
+        this.selectWorktreeBranch(branch);
+      };
+      list.appendChild(option);
+    }
+    const active = list.querySelector(".worktree-branch-option.active");
+    if (active) active.scrollIntoView({ block: "nearest" });
+  }
+
+  openWorktreeBranchList({ filtered = false } = {}) {
+    this.worktreeBranchFilterActive = filtered;
+    this.renderWorktreeBranchList();
+    this.$("worktree-base-ref-list").classList.remove("hidden");
+    this.$("worktree-base-ref").setAttribute("aria-expanded", "true");
+  }
+
+  closeWorktreeBranchList() {
+    this.worktreeBranchActiveIndex = -1;
+    this.$("worktree-base-ref-list").classList.add("hidden");
+    this.$("worktree-base-ref").setAttribute("aria-expanded", "false");
+  }
+
+  worktreeBranchListOpen() {
+    return !this.$("worktree-base-ref-list").classList.contains("hidden");
+  }
+
+  selectWorktreeBranch(branch) {
+    this.$("worktree-base-ref").value = branch;
+    this.closeWorktreeBranchList();
+    this.syncWorktreeLocation();
+    this.updateWorktreeCreateState();
+  }
+
+  // Runs before the dialog-wide Escape/Enter handler on document, so a key the list uses never
+  // reaches it: Escape would close the whole dialog and Enter would submit it.
+  handleWorktreeBranchKeydown(event) {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!this.worktreeBranchListOpen()) {
+        this.worktreeBranchActiveIndex = 0;
+        this.openWorktreeBranchList();
+        return;
+      }
+      const total = this.matchingWorktreeBranches().length;
+      if (!total) return;
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      this.worktreeBranchActiveIndex = (this.worktreeBranchActiveIndex + step + total) % total;
+      this.renderWorktreeBranchList();
+      return;
+    }
+    if (!this.worktreeBranchListOpen()) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeWorktreeBranchList();
+      return;
+    }
+    if (event.key === "Enter" && this.worktreeBranchActiveIndex >= 0) {
+      const branch = this.matchingWorktreeBranches()[this.worktreeBranchActiveIndex];
+      if (!branch) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.selectWorktreeBranch(branch);
+      return;
+    }
+    if (event.key === "Tab") this.closeWorktreeBranchList();
+  }
+
+  async browseWorktreeLocation() {
+    const button = this.$("worktree-location-browse");
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/worktrees/pick-folder", { method: "POST" });
+      const payload = await response.json().catch(() => ({}));
+      if (response.status === 501) {
+        // Only macOS has a native chooser; elsewhere the path field is the whole interface.
+        button.classList.add("hidden");
+        return;
+      }
+      if (!response.ok) {
+        void uiAlert(payload.detail || "failed to choose a folder");
+        return;
+      }
+      if (!payload.cancelled && payload.location) {
+        this.worktreeLocationParent = payload.location;
+        this.worktreeLocationEdited = false;
+        this.syncWorktreeLocation();
+      }
+    } finally {
+      button.disabled = false;
     }
   }
 
@@ -2252,32 +2656,142 @@ class TermdeckApp {
     this.$("worktree-modal-backdrop").classList.add("hidden");
   }
 
+  // Blue once the dialog has what it needs: a branch to start from and somewhere to put the worktree.
+  // The button stays clickable either way, so a bad value still reports itself in the dialog.
+  updateWorktreeCreateState() {
+    const ready = !!this.$("worktree-base-ref").value.trim() && !!this.$("worktree-location").value.trim();
+    this.$("worktree-modal-create").classList.toggle("modal-primary", ready);
+  }
+
+  clearWorktreeModalError() {
+    this.hideWorktreeProgress();
+    this.$("worktree-modal-error").classList.add("hidden");
+    this.$("worktree-modal-open-existing").classList.add("hidden");
+    this.worktreeConflictSegment = "";
+  }
+
+  // Failures stay inside the dialog so the fields keep their values and can be corrected. A folder
+  // that is already a worktree of this repository is offered directly rather than just reported.
+  showWorktreeModalError(detail) {
+    const structured = detail && typeof detail === "object" ? detail : null;
+    const message = structured ? structured.message : detail;
+    if (structured?.commands?.length) this.showWorktreeProgress(structured.commands, "failed");
+    else this.hideWorktreeProgress();
+    this.$("worktree-modal-error-text").textContent = message || "worktree creation failed";
+    this.$("worktree-modal-error").classList.remove("hidden");
+    // The URL takes the same segment the create flow uses, not the internal id.
+    this.worktreeConflictSegment = structured?.worktree_id
+      ? structured.worktree_name || structured.worktree_branch || structured.worktree_id : "";
+    const open = this.$("worktree-modal-open-existing");
+    open.classList.toggle("hidden", !this.worktreeConflictSegment);
+    if (this.worktreeConflictSegment) {
+      this.$("worktree-modal-error-text").textContent = `${message} — already a worktree on ${this.worktreeConflictSegment}.`;
+    }
+  }
+
+  openConflictingWorktree() {
+    if (!this.worktreeConflictSegment) return;
+    const target = `/p/${encodeURIComponent(this.projectSlug)}/${encodeURIComponent(this.worktreeConflictSegment)}`;
+    this.closeWorktreeModal();
+    location.href = target;
+  }
+
   async createProjectWorktree() {
+    const name = this.$("worktree-name").value.trim();
     const baseRef = this.$("worktree-base-ref").value.trim();
     const branch = this.$("worktree-branch").value.trim();
-    const response = await fetch("/api/worktrees", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project: this.projectSlug, branch, base_ref: baseRef }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      alert(payload.detail || "worktree creation failed");
-      return;
+    // Not named `location`: this function reads location.href below, and a local would shadow it.
+    const folder = this.$("worktree-location").value.trim();
+    if (this.worktreeCreateInFlight) return;
+    this.worktreeCreateInFlight = true;
+    this.clearWorktreeModalError();
+    // `git worktree add` copies a whole checkout, which is slow enough to look frozen. The commands
+    // shown while it runs are the ones the request will run; the reply replaces them with what ran.
+    this.showWorktreeProgress([this.plannedWorktreeCommand(baseRef, branch, folder)]);
+    try {
+      const response = await fetch("/api/worktrees", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project: this.projectSlug, name, branch, base_ref: baseRef, location: folder }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        this.showWorktreeModalError(payload.detail);
+        return;
+      }
+      this.rememberWorktreeRoot(payload.path || folder);
+      this.closeWorktreeModal();
+      await this.loadWorktrees();
+      const worktreeSegment = payload.name || payload.branch || payload.id;
+      const url = new URL(`/p/${encodeURIComponent(this.projectSlug)}/${encodeURIComponent(worktreeSegment)}`, location.href);
+      this.showWorktreeResult("Worktree created", `${payload.name || payload.branch} · ${payload.branch || "new branch"}`,
+        url, payload.path || "");
+    } catch (error) {
+      this.showWorktreeModalError(error.message || "worktree creation failed");
+    } finally {
+      this.worktreeCreateInFlight = false;
+      this.$("worktree-modal-create").disabled = false;
     }
-    this.closeWorktreeModal();
-    await this.loadWorktrees();
-    const worktreeSegment = payload.branch || payload.name || payload.id;
-    const url = new URL(`/p/${encodeURIComponent(this.projectSlug)}/${encodeURIComponent(worktreeSegment)}`, location.href);
-    this.$("worktree-result-title").textContent = "Worktree created";
+  }
+
+  // What the server is about to run, so the panel says something specific from the first frame.
+  plannedWorktreeCommand(baseRef, branch, folder) {
+    const quote = (value) => (/^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`);
+    const parts = ["git", "worktree", "add"];
+    if (branch) parts.push("-b", quote(branch));
+    parts.push(quote(folder), quote(baseRef));
+    return parts.join(" ");
+  }
+
+  showWorktreeProgress(commands, state = "running") {
+    const panel = this.$("worktree-modal-progress");
+    const list = this.$("worktree-modal-progress-commands");
+    this.$("worktree-modal-progress-label").textContent =
+      state === "failed" ? "Could not create the worktree" : "Creating worktree…";
+    panel.classList.toggle("failed", state === "failed");
+    list.textContent = "";
+    for (const command of commands) {
+      const row = document.createElement("div");
+      row.className = `worktree-command${state === "running" ? "" : ` ${state}`}`;
+      row.textContent = command;
+      list.appendChild(row);
+    }
+    panel.classList.remove("hidden");
+    this.$("worktree-modal-create").disabled = state === "running";
+  }
+
+  hideWorktreeProgress() {
+    this.$("worktree-modal-progress").classList.add("hidden");
+    this.$("worktree-modal-progress-commands").textContent = "";
+  }
+
+  // The folder a project's worktrees live in is remembered, so renaming the root once is enough.
+  rememberWorktreeRoot(createdPath) {
+    const parent = String(createdPath || "").replace(/\/+$/, "").split("/").slice(0, -1).join("/");
+    if (!parent || !this.projectSlug) return;
+    const roots = { ...(this.settings.worktree_roots || {}) };
+    if (roots[this.projectSlug] === parent) return;
+    roots[this.projectSlug] = parent;
+    this.settings.worktree_roots = roots;
+    this.saveSettings();
+  }
+
+  // Shared by "Worktree created" and "Project added": both offer the same address, so both need the
+  // in-page link and the new-tab link pointed at it. Setting one and not the other left the button
+  // aimed wherever the dialog last was.
+  showWorktreeResult(title, name, url, path) {
+    this.$("worktree-result-title").textContent = title;
+    this.$("worktree-result-name").textContent = name;
     const link = this.$("worktree-result-link");
-    this.$("worktree-result-name").textContent = `${payload.name || payload.branch} · ${payload.branch || "new branch"}`;
     link.href = url.href;
     link.textContent = url.href;
     link.title = url.href;
-    this.$("worktree-result-hint").textContent = "Click to open here. Command/Ctrl-click or middle-click opens a new tab; right-click can open a new window.";
-    this.$("worktree-result-path").textContent = payload.path || "";
+    const openTab = this.$("worktree-result-open-tab");
+    openTab.href = url.href;
+    openTab.title = `Open ${url.href} in a new tab`;
+    this.$("worktree-result-hint").textContent = "Click the address to open it here, or use the button below for a new tab.";
+    this.$("worktree-result-path").textContent = path;
     this.$("worktree-result-backdrop").classList.remove("hidden");
-    requestAnimationFrame(() => this.$("worktree-result-link").focus());
+    requestAnimationFrame(() => link.focus());
   }
 
   closeWorktreeResult() {
@@ -2287,15 +2801,15 @@ class TermdeckApp {
   async deleteSelectedWorktree() {
     const selected = this.worktrees.find((worktree) => worktree.id === this.worktreeId);
     if (!selected || selected.is_root) return;
-    if (!window.confirm(`Remove worktree "${selected.name}"? Terminals in it must be closed first.`)) return;
-    const moveToTrash = window.confirm("Move the worktree folder to the macOS Trash? Cancel keeps the files but detaches the worktree.");
+    if (!await uiConfirm(`Remove worktree "${selected.name}"? Terminals in it must be closed first.`)) return;
+    const moveToTrash = await uiConfirm("Move the worktree folder to the macOS Trash? Cancel keeps the files but detaches the worktree.");
     const response = await fetch(`/api/worktrees/${encodeURIComponent(selected.id)}`, {
       method: "DELETE", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ project: this.projectSlug, move_to_trash: moveToTrash }),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      alert(payload.detail || "worktree deletion failed");
+      void uiAlert(payload.detail || "worktree deletion failed");
       return;
     }
     this.worktreeId = "root";
@@ -2329,6 +2843,48 @@ class TermdeckApp {
     this.openFileDeckViewInNewTab(root, "tree", relativePath);
   }
 
+  async openFileExternally(root, path) {
+    const response = await fetch("/api/files/open-external", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ root, path }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      this.$("status-name").textContent = payload.detail || "unable to open file externally";
+      return false;
+    }
+    this.$("status-name").textContent = `opened ${path.split("/").pop() || path} externally`;
+    return true;
+  }
+
+  containingDirectoryPath(path) {
+    const normalized = String(path || "").replace(/\\/g, "/");
+    const separator = normalized.lastIndexOf("/");
+    return separator < 0 ? "" : normalized.slice(0, separator);
+  }
+
+  async openFolderExternally(root, path, label = "folder") {
+    const response = await fetch("/api/files/open-external", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ root, path }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      this.$("status-name").textContent = payload.detail || `unable to open ${label} externally`;
+      return false;
+    }
+    this.$("status-name").textContent = `opened ${label} externally`;
+    return true;
+  }
+
+  addOpenFileExternallyContextItem(menu, root, path) {
+    this.addContextItem(menu, "Open externally", () => { void this.openFileExternally(root, path); }, "link-external");
+    this.addContextItem(menu, "Open containing folder externally",
+      () => { void this.openFolderExternally(root, this.containingDirectoryPath(path), "containing folder"); }, "folder-opened");
+  }
+
+  addOpenFolderExternallyContextItem(menu, root, path) {
+    this.addContextItem(menu, "Open folder externally", () => { void this.openFolderExternally(root, path); }, "folder-opened");
+  }
+
   projectRelativeFilePath(project, root, relativePath) {
     const projectRoot = String(project.root || "").replace(/\\/g, "/").replace(/\/+$/, "");
     const currentRoot = String(root || "").replace(/\\/g, "/").replace(/\/+$/, "");
@@ -2342,7 +2898,6 @@ class TermdeckApp {
     if (!project) return;
     const params = new URLSearchParams();
     params.set("view", view === "tree" ? "project" : view);
-    params.set("pinned", "1");
     const selectedWorktreeId = this.worktreeId && this.worktreeId !== ALL_WORKTREES_ID && root === this.worktreeRoot()
       ? this.worktreeId : "root";
     const basePath = view === "git"
@@ -2441,29 +2996,20 @@ class TermdeckApp {
       const res = await fetch("/api/projects/pick-folder", { method: "POST" });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert(payload.detail || "failed to choose project folder");
+        void uiAlert(payload.detail || "failed to choose project folder");
         return;
       }
       if (payload.cancelled) return;
       const project = payload.project;
       if (!project?.name) {
-        alert("native folder selection returned no project");
+        void uiAlert("native folder selection returned no project");
         return;
       }
       await this.loadProjects();
       const url = new URL(`/p/${encodeURIComponent(project.name)}`, location.href);
-      this.$("worktree-result-title").textContent = "Project added";
-      this.$("worktree-result-name").textContent = project.name;
-      const link = this.$("worktree-result-link");
-      link.href = url.href;
-      link.textContent = url.href;
-      link.title = url.href;
-      this.$("worktree-result-hint").textContent = "Click to open here. Command/Ctrl-click or middle-click opens a new tab; right-click can open a new window.";
-      this.$("worktree-result-path").textContent = project.root || "";
-      this.$("worktree-result-backdrop").classList.remove("hidden");
-      requestAnimationFrame(() => link.focus());
+      this.showWorktreeResult("Project added", project.name, url, project.root || "");
     } catch (error) {
-      alert(error.message || "failed to choose project folder");
+      void uiAlert(error.message || "failed to choose project folder");
     } finally {
       if (button) button.disabled = false;
     }
@@ -2475,15 +3021,11 @@ class TermdeckApp {
     window.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       const fontSampleEditorOpen = !this.$("font-samples-backdrop").classList.contains("hidden");
-      if (!this.settings.inline_size_controls && !this.fontSizeEditorOpen && !fontSampleEditorOpen) return;
+      if (!this.settings.inline_size_controls && !fontSampleEditorOpen) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       if (fontSampleEditorOpen) this.closeFontSampleEditor();
-      else if (this.settings.inline_size_controls) this.exitInlineSizeControls();
-      else {
-        this.fontSizeEditorOpen = false;
-        this.$("settings-popover").classList.add("hidden");
-      }
+      else this.exitInlineSizeControls();
     }, true);
     window.addEventListener("message", this.handleHostMessageBound, false);
     window.addEventListener("pagehide", () => {
@@ -2498,8 +3040,13 @@ class TermdeckApp {
       this.flushPendingSearchHistoryRecord();
     });
     document.body.classList.toggle("termdeck-page-hidden", document.hidden);
+    // Sibling tabs read this stamp to learn which session is being watched here, so they do not
+    // post a banner for the one session already in front of the user.
+    this.markWatchedSession();
+    window.addEventListener("focus", () => this.markWatchedSession());
     document.addEventListener("visibilitychange", () => {
       document.body.classList.toggle("termdeck-page-hidden", document.hidden);
+      this.markWatchedSession();
       if (document.visibilityState === "hidden") {
         this.disconnectRecentFilesWatch();
         this.flushPendingSettingsSave();
@@ -2511,23 +3058,30 @@ class TermdeckApp {
         if (!this.sectionCollapsed("recent_files_collapsed")) void this.refreshRecentFiles(true);
       }
     });
-    await this.loadSettings();
+    await Promise.all([this.loadAgentSpecs(), this.loadSettings()]);
+    if (this.settings.notify_attention !== false || this.settings.notify_agent_idle !== false) {
+      // Chrome ignores a permission request that arrives without a user gesture, so a
+      // page-load request leaves the permission stuck at "default" forever. Ask again on
+      // the first real gesture, where the prompt is actually allowed to appear.
+      const requestOnFirstGesture = () => {
+        this.maybeRequestNotificationPermission();
+        window.removeEventListener("pointerdown", requestOnFirstGesture, true);
+        window.removeEventListener("keydown", requestOnFirstGesture, true);
+      };
+      window.addEventListener("pointerdown", requestOnFirstGesture, true);
+      window.addEventListener("keydown", requestOnFirstGesture, true);
+    }
+    this.initializeMobileSidebar();
     this.loadSearchHistory();
     await this.loadProjects();
+    this.initializeEventlyDemoPresentation();
     this.applyVscodeModeLayout();
     if (!this.vscodeMode) {
       this.restoreOpenFiles();
       this.initMonaco();
       this.loadIconMap();
     }
-    this.$("settings-gear").onclick = (e) => this.openSettingsPopover(e.currentTarget,
-      [{ label: "Terminal font", key: "terminal_font_size" }, { label: "Terminal icon size", key: "terminal_icon_size", type: "scale" },
-       { label: "Code font", key: "code_font_size" },
-       { label: "Terminal list font", key: "sidebar_font_size" }, { label: "Project title font", key: "project_font_size" },
-       { label: "Tree/search font", key: "tree_font_size" }, { label: "Files / Search tabs font", key: "files_tab_font_size" },
-       { label: "Diff font", key: "diff_font_size" }, { label: "Status font", key: "ui_font_size" },
-       { label: "Menus / lists font", key: "system_font_size" },
-       { label: "UI icons / spacing", key: "bottom_font_size", type: "scale" }]);
+    this.$("settings-gear").onclick = (e) => this.openSettingsPopover(e.currentTarget);
     // Null-safe: #file-view-close is not in index.html yet. This runs during setup, so the throw
     // aborted the rest of this initialisation rather than just failing one button.
     const fileViewClose = this.$("file-view-close");
@@ -2539,14 +3093,16 @@ class TermdeckApp {
     this.$("git-review-previous").onclick = () => this.navigateGitReviewDiff(-1);
     this.$("git-review-next").onclick = () => this.navigateGitReviewDiff(1);
     this.$("git-review-layout").onclick = () => this.toggleGitReviewLayout();
-    this.$("file-history-close").onclick = () => this.closeFileHistory();
+    for (const button of this.$("git-review-conflict-sources").querySelectorAll("button[data-source]")) {
+      button.onclick = () => this.selectGitConflictSource(button.dataset.source);
+    }
+    this.$("git-review-conflict-stage").onclick = () => this.stageGitConflictResultAndOpenNext();
+    this.$("file-history-close").onclick = () => this.hideFileHistorySidebar();
     for (const button of this.$("file-history-filters").querySelectorAll("button[data-mode]")) {
       button.onclick = () => this.setFileHistoryMode(button.dataset.mode);
     }
     this.$("file-history-diff-previous").onclick = () => this.navigateFileHistoryDiff(-1);
     this.$("file-history-diff-next").onclick = () => this.navigateFileHistoryDiff(1);
-    this.$("file-history-diff-undo-block").onclick = () => this.undoFileHistoryDiffBlock();
-    this.$("file-history-diff-undo-line").onclick = () => this.undoFileHistoryDiffLine();
     this.initNotebook();
     this.initSelectionActions();
     this.initIdeFeatures();
@@ -2556,13 +3112,6 @@ class TermdeckApp {
       if (view !== "terminals") {
         this.$("view-" + view).oncontextmenu = (event) => this.handleNavigationContextMenu(event, view);
       }
-    }
-    for (const [view, id] of [["project", "files-tab-project"], ["search", "files-tab-search"], ["git", "files-tab-git"]]) {
-      const button = this.$(id);
-      if (!button) continue;
-      button.onclick = () => this.handleFileModeNavigationClick(view);
-      button.onauxclick = (event) => this.handleNavigationAuxClick(event, view);
-      button.oncontextmenu = (event) => this.handleNavigationContextMenu(event, view);
     }
     const replaceToggle = this.$("replace-toggle");
     replaceToggle.onclick = () => {
@@ -2593,21 +3142,17 @@ class TermdeckApp {
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        if (!this.closeUnpinnedFilesPanelAndFocusEditor()) {
-          queryInput.value = "";
-          this.setExplorerMode("tree");
-        }
+        queryInput.value = "";
+        this.setExplorerMode("tree");
       }
     });
     queryInput.addEventListener("input", () => this.debouncedSearch());
     this.syncFileGlobInputs();
+    const searchFileGlobInput = this.$("search-file-glob");
+    searchFileGlobInput.oninput = this.handleSearchFileGlobInput.bind(this);
+    searchFileGlobInput.onkeydown = this.handleSearchFileGlobKeydown.bind(this);
     this.$("file-type-filter-button").onclick = (event) => this.toggleFileTypeFilterMenu(event.currentTarget);
     this.$("search-file-type-filter-button").onclick = (event) => this.toggleFileTypeFilterMenu(event.currentTarget);
-    this.$("minimize-toggle").onclick = () => {
-      this.setSideView("terminals", false);
-      if (this.activeId && this.session(this.activeId)) this.pushNav({ kind: "term", id: this.activeId });
-      else this.pushNav({ kind: "init" });
-    };
     const wordBtn = this.$("search-word-toggle"), caseBtn = this.$("search-case-toggle"), regexBtn = this.$("search-regex-toggle");
     wordBtn.onclick = () => { this.searchWord = !this.searchWord; wordBtn.classList.toggle("on", this.searchWord); };
     caseBtn.onclick = () => { this.searchCase = !this.searchCase; caseBtn.classList.toggle("on", this.searchCase); };
@@ -2630,17 +3175,14 @@ class TermdeckApp {
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        if (!this.closeUnpinnedFilesPanelAndFocusEditor()) {
-          nameInput.value = "";
-          this.setExplorerMode("tree");
-        }
+        nameInput.value = "";
+        this.setExplorerMode("tree");
       }
     });
     nameInput.addEventListener("input", () => this.debouncedNameSearch());
     this.$("search-history-btn").onclick = (event) => this.toggleSearchHistory(event.currentTarget);
     this.$("name-search-history-btn").onclick = (event) => this.toggleSearchHistory(event.currentTarget);
     this.$("replace-all-btn").onclick = () => this.replaceAll();
-    this.$("search-back").onclick = () => this.prevSearch();
     const mtimeBtn = this.$("mtime-toggle");
     mtimeBtn.classList.toggle("on", !this.settings.show_mtime);
     mtimeBtn.title = this.settings.show_mtime ? "Hide last-modified times" : "Show last-modified times";
@@ -2676,24 +3218,12 @@ class TermdeckApp {
       this.rerenderTree();
     };
     this.updateHideDotButton();
-    this.$("files-pin-toggle").onclick = () => this.toggleFilesPinned();
-    this.updateFilesPinButton();
     this.$("git-refresh").onclick = () => void this.loadGitSidePanel();
     this.$("files-tree").addEventListener("contextmenu", (e) => {
       const row = e.target.closest(".tree-row");
       if (row && row.dataset.rel) this.openTreeContextMenu(e, row);
     });
-    this.$("main").addEventListener("pointerdown", (e) => {
-      if (e.target.closest("#editor-area, #terminal-area, #history-area")) this.dismissUnpinnedFilesPanel();
-    });
     this.initResizer("sidebar-resizer", "sidebar_width", false, 236, 520);
-    const filesPanelResizer = this.$("files-section-resizer");
-    if (filesPanelResizer) {
-      filesPanelResizer.onpointerdown = this.startFilesPanelResize.bind(this);
-      filesPanelResizer.onpointermove = this.resizeFilesPanelFromPointer.bind(this);
-      filesPanelResizer.onpointerup = this.finishFilesPanelResize.bind(this);
-      filesPanelResizer.onpointercancel = this.finishFilesPanelResize.bind(this);
-    }
     this.initSideSplit();
     if (!this.vscodeMode) {
       this.updateRecentFilesWatch();
@@ -2709,11 +3239,12 @@ class TermdeckApp {
       if (e.target.closest?.(".inline-size-controls, #inline-size-done, #font-samples-backdrop")) return;
       for (const id of ["settings-popover", "context-menu"]) {
         const pop = this.$(id);
-        if (!pop.classList.contains("hidden") && !pop.contains(e.target)) {
-          pop.classList.add("hidden");
-          if (id === "settings-popover") this.fontSizeEditorOpen = false;
-          if (id === "context-menu") this.contextMenuTarget = null;
-        }
+        if (pop.classList.contains("hidden") || pop.contains(e.target)) continue;
+        // The stats readout toggles its own menu on click. Auto-hiding here would let the click
+        // that follows reopen it, so a second click could never close it.
+        if (id === "context-menu" && this.statsMaintenanceMenuOpen() && e.target.closest?.("#bottombar-stats")) continue;
+        pop.classList.add("hidden");
+        if (id === "context-menu") this.contextMenuTarget = null;
       }
       const headerAddMenu = this.$("header-add-menu");
       if (headerAddMenu && !headerAddMenu.classList.contains("hidden") && !headerAddMenu.contains(e.target) &&
@@ -2743,10 +3274,6 @@ class TermdeckApp {
           !notebookToggle?.contains(e.target) && !fileTabsNotebook?.contains(e.target)) {
         this.setNotebookOpen(false, { focus: false });
       }
-      const fileHistoryPanel = this.$("file-history-panel");
-      const fileHistoryToggle = this.$("file-history-toggle");
-      if (this.fileHistoryOpen && fileHistoryPanel && !fileHistoryPanel.contains(e.target) &&
-          !fileHistoryToggle?.contains(e.target)) this.closeFileHistory();
     });
     this.$("history-search-close").onclick = () => this.closeHistorySearchContext();
     this.$("history-search-open").onclick = () => this.openHistorySearchSession();
@@ -2761,6 +3288,30 @@ class TermdeckApp {
     this.$("modal-model").onchange = () => { this.clearModalError(); this.updateModalPermissions(); };
     this.$("worktree-modal-cancel").onclick = () => this.closeWorktreeModal();
     this.$("worktree-modal-create").onclick = () => void this.createProjectWorktree();
+    this.$("worktree-location-browse").onclick = () => void this.browseWorktreeLocation();
+    this.$("worktree-modal-open-existing").onclick = () => this.openConflictingWorktree();
+    this.$("worktree-name").oninput = () => this.syncWorktreeLocation();
+    this.$("worktree-branch").oninput = () => this.syncWorktreeLocation();
+    // Once the path is hand-edited it stops following the name; nothing should overwrite a typed path.
+    this.$("worktree-location").oninput = () => {
+      this.worktreeLocationEdited = true;
+      this.updateWorktreeCreateState();
+    };
+    const baseRef = this.$("worktree-base-ref");
+    baseRef.oninput = () => {
+      this.worktreeBranchActiveIndex = 0;
+      this.openWorktreeBranchList({ filtered: true });
+      this.syncWorktreeLocation();
+      this.updateWorktreeCreateState();
+    };
+    baseRef.onkeydown = (event) => this.handleWorktreeBranchKeydown(event);
+    baseRef.onfocus = () => this.openWorktreeBranchList();
+    baseRef.onblur = () => this.closeWorktreeBranchList();
+    this.$("worktree-base-ref-toggle").onclick = () => {
+      if (this.worktreeBranchListOpen()) return this.closeWorktreeBranchList();
+      baseRef.focus();
+      baseRef.select();
+    };
     this.$("worktree-modal-backdrop").addEventListener("mousedown", (event) => {
       if (event.target === this.$("worktree-modal-backdrop")) this.closeWorktreeModal();
     });
@@ -2777,6 +3328,10 @@ class TermdeckApp {
         };
       }
     }
+    this.$("terminal-history-more").onclick = () => {
+      this.setHistoryMode(true);
+      this.refocusActiveInputAfterToolbarAction();
+    };
     this.updateShortcutTitles();
     this.$("history-edits-toggle").onclick = () => this.toggleHistoryEdits();
     this.$("history-scroll-bottom").onmousedown = (event) => event.preventDefault();
@@ -2816,22 +3371,21 @@ class TermdeckApp {
     this.$("terminal-find-previous").onclick = () => this.moveTerminalFindMatch(-1);
     this.$("terminal-find-next").onclick = () => this.moveTerminalFindMatch(1);
     this.$("terminal-find-close").onclick = () => this.closeTerminalFind();
-    this.$("kill-stale-terminals-btn").onclick = () => void this.killStaleTerminals();
-    this.$("history-send").onclick = () => this.sendHistoryPrompt();
-    this.$("history-queue-btn").onclick = () => this.sendHistoryPrompt({ queue: true });
+    const stats = this.$("bottombar-stats");
+    stats.onclick = (event) => this.toggleStatsMaintenanceMenu(event.currentTarget);
+    stats.onkeydown = (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      this.toggleStatsMaintenanceMenu(event.currentTarget);
+    };
+    this.$("history-send").onclick = () => this.handleHistorySendButton();
+    this.$("history-queue").onclick = () => this.sendHistoryPrompt({ queue: true });
     this.$("history-prompt-history-btn").onclick = () => this.togglePromptHistory();
     this.$("history-prompt").addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
-        const view = this.views.get(this.activeId);
-        if (view) {
-          this.sendInput(view, "\x1b");
-          this.historyPendingProcessing.delete(this.activeId);
-          this.updateHistoryThinkingIndicator();
-          view.keepBottom = true;
-          view.pinBottomUntil = Date.now() + 3000;
-        }
+        this.interruptHistoryPrompt();
         return;
       }
       if (e.key === "Tab") {
@@ -2900,7 +3454,10 @@ class TermdeckApp {
       this.resizeHistoryPrompt();
     });
     this.$("attach-btn").onclick = () => this.historyOpen ? this.attachToHistory() : this.attachToActive();
-    this.$("reveal-session-btn").onclick = () => this.revealAndFocusActiveTerminalInSidebar();
+    this.$("reveal-session-btn").onclick = () => {
+      if (this.activeFileKey !== null) void this.revealActiveFile();
+      else this.revealAndFocusActiveTerminalInSidebar();
+    };
     for (const id of ["scroll-bottom-btn", "vscode-scroll-bottom-btn"]) {
       const button = this.$(id);
       if (button) {
@@ -2935,6 +3492,7 @@ class TermdeckApp {
       e.stopImmediatePropagation();
       this.selectActiveTerminalText();
     }, true);
+    document.addEventListener("keydown", (e) => this.handleCodexCommandTranscriptShortcut(e), true);
     // Every per-element dragleave/drop/dragend only runs when the drag ends on that same element, so a
     // drag released anywhere else — empty sidebar, outside the window, Escape — strands its indicator.
     // Bubble phase, never capture: the drop handlers read .drop-after off the target to decide placement,
@@ -2968,6 +3526,15 @@ class TermdeckApp {
           !this.$("modal-backdrop").classList.contains("hidden")) return;
       const actionId = this.bindingMap()[this.eventToBinding(e)];
       if (actionId !== "open-file-search") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.runAction(actionId);
+    }, true);
+    window.addEventListener("keydown", (e) => {
+      if (!this.$("keys-backdrop").classList.contains("hidden") ||
+          !this.$("modal-backdrop").classList.contains("hidden") || !this.fileHistoryActiveComparison?.isDiff) return;
+      const actionId = this.bindingMap()[this.eventToBinding(e)];
+      if (!FILE_HISTORY_SHORTCUT_ACTIONS.has(actionId)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       this.runAction(actionId);
@@ -3033,11 +3600,6 @@ class TermdeckApp {
         this.navigateBackFromActiveFile();
         return;
       }
-      if (e.key === "Escape" && this.closeUnpinnedFilesPanelAndFocusEditor()) {
-        e.preventDefault();
-        e.stopPropagation();
-        return;
-      }
       if (this.isTypingTarget(e)) return;
       const treeVisible = !this.$("files-section").classList.contains("hidden") &&
         !this.$("files-tree").classList.contains("hidden");
@@ -3072,7 +3634,6 @@ class TermdeckApp {
     this.lastNavJson = JSON.stringify(startupNav);
     history.replaceState(startupNav, "", this.navUrl(startupNav));
     const scheduleLayoutFit = () => {
-      this.positionFloatingFilesPanel();
       this.scheduleTerminalLayoutFit();
     };
     new ResizeObserver(scheduleLayoutFit).observe(this.$("terminal-area"));
@@ -3081,25 +3642,9 @@ class TermdeckApp {
     this.syncMobileVisualViewport();
     window.visualViewport?.addEventListener("resize", this.mobileViewportResizeHandler);
     window.addEventListener("orientationchange", this.mobileOrientationChangeHandler);
-    // Every fit/repaint pass in this file runs off requestAnimationFrame or setTimeout, both of
-    // which browsers throttle or fully suspend for a backgrounded tab or unfocused window. A
-    // repair scheduled while hidden does not fail — it just never runs, or runs late against
-    // stale state, until something un-suspends the page. visibilitychange/focus/pageshow fire
-    // promptly even from a suspended state (unlike rAF/setTimeout), so they are the one place
-    // that can reliably kick the active terminal back into a known-good state on return. This is
-    // also the likely reason a manual resize "always" fixes a stuck terminal: resizing requires
-    // focusing the window first, which is the trigger this file otherwise never listens for.
-    const revalidateActiveTerminalOnReturn = () => {
-      if (document.hidden) return;
-      const view = this.views.get(this.activeId);
-      if (!view || view.closed) return;
-      view.forceResizeAfterFit = true;
-      this.scheduleTerminalActivationRepair(view, { forceReflow: true });
-      this.scheduleActiveTerminalSettleWatchdog(view);
-    };
-    document.addEventListener("visibilitychange", revalidateActiveTerminalOnReturn);
-    window.addEventListener("focus", revalidateActiveTerminalOnReturn);
-    window.addEventListener("pageshow", revalidateActiveTerminalOnReturn);
+    window.addEventListener("pageshow", (event) => {
+      if (event.persisted) scheduleLayoutFit();
+    });
     this.installTerminalSizeDebugOverlay();
     void this.initializeRemoteIdleMode();
     this.refresh().finally(() => this.connectStatusStream());
@@ -3108,8 +3653,15 @@ class TermdeckApp {
 
   navUrl(state) {
     const params = new URLSearchParams();
+    if (this.projectSlug === "evently-demo" && new URLSearchParams(location.search).get("demo") === "evently") {
+      params.set("demo", "evently");
+    }
+    // A state that names a side-panel tab picks the route itself. Consulting the pathname for those
+    // is what pinned the URL to /g/: once git had been opened, every later switch to files or search
+    // saw "/g/" and kept it, so the address never moved off git mode.
+    const tabbedView = FILES_SIDE_PANEL_TABS.includes(state.view) ? state.view : "";
     const gitModeNavigation = state.kind === "git-diff" || state.kind !== "term" && state.kind !== "file-history" &&
-      (location.pathname.startsWith("/g/") || (state.kind === "files" && state.view === "git"));
+      (tabbedView ? tabbedView === "git" : location.pathname.startsWith("/g/"));
     const fileModeNavigation = state.kind !== "term" &&
       (location.pathname.startsWith("/f/") || state.kind === "files" || state.kind === "file" ||
        state.kind === "open-file" || state.kind === "file-history");
@@ -3132,10 +3684,6 @@ class TermdeckApp {
     } else if (state.kind === "file" || state.kind === "open-file") {
       navigationPath = this.relativeNavigationPathForFileKey(state.key);
       if (!navigationPath && state.key) params.set("f", state.key);
-      if (state.kind === "open-file") {
-        if (state.view) params.set("view", state.view);
-        if (state.pinned) params.set("pinned", "1");
-      }
     } else if (state.kind === "file-history") {
       navigationPath = this.relativeNavigationPathForFileKey(state.key);
       if (!navigationPath && state.key) params.set("f", state.key);
@@ -3150,11 +3698,11 @@ class TermdeckApp {
       params.set("git_scope", state.scope || "working");
       if (state.revision) params.set("git_revision", state.revision);
       if (state.previous_path) params.set("git_previous_path", state.previous_path);
+      if (state.base) params.set("git_base", state.base);
+      if (state.target) params.set("git_target", state.target);
     } else if (state.kind === "path") {
       navigationPath = this.encodedRelativeFilePath(state.selector);
     } else if (state.kind === "files") {
-      if (state.view) params.set("view", state.view);
-      if (state.pinned) params.set("pinned", "1");
       if (state.q) params.set("q", state.q);
     } else if (state.kind === "search") {
       params.set("q", state.q);
@@ -3163,6 +3711,19 @@ class TermdeckApp {
       if (state.case_sensitive) params.set("c", "1");
       if (state.regex) params.set("re", "1");
     }
+    // The all-projects root has no project route to extend: "/" + "/<segment>" forms a
+    // protocol-relative URL whose HOST is the segment, and pushState throws on it -- aborting
+    // boot when the startup state restores a terminal, and aborting activate() at the root
+    // view. A bare "/<segment>" is not a served route either, so the root keeps its path:
+    // files fall back to the ?f= param and a terminal keeps its name in the fragment.
+    if (basePath === "/" && navigationPath) {
+      if (state.key) params.set("f", state.key);
+      navigationPath = "";
+    }
+    // /f/ and /g/ already say which tab is open; the param is only needed for a tab the route
+    // cannot express, which today is search on a file route and git on a file-history route.
+    const routeView = gitModeNavigation ? "git" : "project";
+    if (tabbedView && tabbedView !== routeView) params.set("view", tabbedView);
     const qs = params.toString();
     return `${basePath}${navigationPath ? `/${navigationPath}` : ""}${qs ? `?${qs}` : ""}${fragment}`;
   }
@@ -3212,30 +3773,44 @@ class TermdeckApp {
       location.reload();
       return;
     }
-    this.applyNavState(state);
+    const navigationState = this.parseNavState(state);
+    if (!navigationState) return;
+    this.lastNavJson = JSON.stringify(navigationState);
+    this.lastNavUrl = `${location.pathname}${location.search}${location.hash}`;
+    this.applyNavState(navigationState);
   }
 
   applyNavState(state) {
     if (!state || state.kind === "init") return;
+    if (this.fileHistoryOpen && !["file-history", "file-history-path"].includes(state.kind)) {
+      this.deactivateFileHistoryTab();
+    }
     if (state.kind === "path") {
       const selector = String(state.selector || "");
       if (!selector) return;
       if (this.session(selector)) {
+        this.setSideView("terminals", false);
         this.replaceNav({ kind: "term", id: selector });
-        this.activate(selector, { history: false });
+        this.activate(selector, { history: false, reveal: true });
       } else {
         const root = this.worktreeRoot();
         if (root) {
-          this.replaceNav({ kind: "file", key: `${root}|${selector}` });
-          void this.openFile(root, selector, null, null, { pinned: true, history: false });
+          const view = FILES_SIDE_PANEL_TABS.includes(state.view) ? state.view : this.lastFilesSidePanelTab;
+          this.setSideView(FILES_SIDE_PANEL_TABS.includes(view) ? view : "project", false);
+          this.replaceNav({ kind: "file", key: `${root}|${selector}`, view });
+          void this.openFile(root, selector, null, null, { pinned: true, history: false, view });
         }
       }
       return;
     }
     if (state.kind === "file-history-path") {
       const root = this.worktreeRoot();
-      if (root && state.selector) void this.openFileHistoryForPath(root, state.selector, state.mode || "all",
-        { history: false, selection: state.selection || [] });
+      if (root && state.selector) {
+        const view = FILES_SIDE_PANEL_TABS.includes(state.view) ? state.view : this.lastFilesSidePanelTab;
+        this.setSideView(FILES_SIDE_PANEL_TABS.includes(view) ? view : "project", false);
+        void this.openFileHistoryForPath(root, state.selector, state.mode || "all",
+          { history: false, selection: state.selection || [], view });
+      }
       return;
     }
     if (state.kind === "file-history") {
@@ -3243,7 +3818,9 @@ class TermdeckApp {
       if (separator <= 0) return;
       const root = state.key.slice(0, separator);
       const path = state.key.slice(separator + 1);
-      void this.openFileHistoryForPath(root, path, state.mode || "all", { history: false, selection: state.selection || [] });
+      const view = FILES_SIDE_PANEL_TABS.includes(state.view) ? state.view : this.lastFilesSidePanelTab;
+      this.setSideView(FILES_SIDE_PANEL_TABS.includes(view) ? view : "project", false);
+      void this.openFileHistoryForPath(root, path, state.mode || "all", { history: false, selection: state.selection || [], view });
       return;
     }
     if (state.kind === "git-diff") {
@@ -3252,7 +3829,8 @@ class TermdeckApp {
       this.setSideView("git", false);
       this.gitExpandedCommitId = state.revision ? state.revision.slice(0, 7) : "";
       void this.openGitReviewDiff(root, state.path, state.scope || "working", false,
-        { revision: state.revision || "", previousPath: state.previous_path || "", history: false });
+        { revision: state.revision || "", previousPath: state.previous_path || "", base: state.base || "",
+          target: state.target || "", history: false });
       return;
     }
     if (state.kind === "open-file") {
@@ -3260,13 +3838,11 @@ class TermdeckApp {
       if (separator <= 0) return;
       const root = String(state.key).slice(0, separator);
       const path = String(state.key).slice(separator + 1);
-      if (state.pinned) this.setFilesPinned(true);
       this.setSideView(["project", "search", "git"].includes(state.view) ? state.view : "project", false);
       void this.openFile(root, path, null, null, { pinned: true, history: false });
       return;
     }
     if (state.kind === "files") {
-      if (state.pinned) this.setFilesPinned(true);
       const view = ["project", "search", "git"].includes(state.view) ? state.view : "project";
       if (view === "git" && this.gitReviewOpen) this.closeGitReview(false);
       this.setSideView(view, false);
@@ -3274,10 +3850,13 @@ class TermdeckApp {
         this.$("search-query").value = state.q;
         void this.runSearch(state.q, true);
       }
-      if (location.pathname.startsWith("/f/") && this.openFiles.size) {
+      if (view === "git" && this.activeFileKey === null && this.openFiles.size) {
         const key = [...this.openFiles.keys()].at(-1);
-        this.replaceNav({ kind: "file", key });
         void this.activateFile(key, null, { history: false });
+      } else if (location.pathname.startsWith("/f/") && this.openFiles.size) {
+        const key = [...this.openFiles.keys()].at(-1);
+        this.replaceNav({ kind: "file", key, view });
+        void this.activateFile(key, null, { history: false, view });
       }
       return;
     }
@@ -3299,10 +3878,12 @@ class TermdeckApp {
         if (state.history_scroll && typeof state.history_scroll === "object") {
           this.historyScrollBySession.set(state.id, state.history_scroll);
         }
-        this.activate(state.id, { history: false });
+        this.setSideView("terminals", false);
+        this.activate(state.id, { history: false, reveal: true });
       } else if (state.kind === "file" && this.openFiles.has(state.key)) {
-        if (this.fileHistoryOpen) this.closeFileHistory(false);
-        this.activateFile(state.key, null, { history: false });
+        const view = FILES_SIDE_PANEL_TABS.includes(state.view) ? state.view : this.lastFilesSidePanelTab;
+        this.setSideView(FILES_SIDE_PANEL_TABS.includes(view) ? view : "project", false);
+        this.activateFile(state.key, null, { history: false, view });
       } else if (state.kind === "search") {
         this.searchWord = !!state.word;
         this.searchCase = !!state.case_sensitive;
@@ -3371,7 +3952,6 @@ class TermdeckApp {
       if (!this.initialLoadComplete) this.showInitialLoadFailure();
       return;
     }
-    this.finishInitialLoadingState();
     const previousSessionListSignature = this.sessionListSignature;
     this.sessions = this.worktreeId === ALL_WORKTREES_ID ? sessions : this.applySessionOrder(sessions);
     this.closedSessions = closed;
@@ -3455,6 +4035,7 @@ class TermdeckApp {
       this.nativeSessionIds = new Set(this.sessions.map((s) => s.session_id));
     }
     this.scheduleTerminalLayoutFit();
+    this.finishInitialLoadingState();
   }
 
   connectStatusStream() {
@@ -3471,7 +4052,7 @@ class TermdeckApp {
           if (!instanceId) return;
           if (this.serverInstanceId && this.serverInstanceId !== instanceId && !this.serverRestartReloading) {
             this.serverRestartReloading = true;
-            location.reload();
+            setTimeout(() => location.reload(), SERVER_RESTART_RELOAD_DELAY_MS);
             return;
           }
           this.serverInstanceId = instanceId;
@@ -3528,7 +4109,7 @@ class TermdeckApp {
       location.replace(loginUrl.href);
     } catch (error) {
       button.disabled = false;
-      window.alert(error instanceof Error ? error.message : String(error));
+      void uiAlert(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -3571,29 +4152,83 @@ class TermdeckApp {
   }
 
   showInitialLoadingState() {
-    const emptyState = this.$("empty-state");
-    emptyState.classList.add("loading");
-    emptyState.textContent = "loading TermDeck…";
-    emptyState.style.display = "flex";
+    const loadingState = this.$("initial-loading-state");
+    loadingState.classList.add("loading");
+    loadingState.classList.remove("hidden");
+    this.$("initial-loading-message").textContent = "loading TermDeck…";
   }
 
   showInitialLoadFailure() {
-    const emptyState = this.$("empty-state");
-    emptyState.classList.remove("loading");
-    emptyState.textContent = "unable to load TermDeck — retrying…";
-    emptyState.style.display = "flex";
+    const loadingState = this.$("initial-loading-state");
+    loadingState.classList.remove("loading", "hidden");
+    this.$("initial-loading-message").textContent = "unable to load TermDeck — retrying…";
+    this.$("initial-loading-recovery").classList.remove("hidden");
   }
 
   finishInitialLoadingState() {
     this.initialLoadComplete = true;
     const emptyState = this.$("empty-state");
-    emptyState.classList.remove("loading");
     emptyState.textContent = "no terminals — press + to open one";
+    const session = this.session(this.activeId);
+    const view = this.views.get(this.activeId);
+    const terminalContentPending = !this.vscodeMode && this.activeFileKey === null && !this.historyOpen &&
+      !!session && !!view && (view.awaitingSnapshot || view.replaying || !view.everConnected);
+    if (terminalContentPending) {
+      const loadingState = this.$("initial-loading-state");
+      loadingState.classList.add("loading");
+      loadingState.classList.remove("hidden");
+      this.$("initial-loading-message").textContent = "loading terminal session…";
+      return;
+    }
+    this.finishInitialPageContentLoading();
+  }
+
+  initializeEventlyDemoPresentation() {
+    const params = new URLSearchParams(location.search);
+    if (this.projectSlug !== "evently-demo" || params.get("demo") !== "evently") return;
+    document.body.classList.add("evently-demo-presentation");
+    if (this.$("evently-demo-feature-banner")) return;
+    const banner = document.createElement("div");
+    banner.id = "evently-demo-feature-banner";
+    banner.innerHTML = '<span id="evently-demo-caption"></span>';
+    document.body.append(banner);
+    this.updateEventlyDemoFeatureBanner();
+  }
+
+  updateEventlyDemoFeatureBanner() {
+    if (!document.body.classList.contains("evently-demo-presentation")) return;
+    const caption = this.$("evently-demo-caption");
+    if (!caption) return;
+    const session = this.session(this.activeId);
+    const groupName = this.terminalGroupNameForSession(this.activeId) || "Evently workspace";
+    const settingsOpen = !this.$("settings-popover")?.classList.contains("hidden");
+    const themeListOpen = settingsOpen && !!this.$("settings-popover")?.querySelector(".settings-theme-row.expanded");
+    const activityEntries = this.activityDotEntries(this.sessionActivityById.get(this.activeId));
+    let feature = "Persistent terminal workspace";
+    if (settingsOpen) feature = themeListOpen ? `Theme gallery: ${this.themeLabel()}` : "Remote access: Google relay or local Wi-Fi";
+    else if (this.settings.notebook_open) feature = "Notes: save context for follow-up work";
+    else if (this.sideView === "git") feature = "Git history, blame, and changed-file review";
+    else if (this.sideView === "search") feature = "Search across files and agents";
+    else if (this.activeFileKey !== null) feature = "File editing, history, and usages";
+    else if (this.historyOpen) feature = "Markdown transcript and cross-agent review";
+    else if (activityEntries.length) feature = `Background activity: ${activityEntries.map((entry) => entry.label).join(" · ")}`;
+    caption.textContent = `Caption: ${feature} · ${groupName} · ${session?.title || "Select a feature terminal"}`;
+  }
+
+  finishInitialPageContentLoading(sessionId = this.activeId) {
+    if (sessionId !== this.activeId) return;
+    this.initialPageContentReady = true;
+    const loadingState = this.$("initial-loading-state");
+    loadingState.classList.remove("loading");
+    loadingState.classList.add("hidden");
   }
 
   applySessionStatus(message) {
     const session = this.session(message.session_id);
     if (!session) return;
+    // Keeps the "watched here" stamp fresh (throttled) so a sibling tab knows the session the user
+    // is sitting on, however long they sit there.
+    this.markWatchedSession();
     const previousPresentation = this.titlePresentation(session);
     const previousAgentSessionId = session.agent_session_id;
     const previousAgentKind = session.agent_kind;
@@ -3608,6 +4243,12 @@ class TermdeckApp {
     if (Object.prototype.hasOwnProperty.call(message, "cli_title") && message.cli_title) session.cli_title = message.cli_title;
     if (Object.prototype.hasOwnProperty.call(message, "agent_session_id")) session.agent_session_id = message.agent_session_id;
     if (Object.prototype.hasOwnProperty.call(message, "agent_kind")) session.agent_kind = message.agent_kind;
+    let activityDetailChanged = false;
+    if (Object.prototype.hasOwnProperty.call(message, "activity")) {
+      const previousActivity = this.sessionActivityById.get(session.session_id) || null;
+      activityDetailChanged = JSON.stringify(previousActivity) !== JSON.stringify(message.activity || null);
+      this.sessionActivityById.set(session.session_id, message.activity || null);
+    }
     if (Object.prototype.hasOwnProperty.call(message, "last_activity_at")) {
       session.last_activity_at = message.last_activity_at;
       const activity = Number(message.last_activity_at || 0);
@@ -3652,8 +4293,29 @@ class TermdeckApp {
     if (processingChanged || (spinning && this.historyPendingProcessing.has(session.session_id))) {
       this.updateProcessingState(session.session_id, spinning);
     }
+    if (activityDetailChanged) {
+      this.updateSessionActivityDots(session.session_id);
+      this.updateEventlyDemoFeatureBanner();
+    }
+    // A finished turn is when the transcript's newest usage report changes.
+    if (processingChanged && !spinning && session.session_id === this.activeId) {
+      void this.refreshSessionUsage(session.session_id);
+    }
+    // Desktop notifications live HERE, in the page, because macOS refuses osascript
+    // notifications from the launchd-run server outright ("not allowed for this application");
+    // the browser has a real permission prompt and follows the user to every machine.
+    if (spinning && !this.agentRunStartedAt.has(session.session_id)) {
+      this.agentRunStartedAt.set(session.session_id, Date.now());
+    } else if (!spinning && this.agentRunStartedAt.has(session.session_id)) {
+      const ranForMs = Date.now() - this.agentRunStartedAt.get(session.session_id);
+      this.agentRunStartedAt.delete(session.session_id);
+      if (processingChanged && ranForMs >= 5000 && this.settings.notify_agent_idle !== false) {
+        this.notifyAgentEvent(session, "finished");
+      }
+    }
     if (session.needs_attention && !previousNeedsAttention) {
       this.triggerSessionAttention(session.session_id);
+      if (this.settings.notify_attention !== false) this.notifyAgentEvent(session, "needs your attention");
     } else if (previousExitCode == null && session.exit_code != null && !session.dormant && session.exit_code !== 0) {
       this.triggerSessionAttention(session.session_id);
     }
@@ -3681,12 +4343,56 @@ class TermdeckApp {
     this.updateSessionTextStatus(id, spinning);
   }
 
+  // One entry per background-activity kind reported by AgentCli.activity_detail — "main"
+  // is the spinner's job and stays out. Keys are generic on purpose: a future
+  // {"background_jobs": 2} needs no client change to get its own dot.
+  activityDotEntries(activity) {
+    if (!activity) return [];
+    const entries = [];
+    for (const [key, value] of Object.entries(activity)) {
+      if (key === "main") continue;
+      const count = Number(value);
+      if (!(count > 0)) continue;
+      const noun = key.replace(/_/g, " ");
+      entries.push({ key, count, label: `${count} ${count === 1 ? noun.replace(/s$/, "") : noun} running` });
+    }
+    return entries;
+  }
+
+  updateSessionActivityDots(id) {
+    const host = this.sessionActivityEls.get(id);
+    if (!host) return;
+    const entries = this.activityDotEntries(this.sessionActivityById.get(id));
+    const signature = JSON.stringify(entries);
+    if (host.dataset.signature === signature) return;
+    host.dataset.signature = signature;
+    host.replaceChildren(...entries.map((entry) => {
+      const chip = document.createElement("span");
+      chip.className = `session-activity-chip activity-${entry.key}`;
+      chip.title = entry.label;
+      const count = document.createElement("span");
+      count.className = "session-activity-count";
+      count.textContent = String(entry.count);
+      const dot = document.createElement("span");
+      dot.className = "session-activity-dot";
+      chip.append(count, dot);
+      return chip;
+    }));
+    host.closest(".session-item")?.classList.toggle("has-activity", entries.length > 0);
+  }
+
   updateSessionTextStatus(id, spinning = !!this.processingStates.get(id)) {
     const title = this.sessionTitleEls.get(id);
     if (!title) return;
+    // The wave is the TEXT-mode stand-in for the spinning icon, and stays that way: running both at once
+    // was tried and the sweep collided with the tab text rather than reading as one signal.
     const textOnly = this.usesTextTerminalStatus(this.session(id)?.agent_kind);
     const working = textOnly && !!spinning;
     title.classList.toggle("session-title-working", working);
+    // Attention runs the title wave whatever the icon setting says. Working state and icon mode are
+    // alternatives -- the spinning icon stands in for the wave -- but a question is worth both: the
+    // icon's ring catches the eye, the wave over the name says which session wants you.
+    title.classList.toggle("session-title-attention", this.attentionSessions.has(id));
     title.classList.toggle("session-title-unread", !this.vscodeMode && !working && this.unreadSessions.has(id));
     const session = this.session(id);
     if (!this.vscodeMode && session && !working) title.style.color = this.terminalAgeColor(session);
@@ -3715,7 +4421,7 @@ class TermdeckApp {
 
   terminalIconAgentKind(agentKind) {
     const kind = String(agentKind || "none").toLowerCase();
-    return TERMINAL_ICON_AGENT_KINDS.includes(kind) ? kind : "none";
+    return this.agentSpecs[kind] ? kind : "none";
   }
 
   terminalIconEnabledForAgent(agentKind) {
@@ -3810,12 +4516,12 @@ class TermdeckApp {
     const session = this.session(id);
     if (!icon || !session) return;
     const enabled = this.terminalIconEnabledForAgent(session.agent_kind);
-    icon.classList.toggle("on", enabled);
-    icon.closest(".session-item")?.classList.toggle("terminal-icons-hidden", !enabled);
-    const active = enabled && (!!this.processingStates.get(id) || this.unreadSessions.has(id));
-    const exited = enabled && !session.running;
+    const visible = enabled;
+    icon.classList.toggle("on", visible);
+    icon.closest(".session-item")?.classList.toggle("terminal-icons-hidden", !visible);
+    const active = visible && (!!this.processingStates.get(id) || this.unreadSessions.has(id));
     icon.classList.toggle("terminal-status-active", active);
-    icon.classList.toggle("terminal-status-exited", !active && exited);
+    icon.classList.remove("terminal-status-exited");
   }
 
   triggerSessionAttention(id) {
@@ -3835,6 +4541,28 @@ class TermdeckApp {
     this.attentionTimers.delete(id);
     if (!this.attentionSessions.delete(id)) return;
     this.updateUnreadIndicator(id);
+  }
+
+  sessionNeedsAttention(id) {
+    if (this.attentionServerStates.has(id)) return this.attentionServerStates.get(id) === true;
+    return this.session(id)?.needs_attention === true || this.attentionSessions.has(id);
+  }
+
+  // Drop the badge without answering the prompt: the terminal still wants a human eventually, so it
+  // stays unread rather than going quiet entirely.
+  async ignoreSessionsAttention(sessionIds) {
+    const ids = [...new Set(sessionIds)].filter((id) => this.sessionNeedsAttention(id));
+    if (!ids.length) return;
+    for (const id of ids) {
+      this.clearSessionAttention(id);
+      this.attentionServerStates.set(id, false);
+      const session = this.session(id);
+      if (session) session.needs_attention = false;
+    }
+    this.setSessionsUnread(ids, true);
+    for (const id of ids) this.updateSessionRows(id);
+    await Promise.all(ids.map((id) =>
+      fetch(`/api/sessions/${encodeURIComponent(id)}/attention`, { method: "POST" }).catch(() => null)));
   }
 
   updateProcessingState(id, spinning) {
@@ -3903,7 +4631,7 @@ class TermdeckApp {
   }
 
   dispatchNextMarkdownPrompt(view) {
-    if (!view || view.closed || view.promptQueueDispatching || !view.promptQueue.length ||
+    if (!view || view.closed || view.promptQueueHold || view.promptQueueDispatching || !view.promptQueue.length ||
         this.processingStates.get(view.sessionId) || this.session(view.sessionId)?.processing === true ||
         this.historyPendingProcessing.has(view.sessionId) || !view.ws || view.ws.readyState !== WebSocket.OPEN) return false;
     const item = view.promptQueue.shift();
@@ -3954,13 +4682,14 @@ class TermdeckApp {
         this.usesTextTerminalStatus(s.agent_kind) && presentation.spinning);
       const dot = this.sessionStatusEls.get(s.session_id);
       if (dot) {
-        dot.className = "status-dot" + (s.running ? "" : s.dormant ? " dormant" : " exited") +
+        dot.className = "status-dot" +
           (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "") +
           (this.attentionSessions.has(s.session_id) ? " attention" : "");
       }
       const spinner = this.sessionSpinnerEls.get(s.session_id);
       if (spinner) spinner.classList.toggle("on", presentation.spinning);
       this.updateSessionTextStatus(s.session_id, presentation.spinning);
+      this.updateSessionActivityDots(s.session_id);
       if (title) {
         const item = title.closest(".session-item");
         if (item) {
@@ -4251,10 +4980,32 @@ class TermdeckApp {
       sort.classList.toggle("on", this.hideInactiveTerminals);
       sort.innerHTML = `<span class="codicon ${this.hideInactiveTerminals ? "codicon-eye-closed" : "codicon-eye"}"></span>`;
       sort.setAttribute("aria-pressed", String(this.hideInactiveTerminals));
-      sort.title = this.hideInactiveTerminals ? "Show all terminals" : "Show active and unread terminals";
-      sort.setAttribute("aria-label", sort.title);
+      const window_ = this.recentHoursLabel(this.terminalRecentHours());
+      sort.title = (this.hideInactiveTerminals ? "Show all terminals" : "Show active terminals only") +
+        `\nLong press to set the active window (${window_})`;
+      sort.setAttribute("aria-label", sort.title.replace("\n", " · "));
+      // Click toggles; press and hold opens the window menu. The menu is a refinement you reach for
+      // occasionally, so it stays out of the path of the thing you do constantly.
+      sort.onpointerdown = (event) => {
+        if (event.button !== 0) return;
+        this.recentHoursLongPressFired = false;
+        clearTimeout(this.recentHoursLongPressTimer);
+        this.recentHoursLongPressTimer = window.setTimeout(() => {
+          this.recentHoursLongPressFired = true;
+          this.openRecentTerminalHoursMenu(this.$("active-toggle"));
+        }, RECENT_TERMINAL_LONG_PRESS_MS);
+      };
+      const cancelLongPress = () => clearTimeout(this.recentHoursLongPressTimer);
+      sort.onpointerup = cancelLongPress;
+      sort.onpointerleave = cancelLongPress;
+      sort.onpointercancel = cancelLongPress;
       sort.onclick = (event) => {
         event.stopPropagation();
+        // A long press still delivers a click on release; that one must not also flip the filter.
+        if (this.recentHoursLongPressFired) {
+          this.recentHoursLongPressFired = false;
+          return;
+        }
         this.toggleHideInactiveTerminals();
       };
       const group = document.createElement("button");
@@ -4607,9 +5358,99 @@ class TermdeckApp {
     this.renderList();
   }
 
+  // The filter keeps anything working, anything waiting on you, anything unread -- and anything you
+  // have touched recently. Without that last clause the list collapsed to whatever happened to be busy
+  // at that instant, which hides the session you were reading a minute ago the moment it finishes.
   isActiveTerminal(session) {
-    return !!session && (this.processingStates.get(session.session_id) === true ||
-      session.processing === true || session.needs_attention === true || this.unreadSessions.has(session.session_id));
+    if (!session) return false;
+    if (this.processingStates.get(session.session_id) === true || session.processing === true ||
+        session.needs_attention === true || this.unreadSessions.has(session.session_id)) return true;
+    return this.terminalUsedWithinWindow(session);
+  }
+
+  // A small menu under the filter button offering the window. Deliberately transient: it is a refinement
+  // of a filter you just switched on, not a setting you go looking for, so any click elsewhere, Escape,
+  // or a scroll dismisses it and the default stands if you ignore it.
+  openRecentTerminalHoursMenu(anchor) {
+    this.closeRecentTerminalHoursMenu();
+    if (!anchor) return;
+    const menu = document.createElement("div");
+    menu.id = "recent-hours-menu";
+    menu.setAttribute("role", "menu");
+    const heading = document.createElement("div");
+    heading.className = "recent-hours-heading";
+    heading.textContent = "recently used within";
+    menu.appendChild(heading);
+    for (const hours of RECENT_TERMINAL_HOUR_CHOICES) {
+      const option = document.createElement("button");
+      option.className = "recent-hours-option";
+      option.type = "button";
+      option.setAttribute("role", "menuitemradio");
+      const selected = hours === this.terminalRecentHours();
+      option.classList.toggle("on", selected);
+      option.setAttribute("aria-checked", String(selected));
+      option.textContent = this.recentHoursLabel(hours);
+      option.onclick = (event) => {
+        event.stopPropagation();
+        this.settings.recent_terminal_hours = hours;
+        this.saveSettings();
+        this.closeRecentTerminalHoursMenu();
+        this.renderList();
+      };
+      menu.appendChild(option);
+    }
+    document.body.appendChild(menu);
+    const rect = anchor.getBoundingClientRect();
+    menu.style.top = `${Math.round(rect.bottom + 4)}px`;
+    // Right-aligned to the button, then pulled back inside the viewport if that would overflow.
+    const left = Math.min(Math.max(6, rect.right - menu.offsetWidth), window.innerWidth - menu.offsetWidth - 6);
+    menu.style.left = `${Math.round(left)}px`;
+    this.recentHoursMenu = menu;
+    this.recentHoursDismiss = (event) => {
+      if (event.type === "keydown" && event.key !== "Escape") return;
+      if (event.type === "pointerdown" && (menu.contains(event.target) || anchor.contains(event.target))) return;
+      this.closeRecentTerminalHoursMenu();
+    };
+    // Listeners are added on the next frame: the click that opened this menu is still propagating, and
+    // catching it would close the menu in the same gesture that asked for it.
+    requestAnimationFrame(() => {
+      if (!this.recentHoursMenu) return;
+      window.addEventListener("pointerdown", this.recentHoursDismiss, true);
+      window.addEventListener("keydown", this.recentHoursDismiss, true);
+      window.addEventListener("resize", this.recentHoursDismiss, true);
+      this.$("session-list")?.addEventListener("scroll", this.recentHoursDismiss, true);
+    });
+  }
+
+  closeRecentTerminalHoursMenu() {
+    if (this.recentHoursDismiss) {
+      window.removeEventListener("pointerdown", this.recentHoursDismiss, true);
+      window.removeEventListener("keydown", this.recentHoursDismiss, true);
+      window.removeEventListener("resize", this.recentHoursDismiss, true);
+      this.$("session-list")?.removeEventListener("scroll", this.recentHoursDismiss, true);
+      this.recentHoursDismiss = null;
+    }
+    this.recentHoursMenu?.remove();
+    this.recentHoursMenu = null;
+  }
+
+  recentHoursLabel(hours) {
+    if (hours % 168 === 0) return `${hours / 168}w`;
+    if (hours % 24 === 0) return `${hours / 24}d`;
+    return `${hours}h`;
+  }
+
+  terminalRecentHours() {
+    const hours = Number(this.settings.recent_terminal_hours);
+    return Number.isFinite(hours) && hours > 0 ? hours : RECENT_TERMINAL_HOURS_DEFAULT;
+  }
+
+  terminalUsedWithinWindow(session) {
+    // last_activity_at is epoch seconds and covers input as well as output, so "used" means the session
+    // did something or had something done to it -- which is what someone scanning the list is after.
+    const last = Number(session.last_activity_at);
+    if (!Number.isFinite(last) || last <= 0) return false;
+    return (Date.now() / 1000 - last) <= this.terminalRecentHours() * 3600;
   }
 
   updateTerminalSearchGroupButton() {
@@ -4847,15870 +5688,4 @@ class TermdeckApp {
     row.focus({ preventScroll: true });
     row.scrollIntoView({ block: "nearest" });
   }
-
-  openTerminalFind() {
-    const view = this.views.get(this.activeId);
-    if (!view || view.closed || this.activeFileKey !== null || this.historyOpen) return;
-    const panel = this.$("terminal-find");
-    const input = this.$("terminal-find-input");
-    if (!panel || !input) return;
-    panel.classList.remove("hidden");
-    this.terminalFindSessionId = view.sessionId;
-    input.focus();
-    input.select();
-    this.updateTerminalFindMatches();
-  }
-
-  closeTerminalFind() {
-    this.$("terminal-find")?.classList.add("hidden");
-    this.$("terminal-find-count").textContent = "";
-    this.terminalFindQuery = "";
-    this.terminalFindSessionId = "";
-    this.terminalFindFallbackMatches = [];
-    this.terminalFindFallbackIndex = -1;
-    const view = this.views.get(this.activeId);
-    if (view) {
-      view.terminalFindAddon?.clearDecorations();
-      // After the state above is cleared, so the override resolves to null and the normal selection
-      // color comes back for ordinary selections.
-      this.applyTerminalFindHighlight(view);
-      view.term.focus();
-    }
-  }
-
-  terminalFindOptions(incremental = false) {
-    return { caseSensitive: false, incremental, decorations: TERMINAL_FIND_DECORATIONS };
-  }
-
-  // Only the session actually being searched gets the override, and only while a query is live, so an
-  // ordinary mouse selection anywhere (including in this same terminal once find closes) keeps the normal,
-  // deliberately unobtrusive selection color.
-  terminalFindThemeOverride(view) {
-    if (!view || view.sessionId !== this.terminalFindSessionId || !this.terminalFindQuery) return null;
-    return { selectionBackground: TERMINAL_FIND_SELECTION_BACKGROUND,
-             selectionInactiveBackground: TERMINAL_FIND_SELECTION_BACKGROUND,
-             selectionForeground: TERMINAL_FIND_SELECTION_FOREGROUND };
-  }
-
-  applyTerminalFindHighlight(view) {
-    if (!view || view.closed || !view.term) return;
-    view.term.options.theme = { ...this.termTheme(), ...(this.terminalFindThemeOverride(view) || {}) };
-  }
-
-  prepareTerminalFindNavigation(view) {
-    view.userScrollIntent = true;
-    view.scrollMode = "preserve";
-    this.cancelTerminalViewportRestore(view);
-    this.clearActiveTerminalSettleWatchdog(view);
-    clearTimeout(view.tailRepairTimer);
-    clearTimeout(view.tailRepairConfirmTimer);
-    view.tailRepairTimer = 0;
-    view.tailRepairConfirmTimer = 0;
-  }
-
-  updateTerminalFindResultCount(view, result) {
-    view.terminalFindResultIndex = Number(result.resultIndex);
-    view.terminalFindResultCount = Number(result.resultCount);
-    if (view.sessionId !== this.activeId || view.sessionId !== this.terminalFindSessionId ||
-        this.$("terminal-find")?.classList.contains("hidden")) return;
-    const count = this.$("terminal-find-count");
-    if (!count) return;
-    if (view.terminalFindResultCount <= 0) {
-      count.textContent = "no matches";
-    } else if (view.terminalFindResultIndex < 0) {
-      count.textContent = `${view.terminalFindResultCount}${view.terminalFindResultCount >= TERMINAL_FIND_HIGHLIGHT_LIMIT ? "+" : ""} matches`;
-    } else {
-      count.textContent = `${view.terminalFindResultIndex + 1}/${view.terminalFindResultCount}`;
-    }
-  }
-
-  terminalBufferFindMatches(view, query) {
-    const matches = [];
-    const needle = query.toLocaleLowerCase();
-    const buffer = view.term.buffer.active;
-    for (let row = 0; row < buffer.length; row += 1) {
-      const line = buffer.getLine(row);
-      const searchable = (line?.translateToString(true) || "").toLocaleLowerCase();
-      let column = searchable.indexOf(needle);
-      while (column >= 0) {
-        matches.push({ row, column });
-        column = searchable.indexOf(needle, column + Math.max(1, needle.length));
-      }
-    }
-    return matches;
-  }
-
-  revealTerminalBufferFindMatch(view, query) {
-    const count = this.$("terminal-find-count");
-    const match = this.terminalFindFallbackMatches[this.terminalFindFallbackIndex];
-    if (!match) {
-      if (count) count.textContent = "no matches";
-      return false;
-    }
-    view.v2Programmatic = true;
-    const buffer = view.term.buffer.active;
-    const viewportStart = Math.max(0, Number(buffer.viewportY || 0));
-    const viewportRows = Math.max(1, Number(view.term.rows || 1));
-    if (match.row < viewportStart || match.row >= viewportStart + viewportRows) {
-      const centeredLine = match.row - Math.floor(viewportRows / 2);
-      view.term.scrollToLine(Math.max(0, Math.min(centeredLine, Number(buffer.baseY || 0))));
-    }
-    view.term.select(match.column, match.row, query.length);
-    this.scrollTallContainerToRow(view, match.row);
-    requestAnimationFrame(() => { view.v2Programmatic = false; });
-    if (count) count.textContent = `${this.terminalFindFallbackIndex + 1}/${this.terminalFindFallbackMatches.length}`;
-    return true;
-  }
-
-  // Find highlights the match but cannot bring it into view on its own here. Both mechanisms above are
-  // no-ops against the tall container: term.scrollToLine moves xterm's viewport, which is not the surface
-  // being scrolled any more, and the guard that decides whether to call it compares against term.rows --
-  // 1000 here -- so a match almost always looks "already visible" and it is never even called. The result
-  // is a highlighted, selected match somewhere outside the ~37 rows actually on screen. Centering is
-  // deliberate rather than a minimal scroll-into-view: a match found mid-search usually wants its
-  // surrounding context readable, and centering also keeps repeat presses of the same direction moving a
-  // predictable distance instead of pinning the match to whichever edge it entered from.
-  scrollTallContainerToRow(view, absoluteRow) {
-    if (!view || view.closed) return;
-    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-    if (!cellHeight || !view.container.clientHeight) return;
-    // Read viewportY now, not before: the scrollToLine above may have just moved it to reach a match
-    // that was sitting in real scrollback, and this row is in absolute buffer coordinates.
-    const canvasRow = absoluteRow - Number(view.term.buffer.active.viewportY || 0);
-    const centered = canvasRow * cellHeight - Math.max(0, (view.container.clientHeight - cellHeight) / 2);
-    const nativeMax = Math.max(0, view.container.scrollHeight - view.container.clientHeight);
-    // Honor the same content ceiling the scroll listener enforces, so centering a match near the end
-    // cannot park the view in the blank rows past the content.
-    const ceiling = view.tallMaxScrollTop == null ? nativeMax : Math.min(nativeMax, view.tallMaxScrollTop);
-    this.tallSetScrollTop(view, Math.min(centered, ceiling));
-    // Searching is the user asking to look at something specific, so stop following new output -- other-
-    // wise the next write scrolls straight back to the prompt and the match they just navigated to is
-    // gone. Typing resumes following (see the key handler in ensureView). Anchoring to the match's row
-    // keeps it pinned even as new output pushes lines into scrollback underneath it.
-    view.tallFollowing = false;
-    this.tallCaptureAnchorRow(view);
-  }
-
-  useTerminalBufferFindFallback(view, query, direction = 0) {
-    const reusable = this.terminalFindSessionId === view.sessionId && this.terminalFindQuery === query &&
-      this.terminalFindFallbackMatches.length > 0;
-    if (!reusable) {
-      this.terminalFindFallbackMatches = this.terminalBufferFindMatches(view, query);
-      this.terminalFindFallbackIndex = direction < 0 ? this.terminalFindFallbackMatches.length - 1 : 0;
-    } else if (direction) {
-      this.terminalFindFallbackIndex = (this.terminalFindFallbackIndex + direction + this.terminalFindFallbackMatches.length) %
-        this.terminalFindFallbackMatches.length;
-    }
-    return this.revealTerminalBufferFindMatch(view, query);
-  }
-
-  updateTerminalFindMatches() {
-    const input = this.$("terminal-find-input");
-    const view = this.views.get(this.activeId);
-    if (!input || !view || view.closed || this.activeFileKey !== null || this.historyOpen) return;
-    const query = input.value;
-    if (this.terminalFindSessionId && this.terminalFindSessionId !== view.sessionId) {
-      this.views.get(this.terminalFindSessionId)?.terminalFindAddon?.clearDecorations();
-    }
-    view.terminalFindAddon?.clearDecorations();
-    this.terminalFindSessionId = view.sessionId;
-    this.terminalFindQuery = query;
-    this.terminalFindFallbackMatches = [];
-    this.terminalFindFallbackIndex = -1;
-    this.applyTerminalFindHighlight(view);
-    if (!query) {
-      this.$("terminal-find-count").textContent = "";
-      return;
-    }
-    this.prepareTerminalFindNavigation(view);
-    this.terminalFindFallbackMatches = this.terminalBufferFindMatches(view, query);
-    this.terminalFindFallbackIndex = 0;
-    this.revealTerminalBufferFindMatch(view, query);
-  }
-
-  moveTerminalFindMatch(direction) {
-    const input = this.$("terminal-find-input");
-    const view = this.views.get(this.activeId);
-    const query = input?.value || "";
-    if (!view || !query) return;
-    if (this.terminalFindSessionId !== view.sessionId || this.terminalFindQuery !== query ||
-        !this.terminalFindFallbackMatches.length) {
-      this.updateTerminalFindMatches();
-      if (!this.terminalFindFallbackMatches.length) return;
-      if (direction < 0) this.terminalFindFallbackIndex = this.terminalFindFallbackMatches.length - 1;
-      this.revealTerminalBufferFindMatch(view, query);
-      return;
-    }
-    this.prepareTerminalFindNavigation(view);
-    this.terminalFindFallbackIndex = (this.terminalFindFallbackIndex + direction + this.terminalFindFallbackMatches.length) %
-      this.terminalFindFallbackMatches.length;
-    this.revealTerminalBufferFindMatch(view, query);
-  }
-
-  clearTerminalSearch() {
-    const preserveInputFocus = document.activeElement?.id === "terminal-search-input";
-    const input = this.$("terminal-search-input");
-    clearTimeout(this.terminalSearchTimer);
-    if (this.terminalSearchAbort) this.terminalSearchAbort.abort();
-    this.terminalSearchAbort = null;
-    this.terminalSearchText = "";
-    if (input) input.value = "";
-    this.terminalSearchFocusIndex = -1;
-    this.terminalTitleSearchResults = [];
-    this.historySearchResults = [];
-    this.terminalSearchMatches.clear();
-    this.terminalSearchClosedMatches.clear();
-    this.renderList();
-    if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
-  }
-
-  filterTerminalSearchMatchesToGroup() {
-    if (!this.terminalSearchGroupId) return;
-    const worktreeId = this.terminalSearchWorktreeId || this.stateWorktreeId();
-    const state = this.getProjectStateForWorktree(worktreeId);
-    for (const sessionId of this.terminalSearchMatches.keys()) {
-      if (state.session_groups?.[sessionId] !== this.terminalSearchGroupId) this.terminalSearchMatches.delete(sessionId);
-    }
-    this.terminalSearchClosedMatches.clear();
-  }
-
-  expandGlobalTerminalSearchClosedSections() {
-    if (this.terminalSearchGroupId) return;
-    if (this.worktreeId !== ALL_WORKTREES_ID) {
-      this.closedExpanded = true;
-      return;
-    }
-    for (const worktree of this.availableWorktreeSections()) {
-      const worktreeId = String(worktree.id);
-      this.setWorktreeSectionCollapsed(worktreeId, false);
-      this.setWorktreeClosedExpanded(worktreeId, true);
-    }
-  }
-
-  mergeTerminalSearchMatch(target, sessionId, incoming) {
-    if (!sessionId || !incoming) return;
-    const previous = target.get(sessionId) || { count: 0, snippets: [] };
-    const snippets = [...(previous.snippets || [])];
-    const keys = new Set(snippets.map((snippet) => `${snippet.source_path || ""}:${snippet.line || ""}:${snippet.text || ""}`));
-    for (const snippet of incoming.snippets || []) {
-      const key = `${snippet.source_path || ""}:${snippet.line || ""}:${snippet.text || ""}`;
-      if (keys.has(key)) continue;
-      keys.add(key);
-      snippets.push(snippet);
-    }
-    target.set(sessionId, { count: Number(previous.count || 0) + Number(incoming.count || 0), snippets });
-  }
-
-  historyTerminalSearchMatch(result) {
-    return {
-      count: result.count,
-      snippets: (result.matches || []).map((match) => ({
-        line: match.line_no,
-        text: match.text,
-        timestamp: match.timestamp,
-        source_path: result.source_path,
-        result,
-      })),
-    };
-  }
-
-  async runTerminalSearch() {
-    const input = this.$("terminal-search-input");
-    const query = String(input?.value ?? this.terminalSearchText).trim();
-    const preserveInputFocus = document.activeElement?.id === "terminal-search-input";
-    this.terminalSearchText = query;
-    this.terminalSearchFocusIndex = -1;
-    if (!query) {
-      this.clearTerminalSearch();
-      return;
-    }
-    if (this.terminalSearchAbort) this.terminalSearchAbort.abort();
-    this.terminalSearchAbort = new AbortController();
-    this.terminalTitleSearchResults = this.matchingTerminalTitleSearchResults(query);
-    this.terminalSearchMatches = new Map(this.terminalTitleSearchResults.map((result) => [result.open_session_id, {
-      count: 1, snippets: [{ line: "name", text: result.title, kind: "name" }],
-    }]));
-    this.terminalSearchClosedMatches = new Map(this.closedSessions
-      .filter((session) => String(session.title || "").toLocaleLowerCase().includes(query.toLocaleLowerCase()))
-      .map((session) => [session.session_id, { count: 1, snippets: [{ line: "name", text: session.title, kind: "name" }] }]));
-    this.filterTerminalSearchMatchesToGroup();
-    this.expandGlobalTerminalSearchClosedSections();
-    this.renderList();
-    const searchingSummary = this.$("terminal-search-summary");
-    if (searchingSummary) searchingSummary.textContent = "searching…";
-    if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
-    try {
-      const historyParams = new URLSearchParams({ q: query, include_operations: String(this.historySearchOperations) });
-      const requests = [fetch(`/api/history-search?${historyParams}`, { signal: this.terminalSearchAbort.signal })];
-      if (this.historySearchOperations) {
-        const liveParams = new URLSearchParams({ q: query });
-        requests.push(fetch(`/api/terminal-search?${liveParams}`, { signal: this.terminalSearchAbort.signal }));
-      }
-      const [historyResponse, liveResponse] = await Promise.all(requests);
-      if (!historyResponse.ok) throw new Error(await historyResponse.text());
-      if (liveResponse && !liveResponse.ok) throw new Error(await liveResponse.text());
-      const liveResults = liveResponse ? await liveResponse.json() : [];
-      const historyPayload = await historyResponse.json();
-      this.historySearchResults = Array.isArray(historyPayload.results) ? historyPayload.results : [];
-      if (this.terminalSearchText.trim() !== query) return;
-      this.terminalSearchMatches = new Map(this.terminalTitleSearchResults.map((result) => [result.open_session_id, {
-        count: 1, snippets: [{ line: "name", text: result.title, kind: "name" }],
-      }]));
-      this.terminalSearchClosedMatches = new Map(this.closedSessions
-        .filter((session) => String(session.title || "").toLocaleLowerCase().includes(query.toLocaleLowerCase()))
-        .map((session) => [session.session_id, { count: 1, snippets: [{ line: "name", text: session.title, kind: "name" }] }]));
-      for (const result of liveResults) this.mergeTerminalSearchMatch(this.terminalSearchMatches, result.session_id, result);
-      for (const result of this.historySearchResults) {
-        const openSessionId = result.open_session_id || result.parent_open_session_id;
-        const closedSessionId = result.closed_session_id || result.parent_closed_session_id;
-        const match = this.historyTerminalSearchMatch(result);
-        if (openSessionId) this.mergeTerminalSearchMatch(this.terminalSearchMatches, openSessionId, match);
-        else if (closedSessionId) this.mergeTerminalSearchMatch(this.terminalSearchClosedMatches, closedSessionId, match);
-      }
-      this.filterTerminalSearchMatchesToGroup();
-      const terminalCount = this.terminalSearchMatches.size + this.terminalSearchClosedMatches.size;
-      const matchCount = [...this.terminalSearchMatches.values(), ...this.terminalSearchClosedMatches.values()]
-        .reduce((sum, result) => sum + Number(result.count || 0), 0);
-      const indexing = historyPayload.indexing ? " · indexing history" : "";
-      const scope = this.historySearchOperations ? "all output" : "conversation";
-      const groupScope = this.terminalSearchGroupName();
-      const summaryPrefix = groupScope ? `${groupScope} · ` : "";
-      this.renderList();
-      const summary = this.$("terminal-search-summary");
-      if (summary) summary.textContent = terminalCount
-        ? `${summaryPrefix}${scope} · ${terminalCount} terminal${terminalCount === 1 ? "" : "s"} · ${matchCount} match${matchCount === 1 ? "" : "es"}${indexing}`
-        : `${summaryPrefix}no ${scope} matches${indexing}`;
-      if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
-    } catch (error) {
-      if (error.name === "AbortError") return;
-      this.historySearchResults = [];
-      this.renderList();
-      const summary = this.$("terminal-search-summary");
-      if (summary) summary.textContent = this.terminalSearchMatches.size
-        ? `${this.terminalSearchMatches.size} terminal name match${this.terminalSearchMatches.size === 1 ? "" : "es"} · conversation search unavailable`
-        : error.message || "search failed";
-      if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
-    }
-  }
-
-  matchingTerminalTitleSearchResults(query) {
-    const terms = String(query || "").toLocaleLowerCase().split(/\s+/).filter(Boolean);
-    if (!terms.length) return [];
-    return this.sessions.flatMap((session) => {
-      const title = this.titlePresentation(session).text;
-      const candidates = [title, session.title, session.cli_title, session.agent_session_id]
-        .filter(Boolean).map((value) => String(value).toLocaleLowerCase());
-      if (!terms.every((term) => candidates.some((value) => value.includes(term)))) return [];
-      return [{ terminal_title_match: true, open_session_id: session.session_id, title, status: "open", count: 1 }];
-    });
-  }
-
-  renderTerminalHistoryResults() {
-    const container = this.$("terminal-search-results");
-    container.textContent = "";
-    this.renderTerminalTitleSearchResults(container);
-    if (this.terminalSearchGroupSimilar) {
-      this.renderSimilarTerminalHistoryResults(container);
-      return;
-    }
-    const groups = new Map();
-    for (const result of this.historySearchResults) {
-      const sessionKey = this.searchResultSessionKey(result);
-      if (!groups.has(sessionKey)) {
-        groups.set(sessionKey, {
-          title: this.searchResultTitle(result), count: 0, results: [],
-        });
-      }
-      const group = groups.get(sessionKey);
-      group.count += Number(result.count || 0);
-      group.results.push(result);
-    }
-    for (const group of groups.values()) {
-      const groupBox = document.createElement("div");
-      groupBox.className = "terminal-history-group";
-      const heading = document.createElement("div");
-      heading.className = "terminal-history-group-title";
-      const title = document.createElement("span");
-      title.className = "terminal-history-group-name";
-      title.textContent = group.title;
-      const count = document.createElement("span");
-      count.className = "terminal-history-result-count";
-      count.textContent = String(group.count);
-      heading.append(title, count, this.searchResultStatusIcon(group.results[0]));
-      groupBox.appendChild(heading);
-      for (const result of group.results) {
-        for (const match of (result.matches || []).slice(0, 6)) {
-          const item = document.createElement("div");
-          item.className = "terminal-history-result-match";
-          item.textContent = this.searchMatchText(match.text);
-          item.title = `${result.is_subagent ? `${result.title} · ` : ""}Open ${group.title} at line ${match.line_no}`;
-          item.onclick = () => this.openHistorySearchContext(result, match.line_no || 1);
-          groupBox.appendChild(item);
-        }
-      }
-      container.appendChild(groupBox);
-    }
-  }
-
-  renderTerminalTitleSearchResults(container) {
-    if (!this.terminalTitleSearchResults.length) return;
-    const section = document.createElement("div");
-    section.className = "terminal-history-title-matches";
-    for (const result of this.terminalTitleSearchResults) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = "terminal-history-title-match";
-      const icon = document.createElement("span");
-      icon.className = "codicon codicon-terminal";
-      const title = document.createElement("span");
-      title.className = "terminal-history-title-match-name";
-      title.textContent = result.title;
-      const label = document.createElement("span");
-      label.className = "terminal-history-title-match-label";
-      label.textContent = "name";
-      row.append(icon, title, label);
-      row.title = `Activate ${result.title}`;
-      row.onclick = () => {
-        this.activate(result.open_session_id, { reveal: true });
-        if (!this.settings.files_pinned) this.setSideView("terminals", false);
-      };
-      section.appendChild(row);
-    }
-    container.appendChild(section);
-  }
-
-  searchResultSessionKey(result) {
-    if (result.is_subagent && result.parent_agent_session_id) {
-      return `parent:${result.agent_kind}:${result.parent_agent_session_id}`;
-    }
-    return result.open_session_id || result.closed_session_id ||
-      (result.agent_session_id ? `${result.agent_kind}:${result.agent_session_id}` :
-        result.title ? `title:${result.title}` : `source:${result.source_path}`);
-  }
-
-  searchResultTitle(result) {
-    return result.is_subagent && result.parent_title
-      ? result.parent_title
-      : result.title || `${result.agent_kind} session`;
-  }
-
-  searchResultStatus(result) {
-    return result.parent_status || result.status || "not_open";
-  }
-
-  searchResultStatusIcon(result) {
-    const status = this.searchResultStatus(result);
-    const wrapper = document.createElement("span");
-    wrapper.className = `terminal-history-result-status ${status.replace(/_/g, "-")}`;
-    const iconClass = status === "open" ? "codicon-circle-filled" :
-      status === "closed" ? "codicon-history" : "codicon-circle-outline";
-    const label = status === "open" ? "open terminal" : status === "closed" ? "closed terminal" : "not opened";
-    const icon = document.createElement("span");
-    icon.className = `codicon ${iconClass}`;
-    icon.setAttribute("aria-hidden", "true");
-    wrapper.appendChild(icon);
-    wrapper.title = label;
-    wrapper.setAttribute("aria-label", label);
-    return wrapper;
-  }
-
-  searchMatchText(text) {
-    return String(text || "").replace(/\s+/g, " ").trim();
-  }
-
-  renderSimilarTerminalHistoryResults(container) {
-    const groups = new Map();
-    for (const result of this.historySearchResults) {
-      for (const match of (result.matches || []).slice(0, 6)) {
-        const text = this.searchMatchText(match.text);
-        if (!text) continue;
-        const key = text.toLocaleLowerCase();
-        if (!groups.has(key)) groups.set(key, { text, entries: new Map() });
-        const group = groups.get(key);
-        const sessionKey = this.searchResultSessionKey(result);
-        if (!group.entries.has(sessionKey)) group.entries.set(sessionKey, { result, match });
-      }
-    }
-    for (const group of groups.values()) {
-      const groupBox = document.createElement("div");
-      groupBox.className = "terminal-history-group terminal-history-similar-group";
-      const heading = document.createElement("div");
-      heading.className = "terminal-history-group-title";
-      const text = document.createElement("span");
-      text.className = "terminal-history-group-name";
-      text.textContent = group.text;
-      text.title = group.text;
-      const count = document.createElement("span");
-      count.className = "terminal-history-result-count";
-      count.textContent = String(group.entries.size);
-      heading.append(text, count);
-      groupBox.appendChild(heading);
-      for (const { result, match } of group.entries.values()) {
-        const row = document.createElement("div");
-        row.className = "terminal-history-similar-terminal";
-        const name = document.createElement("span");
-        name.className = "terminal-history-similar-terminal-name";
-        name.textContent = result.is_subagent && result.parent_title
-          ? `${result.parent_title} · ${result.title || "subagent"}`
-          : this.searchResultTitle(result);
-        row.append(name, this.searchResultStatusIcon(result));
-        row.title = `Open ${name.textContent} at line ${match.line_no}`;
-        row.onclick = () => this.openHistorySearchContext(result, match.line_no || 1);
-        groupBox.appendChild(row);
-      }
-      container.appendChild(groupBox);
-    }
-  }
-
-  async openHistorySearchContext(result, lineNo) {
-    this.historySearchContextResult = result;
-    this.$("history-search-backdrop").classList.remove("hidden");
-    const resultTitle = result.is_subagent && result.parent_title
-      ? `${result.parent_title} · ${result.title || "subagent"}`
-      : result.title || "History match";
-    this.$("history-search-title").textContent = `${resultTitle} · line ${lineNo}`;
-    const openButton = this.$("history-search-open");
-    const status = this.searchResultStatus(result);
-    openButton.textContent = status === "open" ? "Activate terminal" : status === "closed" ? "Reopen terminal" : "Open parent terminal";
-    const context = this.$("history-search-context");
-    context.textContent = "loading history context…";
-    try {
-      const params = new URLSearchParams({ source: result.source_path, line: String(lineNo), radius: "4",
-        q: this.$("terminal-search-input").value, include_operations: String(this.historySearchOperations) });
-      const response = await fetch(`/api/history-context?${params}`);
-      if (!response.ok) throw new Error("history context unavailable");
-      const payload = await response.json();
-      context.textContent = "";
-      for (const line of payload.lines || []) {
-        const row = document.createElement("div");
-        row.className = "history-search-context-line" + (Number(line.line_no) === Number(payload.line_no) ? " target" : "");
-        const number = document.createElement("span");
-        number.className = "history-search-context-number";
-        number.textContent = line.line_no;
-        const text = document.createElement("span");
-        text.className = "history-search-context-text";
-        text.textContent = line.text;
-        row.append(number, text);
-        context.appendChild(row);
-      }
-    } catch (error) {
-      context.textContent = error.message || "history context unavailable";
-    }
-  }
-
-  closeHistorySearchContext() {
-    this.$("history-search-backdrop").classList.add("hidden");
-    this.historySearchContextResult = null;
-  }
-
-  async ensureHistorySearchSession(result) {
-    const isSubagent = !!result.is_subagent;
-    let sessionId = isSubagent ? result.parent_open_session_id : result.open_session_id;
-    const closedSessionId = isSubagent ? result.parent_closed_session_id : result.closed_session_id;
-    const sessionReference = isSubagent ? result.parent_agent_session_id : result.agent_session_id;
-    const sessionTitle = isSubagent ? (result.parent_title || result.title) : result.title;
-    if (closedSessionId) {
-      const response = await fetch(`/api/closed/${closedSessionId}/reopen`, { method: "POST" });
-      if (!response.ok) return;
-      sessionId = closedSessionId;
-    } else if (!sessionId) {
-      const response = await fetch("/api/sessions", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: result.agent_kind, permission: "default", session_ref: sessionReference,
-          cwd: (isSubagent ? result.parent_cwd : result.cwd) || result.cwd || "~", title: sessionTitle || "" }),
-      });
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({}));
-        alert(detail.detail || "unable to open saved session");
-        return null;
-      }
-      sessionId = (await response.json()).session_id;
-    }
-    return sessionId;
-  }
-
-  async openHistorySearchSession() {
-    const result = this.historySearchContextResult;
-    if (!result) return;
-    const sessionId = await this.ensureHistorySearchSession(result);
-    if (!sessionId) return;
-    this.closeHistorySearchContext();
-    await this.refresh();
-    this.activate(sessionId, { reveal: true });
-  }
-
-  async openTerminalSearchTranscriptMatch(snippet) {
-    if (!snippet?.result) return;
-    const query = this.terminalSearchText;
-    const sessionId = await this.ensureHistorySearchSession(snippet.result);
-    if (!sessionId) return;
-    this.pendingHistorySearchNavigation = {
-      sessionId,
-      query,
-      text: this.searchMatchText(snippet.text).replace(/^…+|…+$/g, "").trim(),
-      sourcePath: snippet.source_path,
-      line: Number(snippet.line || 0),
-    };
-    this.hideTerminalSearchHoverPopup();
-    this.closeTerminalSearchEditor();
-    await this.refresh();
-    this.settings.history_mode = true;
-    this.saveSettings();
-    this.activate(sessionId, { reveal: true });
-    if (!this.historyOpen) this.setHistoryMode(true);
-    this.schedulePendingHistorySearchReveal();
-  }
-
-  normalizedHistorySearchText(value) {
-    return String(value || "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
-  }
-
-  pendingHistorySearchTurnIndex(target, allowQueryFallback = false) {
-    const targetText = this.normalizedHistorySearchText(target.text);
-    if (targetText.length >= 8) {
-      const exactIndex = this.historyTurns.findIndex((turn) =>
-        this.normalizedHistorySearchText(turn?.text).includes(targetText));
-      if (exactIndex >= 0) return exactIndex;
-    }
-    if (!allowQueryFallback) return -1;
-    const terms = this.normalizedHistorySearchText(target.query).split(/\s+/).filter(Boolean);
-    if (!terms.length) return -1;
-    return this.historyTurns.findIndex((turn) => {
-      const text = this.normalizedHistorySearchText(turn?.text);
-      return text && terms.every((term) => text.includes(term));
-    });
-  }
-
-  schedulePendingHistorySearchReveal() {
-    if (!this.pendingHistorySearchNavigation || this.historySearchNavigationBusy) return;
-    requestAnimationFrame(() => { void this.revealPendingHistorySearchMatch(); });
-  }
-
-  async revealPendingHistorySearchMatch() {
-    const target = this.pendingHistorySearchNavigation;
-    if (!target || this.historySearchNavigationBusy || target.sessionId !== this.activeId || !this.historyOpen) return;
-    this.historySearchNavigationBusy = true;
-    let index = -1;
-    try {
-      for (let page = 0; page < 25; page += 1) {
-        index = this.pendingHistorySearchTurnIndex(target, false);
-        if (index >= 0 || !this.historyHasMoreBySession.get(target.sessionId)) break;
-        const previousBefore = this.historyBeforeBySession.get(target.sessionId);
-        const loaded = await this.loadOlderHistory();
-        if (!loaded || previousBefore === this.historyBeforeBySession.get(target.sessionId)) break;
-      }
-      if (index < 0) index = this.pendingHistorySearchTurnIndex(target, true);
-      if (index < 0) return;
-      const body = this.$("history-body");
-      const turn = body?.children[index];
-      if (!turn) return;
-      this.pendingHistorySearchNavigation = null;
-      turn.classList.add("history-search-target-turn");
-      turn.scrollIntoView({ block: "center", behavior: "smooth" });
-      window.setTimeout(() => turn.classList.remove("history-search-target-turn"), 3200);
-    } finally {
-      this.historySearchNavigationBusy = false;
-    }
-  }
-
-  terminalTypeIcon(s) {
-    const icon = document.createElement("span");
-    icon.className = "terminal-type-icon";
-    icon.setAttribute("aria-hidden", "true");
-    if (TERMINAL_TYPE_SVGS[s.agent_kind]) {
-      icon.innerHTML = TERMINAL_TYPE_SVGS[s.agent_kind];
-    } else {
-      icon.innerHTML = '<span class="codicon codicon-terminal"></span>';
-    }
-    icon.title = s.agent_kind === "claude" ? "Claude" : s.agent_kind === "codex" ? "Codex" : s.agent_kind === "agy" ? "AGY" : "Shell terminal";
-    icon.classList.toggle("claude-terminal-icon", s.agent_kind === "claude");
-    icon.classList.toggle("codex-terminal-icon", s.agent_kind === "codex");
-    icon.classList.toggle("agy-terminal-icon", s.agent_kind === "agy");
-    icon.classList.toggle("on", this.terminalIconEnabledForAgent(s.agent_kind));
-    return icon;
-  }
-
-  terminalGroupLabel(group, attentionCount = 0, working = false, members = []) {
-    const label = document.createElement("div");
-    label.className = "side-section-label terminal-group-label";
-    label.dataset.worktreeId = this.stateWorktreeId();
-    const chevron = document.createElement("span");
-    chevron.className = "codicon " + (group.collapsed ? "codicon-chevron-right" : "codicon-chevron-down");
-    const name = document.createElement("span");
-    name.className = "terminal-group-name";
-    name.textContent = group.name;
-    if (!this.vscodeMode) name.style.color = this.terminalGroupAgeColor(members);
-    const unreadDot = document.createElement("span");
-    const groupNeedsAttention = members.some((session) => this.attentionSessions.has(session.session_id));
-    unreadDot.className = "group-unread-dot" + (attentionCount || groupNeedsAttention ? " on" : "");
-    unreadDot.title = attentionCount ? `${attentionCount} active or unread terminal${attentionCount === 1 ? "" : "s"}` : "";
-    const attentionNumber = document.createElement("span");
-    attentionNumber.className = "group-unread-count";
-    attentionNumber.textContent = attentionCount ? String(attentionCount) : "";
-    const attention = document.createElement("span");
-    attention.className = "group-attention";
-    attention.append(unreadDot, attentionNumber);
-    const indicator = document.createElement("span");
-    indicator.className = "group-drop-indicator";
-    indicator.innerHTML = '<span class="codicon codicon-folder-library"></span><span>group</span>';
-    label.title = "Click to collapse/expand · right-click for group actions · drop terminals here" +
-      (working ? " · working" : "") + (attentionCount ? ` · ${attentionCount} active or unread` : "");
-    label.append(chevron, name, attention, indicator);
-    if (!this.vscodeMode) {
-      const search = document.createElement("button");
-      search.className = "terminal-group-search";
-      search.type = "button";
-      search.innerHTML = '<span class="codicon codicon-search"></span>';
-      search.title = `Search terminals in ${group.name}`;
-      search.setAttribute("aria-label", search.title);
-      search.setAttribute("aria-pressed", String(this.terminalSearchEditorOpen && this.terminalSearchGroupId === group.id));
-      search.classList.toggle("on", this.terminalSearchEditorOpen && this.terminalSearchGroupId === group.id);
-      search.addEventListener("pointerdown", (event) => event.stopPropagation());
-      search.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        this.setInteractionWorktreeFromElement(label);
-        this.toggleTerminalSearchEditor(group.id);
-      });
-      const add = document.createElement("button");
-      add.className = "terminal-group-add";
-      add.type = "button";
-      add.textContent = "+";
-      add.title = `New terminal in ${group.name}`;
-      add.setAttribute("aria-label", add.title);
-      add.addEventListener("pointerdown", (event) => event.stopPropagation());
-      add.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        this.setInteractionWorktreeFromElement(label);
-        this.openModal(group.id);
-      });
-      label.insertBefore(search, attention);
-      label.appendChild(add);
-    }
-    label.onclick = () => {
-      this.setInteractionWorktreeFromElement(label);
-      this.toggleTerminalGroup(group.id);
-    };
-    label.oncontextmenu = (event) => {
-      this.setInteractionWorktreeFromElement(label);
-      this.openTerminalGroupContextMenu(event, group);
-    };
-    this.makeLayoutDraggable(label, `group:${group.id}`, "group");
-    return label;
-  }
-
-  renderTerminalItem(s, list) {
-    const searchMatch = this.terminalSearchMatches.get(s.session_id);
-    const item = document.createElement("div");
-    item.className = "session-item" + (s.session_id === this.activeId && this.activeFileKey === null ? " active" : "") +
-      (searchMatch ? " terminal-search-match" : "");
-    if (searchMatch) item.tabIndex = 0;
-    item.dataset.sessionId = s.session_id;
-    item.dataset.worktreeId = this.worktreeIdForSession(s);
-    item.classList.toggle("sidebar-selected", this.sidebarSelectedSessionIds.has(s.session_id));
-    item.title = `${s.command || "zsh"}\n${s.cwd}` + (s.agent_session_id ? `\n${s.agent_kind}: ${s.agent_session_id}` : "") + "\nright-click for actions";
-    if (searchMatch) {
-      item.title += `\n${searchMatch.count} terminal match${searchMatch.count === 1 ? "" : "es"}`;
-    }
-    item.dataset.baseTitle = item.title;
-    item.style.setProperty("--session-age-color", this.terminalAgeColor(s));
-    this.sessionRowEls.set(s.session_id, item);
-    const presentation = this.titlePresentation(s);
-    const showDesktopBrandIndicator = !this.vscodeMode && this.terminalIconEnabledForAgent(s.agent_kind);
-    const useTextStatusIndicator = !this.vscodeMode && !showDesktopBrandIndicator;
-    if (useTextStatusIndicator) item.classList.add("terminal-icons-hidden");
-    const dot = document.createElement("span");
-    dot.className = "status-dot" + (s.running ? "" : s.dormant ? " dormant" : " exited") +
-      (presentation.spinning ? " processing" : this.unreadSessions.has(s.session_id) ? " unread" : "") +
-      (this.attentionSessions.has(s.session_id) ? " attention" : "");
-    this.sessionStatusEls.set(s.session_id, dot);
-    const title = document.createElement("span");
-    title.className = "session-title";
-    title.classList.toggle("session-title-working", useTextStatusIndicator && presentation.spinning);
-    title.classList.toggle("session-title-unread",
-      !this.vscodeMode && !presentation.spinning && this.unreadSessions.has(s.session_id));
-    this.setSessionTitleText(title, presentation.text, useTextStatusIndicator && presentation.spinning);
-    if (!this.vscodeMode && !presentation.spinning) title.style.color = this.terminalAgeColor(s);
-    this.sessionTitleEls.set(s.session_id, title);
-    const typeIcon = this.terminalTypeIcon(s);
-    const iconStatusActive = showDesktopBrandIndicator &&
-      (presentation.spinning || this.unreadSessions.has(s.session_id));
-    const iconStatusExited = showDesktopBrandIndicator && !s.running;
-    typeIcon.classList.toggle("terminal-status-active", iconStatusActive);
-    typeIcon.classList.toggle("terminal-status-exited", !iconStatusActive && iconStatusExited);
-    const worktreeBadge = document.createElement("span");
-    worktreeBadge.className = "worktree-badge";
-    if (s.worktree_branch) {
-      worktreeBadge.textContent = `⎇ ${s.worktree_branch.split("/").pop()}`;
-      worktreeBadge.title = `Isolated worktree\n${s.worktree_path || ""}`;
-    }
-    const close = document.createElement("button");
-    close.className = "item-close";
-    close.textContent = "✕";
-    close.title = this.shortcutTitle("Close terminal", "close-item");
-    close.onclick = (event) => { event.stopPropagation(); this.closeSession(s.session_id); };
-    const groupIndicator = document.createElement("span");
-    groupIndicator.className = "group-drop-indicator";
-    groupIndicator.innerHTML = '<span class="codicon codicon-folder-library"></span><span>group</span>';
-    groupIndicator.title = "Release to group with this terminal";
-    if (showDesktopBrandIndicator) item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
-    else if (useTextStatusIndicator) item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
-    else item.append(dot, typeIcon, title, worktreeBadge, groupIndicator, close);
-    this.bindTerminalSearchHoverPopup(item, searchMatch);
-    item.title = `${item.dataset.baseTitle}\nlast activity ${this.terminalAgeAgoLabel(s)}\n${this.terminalAgeExactTimestamp(s)}`;
-    item.onclick = (event) => {
-      this.setInteractionWorktreeFromElement(item, s);
-      const currentSession = this.session(s.session_id);
-      const clickedAt = Date.now();
-      const startDormantSession = !!currentSession?.dormant && this.lastDormantSessionClickId === s.session_id &&
-        clickedAt - this.lastDormantSessionClickAt <= 500;
-      this.lastDormantSessionClickId = startDormantSession ? null : s.session_id;
-      this.lastDormantSessionClickAt = startDormantSession ? 0 : clickedAt;
-      this.handleSessionRowSelection(event, s.session_id);
-      if (startDormantSession) void this.restartSession(s.session_id);
-    };
-    item.onfocus = () => {
-      if (this.terminalSearchText.trim()) this.terminalSearchFocusIndex = this.terminalSearchRows().indexOf(item);
-    };
-    item.onkeydown = (event) => {
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        event.stopPropagation();
-        this.moveTerminalSearchRow(event.key === "ArrowDown" ? 1 : -1);
-      } else if (event.key === "Enter") {
-        event.preventDefault();
-        item.click();
-      } else if (event.key === "Escape") {
-        event.preventDefault();
-        this.closeTerminalSearchEditor();
-      }
-    };
-    item.onauxclick = (event) => {
-      if (event.button !== 1) return;
-      event.preventDefault();
-      event.stopPropagation();
-      this.openTerminalInNewTab(s);
-    };
-    item.oncontextmenu = (event) => {
-      this.setInteractionWorktreeFromElement(item, s);
-      this.openSessionContextMenu(event, s);
-    };
-    this.makeLayoutDraggable(item, `session:${s.session_id}`, "session");
-    list.appendChild(item);
-  }
-
-  renderTerminalGroup(group, members, list) {
-    const groupBox = document.createElement("div");
-    groupBox.className = "terminal-group";
-    groupBox.dataset.groupId = group.id;
-    groupBox.dataset.worktreeId = this.stateWorktreeId();
-    const attentionCount = members.filter((session) => this.processingStates.get(session.session_id) ||
-      this.unreadSessions.has(session.session_id)).length;
-    const working = members.some((session) => this.processingStates.get(session.session_id));
-    groupBox.appendChild(this.terminalGroupLabel(group, attentionCount, working, members));
-    const membersBox = document.createElement("div");
-    membersBox.className = "terminal-group-members" + (group.collapsed ? " collapsed" : "");
-    const membersInner = document.createElement("div");
-    membersInner.className = "terminal-group-members-inner";
-    for (const session of members) this.renderTerminalItem(session, membersInner);
-    if (!members.length && this.terminalSearchText.trim() && this.terminalSearchGroupId === group.id) {
-      const empty = document.createElement("div");
-      empty.className = "terminal-search-empty";
-      empty.textContent = "no terminals in this group match";
-      membersInner.appendChild(empty);
-    }
-    membersBox.appendChild(membersInner);
-    groupBox.appendChild(membersBox);
-    list.appendChild(groupBox);
-  }
-
-  renderTerminalEntries(sessions, list, worktreeId) {
-    const previousRenderWorktreeId = this.renderWorktreeId;
-    this.renderWorktreeId = worktreeId;
-    try {
-      const state = this.getProjectState();
-      const groups = this.terminalGroups();
-      const groupsById = new Map(groups.map((group) => [group.id, group]));
-      const sessionGroups = state.session_groups || {};
-      const allVisibleSessions = this.hideInactiveTerminals
-        ? sessions.filter((session) => this.isActiveTerminal(session))
-        : sessions;
-      const terminalSearchQuery = this.terminalSearchText.trim();
-      const visibleSessions = terminalSearchQuery
-        ? allVisibleSessions.filter((session) => this.terminalSearchMatches.has(session.session_id))
-        : allVisibleSessions;
-      const sessionsById = new Map(visibleSessions.map((session) => [session.session_id, session]));
-      const grouped = new Map(groups.map((group) => [group.id, []]));
-      for (const session of visibleSessions) {
-        if (grouped.has(sessionGroups[session.session_id])) grouped.get(sessionGroups[session.session_id]).push(session);
-      }
-      const layout = this.terminalLayout(allVisibleSessions);
-      for (const entry of layout) {
-        const [kind, id] = entry.split(":", 2);
-        if (kind === "group") {
-          const group = groupsById.get(id);
-          if (!group) continue;
-          const members = grouped.get(id) || [];
-          const scopedSearchGroup = this.terminalSearchEditorOpen && this.terminalSearchGroupId === id &&
-            (this.terminalSearchWorktreeId || worktreeId) === worktreeId;
-          if (!members.length && (terminalSearchQuery || this.hideInactiveTerminals) && !scopedSearchGroup) continue;
-          this.renderTerminalGroup(group, members, list);
-          continue;
-        }
-        const session = sessionsById.get(id);
-        if (!session || sessionGroups[id]) continue;
-        this.renderTerminalItem(session, list);
-      }
-      if ((terminalSearchQuery || this.hideInactiveTerminals) && !this.terminalSearchGroupId &&
-          !visibleSessions.length && !this.terminalSearchClosedMatches.size) {
-        const empty = document.createElement("div");
-        empty.className = "terminal-search-empty";
-        empty.textContent = terminalSearchQuery ? "no terminals match" : "no active terminals";
-        list.appendChild(empty);
-      }
-    } finally {
-      this.renderWorktreeId = previousRenderWorktreeId;
-    }
-  }
-
-  renderAllWorktreesInto(list) {
-    let renderedSection = false;
-    for (const worktree of this.availableWorktreeSections()) {
-      const worktreeId = String(worktree.id);
-      const sessions = this.sessionsForWorktree(worktreeId);
-      const closed = this.closedSessions.filter((session) => this.worktreeIdForSession(session) === worktreeId);
-      const scopedSearchWorktree = this.terminalSearchEditorOpen && this.terminalSearchGroupId &&
-        this.terminalSearchWorktreeId === worktreeId;
-      if ((this.hideInactiveTerminals && !sessions.some((session) => this.isActiveTerminal(session))) ||
-          (this.terminalSearchText.trim() && !sessions.some((session) => this.terminalSearchMatches.has(session.session_id)) &&
-          !closed.some((session) => this.terminalSearchClosedMatches.has(session.session_id)) && !scopedSearchWorktree)) continue;
-      renderedSection = true;
-      const section = document.createElement("section");
-      section.className = "worktree-section";
-      section.dataset.worktreeId = worktreeId;
-      const header = document.createElement("div");
-      header.className = "worktree-section-header";
-      header.dataset.worktreeId = worktreeId;
-      const chevron = document.createElement("span");
-      const collapsed = this.worktreeSectionCollapsed(worktreeId);
-      chevron.className = `codicon ${collapsed ? "codicon-chevron-right" : "codicon-chevron-down"}`;
-      const title = document.createElement("span");
-      title.className = "worktree-section-title";
-      title.textContent = worktree.branch || worktree.name || worktreeId;
-      const branch = document.createElement("span");
-      branch.className = "worktree-section-branch";
-      branch.textContent = "";
-      const activeCount = sessions.filter((session) => this.processingStates.get(session.session_id) ||
-        this.unreadSessions.has(session.session_id)).length;
-      const count = document.createElement("span");
-      count.className = "worktree-section-count";
-      count.textContent = `${sessions.length} terminal${sessions.length === 1 ? "" : "s"}${closed.length ? ` · ${closed.length} closed` : ""}`;
-      if (activeCount) count.textContent += ` · ${activeCount} active/unread`;
-      header.title = `${worktree.path || worktree.branch || worktreeId}\nclick to collapse or expand`;
-      header.append(chevron, title, branch, count);
-      header.onclick = () => {
-        this.interactionWorktreeId = worktreeId;
-        this.updateRecentFilesWatch();
-        const nextCollapsed = !this.worktreeSectionCollapsed(worktreeId);
-        this.setWorktreeSectionCollapsed(worktreeId, nextCollapsed);
-        this.renderList();
-      };
-      section.appendChild(header);
-      if (!collapsed) {
-        const body = document.createElement("div");
-        body.className = "worktree-section-body";
-        this.renderTerminalEntries(sessions, body, worktreeId);
-        if (!this.hideInactiveTerminals) this.renderClosedInto(body, closed, worktreeId);
-        section.appendChild(body);
-      }
-      list.appendChild(section);
-    }
-    if (!renderedSection && (this.terminalSearchText.trim() || this.hideInactiveTerminals)) {
-      const empty = document.createElement("div");
-      empty.className = "terminal-search-empty";
-      empty.textContent = this.terminalSearchText.trim() ? "no terminals match" : "no active terminals";
-      list.appendChild(empty);
-    }
-  }
-
-  renderList() {
-    const list = this.$("session-list");
-    this.hideTerminalSearchHoverPopup();
-    const terminalSearchEditor = this.terminalSearchEditorOpen ? list.querySelector("#terminal-search-inline") : null;
-    const terminalSearchInput = terminalSearchEditor?.querySelector("#terminal-search-input") || null;
-    const terminalSearchHadFocus = document.activeElement === terminalSearchInput;
-    const terminalSearchSelectionStart = terminalSearchInput?.selectionStart;
-    const terminalSearchSelectionEnd = terminalSearchInput?.selectionEnd;
-    if (terminalSearchEditor) terminalSearchEditor.remove();
-    list.textContent = "";
-    this.ensureDesktopTerminalsHeader(list, terminalSearchEditor);
-    this.migrateLegacyPinnedLayout();
-    const currentSessionIds = new Set(this.sessions.map((session) => session.session_id));
-    this.sidebarSelectedSessionIds = new Set([...this.sidebarSelectedSessionIds]
-      .filter((sessionId) => currentSessionIds.has(sessionId)));
-    if (!this.sidebarSelectedSessionIds.has(this.sidebarSelectionAnchorId)) {
-      this.sidebarSelectionAnchorId = [...this.sidebarSelectedSessionIds][0] || null;
-    }
-    this.sessionTitleEls.clear();
-    this.sessionSpinnerEls.clear();
-    this.sessionStatusEls.clear();
-    this.sessionRowEls.clear();
-    if (this.worktreeId === ALL_WORKTREES_ID) this.renderAllWorktreesInto(list);
-    else this.renderTerminalEntries(this.sessions, list, this.worktreeId || "root");
-    if (this.terminalSearchEditorOpen && this.terminalSearchGroupId) {
-      const groupSelector = `.terminal-group[data-group-id="${CSS.escape(this.terminalSearchGroupId)}"]`;
-      const matchingGroups = [...list.querySelectorAll(groupSelector)];
-      const groupBox = matchingGroups.find((group) => !this.terminalSearchWorktreeId ||
-        group.dataset.worktreeId === this.terminalSearchWorktreeId);
-      const groupLabel = groupBox?.querySelector(":scope > .terminal-group-label");
-      if (groupLabel) groupLabel.after(terminalSearchEditor || this.createTerminalSearchEditor());
-    }
-    this.updateTerminalSearchEditorScope();
-    if (!this.vscodeMode && this.openFiles.size) {
-      const collapsed = this.sectionCollapsed("open_files_collapsed");
-      list.appendChild(this.collapsibleSectionLabel("open files", "open_files_collapsed"));
-      if (!collapsed) {
-        for (const [key, entry] of this.openFiles) {
-          const item = document.createElement("div");
-          item.className = "file-item" + (key === this.activeFileKey ? " active" : "");
-          item.classList.toggle("sidebar-selected", this.sidebarSelectedFileKeys.has(key));
-          item.dataset.fileKey = key;
-          item.tabIndex = 0;
-          item.title = entry.fullPath || `${entry.root}/${entry.path}`;
-          const name = document.createElement("span");
-          name.className = "file-item-name";
-          name.textContent = entry.name;
-          const close = document.createElement("button");
-          close.className = "item-close";
-          close.textContent = "✕";
-          close.title = this.shortcutTitle("Close file", "close-item");
-          close.onclick = (e) => { e.stopPropagation(); void this.closeFile(key); };
-          item.append(this.fileTypeIconEl(entry.name, "file-type-icon"), name);
-          item.appendChild(close);
-          item.onclick = (event) => this.handleOpenFileRowSelection(event, key);
-          item.onauxclick = (event) => this.handleFileDeckAuxClick(event, entry.root, entry.path);
-          item.oncontextmenu = (event) => this.openFileContextMenu(event, key);
-          this.makeDraggable(item, "file", key, (dragged, target, after) => this.reorderFiles(dragged, target, after));
-          list.appendChild(item);
-        }
-      }
-    }
-    if (!this.vscodeMode) this.renderRecentFilesInto(list);
-    if (this.worktreeId !== ALL_WORKTREES_ID && !this.hideInactiveTerminals) this.renderClosedInto(list);
-    this.$("empty-state").style.display = this.sessions.length || this.closedSessions.length ||
-      (!this.vscodeMode && this.openFiles.size) ? "none" : "flex";
-    this.sessionListSignature = this.sessionListSignatureFor();
-    this.updateSidebarAnimationVisibilityObserver();
-    if (terminalSearchHadFocus && terminalSearchInput) requestAnimationFrame(() => {
-      terminalSearchInput.focus({ preventScroll: true });
-      if (Number.isInteger(terminalSearchSelectionStart) && Number.isInteger(terminalSearchSelectionEnd)) {
-        terminalSearchInput.setSelectionRange(terminalSearchSelectionStart, terminalSearchSelectionEnd);
-      }
-    });
-  }
-
-  updateSidebarAnimationVisibilityObserver() {
-    const list = this.$("session-list");
-    if (!list || typeof IntersectionObserver !== "function") return;
-    if (!this.sidebarAnimationVisibilityObserver) {
-      this.sidebarAnimationVisibilityObserver = new IntersectionObserver((entries) => {
-        for (const entry of entries) {
-          entry.target.classList.toggle("termdeck-sidebar-offscreen", !entry.isIntersecting);
-        }
-      }, { root: list, threshold: 0.01 });
-    }
-    this.sidebarAnimationVisibilityObserver.disconnect();
-    for (const element of list.querySelectorAll(".session-item, .terminal-group-label")) {
-      this.sidebarAnimationVisibilityObserver.observe(element);
-    }
-  }
-
-  keepActiveSessionVisible() {
-    if (!this.activeId || this.activeFileKey !== null) return;
-    const title = this.sessionTitleEls.get(this.activeId);
-    const row = title && title.closest(".session-item");
-    if (!row) return;
-    requestAnimationFrame(() => row.scrollIntoView({ block: "nearest" }));
-  }
-
-  revealAndFocusActiveTerminalInSidebar() {
-    if (!this.activeId || !this.session(this.activeId)) return;
-    const sessionId = this.activeId;
-    this.setSideView("terminals", false);
-    const groupId = this.getProjectState().session_groups?.[sessionId] || "";
-    const group = groupId ? this.terminalGroups().find((candidate) => candidate.id === groupId) : null;
-    if (group?.collapsed) {
-      this.applyLocalProjectStatePatch({ terminal_groups: this.terminalGroups().map((candidate) => candidate.id === groupId
-        ? { ...candidate, collapsed: false } : candidate) });
-      this.queueTerminalGroupUpdate(groupId, { collapsed: false });
-    }
-    this.sidebarSelectedFileKeys.clear();
-    this.sidebarSelectedSessionIds = new Set([sessionId]);
-    this.sidebarSelectionAnchorId = sessionId;
-    this.renderList();
-    requestAnimationFrame(() => {
-      const row = this.$("session-list")?.querySelector(`[data-session-id="${CSS.escape(sessionId)}"]`);
-      if (!row) return;
-      row.scrollIntoView({ block: "nearest" });
-      row.focus({ preventScroll: true });
-    });
-  }
-
-  setSideView(view, allowToggle = true, allowFloating = true) {
-    if (this.vscodeMode && view !== "terminals") return;
-    if (!this.filesSidePanelCycleTransition) this.filesSidePanelCycleView = null;
-    const nextView = allowToggle && this.sideView === view
-      ? (view === "terminals" ? CLOSED_SIDE_VIEW : "terminals") : view;
-    this.sideView = nextView;
-    view = this.sideView;
-    if (view !== "git") this.closeGitReview(false);
-    const filesVisible = FILES_SIDE_PANEL_TABS.includes(view);
-    if (filesVisible) {
-      this.lastFilesSidePanelTab = view;
-      if (this.settings.files_side_panel_last_tab !== view) {
-        this.settings.files_side_panel_last_tab = view;
-        this.saveSettings();
-      }
-      localStorage.setItem(FILES_SIDE_PANEL_LAST_TAB_KEY, view);
-    }
-    if (!filesVisible || view === "git") this.closeFileTypeFilterMenu();
-    const filesPinned = filesVisible && !!this.settings.files_pinned;
-    this.settings.side_full = filesVisible;
-    this.$("files-section").classList.toggle("hidden", !filesVisible);
-    this.$("session-list").classList.toggle("hidden", view === CLOSED_SIDE_VIEW);
-    this.$("files-section").classList.toggle("with-search", view === "search");
-    this.$("files-section").classList.toggle("with-git", view === "git");
-    this.$("files-section").classList.toggle("floating", filesVisible && !filesPinned);
-    const gitView = view === "git";
-    this.$("files-root-label").classList.toggle("hidden", gitView);
-    this.$("git-branch-controls").classList.toggle("hidden", !gitView);
-    this.$("git-refresh").classList.toggle("hidden", !gitView);
-    for (const id of ["mtime-toggle", "tree-sort-toggle", "hide-excluded-toggle"]) {
-      this.$(id).classList.toggle("hidden", gitView);
-    }
-    for (const [name, id] of [["terminals", "view-terminals"], ["project", "view-project"], ["search", "view-search"], ["git", "view-git"]]) {
-      const button = this.$(id);
-      if (button) button.classList.toggle("on", name === view);
-    }
-    for (const name of ["project", "search", "git"]) {
-      const id = `files-tab-${name}`;
-      const button = this.$(id);
-      if (button) button.classList.toggle("on", name === view);
-    }
-    this.renderFileEditorChrome();
-    this.$("side-split").classList.toggle("hidden", view === "terminals" || view === CLOSED_SIDE_VIEW || filesVisible);
-    this.applySettings({ fitTerminals: !filesVisible || filesPinned });
-    this.applySideLayout();
-    if (view === "project" || view === "search") {
-      const session = this.session(this.activeId);
-      const expectedRoot = session ? session.cwd : (this.worktreeRoot() || "~");
-      if (this.treeRoot !== expectedRoot || !this.treeDirs.has("")) {
-        this.treeReloadPromise = this.reloadTree(expectedRoot);
-      } else {
-        this.connectFileTreeWatch(expectedRoot);
-        void this.refreshTreeDirectories();
-      }
-    } else {
-      this.disconnectFileTreeWatch();
-    }
-    if (!filesVisible) {
-      this.scheduleTerminalFitAfterSidebarChange();
-      return;
-    }
-    if (view === "project") {
-      this.setExplorerMode("tree");
-    } else if (view === "search") {
-      this.$("search-query").focus();
-      if (this.$("search-query").value.trim()) this.runSearch(null, true);
-      else this.setExplorerMode("content");
-    } else if (view === "git") {
-      this.setExplorerMode("git");
-      void this.loadGitSidePanel();
-    }
-    this.scheduleTerminalFitAfterSidebarChange();
-  }
-
-  focusFileNameSearch() {
-    if (this.vscodeMode) return;
-    const selectedText = this.selectedTextForAutomaticSearch();
-    if (this.sideView !== "project") this.setSideView("project");
-    const input = this.$("search-name");
-    this.hideSelectionActions();
-    if (selectedText) {
-      input.value = this.fileNameSearchQueryFromSelection(selectedText);
-      void this.runNameSearch();
-    } else if (input.value.trim()) {
-      void this.runNameSearch();
-    }
-    setTimeout(() => { input.focus(); input.select(); }, 0);
-  }
-
-  focusFileContentSearch() {
-    if (this.vscodeMode) return;
-    const selectedText = this.selectedTextForAutomaticSearch();
-    if (this.sideView !== "search") this.setSideView("search");
-    const input = this.$("search-query");
-    this.hideSelectionActions();
-    if (selectedText) {
-      input.value = selectedText;
-      void this.runSearch(selectedText);
-    }
-    setTimeout(() => { input.focus(); input.select(); }, 0);
-  }
-
-  openSearchSidePanelFromNavigation() {
-    if (this.sideView === "search") {
-      this.openFilesSidePanelView("search");
-      return;
-    }
-    const selectedText = this.selectedTextSearchQuery();
-    const input = this.$("search-query");
-    if (selectedText) {
-      input.value = "";
-      this.hideSelectionActions();
-    }
-    this.setSideView("search", false);
-    if (selectedText) {
-      input.value = selectedText;
-      void this.runSearch(selectedText);
-      setTimeout(() => { input.focus(); input.select(); }, 0);
-    }
-  }
-
-  handleFileModeNavigationClick(view) {
-    if (view === "terminals") {
-      this.setSideView(view, false);
-      const session = this.recentlyOpenedTerminalSessions()[0];
-      if (session) this.activate(session.session_id, { reveal: true });
-      else if (this.activeFileKey !== null) this.navigateBackFromActiveFile();
-      return;
-    }
-    if (this.sideView === view) {
-      this.openFilesSidePanelView(view);
-    } else if (view === "search") {
-      this.openSearchSidePanelFromNavigation();
-    } else if (view !== "project" || !this.searchFileFromSelection()) {
-      this.openFilesSidePanelView(view);
-    }
-    if (!FILES_SIDE_PANEL_TABS.includes(this.sideView)) {
-      if (view === "git" && this.activeId && this.session(this.activeId)) this.pushNav({ kind: "term", id: this.activeId });
-      return;
-    }
-    if (this.sideView === "git") {
-      this.pushNav({ kind: "files", view: "git", pinned: !!this.settings.files_pinned });
-      return;
-    }
-    if (this.activeFileKey !== null && this.openFiles.has(this.activeFileKey)) {
-      this.pushNav({ kind: "file", key: this.activeFileKey });
-      return;
-    }
-    if (this.openFiles.size) {
-      const key = [...this.openFiles.keys()].at(-1);
-      void this.activateFile(key, null);
-      return;
-    }
-    const state = { kind: "files", view: this.sideView, pinned: !!this.settings.files_pinned };
-    if (this.sideView === "search" && this.$("search-query").value.trim()) state.q = this.$("search-query").value.trim();
-    this.pushNav(state);
-  }
-
-  setExplorerMode(mode) {
-    this.$("files-tree").classList.toggle("hidden", mode !== "tree");
-    this.$("search-results").classList.toggle("hidden", mode !== "content");
-    this.$("name-results").classList.toggle("hidden", mode !== "name");
-    this.$("git-results").classList.toggle("hidden", mode !== "git");
-    if (mode !== "git") {
-      this.gitSideGeneration += 1;
-      this.$("git-results").textContent = "";
-      this.$("git-header-branch-select").textContent = "";
-      this.closeGitReview(false);
-    }
-  }
-
-  async loadGitSidePanel() {
-    if (this.sideView !== "git" || this.vscodeMode) return;
-    const generation = ++this.gitSideGeneration;
-    const root = this.session(this.activeId)?.cwd || this.treeRoot || this.worktreeRoot() || this.projectRoot();
-    const results = this.$("git-results");
-    if (!root || !results) return;
-    results.textContent = "Loading Git status…";
-    const response = await fetch(`/api/git/state?${new URLSearchParams({ root, limit: "200" })}`);
-    if (generation !== this.gitSideGeneration || this.sideView !== "git") return;
-    if (!response.ok) {
-      results.textContent = "";
-      const unavailable = document.createElement("div");
-      unavailable.className = "file-inspector-empty";
-      unavailable.textContent = "This folder is not a Git repository.";
-      const clone = this.gitWorkflowButton("repo-clone", "Clone SSH or remote project",
-                                           () => this.gitCloneProject(root), " clone remote project");
-      clone.classList.add("git-clone-empty");
-      results.append(unavailable, clone);
-      this.$("git-header-branch-select").textContent = "";
-      this.$("git-header-branch-select").disabled = true;
-      this.$("git-new-branch").disabled = true;
-      return;
-    }
-    const state = await response.json();
-    this.gitSideState = state;
-    const tracking = state.upstream ? `${state.branch} → ${state.upstream} · ↑${state.ahead || 0} ↓${state.behind || 0}` : state.branch;
-    this.renderGitHeaderState(state.repository_root || root, state, tracking);
-    this.renderGitSidePanelState(results, state.repository_root || root, state);
-  }
-
-  renderGitHeaderState(root, state, tracking) {
-    const branchSelect = this.$("git-header-branch-select");
-    branchSelect.textContent = "";
-    branchSelect.disabled = false;
-    for (const branch of (state.branches || []).filter((candidate) => !candidate.remote)) {
-      const option = document.createElement("option");
-      option.value = branch.name;
-      option.textContent = branch.name;
-      option.selected = branch.current || branch.name === state.branch;
-      branchSelect.appendChild(option);
-    }
-    branchSelect.title = tracking || state.branch || "Switch branch";
-    branchSelect.onchange = () => void this.gitWorkflowAction("/api/git/switch", { root, name: branchSelect.value });
-    this.$("git-new-branch").disabled = false;
-    this.$("git-new-branch").onclick = () => void this.gitCreateBranch(root);
-  }
-
-  renderGitSidePanelState(results, root, state) {
-    results.textContent = "";
-    const view = this.gitPanelView === "repositories" ? "repositories" : "changes";
-    if (this.gitSelectionRoot !== root) {
-      this.gitSelectionRoot = root;
-      this.gitSelectedPaths.clear();
-      this.gitSelectionExplicitlyCleared = false;
-      this.gitSelectionAnchorPath = "";
-      this.gitFocusedFile = null;
-      this.gitExpandedCommitId = "";
-      this.gitCommitDetails.clear();
-    }
-    const fileGroups = this.gitFileGroups(state.files || []);
-    const descriptors = fileGroups.flatMap(([, , files, scope]) => files.map((file) => ({ file, scope })));
-    const validPaths = new Set(descriptors.map(({ file }) => file.path));
-    this.gitSelectedPaths = new Set([...this.gitSelectedPaths].filter((path) => validPaths.has(path)));
-    if (!this.gitSelectedPaths.size && descriptors.length && !this.gitSelectionExplicitlyCleared) {
-      this.gitSelectedPaths.add(descriptors[0].file.path);
-    }
-    const focusedCommitReview = this.gitReviewOpen && this.gitFocusedFile?.scope === "commit";
-    if (!focusedCommitReview && (!this.gitFocusedFile ||
-        !descriptors.some(({ file, scope }) => file.path === this.gitFocusedFile.path && scope === this.gitFocusedFile.scope))) {
-      this.gitFocusedFile = descriptors.length ? { root, path: descriptors[0].file.path, scope: descriptors[0].scope } : null;
-    }
-    this.renderGitPanelTabs(results, root, state, view);
-    this.renderGitWorkflowControls(results, root, state, view);
-    if (view === "repositories") {
-      this.closeGitReview(false);
-      this.renderGitAgentWorktrees(results, state.agents || []);
-      this.renderGitWorktrees(results, root, state.worktrees || [], state.repository_root);
-      this.renderGitRemotes(results, root, state.remotes || [], state.branch);
-      this.$("status-name").textContent = `${(state.worktrees || []).length} worktrees · ${(state.remotes || []).length} remotes`;
-      return;
-    }
-    const files = state.files || [];
-    const changesPanel = this.createGitPanelSection(results, "Current changes", "diff");
-    const summary = document.createElement("div");
-    summary.className = "git-summary";
-    const conflicted = files.filter((file) => file.conflicted).length;
-    const staged = files.filter((file) => file.staged).length;
-    summary.textContent = files.length
-      ? `${files.length} changed · ${staged} staged${conflicted ? ` · ${conflicted} conflicted` : ""}`
-      : `Working tree clean · ${state.branch}`;
-    changesPanel.appendChild(summary);
-    if (!files.length) {
-      const empty = document.createElement("div");
-      empty.className = "file-inspector-empty";
-      empty.textContent = "No uncommitted changes on this branch.";
-      changesPanel.appendChild(empty);
-    }
-    const orderedPaths = [...new Set(descriptors.map(({ file }) => file.path))];
-    for (const [label, icon, groupFiles, scope] of fileGroups) {
-      if (!groupFiles.length) continue;
-      this.renderGitSideGroupHeader(changesPanel, `${label} (${groupFiles.length})`, icon);
-      for (const file of groupFiles) this.renderGitSideFile(changesPanel, root, file, scope, orderedPaths);
-    }
-    const stashAction = this.gitTextButton("+ Stash", () => this.gitCreateStash(root));
-    stashAction.classList.add("compact");
-    const stashPanel = this.createGitPanelSection(results, `Stashes (${(state.stashes || []).length})`, "archive",
-      "git-stashes-panel", { collapsible: true, collapsed: this.gitStashesCollapsed, action: stashAction,
-        onToggle: (collapsed) => {
-          this.gitStashesCollapsed = collapsed;
-          localStorage.setItem("termdeck.git_stashes_collapsed", collapsed ? "1" : "0");
-        } });
-    this.renderGitStashes(stashPanel, root, state.stashes || []);
-    const graphPaths = [...this.gitSelectedPaths];
-    const historyScope = graphPaths.length === 1 ? graphPaths[0]
-      : graphPaths.length > 1 ? `${graphPaths.length} selected files` : "whole worktree";
-    const historyPanel = this.createGitPanelSection(results, `History · ${historyScope}`, "git-commit", "git-history-panel");
-    this.renderGitCommitGraph(historyPanel, root, state.graph || [], graphPaths);
-    this.$("status-name").textContent = `${files.length} modified file${files.length === 1 ? "" : "s"} · branch ${state.branch}`;
-    if (this.gitGraphPathsKey !== JSON.stringify([root, ...graphPaths])) void this.loadGitCommitGraph(root, graphPaths);
-    if (!this.gitExpandedCommitId && this.gitFocusedFile) {
-      void this.openGitReviewDiff(this.gitFocusedFile.root, this.gitFocusedFile.path, this.gitFocusedFile.scope, false);
-    }
-  }
-
-  gitFileGroups(files) {
-    return [
-      ["conflicts", "warning", files.filter((file) => file.conflicted), "conflict"],
-      ["staged changes", "check", files.filter((file) => file.staged && !file.conflicted), "staged"],
-      ["working tree", "diff-modified", files.filter((file) => file.unstaged && !file.conflicted), "working"],
-      ["untracked", "new-file", files.filter((file) => file.untracked), "untracked"],
-    ];
-  }
-
-  renderGitPanelTabs(container, root, state, view) {
-    const tabs = document.createElement("div");
-    tabs.className = "git-panel-tabs";
-    for (const [value, label] of [["changes", "Changes"], ["repositories", "Worktrees & remotes"]]) {
-      const tab = document.createElement("button");
-      tab.className = `git-panel-tab${view === value ? " active" : ""}`;
-      tab.textContent = label;
-      tab.setAttribute("aria-pressed", String(view === value));
-      tab.onclick = () => {
-        if (this.gitPanelView === value) return;
-        this.gitPanelView = value;
-        this.renderGitSidePanelState(container, root, state);
-      };
-      tabs.appendChild(tab);
-    }
-    container.appendChild(tabs);
-  }
-
-  renderGitWorkflowControls(container, root, state, view) {
-    if (view === "repositories") {
-      const controls = document.createElement("div");
-      controls.className = "git-workflow-controls repository-controls";
-      controls.append(
-        this.gitWorkflowButton("repo-create", "Create worktree", () => this.gitCreateWorktree(root, state.branch), " worktree"),
-        this.gitWorkflowButton("remote", "Add Git remote", () => this.gitAddRemote(root), " remote"),
-        this.gitWorkflowButton("repo-clone", "Clone SSH or remote project", () => this.gitCloneProject(root), " clone"),
-      );
-      container.appendChild(controls);
-    }
-    if (view === "repositories") return;
-    const primaryActions = document.createElement("div");
-    primaryActions.className = "git-primary-actions";
-    const selectedFiles = (state.files || []).filter((file) => this.gitSelectedPaths.has(file.path));
-    primaryActions.append(
-      this.gitWorkflowButton("add", `Stage ${selectedFiles.length || "all"}`, () => this.gitStagePaths(root,
-        selectedFiles.length ? selectedFiles : state.files || [], true)),
-      this.gitWorkflowButton("remove", `Unstage ${selectedFiles.length || "all"}`, () => this.gitStagePaths(root,
-        selectedFiles.length ? selectedFiles : state.files || [], false)),
-      this.gitWorkflowButton("discard", `Revert ${selectedFiles.length || "all"} to HEAD`, () => this.gitRevertPaths(root,
-        selectedFiles.length ? selectedFiles : state.files || [])),
-      this.gitTextButton("Commit", () => this.gitCommit(root), true),
-    );
-    container.appendChild(primaryActions);
-    const selection = document.createElement("div");
-    selection.className = "git-selection-summary";
-    selection.textContent = this.gitSelectedPaths.size
-      ? `${this.gitSelectedPaths.size} selected · commit graph scoped to ${this.gitSelectedPaths.size === 1 ? "this file" : "these files"}`
-      : "No files selected · commit graph scoped to the whole worktree";
-    if (this.gitSelectedPaths.size) {
-      const clear = this.gitTextButton("Whole worktree", () => {
-        this.gitSelectedPaths.clear();
-        this.gitSelectionExplicitlyCleared = true;
-        this.gitSelectionAnchorPath = "";
-        this.renderGitSidePanelState(container, root, state);
-      });
-      clear.classList.add("compact");
-      selection.appendChild(clear);
-    }
-    container.appendChild(selection);
-  }
-
-  gitWorkflowButton(icon, title, run, text = "") {
-    const button = document.createElement("button");
-    button.className = "git-workflow-button";
-    button.title = title;
-    button.setAttribute("aria-label", title);
-    const glyph = document.createElement("span");
-    glyph.className = `codicon codicon-${icon}`;
-    button.appendChild(glyph);
-    if (text) button.append(document.createTextNode(text));
-    button.onclick = (event) => { event.stopPropagation(); run(); };
-    return button;
-  }
-
-  gitTextButton(label, run, primary = false) {
-    const button = document.createElement("button");
-    button.className = `git-text-button${primary ? " primary" : ""}`;
-    button.textContent = label;
-    button.title = label;
-    button.onclick = (event) => { event.stopPropagation(); run(); };
-    return button;
-  }
-
-  openGitDialog({ title, description = "", fields = [], submitLabel = "Continue", danger = false,
-                  hideCancel = false }) {
-    return new Promise((resolve) => {
-      const backdrop = document.createElement("div");
-      backdrop.className = "git-dialog-backdrop";
-      const form = document.createElement("form");
-      form.className = "git-dialog";
-      form.setAttribute("role", "dialog");
-      form.setAttribute("aria-modal", "true");
-      const heading = document.createElement("div");
-      heading.className = "git-dialog-title";
-      heading.textContent = title;
-      form.appendChild(heading);
-      if (description) {
-        const detail = document.createElement("div");
-        detail.className = "git-dialog-description";
-        detail.textContent = description;
-        form.appendChild(detail);
-      }
-      const controls = new Map();
-      for (const field of fields) {
-        const label = document.createElement("label");
-        label.className = `git-dialog-field${field.type === "checkbox" ? " checkbox" : ""}`;
-        const caption = document.createElement("span");
-        caption.textContent = field.label;
-        let control;
-        if (field.type === "textarea") {
-          control = document.createElement("textarea");
-          control.rows = field.rows || 5;
-          control.value = field.value || "";
-        } else {
-          control = document.createElement("input");
-          control.type = field.type || "text";
-          if (control.type === "checkbox") control.checked = field.checked !== false;
-          else control.value = field.value || "";
-        }
-        control.name = field.name;
-        control.placeholder = field.placeholder || "";
-        control.required = !!field.required;
-        if (field.type === "checkbox") label.append(control, caption);
-        else label.append(caption, control);
-        controls.set(field.name, control);
-        form.appendChild(label);
-      }
-      const actions = document.createElement("div");
-      actions.className = "git-dialog-actions";
-      if (!hideCancel) {
-        const cancel = document.createElement("button");
-        cancel.type = "button";
-        cancel.textContent = "Cancel";
-        cancel.onclick = () => close(null);
-        actions.appendChild(cancel);
-      }
-      const submit = document.createElement("button");
-      submit.type = "submit";
-      submit.className = danger ? "danger" : "primary";
-      submit.textContent = submitLabel;
-      actions.appendChild(submit);
-      form.appendChild(actions);
-      backdrop.appendChild(form);
-      const close = (value) => {
-        document.removeEventListener("keydown", onKeyDown, true);
-        backdrop.remove();
-        requestAnimationFrame(() => this.focusActiveEditor());
-        resolve(value);
-      };
-      const onKeyDown = (event) => {
-        if (event.key !== "Escape") return;
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        close(null);
-      };
-      form.onsubmit = (event) => {
-        event.preventDefault();
-        const values = {};
-        for (const [name, control] of controls) {
-          values[name] = control.type === "checkbox" ? control.checked : control.value;
-        }
-        close(values);
-      };
-      backdrop.onmousedown = (event) => {
-        if (event.target === backdrop) close(null);
-      };
-      document.addEventListener("keydown", onKeyDown, true);
-      document.body.appendChild(backdrop);
-      requestAnimationFrame(() => (controls.values().next().value || submit).focus());
-    });
-  }
-
-  async confirmGitAction(title, description, submitLabel, danger = false) {
-    return !!await this.openGitDialog({ title, description, submitLabel, danger, fields: [] });
-  }
-
-  async showGitMessage(title, description) {
-    await this.openGitDialog({ title, description, submitLabel: "Close", hideCancel: true, fields: [] });
-  }
-
-  renderGitSideGroupHeader(container, label, icon) {
-    const header = document.createElement("div");
-    header.className = "git-group-header";
-    const glyph = document.createElement("span");
-    glyph.className = `codicon codicon-${icon}`;
-    const text = document.createElement("span");
-    text.textContent = label;
-    header.append(glyph, text);
-    container.appendChild(header);
-  }
-
-  createGitPanelSection(container, label, icon, extraClass = "", options = {}) {
-    const section = document.createElement("section");
-    section.className = `git-panel-section${extraClass ? ` ${extraClass}` : ""}${options.collapsed ? " collapsed" : ""}`;
-    const header = document.createElement("div");
-    header.className = "git-panel-section-header";
-    if (options.collapsible) {
-      const chevron = document.createElement("span");
-      chevron.className = `codicon codicon-chevron-${options.collapsed ? "right" : "down"} git-panel-chevron`;
-      header.appendChild(chevron);
-      header.onclick = () => {
-        const collapsed = section.classList.toggle("collapsed");
-        chevron.className = `codicon codicon-chevron-${collapsed ? "right" : "down"} git-panel-chevron`;
-        options.onToggle?.(collapsed);
-      };
-    }
-    const glyph = document.createElement("span");
-    glyph.className = `codicon codicon-${icon}`;
-    const title = document.createElement("span");
-    title.textContent = label;
-    header.append(glyph, title);
-    if (options.action) header.appendChild(options.action);
-    const body = document.createElement("div");
-    body.className = "git-panel-section-body";
-    section.append(header, body);
-    container.appendChild(section);
-    return body;
-  }
-
-  renderGitSideFile(container, root, file, scope, orderedPaths) {
-    const row = document.createElement("div");
-    row.className = "tree-row file git-file-row";
-    row.dataset.path = file.path;
-    row.classList.toggle("selected", this.gitSelectedPaths.has(file.path));
-    row.classList.toggle("focused", this.gitFocusedFile?.path === file.path && this.gitFocusedFile?.scope === scope);
-    row.title = `${root}/${file.path}\nClick to review pending changes; middle-click opens the working file in a new TermDeck tab`;
-    row.append(this.fileTypeIconEl(file.path.split("/").pop(), "tree-type-icon"));
-    const name = document.createElement("span");
-    name.className = "tree-name";
-    name.textContent = file.path;
-    row.appendChild(name);
-    this.appendGitStatus(row, { git_status: file.status });
-    const actions = document.createElement("span");
-    actions.className = "git-file-actions";
-    if (file.conflicted) {
-      actions.append(
-        this.gitWorkflowButton("arrow-left", "Accept ours", () => this.gitResolveConflict(root, file.path, "ours")),
-        this.gitWorkflowButton("arrow-right", "Accept theirs", () => this.gitResolveConflict(root, file.path, "theirs")),
-        this.gitWorkflowButton("check", "Mark resolved", () => this.gitResolveConflict(root, file.path, "resolved")),
-      );
-    } else {
-      if (file.staged) actions.appendChild(this.gitWorkflowButton("remove", "Unstage", () => this.gitStagePaths(root, [file], false)));
-      if (file.unstaged || file.untracked) {
-        actions.appendChild(this.gitWorkflowButton("add", "Stage", () => this.gitStagePaths(root, [file], true)));
-      }
-    }
-    row.appendChild(actions);
-    row.onclick = (event) => this.selectGitFile(event, container, root, file, scope, orderedPaths);
-    row.onauxclick = (event) => this.handleFileDeckAuxClick(event, root, file.path);
-    row.oncontextmenu = (event) => this.openGitFileContextMenu(event, root, file, scope);
-    container.appendChild(row);
-  }
-
-  openGitFileContextMenu(event, root, file, scope) {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!this.gitSelectedPaths.has(file.path)) {
-      this.gitSelectedPaths = new Set([file.path]);
-      this.gitSelectionExplicitlyCleared = false;
-      this.gitSelectionAnchorPath = file.path;
-    }
-    this.gitFocusedFile = { root, path: file.path, scope };
-    this.gitSelectionExplicitlyCleared = this.gitSelectedPaths.size === 0;
-    const selectedFiles = (this.gitSideState?.files || []).filter((candidate) => this.gitSelectedPaths.has(candidate.path));
-    const menu = this.$("context-menu");
-    menu.textContent = "";
-    this.contextMenuTarget = { type: "git-files", paths: [...this.gitSelectedPaths] };
-    this.addContextItem(menu, "View pending diff", () => this.openGitReviewDiff(root, file.path, scope, true), "diff");
-    this.addContextItem(menu, "Open working file", () => this.openFile(root, file.path, null, null,
-      { fromFilePanel: true, pinned: true }), "go-to-file");
-    this.addContextItem(menu, "Open working file in new browser tab", () => this.openFileDeckInNewTab(root, file.path), "new-window");
-    if (selectedFiles.some((candidate) => !candidate.conflicted && (candidate.unstaged || candidate.untracked))) {
-      this.addContextItem(menu, `Stage${selectedFiles.length > 1 ? ` ${selectedFiles.length} files` : ""}`,
-        () => this.gitStagePaths(root, selectedFiles, true), "add");
-    }
-    if (selectedFiles.some((candidate) => !candidate.conflicted && candidate.staged)) {
-      this.addContextItem(menu, `Unstage${selectedFiles.length > 1 ? ` ${selectedFiles.length} files` : ""}`,
-        () => this.gitStagePaths(root, selectedFiles, false), "remove");
-    }
-    this.addContextItem(menu, `Revert${selectedFiles.length > 1 ? ` ${selectedFiles.length} files` : " changes"} to HEAD…`,
-      () => this.gitRevertPaths(root, selectedFiles), "discard");
-    if (selectedFiles.length === 1) {
-      this.addContextItem(menu, "Local history", () => this.openFileHistoryForPath(root, file.path, "local"), "history");
-      this.addContextItem(menu, "Git history", () => this.openFileHistoryForPath(root, file.path, "git"), "git-commit");
-    } else {
-      this.addContextItem(menu, `Show Git history for ${selectedFiles.length} files`,
-        () => this.loadGitCommitGraph(root, [...this.gitSelectedPaths]), "git-commit");
-    }
-    this.addContextItem(menu, "Copy relative path", () => this.copyTextToClipboard(file.path, "relative path copied"), "copy");
-    this.positionContextMenu(menu, event.clientX, event.clientY);
-  }
-
-  selectGitFile(event, container, root, file, scope, orderedPaths) {
-    const additive = event.metaKey || event.ctrlKey;
-    if (event.shiftKey && this.gitSelectionAnchorPath) {
-      const anchorIndex = orderedPaths.indexOf(this.gitSelectionAnchorPath);
-      const targetIndex = orderedPaths.indexOf(file.path);
-      if (anchorIndex >= 0 && targetIndex >= 0) {
-        if (!additive) this.gitSelectedPaths.clear();
-        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
-        for (const path of orderedPaths.slice(start, end + 1)) this.gitSelectedPaths.add(path);
-      }
-    } else if (additive) {
-      if (this.gitSelectedPaths.has(file.path)) this.gitSelectedPaths.delete(file.path);
-      else this.gitSelectedPaths.add(file.path);
-      this.gitSelectionAnchorPath = file.path;
-    } else {
-      this.gitSelectedPaths = new Set([file.path]);
-      this.gitSelectionAnchorPath = file.path;
-    }
-    this.gitSelectionExplicitlyCleared = this.gitSelectedPaths.size === 0;
-    this.gitFocusedFile = { root, path: file.path, scope };
-    if (this.gitSideState) this.renderGitSidePanelState(container, root, this.gitSideState);
-    if (!additive && !event.shiftKey) void this.openGitReviewDiff(root, file.path, scope, false, { updateUrl: true });
-  }
-
-  renderGitAgentWorktrees(container, agents) {
-    if (!agents.length) return;
-    this.renderGitSideGroupHeader(container, `agent worktrees (${agents.length})`, "organization");
-    for (const agent of agents) {
-      const details = document.createElement("details");
-      details.className = "git-agent-details";
-      const row = document.createElement("summary");
-      row.className = "git-agent-row";
-      const status = document.createElement("span");
-      status.className = `git-agent-status${agent.processing ? " working" : ""}`;
-      const title = document.createElement("span");
-      title.className = "git-agent-title";
-      title.textContent = agent.sessions?.length === 1 ? agent.sessions[0].title : `${agent.sessions?.length || 0} agents`;
-      const branch = document.createElement("span");
-      branch.className = "git-agent-branch";
-      branch.textContent = `${agent.branch} · ${agent.changed_files}`;
-      row.append(status, title, branch);
-      const sessionNames = (agent.sessions || []).map((session) => `${session.agent_kind}: ${session.title}`).join("\n");
-      row.title = `${agent.worktree}\n${sessionNames}\n${agent.changed_files} worktree changes`;
-      details.appendChild(row);
-      for (const file of agent.files || []) {
-        const fileRow = document.createElement("div");
-        fileRow.className = "git-agent-file";
-        fileRow.append(this.fileTypeIconEl(file.path.split("/").pop(), "tree-type-icon"));
-        const fileName = document.createElement("span");
-        fileName.textContent = file.path;
-        fileRow.appendChild(fileName);
-        this.appendGitStatus(fileRow, { git_status: file.status });
-        fileRow.onclick = () => void this.openFile(agent.worktree, file.path, null, fileRow,
-                                                   { fromFilePanel: true, pinned: false });
-        details.appendChild(fileRow);
-      }
-      for (const session of agent.sessions || []) {
-        if (!this.session(session.session_id)) continue;
-        const open = this.gitWorkflowButton("terminal", `Open ${session.title}`,
-                                            () => this.activate(session.session_id), ` ${session.title}`);
-        open.classList.add("git-agent-open");
-        details.appendChild(open);
-      }
-      container.appendChild(details);
-    }
-  }
-
-  renderGitStashes(container, root, stashes) {
-    if (!stashes.length) {
-      const empty = document.createElement("div");
-      empty.className = "file-inspector-empty";
-      empty.textContent = "No saved stashes.";
-      container.appendChild(empty);
-      return;
-    }
-    for (const stash of stashes) {
-      const row = document.createElement("div");
-      row.className = "git-stash-row";
-      const name = document.createElement("span");
-      name.className = "git-stash-name";
-      name.textContent = stash.message;
-      const actions = document.createElement("span");
-      actions.className = "git-row-actions";
-      actions.append(
-        this.gitWorkflowButton("play", "Apply stash", () => this.gitStashAction(root, stash.reference, "apply")),
-        this.gitWorkflowButton("move", "Pop stash", () => this.gitStashAction(root, stash.reference, "pop")),
-        this.gitWorkflowButton("trash", "Delete stash", () => this.gitStashAction(root, stash.reference, "drop")),
-      );
-      row.append(name, actions);
-      row.title = `${stash.reference} · ${stash.created_at}`;
-      container.appendChild(row);
-    }
-  }
-
-  renderGitWorktrees(container, root, worktrees, repositoryRoot) {
-    this.renderGitSideGroupHeader(container, `worktrees (${worktrees.length})`, "repo");
-    for (const worktree of worktrees) {
-      const row = document.createElement("div");
-      row.className = "git-worktree-row";
-      const name = document.createElement("span");
-      name.className = "git-worktree-name";
-      name.textContent = worktree.branch || "detached";
-      const path = document.createElement("span");
-      path.className = "git-worktree-path";
-      path.textContent = worktree.path;
-      row.append(name, path);
-      if (worktree.path !== repositoryRoot) {
-        row.appendChild(this.gitWorkflowButton("trash", "Remove clean worktree", () => this.gitRemoveWorktree(root, worktree.path)));
-      }
-      row.title = worktree.path;
-      container.appendChild(row);
-    }
-    const prune = this.gitWorkflowButton("clear-all", "Prune missing worktrees", () => this.gitPruneWorktrees(root), " prune missing");
-    prune.classList.add("git-worktree-prune");
-    container.appendChild(prune);
-  }
-
-  renderGitRemotes(container, root, remotes, branch) {
-    this.renderGitSideGroupHeader(container, `remotes (${remotes.length})`, "remote");
-    if (!remotes.length) {
-      const empty = document.createElement("div");
-      empty.className = "file-inspector-empty";
-      empty.textContent = "No remotes. Add an SSH or HTTPS repository URL.";
-      container.appendChild(empty);
-      return;
-    }
-    for (const remote of remotes) {
-      const row = document.createElement("div");
-      row.className = "git-remote-row";
-      const name = document.createElement("span");
-      name.className = "git-remote-name";
-      name.textContent = remote.name;
-      const url = document.createElement("span");
-      url.className = "git-remote-url";
-      url.textContent = remote.fetch_url;
-      const actions = document.createElement("span");
-      actions.className = "git-row-actions";
-      actions.append(
-        this.gitWorkflowButton("sync", `Fetch ${remote.name}`, () => this.gitRemoteAction(root, remote.name, "fetch", branch)),
-        this.gitWorkflowButton("cloud-download", `Pull ${remote.name}/${branch}`, () => this.gitRemoteAction(root, remote.name, "pull", branch)),
-        this.gitWorkflowButton("cloud-upload", `Push ${branch} to ${remote.name}`, () => this.gitRemoteAction(root, remote.name, "push", branch)),
-        this.gitWorkflowButton("trash", `Remove remote ${remote.name}`, () => this.gitRemoteAction(root, remote.name, "remove", branch)),
-      );
-      row.append(name, url, actions);
-      row.title = `Fetch: ${remote.fetch_url}\nPush: ${remote.push_url}`;
-      container.appendChild(row);
-    }
-  }
-
-  renderGitCommitGraph(container, root, graph, paths = []) {
-    if (!graph.length) {
-      const empty = document.createElement("div");
-      empty.className = "file-inspector-empty";
-      empty.textContent = paths.length ? "No commits found for this selection." : "No commits in this worktree yet.";
-      container.appendChild(empty);
-      return;
-    }
-    const visibleGraph = [];
-    let visibleCommits = 0;
-    for (const line of graph) {
-      const commitLine = /[0-9a-f]{4,64}/i.test(line.split("\u0000", 1)[0] || "");
-      if (commitLine && visibleCommits >= this.gitHistoryLimit) break;
-      visibleGraph.push(line);
-      if (commitLine) visibleCommits += 1;
-    }
-    for (const line of visibleGraph) {
-      const fields = line.split("\u0000");
-      const commitId = (fields[0] || "").match(/[0-9a-f]{4,64}/i)?.[0] || "";
-      if (!commitId) {
-        const connector = document.createElement("div");
-        connector.className = "git-graph-connector";
-        connector.textContent = fields[0] || "";
-        container.appendChild(connector);
-        continue;
-      }
-      const entry = document.createElement("div");
-      entry.className = `git-graph-entry${this.gitExpandedCommitId === commitId ? " expanded" : ""}`;
-      const row = document.createElement("div");
-      row.className = "git-graph-row";
-      row.tabIndex = 0;
-      row.dataset.commitId = commitId;
-      const graphText = document.createElement("span");
-      graphText.className = "git-graph-lines";
-      graphText.textContent = fields[0] || "";
-      const message = document.createElement("span");
-      message.className = "git-graph-message";
-      message.textContent = fields[1] || "";
-      const age = document.createElement("span");
-      age.className = "git-graph-age";
-      age.textContent = fields[2] || "";
-      row.append(graphText, message, age);
-      row.title = [fields[1], fields[3]].filter(Boolean).join("\n");
-      row.onclick = () => void this.selectGitCommit(root, commitId, false);
-      row.onkeydown = (event) => this.handleGitCommitKeyDown(event, root, commitId);
-      entry.appendChild(row);
-      if (this.gitExpandedCommitId === commitId) this.renderGitCommitDetails(entry, root, commitId);
-      container.appendChild(entry);
-    }
-    const totalCommits = graph.filter((line) => /[0-9a-f]{4,64}/i.test(line.split("\u0000", 1)[0] || "")).length;
-    if (totalCommits > visibleCommits) {
-      const loadMore = this.gitTextButton(`Load ${Math.min(25, totalCommits - visibleCommits)} more`, () => {
-        this.gitHistoryLimit = Math.min(totalCommits, this.gitHistoryLimit + 25);
-        this.renderGitSidePanelState(this.$("git-results"), root, this.gitSideState);
-      });
-      loadMore.classList.add("git-history-load-more");
-      container.appendChild(loadMore);
-    }
-  }
-
-  handleGitCommitKeyDown(event, root, commitId) {
-    if (["ArrowDown", "ArrowUp"].includes(event.key)) {
-      event.preventDefault();
-      const rows = [...event.currentTarget.closest(".git-history-panel").querySelectorAll(".git-graph-row")];
-      const currentIndex = rows.indexOf(event.currentTarget);
-      const next = rows[currentIndex + (event.key === "ArrowDown" ? 1 : -1)];
-      if (!next) return;
-      next.focus();
-      void this.selectGitCommit(root, next.dataset.commitId, true);
-      return;
-    }
-    if (["Enter", " ", "ArrowRight"].includes(event.key)) {
-      event.preventDefault();
-      void this.selectGitCommit(root, commitId, event.key === "ArrowRight");
-      return;
-    }
-    if (event.key === "ArrowLeft" && this.gitExpandedCommitId === commitId) {
-      event.preventDefault();
-      this.gitExpandedCommitId = "";
-      this.closeGitReview(false);
-      this.renderGitSidePanelState(this.$("git-results"), root, this.gitSideState);
-      requestAnimationFrame(() => this.$("git-results")?.querySelector(`[data-commit-id="${CSS.escape(commitId)}"]`)?.focus());
-    }
-  }
-
-  async selectGitCommit(root, commitId, keepOpen) {
-    if (!commitId) return;
-    this.gitExpandedCommitId = keepOpen || this.gitExpandedCommitId !== commitId ? commitId : "";
-    if (!this.gitExpandedCommitId) {
-      this.closeGitReview(false);
-      this.renderGitSidePanelState(this.$("git-results"), root, this.gitSideState);
-      return;
-    }
-    this.closeGitReview(false);
-    this.renderGitSidePanelState(this.$("git-results"), root, this.gitSideState);
-    if (!this.gitCommitDetails.has(commitId)) await this.loadGitCommitDetails(root, commitId);
-    else await this.openFirstGitCommitDiff(root, this.gitCommitDetails.get(commitId));
-    requestAnimationFrame(() => this.$("git-results")?.querySelector(`[data-commit-id="${CSS.escape(commitId)}"]`)?.focus());
-  }
-
-  async loadGitCommitDetails(root, commitId) {
-    const generation = ++this.gitCommitDetailGeneration;
-    const response = await fetch(`/api/git/commit-detail?${new URLSearchParams({ root, commit_id: commitId })}`);
-    if (generation !== this.gitCommitDetailGeneration || this.gitExpandedCommitId !== commitId) return;
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      await this.showGitMessage("Commit unavailable", error.detail || "The selected commit could not be loaded.");
-      return;
-    }
-    const commit = await response.json();
-    this.gitCommitDetails.set(commitId, commit);
-    this.renderGitSidePanelState(this.$("git-results"), root, this.gitSideState);
-    await this.openFirstGitCommitDiff(root, commit);
-  }
-
-  renderGitCommitDetails(container, root, commitId) {
-    const details = document.createElement("div");
-    details.className = "git-commit-details";
-    const commit = this.gitCommitDetails.get(commitId);
-    if (!commit) {
-      details.textContent = "Loading commit changes…";
-      container.appendChild(details);
-      return;
-    }
-    const message = document.createElement("div");
-    message.className = "git-commit-full-message";
-    message.textContent = commit.message;
-    const metadata = document.createElement("div");
-    metadata.className = "git-commit-metadata";
-    metadata.textContent = `${commit.author} <${commit.email}> · ${commit.committed_at}`;
-    details.append(message, metadata);
-    const files = document.createElement("div");
-    files.className = "git-commit-files";
-    for (const file of commit.files || []) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = "git-commit-file";
-      const status = document.createElement("span");
-      status.className = `git-commit-file-status status-${String(file.status || "M").toLowerCase()}`;
-      status.textContent = file.status || "M";
-      const path = document.createElement("span");
-      path.className = "git-commit-file-path";
-      path.textContent = file.previous_path ? `${file.previous_path} → ${file.path}` : file.path;
-      row.append(status, this.fileTypeIconEl(file.path.split("/").pop(), "tree-type-icon"), path);
-      row.title = `Show ${file.path} diff in ${commit.short_id}`;
-      row.onclick = (event) => {
-        event.stopPropagation();
-        void this.openGitCommitDiff(root, commit, file, true);
-      };
-      files.appendChild(row);
-    }
-    details.appendChild(files);
-    container.appendChild(details);
-  }
-
-  async openFirstGitCommitDiff(root, commit) {
-    const firstFile = commit?.files?.[0];
-    if (firstFile) await this.openGitCommitDiff(root, commit, firstFile, false, true);
-  }
-
-  async openGitCommitDiff(root, commit, file, focus, updateUrl = true) {
-    await this.openGitReviewDiff(root, file.path, "commit", focus,
-      { revision: commit.commit_id, previousPath: file.previous_path || "", updateUrl });
-  }
-
-  async gitWorkflowAction(endpoint, payload) {
-    if (this.gitActionPending) return false;
-    this.gitActionPending = true;
-    this.$("git-results")?.classList.add("git-action-pending");
-    try {
-      const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" },
-                                               body: JSON.stringify(payload) });
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        await this.showGitMessage("Git operation failed", error.detail || "The Git operation could not be completed.");
-        await this.loadGitSidePanel();
-        return false;
-      }
-      await this.loadGitSidePanel();
-      return true;
-    } catch (error) {
-      await this.showGitMessage("Git operation failed", error.message || "The Git operation could not be completed.");
-      return false;
-    } finally {
-      this.gitActionPending = false;
-      this.$("git-results")?.classList.remove("git-action-pending");
-    }
-  }
-
-  async gitStagePaths(root, files, stage) {
-    const paths = files.filter((file) => !file.conflicted && (stage ? (file.unstaged || file.untracked) : file.staged))
-      .map((file) => file.path);
-    if (!paths.length) return;
-    await this.gitWorkflowAction(stage ? "/api/git/stage" : "/api/git/unstage", { root, paths });
-  }
-
-  async gitRevertPaths(root, files) {
-    const paths = [...new Set(files.map((file) => file.path))];
-    if (!paths.length) return;
-    const confirmed = await this.confirmGitAction(
-      `Revert ${paths.length === 1 ? paths[0] : `${paths.length} files`} to HEAD?`,
-      "Current working copies are moved to Trash first, so their contents remain recoverable. Staged and working-tree changes will both be reverted.",
-      "Move copies to Trash and revert", true,
-    );
-    if (!confirmed) return;
-    const reverted = await this.gitWorkflowAction("/api/git/revert", { root, paths });
-    if (!reverted) return;
-    const revertedKeys = [...this.openFiles.entries()]
-      .filter(([, entry]) => entry.root === root && paths.includes(entry.path)).map(([key]) => key);
-    if (revertedKeys.length) await this.closeFiles(revertedKeys, { discard: true });
-  }
-
-  async loadGitCommitGraph(root, paths) {
-    const generation = ++this.gitGraphGeneration;
-    const response = await fetch("/api/git/graph", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ root, paths, limit: 200 }) });
-    if (generation !== this.gitGraphGeneration || !response.ok || this.sideView !== "git" || !this.gitSideState) return;
-    const result = await response.json();
-    this.gitSideState.graph = result.graph || [];
-    this.gitGraphPathsKey = JSON.stringify([root, ...paths]);
-    this.renderGitSidePanelState(this.$("git-results"), root, this.gitSideState);
-  }
-
-  disposeGitReviewEditor() {
-    this.gitReviewDiffEditor?.dispose();
-    this.gitReviewDiffEditor = null;
-    for (const model of this.gitReviewModels) model.dispose();
-    this.gitReviewModels = [];
-  }
-
-  async openGitReviewDiff(root, path, scope, focus, options = {}) {
-    const revision = String(options.revision || "");
-    const previousPath = String(options.previousPath || "");
-    const reviewKey = `${root}\u0000${path}\u0000${scope}\u0000${revision}\u0000${previousPath}`;
-    if (!focus && this.gitReviewOpen && this.gitReviewKey === reviewKey) {
-      if (options.history !== false && options.updateUrl) {
-        this.pushNav({ kind: "git-diff", path, scope, revision, previous_path: previousPath });
-      }
-      return;
-    }
-    const generation = ++this.gitReviewGeneration;
-    const response = await fetch(`/api/git/review?${new URLSearchParams({ root, path, scope, revision,
-                                                                          previous_path: previousPath })}`);
-    if (!response.ok) {
-      if (focus) {
-        const error = await response.json().catch(() => ({}));
-        await this.showGitMessage("Git diff unavailable", error.detail || "The pending diff could not be loaded.");
-      }
-      return;
-    }
-    const review = await response.json();
-    await this.monacoReady;
-    if (generation !== this.gitReviewGeneration || this.sideView !== "git") return;
-    this.disposeGitReviewEditor();
-    const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-    const originalModel = monaco.editor.createModel(review.original, undefined,
-      monaco.Uri.parse(`inmemory://termdeck-git-review/original/${encodedPath}`));
-    const modifiedModel = monaco.editor.createModel(review.modified, undefined,
-      monaco.Uri.parse(`inmemory://termdeck-git-review/modified/${encodedPath}`));
-    this.gitReviewModels = [originalModel, modifiedModel];
-    this.gitReviewDiffEditor = monaco.editor.createDiffEditor(this.$("git-review-editor-host"), {
-      ...this.fileHistoryEditorOptions(), readOnly: true, originalEditable: false, renderSideBySide: this.gitReviewSideBySide,
-      theme: this.monacoThemeName(),
-    });
-    this.gitReviewDiffEditor.setModel({ original: originalModel, modified: modifiedModel });
-    this.gitReviewDiffIndex = -1;
-    this.gitReviewDiffEditor.onDidUpdateDiff(() => this.updateGitReviewDiffNavigation());
-    this.gitReviewOpen = true;
-    this.gitReviewKey = reviewKey;
-    this.gitFocusedFile = { root, path, scope, revision, previousPath };
-    this.activeFileKey = null;
-    this.$("git-review-title").textContent = path;
-    this.$("git-review-title").title = `${root}/${path}`;
-    this.$("git-review-scope").textContent = `${review.original_label} → ${review.modified_label}`;
-    if (options.history !== false && (focus || options.updateUrl)) {
-      this.pushNav({ kind: "git-diff", path, scope, revision, previous_path: previousPath });
-    }
-    this.renderTopbar();
-    this.$("status-name").textContent = `${path} · ${review.original_label} → ${review.modified_label}`;
-    this.applyMainLayout();
-    requestAnimationFrame(() => {
-      this.gitReviewDiffEditor?.layout();
-      this.updateGitReviewDiffNavigation();
-      if (focus) this.gitReviewDiffEditor?.getModifiedEditor().focus();
-    });
-  }
-
-  gitReviewLineChanges() {
-    return this.gitReviewDiffEditor?.getLineChanges() || [];
-  }
-
-  updateGitReviewDiffNavigation() {
-    const changes = this.gitReviewLineChanges();
-    if (!changes.length) this.gitReviewDiffIndex = -1;
-    else if (this.gitReviewDiffIndex >= changes.length) this.gitReviewDiffIndex = changes.length - 1;
-    this.$("git-review-position").textContent = changes.length ? `${Math.max(0, this.gitReviewDiffIndex) + 1}/${changes.length}` : "0/0";
-    this.$("git-review-previous").disabled = !changes.length;
-    this.$("git-review-next").disabled = !changes.length;
-    this.$("git-review-layout").classList.toggle("on", !this.gitReviewSideBySide);
-  }
-
-  navigateGitReviewDiff(direction) {
-    const changes = this.gitReviewLineChanges();
-    if (!changes.length) return;
-    this.gitReviewDiffIndex = (this.gitReviewDiffIndex + direction + changes.length) % changes.length;
-    const change = changes[this.gitReviewDiffIndex];
-    const modifiedLine = change.modifiedStartLineNumber || change.modifiedEndLineNumber;
-    const originalLine = change.originalStartLineNumber || change.originalEndLineNumber;
-    if (modifiedLine) this.gitReviewDiffEditor.getModifiedEditor().revealLineInCenter(modifiedLine);
-    if (originalLine) this.gitReviewDiffEditor.getOriginalEditor().revealLineInCenter(originalLine);
-    this.updateGitReviewDiffNavigation();
-  }
-
-  toggleGitReviewLayout() {
-    this.gitReviewSideBySide = !this.gitReviewSideBySide;
-    this.gitReviewDiffEditor?.updateOptions({ renderSideBySide: this.gitReviewSideBySide });
-    this.gitReviewDiffEditor?.layout();
-    this.updateGitReviewDiffNavigation();
-  }
-
-  closeGitReview(restoreFocus = true) {
-    if (!this.gitReviewOpen && !this.gitReviewDiffEditor) return;
-    this.gitReviewGeneration += 1;
-    this.gitReviewOpen = false;
-    this.gitReviewKey = "";
-    this.gitReviewDiffIndex = -1;
-    this.disposeGitReviewEditor();
-    this.renderTopbar();
-    this.applyMainLayout();
-    if (restoreFocus) {
-      this.pushNav({ kind: "files", view: "git", pinned: !!this.settings.files_pinned });
-      requestAnimationFrame(() => this.focusActiveEditor());
-    }
-  }
-
-  async openFocusedGitWorkingFile() {
-    const focused = this.gitFocusedFile;
-    if (!focused) return;
-    this.closeGitReview(false);
-    await this.openFile(focused.root, focused.path, null, null, { fromFilePanel: true, pinned: true });
-  }
-
-  async openFocusedGitFileHistory() {
-    const focused = this.gitFocusedFile;
-    if (!focused) return;
-    await this.openFileHistoryForPath(focused.root, focused.path, "all");
-  }
-
-  async openFileHistoryForPath(root, path, mode, options = {}) {
-    const key = `${root}|${path}`;
-    if (this.activeFileKey !== key || !this.openFiles.has(key)) {
-      await this.openFile(root, path, null, null, { fromFilePanel: true, pinned: true, history: options.history !== false });
-    }
-    if (this.activeFileKey !== key || !this.openFiles.has(key)) return;
-    this.fileHistoryMode = ["all", "local", "git"].includes(mode) ? mode : "all";
-    this.fileHistoryOpen = true;
-    this.fileHistorySelections = Array.isArray(options.selection) ? options.selection.slice(-2) : [];
-    this.$("file-history-panel").classList.remove("hidden");
-    this.$("file-history-toggle").classList.add("on");
-    this.$("file-history-toggle").setAttribute("aria-pressed", "true");
-    this.renderTopbar();
-    await this.loadFileHistory();
-    if (options.history !== false) {
-      this.pushNav({ kind: "file-history", key, mode: this.fileHistoryMode, selection: this.fileHistorySelections });
-    }
-  }
-
-  async gitCommit(root) {
-    const values = await this.openGitDialog({
-      title: "Commit staged changes",
-      description: "Write the commit message for the currently staged files.",
-      submitLabel: "Commit",
-      fields: [{ name: "message", label: "Commit message", type: "textarea", rows: 6,
-                 placeholder: "Describe the change…", required: true }],
-    });
-    if (!values?.message.trim()) return;
-    await this.gitWorkflowAction("/api/git/commit", { root, message: values.message.trim() });
-  }
-
-  async gitCreateBranch(root) {
-    const values = await this.openGitDialog({
-      title: "Create branch",
-      description: "The new branch starts at the current HEAD and becomes active immediately.",
-      submitLabel: "Create and switch",
-      fields: [{ name: "name", label: "Branch name", placeholder: "feature/my-change", required: true }],
-    });
-    if (!values?.name.trim()) return;
-    await this.gitWorkflowAction("/api/git/branch", { root, name: values.name.trim(), start_point: "HEAD", switch: true });
-  }
-
-  async gitCreateStash(root) {
-    const values = await this.openGitDialog({
-      title: "Stash working changes",
-      description: "Review the message and untracked-file choice. Nothing changes until you press Create stash.",
-      submitLabel: "Create stash",
-      fields: [
-        { name: "message", label: "Stash message", type: "textarea", rows: 3, value: "TermDeck stash" },
-        { name: "include_untracked", label: "Include untracked files", type: "checkbox", checked: true },
-      ],
-    });
-    if (!values) return;
-    await this.gitWorkflowAction("/api/git/stash", { root, message: values.message.trim(),
-                                                     include_untracked: values.include_untracked });
-  }
-
-  async gitStashAction(root, reference, action) {
-    const labels = {
-      apply: ["Apply stash", `Apply ${reference} while keeping it in the stash list?`, "Apply stash", false],
-      pop: ["Pop stash", `Apply ${reference} and remove it from the stash list if Git succeeds?`, "Pop stash", false],
-      drop: ["Delete stash", `Permanently delete ${reference}? This cannot be restored by TermDeck.`, "Delete stash", true],
-    };
-    const confirmation = labels[action];
-    if (!confirmation || !await this.confirmGitAction(...confirmation)) return;
-    await this.gitWorkflowAction("/api/git/stash/action", { root, reference, action });
-  }
-
-  async gitResolveConflict(root, path, resolution) {
-    if (resolution !== "resolved" &&
-        !await this.confirmGitAction(`Accept ${resolution}`, `Replace ${path} with the ${resolution} version and stage it.`,
-                                     `Accept ${resolution}`, true)) return;
-    await this.gitWorkflowAction("/api/git/conflict", { root, path, resolution });
-  }
-
-  async gitCreateWorktree(root, currentBranch) {
-    const suggestedBranch = `${currentBranch || "work"}-agent`;
-    const values = await this.openGitDialog({
-      title: "Create worktree",
-      description: "Create and register an isolated project worktree for an agent or parallel task.",
-      submitLabel: "Create worktree",
-      fields: [
-        { name: "branch", label: "New branch", value: suggestedBranch, required: true },
-        { name: "path", label: "Worktree folder",
-          value: `${root.replace(/\/$/, "")}-${suggestedBranch.replaceAll("/", "-")}`, required: true },
-      ],
-    });
-    if (!values?.branch.trim() || !values.path.trim()) return;
-    await this.gitWorkflowAction("/api/git/worktree", { root, action: "create", path: values.path.trim(),
-                                                       branch: values.branch.trim(),
-                                                       create_branch: true, start_point: "HEAD" });
-  }
-
-  async gitRemoveWorktree(root, path) {
-    if (!await this.confirmGitAction("Remove worktree", path, "Remove worktree", true)) return;
-    await this.gitWorkflowAction("/api/git/worktree", { root, action: "remove", path });
-  }
-
-  async gitPruneWorktrees(root) {
-    await this.gitWorkflowAction("/api/git/worktree", { root, action: "prune" });
-  }
-
-  async gitAddRemote(root) {
-    const values = await this.openGitDialog({
-      title: "Add Git remote",
-      submitLabel: "Add remote",
-      fields: [
-        { name: "name", label: "Remote name", value: "origin", required: true },
-        { name: "url", label: "SSH or HTTPS URL", value: "git@github.com:", required: true },
-      ],
-    });
-    if (!values?.name.trim() || !values.url.trim()) return;
-    await this.gitWorkflowAction("/api/git/remote", { root, action: "add", name: values.name.trim(),
-                                                     url: values.url.trim() });
-  }
-
-  async gitRemoteAction(root, name, action, branch) {
-    if (action === "remove" &&
-        !await this.confirmGitAction("Remove Git remote", name, "Remove remote", true)) return;
-    if (action === "push" &&
-        !await this.confirmGitAction("Push branch", `${branch} → ${name} and set it as upstream.`, "Push")) return;
-    await this.gitWorkflowAction("/api/git/remote", { root, action, name, branch,
-                                                     set_upstream: action === "push" });
-  }
-
-  async gitCloneProject(root) {
-    const parent = String(root || "~/workspace/project").replace(/\/+$/, "").replace(/\/[^/]+$/, "");
-    const values = await this.openGitDialog({
-      title: "Clone remote project",
-      description: "SSH uses your existing Git and SSH configuration. Leave branch blank for the remote default.",
-      submitLabel: "Clone project",
-      fields: [
-        { name: "url", label: "SSH or HTTPS URL", value: "git@github.com:", required: true },
-        { name: "path", label: "Local project folder", value: `${parent}/project`, required: true },
-        { name: "branch", label: "Branch", placeholder: "Remote default" },
-      ],
-    });
-    if (!values?.url.trim() || !values.path.trim()) return;
-    const response = await fetch("/api/git/clone", { method: "POST", headers: { "Content-Type": "application/json" },
-                                                     body: JSON.stringify({ url: values.url.trim(), path: values.path.trim(),
-                                                                            branch: values.branch.trim() }) });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      await this.showGitMessage("Git clone failed", payload.detail || "The remote project could not be cloned.");
-      return;
-    }
-    await this.loadProjects();
-    if (payload.project?.name &&
-        await this.confirmGitAction("Clone complete", `Open ${payload.project.name} now?`, "Open project")) {
-      location.href = `/p/${encodeURIComponent(payload.project.name)}`;
-    } else {
-      await this.loadGitSidePanel();
-    }
-  }
-
-  renderGitSideCommit(container, commit) {
-    const row = document.createElement("div");
-    row.className = "git-commit";
-    const id = document.createElement("span");
-    id.className = "git-commit-id";
-    id.textContent = commit.short_id;
-    const message = document.createElement("span");
-    message.className = "git-commit-message";
-    message.textContent = commit.message;
-    const date = document.createElement("span");
-    date.className = "git-commit-date";
-    date.textContent = this.gitDateLabel(commit.committed_at);
-    row.append(id, message, date);
-    row.title = `${commit.author} · ${commit.committed_at}`;
-    row.onclick = () => this.openGitHistoryForActiveFile();
-    container.appendChild(row);
-  }
-
-  gitDateLabel(value) {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? String(value || "") : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  }
-
-  openGitHistoryForActiveFile() {
-    if (this.activeFileKey === null) {
-      this.$("status-name").textContent = "Open a file to inspect its Git history";
-      return;
-    }
-    const entry = this.openFiles.get(this.activeFileKey);
-    if (entry) void this.openFileHistoryForPath(entry.root, entry.path, "git");
-  }
-
-  updateFilesPinButton() {
-    const button = this.$("files-pin-toggle");
-    if (!button) return;
-    const pinned = !!this.settings.files_pinned;
-    button.classList.toggle("on", pinned);
-    button.title = pinned ? "Unpin panel (it will close after opening a file)" :
-      "Keep this panel open after opening a file";
-    button.setAttribute("aria-label", pinned ? "Unpin file panel" : "Pin file panel");
-    button.setAttribute("aria-pressed", String(pinned));
-    const icon = button.querySelector(".codicon");
-    if (icon) icon.className = `codicon ${pinned ? "codicon-pinned" : "codicon-pin"}`;
-  }
-
-  setFilesPinned(pinned) {
-    const nextPinned = !!pinned;
-    if (this.settings.files_pinned === nextPinned) return;
-    this.settings.files_pinned = nextPinned;
-    localStorage.setItem("termdeck.files_pinned", nextPinned ? "1" : "0");
-    if (nextPinned && !this.filesPanelWidthInitialized) {
-      this.settings.files_width = FILEDECK_DEFAULT_SIDEBAR_WIDTH;
-      this.filesPanelWidthInitialized = true;
-      this.settings.files_panel_width_initialized = true;
-      localStorage.setItem("termdeck.files_panel_width_v2", "1");
-    }
-    const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
-    this.$("files-section").classList.toggle("floating", filesVisible && !nextPinned);
-    this.updateFilesPinButton();
-    this.applySideLayout();
-    this.applySettings({ fitTerminals: !filesVisible || nextPinned });
-    this.scheduleTerminalFitAfterSidebarChange();
-    this.saveSettings();
-  }
-
-  toggleFilesPinned() {
-    this.setFilesPinned(!this.settings.files_pinned);
-  }
-
-  dismissUnpinnedFilesPanel() {
-    if (this.settings.files_pinned || !FILES_SIDE_PANEL_TABS.includes(this.sideView)) return;
-    this.setSideView("terminals", false);
-  }
-
-  closeUnpinnedFilesPanelAndFocusEditor() {
-    if (this.settings.files_pinned || !FILES_SIDE_PANEL_TABS.includes(this.sideView)) return false;
-    this.setSideView("terminals", false);
-    requestAnimationFrame(() => this.focusActiveEditor());
-    return true;
-  }
-
-  scheduleTerminalFitAfterSidebarChange() {
-    if (FILES_SIDE_PANEL_TABS.includes(this.sideView) && !this.settings.files_pinned) return;
-    this.scheduleTerminalLayoutFit();
-  }
-
-  scheduleFinalTerminalFitAfterSidebarResize() {
-    if (this.sidebarResizeFinalFitFrame) cancelAnimationFrame(this.sidebarResizeFinalFitFrame);
-    this.sidebarResizeFinalFitFrame = requestAnimationFrame(() => {
-      this.sidebarResizeFinalFitFrame = requestAnimationFrame(() => {
-        this.sidebarResizeFinalFitFrame = 0;
-        if (this.sidebarResizeInProgress) return;
-        const view = this.views.get(this.activeId);
-        if (view && this.isTerminalScrollV2()) view.forceResizeAfterFit = false;
-        this.fitActive();
-      });
-    });
-  }
-
-  positionFloatingFilesPanel(fileWidth = null) {
-    const section = this.$("files-section");
-    if (!section || !section.classList.contains("floating") || section.classList.contains("hidden")) {
-      if (section) {
-        section.style.top = "";
-        section.style.bottom = "";
-        section.style.width = "";
-      }
-      return;
-    }
-    const sidebar = this.$("sidebar");
-    const header = this.$("sidebar-header");
-    const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
-    const requestedWidth = Number(fileWidth) || Math.max(Number(this.settings.files_width) || 0, normalWidth * 2);
-    const availableWidth = Math.max(normalWidth, window.innerWidth - sidebar.getBoundingClientRect().left - 20);
-    const filesPinned = !!this.settings.files_pinned;
-    section.style.top = filesPinned ? `${header?.offsetHeight || 0}px` : "0px";
-    section.style.bottom = "0px";
-    section.style.width = `${Math.min(requestedWidth, availableWidth)}px`;
-    document.documentElement.style.setProperty("--files-panel-width", `${Math.min(requestedWidth, availableWidth)}px`);
-  }
-
-  scheduleTerminalLayoutFit() {
-    if (this.layoutFitFrame) cancelAnimationFrame(this.layoutFitFrame);
-    clearTimeout(this.layoutFitTimer);
-    clearTimeout(this.layoutFitSettleTimer);
-    this.layoutFitFrame = requestAnimationFrame(() => {
-      this.layoutFitFrame = requestAnimationFrame(() => {
-        this.layoutFitFrame = 0;
-        this.fitActive();
-      });
-    });
-    // A webview/sidebar can finish its flex layout after the first two frames
-    // (notably during startup or after a browser refresh). Refit once more
-    // after that layout has settled, without changing terminal scroll mode.
-    this.layoutFitTimer = setTimeout(() => {
-      this.layoutFitTimer = 0;
-      this.fitActive();
-    }, 180);
-    // A refresh can finish the sidebar/main flex pass after the first timer
-    // (especially when several long session names change row widths). Give
-    // the active xterm one final bounded fit/repaint after that pass. v2
-    // preserves the xterm-owned scroll mode, so this does not reintroduce
-    // the old browser-scroll repair race.
-    this.layoutFitSettleTimer = setTimeout(() => {
-      this.layoutFitSettleTimer = 0;
-      this.fitActive();
-    }, 420);
-  }
-
-  cycleView(view) {
-    if (this.vscodeMode && view !== "terminals") return;
-    this.setSideView(view);
-    if (this.sideView !== view) return;
-    if (view === "project") this.focusFileNameSearch();
-    else if (view === "search") this.focusFileContentSearch();
-  }
-
-  cycleFilesSidePanel() {
-    if (this.vscodeMode) return;
-    const continuingCycle = this.filesSidePanelCycleView === this.sideView;
-    const currentIndex = continuingCycle ? FILES_SIDE_PANEL_TABS.indexOf(this.sideView) : -1;
-    const nextIndex = currentIndex + 1;
-    const nextView = nextIndex >= FILES_SIDE_PANEL_TABS.length ? "terminals" : FILES_SIDE_PANEL_TABS[nextIndex];
-    this.filesSidePanelCycleTransition = true;
-    try {
-      this.setSideView(nextView, false);
-    } finally {
-      this.filesSidePanelCycleTransition = false;
-    }
-    this.filesSidePanelCycleView = nextView === "terminals" ? null : nextView;
-    if (nextView === "project") this.focusFileNameSearch();
-    else if (nextView === "search") this.focusFileContentSearch();
-    else if (nextView === "git") requestAnimationFrame(() => this.$("git-refresh")?.focus());
-    else requestAnimationFrame(() => this.focusActiveEditor());
-  }
-
-  openFilesSidePanelView(view, pinned = false) {
-    if (this.vscodeMode || !FILES_SIDE_PANEL_TABS.includes(view)) return;
-    if (this.sideView === view) {
-      this.setSideView("terminals", false);
-      requestAnimationFrame(() => this.focusActiveEditor());
-      return;
-    }
-    if (pinned) this.setFilesPinned(true);
-    this.setSideView(view, false);
-    if (view === "project") this.focusFileNameSearch();
-    else if (view === "search") this.focusFileContentSearch();
-  }
-
-  applySideLayout() {
-    const sectionId = FILES_SIDE_PANEL_TABS.includes(this.sideView) ? "files-section" : null;
-    const full = !!this.settings.side_full && !!sectionId;
-    this.$("session-list").classList.toggle("collapsed", full);
-    if (!sectionId) return;
-    const section = this.$(sectionId);
-    if (section.classList.contains("floating")) {
-      section.style.height = "auto";
-      section.style.flex = "none";
-      this.positionFloatingFilesPanel();
-      return;
-    }
-    if (full) {
-      section.style.height = "";
-      section.style.flex = "1";
-    } else {
-      section.style.flex = "";
-      section.style.height = Math.round((this.settings.side_split ?? 0.55) * 100) + "%";
-    }
-  }
-
-  toggleSideFull() {
-    this.settings.side_full = !this.settings.side_full;
-    this.applySideLayout();
-    this.saveSettings();
-  }
-
-  initSideSplit() {
-    const split = this.$("side-split");
-    split.title = "Drag to resize · double-click to toggle full";
-    split.ondblclick = () => this.toggleSideFull();
-    split.onmousedown = (e) => {
-      e.preventDefault();
-      document.body.classList.add("dragging-side");
-      const rect = this.$("sidebar").getBoundingClientRect();
-      const move = (ev) => {
-        this.settings.side_full = false;
-        this.settings.side_split_user_set = true;
-        this.settings.side_split = Math.min(0.85, Math.max(0.15, (rect.bottom - ev.clientY) / rect.height));
-        this.applySideLayout();
-      };
-      const up = () => {
-        document.body.classList.remove("dragging-side");
-        document.removeEventListener("mousemove", move);
-        document.removeEventListener("mouseup", up);
-        this.saveSettings();
-      };
-      document.addEventListener("mousemove", move);
-      document.addEventListener("mouseup", up);
-    };
-  }
-
-  isExcludedName(name) {
-    return ALWAYS_EXCLUDED.includes(name) || (this.settings.ignored_dirs || []).includes(name);
-  }
-
-  isDotFolderName(name) {
-    return String(name || "").startsWith(".");
-  }
-
-  searchIgnoreTokens() {
-    const tokens = [...ALWAYS_EXCLUDED, ...(this.settings.ignored_dirs || [])];
-    if (this.settings.hide_dot_folders) tokens.push(".*");
-    return [...new Set(tokens)].join(",");
-  }
-
-  includeHiddenFilesInSearch() {
-    return this.settings.hide_dot_folders === false;
-  }
-
-  isExcludedPath(relPath) {
-    return String(relPath || "").split("/").filter(Boolean).some((part) => this.isExcludedName(part));
-  }
-
-  updateTreeSortButton() {
-    const button = this.$("tree-sort-toggle");
-    if (!button) return;
-    const recent = this.settings.file_tree_sort === "mtime";
-    button.classList.toggle("on", recent);
-    button.title = recent ? "Sort files alphabetically (folders first)" : "Sort files by recently modified";
-    button.setAttribute("aria-label", button.title);
-    button.setAttribute("aria-pressed", String(recent));
-  }
-
-  updateHideDotButton() {
-    const button = this.$("hide-dot-toggle");
-    if (!button) return;
-    const hidden = this.settings.hide_dot_folders !== false;
-    button.classList.toggle("on", !hidden);
-    button.title = hidden ? "Show dot folders" : "Hide dot folders";
-    button.setAttribute("aria-label", button.title);
-    button.setAttribute("aria-pressed", String(hidden));
-    const icon = button.querySelector(".codicon");
-    if (icon) icon.className = `codicon ${hidden ? "codicon-eye-closed" : "codicon-eye"}`;
-  }
-
-  toggleHideDotFolders() {
-    const nextHidden = !this.settings.hide_dot_folders;
-    const tokens = this.fileTypeFilterTokens().filter((token) => token !== "!.*");
-    if (nextHidden) tokens.unshift("!.*");
-    this.updateFileTypeFilterTokens(tokens);
-  }
-
-  toggleExcludeDir(name) {
-    const list = this.settings.ignored_dirs || [];
-    this.settings.ignored_dirs = list.includes(name) ? list.filter((n) => n !== name) : [...list, name];
-    this.saveSettings();
-    this.rerenderTree();
-  }
-
-  rerenderTree() {
-    const root = this.treeDirs.get("");
-    if (root) this.renderDirInto(root.container, "", JSON.parse(root.cache));
-  }
-
-  captureTreeScrollPosition() {
-    const tree = this.$("files-tree");
-    const treeRect = tree.getBoundingClientRect();
-    const anchor = [...tree.querySelectorAll(".tree-row")].find((row) => row.getBoundingClientRect().bottom > treeRect.top);
-    return {
-      top: tree.scrollTop,
-      anchorRel: anchor?.dataset.rel || "",
-      anchorOffset: anchor ? anchor.getBoundingClientRect().top - treeRect.top : 0,
-    };
-  }
-
-  restoreTreeScrollPosition(snapshot) {
-    if (!snapshot) return;
-    const tree = this.$("files-tree");
-    let target = snapshot.top;
-    if (snapshot.anchorRel) {
-      const anchor = tree.querySelector(`[data-rel="${CSS.escape(snapshot.anchorRel)}"]`);
-      if (anchor) {
-        const treeRect = tree.getBoundingClientRect();
-        target = tree.scrollTop + anchor.getBoundingClientRect().top - treeRect.top - snapshot.anchorOffset;
-      }
-    }
-    tree.scrollTop = Math.max(0, Math.min(target, Math.max(0, tree.scrollHeight - tree.clientHeight)));
-  }
-
-  addContextItem(menu, label, handler, icon = "") {
-    const item = document.createElement("div");
-    item.className = "context-item" + (handler ? "" : " disabled");
-    if (icon) {
-      const glyph = document.createElement("span");
-      glyph.className = `codicon codicon-${icon}`;
-      glyph.setAttribute("aria-hidden", "true");
-      item.appendChild(glyph);
-    }
-    const text = document.createElement("span");
-    text.textContent = label;
-    item.appendChild(text);
-    if (handler) {
-      item.onclick = () => {
-        const rootMenu = item.closest("#context-menu") || menu;
-        rootMenu.classList.add("hidden");
-        if (rootMenu.id === "context-menu") this.contextMenuTarget = null;
-        handler();
-      };
-    }
-    menu.appendChild(item);
-  }
-
-  addContextSubmenu(menu, label, entries, icon = "chevron-right", options = {}) {
-    const wrapper = document.createElement("div");
-    const enabledEntries = entries.filter((entry) => entry);
-    wrapper.className = "context-submenu" + (enabledEntries.length ? "" : " disabled");
-    wrapper.classList.toggle("open", !!options.open);
-    const item = document.createElement("div");
-    item.className = "context-item";
-    if (icon) {
-      const glyph = document.createElement("span");
-      glyph.className = `codicon codicon-${icon}`;
-      glyph.setAttribute("aria-hidden", "true");
-      item.appendChild(glyph);
-    }
-    const text = document.createElement("span");
-    text.textContent = label;
-    item.appendChild(text);
-    const arrow = document.createElement("span");
-    arrow.className = "codicon codicon-chevron-right context-submenu-arrow";
-    arrow.setAttribute("aria-hidden", "true");
-    item.appendChild(arrow);
-    wrapper.appendChild(item);
-    const submenu = document.createElement("div");
-    submenu.className = "context-submenu-menu";
-    for (const entry of enabledEntries) {
-      if (entry.kind === "label") {
-        const labelItem = document.createElement("div");
-        labelItem.className = "context-submenu-label";
-        labelItem.textContent = entry.label;
-        submenu.appendChild(labelItem);
-        continue;
-      }
-      this.addContextItem(submenu, entry.label, entry.handler, entry.icon || "");
-    }
-    wrapper.appendChild(submenu);
-    menu.appendChild(wrapper);
-  }
-
-  positionContextMenu(menu, x, y) {
-    menu.classList.remove("hidden");
-    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 10)) + "px";
-    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 10)) + "px";
-  }
-
-  async copyTextToClipboard(text, label = "copied") {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const textarea = document.createElement("textarea");
-        textarea.value = text;
-        textarea.setAttribute("readonly", "");
-        textarea.style.position = "fixed";
-        textarea.style.left = "-9999px";
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand("copy");
-        textarea.remove();
-      }
-      this.$("status-name").textContent = label;
-    } catch (error) {
-      this.$("status-name").textContent = "clipboard blocked";
-    }
-  }
-
-  async copySelectionPayloadToClipboard(text, html, label = "copied") {
-    if (html && navigator.clipboard?.write && window.ClipboardItem) {
-      try {
-        const item = new ClipboardItem({
-          "text/plain": new Blob([text], { type: "text/plain" }),
-          "text/html": new Blob([html], { type: "text/html" }),
-        });
-        await navigator.clipboard.write([item]);
-        this.$("status-name").textContent = label;
-        return;
-      } catch (error) {
-        await this.copyTextToClipboard(text, label);
-        return;
-      }
-    }
-    await this.copyTextToClipboard(text, label);
-  }
-
-  shortcutLabel(label, actionId) {
-    const binding = this.bindingFor(actionId);
-    return binding ? `${label}   ${this.bindingToDisplay(binding)}` : label;
-  }
-
-  shortcutTitle(label, actionId) {
-    const binding = this.bindingToDisplay(this.bindingFor(actionId));
-    return binding ? `${label} (${binding})` : label;
-  }
-
-  keybindingDefinitions() {
-    return this.vscodeMode ? VSCODE_KEYBINDINGS : DESKTOP_KEYBINDINGS;
-  }
-
-  keybindingsStorageKey() {
-    return this.vscodeMode ? "vscode_keybindings" : "keybindings";
-  }
-
-  updateShortcutTitles() {
-    this.updateHeaderAddShortcutLabels();
-    const action = this.bindingToDisplay(this.bindingFor("toggle-history"));
-    for (const id of ["history-btn", "vscode-history-btn"]) {
-      const historyButton = this.$(id);
-      if (historyButton) historyButton.title = `Open Markdown transcript (${action})`;
-    }
-    const historyClose = this.$("history-close");
-    if (historyClose) historyClose.title = `Switch to terminal (${action})`;
-    const refreshButton = this.$("vscode-refresh-btn");
-    if (refreshButton && this.vscodeMode) {
-      refreshButton.title = `Refresh TermDeck (${this.bindingToDisplay(this.bindingFor("vscode-refresh"))})`;
-    }
-    const sidePanelAction = this.bindingToDisplay(this.bindingFor("cycle-side-panel"));
-    const sidePanelTitles = [["view-project", "Files", "open-files-panel"],
-      ["view-search", "Search & replace", "open-file-search"],
-      ["terminal-search-inline-toggle", "Search terminal names and output", "open-terminal-search"],
-      ["files-tab-project", "Files", "open-files-panel"],
-      ["files-tab-search", "Search & replace", "open-file-search"]];
-    for (const [id, label, actionId] of sidePanelTitles) {
-      const button = this.$(id);
-      const directAction = this.bindingToDisplay(this.bindingFor(actionId));
-      if (button) button.title = `${label} (${directAction}; ${sidePanelAction} cycles tabs)`;
-    }
-    for (const id of ["view-project", "view-search", "view-git", "files-tab-project", "files-tab-search", "files-tab-git"]) {
-      const button = this.$(id);
-      if (button) button.title = id === "view-git" || id === "files-tab-git"
-        ? `Git (click; ${sidePanelAction} cycles tabs) · middle/right-click opens file mode in a new tab`
-        : `${button.title} · middle/right-click opens file mode in a new tab`;
-    }
-    const notebookToggle = this.$("notebook-toggle");
-    const notebookTitle = `Quick notebook (${this.bindingToDisplay(this.bindingFor("toggle-notebook"))})`;
-    for (const button of [notebookToggle, this.$("file-tabs-notebook")]) {
-      if (button) button.title = notebookTitle;
-    }
-    const scrollBottomAction = this.bindingToDisplay(this.bindingFor("scroll-bottom"));
-    for (const id of ["scroll-bottom-btn", "vscode-scroll-bottom-btn"]) {
-      const scrollButton = this.$(id);
-      if (scrollButton) scrollButton.title = `Scroll terminal to bottom (${scrollBottomAction})`;
-    }
-    const historyScrollButton = this.$("history-scroll-bottom");
-    if (historyScrollButton) historyScrollButton.title = `Scroll transcript to bottom (${scrollBottomAction})`;
-    const resyncAction = this.bindingToDisplay(this.bindingFor("resync-terminal"));
-    for (const id of ["terminal-resync-btn", "vscode-terminal-resync-btn"]) {
-      const resyncButton = this.$(id);
-      if (resyncButton) {
-        // Keep the size-ownership explanation if it is showing: this pass runs on every shortcut refresh
-        // and would otherwise replace the only text that says why the button is marked.
-        const owned = this.views.get(this.activeId)?.sizeOwnedElsewhere;
-        resyncButton.title = owned
-          ? `Another window is using this terminal at ${owned.cols} columns. Click to resize it to this window. (${resyncAction})`
-          : `Resync terminal content (${resyncAction})`;
-        resyncButton.setAttribute("aria-label", resyncButton.title);
-      }
-    }
-    const conversationOutlineButton = this.$("conversation-outline-toggle");
-    if (conversationOutlineButton) {
-      const outlineLabel = this.activeFileKey !== null ? "File outline" : "Conversation outline";
-      conversationOutlineButton.title = this.shortcutTitle(outlineLabel, "conversation-outline");
-      conversationOutlineButton.setAttribute("aria-label", outlineLabel);
-    }
-    const newSession = this.$("new-session-btn");
-    if (newSession) {
-      newSession.title = this.shortcutTitle("New terminal", "new-terminal");
-      newSession.setAttribute("aria-label", newSession.title);
-    }
-    const emptyState = this.$("empty-state");
-    if (emptyState && this.initialLoadComplete) emptyState.textContent = "no terminals — press + to open one";
-    const selectionButtons = [["selection-copy", "Copy selection"], ["selection-note-new", "Add selection as a new note"],
-      ["selection-note-append", "Append selection to note"]];
-    for (const [id, label] of selectionButtons) {
-      const button = this.$(id);
-      if (button) button.title = `${label} (${this.bindingToDisplay(this.bindingFor(id))})`;
-    }
-    this.updateTerminalSearchGroupButton();
-  }
-
-  openSessionContextMenu(event, session, options = {}) {
-    event.preventDefault();
-    event.stopPropagation();
-    const menu = this.$("context-menu");
-    menu.textContent = "";
-    const sessionIds = this.selectContextMenuSessionIds(session.session_id);
-    const multiple = sessionIds.length > 1;
-    this.contextMenuTarget = multiple ? { type: "sessions", ids: sessionIds } : { type: "session", id: session.session_id };
-    const state = this.getProjectState();
-    const assignedGroupId = state.session_groups?.[session.session_id] || "";
-    if (!multiple) {
-      this.addContextItem(menu, this.shortcutLabel("Fork", "fork-terminal"),
-        () => this.forkSession(session), "repo-forked");
-      this.addContextItem(menu, "New terminal after this",
-        () => this.openModal(null, session.session_id), "add");
-      this.addContextItem(menu, this.shortcutLabel("Restart", "restart-terminal"),
-        () => this.restartSession(session.session_id), "refresh");
-      this.addContextItem(menu, "Stop", session.running ? () => this.stopSession(session.session_id) : null, "debug-stop");
-      const permissions = MODEL_PERMISSIONS[session.agent_kind || "none"] || MODEL_PERMISSIONS.none;
-      if (permissions.length > 1) {
-        this.addContextSubmenu(menu, "Restart with permission", permissions.map((entry) => ({
-          label: entry.label,
-          handler: () => this.restartSession(session.session_id, entry.value),
-          icon: "refresh",
-        })), "refresh");
-      }
-      this.addContextItem(menu, this.shortcutLabel("Rename", "rename-terminal"),
-        () => this.renameSession(session), "edit");
-      this.addContextItem(menu, "Copy session name",
-        () => this.copyTextToClipboard(this.titlePresentation(session).text, "session name copied"), "copy");
-      this.addContextItem(menu, this.shortcutLabel("Copy session id", "copy-session-id"),
-        () => this.copyTextToClipboard(session.session_id, "session id copied"), "copy");
-      if (session.worktree_branch) {
-        this.addContextItem(menu, "Review isolated worktree", () => this.openWorktreeReview(session.session_id), "git-commit");
-      }
-    }
-    const selectionLabel = multiple ? `${sessionIds.length} selected` : "";
-    this.addContextItem(menu, multiple ? `Mark ${selectionLabel} as unread`
-      : this.shortcutLabel("Mark as unread", "mark-terminal-unread"),
-    () => this.setSessionsUnread(sessionIds, true), "eye-closed");
-    this.addContextItem(menu, multiple ? `Create group from ${selectionLabel}`
-      : this.shortcutLabel("Create group", "create-terminal-group-from-active"),
-    () => this.createTerminalGroupFromSessions(sessionIds), "folder-library");
-    const moveEntries = multiple ? [] : [{
-      label: this.shortcutLabel(assignedGroupId ? "Top of group" : "Top", "move-active-to-top"),
-      handler: () => this.moveTerminalLayoutToTop(
-        assignedGroupId ? `group:${assignedGroupId}` : `session:${session.session_id}`),
-      icon: "arrow-up",
-    }];
-    const groups = this.terminalGroups();
-    if (groups.length) {
-      moveEntries.push({ kind: "label", label: "Groups" });
-      moveEntries.push({
-        label: "Ungrouped",
-        handler: sessionIds.some((id) => state.session_groups?.[id])
-          ? () => this.moveSelectedSessionsIntoGroup(sessionIds, null) : null,
-        icon: "folder",
-      });
-      for (const group of groups) {
-        moveEntries.push({
-          label: group.name,
-          handler: sessionIds.every((id) => state.session_groups?.[id] === group.id)
-            ? null : () => this.moveSelectedSessionsIntoGroup(sessionIds, group.id),
-          icon: "folder-library",
-        });
-      }
-    }
-    if (!this.vscodeMode) {
-      const otherProjects = this.projects.filter((project) => project.name &&
-        sessionIds.some((id) => this.session(id)?.project !== project.name));
-      moveEntries.push({ kind: "label", label: "Projects" });
-      for (const project of otherProjects) {
-        moveEntries.push({
-          label: project.name,
-          handler: () => this.moveSelectedSessionsToProject(sessionIds, project.name),
-          icon: "folder",
-        });
-      }
-      if (!otherProjects.length) moveEntries.push({ label: "No other registered projects", handler: null, icon: "info" });
-    }
-    this.addContextSubmenu(menu, this.shortcutLabel("Move to…", "open-move-menu"), moveEntries, "arrow-swap",
-      { open: !!options.openMove });
-    this.addContextItem(menu, multiple ? this.shortcutLabel(`Close ${selectionLabel}`, "close-item")
-      : this.shortcutLabel("Close", "close-item"),
-    () => multiple ? this.closeSelectedSessions(sessionIds) : this.closeSession(session.session_id),
-    multiple ? "close-all" : "close");
-    if (!multiple) {
-      this.addContextItem(menu, this.shortcutLabel("Open in a new browser tab", "open-terminal-new-tab"),
-        () => this.openTerminalInNewTab(session), "new-window");
-    }
-    this.positionContextMenu(menu, event.clientX, event.clientY);
-  }
-
-  async openWorktreeReview(sessionId) {
-    this.worktreeReviewSessionId = sessionId;
-    this.$("worktree-review-backdrop").classList.remove("hidden");
-    await this.refreshWorktreeReview();
-  }
-
-  closeWorktreeReview() {
-    this.worktreeReviewSessionId = null;
-    this.$("worktree-review-backdrop").classList.add("hidden");
-  }
-
-  async refreshWorktreeReview() {
-    const sessionId = this.worktreeReviewSessionId;
-    if (!sessionId) return;
-    const status = this.$("worktree-review-status");
-    const text = this.$("worktree-review-text");
-    status.className = "";
-    status.textContent = "Loading worktree status…";
-    text.textContent = "";
-    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/worktree/review`);
-    const payload = await response.json().catch(() => ({}));
-    if (sessionId !== this.worktreeReviewSessionId) return;
-    if (!response.ok) {
-      status.className = "warn";
-      status.textContent = payload.detail || "Unable to inspect worktree";
-      return;
-    }
-    const files = Array.isArray(payload.files) ? payload.files : [];
-    const commits = Array.isArray(payload.commits) ? payload.commits : [];
-    status.className = payload.clean ? "good" : "warn";
-    status.textContent = payload.clean ? "Clean worktree: ready to merge or keep." : "Uncommitted changes: commit them in the worktree before merging.";
-    this.$("worktree-review-subtitle").textContent = `${payload.branch || "branch"}  ·  ${payload.path || ""}`;
-    const sections = [
-      `Repository: ${payload.repository || ""}`,
-      `Base: ${payload.base_ref || ""} (${payload.base_commit || ""})`,
-      `Current: ${payload.current_commit || ""}`,
-      "",
-      `Changed files (${files.length})`,
-      files.length ? files.join("\n") : "(none)",
-      "",
-      `Commits (${commits.length})`,
-      commits.length ? commits.join("\n") : "(none)",
-      "",
-      "Diff",
-      payload.diff || "(no tracked diff)",
-    ];
-    if (payload.diff_truncated) sections.push("", "[diff truncated]");
-    text.textContent = sections.join("\n");
-  }
-
-  async finishWorktree(action) {
-    const sessionId = this.worktreeReviewSessionId;
-    if (!sessionId) return;
-    if (action === "discard" && !window.confirm("Discard the worktree and its branch? Uncommitted changes will be lost.")) return;
-    if (action === "merge" && !window.confirm("Merge the worktree branch into its base branch?")) return;
-    const status = this.$("worktree-review-status");
-    status.className = "";
-    status.textContent = action === "keep" ? "Keeping worktree…" : `${action}ing worktree…`;
-    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/worktree/finish`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      status.className = "warn";
-      status.textContent = payload.detail || `Unable to ${action} worktree`;
-      return;
-    }
-    if (action === "keep") {
-      status.className = "good";
-      status.textContent = "Worktree kept and detached from automatic cleanup.";
-      await this.refresh();
-      return;
-    }
-    this.closeWorktreeReview();
-    await this.refresh();
-  }
-
-  openFileContextMenu(event, key) {
-    event.preventDefault();
-    event.stopPropagation();
-    const keys = this.selectContextMenuFileKeys(key);
-    const menu = this.$("context-menu");
-    menu.textContent = "";
-    this.contextMenuTarget = { type: "files", keys };
-    if (keys.length === 1) {
-      const entry = this.openFiles.get(keys[0]);
-      if (entry) {
-        this.addContextItem(menu, "Open this file in a new browser tab", () => this.openFileDeckInNewTab(entry.root, entry.path), "new-window");
-        this.addContextItem(menu, "Local history", () => this.openFileHistoryForPath(entry.root, entry.path, "local"), "history");
-        this.addContextItem(menu, "Git history", () => this.openFileHistoryForPath(entry.root, entry.path, "git"), "git-commit");
-      }
-    }
-    const label = keys.length === 1 ? "Close file" : `Close ${keys.length} selected files`;
-    this.addContextItem(menu, this.shortcutLabel(label, "close-item"), () => this.closeFiles(keys), "close-all");
-    this.positionContextMenu(menu, event.clientX, event.clientY);
-  }
-
-  openFileDeckRowContextMenu(event, root, relativePath) {
-    event.preventDefault();
-    event.stopPropagation();
-    const menu = this.$("context-menu");
-    menu.textContent = "";
-    this.contextMenuTarget = { type: "filedeck", root, path: relativePath };
-    this.addContextItem(menu, "Open this file in a new browser tab", () => this.openFileDeckInNewTab(root, relativePath), "new-window");
-    this.addContextItem(menu, "Local history", () => this.openFileHistoryForPath(root, relativePath, "local"), "history");
-    this.addContextItem(menu, "Git history", () => this.openFileHistoryForPath(root, relativePath, "git"), "git-commit");
-    this.positionContextMenu(menu, event.clientX, event.clientY);
-  }
-
-  openActiveMoveMenu() {
-    if (!this.activeId || this.activeFileKey !== null) return;
-    const session = this.session(this.activeId);
-    if (!session) return;
-    this.setSideView("terminals", false);
-    const title = this.sessionTitleEls.get(this.activeId);
-    const row = title?.closest(".session-item");
-    const rect = row?.getBoundingClientRect();
-    const x = rect ? Math.min(rect.right - 4, window.innerWidth - 12) : 12;
-    const y = rect ? rect.top + Math.min(24, Math.max(8, rect.height / 2)) : 80;
-    this.openSessionContextMenu({
-      preventDefault() {},
-      stopPropagation() {},
-      clientX: x,
-      clientY: y,
-    }, session, { openMove: true });
-  }
-
-  openTreeContextMenu(event, row) {
-    event.preventDefault();
-    event.stopPropagation();
-    const rel = row.dataset.rel;
-    const isDir = row.dataset.kind === "dir";
-    const name = rel.split("/").pop();
-    const menu = this.$("context-menu");
-    menu.textContent = "";
-    if (isDir) {
-      if (ALWAYS_EXCLUDED.includes(name)) {
-        this.addContextItem(menu, `"${name}" is always excluded from search`, null);
-      } else {
-        const excluded = (this.settings.ignored_dirs || []).includes(name);
-        this.addContextItem(menu, excluded ? "Include in search" : "Exclude from search",
-          () => this.toggleExcludeDir(name));
-      }
-    } else {
-      this.addContextItem(menu, "Open this file in a new browser tab", () => this.openFileDeckInNewTab(this.treeRoot, rel), "new-window");
-      this.addContextItem(menu, "Open", () => this.openFile(this.treeRoot, rel, null, row));
-      this.addContextItem(menu, "Local history", () => this.openFileHistoryForPath(this.treeRoot, rel, "local"), "history");
-      this.addContextItem(menu, "Git history", () => this.openFileHistoryForPath(this.treeRoot, rel, "git"), "git-commit");
-      this.markTreeSelection(row);
-    }
-    const parent = isDir ? rel : rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
-    this.addContextItem(menu, "New file…", () => this.createTreePath(parent, false), "new-file");
-    this.addContextItem(menu, "New folder…", () => this.createTreePath(parent, true), "new-folder");
-    this.addContextItem(menu, "Rename…", () => this.renameTreePath(rel));
-    this.addContextItem(menu, "Duplicate…", () => this.duplicateTreePath(rel), "files");
-    this.addContextItem(menu, "Move…", () => this.moveTreePath(rel));
-    this.addContextItem(menu, "Delete (to Trash)", () => this.deleteTreePath(rel));
-    this.addContextItem(menu, "Refresh", () => void this.refreshTreeDirectories(), "refresh");
-    this.addContextItem(menu, "Copy relative path", () => this.copyTextToClipboard(rel, "relative path copied"), "copy");
-    this.addContextItem(menu, "Copy absolute path", () => this.copyTextToClipboard(`${this.treeRoot}/${rel}`, "path copied"), "copy");
-    menu.classList.remove("hidden");
-    menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 10) + "px";
-    menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 10) + "px";
-  }
-
-  async fsOp(route, payload, failLabel) {
-    const res = await fetch(route, { method: "POST", headers: { "Content-Type": "application/json" },
-                                     body: JSON.stringify({ root: this.treeRoot, ...payload }) });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert(err.detail || failLabel);
-      return null;
-    }
-    return await res.json();
-  }
-
-  async renameTreePath(rel) {
-    const base = rel.split("/").pop();
-    const newName = prompt(`Rename "${base}" to`, base);
-    if (!newName || newName === base) return;
-    if (!await this.saveOpenFileBeforePathChange(rel)) return;
-    const result = await this.fsOp("/api/files/rename", { path: rel, new_name: newName }, "rename failed");
-    if (result === null) return;
-    const parent = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
-    this.afterFsChange(rel, parent ? `${parent}/${result.new_name}` : result.new_name);
-  }
-
-  async createTreePath(parent, directory) {
-    const suggested = parent ? `${parent}/` : "";
-    const path = prompt(`${directory ? "Folder" : "File"} path relative to ${this.treeRoot}`, suggested);
-    if (!path || path === suggested) return;
-    const result = await this.fsOp("/api/files/create", { path, directory }, "create failed");
-    if (result === null) return;
-    this.selectedTreeRow = null;
-    await this.refreshTreeDirectories();
-    if (!result.directory) void this.openFile(this.treeRoot, result.rel, null, null, { pinned: true });
-  }
-
-  async duplicateTreePath(rel) {
-    const dot = rel.lastIndexOf(".");
-    const slash = rel.lastIndexOf("/");
-    const suggested = dot > slash ? `${rel.slice(0, dot)} copy${rel.slice(dot)}` : `${rel} copy`;
-    const destination = prompt(`Duplicate "${rel}" to`, suggested);
-    if (!destination || destination === rel) return;
-    const result = await this.fsOp("/api/files/duplicate", { path: rel, destination }, "duplicate failed");
-    if (result === null) return;
-    this.selectedTreeRow = null;
-    await this.refreshTreeDirectories();
-  }
-
-  async moveTreePath(rel) {
-    const destination = prompt(`Move "${rel}" to (path relative to ${this.treeRoot}; existing folder = move into it)`, rel);
-    if (!destination || destination === rel) return;
-    if (!await this.saveOpenFileBeforePathChange(rel)) return;
-    const result = await this.fsOp("/api/files/move", { path: rel, destination }, "move failed");
-    if (result === null) return;
-    this.afterFsChange(rel, result.rel);
-  }
-
-  async saveOpenFileBeforePathChange(rel) {
-    const entry = this.openFiles.get(`${this.treeRoot}|${rel}`);
-    if (!entry || (!entry.dirty && !entry.savePromise)) return true;
-    return await this.saveFileEntry(entry, true);
-  }
-
-  async deleteTreePath(rel) {
-    if (!confirm(`Move "${rel}" to Trash?`)) return;
-    const result = await this.fsOp("/api/files/delete", { path: rel }, "delete failed");
-    if (result === null) return;
-    this.afterFsChange(rel, null);
-  }
-
-  afterFsChange(oldRel, newRel) {
-    const key = `${this.treeRoot}|${oldRel}`;
-    const entry = this.openFiles.get(key);
-    if (entry) {
-      if (newRel) {
-        this.openFiles.delete(key);
-        entry.path = newRel;
-        entry.name = newRel.split("/").pop();
-        entry.fullPath = null;
-        if (entry.model) {
-          entry.model.dispose();
-          entry.model = null;
-        }
-        const newKey = `${this.treeRoot}|${newRel}`;
-        this.openFiles.set(newKey, entry);
-        if (this.activeFileKey === key) {
-          this.activeFileKey = newKey;
-          this.activateFile(newKey, null);
-        }
-      } else {
-        void this.closeFile(key, { discard: true });
-      }
-      this.persistOpenFiles();
-    }
-    this.selectedTreeRow = null;
-    this.renderList();
-    void this.refreshTreeDirectories();
-  }
-
-  async revealActiveFile() {
-    const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    if (!entry) return;
-    if (this.sideView !== "project") {
-      this.sideView = "terminals";
-      this.setSideView("project");
-    }
-    if (this.treeRoot !== entry.root || !this.treeDirs.get("")) await this.reloadTree(entry.root);
-    const parts = entry.path.split("/");
-    let rel = "";
-    for (const part of parts.slice(0, -1)) {
-      rel = rel ? `${rel}/${part}` : part;
-      if (!this.expandedDirs.has(rel)) {
-        const dirRow = this.$("files-tree").querySelector(`[data-rel="${CSS.escape(rel)}"]`);
-        if (!dirRow) return;
-        await this.toggleDir(dirRow, rel);
-      }
-    }
-    const fileRow = this.$("files-tree").querySelector(`[data-rel="${CSS.escape(entry.path)}"]`);
-    if (fileRow) {
-      this.markTreeSelection(fileRow);
-      fileRow.scrollIntoView({ block: "center" });
-    }
-  }
-
-  renderRecentFilesInto(list) {
-    const openKeys = new Set(this.openFiles.keys());
-    const toggle = document.createElement("button");
-    toggle.className = "section-toggle";
-    const collapsed = this.sectionCollapsed("recent_files_collapsed");
-    const header = this.collapsibleSectionLabel("recently modified", "recent_files_collapsed", toggle);
-    header.classList.add("recent-files-header");
-    list.appendChild(header);
-    if (collapsed) return;
-    const controls = document.createElement("div");
-    controls.className = "recent-files-controls";
-    const filter = document.createElement("button");
-    filter.id = "recent-file-type-filter-button";
-    filter.type = "button";
-    filter.className = "recent-files-filter";
-    const recentExcludeTokens = this.recentFileExcludeTokens();
-    filter.innerHTML = `<span class="codicon codicon-symbol-enum"></span><span>${recentExcludeTokens.length} exclusions</span>`;
-    filter.title = recentExcludeTokens.length ? recentExcludeTokens.join(", ") : "No recently modified exclusions";
-    filter.setAttribute("aria-label", "Recently modified file exclusions");
-    filter.setAttribute("aria-expanded", "false");
-    filter.onclick = (event) => this.toggleFileTypeFilterMenu(event.currentTarget);
-    controls.appendChild(filter);
-    list.appendChild(controls);
-    const body = document.createElement("div");
-    body.className = "recent-files-list";
-    list.appendChild(body);
-
-    const renderBody = () => {
-      const recent = this.recentFiles.filter((entry) => entry.path &&
-        !openKeys.has(`${this.recentFilesRoot}|${entry.path}`) && !this.recentFileExcluded(entry, this.getProjectState().recent_file_exclude_glob));
-      const limit = this.recentFilesExpanded ? 30 : 8;
-      body.textContent = "";
-      for (const entry of recent.slice(0, limit)) {
-        const item = document.createElement("div");
-        item.className = "file-item recent-file-item";
-        item.tabIndex = 0;
-        item.title = `${this.recentFilesRoot}/${entry.path}\nmodified ${this.exactMtime(entry.mtime)}`;
-        const name = document.createElement("span");
-        name.className = "file-item-name";
-        name.textContent = entry.name;
-        const mtime = document.createElement("span");
-        mtime.className = "recent-mtime";
-        mtime.textContent = this.formatMtime(entry.mtime);
-        mtime.title = `modified ${this.exactMtime(entry.mtime)}`;
-        item.append(this.fileTypeIconEl(entry.name, "file-type-icon"), name, mtime);
-        this.appendGitStatus(item, entry);
-        item.onclick = () => void this.openRecentlyModifiedFile(this.recentFilesRoot, entry.path);
-        item.onauxclick = (event) => this.handleFileDeckAuxClick(event, this.recentFilesRoot, entry.path);
-        item.oncontextmenu = (event) => this.openFileDeckRowContextMenu(event, this.recentFilesRoot, entry.path);
-        body.appendChild(item);
-      }
-      const hiddenCount = Math.max(0, recent.length - 8);
-      toggle.textContent = this.recentFilesExpanded ? "8" : (hiddenCount ? `+${Math.min(22, hiddenCount)}` : "30");
-      toggle.title = this.recentFilesExpanded ? "Show 8 recently modified files" : "Show up to 30 recently modified files";
-      toggle.classList.toggle("on", this.recentFilesExpanded);
-      toggle.disabled = recent.length <= 8;
-      if (!recent.length) {
-        const empty = document.createElement("div");
-        empty.className = "recent-files-empty";
-        empty.textContent = "No matching files";
-        body.appendChild(empty);
-      }
-    };
-    toggle.onclick = (event) => {
-      event.stopPropagation();
-      this.recentFilesExpanded = !this.recentFilesExpanded;
-      renderBody();
-    };
-    renderBody();
-  }
-
-  recentFileExcluded(entry, rawPatterns) {
-    const path = String(entry.path || "").toLowerCase();
-    const name = String(entry.name || path.split("/").pop() || "").toLowerCase();
-    const patterns = String(rawPatterns || "").split(",").map((value) => value.trim().replace(/^!/, "").toLowerCase()).filter(Boolean);
-    return patterns.some((pattern) => {
-      if (pattern.startsWith("*.")) return path.endsWith(pattern.slice(1));
-      if (pattern.startsWith(".")) return path.endsWith(pattern);
-      if (!pattern.includes("/") && !pattern.includes("*")) {
-        return name === pattern || path.endsWith(`.${pattern}`);
-      }
-      const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
-      return new RegExp(`(?:^|/)${escaped}$`).test(path);
-    });
-  }
-
-  async openRecentlyModifiedFile(root, path) {
-    await this.openFile(root, path, null, null);
-    if (this.vscodeMode || this.activeFileKey !== `${root}|${path}`) return;
-    this.fileHistoryMode = "all";
-    this.fileHistoryOpen = true;
-    this.fileHistorySelections = [];
-    this.$("file-history-panel").classList.remove("hidden");
-    this.$("file-history-toggle").classList.add("on");
-    this.$("file-history-toggle").setAttribute("aria-pressed", "true");
-    this.renderTopbar();
-    await this.loadFileHistory(true);
-    this.pushNav({ kind: "file-history", key: this.activeFileKey, mode: this.fileHistoryMode });
-  }
-
-  async refreshRecentFiles(force = false) {
-    if (this.vscodeMode) return;
-    if (this.sectionCollapsed("recent_files_collapsed")) {
-      this.updateRecentFilesWatch();
-      return;
-    }
-    if (this.recentFilesBusy) return;
-    const activeRoot = this.session(this.activeId)?.cwd || this.worktreeRoot();
-    const filesVisible = !this.$("files-section").classList.contains("hidden");
-    const root = (filesVisible && this.treeRoot) || activeRoot;
-    if (!root) return;
-    if (!force && this.recentFilesRoot === root && Date.now() - this.recentFilesFetchedAt < RECENT_FILES_MIN_REFRESH_MS) return;
-    this.recentFilesBusy = true;
-    try {
-      const res = await fetch(`/api/files/recent?root=${encodeURIComponent(root)}&limit=40`);
-      // Recent files are also rendered below terminals while the Files view is
-      // hidden, so treeRoot may intentionally be stale or null in that state.
-      if (!res.ok || (filesVisible && this.treeRoot !== root)) return;
-      const next = await res.json();
-      const fingerprint = `${root}|${next.map((entry) => `${entry.path}:${entry.mtime}`).join("|")}`;
-      this.recentFilesRoot = root;
-      this.recentFilesFetchedAt = Date.now();
-      if (fingerprint !== this.recentFilesFingerprint) {
-        this.recentFiles = next;
-        this.recentFilesFingerprint = fingerprint;
-        this.renderList();
-      }
-    } catch (error) {
-      console.warn("recent files refresh failed", error);
-    } finally {
-      this.recentFilesBusy = false;
-    }
-  }
-
-  renderClosedInto(list, closedSessions = this.closedSessions, worktreeId = this.worktreeId || "root") {
-    if (!closedSessions.length) return;
-    const search = this.terminalSearchText.trim();
-    const matchingClosed = search
-      ? closedSessions.filter((session) => this.terminalSearchClosedMatches.has(session.session_id))
-      : closedSessions;
-    if (search && !matchingClosed.length) return;
-    const header = document.createElement("div");
-    header.className = "side-section-label side-section-header collapsible-section-header closed-header";
-    header.dataset.worktreeId = worktreeId;
-    const chevron = document.createElement("span");
-    const expanded = this.worktreeClosedExpanded(worktreeId);
-    chevron.className = "codicon codicon-chevron-right closed-chevron" + (expanded ? " open" : "");
-    const title = document.createElement("span");
-    title.textContent = search
-      ? `closed terminals (${matchingClosed.length}/${closedSessions.length})`
-      : `closed terminals (${closedSessions.length})`;
-    header.append(chevron, title);
-    header.onclick = () => {
-      this.setWorktreeClosedExpanded(worktreeId, !this.worktreeClosedExpanded(worktreeId));
-      this.renderList();
-    };
-    list.appendChild(header);
-    if (!expanded) return;
-    const visibleClosedLimit = search && !this.terminalSearchGroupId
-      ? CLOSED_SESSIONS_MAX_DISPLAY : Math.min(this.closedDisplayLimit, CLOSED_SESSIONS_MAX_DISPLAY);
-    const visibleClosed = matchingClosed.slice(0, visibleClosedLimit);
-    for (const c of visibleClosed) {
-      const item = document.createElement("div");
-      const searchMatch = search ? this.terminalSearchClosedMatches.get(c.session_id) : null;
-      item.className = "closed-item" + (searchMatch ? " terminal-search-match" : "");
-      item.dataset.worktreeId = worktreeId;
-      if (searchMatch) item.tabIndex = 0;
-      const groupName = c.group_name || this.terminalGroupNameForSession(c.session_id, worktreeId);
-      item.title = `${c.title}\n${c.command || "zsh"}\n${c.cwd}\nclosed ${c.closed_at_est}` +
-        (groupName ? `\ngroup ${groupName}` : "") +
-        (c.worktree_branch ? `\nworktree ${c.worktree_branch}` : "") +
-        (c.agent_session_id ? `\nreopens ${c.agent_kind} session ${c.agent_session_id}` : "") + "\nclick to reopen";
-      const icon = document.createElement("span");
-      icon.className = "codicon codicon-history";
-      const name = document.createElement("span");
-      name.className = "file-item-name";
-      if (searchMatch) this.appendTerminalSearchHighlightedText(name, c.title, search);
-      else name.textContent = c.title;
-      const group = document.createElement("span");
-      group.className = "closed-group";
-      group.textContent = groupName;
-      const worktree = document.createElement("span");
-      worktree.className = "worktree-badge";
-      worktree.textContent = c.worktree_branch ? `⎇ ${c.worktree_branch.split("/").pop()}` : "";
-      worktree.title = c.worktree_path || "";
-      const purge = document.createElement("button");
-      purge.className = "item-close";
-      purge.textContent = "✕";
-      purge.title = "Remove from history";
-      purge.onclick = (e) => { e.stopPropagation(); this.purgeClosed(c.session_id); };
-      item.append(icon, name, worktree, group, purge);
-      this.bindTerminalSearchHoverPopup(item, searchMatch);
-      item.onclick = () => {
-        this.setInteractionWorktreeFromElement(item, c);
-        this.reopenClosed(c.session_id);
-      };
-      item.onfocus = () => {
-        if (this.terminalSearchText.trim()) this.terminalSearchFocusIndex = this.terminalSearchRows().indexOf(item);
-      };
-      item.onkeydown = (event) => {
-        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-          event.preventDefault();
-          event.stopPropagation();
-          this.moveTerminalSearchRow(event.key === "ArrowDown" ? 1 : -1);
-        } else if (event.key === "Enter") {
-          event.preventDefault();
-          item.click();
-        } else if (event.key === "Escape") {
-          event.preventDefault();
-          this.closeTerminalSearchEditor();
-        }
-      };
-      list.appendChild(item);
-    }
-    if (matchingClosed.length > visibleClosed.length && visibleClosed.length < CLOSED_SESSIONS_MAX_DISPLAY) {
-      const loadMore = document.createElement("button");
-      loadMore.className = "closed-load-more";
-      loadMore.textContent = `load more (${Math.min(
-        CLOSED_SESSIONS_MAX_DISPLAY - visibleClosed.length,
-        matchingClosed.length - visibleClosed.length)})`;
-      loadMore.title = "Show more recently closed terminals";
-      loadMore.onclick = (event) => {
-        event.stopPropagation();
-        this.closedDisplayLimit = Math.min(
-          CLOSED_SESSIONS_MAX_DISPLAY, this.closedDisplayLimit + CLOSED_SESSIONS_INITIAL_DISPLAY);
-        this.renderList();
-      };
-      list.appendChild(loadMore);
-    }
-  }
-
-  async reopenClosed(sessionId) {
-    const res = await fetch(`/api/closed/${sessionId}/reopen`, { method: "POST" });
-    if (!res.ok) return false;
-    const reopened = await res.json();
-    const reopenedSessionId = reopened.session_id || sessionId;
-    await this.refresh();
-    if (!this.session(reopenedSessionId)) return false;
-    this.activate(reopenedSessionId, { reveal: true });
-    const view = this.views.get(reopenedSessionId);
-    if (view) view.pinBottomUntil = Date.now() + 6000;
-    requestAnimationFrame(() => {
-      if (this.activeId !== reopenedSessionId || this.activeFileKey !== null) return;
-      this.keepActiveSessionVisible();
-      this.focusActiveEditor();
-    });
-    return true;
-  }
-
-  async restoreLastClosedTerminal() {
-    if (this.restoreLastClosedTerminalBusy) return;
-    const lastClosed = this.closedSessions[0];
-    if (!lastClosed) {
-      this.$("status-name").textContent = "no recently closed terminal";
-      return;
-    }
-    if (this.restoreLastClosedTerminalNeedsConfirmation &&
-        !window.confirm("You already restored the last closed terminal. Restore another older terminal?")) return;
-    this.restoreLastClosedTerminalBusy = true;
-    try {
-      if (await this.reopenClosed(lastClosed.session_id)) this.restoreLastClosedTerminalNeedsConfirmation = true;
-    } finally {
-      this.restoreLastClosedTerminalBusy = false;
-    }
-  }
-
-  async purgeClosed(sessionId) {
-    await fetch(`/api/closed/${sessionId}`, { method: "DELETE" });
-    this.refresh();
-  }
-
-  restorePageFavicon() {
-    if (!this.pageFavicon) return;
-    this.pageFavicon.type = this.pageFaviconType;
-    this.pageFavicon.href = this.pageFaviconHref;
-  }
-
-  showPageTitleFaviconState(faviconState) {
-    if (!this.pageFavicon) return;
-    if (faviconState === "plain") {
-      this.restorePageFavicon();
-      return;
-    }
-    this.pageFavicon.type = "image/svg+xml";
-    this.pageFavicon.href = faviconState === "processing"
-      ? "/static/favicon-processing.svg"
-      : "/static/favicon-unread.svg";
-  }
-
-  updateDocumentTitle(pageTitle, faviconState) {
-    document.title = pageTitle;
-    if (this.pageTitleFaviconState === faviconState) return;
-    this.pageTitleFaviconState = faviconState;
-    this.showPageTitleFaviconState(faviconState);
-  }
-
-  renderTopbar() {
-    const s = this.session(this.activeId);
-    const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    const tabTitle = entry ? entry.name : (s ? this.titlePresentation(s).text : null);
-    const pageTitle = this.vscodeMode ? "TermDeck" : (tabTitle ? `${tabTitle} — TermDeck` : "TermDeck");
-    const processing = !entry && !!s && this.titlePresentation(s).spinning;
-    const unread = !entry && !!s && !processing && this.unreadSessions.has(s.session_id);
-    this.updateDocumentTitle(pageTitle, processing ? "processing" : unread ? "unread" : "plain");
-    const statusEl = this.$("status-name");
-    if (entry) {
-      statusEl.textContent = this.vscodeMode ? entry.name : "";
-    } else {
-      statusEl.textContent = this.vscodeMode ? (s ? this.titlePresentation(s).text : "") : (s ? `${this.titlePresentation(s).text}  ·  ${s.cwd}` : "");
-    }
-    statusEl.title = statusEl.textContent;
-    this.updateActiveTerminalAge();
-    const fileClose = this.$("file-view-close");
-    if (fileClose) {
-      fileClose.classList.toggle("hidden", !entry || this.vscodeMode);
-      fileClose.title = "Return to terminal (Esc)";
-      fileClose.setAttribute("aria-label", "Return to terminal");
-    }
-    const fileHistoryToggle = this.$("file-history-toggle");
-    if (fileHistoryToggle) {
-      const historyTarget = entry || (this.gitReviewOpen ? this.gitFocusedFile : null);
-      fileHistoryToggle.classList.toggle("hidden", !historyTarget || this.vscodeMode);
-      fileHistoryToggle.classList.toggle("on", !!entry && this.fileHistoryOpen);
-      const historyName = entry?.name || this.gitFocusedFile?.path?.split("/").pop();
-      fileHistoryToggle.title = historyTarget
-        ? `File history for ${historyName} · right-click to filter Local or Git history` : "File history";
-      fileHistoryToggle.setAttribute("aria-pressed", String(!!entry && this.fileHistoryOpen));
-    }
-    this.updateFileHistoryFilterButtons();
-    const navigationState = this.parseNavState(this.lastNavJson);
-    if (!entry && s && navigationState?.kind === "term" && navigationState.id === s.session_id) {
-      // Through replaceNav, not history directly: this runs on every chrome render, so calling history
-      // itself rewrote the identical URL about once a second and skipped the identical-state guard that
-      // exists to prevent exactly that. History writes are rate limited in WebKit, so no-ops are not free.
-      this.replaceNav(navigationState);
-    }
-    this.renderHistoryMeta();
-    this.renderFileEditorChrome();
-  }
-
-  fileHistorySourceLabel(source) {
-    return { opened: "Opened", external: "External change", manual: "Edited", restore: "Restored" }[source] || source;
-  }
-
-  fileHistoryTimestampLabel(value) {
-    const text = String(value || "").replace("T", " ");
-    return text.length >= 16 ? text.slice(0, 16) : text;
-  }
-
-  fileHistoryItemKey(item) {
-    if (item.kind === "current") return "current";
-    return `${item.kind}:${item.kind === "git" ? item.commit_id : item.version_id}`;
-  }
-
-  fileHistoryItemLabel(item) {
-    if (item.kind === "current") return "Current file";
-    if (item.kind === "git") return `${item.short_id} ${item.message}`;
-    return this.fileHistorySourceLabel(item.source);
-  }
-
-  fileHistoryItemTimestampLabel(item) {
-    if (item.kind === "current") return "Working copy";
-    return this.fileHistoryTimestampLabel(item.kind === "git" ? item.committed_at : item.captured_at_est);
-  }
-
-  disposeFileHistoryEditors() {
-    this.fileHistoryDiffEditor?.dispose();
-    this.fileHistoryCurrentEditor?.dispose();
-    this.fileHistoryDiffEditor = null;
-    this.fileHistoryCurrentEditor = null;
-    for (const model of this.fileHistoryTransientModels) model.dispose();
-    this.fileHistoryTransientModels.clear();
-    this.fileHistoryActiveComparison = null;
-    this.fileHistoryDiffBlocks = [];
-    this.fileHistoryDiffBlockIndex = -1;
-  }
-
-  updateFileHistoryDiffToolbar() {
-    const toolbar = this.$("file-history-diff-toolbar");
-    const comparison = this.fileHistoryActiveComparison;
-    const hasChanges = this.fileHistoryDiffBlocks.length > 0;
-    toolbar.classList.toggle("hidden", !comparison?.isDiff);
-    const previous = this.$("file-history-diff-previous");
-    const next = this.$("file-history-diff-next");
-    const undoBlock = this.$("file-history-diff-undo-block");
-    const undoLine = this.$("file-history-diff-undo-line");
-    previous.disabled = !hasChanges;
-    next.disabled = !hasChanges;
-    undoBlock.disabled = !comparison?.modifiedEditable || !hasChanges;
-    undoLine.disabled = !comparison?.modifiedEditable || !hasChanges;
-    this.$("file-history-diff-position").textContent = hasChanges
-      ? `${this.fileHistoryDiffBlockIndex + 1}/${this.fileHistoryDiffBlocks.length}` : "0/0";
-  }
-
-  refreshFileHistoryDiffNavigation() {
-    const comparison = this.fileHistoryActiveComparison;
-    if (!comparison?.isDiff || !comparison.modifiedEditable) return;
-    const diff = this.computeFileHistoryLineDiff(comparison.originalModel.getValue(), comparison.modifiedModel.getValue());
-    this.fileHistoryDiffBlocks = diff.tooLarge ? [] : this.fileHistoryDiffBlocksFromLines(diff.lines);
-    this.fileHistoryDiffBlockIndex = this.fileHistoryDiffBlocks.length
-      ? Math.min(Math.max(this.fileHistoryDiffBlockIndex, 0), this.fileHistoryDiffBlocks.length - 1) : -1;
-    this.updateFileHistoryDiffToolbar();
-  }
-
-  toggleFileHistory() {
-    if (this.fileHistoryOpen) {
-      this.closeFileHistory();
-      return;
-    }
-    if (this.vscodeMode) return;
-    if (this.activeFileKey === null) {
-      if (this.gitReviewOpen && this.gitFocusedFile) {
-        const selection = this.gitFocusedFile.revision ? ["current", `git:${this.gitFocusedFile.revision}`] : [];
-        void this.openFileHistoryForPath(this.gitFocusedFile.root, this.gitFocusedFile.path, "all", { selection });
-      }
-      return;
-    }
-    this.fileHistoryMode = "all";
-    this.fileHistoryOpen = true;
-    this.fileHistorySelections = [];
-    this.$("file-history-panel").classList.remove("hidden");
-    this.$("file-history-toggle").classList.add("on");
-    this.$("file-history-toggle").setAttribute("aria-pressed", "true");
-    void this.loadFileHistory();
-    this.pushNav({ kind: "file-history", key: this.activeFileKey, mode: this.fileHistoryMode });
-  }
-
-  openActiveFileHistoryMenu(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    const target = entry || (this.gitReviewOpen ? this.gitFocusedFile : null);
-    if (!target) return;
-    const menu = this.$("context-menu");
-    menu.textContent = "";
-    this.contextMenuTarget = { type: "file-history", key: this.activeFileKey };
-    this.addContextItem(menu, "All history", () => this.openFileHistoryForPath(target.root, target.path, "all"), "history");
-    this.addContextItem(menu, "Local history", () => this.openFileHistoryForPath(target.root, target.path, "local"), "history");
-    this.addContextItem(menu, "Git history", () => this.openFileHistoryForPath(target.root, target.path, "git"), "git-commit");
-    this.positionContextMenu(menu, event.clientX, event.clientY);
-  }
-
-  closeFileHistory(updateNavigation = true) {
-    this.fileHistoryOpen = false;
-    clearTimeout(this.fileHistoryComparisonTimer);
-    this.fileHistoryComparisonTimer = 0;
-    this.disposeFileHistoryEditors();
-    this.updateFileHistoryDiffToolbar();
-    this.fileHistorySelections = [];
-    this.fileHistoryVersions = [];
-    this.fileHistoryItems = [];
-    this.fileHistoryLoadGeneration += 1;
-    this.$("file-history-panel")?.classList.add("hidden");
-    this.$("file-history-toggle")?.classList.remove("on");
-    this.$("file-history-toggle")?.setAttribute("aria-pressed", "false");
-    if (updateNavigation && this.activeFileKey !== null && this.openFiles.has(this.activeFileKey)) {
-      this.pushNav({ kind: "file", key: this.activeFileKey });
-    }
-  }
-
-  setFileHistoryMode(mode, updateNavigation = true) {
-    if (!this.fileHistoryOpen || !["all", "local", "git"].includes(mode) || this.fileHistoryMode === mode) return;
-    this.fileHistoryMode = mode;
-    this.fileHistorySelections = [];
-    this.updateFileHistoryFilterButtons();
-    void this.loadFileHistory();
-    if (updateNavigation && this.activeFileKey !== null) {
-      this.replaceNav({ kind: "file-history", key: this.activeFileKey, mode: this.fileHistoryMode });
-    }
-  }
-
-  updateFileHistoryFilterButtons() {
-    const filters = this.$("file-history-filters");
-    if (!filters) return;
-    for (const button of filters.querySelectorAll("button[data-mode]")) {
-      const selected = button.dataset.mode === this.fileHistoryMode;
-      button.classList.toggle("on", selected);
-      button.setAttribute("aria-pressed", String(selected));
-    }
-  }
-
-  fileHistoryItemTime(item) {
-    if (item.kind === "git") return Date.parse(item.committed_at) || 0;
-    const localTime = String(item.captured_at_est || "").replace(" ", "T");
-    return Date.parse(localTime) || 0;
-  }
-
-  async loadFileHistory(compareWithPreviousVersion = false) {
-    const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    if (!entry || this.vscodeMode) {
-      this.closeFileHistory();
-      return;
-    }
-    const generation = ++this.fileHistoryLoadGeneration;
-    this.updateFileHistoryFilterButtons();
-    const path = `${entry.root}/${entry.path}`;
-    this.$("file-history-path").textContent = path;
-    this.$("file-history-path").title = path;
-    this.$("file-history-list").textContent = "loading history…";
-    this.$("file-history-preview-empty").textContent = "Select one version to compare with the current file, or select two timeline entries to compare them.";
-    this.$("file-history-preview-empty").classList.remove("hidden");
-    this.$("file-history-preview").classList.add("hidden");
-    const query = `root=${encodeURIComponent(entry.root)}&path=${encodeURIComponent(entry.path)}`;
-    const [localResponse, gitResponse] = await Promise.all([
-      fetch(`/api/files/history?${query}`),
-      fetch(`/api/files/git-history?${query}`),
-    ]);
-    if (generation !== this.fileHistoryLoadGeneration || !this.fileHistoryOpen) return;
-    if (!localResponse.ok && !gitResponse.ok) {
-      this.$("file-history-list").textContent = "history unavailable";
-      return;
-    }
-    const localVersions = localResponse.ok ? await localResponse.json() : [];
-    const gitCommits = gitResponse.ok ? await gitResponse.json() : [];
-    this.fileHistoryVersions = localVersions;
-    const localItems = localVersions.map((version) => ({ kind: "local", ...version }));
-    const gitItems = gitCommits.map((commit) => ({ kind: "git", ...commit }));
-    const historicalItems = [
-      ...(this.fileHistoryMode === "git" ? [] : localItems),
-      ...(this.fileHistoryMode === "local" ? [] : gitItems),
-    ].sort((left, right) => this.fileHistoryItemTime(right) - this.fileHistoryItemTime(left));
-    this.fileHistoryItems = [{ kind: "current" }, ...historicalItems];
-    if (generation !== this.fileHistoryLoadGeneration || !this.fileHistoryOpen) return;
-    const availableKeys = new Set(this.fileHistoryItems.map((item) => this.fileHistoryItemKey(item)));
-    this.fileHistorySelections = this.fileHistorySelections.filter((key) => availableKeys.has(key)).slice(-2);
-    if (compareWithPreviousVersion && historicalItems.length) {
-      this.fileHistorySelections = ["current", this.fileHistoryItemKey(historicalItems[0])];
-    } else if (!this.fileHistorySelections.length && this.fileHistoryItems.length) {
-      this.fileHistorySelections = [this.fileHistoryItemKey(this.fileHistoryItems[0])];
-    }
-    this.renderFileHistoryRows();
-    await this.renderFileHistoryComparison(generation);
-  }
-
-  renderFileHistoryRows() {
-    const list = this.$("file-history-list");
-    list.textContent = "";
-    if (!this.fileHistoryItems.length) {
-      list.textContent = "No matching history found for this file.";
-      return;
-    }
-    for (const item of this.fileHistoryItems) {
-      const itemKey = this.fileHistoryItemKey(item);
-      const row = document.createElement("div");
-      row.className = `file-history-version kind-${item.kind}` + (item.kind === "current" ? " current" : "") +
-        (this.fileHistorySelections.includes(itemKey) ? " selected" : "");
-      const select = document.createElement("button");
-      select.className = "file-history-version-select";
-      select.type = "button";
-      select.title = item.kind === "current"
-        ? "Open the current file for editing"
-        : "Select one; hold Shift or ⌘/Ctrl to select another for comparison";
-      const source = document.createElement("span");
-      source.className = "file-history-version-source";
-      source.textContent = this.fileHistoryItemLabel(item);
-      const date = document.createElement("span");
-      date.className = "file-history-version-date";
-      const timestamp = this.fileHistoryItemTimestampLabel(item);
-      date.textContent = item.kind === "git" ? `${item.author} · ${timestamp}` : timestamp;
-      date.title = item.kind === "current"
-        ? "The current editable working copy"
-        : item.kind === "git" ? `${item.author} · ${item.committed_at}` : String(item.captured_at_est || "");
-      const size = document.createElement("span");
-      size.className = "file-history-version-size";
-      size.textContent = item.kind === "current" ? "Editable" : item.kind === "git" ? "Git" : `${Math.ceil(Number(item.byte_size || 0) / 1024)} KB`;
-      select.append(source, date, size);
-      select.onclick = (event) => this.selectFileHistoryItem(item, event);
-      row.appendChild(select);
-      if (item.kind === "local") {
-        const restore = document.createElement("button");
-        restore.className = "file-history-restore";
-        restore.type = "button";
-        restore.title = "Restore this version";
-        restore.textContent = "Restore";
-        restore.onclick = () => this.restoreFileHistoryVersion(item.version_id);
-        row.appendChild(restore);
-      }
-      list.appendChild(row);
-    }
-  }
-
-  selectFileHistoryItem(item, event) {
-    const key = this.fileHistoryItemKey(item);
-    if (event.shiftKey) {
-      const anchor = this.fileHistorySelections[0] || key;
-      this.fileHistorySelections = anchor === key ? [key] : [anchor, key];
-    } else if (event.metaKey || event.ctrlKey) {
-      const selected = this.fileHistorySelections.filter((candidate) => candidate !== key);
-      if (!this.fileHistorySelections.includes(key)) selected.push(key);
-      this.fileHistorySelections = selected.slice(-2);
-    } else {
-      this.fileHistorySelections = [key];
-    }
-    this.renderFileHistoryRows();
-    void this.renderFileHistoryComparison(this.fileHistoryLoadGeneration);
-    if (this.activeFileKey !== null) {
-      this.replaceNav({ kind: "file-history", key: this.activeFileKey, mode: this.fileHistoryMode,
-        selection: this.fileHistorySelections });
-    }
-  }
-
-  async loadFileHistoryItemContent(item, entry) {
-    const url = item.kind === "git"
-      ? `/api/files/git-history/${encodeURIComponent(item.commit_id)}?root=${encodeURIComponent(entry.root)}&path=${encodeURIComponent(entry.path)}`
-      : `/api/files/history/${encodeURIComponent(item.version_id)}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("history version unavailable");
-    const payload = await res.json();
-    return String(payload.content || "");
-  }
-
-  async currentFileHistoryContent(entry) {
-    if (entry.model) return entry.model.getValue();
-    const res = await fetch(`/api/files/read?root=${encodeURIComponent(entry.root)}&path=${encodeURIComponent(entry.path)}`);
-    if (!res.ok) throw new Error("current file unavailable");
-    const payload = await res.json();
-    return String(payload.content || "");
-  }
-
-  computeFileHistoryLineDiff(originalContent, modifiedContent) {
-    const original = String(originalContent).split("\n");
-    const modified = String(modifiedContent).split("\n");
-    if (original.length * modified.length > 1_000_000 || original.length + modified.length > 30_000) {
-      return { tooLarge: true, removed: original.length, added: modified.length, lines: [] };
-    }
-    const table = Array.from({ length: original.length + 1 }, () => new Uint32Array(modified.length + 1));
-    for (let originalIndex = original.length - 1; originalIndex >= 0; originalIndex -= 1) {
-      for (let modifiedIndex = modified.length - 1; modifiedIndex >= 0; modifiedIndex -= 1) {
-        table[originalIndex][modifiedIndex] = original[originalIndex] === modified[modifiedIndex]
-          ? table[originalIndex + 1][modifiedIndex + 1] + 1
-          : Math.max(table[originalIndex + 1][modifiedIndex], table[originalIndex][modifiedIndex + 1]);
-      }
-    }
-    const lines = [];
-    let originalIndex = 0;
-    let modifiedIndex = 0;
-    while (originalIndex < original.length || modifiedIndex < modified.length) {
-      if (originalIndex < original.length && modifiedIndex < modified.length && original[originalIndex] === modified[modifiedIndex]) {
-        lines.push({ kind: "context", text: original[originalIndex], oldLine: originalIndex + 1, newLine: modifiedIndex + 1 });
-        originalIndex += 1;
-        modifiedIndex += 1;
-      } else if (modifiedIndex >= modified.length || (originalIndex < original.length && table[originalIndex + 1][modifiedIndex] >= table[originalIndex][modifiedIndex + 1])) {
-        lines.push({ kind: "remove", text: original[originalIndex], oldLine: originalIndex + 1, newLine: "" });
-        originalIndex += 1;
-      } else {
-        lines.push({ kind: "add", text: modified[modifiedIndex], oldLine: "", newLine: modifiedIndex + 1 });
-        modifiedIndex += 1;
-      }
-    }
-    return { tooLarge: false, removed: lines.filter((line) => line.kind === "remove").length,
-      added: lines.filter((line) => line.kind === "add").length, lines };
-  }
-
-  renderFileHistoryDiff(originalContent, modifiedContent, originalLabel, modifiedLabel) {
-    const preview = this.$("file-history-preview");
-    preview.textContent = "";
-    const diff = this.computeFileHistoryLineDiff(originalContent, modifiedContent);
-    const header = document.createElement("div");
-    header.className = "file-history-diff-summary";
-    header.textContent = `${originalLabel} → ${modifiedLabel}   +${diff.added} −${diff.removed}`;
-    preview.appendChild(header);
-    if (diff.tooLarge) {
-      const notice = document.createElement("div");
-      notice.className = "file-history-diff-notice";
-      notice.textContent = "Diff is too large to render line-by-line; version contents are still available from the history entries.";
-      preview.appendChild(notice);
-    } else if (!diff.lines.some((line) => line.kind !== "context")) {
-      const notice = document.createElement("div");
-      notice.className = "file-history-diff-notice";
-      notice.textContent = "No differences.";
-      preview.appendChild(notice);
-    } else {
-      const body = document.createElement("div");
-      body.className = "file-history-diff-body";
-      for (const line of diff.lines) {
-        const row = document.createElement("div");
-        row.className = `file-history-diff-line ${line.kind}`;
-        const oldLine = document.createElement("span");
-        oldLine.className = "file-history-diff-line-number";
-        oldLine.textContent = line.oldLine;
-        const newLine = document.createElement("span");
-        newLine.className = "file-history-diff-line-number";
-        newLine.textContent = line.newLine;
-        const prefix = document.createElement("span");
-        prefix.className = "file-history-diff-prefix";
-        prefix.textContent = line.kind === "add" ? "+" : line.kind === "remove" ? "−" : " ";
-        const text = document.createElement("span");
-        text.className = "file-history-diff-text";
-        text.textContent = line.text;
-        row.append(oldLine, newLine, prefix, text);
-        body.appendChild(row);
-      }
-      preview.appendChild(body);
-    }
-    preview.classList.remove("hidden");
-    this.$("file-history-preview-empty").classList.add("hidden");
-  }
-
-  fileHistoryDiffBlocksFromLines(lines) {
-    const blocks = [];
-    let block = null;
-    let oldCursor = 1;
-    let newCursor = 1;
-    for (const line of lines) {
-      if (line.kind === "context") {
-        if (block) {
-          block.oldEnd = oldCursor - 1;
-          block.newEnd = newCursor - 1;
-          blocks.push(block);
-          block = null;
-        }
-        oldCursor = Number(line.oldLine) + 1;
-        newCursor = Number(line.newLine) + 1;
-        continue;
-      }
-      if (!block) block = { oldStart: oldCursor, oldEnd: oldCursor - 1, newStart: newCursor, newEnd: newCursor - 1,
-        originalLines: [], modifiedLines: [], lines: [] };
-      block.lines.push(line);
-      if (line.kind === "remove") {
-        block.originalLines.push(line.text);
-        oldCursor += 1;
-      } else {
-        block.modifiedLines.push(line.text);
-        newCursor += 1;
-      }
-    }
-    if (block) {
-      block.oldEnd = oldCursor - 1;
-      block.newEnd = newCursor - 1;
-      blocks.push(block);
-    }
-    return blocks;
-  }
-
-  createFileHistoryTransientModel(content, entry, item) {
-    const language = entry.model?.getLanguageId();
-    const model = monaco.editor.createModel(content, language, monaco.Uri.parse(
-      `inmemory://termdeck-file-history/${encodeURIComponent(`${entry.root}/${entry.path}/${this.fileHistoryItemKey(item)}`)}`));
-    this.fileHistoryTransientModels.add(model);
-    return model;
-  }
-
-  fileHistoryEditorOptions() {
-    return { automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
-      fontSize: this.settings.code_font_size, lineNumbersMinChars: 4, renderLineHighlight: "all", folding: true,
-      wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true };
-  }
-
-  renderFileHistoryCurrentEditor(entry) {
-    this.disposeFileHistoryEditors();
-    const host = this.$("file-history-editor-host");
-    host.classList.remove("hidden");
-    const editor = monaco.editor.create(host, { ...this.fileHistoryEditorOptions(), readOnly: false, model: entry.model,
-      theme: this.monacoThemeName() });
-    this.fileHistoryCurrentEditor = editor;
-    this.fileHistoryActiveComparison = { isDiff: false, modifiedEditable: false, entry, editor };
-    this.$("file-history-preview-empty").classList.add("hidden");
-    this.$("file-history-preview").classList.add("hidden");
-    this.updateFileHistoryDiffToolbar();
-    requestAnimationFrame(() => editor.layout());
-  }
-
-  renderFileHistorySplitEditor(entry, originalContent, modifiedContent, originalItem, modifiedItem, modifiedEditable) {
-    this.disposeFileHistoryEditors();
-    const host = this.$("file-history-editor-host");
-    host.classList.remove("hidden");
-    const originalModel = this.createFileHistoryTransientModel(originalContent, entry, originalItem);
-    const modifiedModel = modifiedEditable ? entry.model : this.createFileHistoryTransientModel(modifiedContent, entry, modifiedItem);
-    const editor = monaco.editor.createDiffEditor(host, { ...this.fileHistoryEditorOptions(), readOnly: !modifiedEditable,
-      originalEditable: false, renderSideBySide: true, theme: this.monacoThemeName() });
-    editor.setModel({ original: originalModel, modified: modifiedModel });
-    this.fileHistoryDiffEditor = editor;
-    this.fileHistoryActiveComparison = { isDiff: true, modifiedEditable, entry, editor,
-      originalModel, modifiedModel, originalItem, modifiedItem };
-    const diff = this.computeFileHistoryLineDiff(originalContent, modifiedContent);
-    this.fileHistoryDiffBlocks = diff.tooLarge ? [] : this.fileHistoryDiffBlocksFromLines(diff.lines);
-    this.fileHistoryDiffBlockIndex = this.fileHistoryDiffBlocks.length ? 0 : -1;
-    this.$("file-history-preview-empty").classList.add("hidden");
-    this.$("file-history-preview").classList.add("hidden");
-    this.updateFileHistoryDiffToolbar();
-    if (typeof editor.onDidUpdateDiff === "function") editor.onDidUpdateDiff(() => this.updateFileHistoryDiffToolbar());
-    requestAnimationFrame(() => {
-      editor.layout();
-      if (modifiedEditable) editor.getModifiedEditor().focus();
-      this.navigateFileHistoryDiff(0);
-    });
-  }
-
-  navigateFileHistoryDiff(direction) {
-    if (!this.fileHistoryDiffEditor || !this.fileHistoryDiffBlocks.length) return;
-    if (direction) {
-      const count = this.fileHistoryDiffBlocks.length;
-      this.fileHistoryDiffBlockIndex = (this.fileHistoryDiffBlockIndex + direction + count) % count;
-    }
-    const block = this.fileHistoryDiffBlocks[this.fileHistoryDiffBlockIndex];
-    if (!block) return;
-    const originalEditor = this.fileHistoryDiffEditor.getOriginalEditor();
-    const modifiedEditor = this.fileHistoryDiffEditor.getModifiedEditor();
-    const originalLine = Math.max(1, Math.min(originalEditor.getModel().getLineCount(), block.oldStart));
-    const modifiedLine = Math.max(1, Math.min(modifiedEditor.getModel().getLineCount(), block.newStart));
-    originalEditor.revealLineInCenter(originalLine);
-    modifiedEditor.revealLineInCenter(modifiedLine);
-    if (this.fileHistoryActiveComparison?.modifiedEditable) modifiedEditor.setPosition({ lineNumber: modifiedLine, column: 1 });
-    this.updateFileHistoryDiffToolbar();
-  }
-
-  replaceCurrentFileHistoryLines(startLine, endLine, replacementLines) {
-    const comparison = this.fileHistoryActiveComparison;
-    if (!comparison?.modifiedEditable || !comparison.entry.model) return;
-    const model = comparison.entry.model;
-    const lines = model.getLinesContent();
-    const startIndex = Math.max(0, Math.min(lines.length, Number(startLine || 1) - 1));
-    const endIndex = Math.max(startIndex, Math.min(lines.length, Number(endLine || 0)));
-    lines.splice(startIndex, endIndex - startIndex, ...replacementLines);
-    const lastLine = model.getLineCount();
-    const range = new monaco.Range(1, 1, lastLine, model.getLineMaxColumn(lastLine));
-    const editor = this.fileHistoryDiffEditor?.getModifiedEditor() || this.fileHistoryCurrentEditor;
-    editor.executeEdits("termdeck-file-history-restore", [{ range, text: lines.join("\n") }]);
-    editor.focus();
-  }
-
-  undoFileHistoryDiffBlock() {
-    const block = this.fileHistoryDiffBlocks[this.fileHistoryDiffBlockIndex];
-    if (!block) return;
-    this.replaceCurrentFileHistoryLines(block.newStart, block.newEnd, block.originalLines);
-  }
-
-  undoFileHistoryDiffLine() {
-    const block = this.fileHistoryDiffBlocks[this.fileHistoryDiffBlockIndex];
-    if (!block) return;
-    const position = this.fileHistoryDiffEditor?.getModifiedEditor().getPosition()?.lineNumber;
-    const line = block.lines.find((candidate) => candidate.kind === "add" && candidate.newLine === position) || block.lines[0];
-    if (line.kind === "add") this.replaceCurrentFileHistoryLines(line.newLine, line.newLine, []);
-    else this.replaceCurrentFileHistoryLines(block.newStart, block.newStart - 1, [line.text]);
-  }
-
-  async renderFileHistoryComparison(generation) {
-    const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    if (!entry || !this.fileHistoryOpen || generation !== this.fileHistoryLoadGeneration || !this.fileHistorySelections.length) return;
-    const selectionKeys = [...this.fileHistorySelections];
-    const selectedItems = selectionKeys.map((key) => this.fileHistoryItems.find((item) => this.fileHistoryItemKey(item) === key)).filter(Boolean);
-    if (!selectedItems.length) return;
-    try {
-      if (!entry.model) await this.refreshFileModelFromDisk(entry);
-      if (generation !== this.fileHistoryLoadGeneration || !this.fileHistoryOpen || selectionKeys.join("\n") !== this.fileHistorySelections.join("\n")) return;
-      const historyItems = selectedItems.filter((item) => item.kind !== "current");
-      if (!historyItems.length) {
-        this.renderFileHistoryCurrentEditor(entry);
-        return;
-      }
-      if (historyItems.length === 1) {
-        const originalContent = await this.loadFileHistoryItemContent(historyItems[0], entry);
-        if (generation !== this.fileHistoryLoadGeneration || !this.fileHistoryOpen || selectionKeys.join("\n") !== this.fileHistorySelections.join("\n")) return;
-        this.renderFileHistorySplitEditor(entry, originalContent, entry.model.getValue(), historyItems[0], { kind: "current" }, true);
-        return;
-      }
-      const selectedContents = await Promise.all(historyItems.slice(0, 2).map((item) => this.loadFileHistoryItemContent(item, entry)));
-      if (generation !== this.fileHistoryLoadGeneration || !this.fileHistoryOpen || selectionKeys.join("\n") !== this.fileHistorySelections.join("\n")) return;
-      this.renderFileHistorySplitEditor(entry, selectedContents[0], selectedContents[1], historyItems[0], historyItems[1], false);
-    } catch (error) {
-      this.disposeFileHistoryEditors();
-      this.updateFileHistoryDiffToolbar();
-      this.$("file-history-preview-empty").textContent = error.message || "history comparison unavailable";
-      this.$("file-history-preview-empty").classList.remove("hidden");
-      this.$("file-history-editor-host").classList.add("hidden");
-      this.$("file-history-preview").classList.add("hidden");
-    }
-  }
-
-  async restoreFileHistoryVersion(versionId) {
-    const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    const version = this.fileHistoryVersions.find((candidate) => candidate.version_id === versionId);
-    if (!entry || !version) return;
-    if (entry.dirty && !confirm("Discard the current unsaved editor changes and restore this version?")) return;
-    if (!confirm(`Restore ${entry.name} from ${version.captured_at_est}?`)) return;
-    const res = await fetch("/api/files/history/restore", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ root: entry.root, path: entry.path, version_id: versionId }),
-    });
-    if (!res.ok) {
-      const error = await res.json().catch(() => ({}));
-      alert(error.detail || "restore failed");
-      return;
-    }
-    entry.dirty = false;
-    await this.refreshFileModelFromDisk(entry);
-    this.renderList();
-    await this.loadFileHistory();
-  }
-
-  renderHistoryMeta() {
-    const meta = this.$("history-meta");
-    if (!meta) return;
-    const visible = this.historyOpen && this.activeFileKey === null;
-    meta.classList.toggle("hidden", !visible);
-    if (!visible) {
-      meta.textContent = "";
-      meta.title = "";
-      return;
-    }
-    const session = this.sessionOrClosed(this.activeId);
-    const turns = this.historyTurnsBySession.get(this.activeId) || this.historyTurns;
-    const plan = [...turns].reverse().find((turn) => turn.kind === "plan" && Array.isArray(turn.plan) && turn.plan.length);
-    const parts = [];
-    if (plan) {
-      const completed = plan.plan.filter((item) => ["complete", "completed", "done"].includes(String(item.status || "").toLowerCase())).length;
-      const active = plan.plan.find((item) => String(item.status || "").toLowerCase() === "in_progress");
-      parts.push(`goal ${completed}/${plan.plan.length}`);
-      if (active?.step) parts.push(String(active.step));
-    }
-    if (this.processingStates.get(this.activeId)) parts.push("working");
-    meta.textContent = parts.join(" · ");
-    meta.title = meta.textContent;
-    meta.classList.toggle("hidden", parts.length === 0);
-    this.renderHistoryModel(session, turns);
-  }
-
-  historyModel(session, turns = []) {
-    const sessionId = session?.session_id || this.activeId;
-    const cachedModel = sessionId ? this.sessionModelById.get(sessionId) || "" : "";
-    if (cachedModel && !this.historyModelIsGeneric(cachedModel)) return cachedModel;
-    const titleModel = this.historyModelFromText(session?.title);
-    if (titleModel && !this.historyModelIsGeneric(titleModel)) return titleModel;
-    const cliTitleModel = this.historyModelFromText(session?.cli_title);
-    if (cliTitleModel && !this.historyModelIsGeneric(cliTitleModel)) return cliTitleModel;
-    const titleCliModel = this.historyModelFromText(session?.title || session?.cli_title);
-    if (titleCliModel && !this.historyModelIsGeneric(titleCliModel)) return titleCliModel;
-    const fromCommand = this.historyModelFromCommand(session?.command || "");
-    if (fromCommand && !this.historyModelIsGeneric(fromCommand)) return fromCommand;
-    const fromTranscript = this.historyModelFromTranscript(turns);
-    if (fromTranscript) return fromTranscript;
-    const sessionTitle = String(session?.title || "").toLowerCase();
-    if (sessionTitle.includes("codex")) return "codex";
-    if (sessionTitle.includes("claude")) return "claude";
-    if (sessionTitle.includes("agy")) return "agy";
-    const sessionCliTitle = String(session?.cli_title || "").toLowerCase();
-    if (sessionCliTitle.includes("codex")) return "codex";
-    if (sessionCliTitle.includes("claude")) return "claude";
-    if (sessionCliTitle.includes("agy")) return "agy";
-    if (String(session?.command || "").toLowerCase().includes("zsh") ||
-        String(session?.command || "").toLowerCase().includes("bash") ||
-        String(session?.command || "").toLowerCase().includes("sh")) return "none";
-    if (this.historyModelFromText(session?.agent_kind)) return this.historyModelFromText(session?.agent_kind);
-    return "none";
-  }
-
-  historyModelFromCommand(command) {
-    const text = this.normalizeModelText(command);
-    if (!text) return "";
-    const modelFromFlag = this.historyModelFromCommandFlags(text);
-    if (modelFromFlag) return modelFromFlag;
-    const commandModel = this.normalizeModelKind(text);
-    return commandModel || this.historyModelFromValue(text);
-  }
-
-  historyModelFromCommandFlags(text) {
-    const rawTokens = text.match(/"([^"\\]|\\.)*"|'([^'\\]|\\.)*'|[^\s]+/g);
-    const tokens = rawTokens === null ? [] : rawTokens;
-    for (let i = 0; i < tokens.length; i++) {
-      const token = this.normalizeModelText(tokens[i]);
-      const lower = token.toLowerCase();
-      if (lower === "--model" || lower === "--model-name" || lower === "--model_name" || lower === "-m") {
-        const candidate = this.historyModelFromValue(tokens[i + 1]);
-        if (candidate) return candidate;
-      }
-      const assignmentMatch = /^(?:--model|--model-name|--model_name|-m)=(.+)$/i.exec(token);
-      if (!assignmentMatch) continue;
-      const candidate = this.historyModelFromValue(assignmentMatch[1]);
-      if (candidate) return candidate;
-    }
-    return "";
-  }
-
-  historyModelFromValue(raw) {
-    const value = this.normalizeModelText(raw).replace(/^["']|["']$/g, "");
-    if (!value) return "";
-    const modelPattern = /\b(gpt-[a-z0-9.+-]+(?:-[a-z0-9.+-]+)*(?:\s+(?:x)?(?:high|medium|low|standard|mini|turbo))?)\b/gi;
-    const match = value.match(modelPattern);
-    if (!match) return "";
-    return match[0];
-  }
-
-  historyModelFromText(raw) {
-    const value = this.historyModelFromValue(raw);
-    if (value) return value;
-    return this.normalizeModelKind(raw);
-  }
-
-  normalizeModelText(raw) {
-    return typeof raw === "string" ? raw.trim() : "";
-  }
-
-  normalizeModelKind(raw) {
-    const text = String(raw || "").toLowerCase();
-    if (!text) return "";
-    if (text.includes("codex")) return "codex";
-    if (text.includes("claude")) return "claude";
-    if (text.includes("agy")) return "agy";
-    if (text.includes("none") || /\b(shell|zsh|bash)\b/.test(text)) return "none";
-    return "";
-  }
-
-  cacheSessionModel(session) {
-    if (!session || !session.session_id) return;
-    const sessionId = session.session_id;
-    const commandModel = this.historyModelFromCommand(session.command);
-    const titleModel = this.historyModelFromText(session.title);
-    const cliTitleModel = this.historyModelFromText(session.cli_title);
-    const specific = [commandModel, titleModel, cliTitleModel].find((value) => value && !this.historyModelIsGeneric(value));
-    if (specific) this.sessionModelById.set(sessionId, specific);
-    else this.sessionModelById.delete(sessionId);
-  }
-
-  cacheSessionModelFromHistory(sessionId, turns = []) {
-    if (!sessionId) return;
-    const specific = this.historyModelFromTranscript(turns);
-    if (specific) this.sessionModelById.set(sessionId, specific);
-  }
-
-  historyModelFromTranscript(turns = []) {
-    if (!Array.isArray(turns)) return "";
-    for (const turn of turns) {
-      const candidates = [
-        this.historyModelFromValue(this.normalizeModelText(turn?.model)),
-        this.historyModelFromValue(this.normalizeModelText(turn?.model_name)),
-        this.historyModelFromValue(this.normalizeModelText(turn?.model_slug)),
-        this.historyModelFromValue(this.normalizeModelText(turn?.assistant_model)),
-        this.historyModelFromValue(this.normalizeModelText(turn?.text)),
-      ];
-      const explicit = candidates.find((candidate) => candidate);
-      if (explicit) return explicit;
-    }
-    return "";
-  }
-
-  historyModelDisplayFromTranscript(turns = []) {
-    if (!Array.isArray(turns)) return "";
-    return this.historyModelFromTranscript(turns);
-  }
-
-  historyModelIsGeneric(raw) {
-    const text = this.normalizeModelText(raw).toLowerCase();
-    return text === "codex" || text === "claude" || text === "none" || text === "shell"
-      || text === "agy" || text === "bash" || text === "zsh" || text === "sh";
-  }
-
-  historyModelDisplay(session, turns = []) {
-    const fromTranscript = this.historyModelDisplayFromTranscript(turns);
-    if (fromTranscript) return fromTranscript;
-    return this.historyModelLabel(session, turns);
-  }
-
-  historyModelLabel(session, turns = []) {
-    const model = this.historyModel(session, turns);
-    if (this.historyModelIsGeneric(model)) {
-      const label = model === "codex" ? "Codex" : model === "claude" ? "Claude" : model === "agy" ? "AGY" : "Shell";
-      return label;
-    }
-    const label = this.historyModelModelLabel(model);
-    return label || "";
-  }
-
-  historyModelModelLabel(model) {
-    return this.normalizeModelText(model);
-  }
-
-  terminalStatusModelFromLine(line) {
-    const text = this.normalizeTerminalTailLine(line);
-    if (!text || !/(?:context|tokens?|remaining|left|used|model|thinking|working|%)/i.test(text)) return "";
-    const gptModel = this.historyModelFromValue(text);
-    if (gptModel && !this.historyModelIsGeneric(gptModel)) return gptModel;
-    const match = text.match(/\b((?:claude|gemini)(?:[-\s](?!(?:context|tokens?|remaining|left|used|model|thinking|working)\b)[a-z0-9.]+)*|(?:opus|sonnet|haiku)(?:[-\s](?!(?:context|tokens?|remaining|left|used|model|thinking|working)\b)[a-z0-9.]+)*)\b/i);
-    const model = this.normalizeModelText(match?.[1] || "");
-    return this.historyModelIsGeneric(model) ? "" : model;
-  }
-
-  terminalStatusModel(view) {
-    const buffer = view?.term?.buffer?.active;
-    if (!buffer || typeof buffer.getLine !== "function") return "";
-    const rows = Math.max(1, Number(view.term.rows || 1));
-    const end = Math.max(rows, Number(buffer.baseY || 0) + rows);
-    const start = Math.max(0, end - Math.max(12, rows));
-    for (let index = end - 1; index >= start; index--) {
-      const line = buffer.getLine(index);
-      const model = this.terminalStatusModelFromLine(line ? line.translateToString(true) : "");
-      if (model) return model;
-    }
-    return "";
-  }
-
-  renderHistoryModel(session, turns = []) {
-    const modelEl = this.$("history-model");
-    if (!modelEl) return;
-    if (!this.historyOpen || this.activeFileKey !== null) {
-      modelEl.textContent = "";
-      modelEl.classList.add("hidden");
-      return;
-    }
-    const model = this.terminalStatusModel(this.views.get(session?.session_id || this.activeId)) ||
-      this.historyModelDisplay(session, turns);
-    if (!model) {
-      modelEl.textContent = "";
-      modelEl.classList.add("hidden");
-      return;
-    }
-    modelEl.textContent = model;
-    modelEl.classList.remove("hidden");
-    modelEl.title = modelEl.textContent;
-  }
-
-  sessionSupportsTranscript(session = this.session(this.activeId)) {
-    return !!session && ["codex", "claude", "agy"].includes(session.agent_kind);
-  }
-
-  usesTranscriptFirstSession(session = this.session(this.activeId)) {
-    return this.sessionSupportsTranscript(session);
-  }
-
-  selectedHistoryMode(session = this.session(this.activeId)) {
-    if (!this.sessionSupportsTranscript(session)) return false;
-    const savedMode = this.getProjectState().session_view_modes?.[session.session_id];
-    if (savedMode === "markdown" || savedMode === "terminal") return savedMode === "markdown";
-    return this.settings.transcript_first_surface === "markdown";
-  }
-
-  reconcileActiveSessionViewMode() {
-    if (!this.activeId || this.activeFileKey !== null || !this.session(this.activeId)) return;
-    const enabled = this.selectedHistoryMode();
-    if (this.historyOpen !== enabled) this.setHistoryMode(enabled, { persist: false });
-  }
-
-  applyMainLayout() {
-    const fileMode = this.activeFileKey !== null;
-    if (!fileMode && this.fileHistoryOpen) this.closeFileHistory();
-    const gitReviewMode = this.gitReviewOpen && this.sideView === "git" && !fileMode;
-    const historyMode = this.historyOpen && !fileMode && !gitReviewMode;
-    const transcriptSupported = this.sessionSupportsTranscript();
-    const transcriptFirstMode = historyMode && this.usesTranscriptFirstSession();
-    const fileWorkspaceMode = fileMode || FILES_SIDE_PANEL_TABS.includes(this.sideView);
-    this.$("file-tabs-bar").classList.toggle("hidden",
-      this.vscodeMode || (!fileMode && !FILES_SIDE_PANEL_TABS.includes(this.sideView)));
-    this.$("notebook-toggle").classList.toggle("hidden", fileMode || gitReviewMode || FILES_SIDE_PANEL_TABS.includes(this.sideView));
-    this.$("editor-wrap-toggle").classList.toggle("hidden", !fileWorkspaceMode);
-    this.$("editor-area").classList.toggle("hidden", !fileMode);
-    this.$("git-review-area").classList.toggle("hidden", !gitReviewMode);
-    this.$("history-area").classList.toggle("hidden", !historyMode);
-    this.$("history-area").classList.toggle("transcript-first", transcriptFirstMode);
-    this.$("terminal-area").classList.toggle("hidden", fileMode || historyMode || gitReviewMode);
-    this.$("conversation-outline").classList.toggle("hidden",
-      fileMode || gitReviewMode || !transcriptSupported || !this.conversationOutlineOpen);
-    this.$("conversation-outline-toggle").classList.toggle("transcript-unavailable", !fileMode && !transcriptSupported);
-    this.$("conversation-outline-toggle").classList.toggle("on", fileMode
-      ? this.fileInspectorMode === "outline" : !gitReviewMode && this.conversationOutlineOpen);
-    for (const id of ["history-btn", "vscode-history-btn"]) {
-      const historyButton = this.$(id);
-      if (!historyButton) continue;
-      historyButton.classList.toggle("transcript-unavailable", !transcriptSupported);
-      historyButton.classList.toggle("on", historyMode);
-      const openTerminal = transcriptFirstMode && historyMode;
-      const label = openTerminal ? "Open terminal" : "Open Markdown transcript";
-      historyButton.title = label;
-      historyButton.setAttribute("aria-label", label);
-      const icon = historyButton.querySelector(".codicon");
-      if (icon) icon.className = `codicon codicon-${openTerminal ? "terminal" : "markdown"}`;
-    }
-    for (const id of ["history-edits-toggle", "history-scroll-bottom"]) {
-      const button = this.$(id);
-      if (button) button.classList.toggle("hidden", !historyMode);
-    }
-    this.updateShortcutTitles();
-    this.$("attach-btn").classList.toggle("hidden", fileMode || gitReviewMode);
-    this.$("reveal-session-btn").classList.toggle("hidden", fileMode || gitReviewMode);
-    const attachButton = this.$("attach-btn");
-    if (attachButton) {
-      const label = historyMode ? "Upload file/image into Markdown prompt" : "Attach file/image to terminal";
-      attachButton.title = label;
-      attachButton.setAttribute("aria-label", label);
-    }
-    for (const id of ["terminal-resync-btn"]) {
-      const button = this.$(id);
-      if (button) button.classList.toggle("hidden", fileMode || gitReviewMode);
-    }
-    const terminalScrollButton = this.$("scroll-bottom-btn");
-    if (terminalScrollButton) {
-      terminalScrollButton.classList.toggle("hidden", historyMode || fileMode || gitReviewMode);
-    }
-    this.$("history-btn").classList.toggle("hidden", fileMode || gitReviewMode);
-    this.renderHistoryMeta();
-    this.updateHistoryThinkingIndicator();
-    this.renderHistoryQueue();
-    this.fitActive();
-    this.renderInlineSizeControls();
-  }
-
-  updateHistoryThinkingIndicator() {
-    const indicator = this.$("history-thinking-banner");
-    const processing = !!this.processingStates.get(this.activeId);
-    const awaitingProcessing = this.historyPendingProcessing.has(this.activeId);
-    const spinning = !!this.historyOpen && (processing || awaitingProcessing);
-    if (indicator) indicator.classList.toggle("hidden", !spinning);
-    const duration = this.$("history-thinking-duration");
-    if (duration) {
-      const session = this.session(this.activeId);
-      const sessionSince = Number(session?.processing_since);
-      const since = processing
-        ? (this.processingSince.get(this.activeId) || (sessionSince > 0 ? sessionSince * 1000 : 0))
-        : this.historyPendingProcessing.get(this.activeId);
-      const seconds = since ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0;
-      duration.textContent = spinning ? this.formatElapsed(seconds) : "";
-    }
-    if (spinning && !this.processingTimer) {
-      this.processingTimer = setInterval(() => this.updateHistoryThinkingIndicator(), 1000);
-    } else if (!spinning && this.processingTimer) {
-      clearInterval(this.processingTimer);
-      this.processingTimer = 0;
-    }
-    this.updateActiveThinkingBlock();
-  }
-
-  updateActiveThinkingBlock() {
-    const body = this.$("history-body");
-    if (!body) return;
-    body.querySelectorAll(".history-event.thinking.active").forEach((event) => event.classList.remove("active"));
-    if (!this.historyOpen || !this.processingStates.get(this.activeId)) return;
-    const last = body.lastElementChild;
-    if (last?.classList.contains("history-event") && last.classList.contains("thinking")) {
-      last.classList.add("active");
-    }
-  }
-
-  formatElapsed(seconds) {
-    if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
-    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-  }
-
-  renderHistoryQueue(view = this.views.get(this.activeId)) {
-    const container = this.$("history-queued");
-    const items = this.$("history-queued-items");
-    const count = this.$("history-queued-count");
-    if (!container || !items || !count) return;
-    const queued = view?.promptQueue || [];
-    const queueButton = this.$("history-queue-btn");
-    if (queueButton) {
-      queueButton.classList.toggle("on", queued.length > 0);
-      const queueLabel = queued.length ? `Queue prompt (${queued.length} pending)` : "Queue prompt after the current task";
-      queueButton.title = queueLabel;
-      queueButton.setAttribute("aria-label", queueLabel);
-    }
-    container.classList.toggle("hidden", !this.historyOpen || !queued.length);
-    count.textContent = queued.length ? `${queued.length} message${queued.length === 1 ? "" : "s"}` : "";
-    const activeEditor = document.activeElement?.classList?.contains("history-queued-editor") ? document.activeElement : null;
-    if (activeEditor && items.contains(activeEditor) && activeEditor.dataset.sessionId === view?.sessionId &&
-        !view?.promptQueueDispatching) return;
-    items.textContent = "";
-    queued.forEach((item, index) => {
-      const row = document.createElement("div");
-      row.className = "history-queued-item";
-      row.dataset.queueIndex = `${index}`;
-      const number = document.createElement("span");
-      number.className = "history-queued-index";
-      number.textContent = `${index + 1}.`;
-      const editor = document.createElement("textarea");
-      editor.className = "history-queued-editor";
-      editor.dataset.sessionId = view?.sessionId || "";
-      editor.value = item.draftText ?? item.text;
-      editor.rows = 1;
-      editor.spellcheck = false;
-      editor.setAttribute("aria-label", `Queued prompt ${index + 1}`);
-      const resize = () => {
-        editor.style.height = "auto";
-        editor.style.height = `${Math.min(editor.scrollHeight, 120)}px`;
-      };
-      editor.addEventListener("focus", () => { if (view) view.promptQueueEditIndex = index; });
-      editor.addEventListener("input", () => {
-        const current = view?.promptQueue?.[index];
-        if (!current) return;
-        current.draftText = editor.value;
-        this.persistMarkdownPromptQueue(view);
-        resize();
-      });
-      editor.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          const current = view?.promptQueue?.[index];
-          if (current) {
-            delete current.draftText;
-            editor.value = current.text;
-            resize();
-          }
-          return;
-        }
-        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-          event.preventDefault();
-          editor.blur();
-        }
-      });
-      editor.addEventListener("blur", () => {
-        const current = view?.promptQueue?.[index];
-        if (!current) return;
-        const next = editor.value;
-        current.draftText = next;
-        this.commitHistoryQueueEdit(view, index, next);
-      });
-      resize();
-      const remove = document.createElement("button");
-      remove.className = "history-queued-remove";
-      remove.type = "button";
-      remove.title = "Remove queued prompt";
-      remove.setAttribute("aria-label", `Remove queued prompt ${index + 1}`);
-      remove.textContent = "×";
-      remove.addEventListener("mousedown", (event) => event.preventDefault());
-      remove.addEventListener("click", () => this.removeHistoryQueueItem(view, index));
-      row.append(number, editor, remove);
-      items.appendChild(row);
-    });
-  }
-
-  commitHistoryQueueEdit(view, index, text) {
-    const item = view?.promptQueue?.[index];
-    if (!item) return;
-    const next = String(text || "");
-    if (!next.trim()) view.promptQueue.splice(index, 1);
-    else item.text = next;
-    delete item.draftText;
-    view.promptQueueEditIndex = null;
-    this.persistMarkdownPromptQueue(view);
-    this.renderHistoryQueue(view);
-  }
-
-  removeHistoryQueueItem(view, index) {
-    if (!view?.promptQueue?.[index]) return;
-    view.promptQueue.splice(index, 1);
-    view.promptQueueEditIndex = null;
-    this.persistMarkdownPromptQueue(view);
-    this.renderHistoryQueue(view);
-  }
-
-  focusActiveEditor() {
-    const view = this.views.get(this.activeId);
-    if (this.activeFileKey !== null) {
-      this.editor?.focus();
-      return;
-    }
-    if (this.gitReviewOpen && this.sideView === "git") {
-      this.gitReviewDiffEditor?.getModifiedEditor().focus();
-      return;
-    }
-    if (!view) return;
-    if (this.historyOpen) {
-      if (this.nativeVscodeMode) this.postVscodeNativeSession(this.session(this.activeId), false);
-      this.showPromptDraft(view);
-      this.$("history-prompt").focus();
-    } else {
-      if (this.nativeVscodeMode) {
-        this.postVscodeNativeSession(this.session(this.activeId), true);
-        return;
-      }
-      view.term.focus();
-    }
-  }
-
-  refocusActiveInputAfterToolbarAction() {
-    requestAnimationFrame(() => requestAnimationFrame(() => this.focusActiveEditor()));
-  }
-
-  scheduleActiveEditorFocus(sessionId) {
-    clearTimeout(this.activeEditorFocusTimer);
-    if (this.historyOpen) return;
-    this.activeEditorFocusTimer = window.setTimeout(this.runScheduledActiveEditorFocus.bind(this, sessionId), 80);
-  }
-
-  runScheduledActiveEditorFocus(sessionId) {
-    this.activeEditorFocusTimer = 0;
-    if (sessionId !== this.activeId || this.historyOpen) return;
-    this.focusActiveEditor();
-  }
-
-  closeHistory() {
-    this.setHistoryMode(false);
-  }
-
-  async toggleHistory() {
-    if (this.activeFileKey !== null || (!this.historyOpen && !this.sessionSupportsTranscript())) return;
-    this.setHistoryMode(!this.historyOpen);
-  }
-
-  setHistoryMode(enabled, options = {}) {
-    if (!this.activeId) return;
-    if (enabled && !this.sessionSupportsTranscript()) return;
-    if (this.historyOpen && !enabled) this.rememberHistoryScrollPosition(this.activeId);
-    this.closeTerminalFind();
-    this.hideSelectionActions(true);
-    if (!enabled) this.closePromptHistory();
-    const mode = enabled ? "markdown" : "terminal";
-    if (options.persist !== false) {
-      const sessionViewModes = { ...(this.getProjectState().session_view_modes || {}), [this.activeId]: mode };
-      this.applyLocalProjectStatePatch({ session_view_modes: sessionViewModes });
-      this.queueProjectResourceRequest(this.projectStateKey(),
-        `/api/session-view-modes/${encodeURIComponent(this.activeId)}`, "PUT", { mode });
-    }
-    this.stopHistoryRefresh();
-    this.disconnectHistoryStream();
-    this.historyFingerprint = "";
-    this.historyTurns = [];
-    this.historyLoaded = false;
-    this.historyOpen = !!enabled && this.activeFileKey === null && !!this.activeId;
-    this.postVscodeNativeSession(this.session(this.activeId), !this.historyOpen);
-    this.applyMainLayout();
-    this.scheduleTerminalLayoutFit();
-    if (this.historyOpen) {
-      const sessionId = this.activeId;
-      this.showPromptDraft(this.views.get(sessionId));
-      const cached = this.historyTurnsBySession.get(sessionId);
-      if (cached) this.applyHistoryTurns(sessionId, cached, { preserveScroll: false });
-      this.connectHistoryStream(sessionId, { fresh: true });
-    } else {
-      const view = this.views.get(this.activeId);
-      if (view) {
-        if (this.nativeVscodeMode) this.postVscodeNativeSession(this.session(this.activeId), true);
-        else view.term.focus();
-      }
-    }
-  }
-
-  startHistoryRefresh() {
-    // Transcript updates arrive from the file watcher over the transcript
-    // websocket. Kept as a no-op for callers from older saved UI state.
-    this.stopHistoryRefresh();
-  }
-
-  stopHistoryRefresh() {
-    if (this.historyRefreshTimer) clearInterval(this.historyRefreshTimer);
-    this.historyRefreshTimer = 0;
-  }
-
-  disconnectHistoryStream() {
-    this.cancelHistoryBackgroundLoad();
-    clearTimeout(this.historyWsReconnectTimer);
-    this.historyWsReconnectTimer = 0;
-    const ws = this.historyWs;
-    const sessionId = this.historyStreamSessionId;
-    this.historyWs = null;
-    this.historyStreamSessionId = null;
-    if (sessionId) this.historySnapshotBuffers.delete(sessionId);
-    if (ws) ws.close();
-  }
-
-  connectHistoryStream(sessionId, options = {}) {
-    if (!sessionId || !this.historyOpen || this.activeFileKey !== null) return;
-    this.disconnectHistoryStream();
-    const fresh = options.fresh === true;
-    this.historyStreamFresh = fresh;
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws/transcript/${encodeURIComponent(sessionId)}`);
-    this.historyWs = ws;
-    this.historyStreamSessionId = sessionId;
-    ws.onopen = () => {
-      // A tab switch can carry a cached revision from before a fork/resume
-      // changed the underlying rollout. Request the authoritative snapshot in
-      // that case instead of treating inherited history as current.
-      const revision = fresh ? 0 : (this.historyRevisions.get(sessionId) || 0);
-      ws.send(JSON.stringify({ type: "transcript_subscribe", revision, fresh }));
-    };
-    ws.onmessage = (event) => {
-      if (typeof event.data !== "string") return;
-      try {
-        const message = JSON.parse(event.data);
-        if (message.session_id === sessionId) this.applyHistoryStreamMessage(sessionId, message);
-      } catch (error) {
-        console.warn("invalid transcript event", error);
-      }
-    };
-    ws.onerror = () => {
-      // The close event owns reconnects. Reconnecting here as well can leave
-      // two sockets racing to update the same Markdown view after a transient
-      // browser/network error.
-    };
-    ws.onclose = () => {
-      if (this.historyWs !== ws) return;
-      this.historyWs = null;
-      this.historyStreamSessionId = null;
-      if (!this.historyOpen || sessionId !== this.activeId) return;
-      clearTimeout(this.historyWsReconnectTimer);
-      this.historyWsReconnectTimer = setTimeout(() => this.connectHistoryStream(sessionId), RECONNECT_MS);
-    };
-  }
-
-  applyHistoryStreamMessage(sessionId, message) {
-    if (sessionId !== this.activeId || !this.historyOpen) return;
-    const type = message.type;
-    if (type === "transcript_snapshot_start") {
-      this.historySnapshotBuffers.set(sessionId, { revision: Number(message.revision || 0), turns: [],
-        before: message.before == null ? null : Number(message.before), hasMore: !!message.has_more });
-      return;
-    }
-    if (type === "transcript_snapshot_chunk") {
-      const buffer = this.historySnapshotBuffers.get(sessionId);
-      if (!buffer || !Array.isArray(message.turns)) return;
-      buffer.turns.push(...message.turns);
-      return;
-    }
-    if (type === "transcript_snapshot_end") {
-      const buffer = this.historySnapshotBuffers.get(sessionId);
-      if (!buffer) return;
-      this.historySnapshotBuffers.delete(sessionId);
-      const turns = this.mergePendingHistoryPrompts(sessionId, buffer.turns);
-      this.historyRevisions.set(sessionId, Number(message.revision || buffer.revision || 0));
-      this.applyHistoryWindow(sessionId, turns, { before: buffer.before, hasMore: buffer.hasMore },
-        { resetOlder: this.historyStreamFresh, preserveScroll: this.historyLoaded && this.historyTurns.length > 0 });
-      return;
-    }
-    if (type === "transcript_snapshot") {
-      const turns = this.mergePendingHistoryPrompts(sessionId, Array.isArray(message.turns) ? message.turns : []);
-      this.historyRevisions.set(sessionId, Number(message.revision || 0));
-      this.applyHistoryWindow(sessionId, turns, { before: message.before, hasMore: !!message.has_more },
-        { resetOlder: this.historyStreamFresh, preserveScroll: this.historyLoaded && this.historyTurns.length > 0 });
-      return;
-    }
-    if (type === "transcript_ready") {
-      this.historyRevisions.set(sessionId, Number(message.revision || 0));
-      return;
-    }
-    if (type !== "transcript_update") return;
-    const revision = Number(message.revision || 0);
-    if (revision <= (this.historyRevisions.get(sessionId) || 0)) return;
-    const previous = this.historyTurnsBySession.get(sessionId) || [];
-    const previousLive = this.historyLiveTurnsBySession.get(sessionId) || previous;
-    if (message.windowed) {
-      const liveTurns = this.mergePendingHistoryPrompts(sessionId, Array.isArray(message.turns) ? message.turns : []);
-      this.historyLiveTurnsBySession.set(sessionId, liveTurns);
-      const turns = this.combineHistoryWindow(sessionId, liveTurns);
-      this.historyRevisions.set(sessionId, revision);
-      this.applyHistoryTurns(sessionId, turns, { preserveScroll: true });
-      return;
-    }
-    const replaceFrom = Number(message.replace_from);
-    if (!Number.isInteger(replaceFrom) || replaceFrom < 0 || replaceFrom > previousLive.length) {
-      this.connectHistoryStream(sessionId, { fresh: true });
-      return;
-    }
-    const turns = this.mergePendingHistoryPrompts(
-      sessionId,
-      previousLive.slice(0, replaceFrom).concat(Array.isArray(message.turns) ? message.turns : []),
-    );
-    this.historyLiveTurnsBySession.set(sessionId, turns);
-    const combined = this.combineHistoryWindow(sessionId, turns);
-    this.historyTurnsBySession.set(sessionId, combined);
-    this.historyRevisions.set(sessionId, revision);
-    this.applyHistoryTurns(sessionId, combined, { preserveScroll: true });
-  }
-
-  combineHistoryWindow(sessionId, liveTurns) {
-    const older = this.historyOlderTurnsBySession.get(sessionId) || [];
-    return older.concat(liveTurns);
-  }
-
-  cancelHistoryBackgroundLoad() {
-    clearTimeout(this.historyBackgroundLoadTimer);
-    this.historyBackgroundLoadTimer = 0;
-    this.historyBackgroundLoadSessionId = "";
-  }
-
-  scheduleHistoryBackgroundLoad(sessionId, delay = HISTORY_BACKGROUND_LOAD_DELAY_MS) {
-    this.cancelHistoryBackgroundLoad();
-    if (!sessionId || sessionId !== this.activeId || !this.historyOpen || this.activeFileKey !== null ||
-        !this.historyHasMoreBySession.get(sessionId)) return;
-    const loadedTurns = this.historyTurnsBySession.get(sessionId) || [];
-    if (loadedTurns.length >= HISTORY_BACKGROUND_TARGET_TURNS) return;
-    this.historyBackgroundLoadSessionId = sessionId;
-    this.historyBackgroundLoadTimer = window.setTimeout(() => void this.continueHistoryBackgroundLoad(sessionId), delay);
-  }
-
-  async continueHistoryBackgroundLoad(sessionId) {
-    this.historyBackgroundLoadTimer = 0;
-    if (sessionId !== this.historyBackgroundLoadSessionId || sessionId !== this.activeId || !this.historyOpen ||
-        this.activeFileKey !== null) return;
-    if (this.historyOlderLoadBusy) {
-      this.scheduleHistoryBackgroundLoad(sessionId);
-      return;
-    }
-    const advanced = await this.loadOlderHistory({ sessionId, limit: HISTORY_BACKGROUND_PAGE_TURNS });
-    if (advanced) this.scheduleHistoryBackgroundLoad(sessionId);
-  }
-
-  applyHistoryWindow(sessionId, liveTurns, metadata = {}, options = {}) {
-    if (options.resetOlder) {
-      this.historyOlderTurnsBySession.set(sessionId, []);
-    }
-    const live = Array.isArray(liveTurns) ? liveTurns : [];
-    this.historyLiveTurnsBySession.set(sessionId, live);
-    this.historyBeforeBySession.set(sessionId, metadata.before == null ? null : Number(metadata.before));
-    this.historyHasMoreBySession.set(sessionId, !!metadata.hasMore);
-    const turns = this.combineHistoryWindow(sessionId, live);
-    this.applyHistoryTurns(sessionId, turns, { preserveScroll: options.preserveScroll === true });
-    this.scheduleHistoryBackgroundLoad(sessionId);
-  }
-
-  async loadOlderHistory(options = {}) {
-    if (this.historyOlderLoadBusy || !this.historyOpen || !this.activeId || this.activeFileKey !== null) return false;
-    const sessionId = String(options.sessionId || this.activeId);
-    if (sessionId !== this.activeId) return false;
-    if (!this.historyHasMoreBySession.get(sessionId)) return false;
-    const before = this.historyBeforeBySession.get(sessionId);
-    if (before == null) return false;
-    this.historyOlderLoadBusy = true;
-    const body = this.$("history-body");
-    const previousHeight = body.scrollHeight;
-    try {
-      const requestedLimit = Math.max(20, Math.min(HISTORY_BACKGROUND_PAGE_TURNS, Number(options.limit) || HISTORY_BACKGROUND_PAGE_TURNS));
-      const params = new URLSearchParams({ before: String(before), limit: String(requestedLimit) });
-      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/history-page?${params}`);
-      if (!response.ok) throw new Error(`history page failed: ${response.status}`);
-      const page = await response.json();
-      if (sessionId !== this.activeId || !this.historyOpen || this.activeFileKey !== null) return false;
-      if (page.reset) {
-        this.historyOlderTurnsBySession.set(sessionId, []);
-        this.historyBeforeBySession.set(sessionId, null);
-        this.historyHasMoreBySession.set(sessionId, false);
-        this.connectHistoryStream(sessionId, { fresh: true });
-        return false;
-      }
-      const olderPage = Array.isArray(page.turns) ? page.turns : [];
-      const existingOlder = this.historyOlderTurnsBySession.get(sessionId) || [];
-      this.historyOlderTurnsBySession.set(sessionId, olderPage.concat(existingOlder));
-      const nextBefore = page.before == null ? null : Number(page.before);
-      this.historyBeforeBySession.set(sessionId, nextBefore);
-      this.historyHasMoreBySession.set(sessionId, !!page.has_more);
-      const live = this.historyLiveTurnsBySession.get(sessionId) || [];
-      const combined = this.combineHistoryWindow(sessionId, live);
-      this.historyTurnsBySession.set(sessionId, combined);
-      this.historyTurns = combined;
-      const empty = body.querySelector(".history-empty");
-      if (empty) empty.remove();
-      if (olderPage.length) {
-        const scratch = document.createElement("div");
-        this.renderHistoryTurns(olderPage, { target: scratch, preserveExpanded: true });
-        while (scratch.firstChild) body.insertBefore(scratch.firstChild, body.firstChild);
-        await new Promise((resolve) => requestAnimationFrame(() => {
-          body.scrollTop += body.scrollHeight - previousHeight;
-          resolve();
-        }));
-      }
-      return olderPage.length > 0 || nextBefore !== before;
-    } catch (error) {
-      console.warn("unable to load older transcript history", error);
-      return false;
-    } finally {
-      this.historyOlderLoadBusy = false;
-    }
-  }
-
-  mergePendingHistoryPrompts(sessionId, turns) {
-    const pending = this.historyPendingPrompts.get(sessionId) || [];
-    if (!pending.length) return turns;
-    const merged = turns.slice();
-    const remaining = [];
-    for (const item of pending) {
-      const pendingId = item.pending_id || `${Date.now()}-${this.historyPendingPromptSequence++}`;
-      item.pending_id = pendingId;
-      const comparisonText = this.historyPromptComparisonText(item.text);
-      const authoritativeCount = merged.filter((turn) => turn.role === "user" && !turn.pending_id &&
-        this.historyPromptComparisonText(turn.text) === comparisonText).length;
-      const optimisticIndex = merged.findIndex((turn) => turn.pending_id === pendingId);
-      if (authoritativeCount > item.beforeCount) {
-        if (optimisticIndex >= 0) merged.splice(optimisticIndex, 1);
-        continue;
-      }
-      if (optimisticIndex < 0) merged.push({ role: "user", text: item.text, pending_id: pendingId });
-      remaining.push(item);
-    }
-    if (remaining.length) this.historyPendingPrompts.set(sessionId, remaining);
-    else this.historyPendingPrompts.delete(sessionId);
-    return merged;
-  }
-
-  historyPromptComparisonText(text) {
-    return String(text || "").replace(/^\x15+/, "").replace(/\r\n?/g, "\n").trim();
-  }
-
-  sendHistoryPrompt(options = {}) {
-    if (!this.historyOpen || this.activeFileKey !== null || !this.activeId) return;
-    const prompt = this.$("history-prompt");
-    const rawText = prompt.value;
-    const text = rawText;
-    if (!text.trim()) return;
-    const view = this.views.get(this.activeId);
-    if (!view) return;
-    if (options.queue) {
-      view.promptQueue.push({ text });
-      this.persistMarkdownPromptQueue(view);
-      this.renderHistoryQueue(view);
-      this.recordPromptHistory(view.sessionId, text);
-      this.persistMarkdownPromptDraft(view, "");
-      this.showPromptDraft(view);
-      prompt.focus();
-      this.$("status-name").textContent = "prompt queued";
-      this.dispatchNextMarkdownPrompt(view);
-      return;
-    }
-    if (!view.ws || view.ws.readyState !== WebSocket.OPEN) {
-      this.$("status-name").textContent = "terminal is still connecting…";
-      return;
-    }
-    this.submitHistoryPromptText(view, text);
-  }
-
-  submitHistoryPromptText(view, text, options = {}) {
-    if (!view || !view.ws || view.ws.readyState !== WebSocket.OPEN || !String(text || "").trim()) return false;
-    const promptText = String(text);
-    const prompt = this.$("history-prompt");
-    view.promptSubmitting = true;
-    view.promptSubmitEntered = false;
-    view.promptEditing = false;
-    view.promptSubmitVersion = view.promptEditVersion;
-    const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
-    const sessionId = view.sessionId;
-    if (this.session(sessionId)?.agent_kind === "codex") this.deferTerminalReflowAfterPrompt(view);
-    this.historyPendingProcessing.set(sessionId, Date.now());
-    this.updateHistoryThinkingIndicator();
-    if (this.historyOpen && this.activeId === sessionId) {
-      const turns = this.historyTurnsBySession.get(sessionId) || this.historyTurns;
-      const pending = this.historyPendingPrompts.get(sessionId) || [];
-      const live = this.historyLiveTurnsBySession.get(sessionId) || turns;
-      const comparisonText = this.historyPromptComparisonText(promptText);
-      const authoritativeCount = live.filter((turn) => turn.role === "user" && !turn.pending_id &&
-        this.historyPromptComparisonText(turn.text) === comparisonText).length;
-      const beforeCount = authoritativeCount + pending.filter((item) =>
-        this.historyPromptComparisonText(item.text) === comparisonText).length;
-      const pendingId = `${Date.now()}-${this.historyPendingPromptSequence++}`;
-      pending.push({ text: promptText, beforeCount, pending_id: pendingId });
-      this.historyPendingPrompts.set(sessionId, pending);
-      const optimisticLive = this.mergePendingHistoryPrompts(sessionId, live);
-      this.historyLiveTurnsBySession.set(sessionId, optimisticLive);
-      const optimisticTurns = this.combineHistoryWindow(sessionId, optimisticLive);
-      this.applyHistoryTurns(sessionId, optimisticTurns, { preserveScroll: true });
-    }
-    // Submitting from TermDeck's own composer never touches the terminal's key handler (it goes straight
-    // out over the websocket), so it needs to resume following on its own -- sending a prompt is an
-    // unambiguous request to watch what comes back.
-    view.tallFollowing = true;
-    this.scrollTallContainerToCursor(view);
-    try {
-      view.ws.send(JSON.stringify({ type: "submit", text: promptText, bracketed, queue: false }));
-    } catch (error) {
-      this.historyPendingProcessing.delete(sessionId);
-      this.updateHistoryThinkingIndicator();
-      view.promptSubmitting = false;
-      this.$("status-name").textContent = "unable to send prompt";
-      console.warn("unable to send Markdown prompt", error);
-      return false;
-    }
-    if (!options.fromQueue) this.recordPromptHistory(sessionId, promptText);
-    if (!options.fromQueue) this.persistMarkdownPromptDraft(view, "");
-    if (this.historyOpen && this.activeId === sessionId) {
-      this.showPromptDraft(view);
-      prompt.focus();
-    }
-    clearTimeout(view.promptSubmitTimer);
-    view.promptSubmitTimer = setTimeout(() => {
-      view.promptSubmitting = false;
-      view.promptSubmitEntered = false;
-    }, 1500);
-    view.keepBottom = true;
-    view.pinBottomUntil = Date.now() + 5000;
-    this.$("status-name").textContent = options.fromQueue ? "queued prompt sent" : "prompt sent";
-    return true;
-  }
-
-  recordPromptHistory(sessionId, text) {
-    const prompt = String(text || "").trim();
-    if (!prompt) return;
-    const history = this.settings.prompt_history && typeof this.settings.prompt_history === "object"
-      ? this.settings.prompt_history : {};
-    const previous = Array.isArray(history[sessionId]) ? history[sessionId] : [];
-    const next = [prompt, ...previous.filter((item) => item !== prompt)].slice(0, 50);
-    this.settings.prompt_history = { ...history, [sessionId]: next };
-    this.saveSettings();
-    if (!this.$("history-prompt-history").classList.contains("hidden")) this.renderPromptHistory();
-  }
-
-  renderPromptHistory() {
-    const items = this.$("history-prompt-history-items");
-    if (!items) return;
-    items.textContent = "";
-    const entries = Array.isArray(this.settings.prompt_history?.[this.activeId])
-      ? this.settings.prompt_history[this.activeId] : [];
-    if (!entries.length) {
-      const empty = document.createElement("div");
-      empty.className = "history-prompt-history-empty";
-      empty.textContent = "No prompts sent yet.";
-      items.appendChild(empty);
-      return;
-    }
-    for (const text of entries) {
-      const entry = document.createElement("button");
-      entry.type = "button";
-      entry.className = "history-prompt-history-item";
-      entry.textContent = text;
-      entry.title = text;
-      entry.onclick = () => this.restorePromptHistoryEntry(text);
-      items.appendChild(entry);
-    }
-  }
-
-  togglePromptHistory() {
-    const panel = this.$("history-prompt-history");
-    const button = this.$("history-prompt-history-btn");
-    if (!panel || !button || !this.historyOpen || this.activeFileKey !== null) return;
-    const opening = panel.classList.contains("hidden");
-    if (opening) this.renderPromptHistory();
-    panel.classList.toggle("hidden", !opening);
-    button.classList.toggle("on", opening);
-    button.setAttribute("aria-expanded", String(opening));
-  }
-
-  closePromptHistory() {
-    const panel = this.$("history-prompt-history");
-    const button = this.$("history-prompt-history-btn");
-    if (!panel || !button) return;
-    panel.classList.add("hidden");
-    button.classList.remove("on");
-    button.setAttribute("aria-expanded", "false");
-  }
-
-  restorePromptHistoryEntry(text) {
-    const view = this.views.get(this.activeId);
-    const prompt = this.$("history-prompt");
-    if (!view || !prompt || !this.historyOpen || this.activeFileKey !== null) return;
-    prompt.value = text;
-    prompt.dispatchEvent(new Event("input", { bubbles: true }));
-    this.closePromptHistory();
-    prompt.focus();
-    prompt.setSelectionRange(prompt.value.length, prompt.value.length);
-  }
-
-  resizeHistoryPrompt() {
-    const prompt = this.$("history-prompt");
-    if (!prompt) return;
-    prompt.style.height = "auto";
-    const height = Math.min(prompt.scrollHeight, 150);
-    prompt.style.height = `${height}px`;
-    prompt.style.overflowY = prompt.scrollHeight > height ? "auto" : "hidden";
-  }
-
-  showPromptDraft(view) {
-    if (!this.historyOpen || view !== this.views.get(this.activeId)) return;
-    const prompt = this.$("history-prompt");
-    if (!prompt) return;
-    prompt.value = view.markdownPromptDraft || "";
-    this.resizeHistoryPrompt();
-    requestAnimationFrame(() => {
-      if (prompt.value !== (view.markdownPromptDraft || "")) return;
-      this.resizeHistoryPrompt();
-      requestAnimationFrame(() => {
-        if (prompt.value === (view.markdownPromptDraft || "")) this.resizeHistoryPrompt();
-      });
-    });
-  }
-
-  syncPromptToTerminal(view, options = {}) {
-    const text = view.promptDraft || "";
-    const writeToTerminal = options.writeToTerminal !== false;
-    if (!view.ws || view.ws.readyState !== WebSocket.OPEN) {
-      if (writeToTerminal) view.pendingTerminalDraft = text;
-      else view.pendingTerminalDraft = null;
-      view.pendingDraftSync = text;
-      return;
-    }
-    if (!writeToTerminal) view.pendingTerminalDraft = null;
-    if (writeToTerminal) this.writePromptDraftToTerminal(view, text);
-    this.sendPromptDraftSync(view, text);
-  }
-
-  writePromptDraftToTerminal(view, text) {
-    this.sendInput(view, "\x15");
-    if (text) this.sendInput(view, text.includes("\n") ? this.terminalPastePayload(view, text) : text);
-  }
-
-  sendPromptDraftSync(view, text) {
-    clearTimeout(view.promptDraftSyncDebounceTimer);
-    view.promptDraftSyncDebounceTimer = 0;
-    if (!view.ws || view.ws.readyState !== WebSocket.OPEN) {
-      view.pendingDraftSync = text;
-      return;
-    }
-    view.pendingDraftSync = null;
-    view.promptDraftSyncPending = true;
-    clearTimeout(view.promptDraftSyncTimer);
-    view.promptDraftSyncTimer = setTimeout(() => {
-      view.promptDraftSyncPending = false;
-      view.promptDraftSyncTimer = 0;
-    }, 3000);
-    view.ws.send(JSON.stringify({ type: "draft_sync", draft: text }));
-  }
-
-  schedulePromptDraftSync(view, text) {
-    view.pendingDraftSync = text;
-    clearTimeout(view.promptDraftSyncDebounceTimer);
-    view.promptDraftSyncDebounceTimer = setTimeout(() => {
-      view.promptDraftSyncDebounceTimer = 0;
-      this.sendPromptDraftSync(view, view.promptDraft);
-    }, PROMPT_DRAFT_SYNC_PASTE_DELAY_MS);
-  }
-
-  deferTerminalReflowAfterPrompt(view) {
-    if (!view || this.session(view.sessionId)?.agent_kind !== "codex") return;
-    view.promptSubmissionReflowGuardUntil = Date.now() + CODEX_PROMPT_REFLOW_GUARD_MS;
-    clearTimeout(view.promptSubmissionReflowGuardTimer);
-    view.promptSubmissionReflowGuardTimer = setTimeout(() => {
-      view.promptSubmissionReflowGuardTimer = 0;
-      if (!view.closed && view.container.classList.contains("visible") && this.activeId === view.sessionId) {
-        this.scheduleTerminalTailRepair(view);
-      }
-    }, CODEX_PROMPT_REFLOW_GUARD_MS + 40);
-  }
-
-  shouldDeferPromptReflowFit(view) {
-    if (!view) return false;
-    return view.promptSubmissionReflowGuardUntil > Date.now();
-  }
-
-  isPastedTerminalInput(data) {
-    const input = String(data || "");
-    return input.includes("\x1b[200~") || input.includes("\x1b[201~") || input.length >= 128;
-  }
-
-  terminalPastePayload(view, text) {
-    const agentKind = this.session(view.sessionId)?.agent_kind;
-    const agentTerminal = agentKind === "codex" || agentKind === "claude" || agentKind === "agy";
-    const bracketed = agentTerminal || !view.term.modes || view.term.modes.bracketedPasteMode !== false;
-    return bracketed ? `\x1b[200~${text}\x1b[201~` : text;
-  }
-
-  flushPromptSync(view) {
-    if (!view.ws || view.ws.readyState !== WebSocket.OPEN || view.promptSubmitting) return;
-    if (view.pendingTerminalDraft !== null) {
-      const text = view.pendingTerminalDraft;
-      view.pendingTerminalDraft = null;
-      this.writePromptDraftToTerminal(view, text);
-    }
-    if (view.pendingDraftSync !== null) this.sendPromptDraftSync(view, view.pendingDraftSync);
-  }
-
-  schedulePendingAgentPaste(view, delay = 0) {
-    if (!view || view.closed || !view.pendingAgentPaste) return;
-    if (!view.pendingAgentPasteStartedAt) view.pendingAgentPasteStartedAt = Date.now();
-    clearTimeout(view.pendingAgentPasteTimer);
-    const readyDelay = Math.max(0, (view.pendingAgentPasteReadyAt || 0) - Date.now());
-    const wait = Math.max(Number(delay) || 0, readyDelay);
-    view.pendingAgentPasteTimer = window.setTimeout(() => {
-      view.pendingAgentPasteTimer = 0;
-      if (view.closed || !view.pendingAgentPaste) return;
-      if (Date.now() - view.pendingAgentPasteStartedAt >= AGENT_PASTE_TIMEOUT_MS) {
-        view.pendingAgentPaste = "";
-        view.pendingAgentPasteStartedAt = 0;
-        view.pendingAgentPasteReadyAt = 0;
-        view.pendingAgentPasteExpectedTitle = "";
-        view.pendingAgentPasteRequireComposer = false;
-        this.$("status-name").textContent = "selected text could not be pasted into the agent";
-        return;
-      }
-      if (view.awaitingSnapshot || view.replaying || !view.ws || view.ws.readyState !== WebSocket.OPEN ||
-          Date.now() < (view.pendingAgentPasteReadyAt || 0) || !this.agentPasteDestinationReady(view)) {
-        this.schedulePendingAgentPaste(view, AGENT_PASTE_RETRY_DELAY_MS);
-        return;
-      }
-      this.flushPendingAgentPaste(view);
-    }, wait);
-  }
-
-  agentPasteDestinationReady(view) {
-    if (!view.pendingAgentPasteRequireComposer) return true;
-    if (view.lastTerminalOutputAt && Date.now() - view.lastTerminalOutputAt < AGENT_PASTE_OUTPUT_QUIET_MS) return false;
-    const session = this.session(view.sessionId);
-    const expectedTitle = String(view.pendingAgentPasteExpectedTitle || "").trim();
-    if (expectedTitle) {
-      const cliTitle = this.stripTitleStatusPrefixes(session?.cli_title || "");
-      if (cliTitle !== expectedTitle) return false;
-    }
-    const buffer = view.term?.buffer?.active;
-    if (!buffer) return false;
-    const baseY = Number(buffer.baseY || 0);
-    const cursorRow = baseY + Number(buffer.cursorY || 0);
-    const firstRow = Math.max(baseY, cursorRow - 8);
-    const lastRow = Math.min(buffer.length - 1, cursorRow + 8);
-    const promptMarker = session?.agent_kind === "claude" ? "❯" : session?.agent_kind === "codex" ? "›" : "";
-    if (!promptMarker) return true;
-    for (let row = firstRow; row <= lastRow; row += 1) {
-      if ((buffer.getLine(row)?.translateToString(true) || "").trimStart().startsWith(promptMarker)) return true;
-    }
-    return false;
-  }
-
-  queuePendingAgentPaste(view, text, options = {}) {
-    const value = this.normalizeSelectionText(text);
-    if (!view || view.closed || !value) return false;
-    view.pendingAgentPaste = value;
-    view.pendingAgentPasteStartedAt = Date.now();
-    view.pendingAgentPasteReadyAt = Date.now() + DEFAULT_AGENT_PASTE_DELAY_MS;
-    view.pendingAgentPasteExpectedTitle = String(options.expectedTitle || "").trim();
-    view.pendingAgentPasteRequireComposer = options.requireComposer !== false;
-    this.schedulePendingAgentPaste(view);
-    return true;
-  }
-
-  flushPendingAgentPaste(view) {
-    if (!view || view.closed || !view.pendingAgentPaste || view.awaitingSnapshot || view.replaying ||
-        !view.ws || view.ws.readyState !== WebSocket.OPEN || Date.now() < (view.pendingAgentPasteReadyAt || 0) ||
-        !this.agentPasteDestinationReady(view)) return false;
-    const text = view.pendingAgentPaste;
-    view.pendingAgentPaste = "";
-    view.pendingAgentPasteStartedAt = 0;
-    view.pendingAgentPasteReadyAt = 0;
-    view.pendingAgentPasteExpectedTitle = "";
-    view.pendingAgentPasteRequireComposer = false;
-    if (this.activeId === view.sessionId && this.activeFileKey === null && !this.historyOpen) view.term.focus();
-    this.sendTrackedInput(view, this.terminalPastePayload(view, text));
-    this.$("status-name").textContent = "selected text pasted into " +
-      (TERMINAL_ICON_AGENT_LABELS[this.session(view.sessionId)?.agent_kind] || "agent");
-    return true;
-  }
-
-  sendTrackedInput(view, data) {
-    const pastedInput = this.isPastedTerminalInput(data);
-    const session = this.session(view.sessionId);
-    const submittedText = (data === "\r" || data === "\n") && session && session.agent_kind !== "none"
-      ? view.promptDraft.trim() : "";
-    const queueText = data === "\t" && this.session(view.sessionId)?.agent_kind === "codex" && view.promptDraft.trim()
-      ? view.promptDraft
-      : "";
-    view.promptSubmitEntered = false;
-    view.promptSubmitting = false;
-    clearTimeout(view.promptSubmitTimer);
-    view.promptEditing = false;
-    const previousDraft = view.promptDraft;
-    this.updatePromptDraftFromTerminal(view, data);
-    if (view.promptDraft !== previousDraft) view.promptEditVersion += 1;
-    if (view.promptDraft !== previousDraft) {
-      clearTimeout(view.promptDraftSyncTimer);
-      if (pastedInput) this.schedulePromptDraftSync(view, view.promptDraft);
-      else {
-        view.promptDraftSyncPending = true;
-        view.promptDraftSyncTimer = setTimeout(() => {
-          view.promptDraftSyncPending = false;
-          view.promptDraftSyncTimer = 0;
-        }, 3000);
-      }
-    }
-    if ((data === "\r" || data === "\n") && session?.agent_kind === "codex") {
-      this.deferTerminalReflowAfterPrompt(view);
-    }
-    this.sendInput(view, data);
-    if (submittedText && view.ws && view.ws.readyState === WebSocket.OPEN) this.recordPromptHistory(view.sessionId, submittedText);
-    if (view.promptDraft !== previousDraft && !pastedInput) this.sendPromptDraftSync(view, view.promptDraft);
-    if (queueText) {
-      view.promptDraft = "";
-      view.promptEditing = false;
-      view.pendingTerminalDraft = null;
-      view.pendingDraftSync = null;
-      if (view.ws && view.ws.readyState === WebSocket.OPEN) this.recordPromptHistory(view.sessionId, queueText);
-      this.sendPromptDraftSync(view, "");
-      this.showPromptDraft(view);
-    }
-  }
-
-  updatePromptDraftFromTerminal(view, data) {
-    let stream = (view.promptEscape || "") + data;
-    view.promptEscape = "";
-    let i = 0;
-    while (i < stream.length) {
-      if (stream.startsWith("\x1b[200~", i)) { view.promptPaste = true; i += 6; continue; }
-      if (stream.startsWith("\x1b[201~", i)) { view.promptPaste = false; i += 6; continue; }
-      const ch = stream[i];
-      if (ch === "\x1b") {
-        if (i + 1 >= stream.length) { view.promptEscape = stream.slice(i); break; }
-        if (stream[i + 1] === "\r") { view.promptDraft += "\n"; i += 2; continue; }
-        if (stream[i + 1] === "\x7f") { view.promptDraft = view.promptDraft.replace(/\S+\s*$/, ""); i += 2; continue; }
-        if (stream[i + 1] === "[") {
-          let end = i + 2;
-          while (end < stream.length && (stream.charCodeAt(end) < 0x40 || stream.charCodeAt(end) > 0x7e)) end += 1;
-          if (end >= stream.length) { view.promptEscape = stream.slice(i); break; }
-          i = end + 1;
-          continue;
-        }
-        i += 2;
-        continue;
-      }
-      if (ch === "\r" || ch === "\n") {
-        if (view.promptPaste) view.promptDraft += "\n";
-        else view.promptDraft = "";
-      } else if (ch === "\x7f") {
-        view.promptDraft = view.promptDraft.slice(0, -1);
-      } else if (ch === "\x15") {
-        view.promptDraft = view.promptDraft.replace(/[^\n]*$/, "");
-      } else if (ch === "\x17") {
-        view.promptDraft = view.promptDraft.replace(/\s+$/, "").replace(/\S+$/, "");
-      } else if (ch >= " ") {
-        // Append the whole run of plain characters at once, not one at a time: this used to be
-        // promptDraft += ch per character, which is an O(n^2) blowup for a large pasted string (each
-        // += copies the entire accumulated draft again) -- long enough to freeze the tab for several
-        // seconds on a big multiline paste, reported as "hangs" and "not editable".
-        let end = i + 1;
-        while (end < stream.length) {
-          const next = stream[end];
-          if (next < " " || next === "\x7f") break;
-          end += 1;
-        }
-        view.promptDraft += stream.slice(i, end);
-        i = end;
-        continue;
-      }
-      i += 1;
-    }
-    this.showPromptDraft(view);
-  }
-
-  historyTurnKey(turn) {
-    return JSON.stringify([turn.role, turn.kind, turn.title, turn.text, turn.diff, turn.diff_files, turn.plan, turn.items]);
-  }
-
-  toggleHistoryEdits() {
-    this.historyEditsCollapsed = !this.historyEditsCollapsed;
-    for (const event of this.$("history-body").querySelectorAll(".history-event.edit")) {
-      event.open = !this.historyEditsCollapsed;
-    }
-    this.updateHistoryEditToggle();
-    if (body === this.$("history-body")) this.updateActiveThinkingBlock();
-  }
-
-  updateHistoryEditToggle() {
-    const button = this.$("history-edits-toggle");
-    if (!button) return;
-    const hasEdits = !!this.$("history-body").querySelector(".history-event.edit");
-    button.disabled = !hasEdits;
-    button.classList.toggle("on", this.historyEditsCollapsed && hasEdits);
-    const label = this.historyEditsCollapsed ? "Expand all code edits" : "Collapse all code edits";
-    button.title = label;
-    button.setAttribute("aria-label", label);
-    const icon = button.querySelector(".codicon");
-    if (icon) icon.className = `codicon codicon-${this.historyEditsCollapsed ? "expand-all" : "collapse-all"}`;
-  }
-
-  historyEditSummary(turn) {
-    const files = [];
-    const addFile = (value) => {
-      const file = String(value || "").trim().replace(/^['"]|['"]$/g, "");
-      if (file && !files.includes(file)) files.push(file);
-    };
-    if (Array.isArray(turn.diff_files)) {
-      for (const file of turn.diff_files) addFile(file?.path);
-    }
-    if (!files.length) {
-      const text = String(turn.text || "");
-      for (const match of text.matchAll(/\*\*\* (?:Update|Add|Delete) File:\s*([^\\\r\n]+?)(?=(?:\\n|\r?\n)|$)/g)) addFile(match[1]);
-      for (const match of text.matchAll(/(?:file_path|fileName|filename)\s*["']?\s*:\s*["']([^"']+)["']/gi)) addFile(match[1]);
-    }
-    const additions = Array.isArray(turn.diff) ? turn.diff.filter((line) => line.kind === "add").length : 0;
-    const removals = Array.isArray(turn.diff) ? turn.diff.filter((line) => line.kind === "remove").length : 0;
-    const fileSummary = files.length ? `${files.length} file${files.length === 1 ? "" : "s"}` : "file details unavailable";
-    return `${fileSummary} · +${additions} / −${removals} lines`;
-  }
-
-  historyDiffPath(path) {
-    const value = String(path || "Changes").replaceAll("\\", "/");
-    const cwd = String(this.session(this.activeId)?.cwd || "").replace(/[\\/]$/, "");
-    if (cwd && (value === cwd || value.startsWith(`${cwd}/`))) return value.slice(cwd.length + 1) || value;
-    return value;
-  }
-
-  renderHistoryDiffLines(lines, target) {
-    for (const line of lines || []) {
-      const row = document.createElement("div");
-      row.className = "diff-line " + (line.kind || "context");
-      const prefix = document.createElement("span");
-      prefix.className = "diff-line-prefix";
-      prefix.textContent = line.prefix || " ";
-      const content = document.createElement("span");
-      content.className = "diff-line-text";
-      content.textContent = line.text || "";
-      row.append(prefix, content);
-      target.appendChild(row);
-    }
-  }
-
-  collapseHistoryThinkingEvent(event) {
-    if (!event?.matches?.(".history-event.thinking")) return;
-    event.open = false;
-    const summary = event.querySelector("summary");
-    requestAnimationFrame(() => {
-      if (summary) summary.scrollIntoView({ block: "nearest" });
-    });
-  }
-
-  renderHistoryTurns(turns, options = {}) {
-    const body = options.target || this.$("history-body");
-    const append = options.append === true;
-    const preserveExpanded = options.preserveExpanded === true;
-    const previousExpanded = preserveExpanded ? [...body.querySelectorAll("details")].map((item) => item.open) : [];
-    let eventIndex = 0;
-    for (const turn of turns) {
-      if (turn.kind && turn.kind !== "message") {
-        const event = document.createElement("details");
-        event.className = "history-event " + turn.kind;
-        event.open = turn.kind === "edit" ? !this.historyEditsCollapsed : turn.kind === "plan" ? true : turn.expanded === true;
-        if (!this.historyEditsCollapsed && preserveExpanded && previousExpanded[eventIndex] !== undefined) event.open = previousExpanded[eventIndex];
-        eventIndex += 1;
-        const summary = document.createElement("summary");
-        if (turn.kind === "thinking" && Array.isArray(turn.items)) {
-          const thinkingTitle = document.createElement("span");
-          thinkingTitle.className = "history-thinking-title";
-          thinkingTitle.textContent = "Thinking";
-          const thinkingCount = document.createElement("span");
-          thinkingCount.className = "history-thinking-count";
-          thinkingCount.textContent = ` · ${turn.items.length} operations`;
-          summary.append(thinkingTitle, thinkingCount);
-        } else {
-          summary.textContent = turn.kind === "edit"
-              ? this.historyEditSummary(turn)
-              : turn.kind === "plan" && Array.isArray(turn.plan)
-              ? `Plan · ${turn.plan.length} steps`
-              : (turn.title || turn.kind);
-        }
-        if (turn.kind === "thinking" && Array.isArray(turn.items) && turn.items.length) {
-          const results = document.createElement("div");
-          results.className = "history-thinking";
-          for (const item of turn.items) {
-            const label = document.createElement("div");
-            label.className = "history-thinking-label";
-            label.textContent = item.kind === "result" ? "Result" : (item.title || "Tool");
-            const result = document.createElement("pre");
-            result.textContent = item.text || "";
-            results.append(label, result);
-          }
-          const footer = document.createElement("div");
-          footer.className = "history-thinking-footer";
-          const collapse = document.createElement("button");
-          collapse.type = "button";
-          collapse.className = "history-thinking-collapse";
-          collapse.title = "Collapse this thinking block";
-          collapse.innerHTML = '<span class="codicon codicon-collapse-all"></span><span>Collapse thinking</span>';
-          collapse.onclick = (eventClick) => {
-            eventClick.preventDefault();
-            eventClick.stopPropagation();
-            this.collapseHistoryThinkingEvent(event);
-          };
-          footer.appendChild(collapse);
-          results.appendChild(footer);
-          event.append(summary, results);
-        } else if (Array.isArray(turn.plan) && turn.plan.length) {
-          const list = document.createElement("ul");
-          list.className = "history-plan";
-          for (const item of turn.plan) {
-            const status = String(item.status || "pending").toLowerCase().replace(/[^a-z0-9_-]/g, "-");
-            const step = document.createElement("li");
-            step.className = "plan-step " + status;
-            const marker = document.createElement("span");
-            marker.className = "plan-marker";
-            marker.textContent = status === "completed" || status === "complete" ? "✓" : status === "in_progress" ? "●" : "○";
-            const label = document.createElement("span");
-            label.textContent = item.step || item.content || "";
-            step.append(marker, label);
-            list.appendChild(step);
-          }
-          event.append(summary, list);
-        } else if (Array.isArray(turn.diff) && turn.diff.length) {
-          const diff = document.createElement("div");
-          diff.className = "history-diff";
-          const files = Array.isArray(turn.diff_files) && turn.diff_files.length
-            ? turn.diff_files
-            : [{ path: "Changes", diff: turn.diff }];
-          for (const file of files) {
-            const section = document.createElement("section");
-            section.className = "history-diff-file";
-            const heading = document.createElement("div");
-            heading.className = "history-diff-file-heading";
-            const additions = (file.diff || []).filter((line) => line.kind === "add").length;
-            const removals = (file.diff || []).filter((line) => line.kind === "remove").length;
-            heading.textContent = `${this.historyDiffPath(file.path)} · +${additions} / −${removals}`;
-            const body = document.createElement("div");
-            body.className = "history-diff-file-body";
-            this.renderHistoryDiffLines(file.diff, body);
-            section.append(heading, body);
-            diff.appendChild(section);
-          }
-          event.append(summary, diff);
-        } else {
-          const content = document.createElement("pre");
-          content.textContent = turn.text || "";
-          event.append(summary, content);
-        }
-        body.appendChild(event);
-        continue;
-      }
-      const block = document.createElement("div");
-      block.className = "turn " + turn.role;
-      block.dataset.outlineKey = this.conversationOutlineTurnKey(turn);
-      const text = document.createElement("div");
-      text.className = "turn-text markdown";
-      text.innerHTML = this.renderMarkdown(turn.text);
-      this.linkHistoryFileReferences(text);
-      if (["user", "assistant"].includes(turn.role)) {
-        const role = document.createElement("div");
-        role.className = "turn-role";
-        role.textContent = turn.role === "user" ? "You" : "Assistant";
-        block.append(role);
-      }
-      block.append(text);
-      body.appendChild(block);
-    }
-    this.updateHistoryEditToggle();
-  }
-
-  captureHistoryScroll(body, turns = this.historyTurns) {
-    const snapshot = {
-      top: body.scrollTop,
-      atBottom: body.scrollHeight - body.clientHeight - body.scrollTop < 80,
-      anchorIndex: -1,
-      anchorKey: "",
-      anchorOccurrence: 0,
-      anchorOffset: 0,
-    };
-    const bodyTop = body.getBoundingClientRect().top;
-    const children = [...body.children];
-    for (let index = 0; index < children.length; index += 1) {
-      if (children[index].getBoundingClientRect().bottom > bodyTop + 1) {
-        snapshot.anchorIndex = index;
-        snapshot.anchorOffset = children[index].getBoundingClientRect().top - bodyTop;
-        break;
-      }
-    }
-    if (snapshot.anchorIndex < 0 && children.length) {
-      snapshot.anchorIndex = children.length - 1;
-      snapshot.anchorOffset = children[snapshot.anchorIndex].getBoundingClientRect().top - bodyTop;
-    }
-    if (snapshot.anchorIndex >= 0 && turns[snapshot.anchorIndex]) {
-      snapshot.anchorKey = this.historyTurnKey(turns[snapshot.anchorIndex]);
-      snapshot.anchorOccurrence = turns.slice(0, snapshot.anchorIndex + 1)
-        .filter((turn) => this.historyTurnKey(turn) === snapshot.anchorKey).length - 1;
-    }
-    return snapshot;
-  }
-
-  rememberHistoryScrollPosition(sessionId) {
-    const body = this.$("history-body");
-    if (!sessionId || !body || !this.historyOpen || !this.historyLoaded || this.activeFileKey !== null) return;
-    this.historyScrollBySession.set(sessionId, this.captureHistoryScroll(body, this.historyTurns));
-  }
-
-  restoreHistoryScroll(body, snapshot, turns = this.historyTurns, settling = false) {
-    if (!snapshot) {
-      body.scrollTop = body.scrollHeight;
-      return;
-    }
-    if (snapshot.atBottom) {
-      body.scrollTop = body.scrollHeight;
-      return;
-    }
-    let anchorIndex = snapshot.anchorIndex;
-    if (snapshot.anchorKey && Array.isArray(turns)) {
-      let occurrence = 0;
-      anchorIndex = turns.findIndex((turn) => {
-        if (this.historyTurnKey(turn) !== snapshot.anchorKey) return false;
-        return occurrence++ === snapshot.anchorOccurrence;
-      });
-    }
-    const anchor = anchorIndex >= 0 ? body.children[anchorIndex] : null;
-    if (anchor) {
-      const bodyTop = body.getBoundingClientRect().top;
-      const currentOffset = anchor.getBoundingClientRect().top - bodyTop;
-      body.scrollTop += currentOffset - snapshot.anchorOffset;
-    } else {
-      body.scrollTop = snapshot.top;
-    }
-    body.scrollTop = Math.min(body.scrollTop, Math.max(0, body.scrollHeight - body.clientHeight));
-    // A live update can reflow Markdown one frame after the DOM replacement.
-    // Reapply the same anchor after layout, without changing the user's
-    // intentional position when they are reading above the newest output.
-    if (!settling && !snapshot.atBottom) {
-      requestAnimationFrame(() => {
-        if (this.historyOpen && body === this.$("history-body")) {
-          this.restoreHistoryScroll(body, snapshot, turns, true);
-        }
-      });
-    }
-  }
-
-  async loadHistory(sessionId, options = {}) {
-    const body = this.$("history-body");
-    const preserveScroll = options.preserveScroll === true;
-    if (this.historyLoadBusy) return;
-    this.historyLoadBusy = true;
-    if (!this.historyLoaded) {
-      body.textContent = "";
-      const loading = document.createElement("div");
-      loading.className = "history-empty";
-      loading.textContent = "loading transcript…";
-      body.appendChild(loading);
-    }
-    let turns;
-    try {
-      const res = await fetch(`/api/sessions/${sessionId}/history`);
-      if (!res.ok) throw new Error(`history request failed: ${res.status}`);
-      turns = await res.json();
-    } catch (err) {
-      this.historyLoadBusy = false;
-      if (!this.historyLoaded) {
-        body.textContent = "";
-        const error = document.createElement("div");
-        error.className = "history-empty";
-        error.textContent = "unable to load transcript";
-        body.appendChild(error);
-      }
-      return;
-    }
-    this.historyLoadBusy = false;
-    return this.applyHistoryTurns(sessionId, this.mergePendingHistoryPrompts(sessionId, turns), options);
-  }
-
-  applyHistoryTurns(sessionId, turns, options = {}) {
-    const body = this.$("history-body");
-    const preserveScroll = options.preserveScroll === true;
-    if (sessionId !== this.activeId || !this.historyOpen) return;
-    this.cacheSessionModelFromHistory(sessionId, turns);
-    // Capture this after the request completes so scrolling while the refresh
-    // is in flight is never overwritten by an older scroll position.
-    const scrollSnapshot = preserveScroll
-      ? this.captureHistoryScroll(body, this.historyTurns)
-      : (this.historyScrollBySession.get(sessionId) || null);
-    const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length, turn.diff_files, turn.plan, turn.items]))}`;
-    if (preserveScroll && fingerprint === this.historyFingerprint) return;
-    let commonPrefix = 0;
-    if (preserveScroll && this.historyLoaded) {
-      while (commonPrefix < this.historyTurns.length && commonPrefix < turns.length &&
-        this.historyTurnKey(this.historyTurns[commonPrefix]) === this.historyTurnKey(turns[commonPrefix])) commonPrefix += 1;
-    }
-    const canAppend = preserveScroll && this.historyLoaded && this.historyTurns.length > 0 &&
-      commonPrefix === this.historyTurns.length && turns.length >= this.historyTurns.length;
-    const canPatchTail = preserveScroll && this.historyLoaded && this.historyTurns.length > 0 &&
-      commonPrefix === this.historyTurns.length - 1 && turns.length >= this.historyTurns.length;
-    this.historyFingerprint = fingerprint;
-    this.historyLoaded = true;
-    const s = this.sessionOrClosed(sessionId);
-    this.$("history-title").textContent = s ? this.effectiveTitle(s) : "";
-    this.renderHistoryModel(s, turns);
-    if (canPatchTail) {
-      // Keep the unchanged transcript nodes in place so browser-find selection
-      // and the user's reading position survive live output updates.
-      const existing = body.children[this.historyTurns.length - 1];
-      const scratch = document.createElement("div");
-      this.renderHistoryTurns([turns[this.historyTurns.length - 1]], { target: scratch });
-      const replacement = scratch.firstElementChild;
-      if (existing && replacement) {
-        const wasOpen = existing.matches("details") ? existing.open : false;
-        if (existing.tagName === replacement.tagName && existing.className === replacement.className) {
-          existing.replaceChildren(...replacement.childNodes);
-          if (existing.matches("details")) existing.open = wasOpen;
-        } else {
-          if (replacement.matches("details")) replacement.open = wasOpen;
-          existing.replaceWith(replacement);
-        }
-      }
-      if (turns.length > this.historyTurns.length) {
-        this.renderHistoryTurns(turns.slice(this.historyTurns.length), { target: body });
-      }
-    } else if (!canAppend) {
-      body.textContent = "";
-      if (!turns.length) {
-        const empty = document.createElement("div");
-        empty.className = "history-empty";
-        empty.textContent = "no transcript found yet (send a message first, or the session id isn't resolved)";
-        body.appendChild(empty);
-      } else {
-        this.renderHistoryTurns(turns, { preserveExpanded: preserveScroll });
-      }
-    } else {
-      this.renderHistoryTurns(turns.slice(this.historyTurns.length), { append: true });
-    }
-    this.historyTurns = turns;
-    this.historyTurnsBySession.set(sessionId, turns);
-    this.renderHistoryMeta();
-    this.updateHistoryEditToggle();
-    this.updateActiveThinkingBlock();
-    this.restoreHistoryScroll(body, scrollSnapshot, turns);
-    this.schedulePendingHistorySearchReveal();
-  }
-
-  renderMarkdown(text) {
-    if (window.marked) {
-      return marked.parse(text, { breaks: true, gfm: true });
-    }
-    const escaped = document.createElement("div");
-    escaped.textContent = text;
-    return escaped.innerHTML;
-  }
-
-  linkHistoryFileReferences(container) {
-    for (const anchor of container.querySelectorAll("a")) {
-      const linkText = anchor.getAttribute("href") || "";
-      if (this.parseVscodeFileLink(linkText)) {
-        anchor.dataset.terminalFile = linkText;
-        anchor.classList.add("history-file-link");
-        anchor.title = `Open ${linkText}`;
-        continue;
-      }
-      let url;
-      try {
-        url = new URL(linkText, location.href);
-      } catch (_error) {
-        continue;
-      }
-      if (!["http:", "https:", "mailto:"].includes(url.protocol)) continue;
-      anchor.classList.add("history-external-link");
-      anchor.target = "_blank";
-      anchor.rel = "noopener noreferrer";
-      anchor.title = `Open ${linkText}`;
-    }
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-    const textNodes = [];
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (!node.parentElement?.closest("a")) textNodes.push(node);
-    }
-    for (const node of textNodes) {
-      const source = node.nodeValue || "";
-      const matches = [...source.matchAll(new RegExp(PATH_LINK_RE.source, "g"))].filter((match) => {
-        const raw = match[0];
-        const extension = raw.split(":")[0].split(".").pop().toLowerCase();
-        return raw.includes("/") || KNOWN_EXTS.has(extension);
-      });
-      if (!matches.length) continue;
-      const fragment = document.createDocumentFragment();
-      let offset = 0;
-      for (const match of matches) {
-        fragment.appendChild(document.createTextNode(source.slice(offset, match.index)));
-        const anchor = document.createElement("a");
-        anchor.className = "history-file-link";
-        anchor.href = match[0];
-        anchor.dataset.terminalFile = match[0];
-        anchor.title = `Open ${match[0]}`;
-        anchor.textContent = match[0];
-        fragment.appendChild(anchor);
-        offset = match.index + match[0].length;
-      }
-      fragment.appendChild(document.createTextNode(source.slice(offset)));
-      node.replaceWith(fragment);
-    }
-  }
-
-  initNotebook() {
-    const toggles = [this.$("notebook-toggle"), this.$("file-tabs-notebook")].filter(Boolean);
-    const panel = this.$("notebook-panel");
-    const host = this.$("notebook-editor-host");
-    if (!toggles.length || !panel || !host) return;
-    this.normalizeNotebookNotes();
-    for (const toggle of toggles) toggle.onclick = () => this.toggleNotebook();
-    this.$("notebook-new").onclick = () => { void this.createNotebookNote(); };
-    this.$("notebook-find").onclick = () => this.openNotebookFind();
-    this.$("notebook-find-close").onclick = () => this.closeNotebookFind(true);
-    this.$("notebook-find-prev").onclick = () => this.stepNotebookSearch(-1);
-    this.$("notebook-find-next").onclick = () => this.stepNotebookSearch(1);
-    this.$("notebook-replace-toggle").onclick = () => this.toggleNotebookReplace();
-    this.$("notebook-replace-one").onclick = () => { void this.replaceNotebookSearchMatch(false); };
-    this.$("notebook-replace-all").onclick = () => { void this.replaceNotebookSearchMatch(true); };
-    this.$("notebook-find-query").addEventListener("input", () => this.updateNotebookSearchState(true));
-    this.$("notebook-find-query").addEventListener("keydown", (event) => {
-      if (event.key === "Escape") { event.preventDefault(); this.closeNotebookFind(true); return; }
-      if (event.key === "Enter") { event.preventDefault(); this.stepNotebookSearch(event.shiftKey ? -1 : 1); }
-    });
-    this.$("notebook-replace-query").addEventListener("keydown", (event) => {
-      if (event.key === "Escape") { event.preventDefault(); this.closeNotebookFind(true); return; }
-      if (event.key === "Enter") { event.preventDefault(); void this.replaceNotebookSearchMatch(event.metaKey); }
-    });
-    window.addEventListener("keydown", (event) => {
-      if (!this.settings.notebook_open || !event.target.closest?.("#notebook-panel") ||
-          !event.metaKey || event.ctrlKey || event.shiftKey || event.key.toLowerCase() !== "f") return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      this.openNotebookFind(event.altKey);
-    }, true);
-    this.$("notebook-close").onclick = () => {
-      this.setNotebookOpen(false);
-    };
-    const notebookResizer = this.$("notebook-resizer");
-    notebookResizer.onpointerdown = this.startNotebookResize.bind(this);
-    notebookResizer.onpointermove = this.resizeNotebookFromPointer.bind(this);
-    notebookResizer.onpointerup = this.finishNotebookResize.bind(this);
-    notebookResizer.onpointercancel = this.finishNotebookResize.bind(this);
-    panel.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (!this.$("notebook-find-bar").classList.contains("hidden")) {
-        this.closeNotebookFind(true);
-        return;
-      }
-      this.setNotebookOpen(false);
-    });
-    if (!this.notebookEditor) {
-      host.textContent = "";
-      const fallback = document.createElement("textarea");
-      fallback.className = "notes-area";
-      fallback.placeholder = "Quick notes…";
-      fallback.value = this.activeNotebookNote()?.text || "";
-      fallback.addEventListener("input", () => this.setActiveNotebookText(fallback.value));
-      host.appendChild(fallback);
-    }
-    this.renderNotebook();
-    void this.mountNotebookEditor();
-  }
-
-  initSelectionActions() {
-    const actions = this.$("selection-actions");
-    if (!actions) return;
-    this.$("selection-copy").onclick = () => this.copySelectionToClipboard();
-    this.$("selection-note-new").onclick = () => { void this.createNotebookNoteFromSelection(); };
-    this.$("selection-note-append").onclick = () => { void this.appendSelectionToNotebook(); };
-    this.$("selection-search-content").onclick = () => this.searchContentFromSelection();
-    this.$("selection-search-file").onclick = () => this.searchFileFromSelection();
-    this.$("selection-copy-history-panel").addEventListener("keydown", (event) => {
-      if (!actions.classList.contains("history-picker")) return;
-      const items = [...this.$("selection-copy-history-panel").querySelectorAll(".selection-copy-history-item")];
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        this.closeSelectionCopyHistoryPicker();
-        return;
-      }
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        event.stopPropagation();
-        if (!items.length) return;
-        actions.classList.add("keyboard-nav");
-        const direction = event.key === "ArrowDown" ? 1 : -1;
-        this.selectionCopyHistoryIndex = (this.selectionCopyHistoryIndex + direction + items.length) % items.length;
-        this.focusSelectionCopyHistoryItem();
-        return;
-      }
-      if (event.key === "Enter" && !event.isComposing) {
-        const item = event.target.closest?.(".selection-copy-history-item");
-        if (!item) return;
-        event.preventDefault();
-        event.stopPropagation();
-        this.insertSelectionCopyHistory(item.dataset.copyText || "", true);
-      }
-    });
-    this.$("selection-copy-history-panel").addEventListener("pointermove", (event) => {
-      if (event.target.closest?.(".selection-copy-history-item")) actions.classList.remove("keyboard-nav");
-    });
-    actions.addEventListener("pointerdown", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-    });
-    actions.addEventListener("click", (event) => event.stopPropagation());
-    document.addEventListener("contextmenu", (event) => {
-      const source = event.target.closest?.(".xterm, #history-body, #monaco-host, #notebook-editor-host");
-      if (!source) return;
-      const state = this.readSelectionActionState(event.target);
-      event.preventDefault();
-      event.stopPropagation();
-      const contextKind = source.matches(".xterm") ? "terminal" : source.id === "history-body" ? "history"
-        : source.id === "monaco-host" ? "file" : "notebook";
-      this.openSelectionContextMenu(state, { x: event.clientX, y: event.clientY }, contextKind);
-    });
-    document.addEventListener("selectionchange", () => this.scheduleSelectionActions());
-    document.addEventListener("mouseup", () => this.scheduleSelectionActions());
-    document.addEventListener("copy", () => this.recordDocumentSelectionCopy());
-    window.addEventListener("resize", () => this.scheduleSelectionActions());
-    window.addEventListener("scroll", () => this.scheduleSelectionActions(), true);
-  }
-
-  initIdeFeatures() {
-    if (this.vscodeMode) return;
-    const quickBackdrop = this.$("quick-open-backdrop");
-    const quickInput = this.$("quick-open-input");
-    quickBackdrop.addEventListener("mousedown", (event) => {
-      if (event.target === quickBackdrop) this.closeQuickOpen();
-    });
-    quickInput.addEventListener("input", () => {
-      clearTimeout(this.quickOpenTimer);
-      this.quickOpenTimer = setTimeout(() => void this.renderQuickOpen(quickInput.value), 140);
-    });
-    quickInput.addEventListener("keydown", (event) => this.handleQuickOpenKey(event));
-    // Null-safe: #file-outline-toggle is not in index.html yet. This sits mid-way through
-    // initIdeFeatures, so the throw skipped every listener wired after it, not just this one.
-    const fileOutlineToggle = this.$("file-outline-toggle");
-    if (fileOutlineToggle) fileOutlineToggle.onclick = () => this.toggleFileInspector("outline");
-    this.$("file-inspector-close").onclick = () => this.closeFileInspector();
-    this.$("file-inspector-refresh").onclick = () => this.refreshFileInspector();
-    this.$("file-split-toggle").onclick = () => this.toggleSplitEditor();
-    this.$("secondary-editor-close").onclick = () => this.closeSplitEditor();
-    this.$("secondary-diff-toggle").onclick = () => this.toggleSecondaryDiff();
-    this.$("secondary-file-select").onchange = (event) => {
-      this.secondaryFileKey = event.target.value || null;
-      void this.renderSecondaryEditor(true);
-    };
-    this.$("file-tabs-more").onclick = (event) => this.openFileTabsMenu(event.currentTarget);
-    this.$("problems-toggle").onclick = () => this.toggleProblemsPanel();
-    this.$("problems-close").onclick = () => this.setProblemsOpen(false);
-    this.$("problems-refresh").onclick = () => this.refreshProblems();
-    this.$("conversation-outline-toggle").onclick = () => this.toggleContextualOutline();
-    this.$("conversation-outline-close").onclick = () => this.setConversationOutlineOpen(false);
-    this.$("conversation-outline-refresh").onclick = () => void this.loadConversationOutline(true);
-    document.addEventListener("pointerdown", (event) => {
-      if (this.activeFileKey !== null && this.fileInspectorMode === "outline") {
-        if (this.$("file-inspector").contains(event.target) || this.$("conversation-outline-toggle").contains(event.target)) return;
-        this.closeFileInspector();
-        return;
-      }
-      if (!this.conversationOutlineOpen) return;
-      if (this.$("conversation-outline").contains(event.target) || this.$("conversation-outline-toggle").contains(event.target)) return;
-      this.setConversationOutlineOpen(false);
-    });
-  }
-
-  openQuickOpen(initialQuery = "") {
-    if (this.vscodeMode) return;
-    this.quickOpenMode = "all";
-    this.showQuickOpen(initialQuery);
-  }
-
-  openRecentTerminalsQuickOpen() {
-    if (this.vscodeMode) return;
-    const backdrop = this.$("quick-open-backdrop");
-    if (!backdrop.classList.contains("hidden") && this.quickOpenMode === "recent-terminals") {
-      const recentIndexes = this.quickOpenResults.map((result, index) => result.kind === "Recently opened terminals" ? index : -1)
-        .filter((index) => index >= 0);
-      if (!recentIndexes.length) return;
-      const currentIndex = recentIndexes.indexOf(this.quickOpenSelection);
-      this.quickOpenSelection = recentIndexes[(currentIndex + 1 + recentIndexes.length) % recentIndexes.length];
-      this.updateQuickOpenSelection();
-      return;
-    }
-    this.quickOpenMode = "recent-terminals";
-    this.showQuickOpen("");
-  }
-
-  showQuickOpen(initialQuery) {
-    const backdrop = this.$("quick-open-backdrop");
-    const input = this.$("quick-open-input");
-    backdrop.classList.remove("hidden");
-    input.value = initialQuery;
-    this.quickOpenSelection = 0;
-    void this.renderQuickOpen(initialQuery);
-    requestAnimationFrame(() => { input.focus(); input.select(); });
-  }
-
-  closeQuickOpen() {
-    clearTimeout(this.quickOpenTimer);
-    this.$("quick-open-backdrop").classList.add("hidden");
-    this.quickOpenMode = "all";
-    requestAnimationFrame(() => this.focusActiveEditor());
-  }
-
-  handleQuickOpenKey(event) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      this.closeQuickOpen();
-      return;
-    }
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!this.quickOpenResults.length) return;
-      const direction = event.key === "ArrowDown" ? 1 : -1;
-      this.quickOpenSelection = (this.quickOpenSelection + direction + this.quickOpenResults.length) % this.quickOpenResults.length;
-      this.updateQuickOpenSelection();
-      return;
-    }
-    if (event.key === "Enter" && !event.isComposing) {
-      event.preventDefault();
-      event.stopPropagation();
-      const result = this.quickOpenResults[this.quickOpenSelection];
-      if (!result) return;
-      this.closeQuickOpen();
-      result.run();
-    }
-  }
-
-  quickOpenTextMatches(query, ...values) {
-    const terms = String(query || "").toLocaleLowerCase().split(/\s+/).filter(Boolean);
-    if (!terms.length) return true;
-    const text = values.filter(Boolean).join(" ").toLocaleLowerCase();
-    return terms.every((term) => text.includes(term));
-  }
-
-  quickOpenCommands() {
-    const commands = [
-      { title: "New terminal", icon: "add", run: () => this.openModal() },
-      { title: "Show Problems", icon: "warning", run: () => this.setProblemsOpen(true) },
-      { title: "Show file Outline", icon: "symbol-class", run: () => this.toggleFileInspector("outline", true) },
-      { title: "Split active editor", icon: "split-horizontal", run: () => this.toggleSplitEditor(true) },
-      { title: "Reveal active file in tree", icon: "target", run: () => void this.revealActiveFile() },
-      { title: "Open Quick Notes", icon: "notebook", run: () => this.setNotebookOpen(true) },
-    ];
-    if (this.sessionSupportsTranscript()) commands.splice(commands.length - 1, 0,
-      { title: "Open Markdown transcript", icon: "markdown", run: () => this.setHistoryMode(true) });
-    return commands;
-  }
-
-  recentlyOpenedTerminalSessions() {
-    const sessionsById = new Map(this.sessions.map((session) => [session.session_id, session]));
-    const ordered = [];
-    const seen = new Set();
-    for (const sessionId of this.getProjectState().recently_opened_terminal_ids || []) {
-      const session = sessionsById.get(sessionId);
-      if (!session || seen.has(session.session_id)) continue;
-      seen.add(session.session_id);
-      ordered.push(session);
-    }
-    for (const session of this.sessions) {
-      if (seen.has(session.session_id)) continue;
-      seen.add(session.session_id);
-      ordered.push(session);
-    }
-    return ordered;
-  }
-
-  quickOpenTerminalResult(session, kind) {
-    const title = this.titlePresentation(session).text;
-    return { kind, title, detail: session.cwd, icon: "terminal",
-      run: () => this.activate(session.session_id, { reveal: true }) };
-  }
-
-  async renderQuickOpen(rawQuery) {
-    const generation = ++this.quickOpenGeneration;
-    const query = String(rawQuery || "").trim();
-    const commandOnly = query.startsWith(">");
-    const symbolOnly = query.startsWith("@");
-    const searchQuery = query.replace(/^[>@]/, "").trim();
-    const results = [];
-    const recentOnly = this.quickOpenMode === "recent-terminals";
-    if (!symbolOnly && !recentOnly) {
-      for (const command of this.quickOpenCommands()) {
-        if (!this.quickOpenTextMatches(searchQuery, command.title)) continue;
-        results.push({ kind: "Commands", title: command.title, detail: "command", icon: command.icon, run: command.run });
-      }
-    }
-    if (!commandOnly && !symbolOnly) {
-      const terminalSessions = this.recentlyOpenedTerminalSessions();
-      const recentSessionIds = new Set(this.getProjectState().recently_opened_terminal_ids || []);
-      for (const session of terminalSessions) {
-        if (!this.quickOpenTextMatches(searchQuery, this.titlePresentation(session).text, session.cwd)) continue;
-        const kind = recentSessionIds.has(session.session_id) ? "Recently opened terminals" : "Terminals";
-        if (recentOnly && kind === "Terminals" && recentSessionIds.size) continue;
-        results.push(this.quickOpenTerminalResult(session, kind));
-      }
-      for (const [key, entry] of this.openFiles) {
-        if (!this.quickOpenTextMatches(searchQuery, entry.name, entry.path)) continue;
-        results.push({ kind: "Open files", title: entry.name, detail: entry.path, icon: "file-code", run: () => void this.activateFile(key, null) });
-      }
-      for (const file of this.settings.recent_closed_files || []) {
-        if (!file?.root || !file?.path || !this.quickOpenTextMatches(searchQuery, file.path)) continue;
-        results.push({ kind: "Recently closed", title: file.path.split("/").pop(), detail: file.path, icon: "history",
-          run: () => void this.openFile(file.root, file.path, null, null, { pinned: true }) });
-      }
-    }
-    if (symbolOnly && this.activeFileKey !== null) {
-      for (const symbol of this.activeFileOutlineSymbols()) {
-        if (!this.quickOpenTextMatches(searchQuery, symbol.name, symbol.kind)) continue;
-        results.push({ kind: "Symbols", title: symbol.name, detail: `${symbol.kind} · line ${symbol.line}`, icon: symbol.icon,
-          run: () => this.revealEditorLine(symbol.line) });
-      }
-      if (searchQuery && this.lspClient?.transport.available) {
-        try {
-          const workspaceSymbols = await this.lspClient.workspaceSymbols(searchQuery);
-          if (generation !== this.quickOpenGeneration) return;
-          for (const symbol of workspaceSymbols) {
-            results.push({ kind: "Workspace symbols", title: symbol.name,
-              detail: symbol.containerName || monaco.Uri.parse(symbol.location.uri).path,
-              icon: "symbol-method", run: () => void this.lspClient.openLocation(symbol.location) });
-          }
-        } catch (error) {
-          this.$("stat-text").textContent = error.message || "workspace symbol search failed";
-        }
-      }
-    }
-    this.paintQuickOpenResults(results);
-    if (!commandOnly && !symbolOnly && searchQuery) {
-      const root = this.searchRoot();
-      const params = new URLSearchParams({ root, q: searchQuery, glob: this.fileGlobForMode("search"),
-        ignore: this.searchIgnoreTokens(), include_hidden: String(this.includeHiddenFilesInSearch()), case_sensitive: "false" });
-      const response = await fetch(`/api/files/find?${params}`);
-      if (generation !== this.quickOpenGeneration || !response.ok) return;
-      const files = (await response.json()).filter((item) => !item.is_dir).slice(0, 80);
-      const existing = new Set(results.filter((result) => result.kind === "Open files").map((result) => result.detail));
-      for (const file of files) {
-        if (existing.has(file.path)) continue;
-        results.push({ kind: "Files", title: file.path.split("/").pop(), detail: file.path, icon: "file-code",
-          run: () => void this.openFile(root, file.path, null, null, { pinned: true }) });
-      }
-      this.paintQuickOpenResults(results);
-    }
-  }
-
-  paintQuickOpenResults(results) {
-    this.quickOpenResults = results.slice(0, 120);
-    this.quickOpenSelection = Math.min(this.quickOpenSelection, Math.max(0, this.quickOpenResults.length - 1));
-    const container = this.$("quick-open-results");
-    container.textContent = "";
-    let lastKind = "";
-    for (const [index, result] of this.quickOpenResults.entries()) {
-      if (result.kind !== lastKind) {
-        const group = document.createElement("div");
-        group.className = "quick-open-group";
-        group.textContent = result.kind;
-        container.appendChild(group);
-        lastKind = result.kind;
-      }
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = `quick-open-item${index === this.quickOpenSelection ? " selected" : ""}`;
-      row.dataset.index = String(index);
-      row.setAttribute("role", "option");
-      row.setAttribute("aria-selected", String(index === this.quickOpenSelection));
-      const icon = document.createElement("span");
-      icon.className = `codicon codicon-${result.icon}`;
-      const title = document.createElement("span");
-      title.className = "quick-open-item-title";
-      title.textContent = result.title;
-      const detail = document.createElement("span");
-      detail.className = "quick-open-item-detail";
-      detail.textContent = result.detail || "";
-      row.append(icon, title, detail);
-      row.onmouseenter = () => { this.quickOpenSelection = index; this.updateQuickOpenSelection(false); };
-      row.onclick = () => { this.closeQuickOpen(); result.run(); };
-      container.appendChild(row);
-    }
-    if (!this.quickOpenResults.length) {
-      const empty = document.createElement("div");
-      empty.className = "file-inspector-empty";
-      empty.textContent = "No matching files, terminals, symbols, or commands.";
-      container.appendChild(empty);
-    }
-  }
-
-  updateQuickOpenSelection(scroll = true) {
-    for (const row of this.$("quick-open-results").querySelectorAll(".quick-open-item")) {
-      const selected = Number(row.dataset.index) === this.quickOpenSelection;
-      row.classList.toggle("selected", selected);
-      row.setAttribute("aria-selected", String(selected));
-      if (selected && scroll) row.scrollIntoView({ block: "nearest" });
-    }
-  }
-
-  renderFileEditorChrome() {
-    if (this.vscodeMode) return;
-    const fileWorkspaceMode = this.activeFileKey !== null || FILES_SIDE_PANEL_TABS.includes(this.sideView);
-    this.$("file-tabs-bar").classList.toggle("hidden", !fileWorkspaceMode);
-    this.$("notebook-toggle").classList.toggle("hidden", fileWorkspaceMode);
-    this.$("editor-wrap-toggle").classList.toggle("hidden", !fileWorkspaceMode);
-    this.$("notebook-panel")?.classList.toggle("notebook-over-file-area", fileWorkspaceMode);
-    this.renderFileTabs();
-    this.renderFileBreadcrumbs();
-    this.renderSecondaryFileSelect();
-    if (this.fileInspectorMode === "outline") this.renderFileOutline();
-    if (this.problemsOpen) this.scheduleProblemsRefresh();
-  }
-
-  renderFileTabs() {
-    const container = this.$("file-tabs");
-    if (!container) return;
-    container.textContent = "";
-    for (const [key, entry] of this.visibleOrderedFileTabs()) {
-      const tab = document.createElement("button");
-      tab.type = "button";
-      tab.className = `file-editor-tab${key === this.activeFileKey ? " active" : ""}${entry.preview ? " preview" : ""}`;
-      tab.title = this.fileTabHoverPath(entry);
-      tab.setAttribute("role", "tab");
-      tab.setAttribute("aria-selected", String(key === this.activeFileKey));
-      const name = document.createElement("span");
-      name.className = "file-editor-tab-name";
-      name.textContent = entry.name;
-      const gitStatus = this.gitStatusPresentation(entry.git_status);
-      if (gitStatus) {
-        name.classList.add(`git-row-${gitStatus.statusClass}`);
-        tab.title = `${tab.title}\ngit: ${gitStatus.label}`;
-      }
-      tab.appendChild(name);
-      const pin = document.createElement("span");
-      pin.className = `file-editor-tab-pin codicon codicon-${entry.preview ? "pin" : "pinned"}`;
-      pin.title = entry.preview ? "Pin file" : "Unpin to preview";
-      pin.onclick = (event) => { event.stopPropagation(); this.setFilePreview(key, !entry.preview); };
-      const close = document.createElement("span");
-      close.className = "file-editor-tab-close codicon codicon-close";
-      close.title = "Close file";
-      close.onclick = (event) => { event.stopPropagation(); void this.closeFile(key); };
-      tab.append(pin, close);
-      tab.onclick = () => void this.activateFile(key, null);
-      tab.ondblclick = () => this.setFilePreview(key, false);
-      container.appendChild(tab);
-    }
-    requestAnimationFrame(() => container.querySelector(".file-editor-tab.active")?.scrollIntoView({ inline: "nearest" }));
-  }
-
-  visibleOrderedFileTabs() {
-    const entries = [...this.openFiles.entries()];
-    if (this.settings.file_tab_order === "modified") {
-      entries.sort((left, right) => (Number(right[1].mtime) || 0) - (Number(left[1].mtime) || 0));
-    }
-    const maximumVisible = Math.max(1, Math.min(OPEN_FILES_MAX_ENTRIES,
-      Number(this.settings.file_tab_max_visible) || SETTINGS_DEFAULTS.file_tab_max_visible));
-    const visible = entries.slice(0, maximumVisible);
-    if (this.activeFileKey !== null && !visible.some(([key]) => key === this.activeFileKey)) {
-      const active = entries.find(([key]) => key === this.activeFileKey);
-      if (active) visible[Math.max(0, visible.length - 1)] = active;
-    }
-    return visible;
-  }
-
-  setFilePreview(key, preview) {
-    const entry = this.openFiles.get(key);
-    if (!entry) return;
-    entry.preview = !!preview && !entry.dirty;
-    this.persistOpenFiles();
-    this.renderFileEditorChrome();
-  }
-
-  openFileTabsMenu(anchor) {
-    const menu = this.$("context-menu");
-    menu.textContent = "";
-    menu.classList.remove("hidden");
-    const title = document.createElement("div");
-    title.className = "file-tab-settings-title";
-    title.textContent = "File tabs";
-    const maximumRow = document.createElement("label");
-    maximumRow.className = "file-tab-settings-row";
-    maximumRow.appendChild(document.createTextNode("Maximum visible"));
-    const maximum = document.createElement("select");
-    maximum.setAttribute("aria-label", "Maximum visible file tabs");
-    for (const value of [5, 10, 15, 20, 25, 30, 40, 50, 60, 80]) {
-      const option = document.createElement("option");
-      option.value = String(value);
-      option.textContent = String(value);
-      maximum.appendChild(option);
-    }
-    maximum.value = String(Math.max(1, Math.min(OPEN_FILES_MAX_ENTRIES,
-      Number(this.settings.file_tab_max_visible) || SETTINGS_DEFAULTS.file_tab_max_visible)));
-    maximum.onchange = () => {
-      this.settings.file_tab_max_visible = Number(maximum.value);
-      this.saveSettings();
-      this.renderFileTabs();
-    };
-    maximumRow.appendChild(maximum);
-    const orderRow = document.createElement("label");
-    orderRow.className = "file-tab-settings-row";
-    orderRow.appendChild(document.createTextNode("Order"));
-    const order = document.createElement("select");
-    order.setAttribute("aria-label", "File tab order");
-    for (const [value, label] of [["opened", "Opening order"], ["modified", "Last modified first"]]) {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = label;
-      order.appendChild(option);
-    }
-    order.value = this.settings.file_tab_order === "modified" ? "modified" : "opened";
-    order.onchange = () => {
-      this.settings.file_tab_order = order.value;
-      this.saveSettings();
-      this.renderFileTabs();
-    };
-    orderRow.appendChild(order);
-    const codeFontRow = document.createElement("label");
-    codeFontRow.className = "file-tab-settings-row";
-    codeFontRow.appendChild(document.createTextNode("Code font size"));
-    const codeFont = document.createElement("select");
-    codeFont.setAttribute("aria-label", "Code font size");
-    for (let value = FONT_MIN; value <= FONT_MAX; value += 1) {
-      const option = document.createElement("option");
-      option.value = String(value);
-      option.textContent = `${value}px`;
-      codeFont.appendChild(option);
-    }
-    codeFont.value = String(Math.max(FONT_MIN, Math.min(FONT_MAX,
-      Number(this.settings.code_font_size) || SETTINGS_DEFAULTS.code_font_size)));
-    codeFont.onchange = () => {
-      this.settings.code_font_size = Number(codeFont.value);
-      this.applySettings();
-      this.saveSettings();
-    };
-    codeFontRow.appendChild(codeFont);
-    menu.append(title, maximumRow, orderRow, codeFontRow);
-    const recentlyClosed = (this.settings.recent_closed_files || [])[0];
-    this.addContextItem(menu, recentlyClosed ? `Reopen ${recentlyClosed.path.split("/").pop()}` : "No recently closed files",
-      recentlyClosed ? () => void this.openFile(recentlyClosed.root, recentlyClosed.path, null, null, { pinned: true }) : null,
-      "history");
-    const rect = anchor.getBoundingClientRect();
-    this.positionContextMenu(menu, rect.right, rect.bottom + 4);
-  }
-
-  renderFileBreadcrumbs() {
-    const container = this.$("file-breadcrumbs");
-    if (!container) return;
-    container.textContent = "";
-    const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    container.classList.toggle("hidden", !entry || this.vscodeMode);
-    if (!entry || this.vscodeMode) {
-      container.title = "";
-      return;
-    }
-    container.title = entry.fullPath || `${entry.root}/${entry.path}`;
-    const project = this.projectForCwd(entry.root);
-    const parts = entry.path.split("/").filter(Boolean);
-    const labels = [project?.name || entry.root.split("/").filter(Boolean).pop() || entry.root, ...parts];
-    for (const [index, label] of labels.entries()) {
-      const crumb = document.createElement("button");
-      crumb.type = "button";
-      crumb.className = "file-breadcrumb";
-      crumb.textContent = label;
-      crumb.title = container.title;
-      if (index < labels.length - 1) {
-        const folderPath = index === 0 ? "" : parts.slice(0, index).join("/");
-        crumb.onclick = () => void this.revealFileBreadcrumb(entry, folderPath);
-      }
-      container.appendChild(crumb);
-    }
-  }
-
-  fileTabHoverPath(entry) {
-    const absolutePath = this.normalizedFileSystemPath(entry.fullPath || `${entry.root}/${entry.path}`);
-    const projectBases = [this.worktreeRoot(), this.projectRoot()].filter(Boolean)
-      .map((base) => this.normalizedFileSystemPath(base)).sort((left, right) => right.length - left.length);
-    const matchingBase = projectBases.find((base) => absolutePath.startsWith(`${base}/`));
-    return matchingBase ? absolutePath.slice(matchingBase.length + 1) : absolutePath;
-  }
-
-  async revealFileBreadcrumb(entry, folderPath) {
-    if (this.sideView !== "project") this.setSideView("project", false);
-    if (this.treeRoot !== entry.root || !this.treeDirs.get("")) await this.reloadTree(entry.root);
-    if (!folderPath) {
-      this.markTreeSelection(null);
-      this.$("files-tree").scrollTop = 0;
-      return;
-    }
-    let relativePath = "";
-    let folderRow = null;
-    for (const part of folderPath.split("/")) {
-      relativePath = relativePath ? `${relativePath}/${part}` : part;
-      folderRow = this.treeRowForPath(relativePath);
-      if (!folderRow) return;
-      if (!this.expandedDirs.has(relativePath)) await this.toggleDir(folderRow, relativePath);
-    }
-    this.markTreeSelection(folderRow);
-    folderRow?.scrollIntoView({ block: "center" });
-  }
-
-  toggleFileInspector(mode, forceOpen = false) {
-    if (this.activeFileKey === null) return;
-    if (!forceOpen && this.fileInspectorMode === mode) {
-      this.closeFileInspector();
-      return;
-    }
-    this.fileInspectorMode = mode;
-    this.$("file-inspector").classList.remove("hidden");
-    this.$("file-outline-toggle")?.classList.toggle("on", mode === "outline");
-    this.$("conversation-outline-toggle").classList.toggle("on", mode === "outline");
-    this.refreshFileInspector();
-  }
-
-  closeFileInspector() {
-    this.fileInspectorMode = null;
-    this.$("file-inspector").classList.add("hidden");
-    this.$("file-outline-toggle")?.classList.remove("on");
-    if (this.activeFileKey !== null) this.$("conversation-outline-toggle").classList.remove("on");
-    this.editor?.layout();
-  }
-
-  refreshFileInspector() {
-    if (this.fileInspectorMode === "outline") this.renderFileOutline();
-  }
-
-  activeFileOutlineSymbols() {
-    const model = this.editor?.getModel();
-    if (!model) return [];
-    const symbols = [];
-    const extension = String(this.openFiles.get(this.activeFileKey)?.name || "").split(".").pop().toLocaleLowerCase();
-    for (let line = 1; line <= model.getLineCount(); line += 1) {
-      const text = model.getLineContent(line);
-      let match = null;
-      let kind = "symbol", icon = "symbol-variable";
-      if (["py", "pyi"].includes(extension)) {
-        match = /^\s*(?:async\s+)?(class|def)\s+([A-Za-z_]\w*)/.exec(text);
-        if (match) { kind = match[1] === "class" ? "class" : "function"; icon = match[1] === "class" ? "symbol-class" : "symbol-method"; }
-      } else if (["js", "jsx", "ts", "tsx", "mjs", "cjs", "java", "kt", "go", "rs"].includes(extension)) {
-        match = /^\s*(?:export\s+)?(?:public\s+|private\s+|protected\s+)?(?:async\s+)?(class|interface|function|fn|func|const|let|var)\s+([A-Za-z_$]\w*)/.exec(text);
-        if (match) { kind = match[1]; icon = ["class", "interface"].includes(kind) ? "symbol-class" : ["function", "fn", "func"].includes(kind) ? "symbol-method" : "symbol-variable"; }
-      } else if (["md", "mdx"].includes(extension)) {
-        match = /^(#{1,6})\s+(.+?)\s*$/.exec(text);
-        if (match) { kind = `heading ${match[1].length}`; icon = "symbol-string"; }
-      }
-      if (!match) continue;
-      symbols.push({ name: match[2], kind, icon, line });
-    }
-    return symbols;
-  }
-
-  renderFileOutline() {
-    if (this.fileInspectorMode !== "outline") return;
-    this.$("file-inspector-title").textContent = "Outline";
-    const body = this.$("file-inspector-body");
-    body.textContent = "";
-    const symbols = this.activeFileOutlineSymbols();
-    for (const symbol of symbols) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = "file-inspector-row";
-      const icon = document.createElement("span");
-      icon.className = `codicon codicon-${symbol.icon}`;
-      const name = document.createElement("span");
-      name.className = "file-inspector-row-name";
-      name.textContent = symbol.name;
-      const meta = document.createElement("span");
-      meta.className = "file-inspector-row-meta";
-      meta.textContent = symbol.line;
-      row.append(icon, name, meta);
-      row.onclick = () => this.revealEditorLine(symbol.line);
-      body.appendChild(row);
-    }
-    if (!symbols.length) {
-      const empty = document.createElement("div");
-      empty.className = "file-inspector-empty";
-      empty.textContent = "No symbols found in the active file.";
-      body.appendChild(empty);
-    }
-  }
-
-  revealEditorLine(line, column = 1) {
-    if (!this.editor) return;
-    this.editor.setPosition({ lineNumber: line, column });
-    this.editor.revealLineInCenter(line);
-    this.editor.focus();
-  }
-
-  toggleSplitEditor(forceOpen = false) {
-    if (this.activeFileKey === null || !this.editor) return;
-    if (!forceOpen && !this.$("secondary-editor-pane").classList.contains("hidden")) {
-      this.closeSplitEditor();
-      return;
-    }
-    this.$("editor-area").classList.add("split-open");
-    this.$("secondary-editor-pane").classList.remove("hidden");
-    this.$("file-split-toggle").classList.add("on");
-    if (!this.secondaryFileKey || !this.openFiles.has(this.secondaryFileKey)) {
-      this.secondaryFileKey = [...this.openFiles.keys()].find((key) => key !== this.activeFileKey) || this.activeFileKey;
-    }
-    this.renderSecondaryFileSelect();
-    void this.renderSecondaryEditor(true);
-    this.editor.layout();
-  }
-
-  closeSplitEditor() {
-    this.secondaryEditor?.dispose();
-    this.secondaryDiffEditor?.dispose();
-    this.secondaryEditor = null;
-    this.secondaryDiffEditor = null;
-    this.$("secondary-editor-host").textContent = "";
-    this.$("secondary-editor-pane").classList.add("hidden");
-    this.$("editor-area").classList.remove("split-open");
-    this.$("file-split-toggle").classList.remove("on");
-    this.$("secondary-diff-toggle").classList.remove("on");
-    this.editor?.layout();
-  }
-
-  renderSecondaryFileSelect() {
-    const select = this.$("secondary-file-select");
-    if (!select) return;
-    const previous = this.secondaryFileKey;
-    select.textContent = "";
-    for (const [key, entry] of this.openFiles) {
-      const option = document.createElement("option");
-      option.value = key;
-      option.textContent = entry.path;
-      select.appendChild(option);
-    }
-    if (previous && this.openFiles.has(previous)) select.value = previous;
-  }
-
-  toggleSecondaryDiff() {
-    if (this.$("secondary-editor-pane").classList.contains("hidden")) return;
-    this.$("secondary-diff-toggle").classList.toggle("on");
-    void this.renderSecondaryEditor(true);
-  }
-
-  async renderSecondaryEditor(force = false) {
-    if (!this.editor || this.$("secondary-editor-pane").classList.contains("hidden")) return;
-    const secondaryEntry = this.secondaryFileKey ? this.openFiles.get(this.secondaryFileKey) : null;
-    const activeEntry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    if (!secondaryEntry || !activeEntry) return;
-    if (!activeEntry.model) await this.refreshFileModelFromDisk(activeEntry);
-    if (!secondaryEntry.model) await this.refreshFileModelFromDisk(secondaryEntry);
-    if (!secondaryEntry.model || !activeEntry.model || this.$("secondary-editor-pane").classList.contains("hidden")) return;
-    const diff = this.$("secondary-diff-toggle").classList.contains("on");
-    const signature = `${this.activeFileKey}|${this.secondaryFileKey}|${diff}`;
-    if (!force && this.secondaryEditorSignature === signature) return;
-    this.secondaryEditorSignature = signature;
-    this.secondaryEditor?.dispose();
-    this.secondaryDiffEditor?.dispose();
-    this.secondaryEditor = null;
-    this.secondaryDiffEditor = null;
-    const host = this.$("secondary-editor-host");
-    host.textContent = "";
-    const options = { automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
-      fontSize: this.settings.code_font_size, wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true };
-    if (diff) {
-      this.secondaryDiffEditor = monaco.editor.createDiffEditor(host, { ...options, readOnly: true, renderSideBySide: false });
-      this.secondaryDiffEditor.setModel({ original: activeEntry.model, modified: secondaryEntry.model });
-    } else {
-      this.secondaryEditor = monaco.editor.create(host, { ...options, readOnly: false, model: secondaryEntry.model });
-    }
-  }
-
-  toggleProblemsPanel() {
-    this.setProblemsOpen(!this.problemsOpen);
-  }
-
-  setProblemsOpen(open) {
-    this.problemsOpen = !!open;
-    this.$("problems-panel").classList.toggle("hidden", !this.problemsOpen);
-    this.$("problems-toggle").classList.toggle("on", this.problemsOpen);
-    if (this.problemsOpen) this.refreshProblems();
-    this.editor?.layout();
-    this.secondaryEditor?.layout();
-    this.secondaryDiffEditor?.layout();
-    this.fitActive();
-  }
-
-  scheduleProblemsRefresh() {
-    if (!this.problemsOpen) return;
-    clearTimeout(this.problemsRefreshTimer);
-    this.problemsRefreshTimer = setTimeout(() => this.refreshProblems(), 180);
-  }
-
-  refreshProblems() {
-    if (!this.problemsOpen || typeof monaco === "undefined") return;
-    const problems = [];
-    for (const marker of monaco.editor.getModelMarkers({})) {
-      const entry = [...this.openFiles.values()].find((candidate) => candidate.model?.uri.toString() === marker.resource.toString());
-      if (!entry) continue;
-      problems.push({ severity: marker.severity >= monaco.MarkerSeverity.Error ? "error" : "warning",
-        message: marker.message, path: entry.path, root: entry.root, line: marker.startLineNumber, column: marker.startColumn });
-    }
-    const view = this.views.get(this.activeId);
-    const session = this.session(this.activeId);
-    if (view && session && this.activeFileKey === null) {
-      const buffer = view.term.buffer.active;
-      const first = Math.max(0, buffer.baseY + buffer.cursorY - 400);
-      const last = Math.min(buffer.length - 1, buffer.baseY + buffer.cursorY);
-      const seen = new Set();
-      for (let index = first; index <= last; index += 1) {
-        const text = buffer.getLine(index)?.translateToString(true) || "";
-        const match = /(?:^|\s)((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z0-9]+):(\d+)(?::(\d+))?.*?\b(error|warning)\b/i.exec(text) ||
-          /\b(error|warning)\b.*?((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z0-9]+):(\d+)(?::(\d+))?/i.exec(text);
-        if (!match) continue;
-        const pathFirst = match[1] && !/^(error|warning)$/i.test(match[1]);
-        const path = pathFirst ? match[1] : match[2];
-        const line = Number(pathFirst ? match[2] : match[3]);
-        const column = Number(pathFirst ? match[3] : match[4]) || 1;
-        const severity = String(pathFirst ? match[4] : match[1]).toLocaleLowerCase();
-        const key = `${path}:${line}:${severity}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        problems.push({ severity, message: text.trim(), path, root: session.cwd, line, column });
-      }
-    }
-    this.renderProblems(problems);
-  }
-
-  renderProblems(problems) {
-    const list = this.$("problems-list");
-    list.textContent = "";
-    this.$("problems-count").textContent = problems.length ? String(problems.length) : "";
-    for (const problem of problems) {
-      const row = document.createElement("div");
-      row.className = `problem-row ${problem.severity}`;
-      const icon = document.createElement("span");
-      icon.className = `codicon codicon-${problem.severity === "error" ? "error" : "warning"}`;
-      const message = document.createElement("span");
-      message.className = "problem-message";
-      message.textContent = problem.message;
-      const location = document.createElement("span");
-      location.className = "problem-location";
-      location.textContent = `${problem.path}:${problem.line}`;
-      row.append(icon, message, location);
-      row.onclick = () => void this.openFile(problem.root, problem.path, problem.line, null, { pinned: true });
-      list.appendChild(row);
-    }
-    if (!problems.length) {
-      const empty = document.createElement("div");
-      empty.className = "file-inspector-empty";
-      empty.textContent = "No Monaco diagnostics or recent terminal errors.";
-      list.appendChild(empty);
-    }
-  }
-
-  toggleConversationOutline() {
-    this.setConversationOutlineOpen(!this.conversationOutlineOpen);
-  }
-
-  toggleContextualOutline() {
-    if (this.activeFileKey !== null) {
-      this.toggleFileInspector("outline");
-      return;
-    }
-    this.toggleConversationOutline();
-  }
-
-  setConversationOutlineOpen(open) {
-    this.conversationOutlineOpen = !!open && this.activeFileKey === null && !!this.activeId && this.sessionSupportsTranscript();
-    this.$("conversation-outline").classList.toggle("hidden", !this.conversationOutlineOpen);
-    this.$("conversation-outline-toggle").classList.toggle("on", this.conversationOutlineOpen);
-    if (this.conversationOutlineOpen) void this.loadConversationOutline(true);
-    else this.conversationOutlineSessionId = null;
-    this.fitActive();
-  }
-
-  async loadConversationOutline(force = false) {
-    const sessionId = this.activeId;
-    if (!this.conversationOutlineOpen || !sessionId || this.activeFileKey !== null) return;
-    const list = this.$("conversation-outline-list");
-    let turns = !force ? this.conversationOutlineTurnsBySession.get(sessionId) : null;
-    if (!turns?.length || force) {
-      list.textContent = "";
-      const loading = document.createElement("div");
-      loading.className = "file-inspector-empty";
-      loading.textContent = "Loading transcript outline…";
-      list.appendChild(loading);
-      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/history-page?limit=160`);
-      if (!response.ok || !this.conversationOutlineOpen || this.activeId !== sessionId) {
-        loading.textContent = "Conversation transcript unavailable.";
-        return;
-      }
-      const payload = await response.json();
-      turns = Array.isArray(payload.turns) ? payload.turns : [];
-      this.conversationOutlineTurnsBySession.set(sessionId, turns);
-    }
-    this.conversationOutlineSessionId = sessionId;
-    this.renderConversationOutline(turns || []);
-  }
-
-  conversationOutlineTurnKey(turn) {
-    return `${turn.role || ""}|${turn.kind || ""}|${String(turn.text || "").replace(/\s+/g, " ").trim().slice(0, 220)}`;
-  }
-
-  renderConversationOutline(turns) {
-    const list = this.$("conversation-outline-list");
-    list.textContent = "";
-    const messages = turns.filter((turn) => ["user", "assistant"].includes(turn.role) && String(turn.text || "").trim());
-    let latestPromptItem = null;
-    for (const turn of messages) {
-      const item = document.createElement("button");
-      item.type = "button";
-      const prompt = turn.role === "user";
-      const question = !prompt && /[?？]\s*$/.test(String(turn.text || "").trim());
-      const messageType = prompt ? "prompt" : question ? "question" : "response";
-      item.className = `conversation-outline-item ${messageType}`;
-      const role = document.createElement("span");
-      role.className = `conversation-outline-role codicon codicon-${prompt ? "arrow-right" : question ? "question" : "sparkle"}`;
-      const label = document.createElement("span");
-      label.className = "conversation-outline-label";
-      label.textContent = prompt ? "Prompt" : question ? "Question" : "LLM response";
-      const text = document.createElement("span");
-      text.className = "conversation-outline-text";
-      text.textContent = String(turn.text || "").replace(/\s+/g, " ").trim();
-      item.append(role, label, text);
-      item.onclick = () => this.openConversationOutlineTurn(turn);
-      list.appendChild(item);
-      if (prompt) latestPromptItem = item;
-    }
-    if (!messages.length) {
-      const empty = document.createElement("div");
-      empty.className = "file-inspector-empty";
-      empty.textContent = "No user prompts or assistant responses yet.";
-      list.appendChild(empty);
-    }
-    if (latestPromptItem) {
-      requestAnimationFrame(() => {
-        if (!this.conversationOutlineOpen || !latestPromptItem.isConnected) return;
-        list.scrollTop = Math.max(0, latestPromptItem.offsetTop - list.offsetTop - 6);
-      });
-    }
-  }
-
-  openConversationOutlineTurn(turn) {
-    const key = this.conversationOutlineTurnKey(turn);
-    if (!this.historyOpen) this.setHistoryMode(true);
-    const reveal = (attempt = 0) => {
-      if (!this.historyOpen || attempt > 12) return;
-      const target = [...this.$("history-body").querySelectorAll(".turn")]
-        .find((block) => block.dataset.outlineKey === key);
-      if (target) {
-        target.scrollIntoView({ block: "center", behavior: "smooth" });
-        target.classList.add("outline-target");
-        setTimeout(() => target.classList.remove("outline-target"), 1200);
-        return;
-      }
-      setTimeout(() => reveal(attempt + 1), 100);
-    };
-    requestAnimationFrame(() => reveal());
-  }
-
-  scheduleSelectionActions() {
-    clearTimeout(this.selectionActionUpdateTimer);
-    this.selectionActionUpdateTimer = setTimeout(() => {
-      this.selectionActionUpdateTimer = 0;
-      if (this.selectionActionUpdateFrame) cancelAnimationFrame(this.selectionActionUpdateFrame);
-      this.selectionActionUpdateFrame = requestAnimationFrame(() => {
-        this.selectionActionUpdateFrame = 0;
-        this.updateSelectionActions();
-      });
-    }, SELECTION_ACTION_DELAY_MS);
-  }
-
-  updateSelectionActions() {
-    const actions = this.$("selection-actions");
-    const historyPanel = this.$("selection-copy-history-panel");
-    const historyPanelOpen = !!actions?.classList.contains("history-picker") && !!historyPanel && !historyPanel.classList.contains("hidden");
-    const state = this.readSelectionActionState();
-    if (!state) {
-      if (historyPanelOpen) {
-        this.positionSelectionCopyHistoryPanel(this.selectionActionAnchorRect());
-        return;
-      }
-      if (this.contextMenuTarget?.type === "selection" && !this.$("context-menu").classList.contains("hidden")) return;
-      this.hideSelectionActions();
-      return;
-    }
-    this.selectionActionState = state;
-    if (!actions) return;
-    if (historyPanelOpen) {
-      this.positionSelectionCopyHistoryPanel(state.rect);
-      return;
-    }
-    actions.classList.add("hidden");
-    if (this.contextMenuTarget?.type === "selection") this.openSelectionContextMenu(state);
-  }
-
-  positionSelectionActions(rect) {
-    const actions = this.$("selection-actions");
-    if (!actions) return;
-    if (actions.classList.contains("history-picker")) {
-      const width = Math.min(640, Math.max(280, window.innerWidth - 32));
-      actions.style.width = `${width}px`;
-      actions.style.left = `${Math.max(16, Math.round((window.innerWidth - width) / 2))}px`;
-      actions.style.top = `${Math.max(16, Math.round((window.innerHeight - actions.offsetHeight) / 2))}px`;
-      actions.style.transform = "none";
-      return;
-    }
-    actions.style.width = "";
-    actions.style.transform = "";
-    const width = actions.offsetWidth || 150;
-    const height = actions.offsetHeight || 30;
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const leftOfSelection = rect.left - width - 8;
-    const rightOfSelection = rect.right + 8;
-    const left = leftOfSelection >= 8 ? leftOfSelection : rightOfSelection + width <= viewportWidth - 8
-      ? rightOfSelection : Math.max(8, Math.min(viewportWidth - width - 8, rect.right - width));
-    const selectionHeight = Math.max(0, rect.bottom - rect.top);
-    const centeredTop = rect.top + (selectionHeight - height) / 2;
-    const top = Math.max(8, Math.min(viewportHeight - height - 8, centeredTop));
-    actions.style.left = `${left}px`;
-    actions.style.top = `${top}px`;
-    actions.classList.toggle("selection-submenus-right", left < 160);
-  }
-
-  readSelectionActionState(sourceElement = null) {
-    if (this.activeFileKey !== null) {
-      const editorHost = this.$("monaco-host");
-      if (sourceElement && !editorHost?.contains(sourceElement)) return null;
-      const editor = this.editor;
-      const selection = editor?.getSelection();
-      const model = editor?.getModel();
-      if (!selection || selection.isEmpty || !model) return null;
-      const text = this.normalizeSelectionText(model.getValueInRange(selection));
-      const rect = this.monacoSelectionRect(editor, selection);
-      return text && rect ? { kind: "file", fileKey: this.activeFileKey, text, rawText: text, rect } : null;
-    }
-    if (this.settings.notebook_open && this.notebookEditor && this.notebookMounted) {
-      const editorHost = this.$("notebook-editor-host");
-      const focusedInNotebook = editorHost?.contains(document.activeElement);
-      if ((!sourceElement && focusedInNotebook) || (sourceElement && editorHost?.contains(sourceElement))) {
-        const selection = this.notebookEditor.getSelection();
-        const model = this.notebookEditor.getModel();
-        if (selection && !selection.isEmpty && model) {
-          const text = this.normalizeSelectionText(model.getValueInRange(selection));
-          const rect = this.monacoSelectionRect(this.notebookEditor, selection);
-          return text && rect ? { kind: "notebook", text, rawText: text, rect } : null;
-        }
-      }
-    }
-    if (this.historyOpen) {
-      const selection = window.getSelection();
-      const body = this.$("history-body");
-      if (sourceElement && !body?.contains(sourceElement)) return null;
-      if (!this.selectionWithinContainer(selection, body)) return null;
-      const range = selection.getRangeAt(0).cloneRange();
-      const rawText = this.normalizeSelectionText(selection.toString());
-      const text = this.markdownSelectionText(range, body, rawText);
-      const html = this.markdownSelectionHtml(range);
-      const rect = this.selectionRangeRect(selection);
-      return text && rect ? { kind: "history", text, rawText, html, rect } : null;
-    }
-    const view = this.views.get(this.activeId);
-    if (sourceElement && !view?.container.contains(sourceElement)) return null;
-    if (!view || !view.container.classList.contains("visible") || !view.term.hasSelection()) return null;
-    const text = this.normalizeSelectionText(view.term.getSelection());
-    const rect = this.terminalSelectionRect(view);
-    return text && rect ? { kind: "terminal", sessionId: view.sessionId, text, rect } : null;
-  }
-
-  markdownSelectionText(range, body, rawText) {
-    const selectedItems = [...body.querySelectorAll(".markdown li")].filter((item) => range.intersectsNode(item));
-    const previousMarkers = selectedItems.map((item) => [item, item.getAttribute("data-termdeck-selection-marker")]);
-    for (const item of selectedItems) {
-      const marker = this.markdownListItemMarker(item);
-      if (marker) item.setAttribute("data-termdeck-selection-marker", marker);
-    }
-    const fragment = range.cloneContents();
-    for (const [item, marker] of previousMarkers) {
-      if (marker === null) item.removeAttribute("data-termdeck-selection-marker");
-      else item.setAttribute("data-termdeck-selection-marker", marker);
-    }
-    const output = [];
-    this.serializeMarkdownSelectionNode(fragment, output);
-    let text = output.join("").replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-    const startItem = this.selectionAncestorElement(range.startContainer, "LI");
-    const firstItem = startItem && selectedItems.includes(startItem) ? startItem : selectedItems[0];
-    const firstMarker = firstItem ? this.markdownListItemMarker(firstItem) : "";
-    const startsInListItem = !!startItem;
-    if (startsInListItem && firstMarker && !text.startsWith(firstMarker.trim())) text = `${firstMarker}${text}`;
-    return text || rawText;
-  }
-
-  markdownSelectionHtml(range) {
-    const wrapper = document.createElement("div");
-    wrapper.appendChild(range.cloneContents());
-    return wrapper.innerHTML;
-  }
-
-  markdownListItemMarker(item) {
-    const list = item.parentElement;
-    if (!list || (list.tagName !== "OL" && list.tagName !== "UL")) return "";
-    let depth = 0;
-    let ancestor = list.parentElement;
-    while (ancestor) {
-      if (ancestor.tagName === "OL" || ancestor.tagName === "UL") depth += 1;
-      ancestor = ancestor.parentElement;
-    }
-    const indentation = "  ".repeat(depth);
-    if (list.tagName === "UL") return `${indentation}- `;
-    const listItems = [...list.children].filter((child) => child.tagName === "LI");
-    const index = listItems.indexOf(item);
-    if (index < 0) return "";
-    const explicitValue = Number.parseInt(item.getAttribute("value") || "", 10);
-    const listStart = Number.parseInt(list.getAttribute("start") || "1", 10);
-    const number = Number.isFinite(explicitValue) ? explicitValue : (Number.isFinite(listStart) ? listStart : 1) + index;
-    return `${indentation}${number}. `;
-  }
-
-  selectionAncestorElement(node, tagName) {
-    let current = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
-    while (current) {
-      if (current.tagName === tagName) return current;
-      current = current.parentElement;
-    }
-    return null;
-  }
-
-  serializeMarkdownSelectionNode(node, output) {
-    if (node.nodeType === Node.TEXT_NODE) {
-      output.push(node.nodeValue || "");
-      return;
-    }
-    if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) return;
-    const tag = node.nodeType === Node.ELEMENT_NODE ? node.tagName : "";
-    if (tag === "BR") {
-      output.push("\n");
-      return;
-    }
-    if (tag === "HR") {
-      output.push("\n---\n");
-      return;
-    }
-    if (tag === "PRE") {
-      output.push("\n", node.textContent || "", "\n");
-      return;
-    }
-    if (tag === "LI") {
-      output.push("\n", node.getAttribute("data-termdeck-selection-marker") || "");
-      for (const child of node.childNodes) this.serializeMarkdownSelectionNode(child, output);
-      output.push("\n");
-      return;
-    }
-    const blockTags = new Set(["ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DD", "DIV", "DL", "DT", "FIELDSET", "FIGCAPTION", "FIGURE", "FOOTER", "FORM", "H1", "H2", "H3", "H4", "H5", "H6", "HEADER", "HR", "MAIN", "NAV", "OL", "P", "SECTION", "TABLE", "TBODY", "TD", "TFOOT", "TH", "THEAD", "TR", "UL"]);
-    if (blockTags.has(tag)) output.push("\n");
-    for (const child of node.childNodes) this.serializeMarkdownSelectionNode(child, output);
-    if (blockTags.has(tag)) output.push("\n");
-  }
-
-  selectionWithinContainer(selection, container) {
-    if (!selection || selection.isCollapsed || !selection.rangeCount || !container) return false;
-    const anchor = selection.anchorNode?.nodeType === Node.ELEMENT_NODE ? selection.anchorNode : selection.anchorNode?.parentElement;
-    const focus = selection.focusNode?.nodeType === Node.ELEMENT_NODE ? selection.focusNode : selection.focusNode?.parentElement;
-    return !!anchor && !!focus && container.contains(anchor) && container.contains(focus);
-  }
-
-  normalizeSelectionText(text) {
-    return String(text || "").replace(/\r/g, "").trim();
-  }
-
-  selectionRangeRect(selection) {
-    if (!selection || !selection.rangeCount) return null;
-    const range = selection.getRangeAt(0);
-    const rects = [...range.getClientRects()].filter((rect) => rect.width || rect.height);
-    return rects[rects.length - 1] || range.getBoundingClientRect();
-  }
-
-  terminalSelectionRect(view) {
-    const rects = [...view.container.querySelectorAll(".xterm-selection, .xterm-selection > div")]
-      .map((element) => element.getBoundingClientRect()).filter((rect) => rect.width || rect.height)
-      .sort((left, right) => left.bottom - right.bottom);
-    if (rects.length) return rects[rects.length - 1];
-    const container = view.container.getBoundingClientRect();
-    return { left: container.left + container.width / 2 - 1, right: container.left + container.width / 2 + 1,
-      top: container.bottom - 28, bottom: container.bottom - 8 };
-  }
-
-  monacoSelectionRect(editor, selection) {
-    const node = editor?.getDomNode();
-    if (!node || !selection) return null;
-    const start = editor.getScrolledVisiblePosition(selection.getStartPosition());
-    const end = editor.getScrolledVisiblePosition(selection.getEndPosition());
-    if (!start || !end) return null;
-    const bounds = node.getBoundingClientRect();
-    const left = bounds.left + Math.min(start.left, end.left);
-    const right = bounds.left + Math.max(start.left + start.width, end.left + end.width);
-    const top = bounds.top + Math.min(start.top, end.top);
-    const bottom = bounds.top + Math.max(start.top + start.height, end.top + end.height);
-    return { left, right, top, bottom };
-  }
-
-  openSelectionContextMenu(state, point = null, contextKind = "terminal") {
-    const menu = this.$("context-menu");
-    if (!menu) return;
-    const hasSelection = !!state?.text;
-    const selectionState = state || { kind: contextKind, text: "", rect: { left: point?.x || 0, right: point?.x || 0,
-      top: point?.y || 0, bottom: point?.y || 0 } };
-    this.selectionActionState = hasSelection ? state : null;
-    const selectionKey = `${selectionState.kind}:${selectionState.text}`;
-    const existingSelectionMenu = this.contextMenuTarget?.type === "selection" &&
-      this.contextMenuTarget.key === selectionKey;
-    if (!existingSelectionMenu) {
-      menu.textContent = "";
-      this.contextMenuTarget = { type: "selection", key: selectionKey, point };
-      const selectionText = hasSelection ? state.text : "";
-      this.addContextItem(menu, "Copy", hasSelection ? () => this.copySelectionToClipboard() : null, "copy");
-      this.addContextItem(menu, "New note", hasSelection ? () => { void this.createNotebookNoteFromSelection(); } : null, "new-file");
-      this.addContextItem(menu, "Append to note", hasSelection ? () => { void this.appendSelectionToNotebook(); } : null, "comment-add");
-      this.addContextItem(menu, "File contents", hasSelection ? () => this.searchContentFromSelection() : null, "search");
-      this.addContextItem(menu, "File name", hasSelection ? () => this.searchFileFromSelection() : null, "symbol-file");
-      if (selectionState.kind === "terminal" && this.session(this.activeId)?.agent_kind === "codex") {
-        this.addContextItem(menu, "Repaint Codex display", () => this.repaintActiveCodexDisplay(), "refresh");
-      }
-      const agentEntries = [{
-        label: "New agent…",
-        handler: hasSelection ? () => this.openNewAgentFromSelection(selectionText) : () => this.openModal(),
-        icon: "add",
-      }, { kind: "label", label: "Existing agents" }];
-      const existingAgents = this.recentAgentSessionsForContextMenu();
-      if (existingAgents.length) {
-        for (const session of existingAgents) {
-          agentEntries.push({
-            label: this.agentSessionContextLabel(session),
-            handler: hasSelection ? () => this.pasteSelectionIntoAgent(session.session_id, selectionText) : null,
-            icon: "terminal",
-          });
-        }
-      } else {
-        agentEntries.push({ kind: "label", label: "No existing agents" });
-      }
-      this.addContextSubmenu(menu, "Ask an agent", agentEntries, "terminal");
-    } else if (point) {
-      this.contextMenuTarget.point = point;
-    }
-    menu.classList.remove("hidden");
-    const contextPoint = point || this.contextMenuTarget?.point;
-    if (contextPoint) {
-      this.positionContextMenu(menu, contextPoint.x + 4, contextPoint.y + 4);
-      return;
-    }
-    const width = menu.offsetWidth;
-    const height = menu.offsetHeight;
-    const right = selectionState.rect.right + 8;
-    const left = selectionState.rect.left - width - 8 >= 8 ? selectionState.rect.left - width - 8 : right;
-    const top = selectionState.rect.top + Math.max(0, (selectionState.rect.bottom - selectionState.rect.top - height) / 2);
-    this.positionContextMenu(menu, left, top);
-  }
-
-  closeSelectionContextMenu() {
-    if (this.contextMenuTarget?.type !== "selection") return;
-    this.closeContextMenu();
-  }
-
-  hideSelectionActions(clearSelection = false) {
-    const state = this.selectionActionState;
-    this.selectionActionState = null;
-    this.closeSelectionContextMenu();
-    this.selectionCopyHistoryIndex = 0;
-    clearTimeout(this.selectionActionUpdateTimer);
-    this.selectionActionUpdateTimer = 0;
-    const actions = this.$("selection-actions");
-    if (actions) actions.classList.add("hidden");
-    if (actions) actions.classList.remove("history-picker");
-    if (actions) actions.classList.remove("keyboard-nav");
-    const historyPanel = this.$("selection-copy-history-panel");
-    if (historyPanel) historyPanel.classList.add("hidden");
-    if (!clearSelection) return;
-    if (state?.kind === "terminal") this.views.get(state.sessionId)?.term.clearSelection();
-    const selection = window.getSelection();
-    if (selection && !selection.isCollapsed) selection.removeAllRanges();
-  }
-
-  closeSelectionCopyHistoryPicker() {
-    this.hideSelectionActions();
-    requestAnimationFrame(() => this.focusActiveEditor());
-  }
-
-  recordDocumentSelectionCopy() {
-    const state = this.readSelectionActionState();
-    if (state) this.recordSelectionCopyHistory(state.text);
-  }
-
-  recordSelectionCopyHistory(text) {
-    const copied = this.normalizeSelectionText(text);
-    if (!copied) return;
-    const previous = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
-    this.settings.selection_copy_history = [copied, ...previous.filter((item) => item !== copied)].slice(0, 50);
-    this.saveSettings();
-    const panel = this.$("selection-copy-history-panel");
-    if (panel && !panel.classList.contains("hidden")) this.renderSelectionCopyHistory();
-    if (this.settings.notebook_open) {
-      this.renderNotebookRecentCopies();
-      this.renderNotebookTabs();
-    }
-  }
-
-  renderSelectionCopyHistory() {
-    const panel = this.$("selection-copy-history-panel");
-    if (!panel) return;
-    panel.textContent = "";
-    const history = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
-    const head = document.createElement("div");
-    head.className = "selection-copy-history-head";
-    const title = document.createElement("span");
-    title.textContent = "Recently copied";
-    const count = document.createElement("span");
-    count.className = "selection-copy-history-count";
-    count.textContent = history.length ? `${history.length} items` : "";
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "selection-copy-history-close codicon codicon-close";
-    close.title = "Close copied text picker";
-    close.setAttribute("aria-label", close.title);
-    close.onclick = () => this.closeSelectionCopyHistoryPicker();
-    head.append(title, count, close);
-    panel.appendChild(head);
-    const list = document.createElement("div");
-    list.className = "selection-copy-history-items";
-    list.setAttribute("role", "listbox");
-    list.setAttribute("aria-label", "Recently copied text");
-    if (!history.length) {
-      const empty = document.createElement("div");
-      empty.className = "selection-copy-history-empty";
-      empty.textContent = "No copied selections yet.";
-      list.appendChild(empty);
-      panel.appendChild(list);
-      return;
-    }
-    for (const [index, text] of history.entries()) {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.className = "selection-copy-history-item";
-      item.dataset.copyText = text;
-      item.dataset.copyIndex = String(index);
-      item.setAttribute("role", "option");
-      item.setAttribute("aria-selected", String(index === this.selectionCopyHistoryIndex));
-      item.title = "Insert into the active prompt";
-      item.textContent = text;
-      item.onclick = () => this.insertSelectionCopyHistory(text, true);
-      list.appendChild(item);
-    }
-    panel.appendChild(list);
-    this.focusSelectionCopyHistoryItem(false);
-  }
-
-  toggleSelectionCopyHistory() {
-    const panel = this.$("selection-copy-history-panel");
-    if (!panel) return;
-    const opening = panel.classList.contains("hidden");
-    if (!opening) {
-      this.closeSelectionCopyHistoryPicker();
-      return;
-    }
-    this.showSelectionCopyHistoryPicker();
-  }
-
-  showSelectionCopyHistoryPicker() {
-    const actions = this.$("selection-actions");
-    const panel = this.$("selection-copy-history-panel");
-    if (!actions || !panel) return;
-    const state = this.selectionActionState || this.readSelectionActionState();
-    if (state) this.selectionActionState = state;
-    this.closeSelectionContextMenu();
-    actions.classList.add("history-picker");
-    actions.classList.remove("hidden");
-    panel.classList.remove("hidden");
-    this.selectionCopyHistoryIndex = 0;
-    this.renderSelectionCopyHistory();
-    this.positionSelectionActions(state?.rect || this.selectionActionAnchorRect());
-    this.focusSelectionCopyHistoryItem();
-  }
-
-  focusSelectionCopyHistoryItem(updateIndex = true) {
-    const items = [...this.$("selection-copy-history-panel")?.querySelectorAll(".selection-copy-history-item") || []];
-    if (!items.length) return;
-    this.selectionCopyHistoryIndex = Math.max(0, Math.min(this.selectionCopyHistoryIndex, items.length - 1));
-    for (const [index, item] of items.entries()) {
-      item.setAttribute("aria-selected", String(index === this.selectionCopyHistoryIndex));
-    }
-    const item = items[this.selectionCopyHistoryIndex];
-    item.focus();
-    item.scrollIntoView({ block: "nearest" });
-    if (updateIndex) this.selectionCopyHistoryIndex = Number(item.dataset.copyIndex || this.selectionCopyHistoryIndex);
-  }
-
-  selectionActionAnchorRect() {
-    if (this.selectionActionState?.rect) return this.selectionActionState.rect;
-    const prompt = this.historyOpen ? this.$("history-prompt") : null;
-    const view = this.views.get(this.activeId);
-    const source = prompt || (view && view.container.classList.contains("visible") ? view.container : null);
-    const sourceRect = source?.getBoundingClientRect();
-    return sourceRect || { left: window.innerWidth / 2, right: window.innerWidth / 2, top: window.innerHeight / 2,
-      bottom: window.innerHeight / 2 };
-  }
-
-  positionSelectionCopyHistoryPanel(rect) {
-    if (this.$("selection-copy-history-panel")?.classList.contains("hidden")) return;
-    this.positionSelectionActions(rect);
-  }
-
-  copySelectionToClipboard(keepSelectionActions = false) {
-    const state = this.readSelectionActionState() || this.selectionActionState;
-    if (!state) return;
-    const text = state.text;
-    this.recordSelectionCopyHistory(text);
-    void this.copySelectionPayloadToClipboard(text, state.html || "", "selection copied");
-    if (keepSelectionActions) {
-      this.selectionActionState = state;
-      this.scheduleSelectionActions();
-    } else {
-      this.hideSelectionActions();
-    }
-  }
-
-  fileNameSearchQueryFromSelection(text) {
-    const normalized = String(text || "").replace(/\r/g, "").replace(/\s*\/\s*/g, "/").trim();
-    if (!normalized) return "";
-    const candidates = normalized.match(/(?:[A-Za-z0-9_.~-]+\/)*[A-Za-z0-9_.~-]+(?:\.[A-Za-z0-9_-]+)?(?::\d+(?::\d+)?)?/g) || [];
-    const fileCandidate = candidates.filter((candidate) => candidate.includes("/") || candidate.includes(".")).sort((left, right) => right.length - left.length)[0];
-    const fallback = normalized.split(/\s+/).pop() || "";
-    return (fileCandidate || fallback).replace(/:\d+(?::\d+)?$/, "").replace(/^[([{<]+|[)\]}>.,;]+$/g, "");
-  }
-
-  selectedTextSearchQuery() {
-    const state = this.selectionActionState || this.readSelectionActionState();
-    if (!state) return "";
-    this.selectionActionState = state;
-    const query = this.normalizeSelectionText(state.rawText || state.text);
-    if (!query) return "";
-    if (query.length > SELECTION_SEARCH_MAX_CHARS) {
-      this.$("status-name").textContent = `selection is too long for search (${SELECTION_SEARCH_MAX_CHARS} characters maximum)`;
-      return "";
-    }
-    return query;
-  }
-
-  selectedTextForAutomaticSearch() {
-    const state = this.selectionActionState || this.readSelectionActionState();
-    if (!state) return "";
-    this.selectionActionState = state;
-    const query = this.normalizeSelectionText(state.rawText || state.text);
-    if (!query || query.includes("\n") || query.length > SELECTION_SEARCH_MAX_CHARS) return "";
-    return query;
-  }
-
-  searchContentFromSelection() {
-    const query = this.selectedTextSearchQuery();
-    if (!query) return false;
-    this.hideSelectionActions();
-    const input = this.$("search-query");
-    if (this.sideView !== "search") {
-      input.value = "";
-      this.setSideView("search", false);
-    }
-    input.value = query;
-    void this.runSearch(query);
-    return true;
-  }
-
-  searchFileFromSelection() {
-    const selectedText = this.selectedTextSearchQuery();
-    if (!selectedText) return false;
-    const query = this.fileNameSearchQueryFromSelection(selectedText);
-    if (!query) return false;
-    this.hideSelectionActions();
-    const input = this.$("search-name");
-    if (this.sideView !== "project") {
-      input.value = "";
-      this.setSideView("project", false);
-    }
-    input.value = query;
-    void this.runNameSearch();
-    return true;
-  }
-
-  recentAgentSessionsForContextMenu() {
-    return this.sessions.filter((session) => session.agent_kind && session.agent_kind !== "none" &&
-      (session.running || session.dormant)).sort((left, right) => {
-      const activityDifference = this.sessionActivityTime(right) - this.sessionActivityTime(left);
-      if (activityDifference) return activityDifference;
-      return this.agentSessionContextLabel(left).localeCompare(this.agentSessionContextLabel(right));
-    });
-  }
-
-  agentSessionContextLabel(session) {
-    const title = this.titlePresentation(session).text.trim();
-    const cwd = String(session.cwd || "").replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop() || "";
-    const name = title || cwd || session.session_id;
-    return (TERMINAL_ICON_AGENT_LABELS[session.agent_kind] || session.agent_kind) + " · " + name;
-  }
-
-  pasteSelectionIntoAgent(sessionId, text = "") {
-    const value = this.normalizeSelectionText(text || this.selectionActionState?.text);
-    const session = this.session(sessionId);
-    if (!value || !session || !session.agent_kind || session.agent_kind === "none" ||
-        (!session.running && !session.dormant)) return false;
-    this.hideSelectionActions(true);
-    this.activate(sessionId, { reveal: true });
-    const view = this.views.get(sessionId) || this.ensureView(sessionId);
-    if (!this.queuePendingAgentPaste(view, value)) return false;
-    if (!view.ws) this.connect(sessionId, view);
-    this.$("status-name").textContent = "selected text queued for " + this.agentSessionContextLabel(session);
-    return true;
-  }
-
-  openNewAgentFromSelection(text = "") {
-    const value = this.normalizeSelectionText(text || this.selectionActionState?.text);
-    if (!value) return false;
-    this.hideSelectionActions(true);
-    this.openModal(null, null, value);
-    return true;
-  }
-
-  pasteSelectionIntoNewAgentWhenReady(sessionId, text, expectedTitle = "") {
-    const value = this.normalizeSelectionText(text);
-    if (!sessionId || !value) return false;
-    const view = this.views.get(sessionId) || this.ensureView(sessionId);
-    if (!this.queuePendingAgentPaste(view, value, { requireComposer: true, expectedTitle })) return false;
-    if (!view.ws) this.connect(sessionId, view);
-    this.$("status-name").textContent = "waiting for the new agent to accept selected text";
-    return true;
-  }
-
-  appendTextToHistoryPrompt(text) {
-    const value = this.normalizeSelectionText(text);
-    if (!value) return;
-    if (!this.historyOpen) this.setHistoryMode(true);
-    const view = this.views.get(this.activeId);
-    const prompt = this.$("history-prompt");
-    if (!view || !prompt || !this.historyOpen) return;
-    const current = String(prompt.value || view.markdownPromptDraft || "").trimEnd();
-    this.persistMarkdownPromptDraft(view, current ? `${current}\n\n${value}\n\n` : `${value}\n\n`);
-    this.showPromptDraft(view);
-    prompt.focus();
-    prompt.setSelectionRange(prompt.value.length, prompt.value.length);
-  }
-
-  pasteSelectionCopyHistory(text) {
-    this.insertSelectionCopyHistory(text, false);
-  }
-
-  insertSelectionCopyHistory(text, closeNotebook) {
-    const value = this.normalizeSelectionText(text);
-    if (!value) return;
-    if (closeNotebook && this.settings.notebook_open) this.setNotebookOpen(false, { focus: false });
-    this.hideSelectionActions(true);
-    if (this.activeFileKey !== null) {
-      const editor = this.editor;
-      const selection = editor?.getSelection();
-      if (!editor || !selection) return;
-      editor.executeEdits("termdeck-copy-history", [{ range: selection, text: value, forceMoveMarkers: true }]);
-      editor.focus();
-      this.$("status-name").textContent = "copied text inserted into file";
-      return;
-    }
-    if (this.historyOpen) {
-      this.appendTextToHistoryPrompt(value);
-      this.$("status-name").textContent = "copied text inserted into prompt";
-      return;
-    }
-    const view = this.views.get(this.activeId);
-    if (!view) return;
-    view.term.focus();
-    this.sendTrackedInput(view, this.terminalPastePayload(view, value));
-    this.$("status-name").textContent = "copied text pasted into terminal";
-  }
-
-  async prepareNotebookSelectionEdit() {
-    await this.flushNotebook();
-    this.notebookCopiesOpen = false;
-    if (this.notebookEditor) this.notebookEditor.setModel(null);
-    this.notebookMounted = false;
-    this.normalizeNotebookNotes();
-  }
-
-  openNotebookAfterSelectionEdit(status) {
-    const fallback = this.$("notebook-editor-host")?.querySelector(".notes-area");
-    if (fallback) fallback.value = this.activeNotebookNote()?.text || "";
-    this.settings.notebook_open = true;
-    this.renderNotebook();
-    this.saveSettings();
-    void this.mountNotebookEditor().then(() => this.focusNotebookEditor());
-    this.$("status-name").textContent = status;
-  }
-
-  async createNotebookNoteFromSelection() {
-    const state = this.selectionActionState;
-    if (!state) return;
-    const text = state.text;
-    this.hideSelectionActions(true);
-    await this.prepareNotebookSelectionEdit();
-    const note = { note_id: this.createNotebookNoteId(), text: `${text}\n` };
-    this.settings.notebook_notes.push(note);
-    this.settings.notebook_active_note_id = note.note_id;
-    this.settings.notebook_notes_initialized = true;
-    this.settings.notebook_text = note.text;
-    this.openNotebookAfterSelectionEdit("selection added as new note");
-  }
-
-  async appendSelectionToNotebook() {
-    const state = this.selectionActionState;
-    if (!state) return;
-    const text = state.text;
-    this.hideSelectionActions(true);
-    await this.prepareNotebookSelectionEdit();
-    let note = this.activeNotebookNote();
-    if (!note) {
-      note = { note_id: this.createNotebookNoteId(), text: "" };
-      this.settings.notebook_notes.push(note);
-      this.settings.notebook_active_note_id = note.note_id;
-      this.settings.notebook_notes_initialized = true;
-    }
-    const current = String(note.text || "").trimEnd();
-    note.text = current ? `${current}\n\n${text}\n` : `${text}\n`;
-    this.settings.notebook_text = note.text;
-    const fallback = this.$("notebook-editor-host")?.querySelector(".notes-area");
-    if (fallback) fallback.value = note.text;
-    this.openNotebookAfterSelectionEdit("selection appended to note");
-  }
-
-  createNotebookNoteId() {
-    return `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  }
-
-  normalizeNotebookNotes() {
-    const sourcePresent = Array.isArray(this.settings.notebook_notes);
-    const source = sourcePresent ? this.settings.notebook_notes : [];
-    const seen = new Set();
-    const notes = [];
-    for (const raw of source) {
-      const noteId = String(raw?.note_id || raw?.id || "").trim();
-      if (!noteId || seen.has(noteId)) continue;
-      seen.add(noteId);
-      notes.push({ note_id: noteId, text: String(raw?.text || "") });
-    }
-    if (!notes.length && !this.settings.notebook_notes_initialized) {
-      notes.push({ note_id: this.createNotebookNoteId(), text: String(this.settings.notebook_text || "") });
-    }
-    const activeNoteId = notes.some((note) => note.note_id === this.settings.notebook_active_note_id)
-      ? this.settings.notebook_active_note_id : notes[0]?.note_id || "";
-    const active = notes.find((note) => note.note_id === activeNoteId) || null;
-    const changed = JSON.stringify(source) !== JSON.stringify(notes) || this.settings.notebook_active_note_id !== activeNoteId ||
-      this.settings.notebook_text !== (active?.text || "") || !sourcePresent || !this.settings.notebook_notes_initialized;
-    this.settings.notebook_notes = notes;
-    this.settings.notebook_active_note_id = activeNoteId;
-    this.settings.notebook_text = active?.text || "";
-    this.settings.notebook_notes_initialized = true;
-    return changed;
-  }
-
-  activeNotebookNote() {
-    this.normalizeNotebookNotes();
-    return this.settings.notebook_notes.find((note) => note.note_id === this.settings.notebook_active_note_id) || null;
-  }
-
-  notebookTabTitle(note) {
-    const source = String(note?.text || "").replace(/!\[[^\]]*\]\([^)]*\)|\[([^\]]+)\]\([^)]*\)/g, "$1")
-      .replace(/[`*_~>#]/g, " ").replace(/\s+/g, " ").trim();
-    const words = source.split(" ").filter(Boolean).slice(0, 6);
-    return words.length ? words.join(" ") : "Untitled note";
-  }
-
-  renderNotebookTabs() {
-    const tabs = this.$("notebook-tabs");
-    if (!tabs) return;
-    this.normalizeNotebookNotes();
-    tabs.textContent = "";
-    for (const note of this.settings.notebook_notes) {
-      const tab = document.createElement("div");
-      const active = !this.notebookCopiesOpen && note.note_id === this.settings.notebook_active_note_id;
-      tab.className = "notebook-tab" + (active ? " active" : "");
-      tab.setAttribute("role", "tab");
-      tab.setAttribute("aria-selected", String(active));
-      const label = document.createElement("button");
-      label.type = "button";
-      label.className = "notebook-tab-label";
-      label.title = this.notebookTabTitle(note);
-      label.textContent = this.notebookTabTitle(note);
-      label.onclick = () => { void this.selectNotebookNote(note.note_id); };
-      const close = document.createElement("button");
-      close.type = "button";
-      close.className = "notebook-tab-close codicon codicon-close";
-      close.title = `Move ${this.notebookTabTitle(note)} to Trash`;
-      close.setAttribute("aria-label", close.title);
-      close.onclick = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        void this.closeNotebookNote(note.note_id);
-      };
-      tab.append(label, close);
-      tabs.appendChild(tab);
-      if (note.note_id === this.settings.notebook_active_note_id) requestAnimationFrame(() => tab.scrollIntoView({ block: "nearest", inline: "nearest" }));
-    }
-    const copiedTab = document.createElement("button");
-    copiedTab.type = "button";
-    copiedTab.className = "notebook-tab notebook-copies-tab" + (this.notebookCopiesOpen ? " active" : "");
-    copiedTab.setAttribute("role", "tab");
-    copiedTab.setAttribute("aria-selected", String(this.notebookCopiesOpen));
-    copiedTab.title = this.shortcutTitle("Recently copied text", "selection-copy-history");
-    const copiedIcon = document.createElement("span");
-    copiedIcon.className = "codicon codicon-copy notebook-copies-icon";
-    const copiedLabel = document.createElement("span");
-    copiedLabel.className = "notebook-tab-label notebook-copies-label";
-    copiedLabel.textContent = "Copied";
-    const copiedCount = document.createElement("span");
-    copiedCount.className = "notebook-copies-count";
-    const history = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
-    copiedCount.textContent = history.length ? String(history.length) : "";
-    copiedTab.append(copiedIcon, copiedLabel, copiedCount);
-    copiedTab.onclick = () => this.selectNotebookCopies();
-    tabs.appendChild(copiedTab);
-  }
-
-  renderNotebookRecentCopies() {
-    const items = this.$("notebook-recent-copies-items");
-    const count = this.$("notebook-recent-copies-count");
-    if (!items || !count) return;
-    const history = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
-    count.textContent = history.length ? String(history.length) : "";
-    items.textContent = "";
-    if (!history.length) {
-      const empty = document.createElement("div");
-      empty.className = "notebook-recent-copies-empty";
-      empty.textContent = "Nothing copied yet.";
-      items.appendChild(empty);
-      return;
-    }
-    for (const text of history) {
-      const row = document.createElement("div");
-      row.className = "notebook-recent-copy-row";
-      const expanded = this.notebookExpandedCopy === text;
-      row.classList.toggle("expanded", expanded);
-      row.title = expanded ? "Collapse copied text" : "Expand copied text";
-      const content = document.createElement("div");
-      content.className = "notebook-recent-copy-text";
-      content.textContent = text;
-      content.title = expanded ? "Collapse copied text" : "Expand copied text";
-      content.tabIndex = 0;
-      content.setAttribute("role", "button");
-      content.setAttribute("aria-expanded", String(expanded));
-      const toggleExpanded = () => {
-        this.notebookExpandedCopy = expanded ? null : text;
-        this.renderNotebookRecentCopies();
-      };
-      row.onclick = (event) => {
-        if (event.target.closest("button")) return;
-        toggleExpanded();
-      };
-      content.onclick = (event) => {
-        event.stopPropagation();
-        toggleExpanded();
-      };
-      content.onkeydown = (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        toggleExpanded();
-      };
-      const actions = document.createElement("span");
-      actions.className = "notebook-recent-copy-actions";
-      const copy = document.createElement("button");
-      copy.type = "button";
-      copy.className = "codicon codicon-copy";
-      copy.title = "Copy again";
-      copy.setAttribute("aria-label", copy.title);
-      copy.onclick = () => { void this.copyTextToClipboard(text, "copied from history"); };
-      const insert = document.createElement("button");
-      insert.type = "button";
-      insert.className = "codicon codicon-arrow-right";
-      insert.title = "Insert into the active prompt";
-      insert.setAttribute("aria-label", insert.title);
-      insert.onclick = () => this.insertSelectionCopyHistory(text, true);
-      actions.append(copy, insert);
-      row.append(content, actions);
-      items.appendChild(row);
-    }
-  }
-
-  setActiveNotebookText(text, save = true, renderTitle = true) {
-    const note = this.activeNotebookNote();
-    if (!note) return;
-    const normalizedText = String(text || "");
-    const changed = note.text !== normalizedText;
-    note.text = normalizedText;
-    this.settings.notebook_text = normalizedText;
-    if (changed && renderTitle) this.renderNotebookTabs();
-    if (save) this.saveSettings();
-  }
-
-  selectNotebookCopies() {
-    if (this.notebookCopiesOpen) {
-      this.setNotebookOpen(false);
-      return;
-    }
-    this.notebookCopiesOpen = true;
-    this.closeNotebookFind(false);
-    this.renderNotebook();
-  }
-
-  activeNotebookText() {
-    const note = this.activeNotebookNote();
-    if (!note) return "";
-    const model = this.notebookEditor?.getModel();
-    const notebookModel = this.notebookEditorModels.get(note.note_id);
-    return model && model === notebookModel ? this.notebookEditor.getValue() : note.text;
-  }
-
-  notebookModelForNote(note) {
-    let model = this.notebookEditorModels.get(note.note_id);
-    if (!model) {
-      const uri = monaco.Uri.parse(`inmemory://termdeck/notebook/${encodeURIComponent(note.note_id)}.txt`);
-      model = monaco.editor.createModel(note.text, "plaintext", uri);
-      this.notebookEditorModels.set(note.note_id, model);
-    } else if (model.getValue() !== note.text) {
-      model.setValue(note.text);
-    }
-    return model;
-  }
-
-  async mountNotebookEditor() {
-    if (this.notebookMounted && this.notebookEditor) {
-      this.notebookEditor.layout();
-      return;
-    }
-    const host = this.$("notebook-editor-host");
-    if (!host) return;
-    if (!this.notebookEditor && this.monacoReady) await this.monacoReady;
-    const note = this.activeNotebookNote();
-    if (!note) return;
-    if (!this.notebookEditor) return;
-    this.notebookEditor.setModel(this.notebookModelForNote(note));
-    this.notebookEditor.layout();
-    this.notebookMounted = true;
-  }
-
-  flushNotebook() {
-    if (!this.notebookEditor || !this.notebookMounted) return Promise.resolve();
-    this.setActiveNotebookText(this.activeNotebookText());
-    return Promise.resolve();
-  }
-
-  async selectNotebookNote(noteId) {
-    this.normalizeNotebookNotes();
-    this.notebookCopiesOpen = false;
-    if (!this.settings.notebook_notes.some((note) => note.note_id === noteId) || noteId === this.settings.notebook_active_note_id) {
-      this.renderNotebook();
-      void this.mountNotebookEditor();
-      this.focusNotebookEditor();
-      return;
-    }
-    await this.flushNotebook();
-    if (this.notebookEditor) this.notebookEditor.setModel(null);
-    this.notebookMounted = false;
-    this.settings.notebook_active_note_id = noteId;
-    this.settings.notebook_text = this.activeNotebookNote()?.text || "";
-    this.notebookSearchIndex = 0;
-    this.renderNotebook();
-    this.saveSettings();
-    await this.mountNotebookEditor();
-    this.focusNotebookEditor();
-  }
-
-  async closeNotebookNote(noteId) {
-    this.normalizeNotebookNotes();
-    const index = this.settings.notebook_notes.findIndex((note) => note.note_id === noteId);
-    if (index < 0) return;
-    const wasActive = noteId === this.settings.notebook_active_note_id;
-    if (wasActive) await this.flushNotebook();
-    const note = this.settings.notebook_notes[index];
-    const title = this.notebookTabTitle(note);
-    if (!confirm(`Move "${title}" to the macOS Trash?`)) return;
-    const response = await fetch("/api/notebook/trash", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, content: note.text }),
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      alert(error.detail || "could not move note to Trash");
-      return;
-    }
-    const notes = this.settings.notebook_notes.filter((note) => note.note_id !== noteId);
-    const next = wasActive ? notes[Math.min(index, notes.length - 1)] || null : this.activeNotebookNote();
-    if (wasActive) {
-      if (this.notebookEditor) this.notebookEditor.setModel(null);
-      this.notebookMounted = false;
-    }
-    const model = this.notebookEditorModels.get(noteId);
-    if (model) model.dispose();
-    this.notebookEditorModels.delete(noteId);
-    this.settings.notebook_notes = notes;
-    this.settings.notebook_active_note_id = next?.note_id || "";
-    this.settings.notebook_text = next?.text || "";
-    this.settings.notebook_notes_initialized = true;
-    this.notebookSearchIndex = 0;
-    this.renderNotebook();
-    this.saveSettings();
-    if (next && wasActive) {
-      await this.mountNotebookEditor();
-      this.focusNotebookEditor();
-    }
-  }
-
-  async createNotebookNote() {
-    await this.flushNotebook();
-    const note = { note_id: this.createNotebookNoteId(), text: "" };
-    this.settings.notebook_notes.push(note);
-    this.notebookCopiesOpen = false;
-    if (this.notebookEditor) this.notebookEditor.setModel(null);
-    this.notebookMounted = false;
-    this.settings.notebook_active_note_id = note.note_id;
-    this.settings.notebook_text = note.text;
-    this.notebookSearchIndex = 0;
-    this.renderNotebook();
-    this.saveSettings();
-    await this.mountNotebookEditor();
-    this.focusNotebookEditor();
-  }
-
-  notebookSearchMatches() {
-    const query = this.$("notebook-find-query")?.value || "";
-    const note = this.activeNotebookNote();
-    if (!note) return [];
-    const text = this.activeNotebookText();
-    if (note.text !== text) note.text = text;
-    if (!query) return [];
-    const matches = [];
-    const source = text.toLocaleLowerCase();
-    const needle = query.toLocaleLowerCase();
-    for (let start = source.indexOf(needle); start >= 0; start = source.indexOf(needle, start + needle.length)) {
-      matches.push({ start, end: start + needle.length });
-    }
-    return matches;
-  }
-
-  updateNotebookSearchState(reset = false) {
-    const matches = this.notebookSearchMatches();
-    if (reset) this.notebookSearchIndex = 0;
-    if (!matches.length) this.notebookSearchIndex = 0;
-    else this.notebookSearchIndex = Math.max(0, Math.min(this.notebookSearchIndex, matches.length - 1));
-    const count = this.$("notebook-find-count");
-    if (count) count.textContent = matches.length ? `${this.notebookSearchIndex + 1} / ${matches.length}` :
-      (this.$("notebook-find-query").value ? "0 / 0" : "");
-    return matches;
-  }
-
-  openNotebookFind(showReplace = false) {
-    if (this.notebookCopiesOpen) {
-      this.notebookCopiesOpen = false;
-      this.renderNotebook();
-      void this.mountNotebookEditor();
-    }
-    const bar = this.$("notebook-find-bar");
-    const replace = this.$("notebook-replace-row");
-    const toggle = this.$("notebook-replace-toggle");
-    bar.classList.remove("hidden");
-    if (showReplace) replace.classList.remove("hidden");
-    toggle.classList.toggle("on", !replace.classList.contains("hidden"));
-    this.updateNotebookSearchState();
-    const input = this.$("notebook-find-query");
-    input.focus();
-    input.select();
-  }
-
-  closeNotebookFind(focusEditor = false) {
-    this.$("notebook-find-bar").classList.add("hidden");
-    this.$("notebook-replace-row").classList.add("hidden");
-    this.$("notebook-replace-toggle").classList.remove("on");
-    if (focusEditor) this.focusNotebookEditor();
-  }
-
-  toggleNotebookReplace() {
-    const bar = this.$("notebook-find-bar");
-    const replace = this.$("notebook-replace-row");
-    if (bar.classList.contains("hidden")) {
-      this.openNotebookFind(true);
-      return;
-    }
-    replace.classList.toggle("hidden");
-    this.$("notebook-replace-toggle").classList.toggle("on", !replace.classList.contains("hidden"));
-    if (!replace.classList.contains("hidden")) this.$("notebook-replace-query").focus();
-  }
-
-  stepNotebookSearch(direction) {
-    const matches = this.updateNotebookSearchState();
-    if (!matches.length) return;
-    this.notebookSearchIndex = (this.notebookSearchIndex + direction + matches.length) % matches.length;
-    this.updateNotebookSearchState();
-  }
-
-  async replaceNotebookSearchMatch(all) {
-    const matches = this.updateNotebookSearchState();
-    if (!matches.length) return;
-    const note = this.activeNotebookNote();
-    if (!note) return;
-    const text = this.activeNotebookText();
-    const replacement = this.$("notebook-replace-query").value;
-    const selected = all ? matches : [matches[this.notebookSearchIndex]];
-    let nextText = text;
-    for (const match of [...selected].reverse()) {
-      nextText = nextText.slice(0, match.start) + replacement + nextText.slice(match.end);
-    }
-    await this.flushNotebook();
-    this.setActiveNotebookText(nextText);
-    if (this.notebookEditor?.getModel() === this.notebookEditorModels.get(note.note_id)) this.notebookEditor.setValue(nextText);
-    this.updateNotebookSearchState();
-  }
-
-  renderNotebook() {
-    const panel = this.$("notebook-panel");
-    const toggles = [this.$("notebook-toggle"), this.$("file-tabs-notebook")].filter(Boolean);
-    if (!panel || !toggles.length) return;
-    panel.classList.toggle("notebook-over-file-area",
-      this.activeFileKey !== null || FILES_SIDE_PANEL_TABS.includes(this.sideView));
-    this.renderNotebookTabs();
-    this.renderNotebookRecentCopies();
-    if (this.settings.notebook_open) {
-      clearTimeout(this.notebookCloseTimer);
-      this.notebookCloseTimer = null;
-      panel.classList.remove("hidden", "notebook-closing");
-    } else if (!panel.classList.contains("notebook-closing")) {
-      panel.classList.add("hidden");
-    }
-    panel.classList.toggle("notebook-copies-open", this.notebookCopiesOpen);
-    for (const toggle of toggles) toggle.classList.toggle("on", !!this.settings.notebook_open);
-    if (this.settings.notebook_open && this.activeNotebookNote() && !this.notebookMounted) {
-      void this.mountNotebookEditor();
-    }
-  }
-
-  finishNotebookClose() {
-    this.notebookCloseTimer = null;
-    if (this.settings.notebook_open) return;
-    const panel = this.$("notebook-panel");
-    if (!panel) return;
-    panel.classList.add("hidden");
-    panel.classList.remove("notebook-closing");
-  }
-
-  startNotebookResize(event) {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    this.notebookResizePointerId = event.pointerId;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    document.body.classList.add("dragging-notebook");
-  }
-
-  resizeNotebookFromPointer(event) {
-    if (event.pointerId !== this.notebookResizePointerId) return;
-    const minimumLeft = 0;
-    const maximumLeft = Math.max(minimumLeft, window.innerWidth - 334);
-    this.settings.notebook_left = Math.max(minimumLeft, Math.min(maximumLeft, Math.round(event.clientX)));
-    document.documentElement.style.setProperty("--notebook-panel-left", `${this.settings.notebook_left}px`);
-  }
-
-  finishNotebookResize(event) {
-    if (event.pointerId !== this.notebookResizePointerId) return;
-    this.notebookResizePointerId = null;
-    document.body.classList.remove("dragging-notebook");
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    this.saveSettings();
-  }
-
-  setNotebookOpen(open, options = {}) {
-    const shouldOpen = !!open;
-    if (!shouldOpen) {
-      void this.flushNotebook();
-      this.closeNotebookFind(false);
-    }
-    const panel = this.$("notebook-panel");
-    const animateClose = !shouldOpen && panel && !panel.classList.contains("hidden") &&
-      !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    clearTimeout(this.notebookCloseTimer);
-    this.notebookCloseTimer = null;
-    if (animateClose) panel.classList.add("notebook-closing");
-    this.settings.notebook_open = shouldOpen;
-    this.renderNotebook();
-    if (animateClose) this.notebookCloseTimer = window.setTimeout(this.finishNotebookClose.bind(this), 180);
-    this.saveSettings();
-    if (!shouldOpen && options.focus !== false) requestAnimationFrame(() => this.focusActiveEditor());
-    if (this.settings.notebook_open && options.focus !== false) {
-      requestAnimationFrame(() => this.focusNotebookEditor());
-    }
-  }
-
-  toggleNotebook() {
-    this.setNotebookOpen(!this.settings.notebook_open, { focus: true });
-  }
-
-  focusNotebookEditor() {
-    const host = this.$("notebook-editor-host");
-    if (!host) return;
-    if (this.notebookEditor && this.notebookMounted) {
-      this.notebookEditor.focus();
-      return;
-    }
-    const target = host.querySelector("textarea");
-    if (target) {
-      target.focus();
-      return;
-    }
-    host.focus();
-  }
-
-  shouldReconnectIdleClaudeView(view, session, previousId) {
-    if (!view || !session || session.agent_kind !== "claude" || previousId === session.session_id ||
-        view.closed || view.replaying || view.scrollMode !== "follow" || !view.hiddenAt || !view.ws ||
-        view.ws.readyState !== WebSocket.OPEN || view.hiddenOutputPending || !session.processing) return false;
-    return Date.now() - view.hiddenAt >= TERMINAL_CLAUDE_IDLE_RECONNECT_MS;
-  }
-
-  reconnectIdleClaudeView(view) {
-    if (!view?.ws || view.closed || view.reconnectAfterClose) return;
-    view.reconnectAfterClose = true;
-    view.suppressReconnect = true;
-    view.ws.close(1000, "idle Claude terminal replay");
-  }
-
-  scheduleClaudeInitialReplayRecovery(id, view) {
-    if (!this.attachRepaintEnabled()) return;
-    if (!view || view.closed || view.claudeInitialReplayRecoveryAttempted || view.claudeInitialReplayCheckTimer) return;
-    clearTimeout(view.claudeInitialReplayCheckTimer);
-    view.claudeInitialReplayCheckTimer = setTimeout(this.recoverClaudeInitialReplay.bind(this, id, view), 900);
-  }
-
-  recoverClaudeInitialReplay(id, view) {
-    view.claudeInitialReplayCheckTimer = 0;
-    if (view.closed || view.claudeInitialReplayRecoveryAttempted || this.activeId !== id || this.historyOpen ||
-        this.activeFileKey !== null || !view.container.classList.contains("visible") || view.replaying || !view.ws ||
-        view.ws.readyState !== WebSocket.OPEN || this.session(id)?.agent_kind !== "claude") return;
-    const buffer = view.term?.buffer?.active;
-    if (!buffer || buffer.baseY > view.term.rows + 2) return;
-    view.claudeInitialReplayRecoveryAttempted = true;
-    this.reconnectIdleClaudeView(view);
-  }
-
-  activate(id, options = {}) {
-    this.closePromptHistory();
-    this.hideSelectionActions(true);
-    const previousId = this.activeId;
-    const selected = this.session(id);
-    if (this.worktreeId === ALL_WORKTREES_ID && selected) {
-      this.interactionWorktreeId = this.worktreeIdForSession(selected);
-    }
-    if (!selected?.needs_attention) this.clearSessionAttention(id);
-    let unreadChanged = false;
-    if (previousId && previousId !== id) {
-      unreadChanged = this.unreadSessions.delete(previousId) || unreadChanged;
-      this.updateUnreadIndicator(previousId);
-    }
-    if (previousId !== id) {
-      unreadChanged = this.unreadSessions.delete(id) || unreadChanged;
-      this.updateUnreadIndicator(id);
-    }
-    if (unreadChanged) {
-      this.persistUnreadSessionDelta([previousId, id].filter(Boolean), false);
-    }
-    this.rememberRecentlyOpenedTerminal(id);
-    if (selected && !this.titlePresentation(selected).spinning) this.viewedCompletedSessions.add(id);
-    else this.viewedCompletedSessions.delete(id);
-    if (selected) {
-      const spinning = this.titlePresentation(selected).spinning;
-      const processingSince = Number(selected.processing_since);
-      if (processingSince > 0 && !this.processingSince.has(id)) this.processingSince.set(id, processingSince * 1000);
-      this.processingStates.set(id, spinning);
-      if (spinning && !this.processingSince.has(id)) this.processingSince.set(id, Date.now());
-      if (!spinning) this.processingSince.delete(id);
-    }
-    if (this.historyOpen && previousId) this.rememberHistoryScrollPosition(previousId);
-    this.saveActiveFileViewState();
-    this.lspClient?.deactivate();
-    this.activeFileKey = null;
-    this.stopHistoryRefresh();
-    this.disconnectHistoryStream();
-    this.historyOpen = false;
-    this.historyFingerprint = "";
-    const cachedHistory = this.historyTurnsBySession.get(id) || [];
-    this.historyTurns = cachedHistory;
-    this.historyLoaded = cachedHistory.length > 0;
-    const previousView = previousId ? this.views.get(previousId) : null;
-    this.activeId = id;
-    this.updateRecentFilesWatch();
-    this.historyOpen = this.selectedHistoryMode(selected);
-    if (options.history !== false) this.pushNav({ kind: "term", id });
-    this.updateSizeOwnershipIndicator(this.views.get(id));
-    if (this.getProjectState().active_session_id !== id) {
-      this.patchProjectState({ active_session_id: id });
-    }
-    const s = this.session(id);
-    this.postVscodeNativeSession(s, !this.historyOpen);
-    if (s && this.treeRoot !== null && this.treeRoot !== s.cwd && !this.$("files-section").classList.contains("hidden")) {
-      this.reloadTree();
-    }
-    const view = this.ensureView(id);
-    if (previousView && previousView !== view) previousView.term.clearSelection();
-    if (previousView && previousView !== view) {
-      if (this.isTerminalScrollV2()) {
-        const previousAtBottom = this.xtermAtBottom(previousView);
-        previousView.scrollMode = previousAtBottom || !previousView.userScrollIntent ? "follow" : "preserve";
-        if (previousAtBottom || !previousView.userScrollIntent) previousView.userScrollIntent = false;
-        // Captured as an OFFSET, not the absolute viewportY: if this tab's background websocket has
-        // closed by the time we come back to it, reactivating it resets and replays the whole buffer
-        // from scratch (see ws.onopen's view.term.reset()), making an absolute row index meaningless
-        // against the freshly rebuilt buffer. "N rows above the latest line" survives that rebuild.
-        previousView.preserveRowsFromBottom = previousView.scrollMode === "preserve"
-          ? previousView.term.buffer.active.baseY - previousView.term.buffer.active.viewportY : 0;
-      } else {
-        // xterm's buffer viewport can still report the old bottom row while
-        // the browser scrollbar has already moved. Carry the native position
-        // across tab switches so returning to a manually scrolled tab does not
-        // re-enable bottom-follow and jump by several pages.
-        previousView.keepBottom = !previousView.manualScroll && this.terminalAtBottom(previousView);
-        previousView.wasAtBottom = previousView.keepBottom;
-        if (!previousView.keepBottom) previousView.pinBottomUntil = 0;
-      }
-    }
-    const switchedViews = previousView !== view;
-    if (switchedViews && previousView) this.clearActiveTerminalSettleWatchdog(previousView);
-    const activatedAt = Date.now();
-    for (const [viewId, v] of this.views) {
-      const visible = viewId === id;
-      const wasVisible = v.container.classList.contains("visible");
-      v.container.classList.toggle("visible", visible);
-      if (visible) {
-        v.lastShownAt = activatedAt;
-      } else if (wasVisible) {
-        v.hiddenAt = activatedAt;
-      }
-    }
-    this.applyMainLayout();
-    this.scheduleTerminalLayoutFit();
-    if (!this.$("terminal-find").classList.contains("hidden")) this.updateTerminalFindMatches();
-    if (this.historyOpen) {
-      const historyId = id;
-      if (previousId !== id) {
-        // Do not leave the previous tab's transcript rendered while a fork's
-        // authoritative snapshot is being loaded.
-        this.historyTurns = [];
-        this.historyLoaded = false;
-        const body = this.$("history-body");
-        if (body) {
-          body.textContent = "";
-          const loading = document.createElement("div");
-          loading.className = "history-empty";
-          loading.textContent = "loading transcript…";
-          body.appendChild(loading);
-        }
-      } else if (cachedHistory.length) {
-        this.applyHistoryTurns(historyId, cachedHistory, { preserveScroll: false });
-      }
-      this.connectHistoryStream(historyId, { fresh: previousId !== id });
-    }
-    if (view) {
-      this.prepareTerminalForFirstPaint(view);
-      if (this.isTerminalScrollV2() && !view.userScrollIntent) view.scrollMode = "follow";
-      this.refreshTerminalAppearance(view);
-      if (!s?.dormant) {
-        if (this.shouldReconnectIdleClaudeView(view, s, previousId)) this.reconnectIdleClaudeView(view);
-        else if (!view.ws) this.connect(id, view);
-      }
-      if (this.isTerminalScrollV2()) {
-        // Only a genuinely first-ever connection should default to follow mode. A background tab's
-        // websocket can close on its own (ws.onclose only auto-reconnects the ACTIVE tab, by design,
-        // to avoid reconnecting every backgrounded session) and then reconnect right here via
-        // `!view.ws` above the moment it's reactivated -- that reconnect ALSO sets
-        // awaitingSnapshot/replaying, so including them in this condition overwrote a correctly
-        // recorded "preserve" (the user had scrolled up before leaving this tab) back to "follow" on
-        // every such reconnect. everConnected alone distinguishes the two: it starts false only for a
-        // view that has never connected at all, and stays true across every later reconnect. Ground-
-        // truth confirmed: a reconnected view's buffer resets and replays from scratch (baseY drops
-        // then regrows), and this forced "follow" combined with that replay is what made switching
-        // back to an already-scrolled-up tab land near the top once the buffer regrew past wherever
-        // the early, still-small-buffer scrollToBottom had landed.
-        if (previousId !== id && !view.everConnected) {
-          view.scrollMode = "follow";
-        }
-        // A tab the user explicitly scrolled up on (scrollMode "preserve") was, by definition, already
-        // rendering correctly before they left it -- you cannot scroll up on a black/broken pane. Every
-        // fit/reflow/repair call below exists to fix a FRESH connect or reconnect that might be showing
-        // stale/incomplete content; none of that applies here, and ground-truth testing found that these
-        // calls can themselves corrupt the scroll position on a tab that never needed fixing (the exact
-        // "switching between half-scrolled tabs jumps to the top" bug, still unresolved after several
-        // attempts at making each individual call scroll-position-safe). Skip the whole pipeline for this
-        // case and let the CSS visibility toggle alone reveal whatever is already sitting in the DOM,
-        // untouched -- the original "views stay alive" design intent before any of that machinery existed.
-        // A genuine container-size change while backgrounded is still caught independently by
-        // view.layoutObserver's own ResizeObserver, which runs regardless of activation.
-        const needsFreshConnectHandling = previousId !== id && (!view.everConnected || view.awaitingSnapshot || view.replaying);
-        if (view.scrollMode === "preserve" && !needsFreshConnectHandling) {
-          // Nothing to do: no fit, no reflow, no repair, no watchdog.
-        } else {
-          const forceFit = previousId !== id || this.shouldForceTerminalActivationReflow(view, switchedViews);
-          this.scheduleV2Fit(view, { force: forceFit });
-          this.scheduleInitialV2Fit(view);
-          if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
-          this.scheduleTerminalActivationRepair(view, {
-            forceReflow: this.shouldForceTerminalActivationReflow(view, switchedViews),
-          });
-          this.scheduleActiveTerminalSettleWatchdog(view);
-        }
-      } else if (previousId !== id) {
-        const needsInitialFollow = !view.everConnected || view.awaitingSnapshot || view.replaying;
-        if (needsInitialFollow || view.keepBottom) {
-          // A new/replaying terminal needs a few frames to settle. An
-          // already-connected terminal is only settled when it was already at
-          // the bottom; manually scrolled tabs must retain their position.
-          view.keepBottom = true;
-          const settleWindow = needsInitialFollow ? 5000 : 750;
-          view.pinBottomUntil = Date.now() + settleWindow;
-          this.scrollTerminalToBottom(view);
-        } else {
-          view.pinBottomUntil = 0;
-        }
-      } else if (view.keepBottom) {
-        view.pinBottomUntil = Date.now() + 3000;
-      }
-      if (!this.isTerminalScrollV2()) {
-        this.scheduleViewportSettle(view);
-        if (view.needsViewportRepair && !view.outputQueue.length && !view.manualScroll && view.keepBottom) {
-          view.needsViewportRepair = false;
-          this.repairTerminalViewport(view);
-        }
-      }
-    }
-    this.renderList();
-    this.renderTopbar();
-    if (this.conversationOutlineOpen && previousId !== id) void this.loadConversationOutline(true);
-    if (options.reveal) this.keepActiveSessionVisible();
-    this.scheduleActiveEditorFocus(id);
-  }
-
-  ensureView(id) {
-    if (this.views.has(id)) return this.views.get(id);
-    const container = document.createElement("div");
-    container.className = "term-container initializing";
-    // Tall-terminal-probe worktree only: xterm.js has no concept of scrolling within an oversized
-    // "current screen" -- its own viewport only becomes scrollable once content has genuinely scrolled
-    // into real backscroll (baseY > 0). Confirmed directly: with rows forced to 1000, term.scrollToBottom()
-    // and term.scrollLines(200) both left viewportY pinned at 0, and .xterm-viewport measured
-    // maxScrollTop=0 even with the cursor 200+ rows below the visible fold. Real TermDeck never hits this
-    // (sessions stay around 30-50 rows, matching the visible area exactly, so there's nothing to scroll).
-    // The fix used here sidesteps xterm's scroll model entirely instead of fighting it: `inner` (not
-    // `container`) is what gets passed to term.open() and is what FitAddon measures, and its height is set
-    // to the real pixel height of FORCE_ROWS rows. xterm therefore just sees an ordinary, fully-fitting,
-    // very tall terminal -- nothing about its rendering or internal scroll logic is unusual. `container`
-    // stays the normal small visible area (unchanged everywhere else in this file: layout, visibility
-    // checks, resize observers) but now has native CSS overflow-y scrolling, so the browser's own
-    // scrollbar/wheel/trackpad handling -- not xterm's -- is what moves through the tall inner content.
-    const inner = document.createElement("div");
-    inner.className = "term-inner";
-    container.appendChild(inner);
-    this.$("terminal-area").appendChild(container);
-    // "wheel" specifically, not "scroll": confirmed live that a generic "scroll" event cannot be trusted
-    // to mean the user acted -- xterm repositions its hidden input textarea to track the cursor (for IME
-    // candidate-window placement), and while that textarea stays focused, the browser's own "keep the
-    // focused element in view" behavior fires ordinary "scroll" events on this container with no user
-    // input and no code of TermDeck's involved. Traced live: that contamination created a feedback loop --
-    // one write's post-check reads a scrollTop the browser had already nudged, concludes the user must be
-    // following, and every write after that keeps genuinely following, silently overriding a deliberate
-    // scroll-away. A wheel/trackpad gesture is a real user action the browser's own auto-scroll can never
-    // synthesize, so it's the only signal trusted here.
-    //
-    // Debounced, not a single deferred frame: a single rAF was tried first and was still too early for a
-    // large wheel delta, which Chrome answers with a multi-frame smooth-scroll animation -- confirmed
-    // live, that one-frame check read scrollTop before the animation had gone anywhere, computed "still
-    // near the cursor", and never re-checked once the animation actually finished moving it away.
-    // Debouncing on "no further wheel events for 150ms" is correct regardless of whether a given browser
-    // animates the scroll or applies it instantly.
-    let tallWheelSettleTimer = 0;
-    container.addEventListener("wheel", (event) => {
-      const wheelView = this.views.get(id);
-      if (wheelView) {
-        // Stopping the follow has to be IMMEDIATE, and cannot wait for the debounce below. A streaming
-        // agent delivers a write every ~20-50ms, and each write while following snaps back to the bottom
-        // -- so a scroll-up was being undone within a frame or two, long before the 150ms settle fired,
-        // and the settle then measured a position already dragged back to the bottom and concluded the
-        // user still wanted to follow. Measured: scrolling up during active output left following=true
-        // with scrollTop pinned to the ceiling across 12 consecutive samples, i.e. it was impossible to
-        // read anything while the agent worked. Scrolling UP is unambiguous on its own, so it takes
-        // effect on the spot; only the decision to RESUME following needs the settled position, which is
-        // what the debounce below still handles.
-        if (event.deltaY < 0) wheelView.tallFollowing = false;
-        // Writes must not fight an in-progress gesture either: while the wheel is still moving, the
-        // not-following branch of drainTerminalWrites would keep restoring an anchor captured before
-        // this gesture started, which reads as the view refusing to scroll.
-        wheelView.tallWheelActiveUntil = Date.now() + 250;
-      }
-      clearTimeout(tallWheelSettleTimer);
-      tallWheelSettleTimer = setTimeout(() => {
-        const view = this.views.get(id);
-        if (!view) return;
-        view.tallWheelActiveUntil = 0;
-        view.tallFollowing = this.tallContainerNearCursor(view);
-        // Captured once here, at the settled position, rather than re-sampled per write: each write used
-        // to snapshot "wherever scrollTop happens to be right now" as its own restore target, so small
-        // incremental drift between rapid keystroke-batches (the browser's scroll-into-view nudge,
-        // individually too small to flip tallFollowing) could still accumulate write over write even while
-        // tallFollowing correctly stayed false throughout -- confirmed live.
-        if (!view.tallFollowing) this.tallCaptureAnchorRow(view);
-      }, 150);
-    }, { passive: true });
-    // A hard ceiling, not an intent signal -- unlike the "wheel" listener above, this one never decides
-    // anything about the user, it just enforces tallMaxScrollTop (see its own comment) whenever a scroll
-    // lands past it, however that scroll happened: native or programmatic, deliberate or the browser's own
-    // focus-driven auto-scroll.
-    //
-    // Deferred until scrolling stops, though, because clamping cannot win an argument with a scroll source
-    // that is still running. Dragging the scrollbar thumb is one: the browser re-derives scrollTop from the
-    // held pointer every frame, so an immediate clamp was overwritten and re-clamped frame after frame,
-    // which reads as the text tearing between two positions at once. Waiting for a short quiet period
-    // means the drag simply wins while it lasts and gets clamped once, cleanly, on release. Nothing is
-    // lost by waiting: the wheel handler below already refuses to overshoot in the first place, so this
-    // path only ever sees drags and programmatic jumps.
-    let tallClampTimer = 0;
-    const scheduleTallSettle = () => {
-      const watching = this.views.get(id);
-      if (!watching || watching.closed) return;
-      // Remember where the settle was scheduled from, so the callback can tell whether the view is
-      // actually still. Events alone are not enough to know that: our own writes are skipped as echoes
-      // below, and the browser coalesces bursts, so a gesture can keep moving while this listener hears
-      // nothing -- and a settle that fires mid-gesture is exactly the clamp that tears the view.
-      watching.tallSettleWatchTop = container.scrollTop;
-      clearTimeout(tallClampTimer);
-      tallClampTimer = setTimeout(() => {
-        const settled = this.views.get(id);
-        if (!settled || settled.closed) return;
-        // A held pointer is the one case a quiet period cannot detect: holding the thumb still IS quiet,
-        // right up until a clamp perturbs it, and then the browser re-derives scrollTop from the pointer
-        // that is still down and undoes the clamp -- which fires another settle, forever. Measured as a
-        // steady ~150ms pulse while the thumb was held at the bottom. So while any pointer is down on
-        // this terminal, nothing here moves the view; release re-runs this once.
-        if (settled.tallPointerHeld) return;
-        if (Math.abs(container.scrollTop - (settled.tallSettleWatchTop || 0)) > 2) {
-          scheduleTallSettle();   // moved since scheduling: still in flight, wait for real quiet
-          return;
-        }
-        settled.tallScrollActiveUntil = 0;
-        // Refresh the ceiling from the buffer as it is NOW, before enforcing it. It is otherwise only
-        // recomputed on writes, so a value latched from a mid-repaint cursor on a session that then goes
-        // idle is permanent -- and the clamp below enforces the stale number against every attempt to
-        // scroll to content that sits beyond it ("the bottom of the screen is in the middle, and it
-        // keeps bringing me back up"). A user gesture is exactly the moment a stale ceiling must not
-        // win; the update's own guards (replay, blank-region, shrink hold) still apply.
-        this.tallUpdateMaxScrollTop(settled);
-        if (settled.tallMaxScrollTop != null &&
-            container.scrollTop > settled.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
-          this.tallSetScrollTop(settled, settled.tallMaxScrollTop);
-        }
-        this.tallApplySettledScroll(settled);
-      }, TALL_SCROLL_SETTLE_MS);
-    };
-    // Pointer-held tracking. Registered on the container in capture so a scrollbar interaction counts,
-    // and released from the window because the pointerup can land anywhere once a drag is under way.
-    const releaseTallPointer = () => {
-      const view = this.views.get(id);
-      window.removeEventListener("pointerup", releaseTallPointer, true);
-      window.removeEventListener("pointercancel", releaseTallPointer, true);
-      if (!view || view.closed) return;
-      view.tallPointerHeld = false;
-      scheduleTallSettle();       // now that it is released, let it settle exactly once
-    };
-    container.addEventListener("pointerdown", () => {
-      const view = this.views.get(id);
-      if (!view || view.closed) return;
-      view.tallPointerHeld = true;
-      window.addEventListener("pointerup", releaseTallPointer, true);
-      window.addEventListener("pointercancel", releaseTallPointer, true);
-    }, { capture: true, passive: true });
-    container.addEventListener("scroll", () => {
-      const view = this.views.get(id);
-      if (!view || view.closed) return;
-      // Our own scrolls must not read as the user scrolling, or following would flip on every write.
-      // Matching on value ALONE is wrong: the user scrolling to the bottom lands on exactly the ceiling
-      // we last set ourselves, so a real gesture was being discarded as an echo -- which is what left the
-      // pinned viewport stale and the newest lines unreachable. Track whether a write is actually waiting
-      // for its scroll event instead of using a timing window that can swallow a real move to that value.
-      const echoOfOurOwnWrite = view.tallProgrammaticScrollPending &&
-        container.scrollTop === view.tallLastProgrammaticTop;
-      view.tallProgrammaticScrollPending = false;
-      if (echoOfOurOwnWrite) return;
-      // Marks a gesture as in progress. Writes check this and leave the view completely alone while it is
-      // set: a scrollbar drag or an autoscroll keeps producing scroll events, and a write that re-asserts
-      // the follow position in the middle of one is what tears the text between two positions.
-      view.tallScrollActiveUntil = Date.now() + TALL_SCROLL_ACTIVE_MS;
-      // The scroll position is the buffer position in this mode, so it has to be honoured immediately
-      // rather than waiting for the gesture to settle -- the rendered window is what makes the scroll
-      // visible at all.
-      if (this.wholeBufferScrollEnabled()) {
-        this.tallSyncBufferToScroll(view);
-        scheduleTallSettle();
-        return;
-      }
-      scheduleTallSettle();
-    }, { passive: true });
-    // The scrollback bridge for the CSS's overflow-y:hidden on .xterm-viewport (see style.css). That rule
-    // takes xterm's own viewport out of the scroll chain so there's a single scroll surface, but the
-    // scrollback it used to scroll through is still real content that has to stay reachable -- this hands
-    // it whatever delta the container can't absorb, so one continuous gesture runs container-first and
-    // then into scrollback, rather than the reverse order the browser's chaining used to impose.
-    //
-    // Deliberately edge-only, and non-passive only where it actually acts: while the container still has
-    // room in the direction being scrolled, this returns without touching the event, leaving the browser's
-    // native scrolling (and its trackpad momentum, which a manual scrollTop-per-event implementation
-    // cannot reproduce) to handle the common case untouched.
-    container.addEventListener("wheel", (event) => {
-      const view = this.views.get(id);
-      if (!view || view.closed || !event.deltaY) return;
-      const buffer = view.term.buffer.active;
-      const up = event.deltaY < 0;
-      // Absorb downward overscroll rather than letting the browser take it and correcting afterwards.
-      // .term-inner is a fixed FORCE_ROWS tall no matter how little content exists, so the browser's own
-      // max scroll sits thousands of pixels below the last line, and a scroll past the end used to be
-      // painted out there and then yanked back by the "scroll" listener's clamp -- the visible bounce at
-      // the bottom. Worst on a nearly empty terminal, where the ceiling can be 0 and the overshoot is the
-      // full canvas. Clamping the gesture here means the overshoot is never painted at all. Trackpad
-      // momentum keeps firing wheel events, so this has to absorb those too, which it does by staying on
-      // the clamp branch once scrollTop has reached the ceiling.
-      //
-      // Only when there is no scrollback left to spend, though. Scrolling up past the top of the container
-      // hands the rest of the gesture to xterm's viewport (see the bridge below), and from then on the
-      // container sits at its ceiling with the viewport parked above baseY -- so on the way back down this
-      // clamp matched every single event and returned before the bridge could give the scrollback back.
-      // On a short session, where the ceiling is 0, that made downward scrolling impossible: the view
-      // could be scrolled up into history and never returned. Reported as "shows up at the top, cannot
-      // scroll down".
-      const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-      if (!cellHeight) return;
-      // No bridge needed when the container already spans the whole buffer: native scrolling reaches
-      // every line, pixel by pixel, which is the entire point of that mode.
-      if (this.wholeBufferScrollEnabled()) return;
-      const ceiling = view.tallMaxScrollTop == null ? Infinity : view.tallMaxScrollTop;
-      // The container is the outer surface in BOTH directions, and that symmetry is the whole point. It
-      // used to hold only going up: going down, the buffer viewport was advanced whenever any scrollback
-      // was pending, which is true for the entire time a view is parked -- so downward scrolling was
-      // quantised to whole lines while the container still had smooth pixels to give. Scrolling the same
-      // number of notches up and then back down proved it: four each way landed 4.76 rows (one whole
-      // notch) from where it started, and eight each way through scrollback landed 8 rows out.
-      const room = up ? container.scrollTop : ceiling - container.scrollTop;
-      if (Math.abs(event.deltaY) <= room) return;      // the container can absorb this on its own
-      if (up ? buffer.viewportY <= 0 : buffer.viewportY >= buffer.baseY) {
-        // Nothing beyond the container in this direction. Absorb the overshoot rather than letting the
-        // browser paint past the last line and yanking it back afterwards -- the bounce at the bottom.
-        if (!up && ceiling !== Infinity) {
-          event.preventDefault();
-          if (container.scrollTop !== ceiling) this.tallSetScrollTop(view, ceiling);
-        }
-        return;
-      }
-      event.preventDefault();
-      // One continuous position expressed across two surfaces. xterm scrolls whole lines only, so a 100px
-      // notch over a 21px row (4.76 rows) snapped to 4 or 5 -- measured per notch as 4,5,5,4,5,5,5,5,4,3
-      // against a steady 4.76 once the container took over, which is what "jumpy" is. The container takes
-      // the spill up to its own edge and keeps the leftover sub-row as its offset, so the remainder lives
-      // in the position itself rather than in a variable that can drift out of step with it.
-      const spill = event.deltaY - (up ? -room : room);
-      const edge = up ? 0 : ceiling;
-      const pendingRows = spill / cellHeight;
-      const wholeLines = Math.floor(pendingRows);
-      const subRow = pendingRows - wholeLines;
-      if (wholeLines) view.term.scrollLines(wholeLines);
-      this.tallSetScrollTop(view, edge + subRow * cellHeight);
-    }, { passive: false });
-    const term = new Terminal({
-      fontSize: this.settings.terminal_font_size, fontFamily: '"SF Mono", Menlo, monospace', letterSpacing: -0.2, theme: this.termTheme(),
-      scrollback: 20000, cursorBlink: true, macOptionIsMeta: true, allowProposedApi: true,
-    });
-    const fit = new FitAddon.FitAddon();
-    const terminalFindAddon = new SearchAddon.SearchAddon({ highlightLimit: TERMINAL_FIND_HIGHLIGHT_LIMIT });
-    term.loadAddon(fit);
-    if (terminalFindAddon) term.loadAddon(terminalFindAddon);
-    // The other half of taking xterm out of the scroll chain (style.css's overflow-y:hidden on
-    // .xterm-viewport is the first half, and on its own does nothing here). xterm does not rely on that
-    // element's CSS overflow to scroll -- it registers its own non-passive "wheel" listener and drives the
-    // buffer directly, so the CSS rule alone left the measured two-stage behavior completely unchanged.
-    // Returning false from this hook is xterm's supported way to say "ignore this wheel event", which
-    // leaves the browser to scroll the one remaining scrollable ancestor: .term-container.
-    //
-    // Unconditional, including on the alternate screen. In a normal terminal xterm translates wheel into
-    // arrow keys there, which is right because the alt screen is exactly one screenful with nothing to
-    // scroll over -- but that premise does not survive 1000 forced rows. A full-screen app here paints a
-    // 1000-row UI of which .term-container shows ~37, so the wheel's first job is moving the viewport
-    // over what the app already painted, which only the container can do. Measured: `seq 1 500 | less`
-    // painted all 500 lines at once into rows 499-998; letting xterm keep the wheel would have left ~963
-    // painted rows unreachable by mouse.
-    //
-    // Known tradeoff, not an oversight: for content that overflows even 1000 rows (`seq 1 5000 | less`),
-    // the app does still have somewhere to scroll, and the wheel no longer tells it so -- paging past the
-    // painted rows needs the keyboard. Bridging the container's bottom edge back into arrow keys the way
-    // the normal screen bridges into scrollback would fix that, but it needs the app-cursor-keys mode off
-    // xterm's private coreService to pick the right escape sequence, so it is left alone here.
-    term.attachCustomWheelEventHandler(() => false);
-    term.open(inner);
-    // Real cell height is only known once xterm has measured the font, which happens synchronously inside
-    // open(). The row count is an explicit pixel height rather than something derived from the container
-    // (the FitAddon-based approach tried earlier) because it has to stay fixed across every later resize
-    // -- if it tracked the container's height the way a normal terminal does, this collapses straight back
-    // to the problem being solved.
-    //
-    // Height and renderer are chosen together by tallRowPlan (see it for the arithmetic). WebGL backs the
-    // terminal with one drawing buffer sized to the FULL terminal, so an over-tall terminal does not fail
-    // loudly -- it silently corrupts, which is what the solid-black screen at 1000 rows was. So the WebGL
-    // mode takes the tallest height the GPU can back and the DOM mode, which has no texture limit at all,
-    // is what buys the full 1000 rows.
-    const cellHeight = term._core?._renderService?.dimensions?.css?.cell?.height || 17;
-    const rowPlan = this.tallRowPlan(cellHeight);
-
-    inner.style.height = `${Math.round(rowPlan.rows * cellHeight)}px`;
-    if (rowPlan.webgl) this.enableWebglRenderer(term);
-    term.registerLinkProvider({ provideLinks: (y, cb) => this.providePathLinks(term, id, y, cb) });
-    const view = { sessionId: id, container, term, fit, terminalFindAddon, tallRows: rowPlan.rows,
-                   terminalFindResultIndex: -1,
-                   terminalFindResultCount: 0, terminalFindResultListener: null,
-                   tallWebgl: rowPlan.webgl,
-                   ws: null, closed: false, everConnected: false, awaitingSnapshot: true,
-                   replaying: false, pasting: false, suppressReconnect: false, cliTitle: null, pinBottomUntil: 0,
-                   programmaticScrollUntil: 0, programmaticScrollGeneration: 0, scrollSettleTimer: 0,
-                   reconnectTimer: 0, settleFrame: 0, viewportRepairFrame: 0, needsViewportRepair: false,
-                   resizeRepairTimer: 0, outputQueue: [], outputWriteInFlight: false, outputWriteGeneration: 0,
-                   layoutObserver: null, scrollObserver: null, visibilityObserver: null,
-                   layoutFitRetryTimer: 0, layoutFitRetryCount: 0,
-                   keepBottom: true, manualScroll: false, manualScrollGeneration: 0, manualScrollReleaseTimer: 0,
-                   wasAtBottom: true, scrollMode: "follow", v2Programmatic: false, v2FitFrame: 0,
-                   userScrollIntent: false,
-                   v2InitialFitPending: true, v2InitialFitFrame: 0, hiddenOutputPending: false, v2ViewportSyncFrame: 0,
-                   forceResizeAfterFit: true, initialSnapshotPainted: false, v2ForcedReflowFrame: 0, v2ForcedReflowRestoreFrame: 0,
-                   suppressResizeToServer: false, resyncResizeRepairPending: false,
-                   hiddenAt: 0, lastShownAt: 0, lastActivationReflowAt: 0,
-                   tailRepairFrame: 0, tailRepairTimer: 0, tailRepairConfirmTimer: 0,
-                   activationRepairFrame: 0, tailRepairSignature: "", lastRenderRepairAt: 0,
-                   renderedRows: [], renderedViewportY: null, renderedCols: 0, renderedTermRows: 0,
-                   renderRepairArmed: true, renderObserver: null,
-                   viewportAnchorRestore: null, viewportAnchorRestoreTimer: 0,
-                   lastSentCols: null, lastSentRows: null, settleWatchdogTimers: [], codexReflowFollowupTimers: [],
-                   preserveRowsFromBottom: 0, reconnectReset: false,
-                   promptDraft: this.session(id)?.draft || "", markdownPromptDraft: this.markdownPromptDraftForSession(id),
-                   promptPaste: false, promptEscape: "", promptEditing: false,
-                   promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
-                   promptSubmissionReflowGuardUntil: 0, promptSubmissionReflowGuardTimer: 0,
-                   attentionScreenDetectionSuppressed: false,
-                   reconnectAfterClose: false, claudeInitialReplayCheckTimer: 0,
-                   claudeInitialReplayRecoveryAttempted: false,
-                   claudeStatusRowRefreshTimer: 0, historyModelRefreshTimer: 0, lastClaudeStatusRowRefreshAt: 0,
-                   codexFocusRefreshFrame: 0,
-                   promptQueue: this.markdownPromptQueueForSession(id), promptQueueEditIndex: null, promptQueueDispatching: false,
-                   promptDraftSyncPending: false, promptDraftSyncTimer: 0, promptDraftSyncDebounceTimer: 0,
-                   pendingDraftSync: null, pendingTerminalDraft: null, pendingAgentPaste: "", pendingAgentPasteTimer: 0,
-                   pendingAgentPasteStartedAt: 0, pendingAgentPasteReadyAt: 0, pendingAgentPasteExpectedTitle: "",
-                   pendingAgentPasteRequireComposer: false, lastTerminalOutputAt: 0,
-                   promptEditVersion: 0, promptSubmitVersion: -1 };
-    view.terminalFindResultListener = terminalFindAddon?.onDidChangeResults((result) => this.updateTerminalFindResultCount(view, result)) || null;
-    const releaseManualScrollWhenStable = () => {
-      clearTimeout(view.manualScrollReleaseTimer);
-      const generation = view.manualScrollGeneration;
-      view.manualScrollReleaseTimer = setTimeout(() => {
-        view.manualScrollReleaseTimer = 0;
-        if (view.closed || !view.manualScroll || generation !== view.manualScrollGeneration) return;
-        const atBottom = this.terminalAtBottom(view);
-        if (!atBottom) {
-          view.wasAtBottom = false;
-          view.keepBottom = false;
-          view.pinBottomUntil = 0;
-          return;
-        }
-        // A wheel event can be delivered before xterm has updated its native
-        // viewport. Only leave manual mode after the position remains at the
-        // bottom long enough for that layout/reflow to settle.
-        view.manualScroll = false;
-        view.wasAtBottom = true;
-        view.keepBottom = true;
-      }, 180);
-    };
-    const markV2Preserve = () => {
-      if (!this.isTerminalScrollV2()) return;
-      this.cancelTerminalViewportRestore(view);
-      // Wheel/scrollbar intent arrives before xterm publishes onScroll().
-      // Preserve immediately so a live output callback in that gap cannot
-      // pull the viewport back to the prompt.
-      view.v2Programmatic = false;
-      view.userScrollIntent = true;
-      view.scrollMode = "preserve";
-    };
-    const markManualScroll = () => {
-      if (this.isTerminalScrollV2()) {
-        markV2Preserve();
-        return;
-      }
-      // wheel fires before the browser moves the native xterm viewport, so
-      // checking terminalAtBottom() here can still report the old bottom
-      // position and leave auto-follow enabled.  Any wheel gesture is an
-      // explicit request to browse, regardless of its current position.
-      view.pinBottomUntil = 0;
-      view.keepBottom = false;
-      view.manualScroll = true;
-      view.manualScrollGeneration += 1;
-      view.wasAtBottom = false;
-      releaseManualScrollWhenStable();
-      if (view.settleFrame) {
-        cancelAnimationFrame(view.settleFrame);
-        view.settleFrame = 0;
-      }
-      if (view.viewportRepairFrame) {
-        cancelAnimationFrame(view.viewportRepairFrame);
-        view.viewportRepairFrame = 0;
-      }
-      view.needsViewportRepair = false;
-      clearTimeout(view.scrollSettleTimer);
-      view.scrollSettleTimer = 0;
-    };
-    view.renderObserver = term.onRender(({ start, end }) => this.recordTerminalRenderedRows(view, start, end));
-    this.refreshTerminal(view);
-    container.addEventListener("focusin", () => this.scheduleCodexFocusTailRefresh(view));
-    // Capture before xterm's wheel handler so the first wheel after a tab
-    // switch cannot be mistaken for an automatic bottom-follow scroll.
-    container.addEventListener("wheel", markManualScroll, { passive: true, capture: true });
-    container.addEventListener("paste", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const cd = e.clipboardData || window.clipboardData;
-      const files = cd && cd.files && cd.files.length ? [...cd.files] : [];
-      if (files.length) { this.uploadAndInsert(view, files); return; }
-      const text = cd && (cd.getData("text/plain") || cd.getData("text"));
-      if (!text || !view.ws || view.ws.readyState !== WebSocket.OPEN) return;
-      // Pasting is real input, so it returns to the prompt the way typing does -- the Cmd+V chord itself
-      // is ignored by the key handler above (it cannot tell paste from copy), so this is where it lands.
-      view.tallFollowing = true;
-      this.scrollTallContainerToCursor(view);
-      this.sendTrackedInput(view, this.terminalPastePayload(view, text));
-    }, true);
-    container.addEventListener("dragover", (e) => { e.preventDefault(); container.classList.add("drag-over"); });
-    container.addEventListener("dragleave", (e) => { if (e.target === container) container.classList.remove("drag-over"); });
-    container.addEventListener("drop", (e) => {
-      e.preventDefault();
-      container.classList.remove("drag-over");
-      const files = e.dataTransfer && e.dataTransfer.files ? [...e.dataTransfer.files] : [];
-      if (files.length) this.uploadAndInsert(view, files);
-    });
-    term.onTitleChange((t) => {
-      const title = t.trim();
-      if (!title || title === view.cliTitle) return;
-      view.cliTitle = title;
-      const s = this.session(id);
-      // The backend status stream is authoritative for processing. Do not
-      // mark a session active merely because its xterm title was replayed
-      // when the user selected the tab.
-      if (s) s.cli_title = title;
-      const titleEl = this.sessionTitleEls.get(id);
-      if (titleEl && s) titleEl.textContent = this.titlePresentation(s).text;
-      this.updateProcessingState(id, !!s && this.titlePresentation(s).spinning);
-      if (id === this.activeId) this.renderTopbar();
-    });
-    term.attachCustomKeyEventHandler((e) => {
-      // xterm's PageUp/Home family scrolls its viewport without a wheel or
-      // scrollbar pointer event. Treat those as an explicit browse action so
-      // a pending output/layout repair cannot pull the terminal back down.
-      if (e.type === "keydown" && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) {
-        if (this.isTerminalScrollV2()) markV2Preserve();
-        else markManualScroll();
-      }
-      // Typing means the user is done reading whatever they scrolled up to look at, so resume following
-      // -- otherwise they type blind into a prompt that is somewhere off-screen. xterm's own
-      // scrollOnUserInput cannot do this here: it scrolls xterm's viewport, which is not the surface
-      // being scrolled any more (see the tall-container comments above).
-      //
-      // A real KeyboardEvent is the signal, NOT sendInput/onData. onData carries far more than typing:
-      // xterm answers terminal queries (DSR/DA) through it, and with the modes an agent CLI enables it
-      // also emits focus-in/out and mouse reports there. An agent working produces a steady stream of
-      // those, so resuming follow from onData meant the view snapped to the bottom continuously while
-      // output streamed, making it impossible to read anything scrolled back. This handler only ever
-      // sees genuine key events. PageUp/Home above are deliberately excluded by ordering: they browse
-      // rather than type, and the block above has already marked them as such.
-      //
-      // "Typing" excludes Cmd chords and bare modifier presses. Cmd+C is the case that matters: copying
-      // means the user has scrolled back, selected something, and is reading it -- scrolling to the prompt
-      // there throws away the very thing they are copying. Cmd never reaches the shell anyway, so a Cmd
-      // chord is never terminal input. Ctrl and Alt deliberately still count: on this platform those DO
-      // produce terminal input (Ctrl+C interrupts, Alt+B/F move by word), so they are real typing.
-      // Pasting is real input too, but arrives on the paste listener rather than here.
-      const tallTypingKey = e.type === "keydown" && !e.metaKey &&
-        !["PageUp", "PageDown", "Home", "End"].includes(e.key) &&
-        !["Shift", "Meta", "Control", "Alt", "CapsLock"].includes(e.key);
-      if (tallTypingKey) {
-        const tallView = this.views.get(id);
-        if (tallView) {
-          tallView.tallFollowing = true;
-          this.scrollTallContainerToCursor(tallView);
-        }
-      }
-      return this.handleTerminalEditingKeys(view, e);
-    });
-    term.onData((data) => this.sendTrackedInput(view, data));
-    term.onResize(({ cols, rows }) => {
-      if (!view.suppressResizeToServer) this.sendResize(view, cols, rows);
-    });
-    term.onScroll(() => {
-      if (!view.container.classList.contains("visible")) return;
-      if (this.isTerminalScrollV2()) {
-        if (!view.v2Programmatic) {
-          if (this.xtermAtBottom(view)) {
-            view.scrollMode = "follow";
-            view.userScrollIntent = false;
-          } else if (view.userScrollIntent) {
-            view.scrollMode = "preserve";
-          }
-          this.scheduleTerminalTailRepair(view);
-        }
-        return;
-      }
-      // xterm can emit its internal scroll event before the browser updates
-      // .xterm-viewport.scrollTop. Keep the manual-scroll lock until the
-      // delayed stability check sees the user's real position.
-      if (view.manualScroll) {
-        if (this.terminalAtBottom(view)) releaseManualScrollWhenStable();
-        return;
-      }
-      // scrollToBottom() can emit before xterm has committed the matching DOM
-      // scroll position. Do not let that stale event turn off following and
-      // strand the live prompt one viewport above the bottom. Manual wheel,
-      // scrollbar, and keyboard browsing increment the generation first, so
-      // they still leave follow mode immediately.
-      if (Date.now() < view.programmaticScrollUntil
-          && view.programmaticScrollGeneration === view.manualScrollGeneration) {
-        view.wasAtBottom = true;
-        view.keepBottom = true;
-        return;
-      }
-      const atBottom = this.terminalAtBottom(view);
-      view.wasAtBottom = atBottom;
-      view.keepBottom = atBottom;
-      if (!view.keepBottom) view.pinBottomUntil = 0;
-    });
-    const viewport = container.querySelector(".xterm-viewport");
-    if (viewport) {
-      viewport.addEventListener("pointerdown", (event) => {
-        const rect = viewport.getBoundingClientRect();
-        const scrollbarEdge = Math.max(18, viewport.offsetWidth - viewport.clientWidth + 4);
-        const onScrollbar = event.clientX >= rect.right - scrollbarEdge;
-        const touchScroll = event.pointerType && event.pointerType !== "mouse";
-        if (onScrollbar || touchScroll) {
-          if (this.isTerminalScrollV2()) markV2Preserve();
-          else markManualScroll();
-        }
-      }, { passive: true });
-    }
-    const scrollArea = container.querySelector(".xterm-scroll-area");
-    if (scrollArea) {
-      view.scrollObserver = new ResizeObserver(() => {
-        if (!view.container.classList.contains("visible") || view.closed) return;
-        if (this.isTerminalScrollV2()) return;
-        if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
-      });
-      view.scrollObserver.observe(scrollArea);
-    }
-    view.layoutObserver = new ResizeObserver(() => {
-      if (!view.container.classList.contains("visible") || view.closed || !this.terminalPageCanResize()) return;
-      if (this.sidebarResizeInProgress) return;
-      if (this.isTerminalScrollV2()) {
-        this.scheduleV2Fit(view);
-        return;
-      }
-      const rect = view.container.getBoundingClientRect();
-      if (rect.width < 40 || rect.height < 40) return;
-      this.tallFit(view);
-      const { cols, rows } = view.term;
-      if (cols >= 2 && rows >= 2) this.sendResize(view, cols, rows);
-      if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
-    });
-    view.layoutObserver.observe(container);
-    // xterm suspends its renderer while the container is display:none and resumes from its own
-    // IntersectionObserver, so every refresh issued between activation and that resume is dropped.
-    // Output written while hidden therefore sits in the buffer unpainted until some later redraw.
-    // Repainting from a second observer on the same element covers it in either callback order:
-    // after xterm resumes this paints directly, before it the refresh is folded into xterm's resume.
-    view.visibilityObserver = new IntersectionObserver((entries) => {
-      if (!entries[entries.length - 1].isIntersecting || view.closed) return;
-      this.refreshTerminal(view);
-    }, { threshold: 0 });
-    view.visibilityObserver.observe(container);
-    this.views.set(id, view);
-    return view;
-  }
-
-  prepareTerminalForFirstPaint(view) {
-    if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
-    const rect = view.container.getBoundingClientRect();
-    if (rect.width < 40 || rect.height < 40) return false;
-    this.tallFit(view);
-    this.refreshTerminalAppearance(view);
-    view.container.classList.remove("initializing");
-    return true;
-  }
-
-  connect(id, view) {
-    if (view.closed) return;
-    if (this.isTerminalScrollV2() && !view.userScrollIntent) {
-      view.scrollMode = "follow";
-      view.preserveRowsFromBottom = 0;
-    }
-    // A reconnect that lands with less than a screen of scrollback gets one more chance to restore: the
-    view.suppressReconnect = false;
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const hasPopulatedBuffer = view.everConnected && !view.closed && view.term?.buffer?.active?.baseY > 0;
-    // The server's SIGWINCH repaint is what rebuilds an agent's screen on reattach, so a client that
-    // already holds a populated buffer asks it to skip; an empty one always wants the repaint.
-    // screen_repaint=0 tells the server to skip its SIGWINCH nudge, which is the repaint that actually
-    // makes an agent redraw. With the switch off we never ask for it.
-    const screenRepaint = this.attachRepaintEnabled() ? (hasPopulatedBuffer ? 0 : 1) : 0;
-    const haveBuffer = hasPopulatedBuffer ? 1 : 0;
-    // repaint_preserved_buffer is deliberately not sent: it only ever meant "this client restored a
-    // client-side snapshot, so make the agent repaint over it", and that snapshot path is gone. The
-    // server defaults the flag to false when the parameter is absent.
-    const ws = new WebSocket(`${proto}://${location.host}/ws/${id}?screen_repaint=${screenRepaint}&have_buffer=${haveBuffer}`);
-    ws.binaryType = "arraybuffer";
-    view.preserveBufferOnReconnect = haveBuffer === 1;
-    view.awaitingSnapshot = true;
-    view.replaying = false;
-    view.needsViewportRepair = false;
-    view.outputWriteGeneration += 1;
-    view.outputQueue = [];
-    view.lastSentCols = null;
-    view.lastSentRows = null;
-    ws.onopen = () => {
-      view.reconnectReset = view.everConnected;
-      view.attachActivitySuppressedUntil = Date.now() + TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS;
-      // Ask for a repaint if nothing shows up. This cannot hang off a message: when the server has no
-      // saved scrollback -- exactly the case after it restarts -- there is no message at all, so a check
-      // driven by incoming data never runs and the pane stays blank forever. A timer fires either way.
-      clearTimeout(view.blankRepaintTimer);
-      view.blankRepaintTimer = setTimeout(() => this.requestRepaintIfBlank(view), TALL_BLANK_REPAINT_MS);
-      if (view.everConnected) {
-        view.replaying = true;
-        if (!this.isTerminalScrollV2()) {
-          if (view.keepBottom && !view.manualScroll) view.pinBottomUntil = Date.now() + 8000;
-          else view.pinBottomUntil = 0;
-        }
-      }
-      view.everConnected = true;
-      this.detectTerminalAttentionFromBuffer(view);
-      if (this.isTerminalScrollV2()) {
-        if (id === this.activeId) {
-          this.scheduleV2Fit(view);
-          if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
-        }
-      } else if (id === this.activeId && view.keepBottom && !view.manualScroll) {
-        this.fitActive();
-        view.keepBottom = true;
-        view.pinBottomUntil = Date.now() + 8000;
-        this.scrollTerminalToBottom(view);
-        this.scheduleViewportSettle(view);
-      }
-      // FitAddon may have run before the websocket opened, so xterm's
-      // onResize callback could not send the resulting dimensions to the
-      // PTY. Always send the currently fitted size once the socket is ready.
-      if (view.term.cols >= 2 && view.term.rows >= 2) {
-        this.sendResize(view, view.term.cols, view.term.rows);
-      }
-      this.flushPromptSync(view);
-      this.dispatchNextMarkdownPrompt(view);
-      if (view.pendingAgentPaste) this.schedulePendingAgentPaste(view, AGENT_PASTE_RETRY_DELAY_MS);
-    };
-    ws.onmessage = (e) => {
-      if (typeof e.data === "string") { this.handleControl(id, view, JSON.parse(e.data)); return; }
-      view.lastTerminalOutputAt = Date.now();
-      if (view.pendingAgentPaste) this.schedulePendingAgentPaste(view, AGENT_PASTE_OUTPUT_QUIET_MS);
-      // xterm's buffer continues to process output while an inactive tab is
-      // display:none, but its browser viewport has zero height. Remember that
-      // state so activation can synchronize the now-visible scrollbar through
-      // xterm's public scroll API, rather than a DOM scroll listener or PTY
-      // resize/reflow.
-      if (!view.container.classList.contains("visible")) view.hiddenOutputPending = true;
-      if (!view.awaitingSnapshot && !view.replaying) view.attentionScreenDetectionSuppressed = false;
-      if (!view.awaitingSnapshot && !view.replaying && Date.now() >= (view.attachActivitySuppressedUntil || 0)) {
-        this.touchSessionActivity(id);
-      }
-      if (view.awaitingSnapshot) {
-        if (view.reconnectReset && e.data.byteLength > 0 && !view.preserveBufferOnReconnect) {
-          view.term.reset();
-          this.tallResetScrollState(view);
-        }
-        const snapshotScrollGeneration = view.manualScrollGeneration;
-        const v2 = this.isTerminalScrollV2();
-        const followSnapshot = v2 ? view.scrollMode === "follow" : view.keepBottom && !view.manualScroll;
-        view.awaitingSnapshot = false;
-        view.replaying = true;
-        if (!v2) {
-          if (followSnapshot) view.pinBottomUntil = Date.now() + 8000;
-          else view.pinBottomUntil = 0;
-        }
-        // The server sends the saved scrollback first, then starts streaming
-        // the live PTY queue. Keep the first live frame out of xterm until
-        // its asynchronous snapshot write has completed. Otherwise a busy
-        // agent can change the scroll-area height mid-replay and leave the
-        // final terminal rows outside the native scrollbar range.
-        this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
-          this.refreshTerminal(view);
-          view.replaying = false;
-          // Replay finished, so the cursor finally describes the real screen: take the geometry and the
-          // follow position from it once, rather than from every intermediate frame.
-          this.tallUpdateMaxScrollTop(view);
-          if (view.tallFollowing !== false) this.scrollTallContainerToCursor(view);
-          // An empty screen is the one case that genuinely needs the agent to repaint: after a server
-          // restart there is no saved scrollback to replay, so nothing arrives and the pane would just
-          // stay blank. Asking only here keeps the attach-time repaint off in the common case, where the
-          // buffer already holds the screen and repainting is what causes the flicker.
-          this.requestRepaintIfBlank(view);
-          this.schedulePendingAgentPaste(view);
-          if (!view.reconnectReset && this.session(id)?.agent_kind === "claude") {
-            this.scheduleClaudeInitialReplayRecovery(id, view);
-          }
-          if (v2 && view.container.classList.contains("visible")) {
-            const firstSnapshot = !view.initialSnapshotPainted;
-            view.initialSnapshotPainted = true;
-            view.forceResizeAfterFit = !firstSnapshot;
-            this.scheduleV2Fit(view);
-          } else if (view.resyncResizeRepairPending && view.container.classList.contains("visible")) {
-            // Legacy (non-V2) scroll mode has no equivalent post-snapshot repaint trigger above, so it
-            // still needs resync's own scheduled repair. V2 mode does NOT reach here (the branch above
-            // already re-triggers forceVisibleTerminalReflow at exactly this moment, the same path a
-            // plain page refresh goes through) -- calling both raced them: the older, timer-based
-            // scheduleTerminalResizeRepair could fire the codex nudge before this reconnect had actually
-            // delivered any content, nudging an empty buffer and leaving a tab that was showing content
-            // black. See resyncActiveTerminal.
-            view.resyncResizeRepairPending = false;
-            this.scheduleTerminalResizeRepair(view);
-          }
-          const canFollowSnapshot = v2
-            ? followSnapshot && view.scrollMode === "follow"
-            : followSnapshot && snapshotScrollGeneration === view.manualScrollGeneration && view.keepBottom && !view.manualScroll;
-          if (canFollowSnapshot) {
-            if (v2) {
-              view.scrollMode = "follow";
-              this.scheduleV2Fit(view);
-              this.scrollTerminalV2ToBottom(view);
-            } else {
-              view.keepBottom = true;
-              view.pinBottomUntil = Date.now() + 5000;
-              // A terminal that changed while its saved scrollback was being
-              // replayed can have a DOM scrollbar at its apparent maximum with
-              // xterm's final row geometry still stale. Defer one bounded
-              // refit until that initial stream has drained.
-              view.needsViewportRepair = true;
-              this.scheduleViewportSettle(view);
-            }
-          } else if (v2 && view.reconnectReset) {
-            // A reconnect's replay rebuilt the buffer from scratch (view.term.reset() in ws.onopen),
-            // so the pre-reset absolute viewportY this tab had is meaningless now -- restore using the
-            // rows-from-bottom offset captured before that reset instead. Without this, xterm's own
-            // write()-time auto-follow (a freshly reset buffer starts "at the bottom" trivially, so it
-            // naturally tracks the incoming replay) lands the view at the bottom of the FULL replayed
-            // content regardless of where the user actually was, which showed up as a scrolled-up tab
-            // jumping toward the top once the buffer regrew past the small early size where an
-            // earlier bug (now fixed) had frozen the viewport.
-            this.scrollTerminalV2ToLine(view, Math.max(0, view.term.buffer.active.baseY - (view.preserveRowsFromBottom || 0)));
-          } else if (!v2) {
-            view.pinBottomUntil = 0;
-          }
-        });
-        return;
-      }
-      const followOutput = this.isTerminalScrollV2() ? false : view.keepBottom || Date.now() < view.pinBottomUntil;
-      const outputScrollGeneration = view.manualScrollGeneration;
-      this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
-        if (this.isTerminalScrollV2()) {
-          if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
-          return;
-        }
-        if (followOutput && outputScrollGeneration === view.manualScrollGeneration &&
-            view.keepBottom && !view.manualScroll) {
-          view.keepBottom = true;
-          clearTimeout(view.scrollSettleTimer);
-          view.scrollSettleTimer = setTimeout(() => {
-            if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
-          }, 250);
-        }
-      });
-    };
-    ws.onclose = () => {
-      const reconnectAfterClose = view.reconnectAfterClose;
-      view.reconnectAfterClose = false;
-      view.ws = null;
-      if (reconnectAfterClose) view.suppressReconnect = false;
-      if (reconnectAfterClose && !view.closed && id === this.activeId && this.activeFileKey === null &&
-          !this.session(id)?.dormant) {
-        this.connect(id, view);
-        return;
-      }
-      if (!view.closed && !view.suppressReconnect && id === this.activeId && this.activeFileKey === null &&
-          !this.session(id)?.dormant) {
-        clearTimeout(view.reconnectTimer);
-        view.reconnectTimer = setTimeout(() => {
-          view.reconnectTimer = 0;
-          this.connect(id, view);
-        }, RECONNECT_MS);
-      }
-    };
-    view.ws = ws;
-  }
-
-  handleTerminalEditingKeys(view, e) {
-    if (e.type !== "keydown") return true;
-    if (this.isDesktopTerminalSelectInputEvent(e)) {
-      e.preventDefault();
-      this.selectActiveTerminalInputText();
-      return false;
-    }
-    if (this.isDesktopTerminalSelectAllEvent(e)) {
-      e.preventDefault();
-      this.selectActiveTerminalText();
-      return false;
-    }
-    if (this.tryAppShortcut(e)) return false;
-    if (e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      e.preventDefault();
-      this.sendTrackedInput(view, "\x1b\r");
-      return false;
-    }
-    if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "v") {
-      e.preventDefault();
-      navigator.clipboard.readText()
-        .then((text) => { if (text) this.sendTrackedInput(view, this.terminalPastePayload(view, text)); })
-        .catch(() => { this.$("status-name").textContent = "clipboard blocked — use ⌘V (allow clipboard in site settings for ⌃V)"; });
-      return false;
-    }
-    if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "c" && view.term.hasSelection()) {
-      e.preventDefault();
-      const text = view.term.getSelection();
-      this.recordSelectionCopyHistory(text);
-      void this.copyTextToClipboard(text);
-      return false;
-    }
-    if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
-      const key = e.key.toLowerCase();
-      if (key === "c" && view.term.hasSelection()) {
-        e.preventDefault();
-        const text = view.term.getSelection();
-        this.recordSelectionCopyHistory(text);
-        void this.copyTextToClipboard(text);
-        return false;
-      }
-      if (key === "v") return true;
-      if (key === "backspace") { e.preventDefault(); this.sendTrackedInput(view, "\x15"); return false; }
-      if (key === "arrowleft") { e.preventDefault(); this.sendTrackedInput(view, "\x01"); return false; }
-      if (key === "arrowright") { e.preventDefault(); this.sendTrackedInput(view, "\x05"); return false; }
-    }
-    if (e.altKey && !e.metaKey && !e.ctrlKey) {
-      if (e.key === "Backspace") { e.preventDefault(); this.sendTrackedInput(view, "\x1b\x7f"); return false; }
-      if (e.key === "ArrowLeft") { e.preventDefault(); this.sendTrackedInput(view, "\x1bb"); return false; }
-      if (e.key === "ArrowRight") { e.preventDefault(); this.sendTrackedInput(view, "\x1bf"); return false; }
-    }
-    return true;
-  }
-
-  handleControl(id, view, msg) {
-    if (msg.type === "resize_rejected") {
-      // Another window already owns this terminal's size. Stop pushing ours -- a pty has one size, and
-      // two windows disagreeing means one of them renders at a width its screen does not have, wrapping
-      // lines and painting redraws over themselves. Adopt the real size so this window renders correctly
-      // too, and offer the swap explicitly rather than taking it.
-      view.suppressResizeToServer = true;
-      view.sizeOwnedElsewhere = { cols: msg.cols, rows: msg.rows };
-      if (view.term.cols !== msg.cols || view.term.rows !== msg.rows) {
-        try { view.term.resize(msg.cols, msg.rows); } catch (resizeError) { /* geometry not ready yet */ }
-      }
-      this.updateSizeOwnershipIndicator(view);
-      return;
-    }
-    if (msg.type === "exit") {
-      if (msg.dormant) {
-        view.suppressReconnect = true;
-        if (view.ws) view.ws.close();
-      }
-      view.term.write(`\r\n\x1b[2m[termdeck] process exited (${msg.code})\x1b[0m\r\n`);
-      if (this.isTerminalScrollV2()) {
-        if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
-      } else {
-        view.pinBottomUntil = Date.now() + 5000;
-      }
-    } else if (msg.type === "draft") {
-      const incomingDraft = String(msg.draft || "");
-      if (view.promptDraftSyncPending && incomingDraft !== view.promptDraft) return;
-      view.promptDraftSyncPending = false;
-      clearTimeout(view.promptDraftSyncTimer);
-      view.promptDraftSyncTimer = 0;
-      if (view.promptSubmitting) {
-        return;
-      }
-      if (!view.promptEditing) {
-        view.promptDraft = incomingDraft;
-        this.showPromptDraft(view);
-      }
-      return;
-    } else if (msg.type === "prompt_submitted") {
-      const submissionIsCurrent = view.promptSubmitVersion === view.promptEditVersion;
-      if (submissionIsCurrent) {
-        view.promptDraft = "";
-        view.pendingDraftSync = null;
-        view.pendingTerminalDraft = null;
-        view.promptDraftSyncPending = false;
-        clearTimeout(view.promptDraftSyncTimer);
-        view.promptDraftSyncTimer = 0;
-      }
-      view.promptSubmitting = false;
-      view.promptSubmitEntered = false;
-      clearTimeout(view.promptSubmitTimer);
-      if (submissionIsCurrent) {
-        this.showPromptDraft(view);
-        if (this.historyOpen && id === this.activeId) this.$("history-prompt").focus();
-      }
-      return;
-    } else if (msg.type === "agent_session") {
-      // Session discovery is asynchronous and can arrive while the user is
-      // reading older output. It must not turn that event into an implicit
-      // scroll-to-bottom.
-      if (this.isTerminalScrollV2()) {
-        if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
-      } else if (!view.manualScroll && view.keepBottom) {
-        view.pinBottomUntil = Date.now() + 4000;
-        this.scrollTerminalToBottom(view);
-      }
-    } else if (msg.type === "processing") {
-      this.applySessionStatus({ session_id: id, processing: !!msg.processing });
-      return;
-    }
-    this.refresh();
-  }
-
-  sendInput(view, data) {
-    const session = this.session(view.sessionId);
-    if (data) view.attentionScreenDetectionSuppressed = true;
-    if (session?.needs_attention) {
-      session.needs_attention = false;
-      this.attentionServerStates.set(view.sessionId, false);
-      this.clearSessionAttention(view.sessionId);
-    }
-    if (data) this.touchSessionActivity(view.sessionId);
-    if (view.replaying && QUERY_RESPONSE_RE.test(data)) return;
-    if (view.ws && view.ws.readyState === WebSocket.OPEN) {
-      view.ws.send(JSON.stringify({ type: "input", data }));
-    }
-  }
-
-  isImageAttachmentFile(file) {
-    return !!file && (IMAGE_ATTACHMENT_MIME_RE.test(String(file.type || "")) ||
-      IMAGE_ATTACHMENT_EXTENSION_RE.test(String(file.name || "")));
-  }
-
-  historyImageFilesFromDataTransfer(dataTransfer) {
-    if (!dataTransfer) return [];
-    const files = [];
-    const seen = new Set();
-    const addFile = (file) => {
-      if (!this.isImageAttachmentFile(file) || seen.has(file)) return;
-      seen.add(file);
-      files.push(file);
-    };
-    for (const item of dataTransfer.items || []) {
-      if (item.kind === "file") addFile(item.getAsFile());
-    }
-    for (const file of dataTransfer.files || []) addFile(file);
-    return files;
-  }
-
-  insertHistoryAttachmentPaths(view, paths, selection = null, append = false) {
-    if (!view || !this.historyOpen || this.activeFileKey !== null || !paths.length) return;
-    const prompt = this.$("history-prompt");
-    const value = prompt.value;
-    const start = append ? value.length : Math.max(0, Math.min(value.length,
-      Number(selection?.start ?? prompt.selectionStart ?? value.length)));
-    const end = append ? value.length : Math.max(start, Math.min(value.length,
-      Number(selection?.end ?? prompt.selectionEnd ?? start)));
-    const text = paths.map((path) => (/\s/.test(path) ? `'${path}'` : path)).join(" ");
-    const before = value.slice(0, start);
-    const after = value.slice(end);
-    const prefix = before && !/\s$/.test(before) ? " " : "";
-    const suffix = after && /^\s/.test(after) ? "" : " ";
-    this.persistMarkdownPromptDraft(view, `${before}${prefix}${text}${suffix}${after}`);
-    this.showPromptDraft(view);
-    prompt.focus();
-    const cursor = before.length + prefix.length + text.length + suffix.length;
-    prompt.setSelectionRange(cursor, cursor);
-  }
-
-  async insertHistoryAttachmentFiles(view, files) {
-    if (!view || !this.historyOpen || this.activeFileKey !== null || !files.length) return;
-    const prompt = this.$("history-prompt");
-    const selection = { start: prompt.selectionStart, end: prompt.selectionEnd };
-    const paths = await this.uploadFiles(files);
-    if (!paths.length) {
-      this.$("status-name").textContent = "image upload failed";
-      return;
-    }
-    this.insertHistoryAttachmentPaths(view, paths, selection);
-    this.$("status-name").textContent = `inserted ${paths.length} image${paths.length === 1 ? "" : "s"}`;
-  }
-
-  async uploadFiles(files) {
-    this.$("status-name").textContent = `uploading ${files.length} file${files.length === 1 ? "" : "s"}…`;
-    const paths = [];
-    for (const file of files) {
-      const form = new FormData();
-      form.append("file", file, file.name || "pasted");
-      try {
-        const res = await fetch("/api/upload", { method: "POST", body: form });
-        if (res.ok) paths.push((await res.json()).path);
-      } catch (err) {
-        // skip failed upload
-      }
-    }
-    return paths;
-  }
-
-  async uploadAndInsert(view, files) {
-    const paths = await this.uploadFiles(files);
-    if (!paths.length) { this.$("status-name").textContent = "upload failed"; return; }
-    const text = paths.map((p) => (/\s/.test(p) ? `'${p}'` : p)).join(" ") + " ";
-    if (view.ws && view.ws.readyState === WebSocket.OPEN) {
-      this.sendTrackedInput(view, this.terminalPastePayload(view, text));
-    }
-    this.$("status-name").textContent = `inserted ${paths.length} path${paths.length === 1 ? "" : "s"}`;
-    view.term.focus();
-  }
-
-  async attachToHistory() {
-    const view = this.views.get(this.activeId);
-    if (!view || this.activeFileKey !== null || !this.historyOpen) return;
-    const input = document.createElement("input");
-    input.type = "file";
-    input.multiple = true;
-    input.onchange = async () => {
-      if (!input.files.length) return;
-      const paths = await this.uploadFiles([...input.files]);
-      if (!paths.length) { this.$("status-name").textContent = "upload failed"; return; }
-      this.insertHistoryAttachmentPaths(view, paths, null, true);
-      this.$("status-name").textContent = `inserted ${paths.length} path${paths.length === 1 ? "" : "s"}`;
-    };
-    input.click();
-  }
-
-  async attachToActive() {
-    const view = this.views.get(this.activeId);
-    if (!view || this.activeFileKey !== null) return;
-    const input = document.createElement("input");
-    input.type = "file";
-    input.multiple = true;
-    input.onchange = () => { if (input.files.length) this.uploadAndInsert(view, [...input.files]); };
-    input.click();
-  }
-
-  terminalPageCanResize() {
-    return document.visibilityState === "visible" && document.hasFocus();
-  }
-
-  sendResize(view, cols, rows, force = false) {
-    if (this.sidebarResizeInProgress || view.suppressResizeToServer || !this.terminalPageCanResize() ||
-        view.closed || view.sessionId !== this.activeId || !view.container.classList.contains("visible") ||
-        this.activeFileKey !== null || this.historyOpen) return;
-    if (view.ws && view.ws.readyState === WebSocket.OPEN &&
-        (force || view.lastSentCols !== cols || view.lastSentRows !== rows)) {
-      view.lastSentCols = cols;
-      view.lastSentRows = rows;
-      view.ws.send(JSON.stringify({ type: "resize", cols, rows }));
-    }
-  }
-
-  // Reusable diagnostic utility, not called from anywhere by default -- wire it into a new suspect code
-  // path when needed. Keeps the last DEBUG_SNAPSHOT_LIMIT {trigger, ts, buf, dom} entries per view. buf
-  // is xterm's own logical buffer tail (what SHOULD be on screen); dom is the actually-painted rows. If
-  // they ever disagree, that is a termdeck repaint bug; if buf itself changes content across snapshots
-  // with cols unchanged, the CLI genuinely redrew differently -- the two rule each other in or out.
-  captureDebugSnapshot(view, trigger) {
-    if (!view || view.closed) return;
-    view.debugSnapshots = view.debugSnapshots || [];
-    view.debugSnapshots.push({
-      trigger, ts: Date.now(), cols: view.term.cols, rows: view.term.rows,
-      buf: this.terminalBufferVisibleTailLines(view, 15),
-      dom: this.terminalRenderedTailLines(view, 15),
-    });
-    if (view.debugSnapshots.length > TERMINAL_DEBUG_SNAPSHOT_LIMIT) view.debugSnapshots.shift();
-  }
-
-  // Small top-right corner panel, INVISIBLE by default: a header (collapse toggle) plus a collapsed,
-  // empty body kept as reusable scaffolding for a future terminal-rendering investigation. Deliberately
-  // NOT wired to any automatic capture/logging -- an earlier version accumulated visible blur/focus/
-  // resize chatter once its original investigation was fixed (reported as noise, stripped back out),
-  // and a later "guarded" A/B toggle here showed no observable difference from the shipped default in
-  // practice (also removed, see forceVisibleTerminalReflow). The body (this.debugOverlay.stats/.diff)
-  // stays empty until something explicitly writes into it. To reactivate for a NEW investigation: set
-  // box.style.display = "block", write into this.debugOverlay.stats/.diff, and wire
-  // this.captureDebugSnapshot(view, "label") into whatever new code path is under suspicion -- see this
-  // file's git history around 2026-08-02 for a fuller buffer-vs-rendered-DOM differ and an A/B select
-  // to copy the pattern from, not to revive verbatim.
-  installTerminalSizeDebugOverlay() {
-    const box = document.createElement("div");
-    box.id = "td-debug-size-overlay";
-    Object.assign(box.style, {
-      position: "fixed", top: "4px", right: "4px", zIndex: 99999, display: "none", color: "#0f0",
-      background: "rgba(0,0,0,0.9)", padding: "4px 8px", borderRadius: "4px", cursor: "text",
-      userSelect: "text", WebkitUserSelect: "text", maxWidth: "44vw", maxHeight: "70vh", overflow: "auto",
-    });
-    const header = document.createElement("div");
-    Object.assign(header.style, {
-      font: "11px/1.4 ui-monospace, monospace", cursor: "pointer", userSelect: "none",
-      WebkitUserSelect: "none", display: "flex", justifyContent: "space-between", gap: "8px",
-    });
-    const title = document.createElement("span");
-    title.textContent = "td-debug";
-    const toggle = document.createElement("span");
-    let collapsed = true;
-    const body = document.createElement("div");
-    const applyCollapsed = () => {
-      body.style.display = collapsed ? "none" : "";
-      toggle.textContent = collapsed ? "▸ expand" : "▾ collapse";
-    };
-    toggle.addEventListener("click", () => { collapsed = !collapsed; applyCollapsed(); });
-    header.append(title, toggle);
-    header.addEventListener("click", (e) => { if (e.target === header || e.target === title) { collapsed = !collapsed; applyCollapsed(); } });
-    const stats = document.createElement("div");
-    Object.assign(stats.style, { font: "11px/1.4 ui-monospace, monospace", whiteSpace: "pre" });
-    const diff = document.createElement("div");
-    Object.assign(diff.style, { font: "9.5px/1.3 ui-monospace, monospace", whiteSpace: "pre", marginTop: "4px", color: "#8f8" });
-    body.append(stats, diff);
-    box.append(header, body);
-    applyCollapsed();
-    document.body.appendChild(box);
-    this.debugOverlay = { box, stats, diff };
-  }
-
-  scrollActiveToBottom() {
-    if (this.activeFileKey !== null) return;
-    const view = this.views.get(this.activeId);
-    if (!view) return;
-    if (this.isTerminalScrollV2()) {
-      view.scrollMode = "follow";
-      this.scrollTerminalV2ToBottom(view);
-      // Also drive the tall container: scrollTerminalV2ToBottom only moves xterm's own viewport, which is
-      // no longer the surface being scrolled, so on its own this button did nothing at all here.
-      view.tallFollowing = true;
-      if (view.tallMaxScrollTop != null) this.scrollTallContainerToCursor(view);
-      else this.tallSetScrollTop(view, view.container.scrollHeight);
-      this.scheduleV2Fit(view);
-      view.term.focus();
-      return;
-    }
-    view.keepBottom = true;
-    view.pinBottomUntil = Date.now() + 5000;
-    this.scrollTerminalToBottom(view);
-    this.scheduleViewportSettle(view);
-    view.term.focus();
-  }
-
-  repaintActiveCodexDisplay() {
-    const id = this.activeId;
-    const view = this.views.get(id);
-    if (!view || this.activeFileKey !== null || this.historyOpen || this.session(id)?.agent_kind !== "codex") return;
-    if (this.terminalTailRenderMismatch(view)) {
-      view.renderRepairArmed = true;
-      if (this.repairTerminalRenderIfStale(view)) {
-        this.$("status-name").textContent = "Codex display repainted";
-        return;
-      }
-    }
-    this.refreshTerminalAppearance(view, true);
-    if (!view.ws || view.ws.readyState !== WebSocket.OPEN) return;
-    const anchor = this.captureTerminalViewportAnchor(view, { preserveFollow: true, restoreAfterDeadline: true });
-    this.beginTerminalViewportRestore(view, anchor);
-    view.ws.send(JSON.stringify({ type: "repaint" }));
-    this.$("status-name").textContent = "requesting Codex repaint…";
-  }
-
-  scrollHistoryToBottom() {
-    if (!this.historyOpen || this.activeFileKey !== null) return;
-    const body = this.$("history-body");
-    if (!body) return;
-    body.scrollTop = body.scrollHeight;
-    this.$("history-prompt")?.focus();
-  }
-
-  scrollActiveSurfaceToBottom() {
-    if (this.historyOpen) this.scrollHistoryToBottom();
-    else this.scrollActiveToBottom();
-  }
-
-  scheduleTerminalResizeRepair(view) {
-    if (!this.attachRepaintEnabled()) return;
-    if (!view || view.closed || !view.container.classList.contains("visible")) return;
-    view.forceResizeAfterFit = true;
-    this.scheduleTerminalLayoutFit();
-    clearTimeout(view.resizeRepairTimer);
-    view.resizeRepairTimer = setTimeout(() => {
-      view.resizeRepairTimer = 0;
-      if (view.closed || !view.container.classList.contains("visible") || view.sessionId !== this.activeId) return;
-      view.forceResizeAfterFit = true;
-      this.scheduleTerminalLayoutFit();
-    }, 420);
-  }
-
-  resyncActiveTerminal() {
-    if (this.activeFileKey !== null || this.historyOpen || !this.activeId) return;
-    const view = this.views.get(this.activeId);
-    if (!view || view.closed) return;
-    // Resync is also the manual escape hatch for terminals whose prompt or
-    // wrapped output was painted against stale dimensions. Treat the button
-    // like a sidebar resize so FitAddon remeasures the visible terminal,
-    // repaints it, and sends the corrected PTY size.
-    const v2 = this.isTerminalScrollV2();
-    if (v2) view.scrollMode = "follow";
-    else {
-      view.keepBottom = true;
-      view.pinBottomUntil = Date.now() + 8000;
-    }
-    view.term.reset();
-    this.tallResetScrollState(view);
-    // V2 mode gets its repaint trigger for free once the forced reconnect below actually delivers a
-    // snapshot (connect()'s post-replay callback), the same path a plain page refresh goes through --
-    // scheduling it again here, before that reconnect has even started, used to race it and could nudge
-    // an empty buffer instead of the real one. Legacy mode has no equivalent hook, so it still needs
-    // this scheduled directly.
-    if (!v2) {
-      view.resyncResizeRepairPending = true;
-      this.scheduleTerminalResizeRepair(view);
-    }
-    this.applySettings();
-    this.$("status-name").textContent = "resyncing terminal…";
-    // Explicit user action, so this is the one place allowed to take the size from another window.
-    view.suppressResizeToServer = false;
-    view.sizeOwnedElsewhere = null;
-    this.updateSizeOwnershipIndicator(view);
-    if (view.ws && view.ws.readyState === WebSocket.OPEN && view.term.cols >= 2) {
-      view.ws.send(JSON.stringify({ type: "resize", cols: view.term.cols, rows: view.term.rows, force: true }));
-    }
-    const ws = view.ws;
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-      ws.close();
-    } else {
-      clearTimeout(view.reconnectTimer);
-      view.reconnectTimer = 0;
-      this.connect(this.activeId, view);
-    }
-  }
-
-  terminalAtBottom(view) {
-    if (this.isTerminalScrollV2()) return this.xtermAtBottom(view);
-    if (!view || !view.term) return false;
-    const buffer = view.term.buffer.active;
-    const viewport = view.container.querySelector(".xterm-viewport");
-    if (!viewport) return buffer.viewportY >= buffer.baseY - 1;
-    // The browser position is the authoritative position for the native
-    // scrollbar. xterm's buffer viewport can lag it by a frame during a fit or
-    // resize; requiring both made a real bottom position look non-bottom and
-    // caused the follow-bottom state to fight the user's scrolling.
-    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-    const domAtBottom = maxScrollTop - viewport.scrollTop <= 2;
-    return domAtBottom;
-  }
-
-  isTerminalScrollV2() {
-    // Desktop terminals always use xterm's buffer-owned scrolling. The VS Code
-    // integration remains separate and continues to use its native surface.
-    return !this.vscodeMode;
-  }
-
-  xtermAtBottom(view) {
-    if (!view?.term) return false;
-    const buffer = view.term.buffer.active;
-    return buffer.viewportY >= buffer.baseY;
-  }
-
-  scrollTerminalV2ToBottom(view) {
-    if (!view || view.closed) return;
-    view.userScrollIntent = false;
-    view.scrollMode = "follow";
-    view.v2Programmatic = true;
-    view.term.scrollToBottom();
-    queueMicrotask(() => {
-      if (!view.closed) view.v2Programmatic = false;
-    });
-  }
-
-  // Restoring a "preserve" position needs the same v2Programmatic guard scrollTerminalV2ToBottom
-  // already uses: term.onScroll re-derives scrollMode from wherever the terminal ends up on every
-  // scroll it sees, including one this function itself triggers -- without the guard, that immediate
-  // self-triggered onScroll can flip scrollMode right back to "follow"/"preserve" based on the
-  // now-current position, one write-callback race away from stomping the caller's intended value
-  // before this function's own caller gets a chance to set it explicitly afterward.
-  scrollTerminalV2ToLine(view, line) {
-    if (!view || view.closed) return;
-    view.v2Programmatic = true;
-    view.term.scrollToLine(line);
-    queueMicrotask(() => {
-      if (!view.closed) view.v2Programmatic = false;
-    });
-  }
-
-  normalizeTerminalViewportAnchorText(value) {
-    return String(value || "").replace(/\u00a0/g, " ").replace(/\s+/g, "");
-  }
-
-  captureTerminalViewportAnchor(view, options = {}) {
-    const preserveFollow = Boolean(options.preserveFollow);
-    const restoreAfterDeadline = Boolean(options.restoreAfterDeadline);
-    const atBottom = this.xtermAtBottom(view);
-    if (!view || view.closed || this.session(view.sessionId)?.agent_kind !== "codex" ||
-        (!preserveFollow && (view.scrollMode === "follow" || atBottom))) return null;
-    const buffer = view.term.buffer.active;
-    const viewportY = Math.max(0, Number(buffer.viewportY || 0));
-    const visibleRows = Math.min(TERMINAL_VIEWPORT_ANCHOR_ROWS, Math.max(1, Number(view.term.rows || 1)));
-    const normalizedRows = [];
-    for (let offset = 0; offset < visibleRows; offset++) {
-      const line = buffer.getLine(viewportY + offset);
-      normalizedRows.push(this.normalizeTerminalViewportAnchorText(line ? line.translateToString(true) : ""));
-    }
-    const candidates = [];
-    for (let start = 0; start < normalizedRows.length; start++) {
-      let text = "";
-      for (let offset = start; offset < normalizedRows.length && text.length < TERMINAL_VIEWPORT_ANCHOR_MAX_CHARS; offset++) {
-        text += normalizedRows[offset];
-      }
-      text = text.slice(0, TERMINAL_VIEWPORT_ANCHOR_MAX_CHARS);
-      const alphaNumericCount = (text.match(/[A-Za-z0-9]/g) || []).length;
-      if (text.length >= TERMINAL_VIEWPORT_ANCHOR_MIN_CHARS && alphaNumericCount >= 12) {
-        candidates.push({ text, rowOffset: start });
-      }
-    }
-    if (!candidates.length && !(preserveFollow && atBottom)) return null;
-    candidates.sort((left, right) => left.rowOffset - right.rowOffset || right.text.length - left.text.length);
-    return {
-      candidates: candidates.slice(0, 6),
-      rowsFromBottom: Math.max(0, Number(buffer.baseY || 0) - viewportY),
-      restoreAtBottom: preserveFollow && atBottom,
-      restoreAfterDeadline,
-      redrawSeen: false,
-      escapeMatchLength: 0,
-      deadline: 0,
-    };
-  }
-
-  beginTerminalViewportRestore(view, anchor) {
-    if (!anchor || !view || view.closed) return false;
-    if (!view.viewportAnchorRestore) view.viewportAnchorRestore = anchor;
-    view.viewportAnchorRestore.deadline = Date.now() + TERMINAL_VIEWPORT_RESTORE_TIMEOUT_MS;
-    this.scheduleTerminalViewportRestore(view, TERMINAL_VIEWPORT_RESTORE_IDLE_MS);
-    return true;
-  }
-
-  cancelTerminalViewportRestore(view) {
-    if (!view) return;
-    clearTimeout(view.viewportAnchorRestoreTimer);
-    view.viewportAnchorRestoreTimer = 0;
-    view.viewportAnchorRestore = null;
-  }
-
-  noteTerminalViewportRestoreOutput(view, data) {
-    const anchor = view?.viewportAnchorRestore;
-    if (!anchor || anchor.redrawSeen) return;
-    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    const eraseScrollback = [0x1b, 0x5b, 0x33, 0x4a];
-    let matched = anchor.escapeMatchLength || 0;
-    for (const byte of bytes) {
-      if (byte === eraseScrollback[matched]) matched += 1;
-      else matched = byte === eraseScrollback[0] ? 1 : 0;
-      if (matched !== eraseScrollback.length) continue;
-      anchor.redrawSeen = true;
-      matched = 0;
-      break;
-    }
-    anchor.escapeMatchLength = matched;
-  }
-
-  terminalViewportAnchorTarget(view, anchor) {
-    const buffer = view.term.buffer.active;
-    let text = "";
-    const rowStarts = [];
-    for (let row = 0; row < buffer.length; row++) {
-      const line = buffer.getLine(row);
-      const normalized = this.normalizeTerminalViewportAnchorText(line ? line.translateToString(true) : "");
-      if (!normalized) continue;
-      rowStarts.push({ offset: text.length, row });
-      text += normalized;
-    }
-    if (!text || !rowStarts.length) return null;
-    let best = null;
-    for (const candidate of anchor.candidates) {
-      let offset = text.indexOf(candidate.text);
-      let matches = 0;
-      while (offset >= 0 && matches < 64) {
-        const row = this.terminalViewportRowForTextOffset(rowStarts, offset);
-        const expectedRowsFromBottom = Math.max(0, anchor.rowsFromBottom - candidate.rowOffset);
-        const score = Math.abs((Number(buffer.baseY || 0) - row) - expectedRowsFromBottom);
-        if (!best || score < best.score || (score === best.score && candidate.text.length > best.length)) {
-          best = { line: Math.max(0, row - candidate.rowOffset), score, length: candidate.text.length };
-        }
-        matches += 1;
-        offset = text.indexOf(candidate.text, offset + 1);
-      }
-    }
-    return best?.line ?? null;
-  }
-
-  terminalViewportRowForTextOffset(rowStarts, offset) {
-    let low = 0, high = rowStarts.length - 1;
-    while (low < high) {
-      const middle = Math.ceil((low + high) / 2);
-      if (rowStarts[middle].offset <= offset) low = middle;
-      else high = middle - 1;
-    }
-    return rowStarts[low].row;
-  }
-
-  scheduleTerminalViewportRestore(view, delay = TERMINAL_VIEWPORT_RESTORE_IDLE_MS) {
-    const anchor = view?.viewportAnchorRestore;
-    if (!anchor || view.closed) return;
-    clearTimeout(view.viewportAnchorRestoreTimer);
-    const remaining = Math.max(0, anchor.deadline - Date.now());
-    view.viewportAnchorRestoreTimer = setTimeout(() => {
-      view.viewportAnchorRestoreTimer = 0;
-      this.restoreTerminalViewportAnchor(view);
-    }, Math.min(delay, remaining));
-  }
-
-  restoreTerminalViewportAnchor(view) {
-    const anchor = view?.viewportAnchorRestore;
-    if (!anchor || view.closed) return;
-    const expired = Date.now() >= anchor.deadline;
-    if (!anchor.redrawSeen) {
-      if (!expired || !anchor.restoreAfterDeadline) {
-        if (expired) this.cancelTerminalViewportRestore(view);
-        else this.scheduleTerminalViewportRestore(view);
-        return;
-      }
-    }
-    if (!expired && (view.outputWriteInFlight || view.outputQueue.length)) {
-      this.scheduleTerminalViewportRestore(view);
-      return;
-    }
-    if (anchor.restoreAtBottom) {
-      view.scrollMode = "follow";
-      this.scrollTerminalV2ToBottom(view);
-      this.cancelTerminalViewportRestore(view);
-      return;
-    }
-    const target = this.terminalViewportAnchorTarget(view, anchor);
-    if (target !== null) {
-      view.scrollMode = "preserve";
-      this.scrollTerminalV2ToLine(view, target);
-      this.cancelTerminalViewportRestore(view);
-      return;
-    }
-    if (!expired) {
-      this.scheduleTerminalViewportRestore(view);
-      return;
-    }
-    view.scrollMode = "preserve";
-    view.userScrollIntent = true;
-    this.scrollTerminalV2ToLine(view, Math.max(0, view.term.buffer.active.baseY - anchor.rowsFromBottom));
-    this.cancelTerminalViewportRestore(view);
-  }
-
-  scheduleV2Fit(view, options = {}) {
-    const forceResize = !!options.force;
-    if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return;
-    if (this.shouldDeferPromptReflowFit(view)) return;
-    if (view.v2FitFrame && forceResize) {
-      cancelAnimationFrame(view.v2FitFrame);
-      view.v2FitFrame = 0;
-    }
-    if (view.v2FitFrame) return;
-    view.v2FitFrame = requestAnimationFrame(() => {
-      view.v2FitFrame = 0;
-      if (view.closed || !view.container.classList.contains("visible") || this.sidebarResizeInProgress || !this.terminalPageCanResize()) return;
-      if (this.shouldDeferPromptReflowFit(view)) return;
-      const rect = view.container.getBoundingClientRect();
-      if (rect.width < 40 || rect.height < 40) {
-        const retryLimit = forceResize ? TERMINAL_V2_FIT_RETRY_LIMIT : 12;
-        const retryDelay = forceResize ? TERMINAL_V2_FIT_RETRY_DELAY_MS : 60;
-        if (!view.layoutFitRetryTimer && view.layoutFitRetryCount < retryLimit) {
-          view.layoutFitRetryCount += 1;
-          view.layoutFitRetryTimer = setTimeout(() => {
-            view.layoutFitRetryTimer = 0;
-            if (!view.closed && view.container.classList.contains("visible")) this.scheduleV2Fit(view, options);
-          }, retryDelay);
-        }
-        return;
-      }
-      view.layoutFitRetryCount = 0;
-      clearTimeout(view.layoutFitRetryTimer);
-      view.layoutFitRetryTimer = 0;
-      // Captured as an offset (not the absolute viewportY) and BEFORE fit() below, since this is the
-      // earliest point in the whole activation chain where a cols/rows change (and therefore a full
-      // buffer reflow) can happen -- every downstream repair function (repairTerminalRenderIfStale,
-      // forceVisibleTerminalReflow*) captures ITS OWN restore point only after this has already run,
-      // so if fit() corrupts the position here, they just faithfully preserve the already-corrupted
-      // value instead of the user's actual intended position. Ground-truth testing (window.__td)
-      // confirmed this is where "switching between half-scrolled tabs jumps to the top" traces back
-      // to: FitAddon.fit() calling term.resize() with different cols does not preserve viewportY on
-      // its own, it can land at 0.
-      const beforeCols = view.term.cols, beforeRows = view.term.rows;
-      const rowsFromBottom = view.term.buffer.active.baseY - view.term.buffer.active.viewportY;
-      // FitAddon is the public xterm sizing mechanism. v2 never writes to
-      // .xterm-viewport or .xterm-scroll-area; xterm owns its scrollbar.
-      const viewportAnchor = this.captureTerminalViewportAnchor(view);
-      this.tallFit(view);
-      view.container.classList.remove("initializing");
-      const terminalSizeChanged = view.term.cols !== beforeCols || view.term.rows !== beforeRows;
-      if (terminalSizeChanged) this.beginTerminalViewportRestore(view, viewportAnchor);
-      if (view.scrollMode !== "follow" && terminalSizeChanged) {
-        this.scrollTerminalV2ToLine(view, Math.max(0, view.term.buffer.active.baseY - rowsFromBottom));
-      }
-      // A terminal may have been painted while its container was hidden or
-      // at its pre-flex width. Refresh after the settled fit so the canvas
-      // and text colors are repainted together with the final geometry.
-      const hasPaintedInitialSnapshot = view.initialSnapshotPainted;
-      const forceResizeThisFrame = hasPaintedInitialSnapshot && (forceResize || view.forceResizeAfterFit);
-      if (!hasPaintedInitialSnapshot) view.forceResizeAfterFit = false;
-      if (forceResizeThisFrame) {
-        view.forceResizeAfterFit = false;
-        if (this.forceVisibleTerminalReflow(view)) return;
-      } else {
-        view.forceResizeAfterFit = false;
-      }
-      this.refreshTerminalAppearance(view, forceResizeThisFrame);
-      if (forceResizeThisFrame && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
-      if (view.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
-    });
-  }
-
-  scheduleInitialV2Fit(view) {
-    if (!view || view.closed || !view.v2InitialFitPending || view.v2InitialFitFrame ||
-        !view.container.classList.contains("visible")) return;
-    // A new xterm is opened while its container is display:none. Its first
-    // activation can therefore fit against the pre-layout width; settle once
-    // more after the browser has committed the newly-visible terminal area.
-    view.v2InitialFitPending = false;
-    view.v2InitialFitFrame = requestAnimationFrame(() => {
-      view.v2InitialFitFrame = requestAnimationFrame(() => {
-        view.v2InitialFitFrame = 0;
-        if (view.closed || !view.container.classList.contains("visible")) return;
-        this.scheduleV2Fit(view);
-      });
-    });
-  }
-
-  scheduleV2ViewportSync(view) {
-    if (!view || view.closed || view.v2ViewportSyncFrame || !view.hiddenOutputPending ||
-        !view.container.classList.contains("visible")) return;
-    view.v2ViewportSyncFrame = requestAnimationFrame(() => {
-      view.v2ViewportSyncFrame = 0;
-      if (view.closed || !view.hiddenOutputPending || !view.container.classList.contains("visible")) return;
-      view.hiddenOutputPending = false;
-      // The tall container needs its own catch-up: the ceiling cannot move while the pane is hidden (a
-      // hidden pane has no height to measure against, so writes deliberately decide nothing), which
-      // leaves it describing the content as of when the tab was left. Refreshing it here is what lets a
-      // following view reach output that arrived meanwhile, and a parked reader scroll down to it.
-      this.tallUpdateMaxScrollTop(view);
-      if (view.scrollMode === "follow") {
-        this.scrollTerminalV2ToBottom(view);
-        if (view.tallFollowing !== false) this.scrollTallContainerToCursor(view);
-        return;
-      }
-      const buffer = view.term.buffer.active;
-      const target = buffer.viewportY;
-      if (buffer.baseY <= 0) return;
-      // While the element was display:none, xterm advanced its logical
-      // viewport but the DOM scrollbar retained its old geometry. Nudge one
-      // logical line, then restore the exact line. Both calls are public
-      // xterm APIs, preserve a reader's position, and avoid the old fake
-      // resize/direct-scroll repair paths that caused tab-switch jumps.
-      const nudge = target < buffer.baseY ? target + 1 : Math.max(0, target - 1);
-      if (nudge === target) return;
-      view.v2Programmatic = true;
-      view.term.scrollToLine(nudge);
-      view.term.scrollToLine(target);
-      queueMicrotask(() => {
-        if (!view.closed) view.v2Programmatic = false;
-      });
-    });
-  }
-
-  scrollTerminalToBottom(view) {
-    if (this.isTerminalScrollV2()) {
-      this.scrollTerminalV2ToBottom(view);
-      return;
-    }
-    clearTimeout(view.manualScrollReleaseTimer);
-    view.manualScrollReleaseTimer = 0;
-    view.manualScroll = false;
-    view.wasAtBottom = true;
-    view.programmaticScrollUntil = Date.now() + 1000;
-    view.programmaticScrollGeneration = view.manualScrollGeneration;
-    view.term.scrollToBottom();
-    const viewport = view.container.querySelector(".xterm-viewport");
-    if (viewport) {
-      // Assign the maximum scrollTop, rather than scrollHeight.  The latter
-      // is clamped by the browser but can leave xterm one viewport short while
-      // its row geometry is being updated.
-      viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-    }
-  }
-
-  refreshTerminal(view) {
-    if (!view || view.term.rows < 1) return;
-    view.term.refresh(0, view.term.rows - 1);
-  }
-
-  scheduleCodexFocusTailRefresh(view) {
-    if (!view || view.closed || view.codexFocusRefreshFrame || this.session(view.sessionId)?.agent_kind !== "codex") return;
-    view.codexFocusRefreshFrame = requestAnimationFrame(() => {
-      view.codexFocusRefreshFrame = requestAnimationFrame(() => {
-        view.codexFocusRefreshFrame = 0;
-        if (view.closed || this.activeId !== view.sessionId || this.historyOpen || this.activeFileKey !== null ||
-            !view.container.classList.contains("visible")) return;
-        const lastRow = Math.max(0, view.term.rows - 1);
-        view.term.refresh(Math.max(0, lastRow - 5), lastRow);
-      });
-    });
-  }
-
-  normalizeTerminalTailLine(line) {
-    return String(line || "").replace(/\u00a0/g, " ").replace(/\s+$/g, "");
-  }
-
-  terminalBufferVisibleTailLines(view, count = TERMINAL_TAIL_REPAIR_LINES) {
-    const buffer = view?.term?.buffer?.active;
-    if (!buffer || typeof buffer.getLine !== "function") return [];
-    const rows = Math.max(1, Number(view.term.rows || 1));
-    const viewportY = Math.max(0, Number(buffer.viewportY || 0));
-    const start = Math.max(0, viewportY + rows - count);
-    const end = viewportY + rows;
-    const lines = [];
-    for (let index = start; index < end; index++) {
-      const line = buffer.getLine(index);
-      lines.push(this.normalizeTerminalTailLine(line ? line.translateToString(true) : ""));
-    }
-    return lines;
-  }
-
-  recordTerminalRenderedRows(view, start, end) {
-    const buffer = view?.term?.buffer?.active;
-    if (!buffer || typeof buffer.getLine !== "function") return;
-    const viewportY = Math.max(0, Number(buffer.viewportY || 0));
-    const rows = Math.max(1, Number(view.term.rows || 1));
-    const cols = Math.max(1, Number(view.term.cols || 1));
-    if (view.renderedViewportY !== viewportY || view.renderedCols !== cols || view.renderedTermRows !== rows) {
-      view.renderedRows = new Array(rows).fill(null);
-      view.renderedViewportY = viewportY;
-      view.renderedCols = cols;
-      view.renderedTermRows = rows;
-    }
-    const first = Math.max(0, Number(start || 0));
-    const last = Math.min(rows - 1, Number.isFinite(Number(end)) ? Number(end) : first);
-    for (let row = first; row <= last; row++) {
-      const line = buffer.getLine(viewportY + row);
-      view.renderedRows[row] = this.normalizeTerminalTailLine(line ? line.translateToString(true) : "");
-    }
-  }
-
-  terminalRenderedTailLines(view, count = TERMINAL_TAIL_REPAIR_LINES) {
-    const rows = [...(view?.container?.querySelectorAll(".xterm-rows > div") || [])];
-    if (rows.length) return rows.slice(-count).map((row) => this.normalizeTerminalTailLine(row.textContent || ""));
-    const buffer = view?.term?.buffer?.active;
-    if (!buffer || view.renderedViewportY !== Math.max(0, Number(buffer.viewportY || 0)) ||
-        view.renderedCols !== view.term.cols || view.renderedTermRows !== view.term.rows) return [];
-    const rendered = view.renderedRows.slice(Math.max(0, view.term.rows - count));
-    return rendered.some((line) => line === null) ? [] : rendered;
-  }
-
-  parseCssColor(value) {
-    const color = String(value || "").trim().toLowerCase();
-    let match = color.match(/^#([0-9a-f]{3})$/i);
-    if (match) {
-      return match[1].split("").map((part) => Number.parseInt(part + part, 16)).concat(1);
-    }
-    match = color.match(/^#([0-9a-f]{6})$/i);
-    if (match) {
-      return [
-        Number.parseInt(match[1].slice(0, 2), 16),
-        Number.parseInt(match[1].slice(2, 4), 16),
-        Number.parseInt(match[1].slice(4, 6), 16),
-        1,
-      ];
-    }
-    match = color.match(/^rgba?\(([^)]+)\)$/i);
-    if (!match) return null;
-    const parts = match[1].split(",").map((part) => Number.parseFloat(part.trim()));
-    if (parts.length < 3 || parts.slice(0, 3).some((part) => !Number.isFinite(part))) return null;
-    return [parts[0], parts[1], parts[2], Number.isFinite(parts[3]) ? parts[3] : 1];
-  }
-
-  colorDistance(left, right) {
-    if (!left || !right) return Number.POSITIVE_INFINITY;
-    const dr = left[0] - right[0];
-    const dg = left[1] - right[1];
-    const db = left[2] - right[2];
-    return Math.sqrt((dr * dr) + (dg * dg) + (db * db));
-  }
-
-  terminalRenderedTailLooksInvisible(view, expected, rendered) {
-    const rows = [...(view?.container?.querySelectorAll(".xterm-rows > div") || [])].slice(-expected.length);
-    if (!rows.length || !expected.some((line) => line.trim())) return false;
-    const screen = view.container.querySelector(".xterm-screen") || view.container;
-    const computedBackground = this.parseCssColor(window.getComputedStyle(screen).backgroundColor);
-    const themeBackground = this.parseCssColor(this.termTheme().background);
-    const background = computedBackground && computedBackground[3] > 0 ? computedBackground : themeBackground;
-    let compared = 0;
-    let invisible = 0;
-    for (let index = 0; index < expected.length; index++) {
-      if (!expected[index].trim()) continue;
-      compared += 1;
-      const row = rows[index];
-      const renderedLine = rendered[index] || "";
-      if (!row || !renderedLine.trim()) {
-        invisible += 1;
-        continue;
-      }
-      const spans = [...row.querySelectorAll("span")].filter((span) => String(span.textContent || "").trim());
-      const samples = spans.length ? spans : [row];
-      const rowVisible = samples.some((sample) => {
-        const style = window.getComputedStyle(sample);
-        const opacity = Number.parseFloat(style.opacity);
-        if (style.visibility === "hidden" || style.display === "none" || opacity === 0) return false;
-        const foreground = this.parseCssColor(style.color);
-        if (!foreground || foreground[3] === 0) return false;
-        const sampleBackground = this.parseCssColor(style.backgroundColor);
-        const effectiveBackground = sampleBackground && sampleBackground[3] > 0 ? sampleBackground : background;
-        return !effectiveBackground || this.colorDistance(foreground, effectiveBackground) >= 12;
-      });
-      if (!rowVisible) invisible += 1;
-    }
-    return compared > 0 && invisible > 0;
-  }
-
-  terminalTailRenderMismatch(view) {
-    if (view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame) return false;
-    const visibleRows = Math.max(1, Number(view.term.rows || 1));
-    const expected = this.terminalBufferVisibleTailLines(view, visibleRows);
-    const rendered = this.terminalRenderedTailLines(view, visibleRows);
-    if (!expected.length || expected.length !== rendered.length) return false;
-    let compared = 0;
-    for (let index = 0; index < expected.length; index++) {
-      const expectedLine = expected[index];
-      if (!expectedLine.trim()) continue;
-      compared += 1;
-      if (expectedLine !== rendered[index]) return true;
-    }
-    view.tailRepairSignature = expected.join("\n");
-    return (compared > 0 && !rendered.some((line) => line.trim())) ||
-      this.terminalRenderedTailLooksInvisible(view, expected, rendered);
-  }
-
-  terminalRenderMismatchSnapshot(view) {
-    if (!this.terminalTailRenderMismatch(view)) return null;
-    const visibleRows = Math.max(1, Number(view.term.rows || 1));
-    return {
-      viewportY: Number(view.term.buffer.active.viewportY || 0), cols: view.term.cols, rows: view.term.rows,
-      expected: this.terminalBufferVisibleTailLines(view, visibleRows).join("\n"),
-      rendered: this.terminalRenderedTailLines(view, visibleRows).join("\n"),
-    };
-  }
-
-  sameTerminalRenderMismatch(left, right) {
-    return !!left && !!right && left.viewportY === right.viewportY && left.cols === right.cols && left.rows === right.rows &&
-      left.expected === right.expected && left.rendered === right.rendered;
-  }
-
-  repairTerminalRenderIfStale(view) {
-    if (!view || view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
-    if (this.shouldDeferPromptReflowFit(view)) return false;
-    if (!this.terminalTailRenderMismatch(view)) {
-      view.renderRepairArmed = true;
-      return false;
-    }
-    if (!view.renderRepairArmed) return false;
-    view.renderRepairArmed = false;
-    const restoreLine = view.term.buffer.active.viewportY;
-    // Captured as an OFFSET, not the absolute index above: a cols change reflows the whole buffer
-    // (every wrapped line can re-wrap into a different number of rows), so restoreLine can point at
-    // entirely different content once that happens. An earlier attempt just skipped restoring
-    // anything in that case, assuming xterm's own resize()/reflow keeps the viewport sensibly
-    // positioned on its own -- ground-truth testing (window.__td) showed that assumption was wrong,
-    // reflow can leave viewportY at 0 outright. "N rows above the latest line" survives a reflow the
-    // same way it survives a reconnect-driven buffer reset (see the leaving-view capture in
-    // activate() and the reconnect restore in connect()'s ws.onmessage).
-    const restoreRowsFromBottom = view.term.buffer.active.baseY - restoreLine;
-    const follow = view.scrollMode === "follow";
-    const renderService = view.term._core?._renderService;
-    if (renderService?._isPaused && typeof renderService._handleIntersectionChange === "function") {
-      renderService._handleIntersectionChange({ isIntersecting: true, intersectionRatio: 1 });
-      this.refreshTerminal(view);
-      if (follow) this.scrollTerminalV2ToBottom(view);
-      else this.scrollTerminalV2ToLine(view, Math.min(restoreLine, view.term.buffer.active.baseY));
-      return true;
-    }
-    // A stale-looking render is not always a paint problem: the terminal's own cols/rows can be wrong for
-    // its actual container width (a sibling's DOM change, a still-settling flex pass) without ever having
-    // gone through a resize event. fit() re-measures the container and calls term.resize() when that
-    // differs, which repaints AND corrects wrapping in one pass. Re-check the mismatch afterward — a pure
-    // paint glitch (fit is a no-op) still needs the appearance refresh below.
-    const beforeCols = view.term.cols, beforeRows = view.term.rows;
-    const viewportAnchor = this.captureTerminalViewportAnchor(view);
-    this.tallFit(view);
-    if (view.term.cols !== beforeCols || view.term.rows !== beforeRows) {
-      this.beginTerminalViewportRestore(view, viewportAnchor);
-      if (view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows, true);
-      if (!this.terminalTailRenderMismatch(view)) {
-        if (follow) this.scrollTerminalV2ToBottom(view);
-        else this.scrollTerminalV2ToLine(view, Math.max(0, view.term.buffer.active.baseY - restoreRowsFromBottom));
-        return true;
-      }
-    }
-    if (this.session(view.sessionId)?.agent_kind === "codex") {
-      this.refreshTerminalAppearance(view, true);
-      if (follow) this.scrollTerminalV2ToBottom(view);
-      else this.scrollTerminalV2ToLine(view, Math.min(restoreLine, view.term.buffer.active.baseY));
-      if (view.tailRepairFrame) cancelAnimationFrame(view.tailRepairFrame);
-      view.tailRepairFrame = requestAnimationFrame(() => {
-        view.tailRepairFrame = requestAnimationFrame(() => {
-          view.tailRepairFrame = 0;
-          if (view.closed || !view.container.classList.contains("visible")) return;
-          if (this.terminalTailRenderMismatch(view)) this.forceVisibleTerminalReflowViaResizeNudge(view, 1);
-          else view.renderRepairArmed = true;
-        });
-      });
-      return true;
-    }
-    this.refreshTerminalAppearance(view, true);
-    if (follow) this.scrollTerminalV2ToBottom(view);
-    else this.scrollTerminalV2ToLine(view, Math.min(restoreLine, view.term.buffer.active.baseY));
-    return true;
-  }
-
-  shouldForceTerminalActivationReflow(view, switchedViews) {
-    if (!view || view.closed || !this.isTerminalScrollV2() ||
-        !view.container.classList.contains("visible")) return false;
-    const now = Date.now();
-    if (now - (view.lastActivationReflowAt || 0) < TERMINAL_ACTIVATION_REFLOW_IDLE_MS) return false;
-    if (view.forceResizeAfterFit || !view.lastActivationReflowAt) return true;
-    if (!switchedViews) return false;
-    const hiddenFor = view.hiddenAt ? now - view.hiddenAt : Number.POSITIVE_INFINITY;
-    return hiddenFor >= TERMINAL_ACTIVATION_REFLOW_IDLE_MS;
-  }
-
-  // Re-measures and force-resends a terminal's size at several points after it becomes active,
-  // bypassing sendResize's own dedup each time. Layout can still be settling well past the existing
-  // single-shot activation fit (fonts, a sidebar mid-resize, a flex pass waiting on another panel),
-  // and there is otherwise no retry for a resize the server silently dropped or a program never fully
-  // redrew for. This is the same "keep re-measuring and re-sending until it's right" behavior a manual
-  // drag-resize gets for free from a live ResizeObserver stream — just scoped to the active terminal
-  // and self-terminating instead of a standing timer.
-  scheduleActiveTerminalSettleWatchdog(view) {
-    this.clearActiveTerminalSettleWatchdog(view);
-    if (!view || view.closed || !this.isTerminalScrollV2() || !this.terminalPageCanResize()) return;
-    for (const delay of TERMINAL_ACTIVE_SETTLE_DELAYS_MS) {
-      view.settleWatchdogTimers.push(setTimeout(() => {
-        if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible") ||
-            this.sidebarResizeInProgress || !this.terminalPageCanResize()) return;
-        if (this.shouldDeferPromptReflowFit(view)) return;
-        const beforeCols = view.term.cols, beforeRows = view.term.rows;
-        const viewportAnchor = this.captureTerminalViewportAnchor(view);
-        this.tallFit(view);
-        const colsChanged = view.term.cols !== beforeCols || view.term.rows !== beforeRows;
-        if (colsChanged) this.beginTerminalViewportRestore(view, viewportAnchor);
-        if (colsChanged && view.term.cols >= 2 && view.term.rows >= 2) this.sendResize(view, view.term.cols, view.term.rows);
-        if (colsChanged || this.terminalTailRenderMismatch(view)) {
-          this.repairTerminalRenderIfStale(view);
-        }
-      }, delay));
-    }
-  }
-
-  clearActiveTerminalSettleWatchdog(view) {
-    if (!view) return;
-    for (const timer of view.settleWatchdogTimers) clearTimeout(timer);
-    view.settleWatchdogTimers = [];
-  }
-
-  scheduleTerminalTailRepair(view) {
-    if (!this.attachRepaintEnabled()) return;
-    if (!view || view.closed || view.tailRepairTimer || view.tailRepairConfirmTimer ||
-        !view.container.classList.contains("visible") || !this.isTerminalScrollV2() ||
-        this.session(view.sessionId)?.agent_kind !== "codex" || !this.terminalPageCanResize()) return;
-    view.tailRepairTimer = setTimeout(() => {
-      view.tailRepairTimer = 0;
-      if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible") ||
-          !this.terminalPageCanResize()) return;
-      const candidate = this.terminalRenderMismatchSnapshot(view);
-      if (!candidate) {
-        view.renderRepairArmed = true;
-        return;
-      }
-      view.tailRepairConfirmTimer = setTimeout(() => {
-        view.tailRepairConfirmTimer = 0;
-        if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible") ||
-            !this.terminalPageCanResize()) return;
-        const confirmed = this.terminalRenderMismatchSnapshot(view);
-        if (!this.sameTerminalRenderMismatch(candidate, confirmed)) {
-          if (!confirmed) view.renderRepairArmed = true;
-          else this.scheduleTerminalTailRepair(view);
-          return;
-        }
-        if (Date.now() - view.lastRenderRepairAt < TERMINAL_RENDER_REPAIR_COOLDOWN_MS) return;
-        view.renderRepairArmed = true;
-        if (this.repairTerminalRenderIfStale(view)) view.lastRenderRepairAt = Date.now();
-      }, TERMINAL_RENDER_CONFIRM_DELAY_MS);
-    }, TERMINAL_RENDER_CHECK_INTERVAL_MS);
-  }
-
-  scheduleTerminalActivationRepair(view, options = {}) {
-    if (!view || view.closed || view.activationRepairFrame || !view.container.classList.contains("visible") ||
-        !this.terminalPageCanResize()) return;
-    if (!this.isTerminalScrollV2()) return;
-    const generation = view.outputWriteGeneration;
-    const forceReflow = !!options.forceReflow;
-    view.activationRepairFrame = requestAnimationFrame(() => {
-      view.activationRepairFrame = requestAnimationFrame(() => {
-        view.activationRepairFrame = 0;
-        if (view.closed || !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return;
-        if (view.outputWriteInFlight && generation !== view.outputWriteGeneration) return;
-        const repaired = this.repairTerminalRenderIfStale(view);
-        if (repaired) {
-          view.lastActivationReflowAt = Date.now();
-          return;
-        }
-        if (forceReflow) {
-          view.lastActivationReflowAt = Date.now();
-          view.forceResizeAfterFit = true;
-          this.scheduleV2Fit(view);
-        }
-      });
-    });
-  }
-
-  // Neither underlying implementation alone satisfies both CLIs: the resize-free clear leaves codex's
-  // stale paint stuck, any resize-nudge magnitude/direction tried corrupts Claude's composer wrap (root
-  // cause: xterm's resize-driven buffer reflow can permanently mis-rewrap an already-wrapped row when
-  // cols is nudged even briefly and client-side-only, confirmed live). They need opposite treatment, so
-  // branch by the session's actual agent_kind instead of hunting for one universal value.
-  //
-  // localStorage["td-debug-reflow-mode"]="nudge" forces the pre-fix nudge-everyone behavior for every
-  // session regardless of kind -- a manual escape hatch kept ONLY for a side-by-side comparison if this
-  // regresses again later, not a real option (it reintroduces the Claude wrap on its own). No UI for it;
-  // set/clear it from the browser console.
-  forceVisibleTerminalReflow(view) {
-    if (!this.attachRepaintEnabled()) return false;
-    if (localStorage.getItem("td-debug-reflow-mode") === "nudge") return this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
-    const kind = this.session(view.sessionId)?.agent_kind;
-    if (kind !== "codex") return this.forceVisibleTerminalReflowViaClear(view);
-    const result = this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
-    this.scheduleCodexReflowFollowup(view);
-    return result;
-  }
-
-  // Codex still sometimes shows only its last few scrollback lines after a fresh connect (~10-20% of
-  // tries, reported, persisting across 2-3 hard refreshes in some cases) -- likely a timing race, not
-  // necessarily missing data: this nudge fires as soon as the client's snapshot replay completes, which
-  // can be BEFORE the SERVER's own repair (_force_screen_repaint in session_manager.py, ~0.28-0.43s
-  // delayed) has actually finished getting codex to redraw its full screen -- now unconditional
-  // server-side (see session_manager.py), but still not instant. Retries at several delays (matching
-  // how scheduleActiveTerminalSettleWatchdog already retries elsewhere in this file) instead of just
-  // once, to give that server-side window more chances to be caught.
-  //
-  // Every attempt is gated on terminalTailRenderMismatch(view) -- the rendered DOM actually disagreeing
-  // with xterm's own buffer, i.e. something a repaint could fix. If they already agree, a resize-nudge
-  // is powerless to improve things (its whole mechanism is "force xterm to fully repaint its EXISTING
-  // buffer", not "fetch more data"): either both already show the full correct content (retrying would
-  // just be a visible flicker for nothing) or the buffer genuinely still lacks the content (a
-  // client-side repaint cannot manufacture data that hasn't arrived). Either way, skip that attempt.
-  scheduleCodexReflowFollowup(view) {
-    if (!view || view.closed) return;
-    for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
-    view.codexReflowFollowupTimers = CODEX_REFLOW_FOLLOWUP_DELAYS_MS.map((delay) => setTimeout(
-      () => this.runCodexReflowFollowup(view, CODEX_REFLOW_FOLLOWUP_BUSY_RETRIES), delay));
-  }
-
-  // Deferred while output is still arriving. terminalTailRenderMismatch compares xterm's buffer tail to
-  // the painted DOM tail, and those legitimately differ for a frame or two mid-stream, so acting on that
-  // difference nudges the terminal's width in the middle of a synchronized-update frame and leaves
-  // exactly the half-painted screen this repair exists to remove -- a greyed status line with a couple of
-  // stray glyphs, which then heals on the CLI's next full redraw. Retry once output settles instead.
-  runCodexReflowFollowup(view, busyRetriesLeft) {
-    if (view.closed || this.activeId !== view.sessionId || !view.container.classList.contains("visible")) return;
-    if (view.outputWriteInFlight || view.outputQueue.length) {
-      if (busyRetriesLeft <= 0) return;
-      view.codexReflowFollowupTimers.push(setTimeout(
-        () => this.runCodexReflowFollowup(view, busyRetriesLeft - 1), CODEX_REFLOW_FOLLOWUP_BUSY_RETRY_MS));
-      return;
-    }
-    if (!this.terminalTailRenderMismatch(view)) return;
-    this.forceVisibleTerminalReflowViaResizeNudge(view, 2);
-  }
-
-  forceVisibleTerminalReflowViaClear(view) {
-    if (!view || view.closed || view.v2ForcedReflowFrame || !view.container.classList.contains("visible") ||
-        !this.terminalPageCanResize()) return false;
-    if (this.shouldDeferPromptReflowFit(view)) return false;
-    const rect = view.container.getBoundingClientRect();
-    if (rect.width < 40 || rect.height < 40) return false;
-    const restoreLine = view.term.buffer.active.viewportY;
-    const follow = view.scrollMode === "follow";
-    view.v2Programmatic = true;
-    view.v2ForcedReflowFrame = requestAnimationFrame(() => {
-      view.v2ForcedReflowFrame = 0;
-      if (view.closed || !view.container.classList.contains("visible")) {
-        view.v2Programmatic = false;
-        return;
-      }
-      // A pure repaint, deliberately WITHOUT ever touching cols/rows. The alternative (see
-      // ...ViaResizeNudge below) nudges the container's CSS width to force a real xterm resize down
-      // and back up, suppressed from reaching the server so the CLI never saw it. But xterm's
-      // resize-driven reflow can PERMANENTLY mis-rewrap already-wrapped rows (box-drawing characters
-      // especially) even for a resize that only ever happens client-side -- confirmed via a live debug
-      // capture showing a 104->102->104 xterm-only bounce (never sent to the server:
-      // suppressResizeToServer was true throughout) leave a horizontal composer rule permanently split
-      // across two rows afterward. refreshTerminalAppearance(view, true) already clears and re-runs the
-      // render service against the CURRENT (unchanged) cols/rows -- a full glyph repaint with no call
-      // into resize()/reflow(), so there is nothing for xterm to fail to perfectly undo.
-      this.refreshTerminalAppearance(view, true);
-      if (follow) this.scrollTerminalV2ToBottom(view);
-      else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
-      queueMicrotask(() => {
-        if (!view.closed) view.v2Programmatic = false;
-      });
-    });
-    return true;
-  }
-
-  // Original implementation, kept only for the A/B toggle: nudges the container narrower by ~2 cols
-  // via CSS then restores, forcing a real (client-only, never sent to the server) xterm resize cycle.
-  // nudgeCols: how many columns narrower to go before restoring. The original value (2) is exactly
-  // wide enough to catch a composer's horizontal rule right at its wrap boundary; testing whether 1
-  // column is still enough to unstick a stale codex paint without landing on that boundary.
-  //
-  forceVisibleTerminalReflowViaResizeNudge(view, nudgeCols = 2) {
-    if (!view || view.closed || view.v2ForcedReflowFrame || view.v2ForcedReflowRestoreFrame ||
-        !view.container.classList.contains("visible") || !this.terminalPageCanResize()) return false;
-    if (this.shouldDeferPromptReflowFit(view)) return false;
-    const rect = view.container.getBoundingClientRect();
-    if (rect.width < 40 || rect.height < 40) return false;
-    const computed = window.getComputedStyle(view.container);
-    const originalRight = view.container.style.right;
-    const right = Number.parseFloat(computed.right);
-    const cellWidth = Number(view.term._core?._renderService?.dimensions?.css?.cell?.width) || 8;
-    const nudgeRight = (Number.isFinite(right) ? right : 4) + Math.max(Math.ceil(cellWidth * nudgeCols), 7 * nudgeCols);
-    const restoreLine = view.term.buffer.active.viewportY;
-    const follow = view.scrollMode === "follow";
-    view.suppressResizeToServer = true;
-    view.v2Programmatic = true;
-    view.v2ForcedReflowFrame = requestAnimationFrame(() => {
-      view.v2ForcedReflowFrame = 0;
-      if (view.closed || !view.container.classList.contains("visible")) {
-        view.suppressResizeToServer = false;
-        view.v2Programmatic = false;
-        return;
-      }
-      view.container.style.right = `${nudgeRight}px`;
-      this.tallFit(view);
-      this.refreshTerminalAppearance(view, true);
-      view.v2ForcedReflowRestoreFrame = requestAnimationFrame(() => {
-        view.v2ForcedReflowRestoreFrame = 0;
-        if (!view.closed) {
-          view.container.style.right = originalRight;
-          if (view.container.classList.contains("visible")) {
-            this.tallFit(view);
-            this.refreshTerminalAppearance(view, true);
-            if (follow) this.scrollTerminalV2ToBottom(view);
-            else view.term.scrollToLine(Math.min(restoreLine, view.term.buffer.active.baseY));
-          }
-        }
-        view.suppressResizeToServer = false;
-        if (!view.closed && view.container.classList.contains("visible") && view.term.cols >= 2 && view.term.rows >= 2) {
-          this.sendResize(view, view.term.cols, view.term.rows);
-        }
-        queueMicrotask(() => {
-          if (!view.closed) view.v2Programmatic = false;
-        });
-      });
-    });
-    return true;
-  }
-
-  queueTerminalWrite(view, data, afterWrite = null) {
-    if (!view || view.closed) return;
-    view.outputQueue.push({ data, afterWrite, generation: view.outputWriteGeneration });
-    this.drainTerminalWrites(view);
-  }
-
-  detectTerminalAttentionFromBuffer(view) {
-    if (!view || view.closed || this.session(view.sessionId)?.agent_kind !== "claude" || !view.term) return;
-    if (view.attentionScreenDetectionSuppressed) return;
-    const buffer = view.term.buffer.active;
-    const firstRow = Math.max(0, Number(buffer.baseY || 0) - 2);
-    const lastRow = Math.min(buffer.length, firstRow + view.term.rows + 4);
-    const text = [];
-    for (let row = firstRow; row < lastRow; row += 1) {
-      const line = buffer.getLine(row);
-      if (line) text.push(line.translateToString(true));
-    }
-    const normalized = text.join(" ").replace(/\s+/g, " ").trim().toLowerCase();
-    if (!TERMINAL_ATTENTION_TEXT_MARKERS.every((marker) => normalized.includes(marker))) return;
-    const session = this.session(view.sessionId);
-    if (!session || session.needs_attention) return;
-    session.needs_attention = true;
-    this.attentionServerStates.set(view.sessionId, true);
-    if (this.processingStates.get(view.sessionId)) this.updateProcessingState(view.sessionId, false);
-    this.triggerSessionAttention(view.sessionId);
-  }
-
-  // Tall-terminal-probe worktree only: xterm's own "follow" scroll mode is driven by baseY (how much has
-  // scrolled into real backscroll), which stays 0 here since nothing ever scrolls off a 1000-row screen in
-  // normal use. Cursor row is the equivalent signal in this model. Mirrors the standard terminal UX every
-  // other terminal already has: auto-follow new output, but stop the moment the user scrolls away to read
-  // something earlier, and resume once they scroll back near the bottom themselves.
-  //
-  // Deliberately NOT a "scroll" event listener tracking a persistent follow flag: xterm repositions its
-  // hidden input textarea to track the cursor (for IME candidate-window placement), and while focused that
-  // can itself trigger the browser's own "keep the focused element in view" auto-scroll -- confirmed live,
-  // that fired a real "scroll" event with no code of mine involved, which corrupted a flag-based follow
-  // state (traced: it silently flipped follow back on after the user had deliberately scrolled away, so
-  // the very next line of output yanked them back down). Comparing scroll position against the cursor
-  // FRESH, at both ends of each write, is immune to that: it only reacts to what changed within the write.
-  // The cursor itself sits inside the input box, but Claude/Codex both draw a closing border plus a
-  // status line (model/cost, "shift+tab to cycle", token counts, ...) below it -- real content the
-  // cursor's own row doesn't account for, so following cursorY alone clips those rows out of view.
-  // Bounded to a fixed 12-row lookahead below the cursor rather than a full-buffer scan: real trailing
-  // decoration is always a handful of rows, never hundreds, so this stays O(12) per write regardless of
-  // how tall the forced buffer is -- no scan of the other ~988 rows that can't matter here.
-  //
-  // buffer.getLine(y) takes an ABSOLUTE row index (0 = the very first row ever written, scrollback
-  // included), but cursorY is relative to the current viewport top (viewportY, which tracks baseY here --
-  // see the earlier scroll note above term.open()). They only coincide while baseY is still 0. Confirmed
-  // live on a long-running session: at baseY=1584, getLine(cursorY) landed on unrelated leftover content
-  // ("  526") while getLine(baseY+cursorY) landed on the real prompt row ("❯ ") -- every getLine() call
-  // here has to add baseY back in, or this silently reads the wrong rows the moment a session outlives
-  // one screenful of real scrollback. The returned row stays viewport-relative (i.e. still in cursorY's
-  // frame), because that's what the pixel math both callers do needs.
-  tallEffectiveBottomRow(view) {
-    const buffer = view.term.buffer.active;
-    const baseY = buffer.baseY || 0;
-    const cursorY = buffer.cursorY;
-    let last = cursorY;
-    // Follows DENSE content below the cursor however far it extends -- a popup like Claude's slash menu
-    // paints its whole option list there, well past any fixed window -- but stops at a run of blank rows.
-    // The gap allowance is what still protects against a mid-repaint cursor: a blank-walk leaves nothing
-    // dense below the cursor, so the scan ends immediately, while a menu has no blank runs at all. The
-    // cost is bounded by the content itself: one gap's worth of rows past the last real line.
-    const limit = buffer.length - 1 - baseY;
-    let blankRun = 0;
-    for (let row = cursorY + 1; row <= limit && blankRun <= 12; row += 1) {
-      if (buffer.getLine(baseY + row)?.translateToString(true).trim()) {
-        last = row;
-        blankRun = 0;
-      } else {
-        blankRun += 1;
-      }
-    }
-    return last;
-  }
-
-  // Where a following view belongs: the content bottom at the bottom edge -- unless that would push the
-  // cursor's row off the top of the screen. Claude's slash menu is the case that needs the cap: on this
-  // forced-height terminal it paints its full command list, well over a hundred rows below the composer,
-  // and following the content bottom put the composer ~90 rows above the fold with nothing to bring it
-  // back on an idle tab (the ceiling only shrinks on writes, and an open menu writes nothing). The
-  // composer may ride up to the top of the screen, never past it; the menu rows that do not fit are cut
-  // at the bottom and stay reachable by scrolling, because the CEILING is deliberately not capped.
-  tallFollowCursorCap(view, cellHeight) {
-    const buffer = view.term.buffer.active;
-    const baseRows = this.wholeBufferScrollEnabled() ? Number(buffer.baseY || 0) : 0;
-    return Math.max(0, (baseRows + Number(buffer.cursorY || 0) - TALL_FOLLOW_CURSOR_TOP_MARGIN_ROWS) *
-      cellHeight);
-  }
-
-  tallFollowTarget(view, cellHeight) {
-    // Same frame as the ceiling: absolute over the buffer when the scroll box spans it, rendered-window
-    // relative otherwise -- see tallUpdateMaxScrollTop.
-    const buffer = view.term.buffer.active;
-    const baseRows = this.wholeBufferScrollEnabled() ? Number(buffer.baseY || 0) : 0;
-    const bottomTarget = Math.max(0, (baseRows + this.tallEffectiveBottomRow(view) + 1) * cellHeight -
-      view.container.clientHeight);
-    return Math.min(bottomTarget, this.tallFollowCursorCap(view, cellHeight));
-  }
-
-  tallContainerNearCursor(view) {
-    const inner = view.container.querySelector(".term-inner");
-    if (!inner) return true;
-    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-    if (!cellHeight) return true;
-    return Math.abs(view.container.scrollTop - this.tallFollowTarget(view, cellHeight)) <= 24;
-  }
-
-
-  // `userSettled` marks a placement that ends a user gesture rather than reacting to output. The
-  // difference matters only between the cursor cap and the ceiling -- a popup's overflow: a user who
-  // scrolled down there chose that position and a settle must not drag them back up to the cap, while a
-  // write means the TUI changed under an open popup (filtered, closed, printed) and snapping back to
-  // the capped position is exactly the behavior that keeps the composer in view.
-  scrollTallContainerToCursor(view, userSettled = false) {
-    if (!view || view.closed || view.tallMaxScrollTop == null) return;
-    if (this.wholeBufferScrollEnabled()) {
-      // The newest line is the bottom of the box. The buffer viewport is derived from the scroll
-      // position rather than forced to baseY: the box ends at the content bottom, so a screen shorter
-      // than the viewport puts scrollback in the visible span above it, and a rendered window parked at
-      // baseY would leave that span blank. Reaching the bottom also ends the parked state completely --
-      // pin, anchor and marker -- for the same reason the other branch clears them: following and
-      // parked are mutually exclusive, and a stale pin is what the release gate flags.
-      view.tallPinnedViewportY = null;
-      view.tallAnchorRow = null;
-      this.tallReleaseAnchorMarker(view);
-      const wholeCell = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-      // Capped so the cursor's row stays on screen -- see tallFollowTarget.
-      const wholeTarget = wholeCell
-        ? Math.min(view.tallMaxScrollTop, Math.max(0, this.tallFollowCursorCap(view, wholeCell)))
-        : view.tallMaxScrollTop;
-      const wholeTop = view.container.scrollTop;
-      if (userSettled) {
-        if (wholeTop < wholeTarget) this.tallSetScrollTop(view, wholeTarget);
-        else if (wholeTop > view.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
-          this.tallSetScrollTop(view, view.tallMaxScrollTop);
-        }
-      } else if (wholeTop < wholeTarget || wholeTop > wholeTarget + TALL_OVERSHOOT_DEADZONE_PX) {
-        this.tallSetScrollTop(view, wholeTarget);
-      }
-      view.tallFollowTop = Math.max(wholeTarget, Math.min(view.container.scrollTop, view.tallMaxScrollTop));
-      this.tallSyncBufferToScroll(view);
-      return;
-    }
-    // Following means showing the newest output, so xterm's own viewport has to be back at the bottom.
-    // While parked it is deliberately left short of baseY (see tallHoldAnchorRow) -- that is what stops
-    // it auto-scrolling -- and leaving it there would pin the canvas to stale rows no matter where the
-    // container scrolls. Clearing the pin matters just as much: it is the flag that says "parked".
-    const buffer = view.term.buffer.active;
-    if (Number(buffer.viewportY || 0) < Number(buffer.baseY || 0)) view.term.scrollToBottom();
-    view.tallPinnedViewportY = null;
-    view.tallAnchorRow = null;
-    this.tallReleaseAnchorMarker(view);
-    // Move down to the bottom when behind it, but do not drag the view back up out of a small overshoot
-    // (see TALL_OVERSHOOT_DEADZONE_PX) -- that correction is itself the visible snap. Capped so the
-    // cursor's row stays on screen -- see tallFollowTarget.
-    const domCell = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-    const target = domCell
-      ? Math.min(view.tallMaxScrollTop, this.tallFollowCursorCap(view, domCell))
-      : view.tallMaxScrollTop;
-    const top = view.container.scrollTop;
-    if (userSettled) {
-      if (top < target) this.tallSetScrollTop(view, target);
-      else if (top > view.tallMaxScrollTop + TALL_OVERSHOOT_DEADZONE_PX) {
-        this.tallSetScrollTop(view, view.tallMaxScrollTop);
-      }
-    } else if (top < target || top > target + TALL_OVERSHOOT_DEADZONE_PX) {
-      this.tallSetScrollTop(view, target);
-    }
-    // Where a following view belongs as of this placement. The settle handler needs it kept, because the
-    // ceiling keeps moving afterwards -- see tallApplySettledScroll.
-    view.tallFollowTop = Math.max(target, Math.min(view.container.scrollTop, view.tallMaxScrollTop));
-  }
-
-  // Every piece of tall-scroll state is derived from buffer contents, so all of it is meaningless the
-  // moment term.reset() throws that buffer away -- and none of it resets itself. tallMaxScrollTop is the
-  // damaging one: a restarted session repaints maybe 30 rows, but the ceiling left over from the previous
-  // (much longer) session still points hundreds of rows down, and since the follow logic drives straight
-  // to that ceiling, the view opens parked in blank space far below the new content with the composer out
-  // of sight. container.scrollTop needs clearing for the same reason -- a DOM scroll offset survives
-  // term.reset() untouched -- and tallFollowing goes back to true because a rebuilt buffer has no "the
-  // user scrolled away to read something" to preserve.
-  tallResetScrollState(view) {
-    if (!view) return;
-    view.tallMaxScrollTop = null;
-    view.tallAnchorRow = null;
-    view.tallPinnedViewportY = null;
-    view.tallFollowTop = null;
-    view.tallFollowing = true;
-    this.tallReleaseAnchorMarker(view);
-    this.tallSetScrollTop(view, 0);
-  }
-
-  // Markers live in the terminal's buffer and are updated on every trim, so a stale one is both a leak
-  // and a wrong answer. Released everywhere the anchor it belongs to is dropped.
-  tallReleaseAnchorMarker(view) {
-    if (!view || !view.tallAnchorMarker) return;
-    try { view.tallAnchorMarker.dispose(); } catch { /* already gone with its buffer */ }
-    view.tallAnchorMarker = null;
-    view.tallAnchorGap = null;
-  }
-
-  // Every scroll this code performs goes through here so the "scroll" listener can tell our own moves
-  // from the user's. Timing cannot do it: scroll events are delivered asynchronously, so any time window
-  // either misses our own move or swallows a real one landing in the same frame. Remembering the exact
-  // value we asked for is precise.
-  tallSetScrollTop(view, value) {
-    if (!view || view.closed) return;
-    const target = Math.max(0, Math.round(value));
-    view.tallLastProgrammaticTop = target;
-    // Skip a write that changes nothing: it only adds scroll-event noise for the listener to sort out.
-    if (Math.abs(view.container.scrollTop - target) > 1) {
-      view.tallProgrammaticScrollPending = true;
-      view.container.scrollTop = target;
-    }
-  }
-
-  // The single place that decides "parked, or following the output?" -- for a scroll from ANY source.
-  // This used to be wheel-only, which silently excluded the two ways of scrolling that emit no wheel
-  // events: dragging the scrollbar thumb, and middle-click autoscroll. Neither ever cleared
-  // tallFollowing, so every write snapped the view back to the prompt underneath the gesture (the
-  // tearing), and neither ever restored xterm's pinned viewport on the way back down, which left the
-  // newest lines unreachable with the container already sitting at its ceiling.
-  tallApplySettledScroll(view) {
-    if (!view || view.closed) return;
-    // Two ways to count as at the bottom, and the second is not optional: at the ceiling as it stands, OR
-    // still exactly where the last follow placed the view, with only the ceiling having moved since. A
-    // working agent grows the ceiling every few frames, so a view nobody has touched falls "behind" it
-    // through no action of the user's -- captured live on a tab switch into a streaming session at 172px
-    // (8 rows) short, which parked the view and left it stuck behind the output until something else
-    // happened to set following again (typing does, which is why typing appeared to fix it). The grace
-    // applies only while the view still believes it is following: a real scroll-up clears that on the spot
-    // in the wheel handler, and a scrollbar drag lands nowhere near the last follow position, so neither
-    // can be mistaken for this.
-    const ceiling = view.tallMaxScrollTop;
-    const scrollTop = view.container.scrollTop;
-    const atBottom = ceiling == null ||
-      scrollTop >= ceiling - TALL_BOTTOM_TOLERANCE_PX ||
-      (view.tallFollowing !== false && view.tallFollowTop != null &&
-        scrollTop >= view.tallFollowTop - TALL_BOTTOM_TOLERANCE_PX);
-    view.tallFollowing = atBottom;
-    // Reaching the bottom has to undo the parked state completely, xterm's viewport included: while
-    // parked it sits deliberately short of baseY, and a stale pin there is precisely what made the last
-    // lines unreachable. scrollTallContainerToCursor restores it and clears the pin.
-    if (atBottom) this.scrollTallContainerToCursor(view, true);
-    else this.tallCaptureAnchorRow(view);
-  }
-
-  // What the user is reading is a LINE, not a pixel offset, and in this layout those are not the same
-  // thing. Canvas row N renders buffer row viewportY + N, and xterm keeps viewportY pinned to baseY here
-  // (its own viewport never moves, ours does), so every line that overflows the forced row count and
-  // pushes into scrollback slides the entire canvas up underneath a fixed scrollTop. Measured while
-  // parked mid-history with output streaming: scrollTop held at exactly 17212 the whole time while
-  // viewportY went 401 -> 1603, so the line under the viewport drifted from "1222" to "3022" -- the view
-  // never jumped, but 1200 lines scrolled past under it. Anchoring to an absolute buffer row and
-  // recomputing scrollTop from it each write is what actually holds a line still.
-  tallCaptureAnchorRow(view) {
-    if (!view || view.closed) return;
-    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-    if (!cellHeight) { view.tallAnchorRow = null; view.tallPinnedViewportY = null; return; }
-    const buffer = view.term.buffer.active;
-    const viewportY = Number(buffer.viewportY || 0);
-    // Two coordinate systems, one anchor. Whole-buffer scrollTop is already an absolute buffer offset --
-    // adding viewportY on top double-counted the scrollback the viewport shows and produced anchors past
-    // the end of the buffer (captured live: anchor 11237 on a 5814-row buffer, a marker that no trim
-    // could ever move). Otherwise the container spans only the rendered window and the buffer row is
-    // viewport plus container offset.
-    const anchorRow = this.wholeBufferScrollEnabled()
-      ? Math.max(0, Math.min(Number(buffer.length || 1) - 1, Math.round(view.container.scrollTop / cellHeight)))
-      : viewportY + Math.round(view.container.scrollTop / cellHeight);
-    view.tallAnchorRow = anchorRow;
-    view.tallPinnedViewportY = viewportY;
-    // A row index only means something until the scrollback fills. From then on every new line trims one
-    // off the start and renumbers the entire buffer, so an index quietly begins pointing at newer and
-    // newer content -- reproduced with a reader parked three pages up, scrollTop never moving, and the
-    // line under them travelling from "history 3793" all the way to "chunk 394". It never showed up with
-    // line-at-a-time output because that takes far longer to reach the cap, which is exactly why it read
-    // as "only when it prints big chunks". A marker is xterm's own handle on a LINE rather than an index:
-    // it is carried along by trimming, and disposes itself if the line is finally dropped.
-    this.tallReleaseAnchorMarker(view);
-    const fromCursor = anchorRow - (Number(buffer.baseY || 0) + Number(buffer.cursorY || 0));
-    view.tallAnchorMarker = view.term.registerMarker(fromCursor) || null;
-    view.tallAnchorGap = anchorRow - viewportY;
-  }
-
-  // Holds the anchored line by keeping xterm's viewport where it was, rather than letting it slide and
-  // then correcting scrollTop to compensate. Correcting after the fact was accurate -- the anchored line
-  // sat on the same pixel row in 871 of 872 sampled frames -- but ruinously expensive: xterm only leaves
-  // its viewport alone while it believes it is scrolled up, and here it never was (our container did the
-  // scrolling, so viewportY stayed glued to baseY). Every line of new output therefore advanced viewportY,
-  // which remaps every rendered row to a different buffer row and forces the DOM renderer to rebuild all
-  // 1000 of them, plus a compensating scrollTop write. Measured over 9s of line-by-line output while
-  // parked: 107 viewport shifts and 221 scrollTop writes -- the source of the visible jitter.
-  //
-  // Putting the viewport back once is all it takes, because that leaves viewportY < baseY, which is
-  // exactly xterm's own "the user has scrolled up" state -- from then on xterm declines to auto-scroll
-  // and holds the position itself, for free, and the new output lands on rows outside the rendered window
-  // so there is nothing to repaint at all. The steady state costs one integer comparison per write.
-  tallHoldAnchorRow(view) {
-    if (!view || view.closed || view.tallPinnedViewportY == null) return;
-    const marker = view.tallAnchorMarker;
-    if (this.wholeBufferScrollEnabled()) {
-      // Absolute coordinates make this hold a different job. The content under a fixed scrollTop only
-      // changes when trimming renumbers the buffer, so the marker's movement is exactly the correction
-      // scrollTop needs -- and with no trimming, nothing moves at all. What DOES go wrong without this
-      // branch: xterm auto-scrolls its own viewport to the bottom on output, the geometry pass then
-      // positions the rendered window there, and the window walks down the box write after write while
-      // scrollTop stands still -- observed live as the content sliding down toward the prompt under a
-      // parked reader. Re-deriving the viewport from the scroll position (the same mapping every user
-      // scroll uses) puts the window back and renders the history rows the visible span actually needs.
-      const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-      if (!cellHeight) return;
-      if (marker && !marker.isDisposed && view.tallAnchorRow != null) {
-        const drift = Number(marker.line || 0) - view.tallAnchorRow;
-        if (drift !== 0) {
-          view.tallAnchorRow = Number(marker.line || 0);
-          this.tallSetScrollTop(view, Math.max(0, view.container.scrollTop + drift * cellHeight));
-        }
-      } else if (marker && marker.isDisposed) {
-        // The anchored line was trimmed away; hold the index the reader is at instead.
-        this.tallReleaseAnchorMarker(view);
-        view.tallAnchorRow = Math.round(view.container.scrollTop / cellHeight);
-      }
-      this.tallSyncBufferToScroll(view);
-      return;
-    }
-    if (marker && marker.isDisposed) {
-      // The anchored line has finally fallen out of the scrollback: there is no longer a line to hold, so
-      // adopt wherever the view is now rather than chasing content that no longer exists.
-      this.tallCaptureAnchorRow(view);
-      return;
-    }
-    // Where the viewport has to sit for the anchored LINE to stay on the same screen row. Trimming moves
-    // the marker, so this target moves with it; without a marker (registerMarker can decline) it falls
-    // back to the fixed index, which is right up until the buffer fills.
-    const desired = marker && view.tallAnchorGap != null
-      ? Math.max(0, marker.line - view.tallAnchorGap)
-      : view.tallPinnedViewportY;
-    const current = Number(view.term.buffer.active.viewportY || 0);
-    if (current === desired) { view.tallPinnedViewportY = desired; return; }
-    view.term.scrollLines(desired - current);
-    const settled = Number(view.term.buffer.active.viewportY || 0);
-    view.tallPinnedViewportY = settled;
-    if (settled === desired) return;
-    // xterm could not go back that far. Absorb whatever it could not give us with the container, so the
-    // line still lands where the reader left it.
-    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-    if (cellHeight) {
-      this.tallSetScrollTop(view, view.container.scrollTop - (settled - desired) * cellHeight);
-    }
-    view.tallAnchorRow = settled + Math.round(view.container.scrollTop / (cellHeight || 21));
-  }
-
-  // `inner` (see term.open() below) is always a full FORCE_ROWS tall in CSS regardless of how much of it
-  // actually has content -- that's what lets xterm treat it as an ordinary, fully-fitting terminal (see
-  // that comment). But it means the browser's own native max-scroll lets the user wheel/trackpad straight
-  // past the real content into however many hundred rows of permanently blank space remain below the
-  // prompt, with nothing to stop them -- unlike a normal terminal, where there's simply nothing past the
-  // prompt to scroll into. tallMaxScrollTop tracks where the real content currently ends (reusing
-  // tallCursorRegionMostlyBlank's gate, so it never latches onto a mid-padding position either -- see that
-  // comment) and the "scroll" listener below enforces it as a hard ceiling, independent of whether the
-  // view is currently following. Updating it even while not following matters: content keeps growing while
-  // the user has scrolled away to read history, and the ceiling has to grow with it, or scrolling back down
-  // later would stop short of the actual new bottom.
-  tallUpdateMaxScrollTop(view) {
-    // A replay is not a stream of finished screens. Reattaching replays the saved buffer and the agent
-    // repaints over it, so the cursor lands wherever each escape sequence leaves it -- and deriving the
-    // content bottom from that cursor makes the bottom, and the view chasing it, lurch. Measured on a
-    // real tab switch into a busy Codex session: the ceiling went 5386 -> 10804 -> 16831 -> 3769 -> 9901
-    // -> 1669 -> 20212 within about 350ms, eight visible positions, two of them backwards. None of those
-    // intermediate values described the screen the user was about to see; the replay's completion handler
-    // settles it once from the finished screen, which is the only value that means anything.
-    if (view.replaying) return;
-    // Switching between the normal and alternate screens replaces the entire visible surface, so any
-    // "the user scrolled away to read something" state from the old one is meaningless against the new
-    // one -- without this reset, opening a pager after having scrolled up would inherit tallFollowing
-    // false and strand the view. Note this deliberately does NOT special-case where to scroll on the
-    // alternate screen: following the cursor turns out to be right there too, because a full-screen app
-    // leaves its cursor where its content is. Measured live, `seq 1 500 | less` bottom-aligns -- it
-    // paints lines 1-500 into rows 499-998 with "(END)" on row 999 and parks the cursor there, so rows
-    // 0-498 are genuinely blank and following the cursor to the bottom is exactly right. (An earlier
-    // pass here forced row 0 on entering the alternate screen, on the strength of a probe that read rows
-    // 0-39 and saw blanks; the probe was reading a region the viewport was never showing.)
-    const alternate = view.term.buffer.active.type === "alternate";
-    if (alternate !== view.tallOnAlternateScreen) {
-      view.tallOnAlternateScreen = alternate;
-      view.tallFollowing = true;
-    }
-    // The blank-region guard skips a frame caught mid-redraw, but it must never be able to block this
-    // permanently: an agent's own UI legitimately leaves blank rows above its composer, and how many
-    // depends on the window height, so at some sizes every frame looks "mid-redraw". Measured at
-    // 1728x1080: all 446 attempts were skipped, the ceiling was never established at all, and the view
-    // sat at the very top with ~950 rows below the fold. So it may delay an update, never the first
-    // value, and never more than a few in a row.
-    if (this.tallCursorRegionMostlyBlank(view)) {
-      view.tallBlankSkips = (view.tallBlankSkips || 0) + 1;
-      if (view.tallMaxScrollTop != null && view.tallBlankSkips <= TALL_MAX_BLANK_SKIPS) return;
-    }
-    view.tallBlankSkips = 0;
-    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-    if (!cellHeight || !view.container.clientHeight) return;
-    // tallEffectiveBottomRow, not raw cursorY: picks up the closing border + status line Claude/Codex
-    // draw below the input box (see that function's comment), so the boundary lands past them instead of
-    // clipping them out of view. In whole-buffer mode the scroll position is absolute over the buffer,
-    // so the bottom counts the scrollback above the screen too; otherwise the container spans only the
-    // rendered window and the bottom stays in its frame.
-    const whole = this.wholeBufferScrollEnabled();
-    const baseRows = whole ? Number(view.term.buffer.active.baseY || 0) : 0;
-    const bottomPx = (baseRows + this.tallEffectiveBottomRow(view) + 1) * cellHeight;
-    const next = Math.max(0, bottomPx - view.container.clientHeight);
-    // Hard bound, enforced at once: no state of the CURRENT buffer can justify a ceiling past its last
-    // line, so a stored value beyond that is stale by construction -- typically left over from a longer
-    // buffer that a reconnect has since replaced. Waiting out the shrink hold for one of these pins the
-    // view past the end of the content in the meantime (captured live: ceiling 31981 on a 799-row
-    // buffer, the visible window ~400 rows past the newest line, output "pushing the content up" through
-    // a blank screen).
-    const boundRows = whole ? Number(view.term.buffer.active.length || 0) : (view.term.rows || 0);
-    const hardMax = Math.max(0, boundRows * cellHeight - view.container.clientHeight);
-    let current = view.tallMaxScrollTop;
-    if (current != null && current > hardMax) {
-      current = hardMax;
-      view.tallMaxScrollTop = hardMax;
-    }
-    // Growing is applied at once; shrinking has to hold first, for the same reason the scrollable height
-    // does (see tallApplyGeometry). While following, the view is driven to this value, so a bottom that
-    // dips for a frame during an agent's repaint drags the view backwards -- the residual upward jump
-    // still visible on a tab switch after the replay guard above. Real shrinkage still lands, just after
-    // it has proved itself rather than on the first frame that suggests it. What has to prove itself is
-    // the BOUND, not one exact value: a streaming session moves the content bottom on every write, so
-    // requiring the same number twice in a row reset the hold forever and a stale-large ceiling never
-    // came down at all.
-    if (current == null || next >= current) {
-      view.tallMaxScrollTop = next;
-      view.tallCeilingShrinkSince = null;
-    } else {
-      if (view.tallCeilingShrinkSince == null) view.tallCeilingShrinkSince = Date.now();
-      if (Date.now() - view.tallCeilingShrinkSince >= TALL_SHRINK_SETTLE_MS) {
-        view.tallMaxScrollTop = next;
-        view.tallCeilingShrinkSince = null;
-      }
-    }
-    this.tallApplyGeometry(view);
-  }
-
-  // A snapshot/session-attach redraw pushes "rows" blank rows past the cursor before clearing and
-  // repainting -- invisible on a normal ~40-row terminal. Forced to 1000 rows, that same trick walks the
-  // cursor through up to 1000 blank rows before the redraw actually lands, and dtach/websocket framing
-  // splits it across many writes, so a write's callback can fire with the cursor sitting wherever this
-  // particular chunk's blank run happened to end, well before the matching clear+redraw chunk arrives.
-  // Confirmed live (instrumented scrollTallContainerToCursor across a real reconnect): a mid-sequence
-  // write landed at cursorY=995, and naively following it scrolled the container there for over a
-  // second before the next write (real content, cursorY=161) corrected it -- a real, visible "scrolled
-  // past the bottom, prompt pushed far up" glitch.
-  //
-  // Two things this can't be detected from: the escape sequence isn't consistent (confirmed live: one
-  // reconnect used bare "\r\n" pairs, another used repeated "\x1b[2K\x1b[1B" erase-line+cursor-down --
-  // whatever a given TUI's redraw path happens to use to advance a blank row), and the buffer row at the
-  // cursor isn't reliably blank either -- it can carry a stray glyph ghosted there from an earlier,
-  // differently-sized frame that a later redraw never revisited (confirmed live: row 995 held a lone
-  // "❯ " left over from a prior render). What's reliable is the shape of the neighborhood: real settled
-  // content is dense (a live conversation has text on most nearby rows); a cursor mid-blank-run sits in a
-  // stretch that's almost entirely empty except for whatever stale ghosts happen to be scattered through
-  // it. Requiring most of a screenful above the cursor to be blank catches this regardless of which
-  // escape sequence produced it, and a false trigger costs nothing -- it just skips one write's follow,
-  // and the very next write (arriving momentarily) reliably has a trustworthy cursor to follow instead.
-  tallCursorRegionMostlyBlank(view) {
-    const buffer = view.term.buffer.active;
-    const baseY = buffer.baseY || 0;
-    const row = buffer.cursorY;
-    const start = Math.max(0, row - 20);
-    let blank = 0;
-    let total = 0;
-    for (let r = start; r <= row; r += 1) {
-      total += 1;
-      // getLine() is absolute, cursorY is viewport-relative -- see tallEffectiveBottomRow's comment.
-      if (!buffer.getLine(baseY + r)?.translateToString(true).trim()) blank += 1;
-    }
-    return total > 0 && blank / total >= 0.7;
-  }
-
-  drainTerminalWrites(view) {
-    if (!view || view.closed || view.outputWriteInFlight) return;
-    if (!view.outputQueue.length) return;
-    // One write per batch, not per websocket frame. A streaming agent delivers ~50 frames/sec, and each
-    // write schedules its own xterm refresh plus the follow-up chain below, so writing frame-by-frame paid
-    // that cost ~50x/sec. Only consecutive same-generation items are merged: a reconnect bumps the
-    // generation and its output must not be fused with the previous connection's.
-    const generation = view.outputQueue[0].generation;
-    const batch = [];
-    while (view.outputQueue.length && view.outputQueue[0].generation === generation) {
-      batch.push(view.outputQueue.shift());
-    }
-    view.outputWriteInFlight = true;
-    // view.tallFollowing (default true; only ever changed by the "wheel" listener in ensureView) is the
-    // sole source of truth for whether to follow -- NOT a fresh per-write scrollTop comparison, which was
-    // tried first and had a real feedback-loop bug: the browser's own scroll-into-view drift (see that
-    // listener's comment) could make one write's check read a contaminated position, which then locked
-    // "following" on for every write after it.
-    const following = view.tallFollowing !== false;
-    let total = 0;
-    for (const item of batch) {
-      this.noteTerminalViewportRestoreOutput(view, item.data);
-      total += item.data.length;
-    }
-    let payload;
-    if (batch.length === 1) {
-      payload = batch[0].data;
-    } else {
-      payload = new Uint8Array(total);
-      let offset = 0;
-      for (const item of batch) { payload.set(item.data, offset); offset += item.data.length; }
-    }
-    view.term.write(payload, () => {
-      // Always release the writer. A reconnect invalidates the old callback's
-      // UI work but must not strand the new connection's queued output.
-      view.outputWriteInFlight = false;
-      const live = !view.closed && generation === view.outputWriteGeneration;
-      if (live) {
-        for (const item of batch) {
-          if (item.afterWrite) item.afterWrite();
-        }
-      }
-      if (live) {
-        // Kept up to date regardless of following (see tallUpdateMaxScrollTop's comment) -- it no-ops on
-        // a mid-padding write (see tallCursorRegionMostlyBlank's comment), which also means
-        // scrollTallContainerToCursor below correctly leaves scrollTop alone for that one cycle instead
-        // of following a bogus position: the very next write (the real redraw) fires this callback again
-        // with a trustworthy cursor.
-        this.tallUpdateMaxScrollTop(view);
-        // Any gesture in flight -- wheel, scrollbar drag, autoscroll -- owns the view until it settles.
-        const userScrolling = view.tallPointerHeld ||
-          Date.now() < Math.max(view.tallWheelActiveUntil || 0, view.tallScrollActiveUntil || 0);
-        if (!view.container.clientHeight) {
-          // A backgrounded tab is display:none, and a hidden element reports scrollTop 0 no matter where
-          // it was left. Every check below reads that position, so running them while hidden compares a
-          // real remembered offset against a fake zero: the follow-break test measured 20212px of
-          // "movement" nobody made, cleared following, and anchored the view mid-history. The damage was
-          // invisible until the tab was next looked at and the agent printed something -- which is the
-          // "switch away, come back, and it sits in the middle" report. Nothing here is decidable while
-          // the pane has no height, so nothing is decided; the state is left exactly as the tab was.
-        } else if (userScrolling) {
-          // Deliberately nothing: the settle handler decides where this lands.
-        } else if (following && view.tallLastProgrammaticTop != null &&
-                   Math.abs(view.container.scrollTop - view.tallLastProgrammaticTop) > TALL_FOLLOW_BREAK_PX) {
-          // Following, but the view is no longer where this code last put it: something moved it and the
-          // scroll event saying so has not been delivered yet. Scroll events are asynchronous, so a
-          // gesture's first frames land before any suppression is in place -- measured as a 3-frame burst
-          // that yanked the view from the top back to the bottom the instant a drag began.
-          //
-          // Compared against our own last position, NOT against the ceiling: the ceiling moves down as
-          // output arrives, so on a fresh terminal (container at 0, ceiling jumping to thousands) a
-          // ceiling comparison reads ordinary growth as "the user scrolled away" and parks the terminal
-          // at the top, never following again. Measured exactly that way. The distance from where we put
-          // it only changes when something else moves it.
-          view.tallFollowing = false;
-          this.tallCaptureAnchorRow(view);
-        } else if (following) {
-          this.scrollTallContainerToCursor(view);
-        } else {
-          // Holds the anchored LINE still (see tallHoldAnchorRow), which also absorbs the browser's own
-          // scroll-into-view drift -- the user should never see the view move while they have deliberately
-          // scrolled away to read something. The anchor it defends is captured by the settle handler once
-          // the gesture ends, which is why the branch above yields while one is still running.
-          this.tallHoldAnchorRow(view);
-        }
-      }
-      if (live) this.detectTerminalAttentionFromBuffer(view);
-      if (live && view.needsViewportRepair && !view.outputQueue.length &&
-          view.container.classList.contains("visible")) {
-        view.needsViewportRepair = false;
-        this.repairTerminalViewport(view);
-      }
-      if (live) this.scheduleHistoryTerminalModelRefresh(view);
-      if (live) this.scheduleClaudeStatusRowRefresh(view);
-      if (live) this.scheduleTerminalTailRepair(view);
-      if (live) this.scheduleTerminalViewportRestore(view);
-      this.drainTerminalWrites(view);
-    });
-  }
-
-  scheduleClaudeStatusRowRefresh(view) {
-    if (!view || view.closed || view.claudeStatusRowRefreshTimer || this.session(view.sessionId)?.agent_kind !== "claude" ||
-        !view.container.classList.contains("visible") || view.scrollMode !== "follow" || !this.xtermAtBottom(view)) return;
-    const elapsed = Date.now() - view.lastClaudeStatusRowRefreshAt;
-    const delay = Math.max(0, CLAUDE_STATUS_ROW_REFRESH_INTERVAL_MS - elapsed);
-    view.claudeStatusRowRefreshTimer = setTimeout(() => {
-      view.claudeStatusRowRefreshTimer = 0;
-      if (view.closed || this.session(view.sessionId)?.agent_kind !== "claude" ||
-          !view.container.classList.contains("visible") || view.scrollMode !== "follow" || !this.xtermAtBottom(view)) return;
-      view.lastClaudeStatusRowRefreshAt = Date.now();
-      const lastRow = Math.max(0, view.term.rows - 1);
-      view.term.refresh(Math.max(0, lastRow - 2), lastRow);
-    }, delay);
-  }
-
-  scheduleHistoryTerminalModelRefresh(view) {
-    if (!view || view.closed || view.historyModelRefreshTimer || !this.historyOpen ||
-        view.sessionId !== this.activeId || this.activeFileKey !== null) return;
-    view.historyModelRefreshTimer = setTimeout(() => {
-      view.historyModelRefreshTimer = 0;
-      if (view.closed || !this.historyOpen || view.sessionId !== this.activeId || this.activeFileKey !== null) return;
-      this.renderHistoryModel(this.session(view.sessionId), this.historyTurnsBySession.get(view.sessionId) || this.historyTurns);
-    }, 180);
-  }
-
-  repairTerminalViewport(view) {
-    if (!this.attachRepaintEnabled()) return;
-    // Do this only after an initial replay has drained and only while output
-    // following is active. The older generic viewport scroll listener caused
-    // this same repair to race a user's first wheel gesture after tab switch.
-    if (!view || view.closed || view.manualScroll || !view.keepBottom || view.viewportRepairFrame ||
-        !view.container.classList.contains("visible")) return;
-    const generation = view.manualScrollGeneration;
-    view.viewportRepairFrame = requestAnimationFrame(() => {
-      view.viewportRepairFrame = requestAnimationFrame(() => {
-        view.viewportRepairFrame = 0;
-        if (view.closed || view.manualScroll || generation !== view.manualScrollGeneration ||
-            !view.keepBottom || !view.container.classList.contains("visible") || !this.terminalAtBottom(view)) return;
-        this.tallFit(view);
-        this.refreshTerminal(view);
-        const { cols, rows } = view.term;
-        if (cols >= 2 && rows >= 2) this.sendResize(view, cols, rows);
-        this.scrollTerminalToBottom(view);
-      });
-    });
-  }
-
-  refreshTerminalAppearance(view, forceResize = false) {
-    if (!view || !view.term) return;
-    view.term.options.theme = { ...this.termTheme(), ...(this.terminalFindThemeOverride(view) || {}) };
-    if (typeof view.term.clearTextureAtlas === "function") view.term.clearTextureAtlas();
-    const renderService = view.term._core?._renderService;
-    const allowForcedRendererReset = forceResize;
-    if (allowForcedRendererReset && renderService) {
-      if (typeof renderService.clear === "function") renderService.clear();
-      if (typeof renderService.handleResize === "function") renderService.handleResize(view.term.cols, view.term.rows);
-      else if (view.term._core?.resize) view.term._core.resize(view.term.cols, view.term.rows);
-    }
-    this.refreshTerminal(view);
-  }
-
-  scheduleViewportSettle(view) {
-    if (this.isTerminalScrollV2()) {
-      if (view?.scrollMode === "follow") this.scrollTerminalV2ToBottom(view);
-      return;
-    }
-    if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
-    view.settleFrame = requestAnimationFrame(() => {
-      view.settleFrame = requestAnimationFrame(() => {
-        view.settleFrame = 0;
-        if (!view.manualScroll && (view.keepBottom || Date.now() < view.pinBottomUntil)) {
-          view.keepBottom = true;
-          this.scrollTerminalToBottom(view);
-          const atBottom = this.terminalAtBottom(view);
-          if (!atBottom || Date.now() < view.pinBottomUntil) {
-            clearTimeout(view.scrollSettleTimer);
-            view.scrollSettleTimer = setTimeout(() => {
-              if (!view.manualScroll && (view.keepBottom || Date.now() < view.pinBottomUntil)) {
-                this.scheduleViewportSettle(view);
-              }
-            }, 250);
-          }
-        }
-      });
-    });
-  }
-
-  fitActive() {
-    if (this.nativeVscodeMode || this.sidebarResizeInProgress || !this.terminalPageCanResize()) return;
-    if (this.$("terminal-area").classList.contains("hidden")) return;
-    const view = this.views.get(this.activeId);
-    if (!view || !view.container.classList.contains("visible")) return;
-    if (this.isTerminalScrollV2()) {
-      this.scheduleV2Fit(view);
-      this.scheduleV2ViewportSync(view);
-      return;
-    }
-    const rect = view.container.getBoundingClientRect();
-    if (rect.width < 40 || rect.height < 40) return;
-    this.tallFit(view);
-    view.container.classList.remove("initializing");
-    this.refreshTerminal(view);
-    const { cols, rows } = view.term;
-    if (cols < 2 || rows < 2) return;
-    this.sendResize(view, cols, rows);
-    if (view.keepBottom || Date.now() < view.pinBottomUntil) this.scheduleViewportSettle(view);
-  }
-
-  destroyView(id, view) {
-    view.closed = true;
-    view.renderObserver?.dispose();
-    this.clearActiveTerminalSettleWatchdog(view);
-    clearTimeout(view.manualScrollReleaseTimer);
-    clearTimeout(view.scrollSettleTimer);
-    clearTimeout(view.resizeRepairTimer);
-    clearTimeout(view.tailRepairTimer);
-    clearTimeout(view.tailRepairConfirmTimer);
-    clearTimeout(view.claudeInitialReplayCheckTimer);
-    clearTimeout(view.claudeStatusRowRefreshTimer);
-    clearTimeout(view.historyModelRefreshTimer);
-    clearTimeout(view.promptSubmissionReflowGuardTimer);
-    clearTimeout(view.promptDraftSyncTimer);
-    clearTimeout(view.promptDraftSyncDebounceTimer);
-    clearTimeout(view.pendingAgentPasteTimer);
-    this.cancelTerminalViewportRestore(view);
-    for (const timer of view.codexReflowFollowupTimers) clearTimeout(timer);
-    if (view.settleFrame) cancelAnimationFrame(view.settleFrame);
-    if (view.viewportRepairFrame) cancelAnimationFrame(view.viewportRepairFrame);
-    if (view.v2ViewportSyncFrame) cancelAnimationFrame(view.v2ViewportSyncFrame);
-    if (view.v2FitFrame) cancelAnimationFrame(view.v2FitFrame);
-    if (view.v2InitialFitFrame) cancelAnimationFrame(view.v2InitialFitFrame);
-    if (view.v2ForcedReflowFrame) cancelAnimationFrame(view.v2ForcedReflowFrame);
-    if (view.v2ForcedReflowRestoreFrame) cancelAnimationFrame(view.v2ForcedReflowRestoreFrame);
-    if (view.tailRepairFrame) cancelAnimationFrame(view.tailRepairFrame);
-    if (view.activationRepairFrame) cancelAnimationFrame(view.activationRepairFrame);
-    if (view.codexFocusRefreshFrame) cancelAnimationFrame(view.codexFocusRefreshFrame);
-    clearTimeout(view.layoutFitRetryTimer);
-    if (view.layoutObserver) view.layoutObserver.disconnect();
-    if (view.scrollObserver) view.scrollObserver.disconnect();
-    if (view.visibilityObserver) view.visibilityObserver.disconnect();
-    if (view.ws) view.ws.close();
-    view.terminalFindResultListener?.dispose();
-    view.term.dispose();
-    view.container.remove();
-    this.views.delete(id);
-  }
-
-  async loadSettings() {
-    try {
-      const res = await fetch("/api/settings");
-      const incoming = await res.json();
-      const legacyTerminalIconsEnabled = incoming.show_terminal_icons === true;
-      const storedTerminalIconAgents = incoming.terminal_icon_agents && typeof incoming.terminal_icon_agents === "object"
-        ? incoming.terminal_icon_agents : {};
-      incoming.terminal_icon_agents = Object.fromEntries(TERMINAL_ICON_AGENT_KINDS.map((kind) => [kind,
-        Object.prototype.hasOwnProperty.call(storedTerminalIconAgents, kind)
-          ? !!storedTerminalIconAgents[kind] : legacyTerminalIconsEnabled]));
-      if (incoming.code_font_size == null) incoming.code_font_size = incoming.viewer_font_size || SETTINGS_DEFAULTS.code_font_size;
-      if (incoming.side_split != null && incoming.side_split !== SETTINGS_DEFAULTS.side_split) {
-        incoming.side_split_user_set = true;
-      }
-      if (incoming.sidebar_text_color == null) {
-        const legacyColor = incoming.sidebar_status_color || incoming.wave_color;
-        if (/^#[0-9a-f]{6}$/i.test(String(legacyColor || ""))) incoming.sidebar_text_color = legacyColor;
-      }
-      const legacyGlobTokens = String(incoming.search_glob || "").split(",").map((token) => token.trim()).filter(Boolean);
-      const legacyIncludeGlob = legacyGlobTokens.filter((token) => !token.startsWith("!")).join(", ");
-      const legacyExcludeGlob = legacyGlobTokens.filter((token) => token.startsWith("!")).join(", ");
-      const migratedFileGlobSettings = incoming.tree_file_glob === SETTINGS_DEFAULTS.tree_file_glob &&
-        incoming.search_file_glob === SETTINGS_DEFAULTS.search_file_glob && legacyIncludeGlob;
-      const migratedExcludeGlob = incoming.excluded_file_glob === SETTINGS_DEFAULTS.excluded_file_glob &&
-        incoming.search_glob !== SETTINGS_DEFAULTS.search_glob && legacyExcludeGlob;
-      if (migratedFileGlobSettings) {
-        incoming.tree_file_glob = legacyIncludeGlob;
-        incoming.search_file_glob = legacyIncludeGlob;
-      }
-      if (migratedExcludeGlob) incoming.excluded_file_glob = legacyExcludeGlob;
-      this.settings = { ...SETTINGS_DEFAULTS, ...incoming };
-      this.persistedSettings = this.copySettings(this.settings);
-      this.filesPanelWidthInitialized = !!this.settings.files_panel_width_initialized;
-      this.lastFilesSidePanelTab = FILES_SIDE_PANEL_TABS.includes(this.settings.files_side_panel_last_tab)
-        ? this.settings.files_side_panel_last_tab : "project";
-      if (!this.settings.md_prompt_queues || typeof this.settings.md_prompt_queues !== "object") this.settings.md_prompt_queues = {};
-      if (!this.settings.md_prompt_drafts || typeof this.settings.md_prompt_drafts !== "object") this.settings.md_prompt_drafts = {};
-      if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
-      this.settings.show_git_status = true;
-      const excludedTokens = this.fileTypeFilterTokens();
-      if (this.settings.hide_dot_folders !== false && !excludedTokens.includes("!.*")) excludedTokens.unshift("!.*");
-      if (!excludedTokens.includes("!*.log")) excludedTokens.push("!*.log");
-      const normalizedExcludedGlob = [...new Set(excludedTokens)].join(", ");
-      const excludedGlobChanged = this.settings.excluded_file_glob !== normalizedExcludedGlob;
-      this.settings.excluded_file_glob = normalizedExcludedGlob;
-      this.settings.hide_dot_folders = excludedTokens.includes("!.*");
-      this.syncLegacySearchGlob();
-      if (migratedFileGlobSettings || migratedExcludeGlob || excludedGlobChanged) this.saveSettings();
-    } catch (err) {
-      this.settings = { ...SETTINGS_DEFAULTS };
-      this.persistedSettings = this.copySettings(this.settings);
-    }
-    if (!/^#[0-9a-f]{6}$/i.test(String(this.settings.sidebar_text_color || ""))) {
-      this.settings.sidebar_text_color = SETTINGS_DEFAULTS.sidebar_text_color;
-    }
-    this.settings.show_terminal_age = true;
-    if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
-    if (this.normalizeNotebookNotes()) this.saveSettings();
-    // V2 is now the only desktop terminal scroll controller. Remove the old
-    // browser-only opt-in so a previous preference cannot revive V1.
-    localStorage.removeItem("termdeck.terminal_scroll_v2");
-    const states = this.settings.project_state || {};
-    if (!Object.keys(states).length && (this.settings.active_session_id || (this.settings.open_files || []).length)) {
-      states.__all__ = { active_session_id: this.settings.active_session_id, open_files: this.settings.open_files };
-      this.settings.project_state = states;
-    }
-    this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
-    this.applySettings();
-  }
-
-  restoreOpenFiles() {
-    const states = this.settings.project_state || {};
-    const lists = Object.values(states).map((state) => state.open_files || []);
-    const scopedSavedFiles = this.projectSlug ? this.getProjectState().open_files || [] : [];
-    const scopedSavedKeys = new Set(scopedSavedFiles.map((file) => `${file.root}|${file.path}`));
-    const files = lists.flat().filter((file) => file && file.root && file.path &&
-      (!this.projectSlug || this.owningProjectKey(file.root) === this.projectStateKey())).slice(-OPEN_FILES_MAX_ENTRIES);
-    let recoveredMisownedFile = false;
-    for (const f of files) {
-      const key = `${f.root}|${f.path}`;
-      this.openFiles.set(key,
-        { root: f.root, path: f.path, name: f.path.split("/").pop(), model: null, fullPath: null, truncated: false,
-          mtime: Number(f.mtime) || 0, git_status: String(f.git_status || "") });
-      if (this.projectSlug && !scopedSavedKeys.has(key)) recoveredMisownedFile = true;
-    }
-    if (recoveredMisownedFile) this.persistOpenFiles();
-    void this.refreshOpenFileGitStatuses();
-  }
-
-  closeOpenFileEntry(key, entry, recordRecent = true) {
-    clearTimeout(entry.autosaveTimer);
-    entry.autosaveTimer = 0;
-    if (entry.model) {
-      if (this.lspClient?.model === entry.model) this.lspClient.deactivate();
-      entry.model.dispose();
-      entry.model = null;
-    }
-    if (recordRecent) {
-      const recent = Array.isArray(this.settings.recent_closed_files) ? this.settings.recent_closed_files : [];
-      this.settings.recent_closed_files = [{ root: entry.root, path: entry.path },
-        ...recent.filter((item) => item.root !== entry.root || item.path !== entry.path)].slice(0, 30);
-    }
-    this.openFiles.delete(key);
-    this.sidebarSelectedFileKeys.delete(key);
-    if (this.sidebarFileSelectionAnchorKey === key) this.sidebarFileSelectionAnchorKey = null;
-    if (this.secondaryFileKey === key) this.secondaryFileKey = null;
-  }
-
-  enforceOpenFilesLimit() {
-    let changed = false;
-    for (const [key, entry] of this.openFiles) {
-      if (this.openFiles.size <= OPEN_FILES_MAX_ENTRIES) break;
-      if (key === this.activeFileKey || entry.dirty || entry.savePromise) continue;
-      this.closeOpenFileEntry(key, entry, false);
-      changed = true;
-    }
-    return changed;
-  }
-
-  owningProjectKey(root) {
-    const normalized = String(root || "").replace(/\\/g, "/").replace(/\/+$/, "");
-    const worktree = this.worktrees.find((candidate) => String(candidate.path || "").replace(/\\/g, "/").replace(/\/+$/, "") === normalized);
-    if (worktree) return worktree.id === "root" ? worktree.project : `${worktree.project}::worktree:${worktree.id}`;
-    return this.projectForCwd(root)?.name || "__all__";
-  }
-
-  themeDefinition() {
-    return THEME_BY_ID[this.settings.theme] || THEME_BY_ID.dark;
-  }
-
-  themeLabel() {
-    return this.themeDefinition().label;
-  }
-
-  isLight() {
-    return this.themeDefinition().kind === "light";
-  }
-
-  monacoThemeName() {
-    return "termdeck-theme";
-  }
-
-  termTheme() {
-    return this.themeDefinition().terminal;
-  }
-
-  applyThemeVariables() {
-    const theme = this.themeDefinition();
-    for (const [name, value] of Object.entries(theme.css)) document.documentElement.style.setProperty(name, value);
-    document.documentElement.dataset.theme = theme.id;
-    document.body.classList.toggle("theme-light", theme.kind === "light");
-    document.body.classList.toggle("theme-dark", theme.kind !== "light");
-  }
-
-  defineMonacoTheme(theme = this.themeDefinition()) {
-    monaco.editor.defineTheme(this.monacoThemeName(), {
-      base: theme.monacoBase, inherit: true, rules: [], colors: theme.monacoColors,
-    });
-    if (this.editor) monaco.editor.setTheme(this.monacoThemeName());
-  }
-
-  applySettings({ fitTerminals = true } = {}) {
-    const s = this.settings;
-    const sidebar = this.$("sidebar");
-    const filesVisible = FILES_SIDE_PANEL_TABS.includes(this.sideView);
-    const normalWidth = Number(s.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
-    if (filesVisible && s.files_pinned && !this.filesPanelWidthInitialized) {
-      s.files_width = FILEDECK_DEFAULT_SIDEBAR_WIDTH;
-      this.filesPanelWidthInitialized = true;
-      s.files_panel_width_initialized = true;
-      localStorage.setItem("termdeck.files_panel_width_v2", "1");
-      this.saveSettings();
-    }
-    const pinnedFileWidth = Math.max(Number(s.files_width) || 0, FILEDECK_DEFAULT_SIDEBAR_WIDTH);
-    const floatingFileWidth = Math.max(Number(s.files_width) || 0, normalWidth * 2);
-    const activeSidebarWidth = filesVisible && s.files_pinned ? pinnedFileWidth : normalWidth;
-    const sidebarLeft = sidebar.getBoundingClientRect().left || 0;
-    const sidebarRight = sidebarLeft + activeSidebarWidth;
-    const maximumNotebookLeft = Math.max(0, window.innerWidth - 334);
-    const defaultNotebookLeft = Math.min(Math.round(sidebarRight + 32), maximumNotebookLeft);
-    const configuredNotebookLeft = Number(s.notebook_left);
-    const notebookLeft = configuredNotebookLeft >= 0
-      ? Math.max(0, Math.min(maximumNotebookLeft, configuredNotebookLeft))
-      : defaultNotebookLeft;
-    sidebar.style.width = activeSidebarWidth + "px";
-    sidebar.style.minWidth = activeSidebarWidth + "px";
-    document.documentElement.style.setProperty("--history-sidebar-width", `${normalWidth}px`);
-    document.documentElement.style.setProperty("--notebook-panel-left", `${notebookLeft}px`);
-    this.positionFloatingFilesPanel(floatingFileWidth);
-    document.documentElement.style.setProperty("--sidebar-font-size", s.sidebar_font_size + "px");
-    document.documentElement.style.setProperty("--project-font-size", s.project_font_size + "px");
-    document.documentElement.style.setProperty("--terminal-font-size", s.terminal_font_size + "px");
-    document.documentElement.style.setProperty("--ui-font-size", s.ui_font_size + "px");
-    document.documentElement.style.setProperty("--system-font-size", s.system_font_size + "px");
-    document.documentElement.style.setProperty("--files-tab-font-size", s.files_tab_font_size + "px");
-    document.documentElement.style.setProperty("--code-font-size", s.code_font_size + "px");
-    document.documentElement.style.setProperty("--bottom-font-size", s.bottom_font_size + "px");
-    document.documentElement.style.setProperty("--ui-scale", String(this.normalizeUiScale((Number(s.bottom_font_size) || SETTINGS_DEFAULTS.bottom_font_size) / SETTINGS_DEFAULTS.bottom_font_size)));
-    document.documentElement.style.setProperty("--sidebar-text-color", s.sidebar_text_color);
-    const terminalIconSize = Math.max(FONT_MIN, Math.min(FONT_MAX, Number(s.terminal_icon_size) || SETTINGS_DEFAULTS.terminal_icon_size));
-    const terminalStatusDotSize = Math.max(5, Math.min(10, terminalIconSize * 0.43));
-    const terminalStatusDotLeft = 2 + (terminalIconSize - terminalStatusDotSize) / 2;
-    const terminalRowLeftPadding = Math.max(20, terminalIconSize + 7);
-    document.documentElement.style.setProperty("--terminal-icon-size", `${terminalIconSize}px`);
-    document.documentElement.style.setProperty("--terminal-status-dot-size", `${terminalStatusDotSize}px`);
-    document.documentElement.style.setProperty("--terminal-status-dot-left", `${terminalStatusDotLeft}px`);
-    document.documentElement.style.setProperty("--terminal-row-left-padding", `${terminalRowLeftPadding}px`);
-    this.updateSessionAgeStyles();
-    const codeFontSize = Number(s.code_font_size) || SETTINGS_DEFAULTS.code_font_size;
-    const configuredDiffFontSize = Number(s.diff_font_size) || SETTINGS_DEFAULTS.diff_font_size;
-    const relativeDiffFontSize = configuredDiffFontSize === SETTINGS_DEFAULTS.diff_font_size
-      ? Math.max(8, codeFontSize - 1)
-      : Math.min(configuredDiffFontSize, Math.max(8, codeFontSize - 1));
-    document.documentElement.style.setProperty("--diff-font-size", relativeDiffFontSize + "px");
-    document.documentElement.style.setProperty("--tree-font-size", s.tree_font_size + "px");
-    this.applyThemeVariables();
-    for (const view of this.views.values()) {
-      if (view.term.options.fontSize !== s.terminal_font_size) view.term.options.fontSize = s.terminal_font_size;
-      this.refreshTerminalAppearance(view);
-    }
-    if (this.editor) {
-      this.editor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
-      this.defineMonacoTheme();
-    }
-    if (this.notebookEditor) {
-      this.notebookEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
-      this.notebookEditor.layout();
-    }
-    if (this.fileHistoryCurrentEditor) {
-      this.fileHistoryCurrentEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
-      this.fileHistoryCurrentEditor.layout();
-    }
-    if (this.fileHistoryDiffEditor) {
-      this.fileHistoryDiffEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
-      this.fileHistoryDiffEditor.getOriginalEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
-      this.fileHistoryDiffEditor.getModifiedEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
-      this.fileHistoryDiffEditor.layout();
-    }
-    if (this.gitReviewDiffEditor) {
-      this.gitReviewDiffEditor.updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
-      this.gitReviewDiffEditor.getOriginalEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
-      this.gitReviewDiffEditor.getModifiedEditor().updateOptions({ fontSize: s.code_font_size, wordWrap: s.editor_no_wrap ? "off" : "on" });
-      this.gitReviewDiffEditor.layout();
-    }
-    this.$("stat-text").classList.toggle("hidden", !s.show_stats);
-    this.$("stat-spark").classList.toggle("hidden", !s.show_stats);
-    const editorWrapToggle = this.$("editor-wrap-toggle");
-    if (editorWrapToggle) {
-      const editorNoWrapEnabled = !!s.editor_no_wrap;
-      editorWrapToggle.classList.toggle("on", editorNoWrapEnabled);
-      editorWrapToggle.setAttribute("aria-pressed", String(editorNoWrapEnabled));
-      editorWrapToggle.title = `Editor no wrap: ${editorNoWrapEnabled ? "on" : "off"}`;
-    }
-    this.renderInlineSizeControls();
-    if (fitTerminals) this.fitActive();
-  }
-
-  initMonaco() {
-    this.monacoReady = new Promise((resolve) => {
-      require.config({ paths: { vs: "/static/vendor/monaco/vs" } });
-      require(["vs/editor/editor.main"], () => {
-        this.defineMonacoTheme();
-        this.editor = monaco.editor.create(this.$("monaco-host"), {
-          readOnly: false, theme: this.monacoThemeName(),
-          automaticLayout: true, minimap: { enabled: false },
-          scrollBeyondLastLine: false, fontSize: this.settings.code_font_size, lineNumbersMinChars: 4,
-          renderLineHighlight: "all", folding: true, wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true,
-        });
-        this.lspClient = new TermdeckLspClient(this);
-        this.lspClient.registerProviders();
-        monaco.editor.onDidChangeMarkers(() => this.scheduleProblemsRefresh());
-        this.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => this.saveActiveFile());
-        this.editor.addAction({
-          id: "termdeck-save", label: "Save (⌘S)", contextMenuGroupId: "1_modification", contextMenuOrder: 0.5,
-          run: () => this.saveActiveFile(),
-        });
-        this.editor.addAction({
-          id: "termdeck-find", label: "Find (⌘F)", contextMenuGroupId: "navigation", contextMenuOrder: 1.1,
-          run: (ed) => ed.getAction("actions.find").run(),
-        });
-        this.editor.addAction({
-          id: "termdeck-replace", label: "Replace in File (⌥⌘F)", contextMenuGroupId: "navigation", contextMenuOrder: 1.2,
-          keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyF],
-          run: (ed) => ed.getAction("editor.action.startFindReplaceAction").run(),
-        });
-        this.editor.addAction({
-          id: "termdeck-find-usages", label: "Find Usages in Project", contextMenuGroupId: "navigation",
-          contextMenuOrder: 1.5,
-          run: () => this.showEditorUsages(),
-        });
-        const notebookHost = this.$("notebook-editor-host");
-        if (notebookHost) {
-          notebookHost.textContent = "";
-          this.notebookEditor = monaco.editor.create(notebookHost, {
-            readOnly: false, theme: this.monacoThemeName(),
-            automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
-            fontSize: this.settings.code_font_size, lineNumbersMinChars: 2, lineDecorationsWidth: 8, glyphMargin: false,
-            renderLineHighlight: "all", folding: true, wordWrap: this.settings.editor_no_wrap ? "off" : "on",
-            fixedOverflowWidgets: true, padding: { top: 10, bottom: 10 },
-          });
-          this.notebookEditor.onDidChangeModelContent(() => {
-            if (!this.notebookMounted) return;
-            const note = this.activeNotebookNote();
-            const model = note ? this.notebookEditorModels.get(note.note_id) : null;
-            if (!note || model !== this.notebookEditor.getModel()) return;
-            this.setActiveNotebookText(this.notebookEditor.getValue(), false, false);
-            clearTimeout(this.notebookTitleTimer);
-            this.notebookTitleTimer = setTimeout(() => {
-              this.renderNotebookTabs();
-              this.saveSettings();
-            }, 160);
-          });
-          this.notebookEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { void this.flushNotebook(); });
-        }
-        this.editor.onMouseDown((mouseEvent) => {
-          const event = mouseEvent.event;
-          if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || !mouseEvent.target.position) return;
-          event.preventDefault();
-          event.stopPropagation();
-          void this.openEditorSymbolAtPosition(mouseEvent.target.position);
-        });
-        resolve();
-      });
-    });
-  }
-
-  saveSettings() {
-    if (/^#[0-9a-f]{6}$/i.test(String(this.settings.sidebar_text_color || ""))) {
-      localStorage.setItem("termdeck.sidebar_text_color", this.settings.sidebar_text_color);
-    }
-    clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => {
-      this.saveTimer = null;
-      this.queueSettingsPatch();
-    }, 400);
-  }
-
-  flushPendingSettingsSave() {
-    if (!this.saveTimer) return;
-    clearTimeout(this.saveTimer);
-    this.saveTimer = null;
-    const patch = this.changedSettingsPatch(this.copySettings(this.settings));
-    if (!Object.keys(patch).length) return;
-    for (const operation of this.settingWriteOperations(patch)) {
-      const body = operation.method === "PUT" ? JSON.stringify({ value: operation.value }) : undefined;
-      void fetch(operation.path, { method: operation.method, headers: body ? { "Content-Type": "application/json" } : {},
-        body, keepalive: !body || body.length < 60000 }).catch((error) => console.error("TermDeck settings exit save failed", error));
-    }
-  }
-
-  copySettings(settings) {
-    return JSON.parse(JSON.stringify(settings));
-  }
-
-  changedSettingsPatch(settingsSnapshot) {
-    const patch = {};
-    for (const [key, value] of Object.entries(settingsSnapshot)) {
-      if (key === "project_state") continue;
-      if (JSON.stringify(value) !== JSON.stringify(this.persistedSettings[key])) patch[key] = value;
-    }
-    return patch;
-  }
-
-  settingWriteOperations(patch) {
-    const operations = [];
-    for (const [key, value] of Object.entries(patch)) {
-      const previous = this.persistedSettings[key];
-      const keyed = value && previous && typeof value === "object" && typeof previous === "object" &&
-        !Array.isArray(value) && !Array.isArray(previous);
-      if (!keyed) {
-        operations.push({ key, method: "PUT", path: `/api/settings/${encodeURIComponent(key)}`, value });
-        continue;
-      }
-      const entryKeys = new Set([...Object.keys(previous), ...Object.keys(value)]);
-      for (const entryKey of entryKeys) {
-        if (!Object.prototype.hasOwnProperty.call(value, entryKey)) {
-          operations.push({ key, entryKey, method: "DELETE",
-            path: `/api/settings/${encodeURIComponent(key)}/${encodeURIComponent(entryKey)}` });
-        } else if (JSON.stringify(value[entryKey]) !== JSON.stringify(previous[entryKey])) {
-          operations.push({ key, entryKey, method: "PUT",
-            path: `/api/settings/${encodeURIComponent(key)}/${encodeURIComponent(entryKey)}`, value: value[entryKey] });
-        }
-      }
-    }
-    return operations;
-  }
-
-  applyPersistedSettingOperation(operation, value) {
-    if (operation.entryKey === undefined) {
-      this.persistedSettings[operation.key] = this.copySettings(value);
-      return;
-    }
-    const current = this.persistedSettings[operation.key] && typeof this.persistedSettings[operation.key] === "object"
-      ? this.copySettings(this.persistedSettings[operation.key]) : {};
-    if (operation.method === "DELETE") delete current[operation.entryKey];
-    else current[operation.entryKey] = this.copySettings(value);
-    this.persistedSettings[operation.key] = current;
-  }
-
-  queueSettingsPatch() {
-    this.settingsSavePromise = this.settingsSavePromise.catch((error) => {
-      console.error("TermDeck settings save failed", error);
-    }).then(async () => {
-      const settingsSnapshot = this.copySettings(this.settings);
-      const patch = this.changedSettingsPatch(settingsSnapshot);
-      if (!Object.keys(patch).length) return;
-      for (const operation of this.settingWriteOperations(patch)) {
-        const body = operation.method === "PUT" ? JSON.stringify({ value: operation.value }) : undefined;
-        const response = await fetch(operation.path, { method: operation.method,
-          headers: body ? { "Content-Type": "application/json" } : {}, body });
-        if (!response.ok) throw new Error(`setting save failed for ${operation.key} (${response.status})`);
-        const persisted = await response.json();
-        this.applyPersistedSettingOperation(operation, persisted.value);
-      }
-      if (Object.keys(this.changedSettingsPatch(this.settings)).length) this.saveSettings();
-    });
-  }
-
-  initFontSampleEditor() {
-    const backdrop = this.$("font-samples-backdrop");
-    const range = this.$("font-samples-range");
-    if (!backdrop || !range) return;
-    this.$("font-samples-close").onclick = () => this.closeFontSampleEditor();
-    this.$("font-samples-minus").onclick = () => this.changeSelectedFontSampleSize(-1);
-    this.$("font-samples-plus").onclick = () => this.changeSelectedFontSampleSize(1);
-    this.$("font-samples-reset").onclick = () => this.resetSelectedFontSampleSize();
-    range.oninput = () => this.setSelectedFontSampleSize(Number(range.value));
-    backdrop.addEventListener("mousedown", (event) => {
-      if (event.target === backdrop) this.closeFontSampleEditor();
-    });
-    backdrop.addEventListener("pointerdown", (event) => event.stopPropagation());
-    backdrop.addEventListener("keydown", (event) => {
-      event.stopPropagation();
-      if (event.key === "Escape") {
-        event.preventDefault();
-        this.closeFontSampleEditor();
-        return;
-      }
-      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-        event.preventDefault();
-        this.selectFontSample(this.fontSampleSelectionIndex + (event.key === "ArrowDown" ? 1 : -1), true);
-        return;
-      }
-      if (event.key === "Home" || event.key === "End") {
-        event.preventDefault();
-        this.selectFontSample(event.key === "Home" ? 0 : INLINE_SIZE_SETTING_DEFINITIONS.length - 1, true);
-        return;
-      }
-      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-        event.preventDefault();
-        this.changeSelectedFontSampleSize(event.key === "ArrowRight" ? 1 : -1);
-      }
-    });
-  }
-
-  openFontSampleEditor() {
-    this.fontSampleReturnFocus = this.$("settings-gear");
-    this.fontSizeEditorOpen = false;
-    this.$("settings-popover").classList.add("hidden");
-    this.$("font-samples-backdrop").classList.remove("hidden");
-    this.renderFontSampleList();
-    this.selectFontSample(this.fontSampleSelectionIndex, false);
-    requestAnimationFrame(() => this.$("font-samples-list")?.querySelector(".font-samples-list-item.selected")?.focus());
-  }
-
-  closeFontSampleEditor() {
-    const backdrop = this.$("font-samples-backdrop");
-    if (!backdrop || backdrop.classList.contains("hidden")) return false;
-    backdrop.classList.add("hidden");
-    this.flushPendingSettingsSave();
-    const returnFocus = this.fontSampleReturnFocus;
-    this.fontSampleReturnFocus = null;
-    requestAnimationFrame(() => returnFocus?.focus());
-    return true;
-  }
-
-  selectedFontSampleDefinition() {
-    return INLINE_SIZE_SETTING_DEFINITIONS[this.fontSampleSelectionIndex] || INLINE_SIZE_SETTING_DEFINITIONS[0];
-  }
-
-  renderFontSampleList() {
-    const list = this.$("font-samples-list");
-    if (!list) return;
-    list.textContent = "";
-    INLINE_SIZE_SETTING_DEFINITIONS.forEach((definition, index) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "font-samples-list-item";
-      button.dataset.index = String(index);
-      button.dataset.key = definition.key;
-      button.setAttribute("role", "option");
-      const label = document.createElement("span");
-      label.textContent = definition.label;
-      const value = document.createElement("span");
-      value.className = "font-samples-list-value";
-      value.textContent = `${Math.round(Number(this.settings[definition.key]) || SETTINGS_DEFAULTS[definition.key])}px`;
-      button.append(label, value);
-      button.onclick = () => this.selectFontSample(index, true);
-      list.appendChild(button);
-    });
-  }
-
-  selectFontSample(index, focus = false) {
-    const count = INLINE_SIZE_SETTING_DEFINITIONS.length;
-    this.fontSampleSelectionIndex = (Number(index) + count) % count;
-    this.refreshFontSampleEditor();
-    if (focus) this.$("font-samples-list")?.querySelector(".font-samples-list-item.selected")?.focus();
-  }
-
-  setSelectedFontSampleSize(value) {
-    const definition = this.selectedFontSampleDefinition();
-    const normalized = Math.max(FONT_MIN, Math.min(FONT_MAX, Number(value) || FONT_MIN));
-    this.settings[definition.key] = normalized;
-    this.applySettings({ fitTerminals: false });
-    this.saveSettings();
-    this.refreshFontSampleEditor();
-  }
-
-  changeSelectedFontSampleSize(delta) {
-    const definition = this.selectedFontSampleDefinition();
-    this.setSelectedFontSampleSize((Number(this.settings[definition.key]) || SETTINGS_DEFAULTS[definition.key]) + delta);
-  }
-
-  resetSelectedFontSampleSize() {
-    const definition = this.selectedFontSampleDefinition();
-    this.setSelectedFontSampleSize(SETTINGS_DEFAULTS[definition.key]);
-  }
-
-  refreshFontSampleEditor() {
-    const definition = this.selectedFontSampleDefinition();
-    const value = Math.round(Number(this.settings[definition.key]) || SETTINGS_DEFAULTS[definition.key]);
-    this.$("font-samples-selection-label").textContent = definition.label;
-    this.$("font-samples-selection-value").textContent = `${value}px`;
-    this.$("font-samples-range").value = String(value);
-    const preview = this.$("font-samples-preview");
-    preview.style.setProperty("--font-sample-size", `${value}px`);
-    this.renderSelectedFontSamplePreview(definition.key);
-    for (const row of this.$("font-samples-list").querySelectorAll(".font-samples-list-item")) {
-      const selected = row.dataset.key === definition.key;
-      row.classList.toggle("selected", selected);
-      row.setAttribute("aria-selected", String(selected));
-      row.tabIndex = selected ? 0 : -1;
-      const rowValue = row.querySelector(".font-samples-list-value");
-      if (rowValue) {
-        const rowDefinition = INLINE_SIZE_SETTING_DEFINITIONS[Number(row.dataset.index)];
-        rowValue.textContent = `${Math.round(Number(this.settings[rowDefinition.key]) || SETTINGS_DEFAULTS[rowDefinition.key])}px`;
-      }
-      if (selected) row.scrollIntoView({ block: "nearest" });
-    }
-  }
-
-  renderSelectedFontSamplePreview(key) {
-    const preview = this.$("font-samples-preview");
-    const samples = {
-      sidebar_font_size: '<section class="font-sample-stage font-sample-terminal-list"><div class="font-sample-terminal-group"><span class="codicon codicon-chevron-down"></span><strong>RESEARCH</strong><span class="font-sample-count">2 active</span></div><div class="font-sample-terminal-row"><span class="font-sample-dot"></span><span>feat-model-review</span><span class="font-sample-age">4m</span></div></section>',
-      project_font_size: '<section class="font-sample-stage"><div class="font-sample-project">stock-intraday <span>main · ~/workspace</span></div></section>',
-      terminal_icon_size: '<section class="font-sample-stage font-sample-icons"><span class="codicon codicon-terminal"></span><span class="codicon codicon-sparkle"></span><span class="codicon codicon-hubot"></span></section>',
-      terminal_font_size: '<section class="font-sample-stage font-sample-terminal"><pre><span class="prompt">›</span> review the current feature cache\n\n<span class="assistant">•</span> Working through the source files…</pre></section>',
-      ui_font_size: '<section class="font-sample-stage font-sample-status"><span>gpt-5.4-codex medium</span><span>12m · 41% context</span></section>',
-      system_font_size: '<section class="font-sample-stage font-sample-menu"><div><span class="codicon codicon-go-to-file"></span>Open</div><div><span class="codicon codicon-edit"></span>Rename</div><div><span class="codicon codicon-arrow-swap"></span>Move to</div></section>',
-      files_tab_font_size: '<section class="font-sample-stage font-sample-tabs"><span>Files</span><span>Search</span><span>Git</span></section>',
-      code_font_size: '<section class="font-sample-stage font-sample-code"><pre><span class="line-number">12</span> <span class="keyword">const</span> cache = <span class="function">loadFeatures</span>(<span class="string">"stock"</span>);\n<span class="line-number">13</span> cache.validate();</pre></section>',
-      bottom_font_size: '<section class="font-sample-stage font-sample-bottom"><span class="codicon codicon-markdown"></span><span class="codicon codicon-refresh"></span><span class="codicon codicon-fold-down"></span><span class="codicon codicon-cloud-upload"></span></section>',
-      diff_font_size: '<section class="font-sample-stage font-sample-diff"><pre><div class="removed">− old_feature = cache.final_value</div><div class="added">+ feature = cache.point_in_time_value</div></pre></section>',
-      tree_font_size: '<section class="font-sample-stage font-sample-tree"><div class="folder"><span class="codicon codicon-folder-opened"></span>trainer</div><div class="child"><span class="codicon codicon-file-code"></span><span class="match">model_<mark>config</mark>.py</span></div><div class="child"><span class="codicon codicon-file"></span>features.py</div></section>',
-    };
-    preview.innerHTML = samples[key] || "";
-  }
-
-  initInlineSizeControls() {
-    this.inlineSizeControlRoots = new Map();
-    const done = document.createElement("button");
-    done.id = "inline-size-done";
-    done.type = "button";
-    done.className = "hidden";
-    done.innerHTML = '<span class="codicon codicon-save"></span><span>Save</span>';
-    done.title = "Save font sizes and close Visualize";
-    done.setAttribute("aria-label", done.title);
-    done.onclick = () => this.exitInlineSizeControls();
-    document.body.appendChild(done);
-    for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) {
-      const root = document.createElement("div");
-      root.id = `inline-size-control-${definition.key}`;
-      root.className = "inline-size-controls hidden";
-      root.setAttribute("role", "toolbar");
-      root.setAttribute("aria-label", `${definition.label} size`);
-      root.title = `${definition.label} size`;
-      const row = document.createElement("div");
-      row.className = "inline-size-control-row";
-      const label = document.createElement("span");
-      label.className = "inline-size-control-label";
-      label.textContent = definition.label;
-      const minus = document.createElement("button");
-      minus.type = "button";
-      minus.className = "inline-size-control-step";
-      minus.textContent = "−";
-      minus.title = `Decrease ${definition.label.toLowerCase()} size`;
-      minus.setAttribute("aria-label", minus.title);
-      const range = document.createElement("input");
-      range.type = "range";
-      range.className = "inline-size-control-range";
-      range.min = String(FONT_MIN);
-      range.max = String(FONT_MAX);
-      range.step = "1";
-      range.title = `Adjust ${definition.label.toLowerCase()} size`;
-      range.setAttribute("aria-label", range.title);
-      const value = document.createElement("span");
-      value.className = "inline-size-control-value";
-      const plus = document.createElement("button");
-      plus.type = "button";
-      plus.className = "inline-size-control-step";
-      plus.textContent = "+";
-      plus.title = `Increase ${definition.label.toLowerCase()} size`;
-      plus.setAttribute("aria-label", plus.title);
-      const reset = document.createElement("button");
-      reset.type = "button";
-      reset.className = "inline-size-control-reset";
-      reset.textContent = "↺";
-      reset.title = `Reset ${definition.label.toLowerCase()} size to default`;
-      reset.setAttribute("aria-label", reset.title);
-      minus.onclick = () => this.setInlineSize(definition.key, Number(range.value) - 1);
-      plus.onclick = () => this.setInlineSize(definition.key, Number(range.value) + 1);
-      range.oninput = () => this.setInlineSize(definition.key, Number(range.value));
-      reset.onclick = () => this.resetInlineSize(definition.key);
-      row.append(label, minus, range, value, plus, reset);
-      root.appendChild(row);
-      root.addEventListener("pointerdown", (event) => {
-        this.startInlineSizeControlDrag(event, this.inlineSizeControlRoots.get(definition.key));
-        event.stopPropagation();
-      });
-      root.addEventListener("click", (event) => event.stopPropagation());
-      document.body.appendChild(root);
-      this.inlineSizeControlRoots.set(definition.key, { root, range, value, position: null });
-    }
-    document.addEventListener("pointerover", (event) => {
-      if (!this.settings.inline_size_controls || !(event.target instanceof Element)) return;
-      if ([...this.inlineSizeControlRoots.values()].some((controls) => !controls.root.classList.contains("hidden"))) return;
-      if (this.inlineSizeTargetForElement(event.target)) this.renderInlineSizeControls();
-    });
-    document.addEventListener("pointerdown", (event) => {
-      if (![...this.inlineSizeControlRoots.values()].some((controls) => controls.root.contains(event.target))) {
-        this.hideInlineSizeControls();
-      }
-    }, true);
-    document.addEventListener("pointermove", (event) => this.dragInlineSizeControl(event));
-    document.addEventListener("pointerup", () => this.finishInlineSizeControlDrag());
-    window.addEventListener("resize", () => this.renderInlineSizeControls());
-  }
-
-  startInlineSizeControlDrag(event, controls) {
-    if (event.button !== 0 || event.target instanceof HTMLInputElement || event.target instanceof HTMLButtonElement || !controls) return;
-    const rect = controls.root.getBoundingClientRect();
-    controls.position = { left: rect.left, top: rect.top };
-    this.inlineSizeDrag = { controls, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
-    controls.root.classList.add("dragging");
-    event.preventDefault();
-  }
-
-  dragInlineSizeControl(event) {
-    if (!this.inlineSizeDrag) return;
-    const { controls, offsetX, offsetY } = this.inlineSizeDrag;
-    const width = controls.root.offsetWidth;
-    const height = controls.root.offsetHeight;
-    const left = Math.max(8, Math.min(window.innerWidth - width - 8, event.clientX - offsetX));
-    const top = Math.max(8, Math.min(window.innerHeight - height - 8, event.clientY - offsetY));
-    controls.position = { left, top };
-    controls.root.style.left = `${left}px`;
-    controls.root.style.top = `${top}px`;
-  }
-
-  finishInlineSizeControlDrag() {
-    if (!this.inlineSizeDrag) return;
-    this.inlineSizeDrag.controls.root.classList.remove("dragging");
-    this.inlineSizeDrag = null;
-  }
-
-  inlineSizeTargetForElement(element) {
-    if (element.closest(".inline-size-controls, #settings-popover, #keys-backdrop")) return null;
-    const targets = [
-      { selectors: "#project-select", key: "project_font_size" },
-      { selectors: "#files-section-tabs, .files-section-tab", key: "files_tab_font_size" },
-      { selectors: "#status-name, #terminal-age, #history-meta, #stat-text", key: "ui_font_size" },
-      { selectors: ".collapsible-section-header, .closed-header, .file-item, .closed-item, #context-menu, #settings-popover, #keys-modal", key: "system_font_size" },
-      { selectors: "#bottombar, #sidebar-footer, #terminal-actions, #files-section-header", key: "bottom_font_size" },
-      { selectors: ".history-event pre, .history-diff, .markdown pre code", key: "diff_font_size" },
-      { selectors: "#terminal-area, .term-container, .xterm", key: "terminal_font_size" },
-      { selectors: "#editor-area, #history-area, #notebook-panel, #file-history-editor-host, #file-history-preview", key: "code_font_size" },
-      { selectors: ".terminal-type-icon", key: "terminal_icon_size" },
-      { selectors: ".tree-row, .search-file, .search-hit, .git-commit, .terminal-history-title-match, #files-section, #terminal-search-inline", key: "tree_font_size" },
-      { selectors: ".session-item, .terminal-group, .closed-item, #sidebar-header, #session-list, #closed-section", key: "sidebar_font_size" },
-      { selectors: "#main", key: "ui_font_size" },
-    ];
-    for (const target of targets) {
-      const matched = element.closest(target.selectors);
-      if (matched) return { element: matched, key: target.key };
-    }
-    return null;
-  }
-
-  inlineSizeTargetForKey(key) {
-    const selectors = {
-      sidebar_font_size: "#session-list, #closed-section",
-      project_font_size: "#project-select",
-      terminal_icon_size: ".terminal-type-icon",
-      terminal_font_size: "#terminal-area",
-      ui_font_size: "#status-name, #terminal-age, #history-meta, #stat-text",
-      system_font_size: "#sidebar",
-      files_tab_font_size: "#files-section-tabs",
-      code_font_size: "#editor-area, #history-area, #notebook-panel, #file-history-panel",
-      bottom_font_size: "#sidebar-footer",
-      diff_font_size: ".history-diff, .history-event pre, #file-history-preview",
-      tree_font_size: "#files-tree, #search-results, #name-results, #git-results, #terminal-search-inline",
-    }[key];
-    if (!selectors) return null;
-    for (const element of document.querySelectorAll(selectors)) {
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      if (style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" &&
-          rect.width > 1 && rect.height > 1 && rect.bottom > 0 && rect.right > 0 &&
-          rect.top < window.innerHeight && rect.left < window.innerWidth) return element;
-    }
-    return null;
-  }
-
-  renderInlineSizeControls() {
-    if (!this.inlineSizeControlRoots) return;
-    const done = this.$("inline-size-done");
-    if (!this.settings.inline_size_controls) {
-      this.hideInlineSizeControls();
-      done?.classList.add("hidden");
-      return;
-    }
-    done?.classList.remove("hidden");
-    const visibleTargets = new Map();
-    const placedControls = [];
-    for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) {
-      const controls = this.inlineSizeControlRoots.get(definition.key);
-      const target = this.inlineSizeTargetForKey(definition.key);
-      if (!target) {
-        controls.root.classList.add("hidden");
-        continue;
-      }
-      controls.range.value = String(Math.round(Number(this.settings[definition.key]) || 0));
-      controls.value.textContent = `${Math.round(Number(this.settings[definition.key]) || 0)}px`;
-      controls.root.classList.remove("hidden");
-      visibleTargets.set(definition.key, target);
-      if (controls.position) {
-        const width = controls.root.offsetWidth;
-        const height = controls.root.offsetHeight;
-        const left = Math.max(8, Math.min(window.innerWidth - width - 8, controls.position.left));
-        const top = Math.max(8, Math.min(window.innerHeight - height - 8, controls.position.top));
-        controls.position = { left, top };
-        placedControls.push({ left, top, right: left + width, bottom: top + height });
-      }
-    }
-    for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) {
-      const controls = this.inlineSizeControlRoots.get(definition.key);
-      const target = visibleTargets.get(definition.key);
-      if (!target || controls.position) continue;
-      const rect = target.getBoundingClientRect();
-      const width = controls.root.offsetWidth;
-      const height = controls.root.offsetHeight;
-      const maxLeft = Math.max(8, window.innerWidth - width - 8);
-      const maxTop = Math.max(8, window.innerHeight - height - 8);
-      const left = Math.min(Math.max(8, rect.right - width - 8), maxLeft);
-      let top = Math.min(Math.max(8, rect.top + 8), maxTop);
-      for (let attempt = 0; attempt <= placedControls.length; attempt += 1) {
-        const overlap = placedControls.find((placed) => left < placed.right && left + width > placed.left &&
-          top < placed.bottom && top + height > placed.top);
-        if (!overlap) break;
-        top = overlap.bottom + 8;
-        if (top > maxTop) top = Math.max(8, overlap.top - height - 8);
-      }
-      controls.root.style.left = `${left}px`;
-      controls.root.style.top = `${top}px`;
-      controls.position = { left, top };
-      placedControls.push({ left, top, right: left + width, bottom: top + height });
-    }
-  }
-
-  hideInlineSizeControls() {
-    if (!this.inlineSizeControlRoots) return;
-    for (const controls of this.inlineSizeControlRoots.values()) controls.root.classList.add("hidden");
-  }
-
-  setInlineSize(key, value) {
-    if (!this.inlineSizeControlRoots?.has(key)) return;
-    this.settings[key] = Math.max(FONT_MIN, Math.min(FONT_MAX, Number(value) || FONT_MIN));
-    this.applySettings({ fitTerminals: false });
-    this.saveSettings();
-    this.renderInlineSizeControls();
-  }
-
-  resetInlineSize(key) {
-    if (!this.inlineSizeControlRoots?.has(key) || typeof SETTINGS_DEFAULTS[key] !== "number") return;
-    this.setInlineSize(key, SETTINGS_DEFAULTS[key]);
-  }
-
-  resetAllFontSizes() {
-    for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) this.settings[definition.key] = SETTINGS_DEFAULTS[definition.key];
-    this.applySettings({ fitTerminals: false });
-    this.saveSettings();
-    this.renderInlineSizeControls();
-  }
-
-  resetAllFontSizesWithConfirmation() {
-    if (window.confirm("Reset all font sizes to their defaults?")) this.resetAllFontSizes();
-  }
-
-  openInlineSizeEditor() {
-    this.settings.inline_size_controls = true;
-    this.fontSizeEditorOpen = false;
-    this.applySettings({ fitTerminals: false });
-    this.saveSettings();
-    this.$("settings-popover").classList.add("hidden");
-    this.renderInlineSizeControls();
-  }
-
-  exitInlineSizeControls() {
-    if (!this.settings.inline_size_controls) return false;
-    this.settings.inline_size_controls = false;
-    this.fontSizeEditorOpen = false;
-    this.hideInlineSizeControls();
-    this.$("inline-size-done")?.classList.add("hidden");
-    this.saveSettings();
-    this.flushPendingSettingsSave();
-    this.$("settings-popover").classList.add("hidden");
-    requestAnimationFrame(() => this.focusActiveEditor());
-    return true;
-  }
-
-  formatSettingValue(item) {
-    return item.type === "scale" ? `${this.settings[item.key]}px` : this.settings[item.key];
-  }
-
-  openSettingsPopover(anchor, items, showFontSizeEditor = false) {
-    const pop = this.$("settings-popover");
-    this.fontSizeEditorOpen = showFontSizeEditor;
-    pop.classList.remove("lsp-settings-expanded", "lsp-install-options-popover");
-    pop.textContent = "";
-    pop.onkeydown = (event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      pop.classList.add("hidden");
-      anchor.focus();
-    };
-    pop.appendChild(this.buildThemeSelectRow());
-    pop.appendChild(this.buildRemoteAccessRow());
-    pop.appendChild(this.buildLanAccessRow());
-    pop.appendChild(this.buildTerminalIconSettingsRow());
-    pop.appendChild(this.buildToggleRow("Stats", () => (this.settings.show_stats ? "shown" : "hidden"),
-      () => { this.settings.show_stats = !this.settings.show_stats; }));
-    // Experiment switch: see attachRepaintEnabled(). Off means a terminal is shown exactly as its buffer
-    // already holds it, with nothing forced to redraw on attach.
-    pop.appendChild(this.buildToggleRow("Repaint on attach (reload)",
-      () => (this.attachRepaintEnabled() ? "on" : "off"),
-      () => { this.settings.attach_repaint = !this.attachRepaintEnabled(); }));
-    // Experiment switch: see tallRowPlan(). GPU rendering, at the cost of a much shorter scrollable
-    // canvas -- the whole trade is explained there.
-    pop.appendChild(this.buildToggleRow("WebGL renderer (reload)",
-      () => (this.tallWebglEnabled() ? "on" : "off"),
-      () => { this.settings.tall_webgl = !this.tallWebglEnabled(); }));
-    for (const item of items) {
-      if (!showFontSizeEditor || (this.settings.inline_size_controls && item.type !== "color")) continue;
-      const row = document.createElement("div");
-      row.className = "settings-row";
-      const label = document.createElement("span");
-      label.className = "settings-label";
-      label.textContent = item.label;
-      if (item.type === "color") {
-        const controls = document.createElement("span");
-        controls.className = "settings-controls";
-        const input = document.createElement("input");
-        input.type = "color";
-        input.value = /^#[0-9a-f]{6}$/i.test(String(this.settings[item.key] || ""))
-          ? this.settings[item.key] : SETTINGS_DEFAULTS[item.key];
-        input.title = "Choose the sidebar text color";
-        input.setAttribute("aria-label", item.label);
-        input.oninput = () => {
-          this.settings[item.key] = input.value;
-          localStorage.setItem(`termdeck.${item.key}`, input.value);
-          this.applySettings();
-          this.saveSettings();
-        };
-        const reset = document.createElement("button");
-        reset.type = "button";
-        reset.className = "settings-color-reset";
-        reset.textContent = "↺";
-        reset.title = "Reset to default sidebar text color";
-        reset.setAttribute("aria-label", reset.title);
-        reset.onclick = () => {
-          const defaultColor = SETTINGS_DEFAULTS[item.key];
-          this.settings[item.key] = defaultColor;
-          input.value = defaultColor;
-          localStorage.setItem(`termdeck.${item.key}`, defaultColor);
-          localStorage.removeItem("termdeck.sidebar_status_color");
-          localStorage.removeItem("termdeck.wave_color");
-          this.applySettings();
-          this.saveSettings();
-        };
-        controls.append(input, reset);
-        row.append(label, controls);
-        pop.appendChild(row);
-        continue;
-      }
-      const controls = document.createElement("span");
-      controls.className = "settings-controls";
-      const minus = document.createElement("button");
-      minus.textContent = "−";
-      const value = document.createElement("span");
-      value.className = "settings-value";
-      value.textContent = this.formatSettingValue(item);
-      const plus = document.createElement("button");
-      plus.textContent = "+";
-      minus.onclick = () => { this.bumpSetting(item.key, -1); value.textContent = this.formatSettingValue(item); };
-      plus.onclick = () => { this.bumpSetting(item.key, 1); value.textContent = this.formatSettingValue(item); };
-      controls.append(minus, value, plus);
-      row.append(label, controls);
-      pop.appendChild(row);
-    }
-    if (!showFontSizeEditor) {
-      pop.appendChild(this.buildFontSizeEditRow(anchor, items));
-      if (this.lspClient) pop.appendChild(this.lspClient.buildSettingsSection(anchor));
-    }
-    pop.appendChild(this.buildSettingsSubmenu("Maintenance", [
-      { label: "Export settings", buttonText: "download", run: () => { pop.classList.add("hidden"); this.exportSettings(); } },
-      { label: "Terminal process report", buttonText: "view", run: () => { pop.classList.add("hidden"); void this.showTerminalProcessReport(); } },
-      { label: "Reclaim orphan terminals", buttonText: "clean", run: () => { pop.classList.add("hidden"); void this.reclaimOrphanTerminals(); } },
-      { label: "Kill all running terminals", buttonText: "kill", run: () => { pop.classList.add("hidden"); void this.killAllRunningTerminals(); } },
-    ], anchor));
-    this.positionPopover(pop, anchor);
-  }
-
-  buildActionRow(labelText, buttonText, run) {
-    const row = document.createElement("div");
-    row.className = "settings-row";
-    const label = document.createElement("span");
-    label.className = "settings-label";
-    label.textContent = labelText;
-    const button = document.createElement("button");
-    button.className = "theme-toggle";
-    button.textContent = buttonText;
-    button.onclick = run;
-    row.append(label, button);
-    return row;
-  }
-
-  buildSettingsSubmenu(labelText, entries, anchor = null) {
-    const root = document.createElement("div");
-    root.className = "settings-submenu";
-    const header = document.createElement("div");
-    header.className = "settings-row settings-submenu-header";
-    const label = document.createElement("span");
-    label.className = "settings-label";
-    label.textContent = labelText;
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "theme-toggle settings-submenu-toggle";
-    toggle.textContent = "open";
-    toggle.setAttribute("aria-expanded", "false");
-    const items = document.createElement("div");
-    items.className = "settings-submenu-items";
-    for (const entry of entries) items.appendChild(this.buildActionRow(entry.label, entry.buttonText, entry.run));
-    toggle.onclick = () => {
-      const expanded = root.classList.toggle("expanded");
-      toggle.setAttribute("aria-expanded", String(expanded));
-      if (anchor) requestAnimationFrame(() => this.positionPopover(this.$("settings-popover"), anchor));
-    };
-    header.append(label, toggle);
-    root.append(header, items);
-    return root;
-  }
-
-  buildFontSizeEditRow(anchor, items) {
-    const row = document.createElement("div");
-    row.className = "settings-row settings-font-size-mode-row";
-    const label = document.createElement("span");
-    label.className = "settings-label";
-    label.textContent = "Font sizes";
-    const controls = document.createElement("span");
-    controls.className = "settings-font-size-mode-controls";
-    const visualize = document.createElement("button");
-    visualize.type = "button";
-    visualize.className = "theme-toggle";
-    visualize.textContent = "visualize";
-    visualize.title = "Edit font sizes in place on their UI elements";
-    const samples = document.createElement("button");
-    samples.type = "button";
-    samples.className = "theme-toggle";
-    samples.textContent = "samples";
-    samples.title = "Edit font sizes with representative UI samples";
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "theme-toggle";
-    edit.textContent = "edit";
-    edit.title = "Edit font sizes in Settings";
-    const reset = document.createElement("button");
-    reset.type = "button";
-    reset.className = "settings-font-size-reset";
-    reset.innerHTML = '<span class="codicon codicon-refresh"></span>';
-    reset.title = "Reset all font sizes to defaults";
-    reset.setAttribute("aria-label", reset.title);
-    visualize.onclick = () => this.openInlineSizeEditor();
-    samples.onclick = () => this.openFontSampleEditor(samples);
-    edit.onclick = () => {
-      this.exitInlineSizeControls();
-      this.openSettingsPopover(anchor, items, true);
-    };
-    reset.onclick = () => this.resetAllFontSizesWithConfirmation();
-    controls.append(visualize, samples, edit, reset);
-    row.append(label, controls);
-    return row;
-  }
-
-  buildThemeSelectRow() {
-    const row = document.createElement("div");
-    row.className = "settings-row settings-theme-row";
-    const label = document.createElement("div");
-    label.className = "settings-theme-heading";
-    const title = document.createElement("span");
-    title.className = "settings-label";
-    title.textContent = "Theme";
-    label.append(title);
-    const controls = document.createElement("div");
-    controls.className = "settings-theme-control";
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "theme-toggle settings-theme-toggle";
-    toggle.setAttribute("aria-haspopup", "listbox");
-    toggle.setAttribute("aria-expanded", "false");
-    const updateToggle = () => {
-      const theme = this.themeDefinition();
-      toggle.textContent = theme.label;
-      toggle.title = `${theme.label} theme · Click to expand`;
-    };
-    const select = document.createElement("select");
-    select.className = "settings-theme-list";
-    select.setAttribute("aria-label", "Choose a TermDeck theme");
-    select.setAttribute("size", String(Math.min(8, THEME_DEFINITIONS.length)));
-    select.setAttribute("role", "listbox");
-    for (const theme of THEME_DEFINITIONS) {
-      const option = document.createElement("option");
-      option.value = theme.id;
-      option.textContent = theme.label;
-      select.appendChild(option);
-    }
-    select.value = this.themeDefinition().id;
-    const applySelection = () => {
-      this.settings.theme = THEME_BY_ID[select.value] ? select.value : SETTINGS_DEFAULTS.theme;
-      select.value = this.settings.theme;
-      this.applySettings();
-      this.saveSettings();
-      updateToggle();
-    };
-    const moveSelection = (delta) => {
-      const currentIndex = THEME_DEFINITIONS.findIndex((theme) => theme.id === this.settings.theme);
-      const nextIndex = (Math.max(0, currentIndex) + delta + THEME_DEFINITIONS.length) % THEME_DEFINITIONS.length;
-      select.value = THEME_DEFINITIONS[nextIndex].id;
-      applySelection();
-    };
-    const setExpanded = (expanded) => {
-      row.classList.toggle("expanded", expanded);
-      select.classList.toggle("hidden", !expanded);
-      toggle.setAttribute("aria-expanded", String(expanded));
-      toggle.title = expanded ? "Collapse theme list" : `${this.themeDefinition().label} theme · Click to expand`;
-      if (expanded) select.focus();
-      else toggle.focus();
-    };
-    toggle.onclick = () => setExpanded(!row.classList.contains("expanded"));
-    toggle.onkeydown = (event) => {
-      if (event.key === "ArrowDown" || event.key === "ArrowRight") {
-        event.preventDefault();
-        moveSelection(1);
-      } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
-        event.preventDefault();
-        moveSelection(-1);
-      } else if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        setExpanded(!row.classList.contains("expanded"));
-      } else if (event.key === "Escape" && row.classList.contains("expanded")) {
-        event.preventDefault();
-        setExpanded(false);
-      }
-    };
-    select.oninput = applySelection;
-    select.onchange = applySelection;
-    updateToggle();
-    select.classList.add("hidden");
-    controls.append(toggle, select);
-    row.append(label, controls);
-    return row;
-  }
-
-  buildToggleRow(labelText, valueText, flip, afterFlip = null) {
-    const row = document.createElement("div");
-    row.className = "settings-row";
-    const label = document.createElement("span");
-    label.className = "settings-label";
-    label.textContent = labelText;
-    const button = document.createElement("button");
-    button.className = "theme-toggle";
-    button.textContent = valueText();
-    button.onclick = () => {
-      flip();
-      button.textContent = valueText();
-      this.applySettings();
-      this.saveSettings();
-      if (afterFlip) afterFlip();
-    };
-    row.append(label, button);
-    return row;
-  }
-
-  // xterm's default DOM renderer rebuilds row spans on every refresh, which dominated CPU on a busy
-  // terminal (measured: JS 92% idle while the tab burned ~30%, i.e. the cost is paint, not script). The
-  // WebGL renderer draws to a canvas instead. Must be attached after term.open() so a context exists, and
-  // must fall back to the DOM renderer on context loss, which browsers do trigger under memory pressure.
-  // The largest terminal this machine's GPU can actually back, in rows. Returns 0 when WebGL is
-  // unavailable, which callers read as "use DOM".
-  maxWebglSafeRows(cellHeight) {
-    if (!cellHeight) return 0;
-    try {
-      const probe = document.createElement("canvas");
-      const gl = probe.getContext("webgl2") || probe.getContext("webgl");
-      if (!gl) return 0;
-      const limit = Number(gl.getParameter(gl.MAX_TEXTURE_SIZE)) || 0;
-      const deviceCellHeight = Math.max(1, cellHeight * (window.devicePixelRatio || 1));
-      // Headroom, not the whole limit. Sizing right up against MAX_TEXTURE_SIZE does not fail loudly --
-      // the addon silently allocates a 1x backing store and lets the browser stretch it, which renders as
-      // text that is both too large and soft. Measured at dpr 2.5: 154 rows needed 8162 device px against
-      // an 8192 cap, and the WebGL canvas came back at ratio 1 while the 2D link layer beside it scaled
-      // correctly. The margin covers the addon's own padding and the atlas it allocates alongside.
-      return Math.floor((limit * TALL_WEBGL_TEXTURE_HEADROOM) / deviceCellHeight);
-    } catch (webglProbeError) {
-      return 0;
-    }
-  }
-
-  // Decides the two things that have to agree: how tall to make the terminal, and which renderer can
-  // survive that height. They cannot be chosen independently -- asking for more rows than the GPU can
-  // back does not fail loudly, it silently corrupts (see the WebGL note in ensureView) -- so this is the
-  // single place that picks both.
-  // Fit for the tall layout. FitAddon derives BOTH dimensions from the element it renders into, which is
-  // why .term-inner had to stay a full 1000 rows tall -- and that fixed height is the entire reason the
-  // scrollable area extends past the last line. Taking the row count out of the measurement frees the
-  // element's height to track the content instead. Columns still come from xterm's own math (it accounts
-  // for padding and scrollbar width), only the rows are overridden.
-  tallFit(view) {
-    if (!view || view.closed || !view.term) return;
-    if (this.nativeVscodeMode) { view.fit.fit(); return; }
-    // NOTE: xterm reserves ~15px for a scrollbar it never draws here (style.css hides .xterm-viewport's
-    // overflow), and zeroing that reserve to reclaim the space was tried and reverted -- it yields three
-    // more columns whose arithmetic fits (98 x 10.84 = 1062 inside a 1068px pane) but whose glyphs do
-    // not: text was visibly clipped at the right edge in BOTH renderers. Whatever xterm withholds that
-    // width for, the painted line needs it. Do not reclaim it without measuring painted glyph extent,
-    // not column arithmetic.
-    let dims = null;
-    try { dims = view.fit.proposeDimensions(); } catch (fitError) { dims = null; }
-    const rows = view.tallRows || TALL_ROWS_DOM;
-    // Width can be unmeasurable -- a container that is hidden or not laid out yet reports nothing. The
-    // height must still be applied in that case: returning early here left the terminal sitting at
-    // xterm's construction default of 80x24, which the old fit could never do because it always set both
-    // dimensions. Keep whatever width is in effect and fix the height; a later fit corrects the width.
-    if (!dims || !Number.isFinite(dims.cols) || dims.cols < 2) {
-      if (view.term.rows !== rows && view.term.cols >= 2) {
-        view.term.resize(view.term.cols, rows);
-        this.tallApplyGeometry(view);
-      }
-      return;
-    }
-    // While another window owns the size, render at ITS width rather than the one this window measures.
-    // Measuring wins otherwise: the pty stays at the owner's width while xterm reflows to this window's,
-    // and every line then wraps at a column the pty never used -- the corruption this whole ownership
-    // rule exists to prevent, reintroduced one step later.
-    const owned = view.sizeOwnedElsewhere;
-    const cols = owned && owned.cols >= 2 ? owned.cols : dims.cols;
-    if (view.term.cols !== cols || view.term.rows !== rows) view.term.resize(cols, rows);
-    this.tallApplyGeometry(view);
-  }
-
-  // Keeps the two heights that must differ in sync: the terminal element stays its full forced height so
-  // xterm renders every row, while the scrollable box is only as tall as the content. The container then
-  // cannot scroll past the last line, because there is nothing past it -- no clamp, nothing to correct,
-  // and the scrollbar thumb is sized to the real content.
-  tallApplyGeometry(view) {
-    if (!view || view.closed) return;
-    const inner = view.container.querySelector(".term-inner");
-    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-    if (!inner || !cellHeight) return;
-    if (view.tallWebgl) this.syncWebglCanvasToDevicePixels(view);
-    const whole = this.wholeBufferScrollEnabled();
-    const fullPx = Math.round((view.term.rows || TALL_ROWS_DOM) * cellHeight);
-    if (view.term.element && view.term.element.style.height !== `${fullPx}px`) {
-      view.term.element.style.height = `${fullPx}px`;
-    }
-    // Whole-buffer mode measures in absolute buffer rows -- scrollTop spans the scrollback too -- so the
-    // content bottom counts the history above the screen, and the cap is history plus the screen. It is
-    // still the CONTENT bottom, not the rendered window's: the window ends with however many hundred
-    // blank rows the forced height leaves under the cursor, and a box sized to it opens a fresh session
-    // as one mostly-empty page with the ceiling -- and the following view -- parked in the blank space
-    // at its bottom, the real content out of sight above the fold.
-    const baseRows = whole ? Number(view.term.buffer.active.baseY || 0) : 0;
-    const contentPx = Math.round((baseRows + this.tallEffectiveBottomRow(view) + 1) * cellHeight);
-    const capPx = whole ? Math.round(this.tallBufferRows(view) * cellHeight) : fullPx;
-    // Never shorter than the viewport, never taller than the terminal itself.
-    const desired = Math.max(view.container.clientHeight || 0, Math.min(capPx, contentPx));
-    const current = view.tallInnerHeight || 0;
-    let height = desired;
-    if (desired < current) {
-      // Shrinking is the only direction that can move the view: the browser has to pull scrollTop back
-      // inside the smaller box, and that pull is exactly the jump. Measured while a composer redrew
-      // itself: the content height flickered by one row 19 times in a few seconds, and the view jumped
-      // up to 63px with it. Two rules make that impossible -- ignore a dip until it has held for a
-      // moment, and never shrink past what the current scroll position needs to stay valid. Following
-      // moves the view down to the real bottom first, which then lets the box shrink on a later pass,
-      // so this converges without ever yanking anything.
-      if (view.tallShrinkTarget !== desired) {
-        view.tallShrinkTarget = desired;
-        view.tallShrinkSince = Date.now();
-      }
-      const settled = Date.now() - (view.tallShrinkSince || 0) >= TALL_SHRINK_SETTLE_MS;
-      const keepScrollValid = Math.ceil(view.container.scrollTop + (view.container.clientHeight || 0));
-      height = settled ? Math.max(desired, Math.min(current, keepScrollValid)) : current;
-    } else {
-      view.tallShrinkTarget = null;
-    }
-    if (view.tallInnerHeight !== height) {
-      view.tallInnerHeight = height;
-      inner.style.height = `${height}px`;
-    }
-    if (whole) this.tallPositionRenderedWindow(view, cellHeight);
-  }
-
-  // Whether attaching to a terminal forces it to repaint itself. Every one of these mechanisms exists
-  // because a normal-height terminal cannot hold the agent's screen: reattaching replays scrollback that
-  // cannot reconstruct a synchronized-update frame, so the screen had to be forced to redraw. A terminal
-  // taller than the whole conversation keeps that screen in its buffer, so the redraw may now be
-  // redundant -- and it is not free: the repaint is what flickers on the first visit to a tab and can
-  // leave the view somewhere above the prompt once it settles.
-  //
-  // Kept as a switch rather than a deletion because the answer differs per agent and per state, and the
-  // failure it originally fixed (a blank pane) is worse than the flicker it causes.
-  // Repaint only if the terminal has nothing to show. Deliberately checked after the replay rather than
-  // before connecting: whether anything exists to replay is only knowable once it has arrived, and a
-  // server restart is exactly the case where the answer is "nothing".
-  requestRepaintIfBlank(view) {
-    if (!view || view.closed || !view.ws || view.ws.readyState !== WebSocket.OPEN) return;
-    // A reconnect clears the buffer before replaying it, so "empty" during that window means "not filled
-    // yet", not "nothing to show". Asking then forces a redraw of content that was about to arrive
-    // anyway, which is the flicker on switching to an already-loaded tab. Try again once it has landed.
-    if (view.replaying || view.awaitingSnapshot) {
-      clearTimeout(view.blankRepaintTimer);
-      view.blankRepaintTimer = setTimeout(() => this.requestRepaintIfBlank(view), TALL_BLANK_REPAINT_MS);
-      return;
-    }
-    const buffer = view.term.buffer.active;
-    if (Number(buffer.baseY || 0) > 0) return;
-    for (let row = 0; row < buffer.length; row += 1) {
-      if (buffer.getLine(row)?.translateToString(true).trim()) return;
-    }
-    view.ws.send(JSON.stringify({ type: "repaint" }));
-  }
-
-  // A status-bar line is not enough on its own: the status text is rewritten constantly by other
-  // activity, so the warning was gone before it could be read -- which is why opening a second window at
-  // a different width appeared to warn about nothing. Marking the resync control keeps it visible for as
-  // long as the condition lasts, and points at the thing that resolves it.
-  updateSizeOwnershipIndicator(view) {
-    const owned = view && !view.closed ? view.sizeOwnedElsewhere : null;
-    const active = !!owned && this.activeId === view.sessionId;
-    for (const buttonId of ["terminal-resync-btn", "vscode-terminal-resync-btn"]) {
-      const button = this.$(buttonId);
-      if (!button) continue;
-      button.classList.toggle("size-owned-elsewhere", active);
-      if (active) {
-        button.title = `Another window is using this terminal at ${owned.cols} columns. Click to resize it to this window.`;
-        button.setAttribute("aria-label", button.title);
-      }
-    }
-    if (active) {
-      this.$("status-name").textContent = `${owned.cols} cols — another window owns this terminal's size`;
-    }
-  }
-
-  attachRepaintEnabled() {
-    return this.settings.attach_repaint !== false;
-  }
-
-    // Off by default, and a reload is needed either way: the row count is fixed when a view is built, and
-  // the renderer is chosen to match it. Turning it ON trades canvas height for GPU rendering -- the GPU
-  // can only back MAX_TEXTURE_SIZE / (cellHeight * dpr) rows, measured at 309 on this machine against
-  // 1000 for DOM, so the scrollable canvas drops from ~25 screens to ~8 and the scrollback bridge starts
-  // moving the buffer viewport that much sooner. Search, selection and how far back you can reach are
-  // unaffected: they read the 20,000-line buffer, not the rendered rows.
-  tallWebglEnabled() {
-    return this.settings.tall_webgl === true;
-  }
-
-  // Permanent, formerly the scroll_whole_buffer experiment. The scrollbar used to represent the rendered
-  // canvas rather than history -- the thumb stopped resizing once you passed it, dragging to the bottom
-  // landed mid-content, and releasing snapped. With the scroll box spanning the whole buffer and the
-  // rendered rows positioned inside it, the thumb means what it looks like it means, and the canvas row
-  // count stops governing how far you can scroll -- which is also what puts WebGL and a long history on
-  // speaking terms. Kept as a function because every branch point still reads it, and the other arm of
-  // each of those branches is now dead code awaiting a dedicated removal pass.
-  wholeBufferScrollEnabled() {
-    return true;
-  }
-
-  // Rows of history the scroll box spans. Everything above the rendered window plus the window itself.
-  tallBufferRows(view) {
-    const buffer = view.term.buffer.active;
-    return Math.max(view.term.rows || 0, Number(buffer.baseY || 0) + (view.term.rows || 0));
-  }
-
-  // Puts the rendered window where the scroll position says it should be. xterm always draws the same
-  // `rows` rows; this slides that block down the tall box so the row under the reader is the row the
-  // scrollbar is pointing at.
-  tallPositionRenderedWindow(view, cellHeight) {
-    const element = view.term.element;
-    if (!element) return;
-    const offset = Math.round(Number(view.term.buffer.active.viewportY || 0) * cellHeight);
-    if (element.style.position !== "absolute") {
-      element.style.position = "absolute";
-      element.style.left = "0";
-      element.style.right = "0";
-    }
-    const wanted = `${offset}px`;
-    if (element.style.top !== wanted) element.style.top = wanted;
-  }
-
-  // Maps a scroll position onto the buffer: the top of the box is row 0, the bottom is the newest line.
-  // Only the rendered window has to move, and only when the wanted row leaves it.
-  tallSyncBufferToScroll(view) {
-    if (!view || view.closed) return;
-    const cellHeight = view.term._core?._renderService?.dimensions?.css?.cell?.height;
-    if (!cellHeight) return;
-    const buffer = view.term.buffer.active;
-    const wantedRow = Math.max(0, Math.min(Number(buffer.baseY || 0),
-      Math.floor(view.container.scrollTop / cellHeight)));
-    const current = Number(buffer.viewportY || 0);
-    if (wantedRow !== current) view.term.scrollLines(wantedRow - current);
-    this.tallPositionRenderedWindow(view, cellHeight);
-  }
-
-  tallRowPlan(cellHeight) {
-    if (!this.tallWebglEnabled()) return { rows: TALL_ROWS_DOM, webgl: false };
-    const safeRows = this.maxWebglSafeRows(cellHeight);
-    if (safeRows < TALL_ROWS_MIN_FOR_WEBGL) return { rows: TALL_ROWS_DOM, webgl: false };
-    return { rows: Math.min(TALL_ROWS_MAX, safeRows), webgl: true };
-  }
-
-  enableWebglRenderer(term) {
-    const Addon = window.WebglAddon?.WebglAddon;
-    if (!Addon) return false;
-    try {
-      const addon = new Addon();
-      addon.onContextLoss(() => {
-        try { addon.dispose(); } catch (disposeError) { /* already gone; DOM renderer takes over */ }
-      });
-      term.loadAddon(addon);
-      return true;
-    } catch (webglError) {
-      return false;
-    }
-  }
-
-
-  // The addon sizes its canvas when it loads and again on a terminal resize, but this layout changes the
-  // terminal element's height directly rather than through one, so the canvas can be left holding the
-  // size it was born with. Measured at dpr 2.5: the render service had device canvas 2781x6943 and the
-  // canvas element was still 2777x2777 -- a backing store at 1x stretched across a 2.5x box, which reads
-  // as text that is too large, soft, and running off the right edge. The correct numbers are already
-  // computed; this just applies them.
-
-  syncWebglCanvasToDevicePixels(view) {
-    const term = view.term;
-    const dimensions = term._core?._renderService?.dimensions;
-    const canvas = term.element?.querySelector("canvas:not(.xterm-link-layer)");
-    // Taken from xterm's own dimensions rather than recomputed here. Two attempts to derive it from
-    // cols x deviceCell have now been reverted, and the second one is worth recording precisely:
-    // dimensions.device.cell is ALREADY in device pixels (measured: css 13.5 -> device 27 at dpr 2), so
-    // multiplying by devicePixelRatio again doubles it. That produced a 5184x21216 canvas where xterm
-    // wanted 2592x10608 -- past MAX_TEXTURE_SIZE and far past the ~11500px where this GPU silently stops
-    // drawing, i.e. the blank-new-terminal bug. It was aimed at right-edge truncation, which cannot be
-    // this code in any case: that happens in DOM mode too, where no canvas exists.
-    const wanted = dimensions?.device?.canvas;
-    if (!canvas || !wanted?.width || !wanted?.height) return;
-    const styleWidth = `${dimensions.css.canvas.width}px`;
-    const styleHeight = `${dimensions.css.canvas.height}px`;
-    const restyled = canvas.style.width !== styleWidth || canvas.style.height !== styleHeight;
-    if (restyled) {
-      canvas.style.width = styleWidth;
-      canvas.style.height = styleHeight;
-    }
-    const resized = canvas.width !== wanted.width || canvas.height !== wanted.height;
-    if (resized) {
-      canvas.width = wanted.width;
-      canvas.height = wanted.height;
-    }
-    if (resized || restyled) term.refresh(0, Math.max(0, term.rows - 1));
-  }
-
-
-  buildTerminalIconSettingsRow() {
-    const rows = document.createDocumentFragment();
-    const heading = document.createElement("div");
-    heading.className = "settings-row terminal-icon-settings-row";
-    const label = document.createElement("span");
-    label.className = "settings-label";
-    label.textContent = "Show terminal icons";
-    heading.appendChild(label);
-    rows.appendChild(heading);
-    const row = document.createElement("div");
-    row.className = "settings-row terminal-icon-agent-row";
-    const controls = document.createElement("span");
-    controls.className = "settings-controls terminal-icon-settings-controls";
-    const buttons = new Map();
-    const updateButtons = () => {
-      for (const [kind, button] of buttons) {
-        const enabled = this.terminalIconEnabledForAgent(kind);
-        const labelText = TERMINAL_ICON_AGENT_LABELS[kind];
-        button.textContent = labelText;
-        button.classList.toggle("on", enabled);
-        button.setAttribute("aria-pressed", String(enabled));
-        button.title = `${labelText} terminal icons: ${enabled ? "on" : "off"}`;
-        button.setAttribute("aria-label", button.title);
-      }
-    };
-    for (const kind of TERMINAL_ICON_AGENT_KINDS) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "theme-toggle terminal-icon-agent-toggle";
-      button.title = `${TERMINAL_ICON_AGENT_LABELS[kind]} terminal icon`;
-      button.setAttribute("aria-label", button.title);
-      button.onclick = () => {
-        this.setTerminalIconEnabledForAgent(kind, !this.terminalIconEnabledForAgent(kind));
-        updateButtons();
-        this.applySettings();
-        this.saveSettings();
-        this.renderList();
-      };
-      buttons.set(kind, button);
-      controls.appendChild(button);
-    }
-    updateButtons();
-    row.appendChild(controls);
-    rows.appendChild(row);
-    return rows;
-  }
-
-  normalizeUiScale(value) {
-    return Math.max(0.8, Math.min(1.4, Math.round((Number(value) || 1) * 20) / 20));
-  }
-
-  bumpSetting(key, delta) {
-    this.settings[key] = Math.max(FONT_MIN, Math.min(FONT_MAX, this.settings[key] + delta));
-    this.applySettings();
-    this.saveSettings();
-  }
-
-  initResizer(handleId, key, fromRight, minWidth, maxWidth) {
-    this.$(handleId).onmousedown = (e) => {
-      e.preventDefault();
-      document.body.classList.add("dragging");
-      if (handleId === "sidebar-resizer") {
-        this.sidebarResizeInProgress = true;
-        if (this.sidebarResizeFinalFitFrame) {
-          cancelAnimationFrame(this.sidebarResizeFinalFitFrame);
-          this.sidebarResizeFinalFitFrame = 0;
-        }
-      }
-      const move = (ev) => {
-        const width = fromRight ? window.innerWidth - ev.clientX : ev.clientX;
-        const resizingFiles = handleId === "sidebar-resizer" && this.settings.files_pinned &&
-          FILES_SIDE_PANEL_TABS.includes(this.sideView);
-        const targetKey = resizingFiles ? "files_width" : key;
-        const targetMin = resizingFiles ? Math.max(minWidth, FILEDECK_DEFAULT_SIDEBAR_WIDTH) : minWidth;
-        const targetMax = resizingFiles ? Math.max(maxWidth, Math.floor(window.innerWidth * 0.75)) : maxWidth;
-        this.settings[targetKey] = Math.max(targetMin, Math.min(targetMax, Math.round(width)));
-        this.applySettings({ fitTerminals: false });
-      };
-      const up = () => {
-        document.body.classList.remove("dragging");
-        if (handleId === "sidebar-resizer") this.sidebarResizeInProgress = false;
-        document.removeEventListener("mousemove", move);
-        document.removeEventListener("mouseup", up);
-        this.applySettings({ fitTerminals: false });
-        if (handleId === "sidebar-resizer") this.scheduleFinalTerminalFitAfterSidebarResize();
-        this.saveSettings();
-      };
-      document.addEventListener("mousemove", move);
-      document.addEventListener("mouseup", up);
-    };
-  }
-
-  startFilesPanelResize(event) {
-    if (event.button !== 0 || this.vscodeMode) return;
-    const section = this.$("files-section");
-    if (!section || section.classList.contains("hidden") || !section.classList.contains("floating")) return;
-    event.preventDefault();
-    this.filesPanelResizePointerId = event.pointerId;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    document.body.classList.add("dragging-file-search-panel-resize");
-  }
-
-  resizeFilesPanelFromPointer(event) {
-    if (event.pointerId !== this.filesPanelResizePointerId) return;
-    const section = this.$("files-section");
-    const sidebar = this.$("sidebar");
-    if (!section || !sidebar || !section.classList.contains("floating")) return;
-    const sidebarRect = sidebar.getBoundingClientRect();
-    const leftOffset = sidebarRect?.left || 0;
-    const normalWidth = Number(this.settings.sidebar_width) || SETTINGS_DEFAULTS.sidebar_width;
-    const minWidth = Math.max(normalWidth * 2, 280);
-    const maxWidth = Math.max(minWidth, Math.floor(window.innerWidth - leftOffset - 12));
-    const nextWidth = Math.max(minWidth, Math.min(maxWidth, Math.round(event.clientX - leftOffset)));
-    section.style.width = `${nextWidth}px`;
-    this.settings.files_width = nextWidth;
-    document.documentElement.style.setProperty("--files-panel-width", `${nextWidth}px`);
-    this.scheduleTerminalFitAfterSidebarChange();
-  }
-
-  finishFilesPanelResize(event) {
-    if (event.pointerId !== this.filesPanelResizePointerId) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    this.filesPanelResizePointerId = null;
-    document.body.classList.remove("dragging-file-search-panel-resize");
-    this.applySettings({ fitTerminals: false });
-    this.saveSettings();
-  }
-
-  async reloadTree(rootOverride) {
-    const s = this.session(this.activeId);
-    this.treeRoot = rootOverride || (s ? s.cwd : (this.worktreeRoot() || "~"));
-    this.connectFileTreeWatch(this.treeRoot);
-    const label = this.$("files-root-label");
-    label.textContent = this.vscodeMode ? "files" : this.treeRoot.replace(/^\/Users\/[^/]+/, "~");
-    label.title = this.treeRoot;
-    this.treeDirs.clear();
-    this.expandedDirs = new Set(this.treeSearchFilter?.expandedDirs || []);
-    this.recentFiles = [];
-    this.recentFilesRoot = null;
-    this.recentFilesFingerprint = "";
-    this.recentFilesFetchedAt = 0;
-    this.recentFilesExpanded = false;
-    const tree = this.$("files-tree");
-    tree.textContent = "";
-    await this.renderDirInto(tree, "");
-    this.updateRecentFilesWatch();
-    this.refreshRecentFiles(true);
-  }
-
-  async fetchDirEntries(relPath) {
-    const res = await fetch(`/api/files/list?root=${encodeURIComponent(this.treeRoot)}&path=${encodeURIComponent(relPath)}`);
-    return res.ok ? await res.json() : null;
-  }
-
-  sortTreeEntries(entries) {
-    const sorted = [...entries];
-    const recent = this.settings.file_tree_sort === "mtime";
-    sorted.sort((left, right) => {
-      if (recent) {
-        const mtimeOrder = Number(right.mtime || 0) - Number(left.mtime || 0);
-        if (mtimeOrder) return mtimeOrder;
-      } else {
-        const directoryOrder = Number(right.is_dir) - Number(left.is_dir);
-        if (directoryOrder) return directoryOrder;
-      }
-      return String(left.name || "").localeCompare(String(right.name || ""), undefined,
-        { numeric: true, sensitivity: "base" });
-    });
-    return sorted;
-  }
-
-  treeEntryCache(entries) {
-    return JSON.stringify(this.sortTreeEntries(entries));
-  }
-
-  treeRowMetadataKey(entry) {
-    return `${entry.mtime || 0}|${String(entry.git_status || "").toUpperCase()}`;
-  }
-
-  filePatternRegex(pattern) {
-    const value = String(pattern || "").trim();
-    if (!value) return null;
-    const source = value.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
-    try {
-      return new RegExp(`^${source}$`, "i");
-    } catch (_error) {
-      return null;
-    }
-  }
-
-  filePathMatchesPattern(relativePath, pattern) {
-    const normalizedPath = String(relativePath || "").replaceAll("\\", "/");
-    const basename = normalizedPath.split("/").pop() || normalizedPath;
-    let value = String(pattern || "").trim();
-    if (!value) return false;
-    if (value === ".*" || value === "**/.*") return normalizedPath.split("/").some((part) => part.startsWith("."));
-    if (value.startsWith(".")) value = `*${value}`;
-    const matcher = this.filePatternRegex(value);
-    return !!matcher && (matcher.test(normalizedPath) || matcher.test(basename));
-  }
-
-  filePathMatchesExcludedPattern(relativePath) {
-    return this.fileTypeFilterTokens().some((token) => this.filePathMatchesPattern(relativePath, token.replace(/^!/, "")));
-  }
-
-  filePathMatchesIncludedPattern(relativePath, mode) {
-    const patterns = this.splitFileGlobTokens(this.fileIncludeGlob(mode));
-    return !patterns.length || patterns.some((pattern) => this.filePathMatchesPattern(relativePath, pattern));
-  }
-
-  async renderDirInto(container, relPath, entries) {
-    if (entries === undefined) entries = await this.fetchDirEntries(relPath);
-    if (entries === null) return;
-    entries = this.sortTreeEntries(entries);
-    this.treeDirs.set(relPath, { container, cache: JSON.stringify(entries) });
-    container.textContent = "";
-    for (const entry of entries) {
-      const excluded = entry.is_dir && this.isExcludedName(entry.name);
-      const hiddenDotFolder = entry.is_dir && this.settings.hide_dot_folders !== false && this.isDotFolderName(entry.name);
-      if (hiddenDotFolder || (excluded && this.settings.hide_excluded)) continue;
-      const childRel = relPath ? `${relPath}/${entry.name}` : entry.name;
-      if (!entry.is_dir && (this.filePathMatchesExcludedPattern(childRel) || !this.filePathMatchesIncludedPattern(childRel, "tree"))) continue;
-      if (!this.treeFilterAllows(childRel, entry.is_dir)) continue;
-      const row = TermDeckFileBrowser.createTreeEntryRow({ root: this.treeRoot, relativePath: relPath, entry, excluded,
-        showMtime: this.settings.show_mtime, showGitStatus: this.settings.show_git_status !== false,
-        fileIcon: (name) => this.fileTypeIconEl(name, "tree-type-icon"),
-        onDirectory: (directoryRow, path) => void this.toggleDir(directoryRow, path),
-        onFile: (event, fileRow, path) => void this.openFile(this.treeRoot, path, null, fileRow, { preview: true, fromFilePanel: true }),
-        onDoubleClick: (fileRow, path) => void this.openFile(this.treeRoot, path, null, fileRow, { pinned: true, fromFilePanel: true }),
-        onAuxClick: (event, fileRow, path) => this.handleFileDeckAuxClick(event, this.treeRoot, path),
-        onContextMenu: (event, fileRow) => this.openTreeContextMenu(event, fileRow),
-      });
-      if (!entry.is_dir) row.title = `${row.title || childRel}\nMiddle-click opens in a new TermDeck tab`;
-      row.dataset.metadata = this.treeRowMetadataKey(entry);
-      container.appendChild(row);
-      if (entry.is_dir && this.expandedDirs.has(childRel)) await this.expandDirRow(row, childRel);
-    }
-  }
-
-  appendMtime(row, entry) {
-    if (!this.settings.show_mtime || !entry.mtime) return;
-    const mtimeEl = document.createElement("span");
-    mtimeEl.className = "tree-mtime";
-    mtimeEl.textContent = this.formatMtime(entry.mtime);
-    mtimeEl.title = `modified ${this.exactMtime(entry.mtime)}`;
-    row.appendChild(mtimeEl);
-  }
-
-  appendGitStatus(row, entry) {
-    if (this.settings.show_git_status === false || !entry.git_status) return;
-    const gitStatus = this.gitStatusPresentation(entry.git_status);
-    if (!gitStatus) return;
-    row.dataset.gitStatus = gitStatus.code;
-    row.classList.add("git-row", `git-row-${gitStatus.statusClass}`);
-    row.title = `${row.title ? `${row.title}\n` : ""}git: ${gitStatus.label}`;
-  }
-
-  gitStatusPresentation(rawStatus) {
-    const code = String(rawStatus || "").trim().toUpperCase();
-    if (!code) return null;
-    const labels = { "?": "untracked", "M": "modified", "A": "added", "D": "deleted",
-      "R": "renamed", "C": "copied", "U": "conflicted" };
-    return { code, statusClass: code === "?" ? "untracked" : code.toLowerCase(), label: labels[code] || code };
-  }
-
-  async refreshOpenFileGitStatuses(root = "", refresh = false) {
-    const roots = [...new Set([...this.openFiles.values()].map((entry) => entry.root).filter((entryRoot) => !root || entryRoot === root))];
-    let changed = false;
-    await Promise.all(roots.map(async (entryRoot) => {
-      const params = new URLSearchParams({ root: entryRoot });
-      if (refresh) params.set("refresh", "true");
-      let response;
-      try {
-        response = await fetch(`/api/files/git-status?${params}`);
-      } catch (error) {
-        return;
-      }
-      if (!response.ok) return;
-      const statuses = await response.json();
-      for (const entry of this.openFiles.values()) {
-        if (entry.root !== entryRoot) continue;
-        const nextStatus = String(statuses[entry.path] || "");
-        if (entry.git_status === nextStatus) continue;
-        entry.git_status = nextStatus;
-        changed = true;
-      }
-    }));
-    if (!changed) return;
-    this.persistOpenFiles();
-    this.renderFileTabs();
-  }
-
-  formatMtime(epochSeconds) {
-    return TermDeckFileBrowser.formatMtime(epochSeconds);
-  }
-
-  exactMtime(epochSeconds) {
-    const date = new Date(epochSeconds * 1000);
-    return `${date.toLocaleString()} (${date.toISOString()})`;
-  }
-
-  async expandDirRow(row, relPath) {
-    row.classList.add("open");
-      row.querySelector(".tree-folder-icon").src = FOLDER_ICON_OPEN;
-    const wrap = document.createElement("div");
-    wrap.className = "tree-children-wrap";
-    row.after(wrap);
-    await this.renderDirInto(wrap, relPath);
-  }
-
-  dropTreeDirsUnder(relPath) {
-    for (const key of [...this.treeDirs.keys()]) {
-      if (key === relPath || key.startsWith(relPath + "/")) this.treeDirs.delete(key);
-    }
-  }
-
-  async toggleDir(row, relPath) {
-    const next = row.nextSibling;
-    if (next && next.classList && next.classList.contains("tree-children-wrap")) {
-      next.remove();
-      row.classList.remove("open");
-      row.querySelector(".tree-folder-icon").src = FOLDER_ICON_CLOSED;
-      this.expandedDirs.delete(relPath);
-      this.dropTreeDirsUnder(relPath);
-      return;
-    }
-    this.expandedDirs.add(relPath);
-    await this.expandDirRow(row, relPath);
-  }
-
-  connectFileTreeWatch(root) {
-    if (this.vscodeMode || !root) return;
-    if (this.treeWs && this.treeWsRoot === root &&
-        (this.treeWs.readyState === WebSocket.CONNECTING || this.treeWs.readyState === WebSocket.OPEN)) return;
-    this.disconnectFileTreeWatch();
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${protocol}//${location.host}${FILE_TREE_WS_ROUTE}?root=${encodeURIComponent(root)}`);
-    this.treeWs = socket;
-    this.treeWsRoot = root;
-    socket.onmessage = (event) => {
-      if (this.treeWs !== socket) return;
-      let message;
-      try {
-        message = JSON.parse(event.data);
-      } catch (error) {
-        if (error instanceof SyntaxError) return;
-        throw error;
-      }
-      if (message.type === FILE_TREE_CHANGED) this.queueFileTreeRefresh(message.changes);
-    };
-    socket.onclose = () => {
-      if (this.treeWs !== socket) return;
-      this.treeWs = null;
-      this.treeWsRoot = "";
-      if (this.sideView !== "project" && this.sideView !== "search") return;
-      clearTimeout(this.treeWsReconnectTimer);
-      this.treeWsReconnectTimer = setTimeout(() => {
-        this.treeWsReconnectTimer = 0;
-        if (this.sideView === "project" || this.sideView === "search") this.connectFileTreeWatch(this.treeRoot);
-      }, 5000);
-    };
-  }
-
-  disconnectFileTreeWatch() {
-    clearTimeout(this.treeWsReconnectTimer);
-    this.treeWsReconnectTimer = 0;
-    clearTimeout(this.treeEventRefreshTimer);
-    this.treeEventRefreshTimer = 0;
-    this.treeChangedDirectories.clear();
-    this.treeChangedEntries.clear();
-    const socket = this.treeWs;
-    this.treeWs = null;
-    this.treeWsRoot = "";
-    if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
-  }
-
-  queueFileTreeRefresh(changes) {
-    if (!Array.isArray(changes)) return;
-    for (const change of changes) {
-      if (!change || typeof change.path !== "string") continue;
-      const operation = String(change.operation || "");
-      const parent = typeof change.parent === "string" ? change.parent : "";
-      if (this.isExcludedPath(parent) || (operation === "modified" && this.isExcludedPath(change.path))) continue;
-      if (operation === "modified" && change.is_directory) continue;
-      if (operation === "modified" && !change.is_directory) {
-        this.treeChangedEntries.set(change.path, change);
-        if (!this.treeRowForPath(change.path) && this.treeDirs.has(parent)) this.treeChangedDirectories.add(parent);
-      } else {
-        this.treeChangedDirectories.add(parent);
-        if (change.is_directory && operation === "deleted") {
-          this.expandedDirs.delete(change.path);
-          this.dropTreeDirsUnder(change.path);
-        }
-      }
-    }
-    if (!this.treeChangedDirectories.size && !this.treeChangedEntries.size) return;
-    clearTimeout(this.treeEventRefreshTimer);
-    this.treeEventRefreshTimer = setTimeout(() => {
-      this.treeEventRefreshTimer = 0;
-      void this.refreshChangedFileTreeEvents();
-    }, 120);
-  }
-
-  async refreshChangedFileTreeEvents() {
-    if (this.treePollBusy) {
-      clearTimeout(this.treeEventRefreshTimer);
-      this.treeEventRefreshTimer = setTimeout(() => {
-        this.treeEventRefreshTimer = 0;
-        void this.refreshChangedFileTreeEvents();
-      }, 120);
-      return;
-    }
-    const directories = [...this.treeChangedDirectories];
-    const entries = [...this.treeChangedEntries.values()];
-    this.treeChangedDirectories.clear();
-    this.treeChangedEntries.clear();
-    const openDirectories = directories.filter((directory) => this.treeDirs.has(directory));
-    if (openDirectories.length) await this.refreshTreeDirectories(openDirectories);
-    const openEntryChanges = entries.filter((change) => !openDirectories.includes(change.parent) && this.treeRowForPath(change.path));
-    if (openEntryChanges.length) await this.refreshChangedFileTreeEntries(openEntryChanges);
-    await this.refreshOpenFilesFromDisk(entries);
-    this.queueRecentFilesEventRefresh();
-    if (this.shouldRefreshActiveFileSearch(entries)) await this.refreshActiveFileSearch();
-  }
-
-  async refreshOpenFilesFromDisk(changes) {
-    if (!Array.isArray(changes) || !changes.length) return;
-    const changedKeys = new Set(changes
-      .filter((change) => change && ["modified", "created"].includes(change.operation) && !change.is_directory && typeof change.path === "string")
-      .map((change) => `${this.treeRoot}|${change.path}`));
-    if (!changedKeys.size) return;
-    for (const [key, entry] of this.openFiles) {
-      if (!changedKeys.has(key)) continue;
-      if (!entry.model || entry.dirty) {
-        await this.observeExternalFileHistory(entry);
-        continue;
-      }
-      await this.refreshFileModelFromDisk(entry);
-    }
-  }
-
-  async observeExternalFileHistory(entry) {
-    const res = await fetch(`/api/files/read?root=${encodeURIComponent(entry.root)}&path=${encodeURIComponent(entry.path)}`);
-    if (!res.ok) return;
-    await res.json();
-    if (this.fileHistoryOpen && this.activeFileKey !== null && this.openFiles.get(this.activeFileKey) === entry) {
-      void this.loadFileHistory();
-    }
-  }
-
-  shouldRefreshActiveFileSearch(changes) {
-    if (!Array.isArray(changes) || !changes.length) return false;
-    const structuralChange = changes.some((change) => String(change.operation || "") !== "modified");
-    if (this.sideView === "search" && this.$("search-query").value.trim()) {
-      if (structuralChange) return true;
-      const displayedPaths = this.contentSearchTree?.paths;
-      return changes.some((change) => displayedPaths?.has(change.path));
-    }
-    return this.sideView === "project" && this.$("search-name").value.trim() && structuralChange;
-  }
-
-  async refreshActiveFileSearch() {
-    if (this.sideView === "search" && this.$("search-query").value.trim()) {
-      await this.runSearch(null, true);
-      return;
-    }
-    if (this.sideView === "project" && this.$("search-name").value.trim()) await this.runNameSearch();
-  }
-
-  treeRowForPath(relPath) {
-    return [...this.$("files-tree").querySelectorAll(".tree-row")].find((row) => row.dataset.rel === relPath) || null;
-  }
-
-  async refreshChangedFileTreeEntries(changes) {
-    if (this.settings.show_mtime === false && this.settings.show_git_status === false) return;
-    const entriesByParent = new Map();
-    for (const change of changes) {
-      if (!entriesByParent.has(change.parent)) entriesByParent.set(change.parent, await this.fetchDirEntries(change.parent));
-    }
-    for (const change of changes) {
-      const entries = entriesByParent.get(change.parent);
-      if (!entries) continue;
-      const name = change.path.slice(change.parent ? change.parent.length + 1 : 0);
-      const entry = entries.find((candidate) => candidate.name === name);
-      const row = this.treeRowForPath(change.path);
-      if (!row) continue;
-      if (!entry) {
-        this.treeChangedDirectories.add(change.parent);
-        continue;
-      }
-      this.updateTreeRowMetadata(row, entry);
-    }
-    const missingParents = [...this.treeChangedDirectories].filter((directory) => this.treeDirs.has(directory));
-    this.treeChangedDirectories.clear();
-    if (missingParents.length) await this.refreshTreeDirectories(missingParents);
-  }
-
-  updateTreeRowMetadata(row, entry) {
-    const metadataKey = this.treeRowMetadataKey(entry);
-    if (row.dataset.metadata === metadataKey) return;
-    row.dataset.metadata = metadataKey;
-    row.querySelector(".tree-mtime")?.remove();
-    for (const className of [...row.classList]) {
-      if (className === "git-row" || className.startsWith("git-row-")) row.classList.remove(className);
-    }
-    delete row.dataset.gitStatus;
-    row.title = `${this.treeRoot}/${row.dataset.rel}`;
-    this.appendMtime(row, entry);
-    this.appendGitStatus(row, entry);
-    const openEntry = this.openFiles.get(`${this.treeRoot}|${row.dataset.rel}`);
-    if (openEntry && openEntry.git_status !== String(entry.git_status || "")) {
-      openEntry.git_status = String(entry.git_status || "");
-      this.persistOpenFiles();
-      this.renderFileTabs();
-    }
-  }
-
-  async refreshTreeDirectories(directoryPaths = null) {
-    if (this.treePollBusy || this.treeRoot === null || this.$("files-section").classList.contains("hidden")) return;
-    this.treePollBusy = true;
-    const scrollPosition = this.captureTreeScrollPosition();
-    const selectedPath = this.selectedTreeRow?.dataset?.rel || "";
-    let changed = false;
-    const paths = directoryPaths === null ? [...this.treeDirs.keys()] : [...new Set(directoryPaths)];
-    try {
-      for (const relPath of paths) {
-        const info = this.treeDirs.get(relPath);
-        if (!info || this.treeDirs.get(relPath) !== info) continue;
-        const entries = await this.fetchDirEntries(relPath);
-        if (entries === null || this.treeEntryCache(entries) === info.cache) continue;
-        changed = true;
-        await this.renderDirInto(info.container, relPath, entries);
-      }
-    } finally {
-      this.treePollBusy = false;
-      if (changed) {
-        const selectedRow = selectedPath ? this.treeRowForPath(selectedPath) : null;
-        this.markTreeSelection(selectedRow);
-        this.restoreTreeScrollPosition(scrollPosition);
-        requestAnimationFrame(() => this.restoreTreeScrollPosition(scrollPosition));
-      }
-    }
-  }
-
-  async treeKeyNav(key) {
-    const rows = [...this.$("files-tree").querySelectorAll(".tree-row")];
-    if (!rows.length) return;
-    const idx = rows.indexOf(this.selectedTreeRow);
-    const current = idx >= 0 ? rows[idx] : null;
-    const selectRow = (row) => {
-      if (!row) return;
-      this.markTreeSelection(row);
-      row.scrollIntoView({ block: "nearest" });
-    };
-    if (key === "ArrowDown") { selectRow(rows[Math.min(idx + 1, rows.length - 1)] || rows[0]); return; }
-    if (key === "ArrowUp") { selectRow(rows[Math.max(idx - 1, 0)]); return; }
-    if (!current) { selectRow(rows[0]); return; }
-    const rel = current.dataset.rel;
-    const isDir = current.dataset.kind === "dir";
-    if (key === "Enter") {
-      if (isDir) await this.toggleDir(current, rel);
-      else this.openFile(this.treeRoot, rel, null, current, { preview: true, fromFilePanel: true });
-      return;
-    }
-    if (key === "ArrowRight") {
-      if (isDir && !current.classList.contains("open")) await this.toggleDir(current, rel);
-      else selectRow(rows[Math.min(idx + 1, rows.length - 1)]);
-      return;
-    }
-    if (key === "ArrowLeft") {
-      if (isDir && current.classList.contains("open")) {
-        await this.toggleDir(current, rel);
-        return;
-      }
-      const parentRel = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : null;
-      if (parentRel) selectRow(this.$("files-tree").querySelector(`[data-rel="${CSS.escape(parentRel)}"]`));
-    }
-  }
-
-  markTreeSelection(row) {
-    if (this.selectedTreeRow) this.selectedTreeRow.classList.remove("selected");
-    this.selectedTreeRow = row || null;
-    if (row) row.classList.add("selected");
-  }
-
-  persistOpenFiles() {
-    const groups = {};
-    for (const entry of this.openFiles.values()) {
-      const key = this.owningProjectKey(entry.root);
-      (groups[key] = groups[key] || []).push({ root: entry.root, path: entry.path,
-        mtime: String(Math.max(0, Number(entry.mtime) || 0)), git_status: String(entry.git_status || "") });
-    }
-    const states = this.settings.project_state || {};
-    if (this.projectSlug) {
-      for (const [proj, files] of Object.entries(groups)) states[proj] = { ...(states[proj] || {}), open_files: files };
-      const scopedKey = this.projectStateKey();
-      if (!groups[scopedKey]) states[scopedKey] = { ...(states[scopedKey] || {}), open_files: [] };
-    } else {
-      for (const key of new Set([...Object.keys(states), ...Object.keys(groups)])) {
-        states[key] = { ...(states[key] || {}), open_files: groups[key] || [] };
-      }
-    }
-    this.settings.project_state = states;
-    const projectKeys = this.projectSlug ? [this.projectStateKey()]
-      : [...new Set([...Object.keys(states), ...Object.keys(groups)])];
-    const updates = projectKeys.map((projectKey) => ({ projectKey, openFiles: [...(states[projectKey]?.open_files || [])] }));
-    this.openFilesPersistPromise = this.openFilesPersistPromise.then(async () => {
-      for (const update of updates) {
-        const params = this.projectStateSearchParams(update.projectKey);
-        const response = await fetch(`/api/project-state/open_files?${params}`, { method: "PUT", keepalive: true,
-          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ value: update.openFiles }) });
-        if (!response.ok) throw new Error(`server returned ${response.status}`);
-      }
-    }).catch((error) => { this.$("stat-text").textContent = `Could not persist open files: ${error.message}`; });
-  }
-
-  async openFile(root, path, line, treeRow, options = {}) {
-    const key = `${root}|${path}`;
-    if (!this.openFiles.has(key)) {
-      this.openFiles.set(key, { root, path, name: path.split("/").pop(), model: null, fullPath: null,
-        truncated: false, preview: !!options.preview && !options.pinned, mtime: 0,
-        git_status: String(treeRow?.dataset.gitStatus || "") });
-    } else {
-      const entry = this.openFiles.get(key);
-      if (options.pinned) entry.preview = false;
-      this.openFiles.delete(key);
-      this.openFiles.set(key, entry);
-    }
-    this.enforceOpenFilesLimit();
-    this.persistOpenFiles();
-    this.markTreeSelection(treeRow || null);
-    const entry = this.openFiles.get(key);
-    const returnTo = typeof options.returnTo === "string" ? options.returnTo.trim() : "";
-    await this.activateFile(key, line, { returnTo, history: options.history });
-    void this.refreshOpenFileGitStatuses(root);
-    const openedFromFilePanel = !!treeRow || !!options.fromFilePanel;
-    if (openedFromFilePanel && !this.settings.files_pinned && entry.model && this.sideView !== "terminals") {
-      this.setSideView("terminals", false);
-    }
-  }
-
-  saveActiveFileViewState() {
-    if (this.activeFileKey === null || !this.editor) return;
-    const entry = this.openFiles.get(this.activeFileKey);
-    if (!entry?.model || this.editor.getModel() !== entry.model) return;
-    entry.viewState = this.editor.saveViewState();
-  }
-
-  positionPopover(pop, anchor) {
-    const rect = anchor.getBoundingClientRect();
-    pop.classList.remove("hidden");
-    const below = rect.bottom + 6;
-    const top = below + pop.offsetHeight > window.innerHeight - 8 ? rect.top - pop.offsetHeight - 6 : below;
-    pop.style.top = Math.max(8, top) + "px";
-    pop.style.left = Math.min(rect.left, window.innerWidth - pop.offsetWidth - 12) + "px";
-  }
-
-  buildRemoteAccessRow() {
-    const row = document.createElement("div");
-    row.className = "settings-row remote-access-settings-row";
-    const heading = document.createElement("span");
-    heading.className = "remote-access-heading";
-    const label = document.createElement("span");
-    label.className = "settings-label";
-    label.textContent = "Remote access";
-    const status = document.createElement("span");
-    status.className = "remote-access-status";
-    status.textContent = "checking…";
-    const accessUrl = document.createElement("a");
-    accessUrl.className = "remote-access-url hidden";
-    accessUrl.target = "_blank";
-    accessUrl.rel = "noopener";
-    heading.append(label, status, accessUrl);
-    const controls = document.createElement("span");
-    controls.className = "settings-controls";
-    const open = document.createElement("button");
-    open.type = "button";
-    open.className = "remote-access-open hidden";
-    open.textContent = "↗";
-    open.title = "Open TermDeck Remote";
-    const action = document.createElement("button");
-    action.type = "button";
-    action.className = "remote-access-action";
-    action.textContent = "Sign in";
-    controls.append(open, action);
-    row.append(heading, controls);
-    row.remoteAccessElements = { status, accessUrl, open, action };
-    action.onclick = () => this.handleRemoteAccessAction(row);
-    open.onclick = () => {
-      const relayUrl = row.dataset.relayUrl;
-      if (relayUrl) window.open(relayUrl, "_blank", "noopener");
-    };
-    void this.refreshRemoteAccessRow(row);
-    return row;
-  }
-
-  async refreshRemoteAccessRow(row) {
-    if (!row) return;
-    const { status, accessUrl, open, action } = row.remoteAccessElements;
-    try {
-      const response = await fetch("/api/remote/status");
-      if (!response.ok) throw new Error(`remote status failed (${response.status})`);
-      const remote = await response.json();
-      if (!row.isConnected) return;
-      row.dataset.remoteState = remote.state;
-      row.dataset.relayUrl = remote.public_url || remote.relay_url || "";
-      row.dataset.loginUrl = remote.login_url || "";
-      const showAccessUrl = !!row.dataset.relayUrl && !!(remote.email || this.remoteBrowserEmail);
-      accessUrl.href = showAccessUrl ? row.dataset.relayUrl : "";
-      accessUrl.textContent = showAccessUrl ? row.dataset.relayUrl : "";
-      accessUrl.title = showAccessUrl ? `Open ${row.dataset.relayUrl}` : "";
-      accessUrl.classList.toggle("hidden", !showAccessUrl);
-      const labels = {
-        disconnected: "off",
-        pairing: "finish Google sign-in",
-        ready: remote.email ? `${remote.email} · ready` : "ready",
-        connected: remote.email ? `${remote.email} · connected` : "connected",
-        error: remote.error || "connection failed",
-      };
-      status.textContent = labels[remote.state] || remote.state;
-      status.title = remote.error || remote.relay_url || "";
-      open.classList.toggle("hidden", !!this.remoteBrowserEmail || !showAccessUrl);
-      action.textContent = this.remoteBrowserEmail ? "Log out" :
-        ["connected", "ready"].includes(remote.state) ? "Disconnect" :
-          remote.state === "pairing" ? "Open login" : "Sign in";
-      if (remote.state === "pairing") {
-        clearTimeout(row.remoteStatusTimer);
-        row.remoteStatusTimer = setTimeout(() => this.refreshRemoteAccessRow(row), 1800);
-      }
-    } catch (error) {
-      status.textContent = "unavailable";
-      status.title = error instanceof Error ? error.message : String(error);
-      accessUrl.classList.add("hidden");
-      action.textContent = "Retry";
-    }
-  }
-
-  async handleRemoteAccessAction(row) {
-    if (this.remoteBrowserEmail) {
-      await this.logoutRemoteBrowser(row.remoteAccessElements.action);
-      return;
-    }
-    const state = row.dataset.remoteState || "disconnected";
-    if (["connected", "ready"].includes(state)) {
-      if (!window.confirm("Disconnect this computer from TermDeck Remote?")) return;
-      const response = await fetch("/api/remote/disconnect", { method: "POST" });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        window.alert(payload.detail || `remote disconnect failed (${response.status})`);
-      }
-      await this.refreshRemoteAccessRow(row);
-      return;
-    }
-    if (state === "pairing" && row.dataset.loginUrl) {
-      window.open(row.dataset.loginUrl, "_blank", "noopener");
-      return;
-    }
-    const loginWindow = window.open("about:blank", "termdeck-remote-login");
-    try {
-      const response = await fetch("/api/remote/pair", { method: "POST" });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail || `remote pairing failed (${response.status})`);
-      if (payload.login_url && loginWindow) loginWindow.location.replace(payload.login_url);
-      else if (payload.login_url) window.open(payload.login_url, "_blank", "noopener");
-      await this.refreshRemoteAccessRow(row);
-    } catch (error) {
-      if (loginWindow) loginWindow.close();
-      window.alert(error instanceof Error ? error.message : String(error));
-      await this.refreshRemoteAccessRow(row);
-    }
-  }
-
-  buildLanAccessRow() {
-    const row = document.createElement("div");
-    row.className = "settings-row lan-access-settings-row";
-    const heading = document.createElement("span");
-    heading.className = "lan-access-heading";
-    const label = document.createElement("span");
-    label.className = "settings-label";
-    label.textContent = "Local Wi-Fi";
-    const status = document.createElement("span");
-    status.className = "lan-access-status";
-    status.textContent = "checking…";
-    const accessUrl = document.createElement("a");
-    accessUrl.className = "lan-access-url hidden";
-    accessUrl.target = "_blank";
-    accessUrl.rel = "noopener";
-    heading.append(label, status, accessUrl);
-    const controls = document.createElement("span");
-    controls.className = "settings-controls";
-    const open = document.createElement("button");
-    open.type = "button";
-    open.className = "lan-access-open hidden";
-    open.textContent = "↗";
-    open.title = "Open over local Wi-Fi";
-    const action = document.createElement("button");
-    action.type = "button";
-    action.className = "lan-access-action";
-    action.textContent = "Enable";
-    controls.append(open, action);
-    row.append(heading, controls);
-    row.lanAccessElements = { status, accessUrl, open, action };
-    action.onclick = () => this.handleLanAccessAction(row);
-    open.onclick = () => {
-      const url = row.dataset.accessUrl;
-      if (url) window.open(url, "_blank", "noopener");
-    };
-    void this.refreshLanAccessRow(row);
-    return row;
-  }
-
-  async refreshLanAccessRow(row) {
-    if (!row) return;
-    const { status, accessUrl, open, action } = row.lanAccessElements;
-    try {
-      const response = await fetch("/api/lan/status");
-      const lan = await response.json();
-      if (!response.ok) throw new Error(lan.detail || `local Wi-Fi status failed (${response.status})`);
-      if (!row.isConnected) return;
-      const enabled = !!lan.enabled;
-      const running = !!lan.running;
-      const baseUrl = Array.isArray(lan.urls) ? String(lan.urls[0] || "") : "";
-      const pageUrl = baseUrl ? new URL(`${location.pathname}${location.search}${location.hash}`, `${baseUrl}/`).href : "";
-      row.dataset.enabled = enabled ? "1" : "0";
-      row.dataset.accessUrl = pageUrl;
-      this.settings.lan_access_enabled = enabled;
-      this.persistedSettings.lan_access_enabled = enabled;
-      status.textContent = enabled ? running ? "on · same network only" : lan.error || "not listening" : "off";
-      status.title = lan.error || (Array.isArray(lan.networks) ? lan.networks.join("\n") : "");
-      accessUrl.href = enabled && running ? pageUrl : "";
-      accessUrl.textContent = enabled && running ? baseUrl : "";
-      accessUrl.title = enabled && running ? `Open ${pageUrl}` : "";
-      accessUrl.classList.toggle("hidden", !enabled || !running || !pageUrl);
-      open.classList.toggle("hidden", !enabled || !running || !pageUrl);
-      action.textContent = enabled ? "Disable" : "Enable";
-    } catch (error) {
-      status.textContent = "unavailable";
-      status.title = error instanceof Error ? error.message : String(error);
-      accessUrl.classList.add("hidden");
-      open.classList.add("hidden");
-      action.textContent = "Retry";
-    }
-  }
-
-  async handleLanAccessAction(row) {
-    const enabled = row.dataset.enabled === "1";
-    const message = enabled
-      ? "Disable local Wi-Fi access? A page currently using the Wi-Fi address will disconnect."
-      : "Anyone on your current local Wi-Fi network will be able to control terminals and access files without signing in. Enable local Wi-Fi access?";
-    if (!window.confirm(message)) return;
-    const action = row.lanAccessElements.action;
-    action.disabled = true;
-    try {
-      const response = await fetch("/api/lan/access", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: !enabled }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail || `local Wi-Fi update failed (${response.status})`);
-      row.dataset.enabled = payload.enabled ? "1" : "0";
-      this.settings.lan_access_enabled = !!payload.enabled;
-      this.persistedSettings.lan_access_enabled = !!payload.enabled;
-      await this.refreshLanAccessRow(row);
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : String(error));
-      await this.refreshLanAccessRow(row);
-    } finally {
-      action.disabled = false;
-    }
-  }
-
-  async activateFile(key, line, options = {}) {
-    const entry = this.openFiles.get(key);
-    if (!entry) return;
-    this.closeTerminalFind();
-    this.closePromptHistory();
-    if (this.activeFileKey === null && this.historyOpen && this.activeId) {
-      this.rememberHistoryScrollPosition(this.activeId);
-    }
-    if (this.activeFileKey !== key) this.saveActiveFileViewState();
-    this.activeFileKey = key;
-    if (options.history !== false && !this.vscodeMode) {
-      const requestedReturnTo = typeof options.returnTo === "string" ? options.returnTo.trim() : "";
-      const activeSessionId = String(this.activeId || requestedReturnTo || "");
-      const current = this.parseNavState(this.lastNavJson);
-      const fallback = activeSessionId || (current?.kind === "term" ? String(current.id || "") : "");
-      const fallbackFromFile = current?.kind === "file" ? String(current.return_to || "") : "";
-      const returnTo = (this.session(fallback) ? fallback : fallbackFromFile && this.session(fallbackFromFile) ? fallbackFromFile : "");
-      const fromCurrentFile = current?.kind === "file" && String(current.return_to || "") === returnTo;
-      if (returnTo && !fromCurrentFile) {
-        const returnState = { kind: "term", id: returnTo };
-        const historyScroll = this.historyScrollBySession.get(returnTo);
-        if (historyScroll) returnState.history_scroll = historyScroll;
-        if (current?.kind === "term" && String(current.id || "") === returnTo) this.replaceNav(returnState);
-        else this.pushNav(returnState);
-      }
-      if (returnTo) {
-        this.pushNav({ kind: "file", key, return_to: returnTo });
-      } else {
-        this.pushNav({ kind: "file", key });
-      }
-    }
-    else if (options.history !== false) this.replaceNav({ kind: "file", key });
-    if (options.fromOpenFiles && !this.vscodeMode) this.setSideView("terminals", false);
-    this.applyMainLayout();
-    this.renderList();
-    this.renderTopbar();
-    await this.monacoReady;
-    if (!entry.model || !entry.dirty) {
-      const loaded = await this.refreshFileModelFromDisk(entry);
-      if (!loaded && !entry.model) return;
-    }
-    if (this.activeFileKey !== key) return;
-    this.editor.setModel(entry.model);
-    void this.lspClient?.activate(entry, entry.model);
-    if (line) {
-      this.editor.revealLineInCenter(line);
-      this.editor.setPosition({ lineNumber: line, column: 1 });
-    } else if (entry.viewState) this.editor.restoreViewState(entry.viewState);
-    this.editor.focus();
-    this.renderList();
-    this.renderTopbar();
-    void this.renderSecondaryEditor(true);
-    if (options.fromOpenFiles) {
-      requestAnimationFrame(() => this.$("session-list").querySelector(".file-item.active")?.scrollIntoView({ block: "nearest" }));
-    }
-    if (this.fileHistoryOpen && this.activeFileKey === key) void this.loadFileHistory();
-  }
-
-  navigateBackFromActiveFile() {
-    if (this.activeFileKey === null) return false;
-    const current = this.parseNavState(this.lastNavJson);
-    if (current?.kind === "file" && current.return_to && this.session(current.return_to)) {
-      history.back();
-      return true;
-    }
-    const activeId = this.activeId;
-    this.saveActiveFileViewState();
-    this.lspClient?.deactivate();
-    this.activeFileKey = null;
-    this.applyMainLayout();
-    this.renderList();
-    this.renderTopbar();
-    if (activeId && this.session(activeId)) {
-      this.replaceNav({ kind: "term", id: activeId });
-      requestAnimationFrame(() => this.focusActiveEditor());
-    } else {
-      this.replaceNav({ kind: "init" });
-    }
-    return true;
-  }
-
-  async refreshFileModelFromDisk(entry) {
-    const res = await fetch(`/api/files/read?root=${encodeURIComponent(entry.root)}&path=${encodeURIComponent(entry.path)}`);
-    if (!res.ok) {
-      if (!entry.model) {
-        const err = await res.json().catch(() => ({}));
-        this.$("stat-text").textContent = err.detail || `${entry.path} — cannot open`;
-      }
-      return false;
-    }
-    const data = await res.json();
-    entry.fullPath = data.path;
-    entry.truncated = data.truncated;
-    const previousMtime = Number(entry.mtime) || 0;
-    entry.mtime = Number(data.mtime) || 0;
-    if (entry.mtime !== previousMtime) this.persistOpenFiles();
-    if (this.settings.file_tab_order === "modified") this.renderFileTabs();
-    if (!entry.model) {
-      const uri = monaco.Uri.file(data.path);
-      const existing = monaco.editor.getModel(uri);
-      if (existing) existing.dispose();
-      entry.model = monaco.editor.createModel(data.content, undefined, uri);
-      entry.model.onDidChangeContent(() => {
-        if (entry.applyingDiskContent) return;
-        const becameDirty = !entry.dirty;
-        entry.dirty = true;
-        entry.preview = false;
-        this.scheduleFileAutosave(entry);
-        if (becameDirty) this.renderFileEditorChrome();
-        if (this.fileInspectorMode === "outline" && this.activeFileKey !== null && this.openFiles.get(this.activeFileKey) === entry) {
-          clearTimeout(this.fileOutlineTimer);
-          this.fileOutlineTimer = setTimeout(() => this.renderFileOutline(), 240);
-        }
-        this.scheduleProblemsRefresh();
-        if (this.fileHistoryOpen && this.activeFileKey !== null && this.openFiles.get(this.activeFileKey) === entry) {
-          clearTimeout(this.fileHistoryComparisonTimer);
-          this.fileHistoryComparisonTimer = setTimeout(() => {
-            this.fileHistoryComparisonTimer = 0;
-            this.refreshFileHistoryDiffNavigation();
-          }, 250);
-        }
-      });
-      return true;
-    }
-    if (entry.dirty || entry.model.getValue() === data.content) return false;
-    entry.applyingDiskContent = true;
-    try {
-      entry.model.setValue(data.content);
-    } finally {
-      entry.applyingDiskContent = false;
-    }
-    if (this.fileHistoryOpen && this.activeFileKey !== null && this.openFiles.get(this.activeFileKey) === entry) {
-      void this.loadFileHistory();
-    }
-    return true;
-  }
-
-  scheduleFileAutosave(entry) {
-    clearTimeout(entry.autosaveTimer);
-    entry.autosaveTimer = setTimeout(() => {
-      entry.autosaveTimer = 0;
-      void this.saveFileEntry(entry, false);
-    }, FILE_AUTOSAVE_DELAY_MS);
-  }
-
-  flushPendingFileSavesOnPageExit() {
-    clearTimeout(this.exitFileSaveResetTimer);
-    for (const entry of this.openFiles.values()) {
-      if (!entry.model || (!entry.dirty && !entry.savePromise)) continue;
-      const versionId = entry.model.getVersionId();
-      if (entry.exitSaveVersionId === versionId) continue;
-      entry.exitSaveVersionId = versionId;
-      const body = JSON.stringify({ root: entry.root, path: entry.path, content: entry.model.getValue() });
-      const queued = typeof navigator.sendBeacon === "function" &&
-        navigator.sendBeacon("/api/files/write", new Blob([body], { type: "application/json" }));
-      if (!queued) {
-        void fetch("/api/files/write", { method: "POST", keepalive: true,
-          headers: { "Content-Type": "application/json" }, body }).catch(() => {});
-      }
-    }
-    this.exitFileSaveResetTimer = setTimeout(() => {
-      for (const entry of this.openFiles.values()) delete entry.exitSaveVersionId;
-    }, 2000);
-  }
-
-  async saveFileEntry(entry, showFailureAlert) {
-    if (!entry?.model) return false;
-    clearTimeout(entry.autosaveTimer);
-    entry.autosaveTimer = 0;
-    if (entry.savePromise) {
-      const previousSaveSucceeded = await entry.savePromise;
-      if (!entry.dirty || !previousSaveSucceeded) return previousSaveSucceeded;
-    }
-    const model = entry.model;
-    const versionId = model.getVersionId();
-    const content = model.getValue();
-    const savePromise = (async () => {
-      try {
-        const response = await fetch("/api/files/write", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ root: entry.root, path: entry.path, content }),
-        });
-        if (!response.ok) {
-          const error = await response.json().catch(() => ({}));
-          const message = error.detail || "autosave failed";
-          this.$("stat-text").textContent = message;
-          if (showFailureAlert) alert(message);
-          return false;
-        }
-        if (entry.model === model && model.getVersionId() === versionId) {
-          entry.dirty = false;
-          entry.mtime = Math.floor(Date.now() / 1000);
-          this.persistOpenFiles();
-          this.renderFileEditorChrome();
-          void this.refreshOpenFileGitStatuses(entry.root, true);
-        } else if (entry.model && !entry.autosaveTimer) {
-          this.scheduleFileAutosave(entry);
-        }
-        if (this.fileHistoryOpen && this.activeFileKey !== null && this.openFiles.get(this.activeFileKey) === entry) {
-          void this.loadFileHistory();
-        }
-        if (this.enforceOpenFilesLimit()) this.persistOpenFiles();
-        this.lspClient?.didSave(entry, model, content);
-        return true;
-      } catch (error) {
-        const message = error.message || "autosave failed";
-        this.$("stat-text").textContent = message;
-        if (showFailureAlert) alert(message);
-        return false;
-      }
-    })();
-    entry.savePromise = savePromise;
-    try {
-      return await savePromise;
-    } finally {
-      if (entry.savePromise === savePromise) entry.savePromise = null;
-    }
-  }
-
-  async saveActiveFile() {
-    const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
-    if (entry) await this.saveFileEntry(entry, true);
-  }
-
-  async saveOpenFilesForLsp(root) {
-    for (const entry of this.openFiles.values()) {
-      if (entry.root !== root) continue;
-      if (!entry.dirty && !entry.savePromise) continue;
-      if (!await this.saveFileEntry(entry, true)) return false;
-    }
-    return true;
-  }
-
-  async refreshFilesChangedByLsp(changedFiles, root) {
-    const changedPaths = new Set(changedFiles.map((file) => String(file.path || "")));
-    for (const entry of this.openFiles.values()) {
-      if (entry.root !== root || !changedPaths.has(entry.path)) continue;
-      entry.dirty = false;
-      await this.refreshFileModelFromDisk(entry);
-    }
-    this.renderList();
-    this.renderTopbar();
-    this.scheduleProblemsRefresh();
-    requestAnimationFrame(() => this.editor?.focus());
-  }
-
-  async closeFile(key, options = {}) {
-    await this.closeFiles([key], options);
-  }
-
-  async closeFiles(keys, options = {}) {
-    const entries = [...new Set(keys)].map((key) => [key, this.openFiles.get(key)]).filter(([, entry]) => !!entry);
-    if (!entries.length) return;
-    const closableKeys = [];
-    for (const [key, entry] of entries) {
-      if (!options.discard && (entry.dirty || entry.savePromise)) {
-        const saved = await this.saveFileEntry(entry, true);
-        if (!saved || this.openFiles.get(key) !== entry) continue;
-      }
-      closableKeys.push(key);
-    }
-    if (!closableKeys.length) return;
-    const activeClosed = closableKeys.includes(this.activeFileKey);
-    for (const key of closableKeys) {
-      const entry = this.openFiles.get(key);
-      if (entry) this.closeOpenFileEntry(key, entry);
-    }
-    this.persistOpenFiles();
-    if (activeClosed) {
-      const remaining = [...this.openFiles.keys()];
-      if (remaining.length) {
-        const nextKey = remaining[remaining.length - 1];
-        await this.activateFile(nextKey, null, { history: false });
-        this.replaceNav({ kind: "file", key: nextKey });
-        this.saveSettings();
-        return;
-      }
-      this.lspClient?.deactivate();
-      this.activeFileKey = null;
-      this.applyMainLayout();
-      const view = this.views.get(this.activeId);
-      if (view) view.term.focus();
-      this.replaceNav(this.activeId ? { kind: "term", id: this.activeId } : { kind: "init" });
-    }
-    this.renderList();
-    this.renderTopbar();
-    this.saveSettings();
-  }
-
-  closeActiveItem() {
-    if (this.activeFileKey !== null) void this.closeFile(this.activeFileKey);
-    else this.closeActive();
-  }
-
-  terminalPathBoundaryContinues(leftText, rightText) {
-    const left = String(leftText || "").replace(/\s+$/, "");
-    const right = String(rightText || "").replace(/^\s+/, "");
-    if (!left || !right) return false;
-    // A hard column wrap can land the path separator on either side of the break: "trainer/" then
-    // "prep.py", but just as often "zscripts" then "/probe.py", or a base name then its own ".py".
-    // Only the first shape was recognized before, so a directory name ending a wrapped row (with
-    // no trailing slash) silently dropped its own prefix when the file link was opened.
-    if (/[\\/._-]$/.test(left) && /^[\w@%+=.-]+(?:[\\/._-]|:\d)/.test(right)) return true;
-    if (/[\w@%+=-]$/.test(left) && /^[\\/][\w@%+=.-]*\.[A-Za-z]/.test(right)) return true;
-    if (/[\w@%+=-]$/.test(left) && /^\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+){0,2}\b/.test(right)) return true;
-    return false;
-  }
-
-  providePathLinks(term, sessionId, bufferLineNumber, callback) {
-    const buffer = term.buffer.active;
-    const targetIndex = bufferLineNumber - 1;
-    if (!buffer.getLine(targetIndex)) { callback(undefined); return; }
-
-    let firstIndex = targetIndex;
-    while (firstIndex > 0) {
-      const current = buffer.getLine(firstIndex);
-      const previous = buffer.getLine(firstIndex - 1);
-      if (current?.isWrapped || this.terminalPathBoundaryContinues(
-        previous?.translateToString(true), current?.translateToString(true))) firstIndex -= 1;
-      else break;
-    }
-    const segments = [];
-    let nextIndex = firstIndex;
-    let logicalOffset = 0;
-    while (nextIndex < buffer.length) {
-      const line = buffer.getLine(nextIndex);
-      if (!line) break;
-      const text = line.translateToString(true);
-      segments.push({ index: nextIndex, text, logicalStart: logicalOffset });
-      logicalOffset += text.length;
-      const nextLine = buffer.getLine(nextIndex + 1);
-      if (!nextLine || (!nextLine.isWrapped && !this.terminalPathBoundaryContinues(
-        text, nextLine.translateToString(true)))) break;
-      nextIndex += 1;
-    }
-    const logicalText = segments.map((segment) => segment.text).join("");
-    const links = [];
-    for (const segment of segments) {
-      const segmentStart = segment.logicalStart;
-      const segmentEnd = segmentStart + segment.text.length;
-      if (segment.index === targetIndex && segment.text.length) {
-        for (const match of logicalText.matchAll(PATH_LINK_RE)) {
-          const raw = match[0];
-          const matchStart = match.index;
-          const matchEnd = matchStart + raw.length;
-          const ext = raw.split(":")[0].split(".").pop().toLowerCase();
-          if (!raw.includes("/") && !KNOWN_EXTS.has(ext)) continue;
-          if (matchStart >= segmentEnd || matchEnd <= segmentStart) continue;
-          const start = Math.max(matchStart, segmentStart) - segmentStart;
-          const end = Math.min(matchEnd, segmentEnd) - segmentStart;
-          if (end <= start) continue;
-          links.push({
-            range: { start: { x: start + 1, y: bufferLineNumber }, end: { x: end, y: bufferLineNumber } },
-            text: raw,
-            activate: () => this.openFileFromLink(sessionId, raw),
-          });
-        }
-      }
-    }
-    if (!links.length) {
-      const collapsedChars = [];
-      const logicalCharStarts = [];
-      for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
-        const segment = segments[segmentIndex];
-        const previousText = segmentIndex > 0 ? segments[segmentIndex - 1].text : "";
-        const rightText = String(segment.text || "");
-        const trimStart = this.terminalPathBoundaryContinues(previousText, rightText) ? (rightText.match(/^\s*/)?.[0]?.length ?? 0) : 0;
-        for (let charIndex = trimStart; charIndex < segment.text.length; charIndex += 1) {
-          collapsedChars.push(segment.text[charIndex]);
-          logicalCharStarts.push(segment.logicalStart + charIndex);
-        }
-      }
-      const collapsedText = collapsedChars.join("");
-      for (const segment of segments) {
-        const segmentStart = segment.logicalStart;
-        const segmentEnd = segmentStart + segment.text.length;
-        if (segment.index === targetIndex && segment.text.length) {
-          for (const match of collapsedText.matchAll(PATH_LINK_RE)) {
-            const raw = match[0];
-            const matchStart = match.index;
-            const matchEnd = matchStart + raw.length;
-            const logicalMatchStart = logicalCharStarts[matchStart];
-            if (typeof logicalMatchStart !== "number") continue;
-            const logicalMatchEnd = logicalCharStarts[matchEnd] ?? logicalText.length;
-            const ext = raw.split(":")[0].split(".").pop().toLowerCase();
-            if (!raw.includes("/") && !KNOWN_EXTS.has(ext)) continue;
-            if (logicalMatchStart >= segmentEnd || logicalMatchEnd <= segmentStart) continue;
-            const start = Math.max(logicalMatchStart, segmentStart) - segmentStart;
-            const end = Math.min(logicalMatchEnd, segmentEnd) - segmentStart;
-            if (end <= start) continue;
-            links.push({
-              range: { start: { x: start + 1, y: bufferLineNumber }, end: { x: end, y: bufferLineNumber } },
-              text: raw,
-              activate: (_event, linkText) => this.openFileFromLink(sessionId, linkText || raw),
-            });
-          }
-        }
-      }
-    }
-    callback(links.length ? links : undefined);
-  }
-
-  parseVscodeFileLink(linkText) {
-    let value = String(linkText || "").trim().replace(/\s+/g, "");
-    if (!value || /^(?:https?|mailto|data|javascript):/i.test(value)) return null;
-    let line = null;
-    let column = null;
-    let match = value.match(/#L(\d+)(?:-L\d+)?$/i);
-    if (match) {
-      line = Number(match[1]);
-      value = value.slice(0, match.index);
-    } else {
-      match = value.match(/:(\d+)(?::(\d+))?$/);
-      if (match) {
-        line = Number(match[1]);
-        column = match[2] ? Number(match[2]) : null;
-        value = value.slice(0, match.index);
-      }
-    }
-    if (/^file:\/\//i.test(value)) {
-      try { value = decodeURIComponent(new URL(value).pathname); } catch (_error) { return null; }
-    }
-    value = value.replace(/[),.;]+$/, "");
-    const fileName = value.split("/").pop() || "";
-    const extension = fileName.includes(".") ? fileName.split(".").pop().toLowerCase() : "";
-    if (!value || (!value.includes("/") && !KNOWN_EXTS.has(extension))) return null;
-    return { path: value, line, column };
-  }
-
-  postVscodeFileOpen(path, line, column, cwd) {
-    if (!this.vscodeMode || window.parent === window) return false;
-    window.parent.postMessage({ type: "termdeck-open-file", path, line, column, cwd }, "*");
-    return true;
-  }
-
-  requestVscodeRefresh(hard = false) {
-    if (!this.vscodeMode) return;
-    if (window.parent !== window) {
-      window.parent.postMessage({ type: "termdeck-refresh", hard: !!hard }, "*");
-      return;
-    }
-    location.reload();
-  }
-
-  postVscodeNativeSession(session, visible) {
-    if (!this.nativeVscodeMode || window.parent === window || !session) return;
-    window.parent.postMessage({
-      type: "termdeck-native-session",
-      session: { session_id: session.session_id, title: this.titlePresentation(session).text, cwd: session.cwd },
-      ...(typeof visible === "boolean" ? { visible } : {}),
-    }, "*");
-  }
-
-  postVscodeNativeClose(sessionId) {
-    if (!this.nativeVscodeMode || window.parent === window || !sessionId) return;
-    window.parent.postMessage({ type: "termdeck-native-close", session_id: sessionId }, "*");
-  }
-
-  handleHistoryFileLink(event) {
-    const anchor = event.target.closest?.("a");
-    if (!anchor) return;
-    const linkText = anchor.dataset.terminalFile || anchor.getAttribute("href") || "";
-    if (!this.parseVscodeFileLink(linkText)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    this.openFileFromLink(this.activeId, linkText);
-  }
-
-  openFileFromLink(sessionId, linkText) {
-    const parsed = this.parseVscodeFileLink(linkText);
-    if (!parsed) return;
-    const s = this.session(sessionId);
-    const returnTo = String(sessionId || "").trim();
-    if (this.vscodeMode) {
-      this.postVscodeFileOpen(parsed.path, parsed.line, parsed.column, s ? s.cwd : "~");
-      return;
-    }
-    this.openFile(s ? s.cwd : "~", parsed.path, parsed.line, null, { returnTo });
-  }
-
-  sessionSuggestionEntries() {
-    const entries = [];
-    const seen = new Set();
-    const addEntry = (value, label) => {
-      const normalized = String(value || "").trim();
-      if (!normalized) return;
-      const key = normalized.toLowerCase();
-      if (seen.has(key)) return;
-      seen.add(key);
-      entries.push({ value: normalized, label });
-    };
-    const sessions = [...this.sessions, ...this.closedSessions];
-    for (const session of sessions) {
-      if (!session) continue;
-      addEntry(session.session_id, session.session_id ? "session id" : "");
-      if (session.title) addEntry(session.title, `title: ${session.title}`);
-      if (session.cli_title) addEntry(session.cli_title, `agent title: ${session.cli_title}`);
-    }
-    return entries;
-  }
-
-  updateModalSessionSuggestions() {
-    const datalist = this.$("modal-session-refs");
-    if (!datalist) return;
-    datalist.textContent = "";
-    const entries = this.sessionSuggestionEntries().sort((left, right) => {
-      const leftLabel = String(left.value).toLowerCase();
-      const rightLabel = String(right.value).toLowerCase();
-      return leftLabel < rightLabel ? -1 : leftLabel > rightLabel ? 1 : 0;
-    });
-    for (const item of entries) {
-      const option = document.createElement("option");
-      option.value = item.value;
-      if (item.label) option.label = item.label;
-      datalist.appendChild(option);
-    }
-  }
-
-  resolveSessionNameAndReference(model, rawValue) {
-    const modelValue = String(model || "").trim().toLowerCase();
-    const value = String(rawValue || "").trim();
-    if (!value || modelValue === "none" || modelValue === "agy") {
-      return { title: value, session_ref: "" };
-    }
-    const needle = value.toLowerCase();
-    const matches = [];
-    for (const session of [...this.sessions, ...this.closedSessions]) {
-      if (!session) continue;
-      const sessionId = String(session.session_id || "").trim();
-      const title = String(session.title || "").trim();
-      const cliTitle = String(session.cli_title || "").trim();
-      if (sessionId && sessionId.toLowerCase() === needle) matches.push(sessionId);
-      if (title && title.toLowerCase() === needle) matches.push(sessionId);
-      if (cliTitle && cliTitle.toLowerCase() === needle) matches.push(sessionId);
-    }
-    const unique = [...new Set(matches)];
-    if (unique.length === 1 && unique[0]) {
-      return { title: "", session_ref: unique[0] };
-    }
-    return { title: value, session_ref: "" };
-  }
-
-  clearModalError() {
-    const error = this.$("modal-error");
-    const install = this.$("modal-error-install");
-    if (error) error.classList.add("hidden");
-    if (install) {
-      install.classList.add("hidden");
-      install.disabled = false;
-      install.onclick = null;
-    }
-  }
-
-  showModalDependencyError(detail) {
-    const error = this.$("modal-error");
-    const message = this.$("modal-error-message");
-    const install = this.$("modal-error-install");
-    if (!error || !message || !install) return;
-    const command = String(detail?.install_command || "").trim();
-    message.textContent = `${detail?.message || "The selected agent is unavailable."}${command ? ` Run ${command} in a new terminal to install it.` : ""}`;
-    error.classList.remove("hidden");
-    if (!command) return;
-    install.classList.remove("hidden");
-    install.onclick = () => void this.openModelInstallTerminal(detail);
-  }
-
-  async openModelInstallTerminal(detail) {
-    const install = this.$("modal-error-install");
-    const command = String(detail?.install_command || "").trim();
-    if (!command || install?.disabled) return;
-    if (install) install.disabled = true;
-    const cwd = this.$("modal-cwd").value.trim() || this.resolveVscodeDefaultCwd();
-    let project = this.projectForCwd(cwd)?.name || "";
-    try {
-      if (cwd) {
-        const projectResponse = await fetch("/api/projects", {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ root: cwd }),
-        });
-        const projectPayload = await projectResponse.json().catch(() => ({}));
-        if (!projectResponse.ok) throw new Error(projectPayload.detail || "failed to register project folder");
-        project = projectPayload.name || project;
-      }
-      const response = await fetch("/api/sessions", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command, cwd, title: `Install ${detail.display_name || detail.program}`, project,
-          after: this.activeId ? `session:${this.activeId}` : null }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(typeof payload.detail === "string" ? payload.detail : "failed to open install terminal");
-      const created = payload;
-      this.closeModal();
-      if (!this.vscodeMode && created.project && created.project !== (this.projectSlug || "")) {
-        location.href = `/p/${encodeURIComponent(created.project)}`;
-        return;
-      }
-      await this.refresh();
-      this.activate(created.session_id, { reveal: true });
-    } catch (error) {
-      this.showModalDependencyError({ ...detail, message: error.message || "failed to open install terminal" });
-    } finally {
-      if (install) install.disabled = false;
-    }
-  }
-
-  openModal(groupId = null, afterSessionId = null, initialAgentText = "") {
-    this.pendingNewAgentSelection = this.normalizeSelectionText(initialAgentText);
-    this.modalGroupId = !this.vscodeMode && groupId && this.terminalGroups().some((group) => group.id === groupId)
-      ? groupId : null;
-    this.modalAfterSessionId = !this.modalGroupId && afterSessionId && this.session(afterSessionId) ? afterSessionId : null;
-    const model = this.settings.last_model || DEFAULT_COMMAND;
-    this.$("modal-model").value = MODEL_PERMISSIONS[model] ? model : DEFAULT_COMMAND;
-    this.updateModalPermissions();
-    this.updateModalSessionSuggestions();
-    this.$("modal-project-add-btn").classList.toggle("hidden", !!this.vscodeMode);
-    this.$("modal-session-title").value = "";
-    this.$("modal-cwd").value = this.resolveVscodeDefaultCwd();
-    this.$("modal-cwd").dataset.projectSeeded = "0";
-    this.clearModalError();
-    this.$("modal-backdrop").classList.remove("hidden");
-    this.$("modal-session-title").focus();
-  }
-
-  closeModal() {
-    this.modalGroupId = null;
-    this.modalAfterSessionId = null;
-    this.pendingNewAgentSelection = "";
-    this.$("modal-backdrop").classList.add("hidden");
-  }
-
-  updateModalPermissions() {
-    const model = this.$("modal-model").value;
-    const permission = this.$("modal-permission");
-    permission.textContent = "";
-    for (const option of MODEL_PERMISSIONS[model] || MODEL_PERMISSIONS.codex) {
-      const el = document.createElement("option");
-      el.value = option.value;
-      el.textContent = option.label;
-      permission.appendChild(el);
-    }
-    const remembered = (this.settings.last_permissions || {})[model] || "default";
-    permission.value = [...permission.options].some((option) => option.value === remembered) ? remembered : "default";
-    this.$("modal-permission-field").classList.toggle("hidden", model === "none");
-  }
-
-  async createSession() {
-    if (this.$("modal-backdrop").classList.contains("hidden")) return;
-    const createButton = this.$("modal-create");
-    if (createButton.disabled) return;
-    createButton.disabled = true;
-    try {
-      await this.createSessionFromModal();
-    } finally {
-      createButton.disabled = false;
-    }
-  }
-
-  async createSessionFromModal() {
-    const pendingAgentText = this.pendingNewAgentSelection;
-    const targetGroupId = this.modalGroupId;
-    const requestedAfterSessionId = this.modalAfterSessionId;
-    const model = this.$("modal-model").value;
-    const permission = this.$("modal-permission").value;
-    const resolved = this.resolveSessionNameAndReference(model, this.$("modal-session-title").value);
-    const { title, session_ref: sessionRef } = resolved;
-    const project = this.projectSlug || "";
-    const cwd = this.worktreeRoot() || this.resolveVscodeDefaultCwd();
-    this.settings.last_model = model;
-    this.settings.last_permissions = { ...(this.settings.last_permissions || {}), [model]: permission };
-    this.saveSettings();
-    // Land the new terminal directly below the one in focus rather than at the end of the sidebar.
-    // An explicitly chosen group already dictates placement, so it wins.
-    const anchorSessionId = !targetGroupId && requestedAfterSessionId && this.session(requestedAfterSessionId)
-      ? requestedAfterSessionId : !targetGroupId && this.activeId && this.session(this.activeId) ? this.activeId : null;
-    const res = await fetch("/api/sessions", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, permission, session_ref: sessionRef, cwd, title,
-        project, worktree_id: this.stateWorktreeId() }),
-    });
-    if (!res.ok) {
-      const detail = await res.json().catch(() => ({}));
-      if (detail.detail?.code === "model_dependency_missing") this.showModalDependencyError(detail.detail);
-      else alert(typeof detail.detail === "string" ? detail.detail : "failed to create session");
-      return;
-    }
-    const created = await res.json();
-    this.closeModal();
-    if (!this.vscodeMode && created.project && created.project !== (this.projectSlug || "")) {
-      location.href = `/p/${encodeURIComponent(created.project)}`;
-      return;
-    }
-    if (this.nativeVscodeMode) this.postVscodeNativeSession(created, true);
-    await this.refresh();
-    if (targetGroupId && this.terminalGroups().some((group) => group.id === targetGroupId)) {
-      const state = this.getProjectState();
-      this.applyLocalProjectStatePatch({
-        session_groups: { ...(state.session_groups || {}), [created.session_id]: targetGroupId },
-        terminal_layout: this.terminalLayout().filter((entry) => entry !== `session:${created.session_id}`),
-      });
-      this.queueSessionGroupAssignments({ [created.session_id]: targetGroupId });
-      this.renderList();
-    } else if (anchorSessionId && this.session(anchorSessionId) && this.session(created.session_id)) {
-      this.repositionSelectedSessions([created.session_id], anchorSessionId, true);
-    }
-    this.activate(created.session_id, { reveal: true });
-    if (pendingAgentText) this.pasteSelectionIntoNewAgentWhenReady(created.session_id, pendingAgentText, title);
-  }
-
-  async openLanguageServerInstallTerminal(details) {
-    const project = this.projectForCwd(details.root)?.name || this.projectSlug || "";
-    const languageName = this.lspClient?.languageDisplayName(details.language) || details.language;
-    const command = String(details.installHint || "").trim();
-    if (!command) return;
-    const response = await fetch("/api/sessions", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command, cwd: details.root, project,
-        title: details.title || `Install ${languageName} language server`,
-        after: this.activeId ? `session:${this.activeId}` : null }),
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      this.$("status-name").textContent = error.detail || "could not open install terminal";
-      return;
-    }
-    const session = await response.json();
-    if (!this.vscodeMode && session.project && session.project !== (this.projectSlug || "")) {
-      location.href = `/p/${encodeURIComponent(session.project)}?t=${encodeURIComponent(session.session_id)}`;
-      return;
-    }
-    await this.refresh();
-    this.activate(session.session_id, { reveal: true });
-  }
-
-  createShortcutSection(title) {
-    const section = document.createElement("section");
-    section.className = "keys-section";
-    const heading = document.createElement("div");
-    heading.className = "keys-section-title";
-    heading.textContent = title;
-    section.appendChild(heading);
-    return section;
-  }
-
-  appendShortcutRow(section, shortcut, builtin = false) {
-    const row = document.createElement("div");
-    row.className = builtin ? "keys-row builtin" : "keys-row";
-    const label = document.createElement("span");
-    label.className = "keys-label";
-    label.textContent = shortcut.label;
-    const bind = document.createElement("button");
-    bind.className = builtin ? "keys-bind builtin" : "keys-bind";
-    bind.textContent = builtin ? shortcut.keys : this.bindingToDisplay(this.bindingFor(shortcut.id));
-    if (builtin) {
-      bind.disabled = true;
-      bind.setAttribute("aria-disabled", "true");
-    } else {
-      bind.onclick = () => this.captureBinding(shortcut.id, bind);
-    }
-    row.append(label, bind);
-    section.appendChild(row);
-  }
-
-  shortcutMatchesSearch(shortcut, builtin, query) {
-    if (!query) return true;
-    const binding = builtin ? shortcut.keys : this.bindingFor(shortcut.id);
-    const aliasBindings = [String(binding).replaceAll("Meta", "Cmd").replaceAll("Alt", "Option").replaceAll("Ctrl", "Control"),
-      String(binding).replaceAll("Meta", "Command")];
-    const keyQuery = /(?:meta|cmd|command|ctrl|control|alt|option|shift|[⌘⌥⇧⌃+])/i.test(query);
-    if (keyQuery) {
-      const compactQuery = query.replace(/[\s+_-]/g, "");
-      return [binding, builtin ? shortcut.keys : this.bindingToDisplay(binding), ...aliasBindings]
-        .some((value) => String(value).toLowerCase().replace(/[\s+_-]/g, "").includes(compactQuery));
-    }
-    const searchable = [shortcut.label, shortcut.id || "", shortcut.section, binding,
-      builtin ? shortcut.keys : this.bindingToDisplay(binding), ...aliasBindings].join(" ").toLowerCase();
-    return query.split(/\s+/).filter(Boolean).every((term) => searchable.includes(term));
-  }
-
-  renderKeybindingsList() {
-    const list = this.$("keys-list");
-    list.textContent = "";
-    const query = String(this.$("keys-search")?.value || "").trim().toLowerCase();
-    const references = this.vscodeMode ? VSCODE_REFERENCE_KEYS : REFERENCE_KEYS;
-    let visibleRows = 0;
-    for (const sectionName of KEYBOARD_SHORTCUT_SECTIONS) {
-      const section = this.createShortcutSection(sectionName);
-      let hasRows = false;
-      for (const shortcut of this.keybindingDefinitions()) {
-        if (shortcut.section !== sectionName || !this.shortcutMatchesSearch(shortcut, false, query)) continue;
-        this.appendShortcutRow(section, shortcut);
-        hasRows = true;
-        visibleRows += 1;
-      }
-      for (const shortcut of references) {
-        if (shortcut.section !== sectionName || !this.shortcutMatchesSearch(shortcut, true, query)) continue;
-        this.appendShortcutRow(section, shortcut, true);
-        hasRows = true;
-        visibleRows += 1;
-      }
-      if (hasRows) list.appendChild(section);
-    }
-    if (!visibleRows) {
-      const empty = document.createElement("div");
-      empty.className = "keys-empty";
-      empty.textContent = "No matching shortcuts";
-      list.appendChild(empty);
-    }
-  }
-
-  openKeybindings() {
-    const search = this.$("keys-search");
-    search.value = "";
-    this.renderKeybindingsList();
-    this.$("keys-backdrop").classList.remove("hidden");
-    requestAnimationFrame(() => search.focus());
-  }
-
-  captureBinding(actionId, bindEl) {
-    bindEl.classList.add("capturing");
-    bindEl.textContent = "press keys…";
-    const handler = (e) => {
-      if (["Meta", "Shift", "Alt", "Control"].includes(e.key)) return;
-      e.preventDefault();
-      e.stopPropagation();
-      document.removeEventListener("keydown", handler, true);
-      bindEl.classList.remove("capturing");
-      if (e.key === "Escape") { bindEl.textContent = this.bindingToDisplay(this.bindingFor(actionId)); return; }
-      const binding = this.eventToBinding(e);
-      const key = this.keybindingsStorageKey();
-      this.settings[key] = { ...(this.settings[key] || {}), [actionId]: binding };
-      this.saveSettings();
-      bindEl.textContent = this.bindingToDisplay(binding);
-      this.updateShortcutTitles();
-    };
-    document.addEventListener("keydown", handler, true);
-  }
-
-  resetKeybindings() {
-    this.settings[this.keybindingsStorageKey()] = {};
-    this.saveSettings();
-    this.openKeybindings();
-  }
-
-  exportSettings() {
-    const blob = new Blob([JSON.stringify(this.settings, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "termdeck-settings.json";
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  async killAllRunningTerminals() {
-    const message = "Kill all running terminals, including detached sessions? This stops only terminal processes; " +
-      "session tabs, transcripts, and history are preserved.";
-    const confirmed = window.confirm(message);
-    if (!confirmed) return;
-    try {
-      const response = await fetch("/api/terminals/kill-all", { method: "POST" });
-      if (!response.ok) throw new Error(`kill request failed: ${response.status}`);
-      const result = await response.json();
-      const killed = Number(result.killed || 0);
-      const terminalWord = killed === 1 ? "terminal" : "terminals";
-      this.$("status-name").textContent = `killed ${killed} running ${terminalWord}; history preserved`;
-      await this.refresh();
-    } catch (error) {
-      this.$("status-name").textContent = `unable to kill terminals: ${error.message}`;
-    }
-  }
-
-  async killStaleTerminals() {
-    const message = "Stop running terminals older than 24 hours? Their tabs and session information will stay available for reattach.";
-    if (!window.confirm(message)) return;
-    const button = this.$("kill-stale-terminals-btn");
-    if (button) button.disabled = true;
-    try {
-      const response = await fetch("/api/terminals/kill-stale", { method: "POST" });
-      if (!response.ok) throw new Error(`stale terminal cleanup failed: ${response.status}`);
-      const result = await response.json();
-      const killed = Array.isArray(result.killed) ? result.killed.length : 0;
-      const failed = Array.isArray(result.failed) ? result.failed.length : 0;
-      this.$("status-name").textContent = failed
-        ? `stopped ${killed} old terminal${killed === 1 ? "" : "s"}; ${failed} could not be stopped`
-        : killed ? `stopped ${killed} old terminal${killed === 1 ? "" : "s"}; tabs preserved` : "no terminals older than 24 hours";
-      await this.refresh();
-    } catch (error) {
-      this.$("status-name").textContent = `unable to stop old terminals: ${error.message}`;
-    } finally {
-      if (button) button.disabled = false;
-    }
-  }
-
-  closeTerminalProcessReport() {
-    this.$("terminal-process-report-backdrop").classList.add("hidden");
-  }
-
-  formatTerminalProcessReportEntry(entry, compact = false) {
-    const sessionId = String(entry.session_id || "unknown");
-    const name = entry.known_session ? (entry.title || sessionId) : `ORPHAN ${sessionId}`;
-    const project = entry.project ? ` · project ${entry.project}` : "";
-    const socket = String(entry.socket || "").split(/[\\/]/).pop() || "unknown socket";
-    const mode = entry.live ? entry.attached ? "attached" : entry.detached ? "detached" : "live" : "stale";
-    const processes = Array.isArray(entry.processes) ? entry.processes : [];
-    const processDetails = processes.map((process) => {
-      const command = String(process.command || "").replace(/\s+/g, " ").trim();
-      const state = process.state ? ` ${process.state}` : "";
-      return `pid ${process.pid}${state}${command ? ` ${command}` : ""}`;
-    });
-    if (compact) {
-      const pidText = processDetails.length ? processDetails.join("; ") : "no live pids";
-      return `• ${name}${project} · ${mode} · ${socket} · ${pidText}`;
-    }
-    const lines = [`${name} [${sessionId}]${project}`, `  ${mode} · socket ${socket}`];
-    if (processDetails.length) lines.push(...processDetails.map((detail) => `  ${detail}`));
-    else lines.push("  no processes found");
-    return lines.join("\n");
-  }
-
-  formatTerminalProcessReport(report) {
-    const summary = report.summary || {};
-    const entries = Array.isArray(report.sockets) ? report.sockets : [];
-    const liveSockets = Number(summary.live_sockets || 0);
-    const header = `${liveSockets} live socket${liveSockets === 1 ? "" : "s"} · ` +
-      `${summary.processes || 0} processes · ${summary.node_repl_processes || 0} node_repl · ` +
-      `${summary.zombie_processes || 0} zombies · ${summary.orphan_sockets || 0} orphan sockets`;
-    const body = entries.length ? entries.map((entry) => this.formatTerminalProcessReportEntry(entry)).join("\n\n") : "No TermDeck dtach sockets found.";
-    return { header, body, entries };
-  }
-
-  async showTerminalProcessReport() {
-    const backdrop = this.$("terminal-process-report-backdrop");
-    const status = this.$("terminal-process-report-status");
-    const text = this.$("terminal-process-report-text");
-    backdrop.classList.remove("hidden");
-    backdrop.setAttribute("aria-busy", "true");
-    status.classList.add("loading");
-    status.textContent = "Generating report…";
-    text.textContent = "";
-    try {
-      const response = await fetch("/api/terminals/processes");
-      if (response.status === 404) {
-        throw new Error("available after the next planned TermDeck server restart");
-      }
-      if (!response.ok) throw new Error(`report request failed: ${response.status}`);
-      const report = await response.json();
-      const formatted = this.formatTerminalProcessReport(report);
-      status.classList.remove("loading");
-      status.textContent = `Generated · ${formatted.header}`;
-      text.textContent = formatted.body;
-      backdrop.setAttribute("aria-busy", "false");
-      text.focus({ preventScroll: true });
-      this.$("status-name").textContent = formatted.header;
-    } catch (error) {
-      status.classList.remove("loading");
-      status.textContent = `Unable to generate report: ${error.message}`;
-      backdrop.setAttribute("aria-busy", "false");
-      this.$("status-name").textContent = status.textContent;
-    }
-  }
-
-  async reclaimOrphanTerminals() {
-    try {
-      const response = await fetch("/api/terminals/processes");
-      if (response.status === 404) {
-        throw new Error("available after the next planned TermDeck server restart");
-      }
-      if (!response.ok) throw new Error(`report request failed: ${response.status}`);
-      const report = await response.json();
-      const orphans = (report.sockets || []).filter((entry) => !entry.known_session);
-      if (!orphans.length) {
-        this.$("status-name").textContent = "no orphaned TermDeck terminal sockets";
-        return;
-      }
-      const details = orphans.map((entry) => this.formatTerminalProcessReportEntry(entry, true)).join("\n");
-      const confirmed = window.confirm([`Reclaim ${orphans.length} orphaned TermDeck socket${orphans.length === 1 ? "" : "s"}?`,
-        "These are the processes that will be terminated:", "", details, "",
-        "This terminates only processes reachable from those unlisted TermDeck sockets."].join("\n"));
-      if (!confirmed) return;
-      const cleanup = await fetch("/api/terminals/reclaim-orphans", { method: "POST" });
-      if (!cleanup.ok) throw new Error(`cleanup request failed: ${cleanup.status}`);
-      const result = await cleanup.json();
-      const reclaimed = (result.reclaimed || []).length;
-      const failed = (result.failed || []).length;
-      this.$("status-name").textContent = failed
-        ? `reclaimed ${reclaimed} orphan sockets; ${failed} still need attention`
-        : `reclaimed ${reclaimed} orphaned TermDeck sockets`;
-    } catch (error) {
-      this.$("status-name").textContent = `unable to reclaim orphan terminals: ${error.message}`;
-    }
-  }
-
-  eventToBinding(e) {
-    if (["Meta", "Shift", "Alt", "Control"].includes(e.key)) return "";
-    const parts = [];
-    if (e.metaKey) parts.push("Meta");
-    if (e.ctrlKey) parts.push("Ctrl");
-    if (e.altKey) parts.push("Alt");
-    if (e.shiftKey) parts.push("Shift");
-    const key = /^Key[A-Z]$/.test(e.code || "") ? e.code.slice(3).toLowerCase()
-      : e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    parts.push(key);
-    return parts.join("+");
-  }
-
-  isRecentTerminalsShortcut(e) {
-    if (this.vscodeMode || e.altKey || e.shiftKey || e.metaKey === e.ctrlKey || e.key.toLowerCase() !== "e") return false;
-    const mappedAction = this.bindingMap()[this.eventToBinding(e)];
-    return !mappedAction || mappedAction === "recent-terminals";
-  }
-
-  isDesktopTerminalSelectInputEvent(e) {
-    return !this.vscodeMode && e.metaKey && !e.shiftKey && !e.ctrlKey && !e.altKey &&
-      (e.code === "KeyA" || String(e.key || "").toLowerCase() === "a") &&
-      this.activeFileKey === null && !this.historyOpen && !!this.views.get(this.activeId) &&
-      !!e.target?.closest?.(".xterm");
-  }
-
-  isDesktopTerminalSelectAllEvent(e) {
-    return !this.vscodeMode && this.bindingFor("select-terminal-all") === "Meta+Shift+a" &&
-      e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey &&
-      (e.code === "KeyA" || String(e.key || "").toLowerCase() === "a") &&
-      this.activeFileKey === null && !this.historyOpen && !!this.views.get(this.activeId) &&
-      !!e.target?.closest?.(".xterm");
-  }
-
-  bindingFor(actionId) {
-    const definition = this.keybindingDefinitions().find((k) => k.id === actionId);
-    return (this.settings[this.keybindingsStorageKey()] || {})[actionId] || definition?.def || "";
-  }
-
-  bindingMap() {
-    const map = {};
-    for (const k of this.keybindingDefinitions()) {
-      const binding = this.bindingFor(k.id);
-      map[binding] = k.id;
-      if (!this.vscodeMode && !IS_MAC_KEYBOARD_PLATFORM && binding.includes("Meta")) {
-        const platformBinding = binding.split("+").map((part) => part === "Meta" ? "Ctrl" : part).join("+");
-        if (!map[platformBinding]) map[platformBinding] = k.id;
-      }
-    }
-    return map;
-  }
-
-  tryAppShortcut(e) {
-    const binding = this.eventToBinding(e);
-    const actionId = binding ? this.bindingMap()[binding] : "";
-    if (actionId) {
-      if (["selection-copy", "selection-note-new", "selection-note-append"].includes(actionId) &&
-          !this.readSelectionActionState()) return false;
-      e.preventDefault();
-      e.stopPropagation();
-      this.runAction(actionId);
-      return true;
-    }
-    if (!this.vscodeMode && e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey) {
-      const key = e.key.toLowerCase();
-      if (key === "f") {
-        e.preventDefault();
-        e.stopPropagation();
-        this.focusFileContentSearch();
-        return true;
-      }
-      if (e.key === " " || e.key === "Spacebar") {
-        e.preventDefault();
-        e.stopPropagation();
-        this.cycleView("project");
-        return true;
-      }
-    }
-    if (this.isRecentTerminalsShortcut(e)) {
-      e.preventDefault();
-      e.stopPropagation();
-      this.runAction("recent-terminals");
-      return true;
-    }
-    return false;
-  }
-
-  closeContextMenu() {
-    const menu = this.$("context-menu");
-    if (menu) menu.classList.add("hidden");
-    this.contextMenuTarget = null;
-  }
-
-  runContextMenuAction(actionId) {
-    const menu = this.$("context-menu");
-    if (!this.contextMenuTarget || !menu || menu.classList.contains("hidden")) return false;
-    if (this.contextMenuTarget.type === "files" && actionId === "close-item") {
-      const keys = [...this.contextMenuTarget.keys];
-      this.closeContextMenu();
-      void this.closeFiles(keys);
-      return true;
-    }
-    if (this.contextMenuTarget.type === "sessions" && actionId === "close-item") {
-      const sessionIds = [...this.contextMenuTarget.ids];
-      this.closeContextMenu();
-      void this.closeSelectedSessions(sessionIds);
-      return true;
-    }
-    if (this.contextMenuTarget.type === "group") {
-      const groupId = this.contextMenuTarget.id;
-      if (!this.terminalGroups().some((group) => group.id === groupId)) return false;
-      if (actionId === "move-active-to-top") {
-        this.closeContextMenu();
-        this.moveTerminalLayoutToTop(`group:${groupId}`);
-        return true;
-      }
-      if (actionId === "rename-terminal") {
-        this.closeContextMenu();
-        this.renameTerminalGroup(groupId);
-        return true;
-      }
-      if (actionId === "mark-terminal-unread") {
-        this.closeContextMenu();
-        this.markTerminalGroupUnread(groupId);
-        return true;
-      }
-      if (actionId === "create-terminal-group-from-active") {
-        this.closeContextMenu();
-        this.removeTerminalGroup(groupId);
-        return true;
-      }
-      if (actionId === "close-item") {
-        this.closeContextMenu();
-        this.closeAllInTerminalGroup(groupId);
-        return true;
-      }
-    }
-    return false;
-  }
-
-  runAction(actionId) {
-    if (this.runContextMenuAction(actionId)) return;
-    if (actionId === "new-terminal") this.openModal();
-    else if (actionId === "new-project") void this.addProjectFromHeader();
-    else if (actionId === "new-worktree") this.openWorktreeModal();
-    else if (actionId === "new-group") this.createTerminalGroup();
-    else if (actionId === "close-item") this.closeActiveItem();
-    else if (actionId === "fork-terminal") { const s = this.session(this.activeId); if (s) this.forkSession(s); }
-    else if (actionId === "restart-terminal") { if (this.activeId) this.restartSession(this.activeId); }
-    else if (actionId === "restore-last-closed-terminal") void this.restoreLastClosedTerminal();
-    else if (actionId === "resync-terminal") this.resyncActiveTerminal();
-    else if (actionId === "rename-terminal") { const s = this.session(this.activeId); if (s) this.renameSession(s); }
-    else if (actionId === "copy-session-id") {
-      if (this.activeId) this.copyTextToClipboard(this.activeId, "session id copied");
-    }
-    else if (actionId === "mark-terminal-unread") {
-      if (this.activeId) this.setSessionUnread(this.activeId, true);
-    }
-    else if (actionId === "create-terminal-group-from-active") {
-      if (this.activeId) this.createTerminalGroupFromSession(this.activeId);
-    }
-    else if (actionId === "move-active-to-top") {
-      if (this.activeId) {
-        const assignedGroupId = this.getProjectState().session_groups?.[this.activeId] || "";
-        this.moveTerminalLayoutToTop(assignedGroupId ? `group:${assignedGroupId}` : `session:${this.activeId}`);
-      }
-    }
-    else if (actionId === "open-move-menu") this.openActiveMoveMenu();
-    else if (actionId === "undo-terminal-edit") {
-      const view = this.views.get(this.activeId);
-      if (view && this.activeFileKey === null) this.sendTrackedInput(view, "\x1f");
-    }
-    else if (actionId === "open-terminal-new-tab") {
-      const session = this.session(this.activeId);
-      if (session) this.openTerminalInNewTab(session);
-    }
-    else if (actionId === "save-file") { if (this.activeFileKey !== null) this.saveActiveFile(); }
-    else if (actionId === "prev-terminal") this.cycleTerminal(-1);
-    else if (actionId === "next-terminal") this.cycleTerminal(1);
-    else if (actionId === "cycle-side-panel") this.cycleFilesSidePanel();
-    else if (actionId === "open-files-panel") this.openFilesSidePanelView("project");
-    else if (actionId === "open-file-search") this.openFilesSidePanelView("search");
-    else if (actionId === "open-files-new-tab") this.openFileDeckViewInNewTab(this.treeRoot || this.projectRoot(), "tree");
-    else if (actionId === "open-search-new-tab") this.openFileDeckViewInNewTab(this.treeRoot || this.projectRoot(), "search", "", this.$("search-query").value.trim());
-    else if (actionId === "open-terminal-search") this.toggleTerminalSearchEditor();
-    else if (actionId === "view-terminals") this.handleFileModeNavigationClick("terminals");
-    else if (actionId === "switch-project") this.openProjectSwitcher();
-    else if (actionId === "toggle-notebook") this.toggleNotebook();
-    else if (actionId === "selection-copy") this.copySelectionToClipboard();
-    else if (actionId === "selection-note-new") void this.createNotebookNoteFromSelection();
-    else if (actionId === "selection-note-append") void this.appendSelectionToNotebook();
-    else if (actionId === "selection-copy-history") this.toggleSelectionCopyHistory();
-    else if (actionId === "toggle-history") this.toggleHistory();
-    else if (actionId === "scroll-bottom") this.scrollActiveSurfaceToBottom();
-    else if (actionId === "focus-prompt") this.focusActivePrompt();
-    else if (actionId === "show-usages") this.showEditorUsages();
-    else if (actionId === "select-active-input") this.selectActiveInputText();
-    else if (actionId === "select-terminal-all") this.selectActiveTerminalText();
-    else if (actionId === "recent-terminals") this.openRecentTerminalsQuickOpen();
-    else if (actionId === "quick-open") {
-      if (this.$("quick-open-backdrop").classList.contains("hidden")) this.openQuickOpen();
-      else this.closeQuickOpen();
-    }
-    else if (actionId === "toggle-problems") this.toggleProblemsPanel();
-    else if (actionId === "conversation-outline") this.toggleContextualOutline();
-    else if (actionId === "vscode-refresh") this.requestVscodeRefresh(false);
-    else if (actionId === "vscode-reload") this.requestVscodeRefresh(true);
-  }
-
-  selectActiveTerminalText() {
-    if (this.activeFileKey !== null || this.historyOpen) return;
-    const view = this.views.get(this.activeId);
-    if (!view) return;
-    const select = () => {
-      if (this.activeFileKey !== null || this.historyOpen || this.views.get(this.activeId) !== view) return;
-      window.getSelection()?.removeAllRanges();
-      view.term.focus();
-      view.term.selectAll();
-    };
-    select();
-    // Some browser/macOS paths apply their page-level select-all after the
-    // key event despite preventDefault(). Re-apply xterm's selection after
-    // that default-action frame.
-    requestAnimationFrame(select);
-  }
-
-  selectActiveTerminalInputText() {
-    if (this.activeFileKey !== null || this.historyOpen) return;
-    const view = this.views.get(this.activeId);
-    if (!view) return;
-    const select = () => {
-      if (this.activeFileKey !== null || this.historyOpen || this.views.get(this.activeId) !== view) return;
-      const buffer = view.term.buffer.active;
-      const line = buffer.cursorY + buffer.baseY;
-      window.getSelection()?.removeAllRanges();
-      view.term.focus();
-      view.term.selectLines(line, line);
-    };
-    select();
-    requestAnimationFrame(select);
-  }
-
-  selectActiveInputText() {
-    if (this.activeFileKey !== null) {
-      if (!this.editor) return;
-      this.editor.focus();
-      this.editor.trigger("termdeck", "editor.action.selectAll", null);
-      return;
-    }
-    if (this.historyOpen) {
-      const prompt = this.$("history-prompt");
-      prompt.focus();
-      prompt.select();
-      return;
-    }
-    this.selectActiveTerminalText();
-  }
-
-  focusActivePrompt() {
-    if (this.activeFileKey !== null) {
-      this.editor?.focus();
-      return;
-    }
-    if (this.historyOpen) {
-      const prompt = this.$("history-prompt");
-      prompt.focus();
-      prompt.setSelectionRange(prompt.value.length, prompt.value.length);
-      return;
-    }
-    this.views.get(this.activeId)?.term.focus();
-  }
-
-  openProjectSwitcher() {
-    if (this.vscodeMode) return;
-    const select = this.$("project-select");
-    if (!select || select.disabled || select.classList.contains("hidden")) return;
-    select.focus();
-    if (typeof select.showPicker === "function") {
-      select.showPicker();
-      return;
-    }
-    select.click();
-  }
-
-  bindingToDisplay(binding) {
-    const symbols = IS_MAC_KEYBOARD_PLATFORM
-      ? { Meta: "⌘", Shift: "⇧", Alt: "⌥", Ctrl: "⌃", ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", Backspace: "⌫", Enter: "⏎", Escape: "esc" }
-      : { Meta: "Ctrl", Shift: "Shift", Alt: "Alt", Ctrl: "Ctrl", ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", Backspace: "Backspace", Enter: "Enter", Escape: "Esc" };
-    return binding.split("+").map((part) => symbols[part] || part.toUpperCase()).join(IS_MAC_KEYBOARD_PLATFORM ? "" : "+");
-  }
-
-  cycleTerminal(delta) {
-    if (!this.sessions.length) return;
-    const ids = this.sessions.map((s) => s.session_id);
-    const current = ids.indexOf(this.activeId);
-    const next = current === -1 ? 0 : (current + delta + ids.length) % ids.length;
-    // Keyboard cycling may move past the visible portion of the sidebar.
-    // Reveal only this newly selected row; ordinary clicks and browser
-    // history navigation should not continually reposition the sidebar.
-    this.activate(ids[next], { history: false, reveal: true });
-  }
-
-  applyForkPlacement(sourceSessionId, createdSessions) {
-    const createdIds = createdSessions.map((session) => session.session_id);
-    const createdIdSet = new Set(createdIds);
-    const state = this.getProjectState();
-    const sourceGroupId = state.session_groups?.[sourceSessionId] || null;
-    const order = this.sessions.map((session) => session.session_id).filter((id) => !createdIdSet.has(id));
-    const sourceIndex = order.indexOf(sourceSessionId);
-    if (sourceIndex < 0) return;
-    order.splice(sourceIndex + 1, 0, ...createdIds);
-    const patch = { session_order: order };
-    if (sourceGroupId) {
-      patch.session_groups = { ...(state.session_groups || {}), ...Object.fromEntries(createdIds.map((id) => [id, sourceGroupId])) };
-      patch.terminal_layout = this.terminalLayout().filter((entry) => !createdIdSet.has(entry.replace(/^session:/, "")));
-    } else {
-      const sourceToken = `session:${sourceSessionId}`;
-      const layout = this.terminalLayout().filter((entry) => !createdIdSet.has(entry.replace(/^session:/, "")));
-      const sourceIndexInLayout = layout.indexOf(sourceToken);
-      layout.splice(sourceIndexInLayout < 0 ? layout.length : sourceIndexInLayout + 1, 0,
-        ...createdIds.map((id) => `session:${id}`));
-      patch.terminal_layout = layout;
-    }
-    this.applyLocalProjectStatePatch(patch);
-    this.queueSessionOrderMove(createdIds, sourceSessionId, true);
-    if (sourceGroupId) this.queueSessionGroupAssignments(
-      Object.fromEntries(createdIds.map((id) => [id, sourceGroupId])), sourceSessionId, true);
-    else {
-      let previousToken = `session:${sourceSessionId}`;
-      for (const createdId of createdIds) {
-        const token = `session:${createdId}`;
-        this.queueTerminalLayoutMove(token, previousToken, true);
-        previousToken = token;
-      }
-    }
-  }
-
-  stripTitleStatusPrefixes(title) {
-    let text = String(title || "");
-    while (TITLE_STATUS_PREFIX_RE.test(text)) text = text.replace(TITLE_STATUS_PREFIX_RE, "");
-    return text.trim();
-  }
-
-  async forkSession(s) {
-    const baseTitle = this.stripTitleStatusPrefixes(this.effectiveTitle(s)) || "terminal";
-    const rawValue = prompt(`Fork "${baseTitle}": enter a number from 1 to ${MAX_FORK_COUNT}, or enter a name for one fork.`, "1");
-    if (rawValue === null || !rawValue.trim()) return;
-    const value = rawValue.trim();
-    if (!/^\d+$/.test(value)) {
-      await this.createForkedSessions(s, [value]);
-      return;
-    }
-    const count = Number.parseInt(value, 10);
-    if (count < 1 || count > MAX_FORK_COUNT) {
-      alert(`Enter a whole number from 1 to ${MAX_FORK_COUNT}, or a name for one fork.`);
-      return;
-    }
-    await this.createForkedSessions(s, Array.from({ length: count }, (_unused, index) => `${baseTitle} ${index + 1}`));
-  }
-
-  async createForkedSessions(s, titles, options = {}) {
-    const created = [];
-    let failedAt = 0;
-    for (let index = 0; index < titles.length; index += 1) {
-      const res = await fetch(`/api/sessions/${s.session_id}/fork`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: titles[index], worktree: !!options.worktree }),
-      });
-      if (!res.ok) {
-        failedAt = index + 1;
-        break;
-      }
-      created.push(await res.json());
-    }
-    if (!created.length) {
-      alert("fork failed");
-      return;
-    }
-    if (this.nativeVscodeMode) {
-      for (const session of created) this.postVscodeNativeSession(session, false);
-    }
-    this.applyForkPlacement(s.session_id, created);
-    await this.refresh();
-    if (created.length === 1 && !failedAt) {
-      this.activate(created[0].session_id, { reveal: true });
-      const view = this.views.get(created[0].session_id);
-      if (view) view.pinBottomUntil = Date.now() + 8000;
-    }
-    this.$("status-name").textContent = failedAt
-      ? `forked ${created.length} of ${titles.length}`
-      : `forked ${created.length}`;
-    if (failedAt) alert(`Forked ${created.length} of ${titles.length}; fork ${failedAt} failed.`);
-  }
-
-  async restartSession(sessionId, permission = "") {
-    const wasDormant = !!this.session(sessionId)?.dormant;
-    this.activate(sessionId);
-    this.$("status-name").textContent = "restarting…";
-    const view = this.views.get(sessionId);
-    if (view) view.pinBottomUntil = Date.now() + 6000;
-    const response = await fetch(`/api/sessions/${sessionId}/restart`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ permission }),
-    });
-    if (!response.ok) {
-      const detail = await response.json().catch(() => ({}));
-      this.$("status-name").textContent = detail?.detail || "restart failed";
-      return;
-    }
-    await this.refresh();
-    if (wasDormant && this.activeId === sessionId) {
-      const restartedView = this.views.get(sessionId);
-      if (restartedView && !restartedView.ws) this.connect(sessionId, restartedView);
-    }
-  }
-
-  async stopSession(sessionId) {
-    const session = this.session(sessionId);
-    if (!session?.running) return;
-    this.$("status-name").textContent = "stopping…";
-    const response = await fetch(`/api/sessions/${sessionId}/stop`, { method: "POST" });
-    if (!response.ok) {
-      const detail = await response.json().catch(() => ({}));
-      this.$("status-name").textContent = detail?.detail || "stop failed";
-      return;
-    }
-    await this.refresh();
-    this.$("status-name").textContent = "stopped";
-  }
-
-  async closeSession(sessionId) {
-    const s = this.session(sessionId);
-    if (!s) return;
-    if (!confirm(`Close "${this.effectiveTitle(s)}"? This kills the process (it moves to closed history).`)) return;
-    const wasActive = this.activeId === sessionId;
-    const closeOrder = this.sessions.map((session) => session.session_id);
-    const closeIndex = closeOrder.indexOf(sessionId);
-    const previouslyOpened = this.previouslyOpenedTerminalId(new Set([sessionId]));
-    const adjacentSession = closeIndex >= 0 && closeIndex + 1 < closeOrder.length ? closeOrder[closeIndex + 1]
-      : closeIndex > 0 ? closeOrder[closeIndex - 1] : null;
-    const nextOnClose = previouslyOpened || adjacentSession;
-    const response = await fetch(`/api/sessions/${sessionId}`, {
-      method: "DELETE", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ group_name: this.terminalGroupNameForSession(sessionId) }),
-    });
-    if (!response.ok) {
-      const detail = await response.json().catch(() => ({}));
-      this.$("status-name").textContent = detail.detail || "terminal process cleanup did not complete";
-      return;
-    }
-    this.restoreLastClosedTerminalNeedsConfirmation = false;
-    this.postVscodeNativeClose(sessionId);
-    if (wasActive && nextOnClose && this.session(nextOnClose)) {
-      this.activate(nextOnClose, { history: false, reveal: true });
-      this.replaceNav({ kind: "term", id: nextOnClose });
-    }
-    await this.refresh();
-    if (wasActive && nextOnClose) {
-      const nextSession = this.session(nextOnClose);
-      if (nextSession && this.activeId !== nextSession.session_id) {
-        this.activate(nextSession.session_id, { history: false, reveal: true });
-      }
-    }
-  }
-
-  async closeSelectedSessions(sessionIds) {
-    const selectedSessions = [...new Set(sessionIds)].map((sessionId) => this.session(sessionId)).filter(Boolean);
-    if (!selectedSessions.length) return;
-    if (!confirm(`Close ${selectedSessions.length} selected terminals? This kills their processes and moves them to closed history.`)) return;
-    const selectedIds = new Set(selectedSessions.map((session) => session.session_id));
-    const activeWasSelected = selectedIds.has(this.activeId);
-    const activeIndex = this.sessions.findIndex((session) => session.session_id === this.activeId);
-    const previouslyOpenedId = this.previouslyOpenedTerminalId(selectedIds);
-    const nextSession = this.session(previouslyOpenedId) ||
-      this.sessions.slice(activeIndex + 1).find((session) => !selectedIds.has(session.session_id)) ||
-      this.sessions.slice(0, Math.max(activeIndex, 0)).reverse().find((session) => !selectedIds.has(session.session_id)) || null;
-    const results = await Promise.all(selectedSessions.map(async (session) => ({ session,
-      response: await fetch(`/api/sessions/${session.session_id}`, {
-        method: "DELETE", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ group_name: this.terminalGroupNameForSession(session.session_id) }),
-      }) })));
-    const closedIds = results.filter((result) => result.response.ok).map((result) => result.session.session_id);
-    if (closedIds.length) this.restoreLastClosedTerminalNeedsConfirmation = false;
-    for (const sessionId of closedIds) this.postVscodeNativeClose(sessionId);
-    this.sidebarSelectedSessionIds = new Set([...this.sidebarSelectedSessionIds]
-      .filter((sessionId) => !closedIds.includes(sessionId)));
-    if (activeWasSelected && nextSession && this.session(nextSession.session_id)) {
-      this.activate(nextSession.session_id, { history: false, reveal: true });
-      this.replaceNav({ kind: "term", id: nextSession.session_id });
-    }
-    await this.refresh();
-    if (activeWasSelected && nextSession && this.session(nextSession.session_id) && this.activeId !== nextSession.session_id) {
-      this.activate(nextSession.session_id, { history: false, reveal: true });
-    }
-    const failedCount = results.length - closedIds.length;
-    if (failedCount) this.$("status-name").textContent = `${failedCount} terminal${failedCount === 1 ? "" : "s"} could not be closed`;
-  }
-
-  closeActive() {
-    if (this.activeFileKey === null && this.activeId) this.closeSession(this.activeId);
-  }
-
-  async renameSession(s) {
-    const title = prompt("Rename terminal", this.effectiveTitle(s));
-    if (!title) return;
-    await fetch(`/api/sessions/${s.session_id}/rename`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title }),
-    });
-    this.refresh();
-  }
-
-  async moveSessionToProject(session, project) {
-    if (!session || !project || project === session.project) return;
-    const response = await fetch(`/api/sessions/${session.session_id}/project`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project }),
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      alert(error.detail || "move terminal to project failed");
-      return;
-    }
-    if (this.projectSlug && this.projectSlug !== project) {
-      location.href = `/p/${encodeURIComponent(project)}`;
-      return;
-    }
-    await this.refresh();
-  }
-
-  searchRoot() {
-    if (this.vscodeMode && this.vscodeWorkspaceRoot) return this.vscodeWorkspaceRoot;
-    const projectRoot = this.worktreeRoot();
-    if (projectRoot) return projectRoot;
-    const s = this.session(this.activeId);
-    return s ? s.cwd : "~";
-  }
-
-  loadSearchHistory() {
-    if (Array.isArray(this.settings.file_search_history) && this.settings.file_search_history.length) {
-      this.searchHistory = this.settings.file_search_history.filter((entry) => entry && typeof entry.q === "string" &&
-        (entry.mode === "content" || entry.mode === "name")).slice(-30);
-      return;
-    }
-    const raw = localStorage.getItem(SEARCH_HISTORY_STORAGE_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return;
-    this.searchHistory = parsed.filter((entry) => entry && typeof entry.q === "string" &&
-      (entry.mode === "content" || entry.mode === "name")).slice(-30);
-    if (this.searchHistory.length) this.saveSearchHistory();
-  }
-
-  saveSearchHistory() {
-    this.settings.file_search_history = this.searchHistory.slice(-30);
-    this.saveSettings();
-    localStorage.setItem(SEARCH_HISTORY_STORAGE_KEY, JSON.stringify(this.searchHistory.slice(-30)));
-  }
-
-  recordSearch(state) {
-    const normalized = { ...state, mode: state.mode || "content" };
-    if (this.pendingSearchHistoryState && JSON.stringify(this.pendingSearchHistoryState) === JSON.stringify(normalized)) return;
-    this.pendingSearchHistoryState = normalized;
-    clearTimeout(this.searchHistoryRecordTimer);
-    this.searchHistoryRecordTimer = setTimeout(() => this.commitPendingSearchHistoryRecord(), SEARCH_HISTORY_RECORD_DELAY_MS);
-  }
-
-  commitPendingSearchHistoryRecord() {
-    this.searchHistoryRecordTimer = 0;
-    const pending = this.pendingSearchHistoryState;
-    this.pendingSearchHistoryState = null;
-    if (!pending) return;
-    const last = this.searchHistory[this.searchHistory.length - 1];
-    if (last && JSON.stringify(last) === JSON.stringify(pending)) return;
-    this.searchHistoryBackIndex = null;
-    this.searchHistory.push(pending);
-    if (this.searchHistory.length > 30) this.searchHistory.shift();
-    this.saveSearchHistory();
-  }
-
-  flushPendingSearchHistoryRecord() {
-    if (!this.pendingSearchHistoryState) return;
-    clearTimeout(this.searchHistoryRecordTimer);
-    this.commitPendingSearchHistoryRecord();
-  }
-
-  positionSearchHistoryMenu(button) {
-    const menu = this.$("search-history-menu");
-    const rect = button.getBoundingClientRect();
-    const width = Math.min(420, window.innerWidth - 20);
-    const left = Math.max(10, Math.min(rect.right - width, window.innerWidth - width - 10));
-    const top = rect.bottom + 4;
-    menu.style.width = `${width}px`;
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top + menu.offsetHeight <= window.innerHeight - 10 ? top : Math.max(10, rect.top - menu.offsetHeight - 4)}px`;
-  }
-
-  closeSearchHistory() {
-    const menu = this.$("search-history-menu");
-    menu.classList.add("hidden");
-    for (const id of ["search-history-btn", "name-search-history-btn"]) this.$(id)?.setAttribute("aria-expanded", "false");
-  }
-
-  splitFileGlobTokens(raw) {
-    return String(raw || "").split(",").map((token) => token.trim()).filter(Boolean);
-  }
-
-  fileIncludeGlob(mode) {
-    return String(this.settings[mode === "tree" ? "tree_file_glob" : "search_file_glob"] || "").trim();
-  }
-
-  fileExcludeGlob() {
-    return String(this.settings.excluded_file_glob || "").trim();
-  }
-
-  fileGlobForMode(mode) {
-    return [...this.splitFileGlobTokens(this.fileIncludeGlob(mode)), ...this.fileTypeFilterTokens()].join(", ");
-  }
-
-  fileGlobForNameSearch() {
-    return this.fileTypeFilterTokens().join(", ");
-  }
-
-  updateSearchIncludeGlob(raw) {
-    this.settings.search_file_glob = String(raw || "").trim();
-    this.syncLegacySearchGlob();
-    this.saveSettings();
-    if (this.sideView === "search" && this.$("search-query").value.trim()) this.debouncedSearch();
-  }
-
-  syncLegacySearchGlob() {
-    this.settings.search_glob = this.fileGlobForMode("search");
-    const hidden = this.$("search-glob");
-    if (hidden) hidden.value = this.settings.search_glob;
-  }
-
-  syncFileGlobInputs() {
-    const treeInput = this.$("tree-file-glob");
-    const searchInput = this.$("search-file-glob");
-    if (treeInput) treeInput.value = this.fileIncludeGlob("tree");
-    if (searchInput) searchInput.value = this.fileIncludeGlob("search");
-    this.syncLegacySearchGlob();
-  }
-
-  setFileGlobForMode(mode, raw) {
-    const tokens = this.splitFileGlobTokens(raw);
-    this.settings[mode === "tree" ? "tree_file_glob" : "search_file_glob"] = tokens.filter((token) => !token.startsWith("!")).join(", ");
-    const excluded = tokens.filter((token) => token.startsWith("!"));
-    if (excluded.length) this.settings.excluded_file_glob = [...new Set([...this.fileTypeFilterTokens(), ...excluded])].join(", ");
-    this.syncFileGlobInputs();
-    this.saveSettings();
-  }
-
-  fileTypeFilterTokens() {
-    return this.splitFileGlobTokens(this.settings.excluded_file_glob || this.settings.search_glob || "").filter((token) => token.startsWith("!"));
-  }
-
-  recentFileExcludeTokens() {
-    return this.splitFileGlobTokens(this.getProjectState().recent_file_exclude_glob);
-  }
-
-  normalizedFileExclusionTokens(tokens) {
-    return [...new Set(tokens.map((token) => {
-      const value = String(token).trim();
-      return value ? (value.startsWith("!") ? value : `!${value}`) : "";
-    }).filter(Boolean))];
-  }
-
-  updateFileTypeFilterTokens(tokens) {
-    const normalized = this.normalizedFileExclusionTokens(tokens);
-    this.settings.hide_dot_folders = normalized.includes("!.*");
-    this.settings.excluded_file_glob = normalized.join(", ");
-    this.updateHideDotButton();
-    this.syncFileGlobInputs();
-    this.saveSettings();
-    this.renderFileTypeFilterMenu();
-    if (this.sideView === "search" && this.$("search-query").value.trim()) this.debouncedSearch();
-    else if (this.sideView === "project" && this.$("search-name").value.trim()) this.debouncedNameSearch();
-    else this.rerenderTree();
-  }
-
-  updateVisibleFileTypeFilterTokens(tokens) {
-    if (this.fileTypeFilterMenuMode !== "recent") {
-      this.updateFileTypeFilterTokens(tokens);
-      return;
-    }
-    this.patchProjectState({ recent_file_exclude_glob: this.normalizedFileExclusionTokens(tokens).join(", ") });
-    this.recentFilesExpanded = false;
-    this.renderList();
-    this.$("recent-file-type-filter-button")?.setAttribute("aria-expanded", "true");
-    this.renderFileTypeFilterMenu();
-  }
-
-  closeFileTypeFilterMenu() {
-    this.$("file-type-filter-menu")?.classList.add("hidden");
-    this.fileTypeFilterMenuMode = "name";
-    for (const id of ["file-type-filter-button", "search-file-type-filter-button", "recent-file-type-filter-button"]) {
-      this.$(id)?.setAttribute("aria-expanded", "false");
-    }
-  }
-
-  toggleFileTypeFilterMenu(button) {
-    const menu = this.$("file-type-filter-menu");
-    if (!menu.classList.contains("hidden")) {
-      this.closeFileTypeFilterMenu();
-      return;
-    }
-    this.closeSearchHistory();
-    this.fileTypeFilterMenuMode = button.id === "search-file-type-filter-button" ? "search" :
-      button.id === "recent-file-type-filter-button" ? "recent" : "name";
-    menu.classList.remove("hidden");
-    for (const id of ["file-type-filter-button", "search-file-type-filter-button", "recent-file-type-filter-button"]) {
-      this.$(id)?.setAttribute("aria-expanded", String(id === button.id));
-    }
-    this.renderFileTypeFilterMenu();
-    const rect = button.getBoundingClientRect();
-    const width = Math.min(360, window.innerWidth - 20);
-    const left = Math.max(10, Math.min(rect.right - width, window.innerWidth - width - 10));
-    const below = rect.bottom + 4;
-    menu.style.width = `${width}px`;
-    menu.style.left = `${left}px`;
-    menu.style.top = `${below + menu.offsetHeight <= window.innerHeight - 10 ? below : Math.max(10, rect.top - menu.offsetHeight - 4)}px`;
-  }
-
-  renderFileTypeFilterMenu() {
-    const menu = this.$("file-type-filter-menu");
-    if (!menu || menu.classList.contains("hidden")) return;
-    menu.textContent = "";
-    const head = document.createElement("div");
-    head.className = "file-type-filter-head";
-    const title = document.createElement("span");
-    title.className = "file-type-filter-title";
-    title.textContent = this.fileTypeFilterMenuMode === "search" ? "Search file filters" :
-      this.fileTypeFilterMenuMode === "recent" ? "Recently modified filters" : "Name search filters";
-    head.appendChild(title);
-    menu.appendChild(head);
-    if (this.fileTypeFilterMenuMode === "search") {
-      const include = document.createElement("div");
-      include.className = "file-type-filter-include";
-      const includeLabel = document.createElement("div");
-      includeLabel.className = "file-type-filter-section";
-      includeLabel.textContent = "Include patterns";
-      const includeInput = document.createElement("input");
-      includeInput.id = "search-file-glob";
-      includeInput.className = "file-include-glob";
-      includeInput.type = "text";
-      includeInput.value = this.fileIncludeGlob("search");
-      includeInput.placeholder = "*.py, src/**";
-      includeInput.title = "Only search these file patterns";
-      includeInput.autocomplete = "off";
-      includeInput.autocapitalize = "off";
-      includeInput.autocorrect = "off";
-      includeInput.spellcheck = false;
-      includeInput.addEventListener("input", () => this.updateSearchIncludeGlob(includeInput.value));
-      include.append(includeLabel, includeInput);
-      menu.appendChild(include);
-    }
-    const excludeLabel = document.createElement("div");
-    excludeLabel.className = "file-type-filter-section";
-    excludeLabel.textContent = "Exclude patterns";
-    menu.appendChild(excludeLabel);
-    const list = document.createElement("div");
-    list.className = "file-type-filter-chip-list";
-    const tokens = this.fileTypeFilterMenuMode === "recent" ? this.recentFileExcludeTokens() : this.fileTypeFilterTokens();
-    for (const [index, token] of tokens.entries()) {
-      const chip = document.createElement("span");
-      chip.className = "file-type-filter-chip";
-      chip.textContent = token.replace(/^!/, "");
-      chip.title = token === "!.*" ? "Hidden files are excluded; remove this chip to include them" : token;
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.title = token === "!.*" ? "Include hidden files" : "Remove exclusion";
-      remove.setAttribute("aria-label", token === "!.*" ? "Include hidden files" : `Remove ${token}`);
-      remove.innerHTML = '<span class="codicon codicon-close"></span>';
-      remove.onclick = () => this.updateVisibleFileTypeFilterTokens(tokens.filter((candidate) => candidate !== token));
-      remove.onkeydown = (event) => {
-        const buttons = [...list.querySelectorAll(".file-type-filter-chip button")];
-        if (event.key === "ArrowLeft" && index > 0) {
-          event.preventDefault();
-          buttons[index - 1]?.focus();
-        } else if (event.key === "ArrowRight") {
-          event.preventDefault();
-          (buttons[index + 1] || input)?.focus();
-        } else if (event.key === "Backspace" || event.key === "Delete") {
-          event.preventDefault();
-          this.updateVisibleFileTypeFilterTokens(tokens.filter((_, candidateIndex) => candidateIndex !== index));
-        }
-      };
-      chip.appendChild(remove);
-      list.appendChild(chip);
-    }
-    if (!tokens.length) {
-      const empty = document.createElement("div");
-      empty.className = "file-type-filter-empty";
-      empty.textContent = "No excluded file patterns";
-      list.appendChild(empty);
-    }
-    menu.appendChild(list);
-    const manual = document.createElement("div");
-    manual.className = "file-type-filter-manual";
-    const input = document.createElement("input");
-    input.id = "file-type-filter-manual-input";
-    input.type = "text";
-    input.placeholder = "add exclusion: *.log or .*";
-    input.title = "Press Enter to add an excluded file pattern";
-    input.autocomplete = "off";
-    input.spellcheck = false;
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        const value = input.value.trim();
-        if (!value) return;
-        this.updateVisibleFileTypeFilterTokens([...tokens, value]);
-        this.$("file-type-filter-manual-input")?.focus();
-      } else if (event.key === "Backspace" && !input.value && tokens.length) {
-        event.preventDefault();
-        this.updateVisibleFileTypeFilterTokens(tokens.slice(0, -1));
-        this.$("file-type-filter-manual-input")?.focus();
-      } else if (event.key === "ArrowLeft" && input.selectionStart === 0 && tokens.length) {
-        event.preventDefault();
-        list.querySelector(".file-type-filter-chip button:last-child")?.focus();
-      }
-    });
-    manual.appendChild(input);
-    menu.appendChild(manual);
-  }
-
-  deleteSearchHistoryEntry(entry) {
-    this.searchHistory = this.searchHistory.filter((candidate) => candidate !== entry);
-    this.saveSearchHistory();
-    this.renderSearchHistoryMenu();
-  }
-
-  useSearchHistory(entry) {
-    this.closeSearchHistory();
-    if (entry.mode === "name") {
-      this.nameSearchCase = !!entry.case_sensitive;
-      this.$("name-case-toggle").classList.toggle("on", this.nameSearchCase);
-      this.setFileGlobForMode("tree", entry.glob || "");
-      this.$("search-name").value = entry.q;
-      if (this.sideView !== "project") this.setSideView("project");
-      void this.runNameSearch(true);
-      return;
-    }
-    this.searchWord = !!entry.word;
-    this.searchCase = !!entry.case_sensitive;
-    this.searchRegex = !!entry.regex;
-    this.$("search-word-toggle").classList.toggle("on", this.searchWord);
-    this.$("search-case-toggle").classList.toggle("on", this.searchCase);
-    this.$("search-regex-toggle").classList.toggle("on", this.searchRegex);
-    this.setFileGlobForMode("search", entry.glob || "");
-    if (this.sideView !== "search") this.setSideView("search");
-    void this.runSearch(entry.q, true);
-  }
-
-  renderSearchHistoryMenu() {
-    const items = this.$("search-history-items");
-    items.textContent = "";
-    const entries = [...this.searchHistory].reverse();
-    if (!entries.length) {
-      const empty = document.createElement("div");
-      empty.className = "search-history-empty";
-      empty.textContent = "No recent searches";
-      items.appendChild(empty);
-      return;
-    }
-    for (const entry of entries) {
-      const row = document.createElement("div");
-      row.className = "search-history-item";
-      row.setAttribute("role", "menuitem");
-      row.onclick = () => this.useSearchHistory(entry);
-      const mode = document.createElement("span");
-      mode.className = "search-history-mode";
-      mode.textContent = entry.mode === "name" ? "name" : "text";
-      const query = document.createElement("span");
-      query.className = "search-history-query";
-      query.textContent = entry.q;
-      query.title = entry.q;
-      const remove = document.createElement("button");
-      remove.className = "search-history-delete";
-      remove.type = "button";
-      remove.title = "Delete recent search";
-      remove.setAttribute("aria-label", "Delete recent search");
-      remove.innerHTML = '<span class="codicon codicon-close"></span>';
-      remove.onclick = (event) => {
-        event.stopPropagation();
-        this.deleteSearchHistoryEntry(entry);
-      };
-      row.append(mode, query, remove);
-      items.appendChild(row);
-    }
-  }
-
-  toggleSearchHistory(button) {
-    const menu = this.$("search-history-menu");
-    if (!menu.classList.contains("hidden") && menu.dataset.anchor === button.id) {
-      this.closeSearchHistory();
-      return;
-    }
-    this.renderSearchHistoryMenu();
-    menu.dataset.anchor = button.id;
-    menu.classList.remove("hidden");
-    button.setAttribute("aria-expanded", "true");
-    this.positionSearchHistoryMenu(button);
-  }
-
-  showEditorUsages(word = "") {
-    if (this.vscodeMode || !this.editor) return;
-    const model = this.editor.getModel();
-    const position = this.editor.getPosition();
-    const selectedWord = word || model?.getWordAtPosition(position)?.word || "";
-    if (!selectedWord) return;
-    if (this.lspClient?.handlesModel(model)) {
-      void this.editor.getAction("editor.action.referenceSearch.trigger")?.run();
-      return;
-    }
-    if (this.sideView !== "search") {
-      this.sideView = "terminals";
-      this.setSideView("search");
-    }
-    this.searchWord = true;
-    this.$("search-word-toggle").classList.add("on");
-    void this.runSearch(selectedWord);
-  }
-
-  editorSymbolDefinitionPattern(word, path) {
-    const escaped = String(word).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const identifier = `(?:${escaped})`;
-    const python = `^\\s*(?:async\\s+)?(?:def|class)\\s+${identifier}\\b`;
-    const javascript = `^\\s*(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?(?:function|class)\\s+${identifier}\\b` +
-      `|^\\s*(?:export\\s+)?(?:const|let|var)\\s+${identifier}\\s*=`;
-    const rust = `^\\s*(?:pub\\s+)?(?:async\\s+)?fn\\s+${identifier}\\b`;
-    const go = `^\\s*func(?:\\s+\\([^)]*\\))?\\s+${identifier}\\b`;
-    const extension = String(path || "").split(".").pop().toLowerCase();
-    if (extension === "py") return python;
-    if (["js", "jsx", "ts", "tsx", "mjs", "cjs"].includes(extension)) return javascript;
-    if (extension === "rs") return rust;
-    if (extension === "go") return go;
-    return [python, javascript, rust, go].join("|");
-  }
-
-  async findEditorSymbolDefinition(entry, word) {
-    const glob = this.fileGlobForMode("search");
-    const ignore = this.searchIgnoreTokens();
-    const params = new URLSearchParams({ root: entry.root, q: this.editorSymbolDefinitionPattern(word, entry.path),
-      glob, ignore, include_hidden: String(this.includeHiddenFilesInSearch()), word: "false", case_sensitive: "true", regex: "true" });
-    try {
-      const response = await fetch(`/api/files/search?${params}`);
-      if (!response.ok) return null;
-      const hits = await response.json();
-      return hits.sort((a, b) => (Number(a.path !== entry.path) - Number(b.path !== entry.path)) ||
-        (Number(a.line) - Number(b.line)))[0] || null;
-    } catch (_error) {
-      return null;
-    }
-  }
-
-  async openEditorSymbolAtPosition(position) {
-    if (this.vscodeMode || this.activeFileKey === null) return;
-    const entry = this.openFiles.get(this.activeFileKey);
-    const model = this.editor?.getModel();
-    const word = model?.getWordAtPosition(position);
-    if (!entry || !model || !word) return;
-    const key = this.activeFileKey;
-    const lspDefinition = await this.lspClient?.definitionAt(position);
-    if (this.activeFileKey !== key) return;
-    if (lspDefinition && await this.lspClient.openLocation(lspDefinition)) return;
-    const definition = await this.findEditorSymbolDefinition(entry, word.word);
-    if (this.activeFileKey !== key) return;
-    if (!definition) {
-      this.showEditorUsages(word.word);
-      return;
-    }
-    await this.openFile(entry.root, definition.path, definition.line, null);
-    this.editor?.focus();
-  }
-
-  prevSearch() {
-    const entries = this.searchHistory.filter((entry) => (entry.mode || "content") === "content");
-    if (entries.length < 2) return;
-    if (this.searchHistoryBackIndex === null) this.searchHistoryBackIndex = entries.length - 2;
-    else this.searchHistoryBackIndex = Math.max(0, this.searchHistoryBackIndex - 1);
-    const prev = entries[this.searchHistoryBackIndex];
-    this.searchWord = prev.word;
-    this.searchCase = prev.case_sensitive;
-    this.$("search-word-toggle").classList.toggle("on", this.searchWord);
-    this.$("search-case-toggle").classList.toggle("on", this.searchCase);
-    this.setFileGlobForMode("search", prev.glob || "");
-    if (this.sideView !== "search") {
-      this.sideView = "terminals";
-      this.setSideView("search");
-    }
-    this.runSearch(prev.q, true);
-  }
-
-  searchHighlightRanges(text, query, options = {}) {
-    const source = String(text || "");
-    const needle = String(query || "");
-    if (!source || !needle) return [];
-    const caseSensitive = Boolean(options.caseSensitive);
-    const regexMode = Boolean(options.regex);
-    const fuzzy = Boolean(options.fuzzy);
-    const wholeWord = Boolean(options.wholeWord);
-    const flags = caseSensitive ? "g" : "gi";
-    if (regexMode || wholeWord) {
-      const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const pattern = regexMode ? needle : (/\s/.test(needle) ? escaped : `\\b${escaped}\\b`);
-      let matcher;
-      try {
-        matcher = new RegExp(pattern, flags);
-      } catch (error) {
-        return [];
-      }
-      const ranges = [];
-      let match;
-      while ((match = matcher.exec(source))) {
-        if (match[0].length) ranges.push([match.index, match.index + match[0].length]);
-        else matcher.lastIndex += 1;
-      }
-      return ranges;
-    }
-    if (fuzzy) {
-      const sourceValue = caseSensitive ? source : source.toLocaleLowerCase();
-      const queryValue = caseSensitive ? needle : needle.toLocaleLowerCase();
-      const ranges = [];
-      let cursor = 0;
-      for (const character of queryValue) {
-        const index = sourceValue.indexOf(character, cursor);
-        if (index < 0) return [];
-        ranges.push([index, index + character.length]);
-        cursor = index + character.length;
-      }
-      return ranges;
-    }
-    const sourceValue = caseSensitive ? source : source.toLocaleLowerCase();
-    const queryValue = caseSensitive ? needle : needle.toLocaleLowerCase();
-    const ranges = [];
-    let cursor = 0;
-    while (true) {
-      const index = sourceValue.indexOf(queryValue, cursor);
-      if (index < 0) break;
-      ranges.push([index, index + queryValue.length]);
-      cursor = index + queryValue.length;
-    }
-    return ranges;
-  }
-
-  appendSearchHighlightedText(element, text, query, options = {}) {
-    const value = String(text || "");
-    element.textContent = "";
-    const ranges = this.searchHighlightRanges(value, query, options);
-    let cursor = 0;
-    for (const [start, end] of ranges) {
-      if (start > cursor) element.appendChild(document.createTextNode(value.slice(cursor, start)));
-      const mark = document.createElement("mark");
-      mark.className = "search-match-highlight";
-      mark.textContent = value.slice(start, end);
-      element.appendChild(mark);
-      cursor = end;
-    }
-    if (cursor < value.length) element.appendChild(document.createTextNode(value.slice(cursor)));
-  }
-
-  buildContentSearchHierarchy(files) {
-    const root = { path: "", directories: new Map(), files: [] };
-    const directories = new Set();
-    for (const file of files) {
-      const parts = String(file.path || "").split("/").filter(Boolean);
-      let node = root;
-      let directoryPath = "";
-      for (const part of parts.slice(0, -1)) {
-        directoryPath = directoryPath ? `${directoryPath}/${part}` : part;
-        directories.add(directoryPath);
-        if (!node.directories.has(part)) node.directories.set(part, { path: directoryPath, name: part, directories: new Map(), files: [] });
-        node = node.directories.get(part);
-      }
-      node.files.push(file);
-    }
-    return { root, directories };
-  }
-
-  collapseSearchDirectoryChain(directory, includeMatchedDirectory = false) {
-    const chain = [directory];
-    let current = directory;
-    while (!current.files.length && current.directories.size === 1 && (!includeMatchedDirectory || !current.hit)) {
-      current = [...current.directories.values()][0];
-      chain.push(current);
-    }
-    return { chain, directory: current };
-  }
-
-  appendSearchDirectoryChainName(element, chain, query, options = {}) {
-    element.textContent = "";
-    chain.forEach((part, index) => {
-      if (index) {
-        const separator = document.createElement("span");
-        separator.className = "search-tree-path-separator";
-        separator.textContent = ">";
-        element.appendChild(separator);
-      }
-      const segment = document.createElement("span");
-      segment.className = "search-tree-path-segment";
-      if (options.highlight) this.appendSearchHighlightedText(segment, part.name, query, options);
-      else segment.textContent = part.name;
-      element.appendChild(segment);
-    });
-  }
-
-  renderContentSearchHierarchy(node, container, root, query) {
-    const directories = [...node.directories.values()].sort((a, b) => String(a.name).localeCompare(String(b.name), undefined,
-      { numeric: true, sensitivity: "base" }));
-    for (const directory of directories) {
-      const collapsed = this.collapseSearchDirectoryChain(directory);
-      const displayDirectory = collapsed.directory;
-      const row = document.createElement("div");
-      row.className = `tree-row dir search-tree-row search-tree-directory search-tree-context-directory open${collapsed.chain.length > 1 ? " search-tree-collapsed-directory" : ""}`;
-      row.tabIndex = 0;
-      row.title = `${root}/${displayDirectory.path}`;
-      const chevron = document.createElement("span");
-      chevron.className = "codicon codicon-chevron-right tree-chevron";
-      const icon = document.createElement("img");
-      icon.className = "tree-type-icon tree-folder-icon";
-      icon.src = FOLDER_ICON_OPEN;
-      const name = document.createElement("span");
-      name.className = "tree-name search-tree-directory-name";
-      this.appendSearchDirectoryChainName(name, collapsed.chain, query);
-      row.append(chevron, icon, name);
-      const children = document.createElement("div");
-      children.className = "tree-children-wrap search-tree-children";
-      row.onclick = () => {
-        const open = row.classList.toggle("open");
-        children.classList.toggle("hidden", !open);
-        icon.src = open ? FOLDER_ICON_OPEN : FOLDER_ICON_CLOSED;
-      };
-      container.append(row, children);
-      this.renderContentSearchHierarchy(displayDirectory, children, root, query);
-    }
-    const files = [...node.files].sort((a, b) => this.compareSearchFiles(a, b));
-    for (const file of files) {
-      const fileRow = document.createElement("div");
-      fileRow.className = "tree-row file search-file search-tree-row search-tree-file";
-      fileRow.tabIndex = 0;
-      fileRow.title = `${root}/${file.path}\nMiddle-click opens in a new TermDeck tab`;
-      const spacer = document.createElement("span");
-      spacer.className = "tree-file-spacer";
-      const fileName = document.createElement("span");
-      fileName.className = "search-file-name tree-name";
-      this.appendSearchHighlightedText(fileName, String(file.path).split("/").pop(), query, { caseSensitive: this.searchCase });
-      fileRow.append(spacer, this.fileTypeIconEl(fileName.textContent, "tree-type-icon"), fileName);
-      fileRow.onclick = () => this.openFile(root, file.path, file.hits[0]?.line || null, null, { fromFilePanel: true, preview: true });
-      fileRow.ondblclick = () => this.openFile(root, file.path, file.hits[0]?.line || null, null, { fromFilePanel: true, pinned: true });
-      fileRow.onauxclick = (event) => this.handleFileDeckAuxClick(event, root, file.path);
-      fileRow.oncontextmenu = (event) => this.openFileDeckRowContextMenu(event, root, file.path);
-      this.appendMtime(fileRow, file);
-      this.appendGitStatus(fileRow, file);
-      container.appendChild(fileRow);
-      const hits = document.createElement("div");
-      hits.className = "search-tree-hits";
-      for (const hit of file.hits) {
-        const hitRow = document.createElement("div");
-        hitRow.className = "search-hit";
-        hitRow.tabIndex = -1;
-        hitRow.setAttribute("role", "option");
-        const line = document.createElement("span");
-        line.className = "hit-line";
-        line.textContent = hit.line;
-        const text = document.createElement("span");
-        text.className = "hit-text";
-        this.appendSearchHighlightedText(text, hit.text, query, {
-          caseSensitive: this.searchCase, regex: this.searchRegex, wholeWord: this.searchWord,
-        });
-        hitRow.append(line, text);
-        hitRow.title = `${hit.path}:${hit.line}`;
-        hitRow.onclick = (event) => {
-          event.stopPropagation();
-          this.openFile(root, hit.path, hit.line, null, { fromFilePanel: true, preview: true });
-        };
-        hitRow.onauxclick = (event) => this.handleFileDeckAuxClick(event, root, hit.path);
-        hitRow.onmouseenter = () => this.selectFileSearchResult("content", hitRow, { reveal: false });
-        hits.appendChild(hitRow);
-      }
-      container.appendChild(hits);
-    }
-  }
-
-  async runSearch(queryOverride, skipRecord) {
-    const generation = ++this.searchGeneration;
-    if (queryOverride != null) this.$("search-query").value = queryOverride;
-    const query = this.$("search-query").value.trim();
-    const resultsEl = this.$("search-results");
-    this.$("replace-preview").classList.add("hidden");
-    this.lastSearchRoot = "";
-    this.lastSearchFiles = [];
-    resultsEl.textContent = "";
-    this.clearFileSearchSelection("content");
-    this.contentSearchTree = null;
-    if (!query) { this.setExplorerMode("tree"); return; }
-    if (this.sideView !== "search") {
-      this.sideView = "terminals";
-      this.setSideView("search");
-    }
-    this.setExplorerMode("content");
-    if (!skipRecord) {
-      const state = { mode: "content", q: query, glob: this.fileGlobForMode("search"),
-                      word: this.searchWord, case_sensitive: this.searchCase, regex: this.searchRegex };
-      this.recordSearch(state);
-      // Search selection is also a fixed sidebar view, so keep it in the
-      // current URL without adding a browser-history step.
-      this.replaceNav({ kind: "search", ...state });
-    }
-    const summary = document.createElement("div");
-    summary.className = "search-summary";
-    summary.textContent = "searching…";
-    resultsEl.appendChild(summary);
-    const root = this.searchRoot();
-    const globParts = this.splitFileGlobTokens(this.fileGlobForMode("search"));
-    const ignore = this.searchIgnoreTokens();
-    const params = new URLSearchParams({ root, q: query, glob: globParts.join(","), ignore,
-                                         include_hidden: String(this.includeHiddenFilesInSearch()),
-                                         word: this.searchWord ? "true" : "false",
-                                         case_sensitive: this.searchCase ? "true" : "false",
-                                         regex: this.searchRegex ? "true" : "false" });
-    const res = await fetch(`/api/files/search?${params}`);
-    if (generation !== this.searchGeneration) return;
-    if (!res.ok) {
-      summary.textContent = "search failed";
-      return;
-    }
-    const hits = await res.json();
-    resultsEl.textContent = "";
-    const byFile = new Map();
-    for (const hit of hits) {
-      if (!byFile.has(hit.path)) byFile.set(hit.path, { path: hit.path, mtime: hit.mtime || 0, git_status: hit.git_status || "", hits: [] });
-      byFile.get(hit.path).hits.push(hit);
-    }
-    const files = [...byFile.values()].sort((a, b) => this.compareSearchFiles(a, b));
-    this.lastSearchRoot = root;
-    this.lastSearchFiles = files;
-    const hierarchy = this.buildContentSearchHierarchy(files);
-    this.contentSearchTree = { root, paths: new Set(files.map((file) => file.path)), directories: hierarchy.directories };
-    this.renderContentSearchHierarchy(hierarchy.root, resultsEl, root, query);
-    const done = document.createElement("div");
-    done.className = "search-summary";
-    const flags = [this.searchWord ? "whole word" : "", this.searchCase ? "case sensitive" : ""].filter(Boolean).join(", ");
-    done.textContent = `${hits.length} match${hits.length === 1 ? "" : "es"} in ${files.length} file${files.length === 1 ? "" : "s"}${flags ? ` · ${flags}` : ""}`;
-    resultsEl.prepend(done);
-  }
-
-  compareSearchFiles(a, b) {
-    if (this.settings.file_tree_sort === "mtime") {
-      const mtimeOrder = Number(b.mtime || 0) - Number(a.mtime || 0);
-      if (mtimeOrder) return mtimeOrder;
-    } else {
-      const directoryOrder = Number(Boolean(b.is_dir)) - Number(Boolean(a.is_dir));
-      if (directoryOrder) return directoryOrder;
-    }
-    return String(a.path || "").localeCompare(String(b.path || ""), undefined,
-      { numeric: true, sensitivity: "base" });
-  }
-
-  compareNameSearchFiles(a, b, query) {
-    return this.nameSearchMatchRank(a, query) - this.nameSearchMatchRank(b, query) || this.compareSearchFiles(a, b);
-  }
-
-  nameSearchMatchRank(entry, query) {
-    const basename = String(entry.path || "").split("/").pop() || "";
-    const normalizedName = this.nameSearchCase ? basename : basename.toLowerCase();
-    const normalizedQuery = this.nameSearchCase ? query : query.toLowerCase();
-    if (normalizedName === normalizedQuery) return 0;
-    if (!entry.is_dir && normalizedName.replace(/\.[^.]+$/, "") === normalizedQuery) return 1;
-    if (normalizedName.startsWith(normalizedQuery)) return 2;
-    return this.searchHighlightRanges(basename, query, { caseSensitive: this.nameSearchCase, fuzzy: true }).length ? 4 : 5;
-  }
-
-  debouncedSearch() {
-    clearTimeout(this.searchDebounce);
-    const query = this.$("search-query").value.trim();
-    if (!query) {
-      this.$("search-results").textContent = "";
-      this.$("replace-preview").classList.add("hidden");
-      this.lastSearchRoot = "";
-      this.lastSearchFiles = [];
-      this.clearFileSearchSelection("content");
-      this.contentSearchTree = null;
-      this.treeSearchFilter = null;
-      return;
-    }
-    this.searchDebounce = setTimeout(() => this.runSearch(), SEARCH_DEBOUNCE_MS);
-  }
-
-  fileSearchResultRows(mode) {
-    const container = this.$(mode === "name" ? "name-results" : "search-results");
-    const selector = mode === "name" ? ".search-file.clickable, .search-tree-directory.clickable" : ".search-hit";
-    return container ? [...container.querySelectorAll(selector)] : [];
-  }
-
-  clearFileSearchSelection(mode) {
-    this.searchSelection[mode] = -1;
-  }
-
-  selectFileSearchResult(mode, row, { reveal = true } = {}) {
-    const rows = this.fileSearchResultRows(mode);
-    const index = rows.indexOf(row);
-    if (index < 0) return false;
-    this.searchSelection[mode] = index;
-    for (const candidate of rows) {
-      const selected = candidate === row;
-      candidate.classList.toggle("keyboard-selected", selected);
-      candidate.setAttribute("aria-selected", String(selected));
-    }
-    if (reveal) row.scrollIntoView({ block: "nearest" });
-    return true;
-  }
-
-  moveFileSearchSelection(mode, delta) {
-    const rows = this.fileSearchResultRows(mode);
-    if (!rows.length) return false;
-    const current = this.searchSelection[mode];
-    const index = current < 0 ? (delta < 0 ? rows.length - 1 : 0) :
-      Math.max(0, Math.min(rows.length - 1, current + delta));
-    return this.selectFileSearchResult(mode, rows[index]);
-  }
-
-  activateFileSearchSelection(mode) {
-    const row = this.fileSearchResultRows(mode)[this.searchSelection[mode]];
-    if (!row) return false;
-    row.click();
-    return true;
-  }
-
-  handleFileSearchNavigation(event, mode) {
-    if (event.metaKey || event.ctrlKey || event.altKey) return false;
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return false;
-    event.preventDefault();
-    this.moveFileSearchSelection(mode, event.key === "ArrowDown" ? 1 : -1);
-    return true;
-  }
-
-  treeFilterForSearch(mode) {
-    const search = mode === "name" ? this.nameSearchTree : this.contentSearchTree;
-    if (!search) return null;
-    const paths = new Set(search.paths || []);
-    const directories = new Set(search.directories || []);
-    const expandedDirs = new Set();
-    const addParents = (path, includeSelf) => {
-      const parts = String(path || "").split("/").filter(Boolean);
-      const count = includeSelf ? parts.length : Math.max(0, parts.length - 1);
-      let rel = "";
-      for (let index = 0; index < count; index += 1) {
-        rel = rel ? `${rel}/${parts[index]}` : parts[index];
-        expandedDirs.add(rel);
-      }
-    };
-    for (const path of paths) addParents(path, directories.has(path));
-    return { root: search.root, paths, directories, expandedDirs };
-  }
-
-  treeFilterAllows(relPath, isDir) {
-    const filter = this.treeSearchFilter;
-    if (!filter) return true;
-    const path = String(relPath || "");
-    const prefix = `${path}/`;
-    const isWithinMatchedDirectory = [...filter.directories].some((directory) => path.startsWith(`${directory}/`));
-    if (!isDir) return filter.paths.has(path) || isWithinMatchedDirectory;
-    return isWithinMatchedDirectory || filter.directories.has(path) ||
-      [...filter.paths].some((candidate) => candidate === path || candidate.startsWith(prefix));
-  }
-
-  async enterFileTreeNavigation(mode) {
-    if (this.vscodeMode) return;
-    const filter = this.treeFilterForSearch(mode);
-    this.treeSearchFilter = filter;
-    this.expandedDirs = new Set(filter?.expandedDirs || []);
-    const expectedRoot = filter?.root || this.searchRoot();
-    if (this.sideView !== "project" && this.sideView !== "search") {
-      this.setSideView(mode === "content" ? "search" : "project", false);
-    }
-    this.setExplorerMode("tree");
-    this.treeReloadPromise = this.reloadTree(expectedRoot);
-    await this.treeReloadPromise;
-    const tree = this.$("files-tree");
-    tree.focus({ preventScroll: true });
-    await this.treeKeyNav("ArrowDown");
-  }
-
-  async replaceAll() {
-    const query = this.$("search-query").value.trim();
-    const replacement = this.$("replace-with").value;
-    if (!query) {
-      alert("enter a search query first");
-      return;
-    }
-    if (!this.lastSearchFiles.length) await this.runSearch(null, true);
-    this.renderReplacePreview(query, replacement);
-  }
-
-  renderReplacePreview(query, replacement) {
-    const panel = this.$("replace-preview");
-    panel.textContent = "";
-    panel.classList.remove("hidden");
-    const head = document.createElement("div");
-    head.className = "replace-preview-head";
-    const title = document.createElement("strong");
-    title.textContent = `${this.lastSearchFiles.length} files`;
-    const detail = document.createElement("span");
-    detail.textContent = `“${query}” → “${replacement}”`;
-    const apply = document.createElement("button");
-    apply.type = "button";
-    apply.textContent = "Apply selected";
-    apply.onclick = () => void this.applyReplacementPreview();
-    head.append(title, detail, apply);
-    panel.appendChild(head);
-    for (const file of this.lastSearchFiles) {
-      const label = document.createElement("label");
-      label.className = "replace-preview-file";
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.checked = true;
-      checkbox.value = file.path;
-      const path = document.createElement("span");
-      path.textContent = file.path;
-      const count = document.createElement("small");
-      count.textContent = `${file.hits.length}`;
-      label.append(checkbox, path, count);
-      panel.appendChild(label);
-    }
-  }
-
-  async applyReplacementPreview() {
-    const query = this.$("search-query").value.trim();
-    const replacement = this.$("replace-with").value;
-    const paths = [...this.$("replace-preview").querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value);
-    if (!paths.length) return;
-    if (!confirm(`Replace matches in ${paths.length} selected file${paths.length === 1 ? "" : "s"}?`)) return;
-    const res = await fetch("/api/files/replace", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ root: this.lastSearchRoot || this.searchRoot(), q: query, glob: this.fileGlobForMode("search"),
-                             ignore: this.searchIgnoreTokens(),
-                             include_hidden: this.includeHiddenFilesInSearch(),
-                             word: this.searchWord, case_sensitive: this.searchCase, regex: this.searchRegex,
-                             replacement, paths }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert(err.detail || "replace failed");
-      return;
-    }
-    const result = await res.json();
-    this.$("replace-preview").classList.add("hidden");
-    alert(`replaced ${result.replacements} match${result.replacements === 1 ? "" : "es"} in ${result.files} file${result.files === 1 ? "" : "s"}`);
-    for (const entry of this.openFiles.values()) {
-      if (entry.model && !entry.dirty) {
-        entry.model.dispose();
-        entry.model = null;
-      }
-    }
-    if (this.activeFileKey !== null) this.activateFile(this.activeFileKey, null);
-    this.runSearch(null, true);
-  }
-
-  debouncedNameSearch() {
-    clearTimeout(this.nameDebounce);
-    if (!this.$("search-name").value.trim()) {
-      this.nameDebounce = setTimeout(() => this.runNameSearch(), 0);
-      return;
-    }
-    this.nameDebounce = setTimeout(() => this.runNameSearch(), SEARCH_DEBOUNCE_MS);
-  }
-
-  async runNameSearch(skipRecord = false) {
-    const generation = ++this.nameSearchGeneration;
-    const query = this.$("search-name").value.trim();
-    const resultsEl = this.$("name-results");
-    resultsEl.textContent = "";
-    this.clearFileSearchSelection("name");
-    this.nameSearchTree = null;
-    this.treeSearchFilter = null;
-    if (!query) {
-      this.setExplorerMode("tree");
-      return;
-    }
-    if (this.sideView !== "project" && this.sideView !== "search") {
-      this.sideView = "terminals";
-      this.setSideView("project");
-    }
-    this.setExplorerMode("name");
-    if (!skipRecord) this.recordSearch({ mode: "name", q: query, glob: this.fileGlobForNameSearch(), case_sensitive: this.nameSearchCase });
-    const loading = document.createElement("div");
-    loading.className = "search-summary";
-    loading.textContent = "loading project files…";
-    resultsEl.appendChild(loading);
-    const root = this.searchRoot();
-    const ignore = this.searchIgnoreTokens();
-    const glob = this.fileGlobForNameSearch();
-    const res = await fetch(`/api/files/find?${new URLSearchParams({ root, q: query, glob, ignore,
-      include_hidden: String(this.includeHiddenFilesInSearch()), case_sensitive: this.nameSearchCase ? "true" : "false" })}`);
-    if (!res.ok) return;
-    const hits = await res.json();
-    if (generation !== this.nameSearchGeneration) return;
-    const orderedHits = [...hits].sort((a, b) => this.compareNameSearchFiles(a, b, query));
-    this.nameSearchTree = {
-      root,
-      paths: new Set(orderedHits.map((hit) => hit.path)),
-      directories: new Set(orderedHits.filter((hit) => hit.is_dir).map((hit) => hit.path)),
-    };
-    resultsEl.textContent = "";
-    const summary = document.createElement("div");
-    summary.className = "search-summary";
-    const folderCount = orderedHits.filter((hit) => hit.is_dir).length;
-    summary.textContent = `${orderedHits.length} result${orderedHits.length === 1 ? "" : "s"}${folderCount ? ` · ${folderCount} folder${folderCount === 1 ? "" : "s"}` : ""}`;
-    resultsEl.appendChild(summary);
-    const exactHits = orderedHits.filter((hit) => this.nameSearchMatchRank(hit, query) < 2);
-    const fuzzyHits = orderedHits.filter((hit) => this.nameSearchMatchRank(hit, query) >= 2);
-    for (const [label, sectionHits] of [["Exact matches", exactHits], ["Fuzzy matches", fuzzyHits]]) {
-      if (!sectionHits.length) continue;
-      const section = document.createElement("div");
-      section.className = "search-result-section-label";
-      section.textContent = `${label} · ${sectionHits.length}`;
-      resultsEl.appendChild(section);
-      this.renderNameSearchHierarchy(this.buildNameSearchHierarchy(sectionHits), resultsEl, root, query);
-    }
-  }
-
-  buildNameSearchHierarchy(hits) {
-    const root = { path: "", directories: new Map(), files: [] };
-    for (const hit of hits) {
-      const parts = String(hit.path || "").split("/").filter(Boolean);
-      if (!parts.length) continue;
-      const directoryParts = hit.is_dir ? parts : parts.slice(0, -1);
-      let node = root;
-      let directoryPath = "";
-      for (const part of directoryParts) {
-        directoryPath = directoryPath ? `${directoryPath}/${part}` : part;
-        if (!node.directories.has(part)) node.directories.set(part, { path: directoryPath, name: part, hit: null, directories: new Map(), files: [] });
-        node = node.directories.get(part);
-      }
-      if (hit.is_dir) node.hit = hit;
-      else node.files.push(hit);
-    }
-    return root;
-  }
-
-  renderNameSearchHierarchy(node, container, root, query) {
-    const directories = [...node.directories.values()].sort((a, b) => String(a.name).localeCompare(String(b.name), undefined,
-      { numeric: true, sensitivity: "base" }));
-    for (const directory of directories) {
-      const collapsed = this.collapseSearchDirectoryChain(directory, true);
-      const displayDirectory = collapsed.directory;
-      const row = document.createElement("div");
-      const directoryNameMatches = collapsed.chain.some((part) => part.hit || this.searchHighlightRanges(part.name, query, { caseSensitive: this.nameSearchCase, fuzzy: true }).length > 0);
-      row.className = `tree-row dir clickable search-tree-row search-tree-directory ${directoryNameMatches ? "search-tree-matching-directory" : "search-tree-context-directory"} open${collapsed.chain.length > 1 ? " search-tree-collapsed-directory" : ""}`;
-      row.tabIndex = 0;
-      row.title = `${root}/${displayDirectory.path}`;
-      const chevron = document.createElement("span");
-      chevron.className = "codicon codicon-chevron-right tree-chevron";
-      const icon = document.createElement("img");
-      icon.className = "tree-type-icon tree-folder-icon";
-      icon.src = FOLDER_ICON_OPEN;
-      const name = document.createElement("span");
-      name.className = "tree-name search-tree-directory-name";
-      this.appendSearchDirectoryChainName(name, collapsed.chain, query, { caseSensitive: this.nameSearchCase, fuzzy: true, highlight: true });
-      row.append(chevron, icon, name);
-      if (displayDirectory.hit) {
-        this.appendMtime(row, displayDirectory.hit);
-        this.appendGitStatus(row, displayDirectory.hit);
-      }
-      const children = document.createElement("div");
-      children.className = "tree-children-wrap search-tree-children";
-      row.onclick = () => {
-        const open = row.classList.toggle("open");
-        children.classList.toggle("hidden", !open);
-        icon.src = open ? FOLDER_ICON_OPEN : FOLDER_ICON_CLOSED;
-      };
-      row.ondblclick = () => this.openNameDirectory(root, displayDirectory.path);
-      row.onmouseenter = () => this.selectFileSearchResult("name", row, { reveal: false });
-      container.append(row, children);
-      this.renderNameSearchHierarchy(displayDirectory, children, root, query);
-    }
-    const files = [...node.files].sort((a, b) => this.compareSearchFiles(a, b));
-    for (const file of files) {
-      const fileRow = document.createElement("div");
-      fileRow.className = "tree-row file search-file clickable search-tree-row search-tree-file";
-      fileRow.tabIndex = 0;
-      fileRow.title = `${root}/${file.path}\nMiddle-click opens in a new TermDeck tab`;
-      const spacer = document.createElement("span");
-      spacer.className = "tree-file-spacer";
-      const fileName = String(file.path).split("/").pop() || "";
-      fileRow.append(spacer, this.fileTypeIconEl(fileName, "tree-type-icon"));
-      const name = document.createElement("span");
-      name.className = "tree-name search-file-name";
-      this.appendSearchHighlightedText(name, fileName, query, { caseSensitive: this.nameSearchCase, fuzzy: true });
-      fileRow.appendChild(name);
-      this.appendMtime(fileRow, file);
-      this.appendGitStatus(fileRow, file);
-      fileRow.onclick = () => this.openFile(root, file.path, null, null, { fromFilePanel: true, preview: true });
-      fileRow.ondblclick = () => this.openFile(root, file.path, null, null, { fromFilePanel: true, pinned: true });
-      fileRow.onauxclick = (event) => this.handleFileDeckAuxClick(event, root, file.path);
-      fileRow.oncontextmenu = (event) => this.openFileDeckRowContextMenu(event, root, file.path);
-      fileRow.onmouseenter = () => this.selectFileSearchResult("name", fileRow, { reveal: false });
-      container.appendChild(fileRow);
-    }
-  }
-
-  async openNameDirectory(root, relPath) {
-    if (this.sideView !== "project") this.setSideView("project");
-    if (this.treeRoot !== root) await this.reloadTree(root);
-    this.setExplorerMode("tree");
-    let rel = "";
-    for (const part of relPath.split("/").filter(Boolean)) {
-      rel = rel ? `${rel}/${part}` : part;
-      const row = this.$("files-tree").querySelector(`[data-rel="${CSS.escape(rel)}"]`);
-      if (!row) return;
-      if (rel !== relPath && !row.classList.contains("open")) await this.toggleDir(row, rel);
-      if (rel === relPath) this.markTreeSelection(row);
-    }
-  }
-
-  cssVar(name) {
-    return getComputedStyle(document.body).getPropertyValue(name).trim();
-  }
-
-  formatKb(kb) {
-    return kb >= 1048576 ? (kb / 1048576).toFixed(1) + "G" : Math.round(kb / 1024) + "M";
-  }
-
-  async pollStats() {
-    if (!this.settings.show_stats) return;
-    let data;
-    try {
-      const query = this.activeId ? `?session_id=${encodeURIComponent(this.activeId)}` : "";
-      const res = await fetch(`/api/stats${query}`);
-      if (!res.ok) return;
-      data = await res.json();
-    } catch (err) {
-      return;
-    }
-    this.statHistory.push({ cpu: data.app.cpu, rss: data.app.rss_kb });
-    if (this.statHistory.length > STAT_HISTORY_MAX) this.statHistory.shift();
-    const active = data.sessions[this.activeId];
-    const parts = [];
-    if (active) parts.push(`term ${this.formatKb(active.rss_kb)} · ${active.cpu.toFixed(0)}%`);
-    parts.push(`app ${this.formatKb(data.app.rss_kb)} · ${data.app.cpu.toFixed(0)}%`);
-    this.$("stat-text").textContent = parts.join("   ");
-    this.drawSparkline();
-  }
-
-  drawSparkline() {
-    const canvas = this.$("stat-spark");
-    const ctx = canvas.getContext("2d");
-    const w = canvas.width, h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
-    if (this.statHistory.length < 2) return;
-    const maxCpu = Math.max(100, ...this.statHistory.map((p) => p.cpu));
-    const maxRss = Math.max(1, ...this.statHistory.map((p) => p.rss));
-    const step = w / (STAT_HISTORY_MAX - 1);
-    ctx.strokeStyle = this.cssVar("--dim");
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    this.statHistory.forEach((p, i) => {
-      const x = w - (this.statHistory.length - 1 - i) * step, y = h - 1 - (p.rss / maxRss) * (h - 3);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-    ctx.strokeStyle = this.cssVar("--accent");
-    ctx.beginPath();
-    this.statHistory.forEach((p, i) => {
-      const x = w - (this.statHistory.length - 1 - i) * step, y = h - 1 - (p.cpu / maxCpu) * (h - 3);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-  }
 }
-
-// TEMPORARY debug hook for the scroll-position investigation -- read-only ground truth access to
-// live view/xterm state from outside (e.g. a Playwright script), since DOM proxies like
-// .xterm-viewport.scrollTop/scrollHeight do not reliably correspond to xterm's real internal
-// buffer.viewportY/baseY in V2 scroll mode. Remove once that investigation concludes.
-window.__td = new TermdeckApp();
-window.__td.init();

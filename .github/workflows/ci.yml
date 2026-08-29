@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release-*"]
   pull_request:
   workflow_dispatch:
 
@@ -58,6 +58,18 @@ jobs:
 
       - name: Doctor reports all required programs present
         run: termdeck doctor
+
+      - name: Unit tests
+        run: |
+          # remote_service is the separately deployed relay; its tests import it directly,
+          # so the test environment needs its own requirements alongside the package's.
+          python -m pip install pytest -r remote_service/requirements.txt
+          python -m pytest tests/ -q
+
+      - name: Client syntax
+        run: |
+          for f in termdeck/static/app*.js; do node --check "$f"; done
+          for f in tools/scroll-tests/*.cjs tools/*.cjs; do node --check "$f"; done
 
       - name: Server boots and serves the UI
         env:

@@ -1,6 +1,8 @@
 // Counts real history writes over 15s on a session whose title is animating (a working agent).
 // WebKit's limit is 100 per 10s; anything near that throws and breaks the page.
 const { chromium } = require('playwright');
+const PORT = process.argv[2] || process.env.TERMDECK_TEST_PORT || '8530';
+const BASE = `http://127.0.0.1:${PORT}`;
 const ID = process.argv[2];
 (async () => {
   const br = await chromium.launch({headless:true,args:['--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
@@ -11,7 +13,7 @@ const ID = process.argv[2];
     history.pushState = (s, t, u) => { window.__h.push++; window.__h.urls.add(String(u)); return op(s, t, u); };
     history.replaceState = (s, t, u) => { window.__h.replace++; window.__h.urls.add(String(u)); window.__h.seq.push(JSON.stringify(s)+' :: '+String(u)); return or(s, t, u); };
   });
-  await p.goto('http://127.0.0.1:8530/p/stock',{waitUntil:'domcontentloaded'});
+  await p.goto(BASE + '/p/stock',{waitUntil:'domcontentloaded'});
   await p.waitForTimeout(8000);
   await p.evaluate(i=>window.__td.activate(i), ID);
   await p.waitForTimeout(3000);

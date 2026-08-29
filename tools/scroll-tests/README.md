@@ -50,6 +50,10 @@ Run a TermDeck instance on 8536 with a throwaway data dir, then run any file wit
 | `parked_under_chunks.cjs` | a parked reader holds its line once the scrollback is full and trimming |
 | `wheel_travel.cjs` | a wheel gesture moves the content exactly as far as it was pushed |
 | `composer_cap.cjs` | a popup taller than the screen leaves the composer visible; its overflow stays scrollable |
+| `find_reveals_match.cjs` | find brings the match onto the screen, scrollback included, fresh page included |
+| `fold_keeps_composer.cjs` | deleting earlier lines moves the view with the composer -- no float, no snap-back |
+| `codex_tab_return.cjs` | returning to a codex tab whose commands folded while hidden lands at the bottom |
+| `attach_settles_at_bottom.cjs` | a bad attach paint recovers to the composer; a gesture in that window wins |
 | `symptom_detector.cjs` | the live fault recorder can fire, and does not fire on look-alike states |
 | `overtravel_detector.cjs` | the wheel-accounting detector fires on interference, not on clean gestures |
 
@@ -75,3 +79,12 @@ Two lessons the tests themselves taught, both of which produced false PASSes:
   nothing; measuring at animation frames misses a clamp that runs inside the scroll handler.
 - Verify a test can fail. Several of these passed against known-broken code until the assertion was
   corrected -- disable the fix and confirm the test goes red before trusting it green.
+
+## Known-stale assertions (2026-08-26)
+
+- `scroll_sources` phase B expects `tallPinnedViewportY === null` after a direct
+  `scrollTop = scrollHeight` autoscroll to the bottom. The app has never cleared the pin on that
+  path in the whole-buffer layout (verified identical against the pre-refactor baseline) — the pin
+  clears when a FOLLOW placement runs, and a programmatic scroll does not re-engage follow. Either
+  the app should release the parked state on reaching the bottom, or this assertion should assert
+  the actual contract; until decided, this test fails on that one check.

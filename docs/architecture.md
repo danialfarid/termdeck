@@ -40,9 +40,15 @@ On startup, TermDeck checks each recorded socket: if it is still live it **reatt
 (`──── restarted ────`).
 
 The cost of this design is that the agent's pids are **not** reachable by walking the server's children.
-`ProcTreeUtil` recovers them from the socket instead: `lsof -t <sock>` yields the master, then a ppid walk
+`ProcTreeUtil` recovers them from the socket instead: `lsof` yields the master holding it, then a ppid walk
 expands to the shell and CLI descendants. `ResourceStatsService` uses the same trick for per-terminal
 cpu/rss.
+
+Those two probes are always taken machine-wide, as one `ProcTreeSnapshot` (`lsof -U` + `ps -ax`), and any
+sweep over many sockets shares a single sample. lsof walks every process's open files however narrow the
+question is, so a per-socket probe costs the same ~0.4s as one covering the whole machine — asking per
+session put ~57s of serialized `lsof` in front of the port at startup, since uvicorn runs the lifespan
+before it binds.
 
 ---
 
@@ -58,7 +64,8 @@ cpu/rss.
 | `server.py` | `TermdeckServer` — HTTP + WebSocket surface. Session CRUD, file and search APIs, static UI, one WebSocket per terminal. |
 | `session_manager.py` | `TerminalSessionManager` — creates, respawns, and tears down terminals; broadcasts pty output to attached client queues; owns the resume logic. |
 | `pty_process.py` | `PtyProcess` — one command on one pty. Non-blocking reads pumped into the event loop, buffered writes, winsize, signals. |
-| `models.py` | `SessionRecord`, `AgentKind`, and the WebSocket/API field-name constants mirrored by `static/app.js`. |
+| `models.py` | `SessionRecord` and the WebSocket/API field-name constants mirrored by `static/app.js`. |
+| `agents/` | One `AgentCli` class per agent CLI (claude/codex/agy + shell null object) — commands, transcript trees, parsing, activity, input, detection. See `docs/agent-cli-api.md`. |
 
 ### Persistence
 
@@ -85,8 +92,9 @@ cpu/rss.
 | `filedeck/git_workflow_service.py` | Typed Git workflow operations for status, staging, commits, branches, conflicts, stashes, worktrees, and agent attribution. |
 | `filedeck/git_remote_service.py` | SSH/HTTPS Git remote listing, fetch, fast-forward pull, push, and clone transport. |
 | `search_service.py` | ripgrep wrapper: fixed-string or regex, smart-case, gitignore-aware, glob filters, find-usages. |
-| `proc_tree.py` | Socket → master pid → descendant pids. |
+| `proc_tree.py` | Socket → master pid → descendant pids, from one machine-wide sample. |
 | `stats_service.py` | Per-terminal and whole-app cpu/rss sampling. |
+| `service_log.py` | Bounds the supervisor-owned log, found from this process's stdout descriptor. |
 | `util.py` | `OscTitleParser` (OSC 0/1/2 titles across chunk boundaries) and `TimeUtil` (EST-naive timestamps). |
 
 ### Packaging
@@ -154,7 +162,11 @@ stall the pty reader.
 
 ## Frontend
 
-`termdeck/static/app.js` is a single plain-JS application class — no framework, no bundler, no build step.
+The client is one plain-JS application class — no framework, no bundler, no build step — split across
+ordered files: `static/app.js` declares `TermdeckApp` (constants, constructor, sessions/sidebar core),
+`app_search_git.js`, `app_markdown_files.js`, `app_terminal.js` (the tall-scroll engine),
+`app_settings_ui.js`, and `app_misc_ui.js` attach method groups to its prototype, and `app_boot.js`
+instantiates it. index.html loads them in that order.
 Third-party components are vendored under `static/vendor/` so the app works fully offline and no CDN can
 change behaviour under you:
 

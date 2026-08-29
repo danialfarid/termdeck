@@ -3,6 +3,7 @@
   "private": true,
   "description": "Browser-driven tests and live monitors for the terminal UI (see tools/). Not part of the Python package.",
   "devDependencies": {
+    "acorn": "^8.18.0",
     "playwright": "^1.49.0"
   }
 }

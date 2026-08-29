@@ -2,8 +2,12 @@
 
 # TermDeck
 
-**A persistent local workspace for Codex, Claude Code, AGY/Antigravity, and shell terminals — built
-for running, watching, and returning to many agent sessions without losing the thread.**
+**The persistent control room for coding agents.**
+
+*Run every agent. Keep every thread.*
+
+A local-first workspace for Codex, Claude Code, AGY/Antigravity, Aider, OpenCode, and shell terminals — built
+for running, watching, searching, and returning to many agent sessions without losing their prompts or context.
 
 [![Release](https://img.shields.io/github/v/release/danialfarid/termdeck?sort=semver)](https://github.com/danialfarid/termdeck/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
@@ -16,9 +20,11 @@ for running, watching, and returning to many agent sessions without losing the t
 
 ## What it is
 
-TermDeck is a small local web app that runs a deck of named terminals and serves them to your browser.
-It is built around one idea: **an AI coding agent session should never be lost in a pile of terminal
-windows.**
+TermDeck puts every coding-agent session in one persistent, searchable workspace instead of scattering valuable
+context across terminal windows and browser tabs. Start parallel agents, see what is working or waiting, hand
+selected context to another agent, search across their conversations, and return to the exact session later.
+
+It is built around one idea: **an AI coding agent session should never be lost in a pile of terminal windows.**
 
 Close the tab or restart the TermDeck server and live processes keep running under `dtach`. After a computer
 restart, saved Codex and Claude terminals reopen **resumed into the exact agent session they were on**, not a
@@ -28,6 +34,31 @@ The terminal deck stays at the center. Around it are tools that shorten the loop
 and searchable sessions, activity and unread state, an MD conversation mode, prompt and clipboard
 history, quick notes, a Monaco file editor, project search, Git history, and an automation API for spawning
 parallel agents and coordinating work between them.
+
+## Features at a glance
+
+- **Keep every prompt and session.** Unsent drafts are restored, submitted prompts stay in history, live terminals
+  survive browser and server restarts, and saved Codex and Claude sessions resume after a computer restart.
+- **Manage every coding agent together.** Run Codex, Claude Code, AGY/Antigravity, Aider, OpenCode, and shells;
+  then group, reorder, fork, rename, search, close, reopen, and monitor them from one deck. Supporting another
+  agent CLI is a single adapter class.
+- **Watch delegated work in the background.** Background commands, persistent monitors, and subagents appear as
+  live activity dots under the owning session, so you can see parallel work without opening every terminal.
+- **Hand work between agents.** Select terminal, transcript, file, or note text and use **Ask an agent**, or use the
+  automation API to spawn reviewers and subtasks, send prompts, monitor completion, and read their responses.
+- **Get notified when attention is needed.** Optional browser notifications announce agent attention and finished
+  runs even when the TermDeck tab is not in the foreground. Install TermDeck as a browser app (install icon in the
+  address bar) and notifications carry the TermDeck name and icon instead of a raw localhost origin.
+- **Read the conversation, not terminal noise.** MD conversation mode renders the agent's native transcript with
+  model and status details, collapsible thinking and diffs, prompt history, queues, and a clickable outline.
+- **Search across many agents at once.** Find matching session names and conversation text across open and closed
+  terminals, inspect the surrounding context, and jump back to the relevant turn.
+- **Keep parallel work isolated.** Give each task its own Git worktree, terminal layout, files, search, and Git
+  context, then review its changes and explicitly keep, merge, or discard the result.
+- **Work beside the agents.** Open clickable source references in Monaco, search and replace across the project,
+  inspect definitions and usages, review Git history and blame, and keep notes and copied snippets close by.
+- **Stay local or connect remotely.** TermDeck is local-first and supports direct LAN access or an optional
+  authenticated remote connection when you need to check the deck from another device.
 
 ```
 ┌──────────────────────────┬────────────────────────────────────────────────────┐
@@ -92,7 +123,7 @@ parallel agents and coordinating work between them.
 | **Required** | [`dtach`](https://github.com/crigler/dtach) — keeps terminals alive across restarts |
 | **Recommended** | [`ripgrep`](https://github.com/BurntSushi/ripgrep) — powers project search and replace |
 | **Optional** | A language server for IDE navigation, diagnostics, refactoring, code actions, and hover information |
-| **Optional** | [`claude`](https://claude.com/claude-code), [`codex`](https://github.com/openai/codex), and/or the `agy` Antigravity CLI |
+| **Optional** | [`claude`](https://claude.com/claude-code), [`codex`](https://github.com/openai/codex), the `agy` Antigravity CLI, [`aider`](https://aider.chat), and/or [`opencode`](https://github.com/sst/opencode) |
 | **Browser** | Any current Chrome, Safari, Firefox, or Edge |
 
 Run `termdeck doctor` at any time to see exactly what was found and what's missing.
@@ -150,7 +181,8 @@ termdeck --open
 That starts the server on <http://127.0.0.1:8530> and opens it in your browser. Then:
 
 1. Press **⌘B** (or click **+**) to open a terminal.
-2. Pick **Codex**, **Claude**, **AGY**, or **Shell**, choose a permission mode, and select the project directory.
+2. Pick **Codex**, **Claude**, **AGY**, **Aider**, **OpenCode**, or **Shell**, choose a permission mode, and
+   select the project directory.
 3. Work in it like any terminal.
 4. Close the browser or restart TermDeck — the live process remains attached to its saved terminal. After a
    machine restart, Codex and Claude sessions resume when opened.
@@ -196,9 +228,9 @@ Click **+** or press **⌘B**:
 
 | Field | Meaning |
 |---|---|
-| **Model** | `Codex`, `Claude`, `AGY`, or `Shell` (a plain interactive login shell) |
+| **Model** | `Codex`, `Claude`, `AGY`, `Aider`, `OpenCode`, or `Shell` (a plain interactive login shell) |
 | **Permission** | The sandbox/approval mode to launch the agent with — see the table below |
-| **Session name / Resume** | Name a new terminal, or choose a saved Codex/Claude session ID or name to resume |
+| **Session name / Resume** | Name a new terminal, or choose a saved Codex/Claude/OpenCode session ID or name to resume |
 | **Directory** | Working directory, with a native folder picker for adding a project |
 
 Permission modes map to real CLI flags:
@@ -215,6 +247,9 @@ Permission modes map to real CLI flags:
 | Claude | `full-access` | `--dangerously-skip-permissions` |
 | AGY | `default` | *(none)* |
 | AGY | `full-access` | `--dangerously-skip-permissions` |
+| Aider | `default` | *(none — confirm actions)* |
+| Aider | `auto` | `--yes-always` |
+| OpenCode | `default` | *(none)* |
 
 An empty command gives you an interactive login shell. Any other command runs through your login shell
 (`$SHELL -ilc`), so aliases and shell functions work.
@@ -223,8 +258,9 @@ An empty command gives you an interactive login shell. Any other command runs th
 
 This is the core feature, so it's worth knowing the mechanics.
 
-For any terminal whose command contains `claude` or `codex`, TermDeck continuously tracks **which CLI session
-that terminal is on right now**.
+For any terminal whose command contains `claude`, `codex`, or `opencode`, TermDeck continuously tracks **which
+CLI session that terminal is on right now**. Aider has no session IDs; it restores its own chat history via
+`--restore-chat-history`, which TermDeck always passes.
 
 - **Primarily via open file handles.** It uses `lsof` to see which session file the process group holds open.
   This is exact, and it catches picker-resumes and in-TUI session switches.
@@ -237,6 +273,8 @@ After a computer restart, opening a saved terminal starts it as:
 |---|---|
 | Claude | `<original command> --resume <session-id>` |
 | Codex | `codex resume <session-id>` |
+| OpenCode | `opencode -s <session-id>` |
+| Aider | The original command (`--restore-chat-history` reloads the conversation) |
 | Anything else | The original command, or a fresh shell |
 
 Using `/clear` or switching sessions inside the TUI updates the recorded ID, so a restart always lands you
@@ -297,7 +335,9 @@ transcript read directly from the CLI's own session file:
 - Code edits and thinking blocks shown as collapsible sections
 - Live working state, elapsed time, model name, reasoning effort, and context/status information
 - A prompt composer at the bottom: **Enter** submits, **Shift+Enter** newline, **Esc** interrupts
-- **Tab** queues a prompt (Codex); queued prompts are listed, editable in place, and removable
+- Queue follow-up prompts while the agent is still working — they run one after another, and stay editable
+  until sent
+- Live context usage for the active session (`ctx 118k/258k`) in the bottom toolbar
 - Persisted prompt history from both terminal and conversation mode
 - A conversation outline (**⌥O**) for jumping to earlier prompts and responses
 - An attach button to upload a file or image straight into the prompt
@@ -353,8 +393,8 @@ starts.
 
 ### Automation and parallel agents
 
-The localhost API can create a persistent terminal, select Codex, Claude, AGY, or shell, choose a model and
-permission mode, place it after a session or group, submit a prompt, and optionally append raw output to a
+The localhost API can create a persistent terminal, select Codex, Claude, AGY, Aider, OpenCode, or shell,
+choose a model and permission mode, place it after a session or group, submit a prompt, and optionally append raw output to a
 file. Calls are non-blocking; poll the last-turn endpoint for status and the latest agent response.
 
 `POST /api/terminals/batch` launches up to 32 named tasks at once. This makes TermDeck useful as a visible
@@ -439,6 +479,9 @@ Choose from Nord, macOS Terminal, GitHub, One Dark, Monokai, Dracula, Solarized,
 Catppuccin, Rosé Pine, Ayu, and high-contrast themes. Font sizes are independently adjustable for the project
 title, terminal list, terminal, editor, file tree, tabs, diffs, icons, and bottom controls; an in-place editor
 puts the relevant slider over each visible UI region. Panel widths are drag-resizable and remembered.
+
+A single switch controls desktop notifications for agent attention and finished runs, and sidebar terminal
+icons can be toggled per agent kind.
 
 Interface settings, keybindings, notes, copied-text history, open files, and layout are stored server-side in
 `~/.termdeck/settings.json`. The Maintenance submenu can export settings, show a terminal process report,

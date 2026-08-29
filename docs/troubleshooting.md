@@ -168,7 +168,9 @@ termdeck service status
 termdeck service logs
 ```
 
-On macOS the log is `~/.termdeck/termdeck.log`; on Linux, `journalctl --user -u termdeck`.
+On macOS the log is `~/.termdeck/termdeck.log`; on Linux, `journalctl --user -u termdeck`. TermDeck trims
+that file back to its last 2 MB whenever it passes 5 MB, so only the recent history is kept — copy
+anything older out before it is dropped.
 
 ### It stops when I log out (Linux)
 

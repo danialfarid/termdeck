@@ -28,8 +28,9 @@ curl -sS -X POST http://127.0.0.1:8530/api/worktrees \
   -d '{"project":"stock","name":"review","base_ref":"main"}'
 ```
 
-TermDeck creates the branch and a free folder below `.termdeck-worktrees/<repository>/`. Select the returned `id` when
-creating a terminal:
+TermDeck creates the branch and a free folder below `<repository>-worktrees/`, beside the repository itself.
+Pass `location` to put it somewhere else — it must be an absolute path outside the repository. Select the
+returned `id` when creating a terminal:
 
 ```json
 {"project":"stock","worktree_id":"wt-abc123","model":"codex","title":"reviewer"}

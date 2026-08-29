@@ -2,7 +2,8 @@
 // canvas always has). The complaint is not that it goes there -- it is that it visibly jumps BACK.
 // So: a small overshoot must be left where it lands; a large one must still be corrected.
 const { chromium } = require('playwright');
-const BASE = 'http://127.0.0.1:8536';
+const PORT = process.argv[2] || process.env.TERMDECK_TEST_PORT || '8536';
+const BASE = `http://127.0.0.1:${PORT}`;
 
 const run = async (p, id, overshootPx, label) => {
   const out = await p.evaluate(async ({ i, over }) => {

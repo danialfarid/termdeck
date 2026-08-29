@@ -19,28 +19,35 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from termdeck import agents
 from termdeck.config import TermdeckConfig
 from termdeck.file_history_service import FileHistoryService
 from termdeck.file_service import ProjectFileService
 from filedeck.git_remote_service import GitRemoteService
 from filedeck.git_service import FileDeckGitService
+from filedeck.git_history_service import GitHistoryService
+from filedeck.git_hunk_service import GitHunkService
+from filedeck.git_mutation_service import GitMutationService
 from filedeck.git_workflow_service import GitWorkflowService
+from filedeck.github_pull_request_service import GitHubPullRequestService
 from termdeck.history_index import HistorySearchIndex
 from termdeck.lan_access import LanAccessManager
 from termdeck.lsp_protocol import LanguageServerConnection, LanguageServerProtocolError, LanguageServerRequestError
 from termdeck.lsp_service import LanguageServerManager, LanguageServerRegistry, LanguageServerUnavailableError
 from termdeck.lsp_workspace_edit import LspWorkspaceEditService
 from termdeck.models import ApiFields, WsMessageFields
+from termdeck.notifier import AgentNotifier
 from termdeck.platform_paths import PlatformPaths
 from termdeck.remote_access import RemoteAccessManager, RemoteAccessStatus
 from termdeck.remote_credentials import RemoteCredentialStore
 from termdeck.search_service import ProjectSearchService
+from termdeck.service_log import ServiceLogTrimmer
 from termdeck.session_manager import TerminalSessionManager
 from termdeck.settings_store import UiSettingsStore
 from termdeck.state_backup import StateBackupManager
 from termdeck.stats_service import ResourceStatsService
 from termdeck.transcript_service import TranscriptService
-from termdeck.worktree_service import GitWorktreeService, WorktreeMetadata
+from termdeck.worktree_service import GitWorktreeService, WorktreeFolderExists, WorktreeMetadata
 from termdeck.worktree_registry import ProjectWorktree, WorktreeRegistry
 
 
@@ -102,6 +109,7 @@ class WorktreeCreateRequest(BaseModel):
     name: str = ""
     branch: str = ""
     base_ref: str = ""
+    location: str = ""
 
 
 class WorktreeDeleteRequest(BaseModel):
@@ -291,6 +299,63 @@ class GitGraphRequest(BaseModel):
     root: str
     paths: list[str] = []
     limit: int = 100
+    query: str = ""
+    author: str = ""
+    since: str = ""
+    until: str = ""
+    revision: str = ""
+
+
+class GitCompareRequest(BaseModel):
+    root: str
+    base: str
+    target: str
+    path: str = ""
+    previous_path: str = ""
+
+
+class GitHunkActionRequest(BaseModel):
+    root: str
+    path: str
+    scope: str
+    hunk_id: str
+    action: str
+
+
+class GitCommitActionRequest(BaseModel):
+    root: str
+    commit_id: str
+    action: str
+
+
+class GitRebaseEntryRequest(BaseModel):
+    commit_id: str
+    action: str
+
+
+class GitRebaseRequest(BaseModel):
+    root: str
+    base: str
+    entries: list[GitRebaseEntryRequest]
+
+
+class GitOperationActionRequest(BaseModel):
+    root: str
+    action: str
+
+
+class GitIgnoreRequest(BaseModel):
+    root: str
+    path: str
+    mode: str
+    directory: bool = False
+
+
+class GitHubPullRequestReviewRequest(BaseModel):
+    root: str
+    number: int
+    action: str
+    body: str = ""
 
 
 class GitCommitRequest(BaseModel):
@@ -326,6 +391,7 @@ class GitConflictRequest(BaseModel):
     root: str
     path: str
     resolution: str
+    content: str | None = None
 
 
 class GitWorktreeRequest(BaseModel):
@@ -415,7 +481,8 @@ class NotebookNote(BaseModel):
 
 class UiSettings(BaseModel):
     sidebar_width: int = 250
-    files_width: int = 380
+    # Sidebar width while the files/search/git panel is open; 0 derives it from sidebar_width.
+    files_panel_width: int = 0
     sidebar_font_size: int = 18
     project_font_size: int = 18
     terminal_font_size: int = 18
@@ -456,8 +523,13 @@ class UiSettings(BaseModel):
     history_mode: bool = False
     transcript_first_surface: str = "terminal"
     # Declared explicitly or it is silently dropped when settings are saved.
-    attach_repaint: bool = True
-    tall_webgl: bool = False
+    tall_webgl: bool = True
+    # Window for the sidebar's "recently used" terminal filter, in hours. Chosen from the small menu
+    # under the filter button; the default covers a working day plus the evening before.
+    recent_terminal_hours: int = 24
+    # macOS user notifications on agent transitions (see notifier.AgentNotifier).
+    notify_attention: bool = True
+    notify_agent_idle: bool = True
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
     md_prompt_drafts: dict[str, str] = {}
@@ -469,7 +541,6 @@ class UiSettings(BaseModel):
     notebook_notes: list[NotebookNote] = []
     notebook_active_note_id: str = ""
     notebook_notes_initialized: bool = False
-    files_pinned: bool = False
     show_terminal_age: bool = True
     sidebar_text_color: str = "#d5dbe5"
     side_full: bool = False
@@ -479,9 +550,9 @@ class UiSettings(BaseModel):
     recent_closed_files: list[dict[str, str]] = []
     worktree_ui_state: dict[str, dict[str, bool]] = {}
     selected_worktrees: dict[str, str] = {}
+    worktree_roots: dict[str, str] = {}
     files_side_panel_last_tab: str = "project"
     file_search_history: list[dict[str, str | bool]] = []
-    files_panel_width_initialized: bool = False
     file_tab_max_visible: int = 20
     file_tab_order: str = "opened"
     lsp_enabled: bool = True
@@ -501,6 +572,9 @@ class TermdeckServer:
         self.state_backup = StateBackupManager(TermdeckConfig.DATA_DIR, TermdeckConfig.STATE_BACKUP_MAX_BYTES,
                                                TermdeckConfig.STATE_BACKUP_INTERVAL_SECONDS,
                                                TermdeckConfig.STATE_BACKUP_PREWRITE_INTERVAL_SECONDS)
+        self.service_log = ServiceLogTrimmer(TermdeckConfig.SERVICE_LOG_MAX_BYTES,
+                                             TermdeckConfig.SERVICE_LOG_KEEP_BYTES,
+                                             TermdeckConfig.SERVICE_LOG_TRIM_INTERVAL_SECONDS)
         self.state_recovery = self.state_backup.recovery_status()
         self.recovery_mode = bool(self.state_recovery["required"])
         self.manager: TerminalSessionManager | None = None
@@ -510,6 +584,10 @@ class TermdeckServer:
         self.filedeck_git = FileDeckGitService()
         self.git_remotes = GitRemoteService()
         self.git_workflow = GitWorkflowService(self.filedeck_git, self.git_remotes)
+        self.git_history = GitHistoryService()
+        self.git_hunks = GitHunkService()
+        self.git_mutations = GitMutationService()
+        self.github_pull_requests = GitHubPullRequestService()
         self.worktrees = GitWorktreeService(TermdeckConfig.WORKTREES_DIR)
         self.worktree_registry = WorktreeRegistry(TermdeckConfig.WORKTREE_REGISTRY_FILE, self.state_backup, self.worktrees)
         self.file_history = FileHistoryService(TermdeckConfig.FILE_HISTORY_DATABASE)
@@ -524,6 +602,9 @@ class TermdeckServer:
         if self.manager is not None:
             self.transcripts.add_file_change_listener(self.manager.notify_agent_transcript_changed)
         self.settings_store = UiSettingsStore(TermdeckConfig.SETTINGS_FILE, self.state_backup)
+        if self.manager is not None:
+            self.manager.attach_notifier(AgentNotifier(self.settings_store.load))
+            self.manager.attach_settings_reader(self.settings_store.load)
         self.lsp_workspace_edits = LspWorkspaceEditService(self.files, self.file_history)
         self.language_servers = LanguageServerManager(
             self.files, self.lsp_workspace_edits, self._lsp_command_overrides, self._lsp_enabled)
@@ -540,6 +621,7 @@ class TermdeckServer:
         self.lan_access: LanAccessManager | None = None
         self._lan_stop_task: asyncio.Task[None] | None = None
         self._state_backup_task: asyncio.Task | None = None
+        self._service_log_task: asyncio.Task | None = None
         self._origin_delivery_locks: dict[str, asyncio.Lock] = {}
         self._task_delivery_jobs: set[asyncio.Task] = set()
 
@@ -550,6 +632,8 @@ class TermdeckServer:
             return
         self.state_backup.create_snapshot("startup", True)
         self._state_backup_task = asyncio.create_task(self.state_backup.run_periodic_snapshots())
+        self.service_log.trim_if_oversized()
+        self._service_log_task = asyncio.create_task(self.service_log.run_periodic_trims())
         await self.manager.startup_respawn_saved_sessions()
         self.manager.start_background_tasks()
         self.transcripts.start(asyncio.get_running_loop())
@@ -567,12 +651,13 @@ class TermdeckServer:
             await self._cancel_pending_lan_stop()
             await self._required_lan_access_manager().stop()
             await self.remote_access.stop()
-            if self._state_backup_task is not None:
-                self._state_backup_task.cancel()
-                try:
-                    await self._state_backup_task
-                except asyncio.CancelledError:
-                    pass
+            for background_task in (self._state_backup_task, self._service_log_task):
+                if background_task is not None:
+                    background_task.cancel()
+                    try:
+                        await background_task
+                    except asyncio.CancelledError:
+                        pass
             self.history_index.stop()
             self.transcripts.stop()
             self.manager.stop_background_tasks()
@@ -606,12 +691,15 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_WORKTREES_ROUTE, response_model=None)(self._add_worktree)
         app.delete(TermdeckConfig.API_WORKTREE_ROUTE, response_model=None)(self._delete_worktree)
         app.post(TermdeckConfig.API_PROJECT_FOLDER_PICKER_ROUTE, response_model=None)(self._pick_project_folder)
+        app.post(TermdeckConfig.API_WORKTREE_FOLDER_PICKER_ROUTE, response_model=None)(self._pick_worktree_folder)
+        app.get(TermdeckConfig.API_AGENTS_ROUTE, response_model=None)(self._list_agent_clis)
         app.get(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._list_sessions)
         app.post(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._create_session)
         app.post(TermdeckConfig.API_TERMINAL_TASK_ROUTE, response_model=None)(self._run_terminal_task)
         app.post(TermdeckConfig.API_TERMINAL_TASK_PROMPT_ROUTE, response_model=None)(self._follow_up_task_prompt)
         app.post(TermdeckConfig.API_TERMINALS_BATCH_ROUTE, response_model=None)(self._launch_terminal_batch)
         app.post(TermdeckConfig.API_SESSION_STOP_ROUTE, response_model=None)(self._stop_session)
+        app.post(TermdeckConfig.API_SESSION_ATTENTION_ROUTE, response_model=None)(self._dismiss_session_attention)
         app.post(TermdeckConfig.API_SESSION_RESTART_ROUTE, response_model=None)(self._restart_session)
         app.post(TermdeckConfig.API_SESSION_FORK_ROUTE, response_model=None)(self._fork_session)
         app.get(TermdeckConfig.API_SESSION_WORKTREE_REVIEW_ROUTE, response_model=None)(self._review_worktree)
@@ -625,8 +713,10 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_AGENT_HOOK_ROUTE, response_model=None)(self._agent_hook)
         app.post(TermdeckConfig.API_KILL_ALL_TERMINALS_ROUTE, response_model=None)(self._kill_all_terminals)
         app.post(TermdeckConfig.API_KILL_STALE_TERMINALS_ROUTE, response_model=None)(self._kill_stale_terminals)
+        app.post(TermdeckConfig.API_SERVER_RESTART_ROUTE, response_model=None)(self._restart_server)
         app.get(TermdeckConfig.API_TERMINAL_PROCESSES_ROUTE, response_model=None)(self._terminal_process_report)
         app.post(TermdeckConfig.API_RECLAIM_ORPHAN_TERMINALS_ROUTE, response_model=None)(self._reclaim_orphan_terminals)
+        app.get(TermdeckConfig.API_SESSION_USAGE_ROUTE, response_model=None)(self._session_usage)
         app.get(TermdeckConfig.API_SESSION_HISTORY_ROUTE, response_model=None)(self._session_history)
         app.get(TermdeckConfig.API_SESSION_HISTORY_PAGE_ROUTE, response_model=None)(self._session_history_page)
         app.get(TermdeckConfig.API_TERMINAL_LAYOUT_ROUTE, response_model=None)(self._get_terminal_layout)
@@ -670,6 +760,7 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_FILE_RECENT_ROUTE, response_model=None)(self._recent_files)
         app.get(TermdeckConfig.API_FILE_READ_ROUTE, response_model=None)(self._read_file)
         app.get(TermdeckConfig.API_FILE_EXISTS_ROUTE, response_model=None)(self._file_exists)
+        app.post(TermdeckConfig.API_FILE_OPEN_EXTERNAL_ROUTE, response_model=None)(self._open_file_external)
         app.get(TermdeckConfig.API_FILE_SEARCH_ROUTE, response_model=None)(self._search_files)
         app.get(TermdeckConfig.API_FILE_FIND_ROUTE, response_model=None)(self._find_files)
         app.post(TermdeckConfig.API_FILE_HISTORY_RESTORE_ROUTE, response_model=None)(self._restore_file_history)
@@ -697,6 +788,22 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_GIT_WORKTREE_ROUTE, response_model=None)(self._git_worktree_action)
         app.post(TermdeckConfig.API_GIT_REMOTE_ROUTE, response_model=None)(self._git_remote_action)
         app.post(TermdeckConfig.API_GIT_CLONE_ROUTE, response_model=None)(self._git_clone_project)
+        app.get(TermdeckConfig.API_GIT_REFS_ROUTE, response_model=None)(self._git_references)
+        app.post(TermdeckConfig.API_GIT_COMPARE_ROUTE, response_model=None)(self._git_compare)
+        app.post(TermdeckConfig.API_GIT_COMPARE_REVIEW_ROUTE, response_model=None)(self._git_compare_review)
+        app.get(TermdeckConfig.API_GIT_DIVERGENCE_ROUTE, response_model=None)(self._git_divergence)
+        app.get(TermdeckConfig.API_GIT_HUNKS_ROUTE, response_model=None)(self._git_hunks)
+        app.post(TermdeckConfig.API_GIT_HUNK_ACTION_ROUTE, response_model=None)(self._git_hunk_action)
+        app.post(TermdeckConfig.API_GIT_COMMIT_ACTION_ROUTE, response_model=None)(self._git_commit_action)
+        app.get(TermdeckConfig.API_GIT_REBASE_PLAN_ROUTE, response_model=None)(self._git_rebase_plan)
+        app.post(TermdeckConfig.API_GIT_REBASE_ROUTE, response_model=None)(self._git_rebase)
+        app.get(TermdeckConfig.API_GIT_OPERATION_ROUTE, response_model=None)(self._git_operation)
+        app.post(TermdeckConfig.API_GIT_OPERATION_ROUTE, response_model=None)(self._git_operation_action)
+        app.post(TermdeckConfig.API_GIT_IGNORE_ROUTE, response_model=None)(self._git_ignore)
+        app.get(TermdeckConfig.API_GITHUB_PULL_REQUESTS_ROUTE, response_model=None)(self._github_pull_request_list)
+        app.get(TermdeckConfig.API_GITHUB_PULL_REQUEST_ROUTE, response_model=None)(self._github_pull_request_detail)
+        app.get(TermdeckConfig.API_GITHUB_PULL_REQUEST_PATCH_ROUTE, response_model=None)(self._github_pull_request_patch)
+        app.post(TermdeckConfig.API_GITHUB_PULL_REQUEST_REVIEW_ROUTE, response_model=None)(self._github_pull_request_review)
         app.post(TermdeckConfig.API_UPLOAD_ROUTE, response_model=None)(self._upload_file)
         app.post(TermdeckConfig.API_FILE_WRITE_ROUTE, response_model=None)(self._write_file)
         app.post(TermdeckConfig.API_FILE_CREATE_ROUTE, response_model=None)(self._create_file)
@@ -710,6 +817,7 @@ class TermdeckServer:
         app.put(TermdeckConfig.API_LSP_ENABLED_ROUTE, response_model=None)(self._put_lsp_enabled)
         app.post(TermdeckConfig.API_LSP_APPLY_WORKSPACE_EDIT_ROUTE, response_model=None)(self._apply_lsp_workspace_edit)
         app.get(TermdeckConfig.API_STATS_ROUTE, response_model=None)(self._resource_stats)
+        app.post(TermdeckConfig.API_DIAGNOSTICS_ROUTE, response_model=None)(self._record_diagnostics)
         app.websocket(TermdeckConfig.STATUS_WS_ROUTE)(self._ws_status)
         app.websocket(TermdeckConfig.FILE_TREE_WS_ROUTE)(self._ws_file_tree)
         app.websocket(TermdeckConfig.TRANSCRIPT_WS_ROUTE)(self._ws_transcript)
@@ -978,7 +1086,12 @@ class TermdeckServer:
         try:
             base = self.files.resolve_confined(root, "")
             sessions = list(self.manager.list_sessions(None))
-            return await asyncio.to_thread(self.git_workflow.get_state, base, sessions, limit)
+            state, operation, references = await asyncio.gather(
+                asyncio.to_thread(self.git_workflow.get_state, base, sessions, limit),
+                asyncio.to_thread(self.git_mutations.operation_state, base),
+                asyncio.to_thread(self.git_history.list_references, base),
+            )
+            return {**state, "operation": operation, "references": references}
         except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError, OSError,
                 subprocess.SubprocessError) as git_error:
             raise HTTPException(status_code=404, detail=str(git_error)) from git_error
@@ -1009,10 +1122,20 @@ class TermdeckServer:
         try:
             base = self.files.resolve_confined(request.root, "")
             repository_root = await asyncio.to_thread(self.git_workflow.repository_root, base)
+            selected_paths: list[str] = []
+            for path in request.paths:
+                selected_path = self.files.resolve_confined(request.root, path)
+                if not selected_path.is_relative_to(repository_root):
+                    raise ValueError(f"path outside repository: {path}")
+                selected_paths.append(str(selected_path.relative_to(repository_root)))
             graph = await asyncio.to_thread(self.git_workflow.commit_graph, repository_root, request.limit,
-                                            request.paths or None)
-            scope = "worktree" if not request.paths else "file" if len(request.paths) == 1 else "files"
-            return {"scope": scope, "paths": request.paths, "graph": graph}
+                                            selected_paths or None, request.query, request.author, request.since,
+                                            request.until, request.revision)
+            scope = "worktree" if not selected_paths else "file" if len(selected_paths) == 1 else "files"
+            return {"scope": scope, "paths": selected_paths, "query": request.query.strip(),
+                    "author": request.author.strip(), "since": request.since.strip(), "until": request.until.strip(),
+                    "revision": request.revision.strip(),
+                    "repository_root": str(repository_root), "graph": graph}
         except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as graph_error:
             raise HTTPException(status_code=404, detail=str(graph_error)) from graph_error
 
@@ -1052,6 +1175,8 @@ class TermdeckServer:
         return {"updated": True}
 
     async def _git_resolve_conflict(self, request: GitConflictRequest) -> dict[str, bool]:
+        if request.resolution == "resolved" and request.content is not None:
+            await self._write_file(FileWriteRequest(root=request.root, path=request.path, content=request.content))
         await self._run_git_workflow_mutation(self.git_workflow.resolve_conflict, request.root, request.path,
                                               request.resolution)
         return {"resolved": True}
@@ -1111,6 +1236,114 @@ class TermdeckServer:
                 subprocess.SubprocessError) as clone_error:
             raise HTTPException(status_code=409, detail=str(clone_error)) from clone_error
 
+    async def _git_references(self, root: str) -> list[dict[str, object]]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.git_history.list_references, base)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as reference_error:
+            raise HTTPException(status_code=404, detail=str(reference_error)) from reference_error
+
+    async def _git_compare(self, request: GitCompareRequest) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(request.root, "")
+            return await asyncio.to_thread(self.git_history.compare_revisions, base, request.base, request.target)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as compare_error:
+            raise HTTPException(status_code=404, detail=str(compare_error)) from compare_error
+
+    async def _git_compare_review(self, request: GitCompareRequest) -> dict[str, str]:
+        try:
+            base = self.files.resolve_confined(request.root, "")
+            return await asyncio.to_thread(self.git_history.review_comparison_file, base, request.path,
+                                           request.previous_path, request.base, request.target)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as review_error:
+            raise HTTPException(status_code=404, detail=str(review_error)) from review_error
+
+    async def _git_divergence(self, root: str, remote: str = "", branch: str = "") -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.git_history.incoming_outgoing, base, remote, branch)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as divergence_error:
+            raise HTTPException(status_code=404, detail=str(divergence_error)) from divergence_error
+
+    async def _git_hunks(self, root: str, path: str) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.git_hunks.file_hunks, base, path)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as hunk_error:
+            raise HTTPException(status_code=404, detail=str(hunk_error)) from hunk_error
+
+    async def _git_hunk_action(self, request: GitHunkActionRequest) -> dict[str, object]:
+        if request.action == "revert":
+            try:
+                current = self.files.read_file(request.root, request.path)
+                self.file_history.observe_file(request.root, request.path, str(current["content"]))
+            except (ValueError, FileNotFoundError, IsADirectoryError, PermissionError, OSError) as history_error:
+                raise HTTPException(status_code=409, detail=str(history_error)) from history_error
+        result = await self._run_git_workflow_mutation(self.git_hunks.apply_hunk_action, request.root, request.path,
+                                                       request.scope, request.hunk_id, request.action)
+        return dict(result)
+
+    async def _git_commit_action(self, request: GitCommitActionRequest) -> dict[str, object]:
+        result = await self._run_git_workflow_mutation(self.git_mutations.commit_action, request.root,
+                                                       request.commit_id, request.action)
+        return dict(result)
+
+    async def _git_rebase_plan(self, root: str, limit: int = 12) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.git_mutations.rebase_plan, base, limit)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as rebase_error:
+            raise HTTPException(status_code=404, detail=str(rebase_error)) from rebase_error
+
+    async def _git_rebase(self, request: GitRebaseRequest) -> dict[str, object]:
+        entries = [{"commit_id": entry.commit_id, "action": entry.action} for entry in request.entries]
+        result = await self._run_git_workflow_mutation(self.git_mutations.interactive_rebase, request.root,
+                                                       request.base, entries)
+        return dict(result)
+
+    async def _git_operation(self, root: str) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.git_mutations.operation_state, base)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as operation_error:
+            raise HTTPException(status_code=404, detail=str(operation_error)) from operation_error
+
+    async def _git_operation_action(self, request: GitOperationActionRequest) -> dict[str, object]:
+        result = await self._run_git_workflow_mutation(self.git_mutations.operation_action, request.root, request.action)
+        return dict(result)
+
+    async def _git_ignore(self, request: GitIgnoreRequest) -> dict[str, str]:
+        pattern = await self._run_git_workflow_mutation(self.git_mutations.update_gitignore, request.root,
+                                                        request.path, request.mode, request.directory)
+        return {"pattern": str(pattern)}
+
+    async def _github_pull_request_list(self, root: str, state: str = "open", limit: int = 30) -> list[dict[str, object]]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.github_pull_requests.list_pull_requests, base, state, limit)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as pull_request_error:
+            raise HTTPException(status_code=404, detail=str(pull_request_error)) from pull_request_error
+
+    async def _github_pull_request_detail(self, root: str, number: int) -> dict[str, object]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            return await asyncio.to_thread(self.github_pull_requests.pull_request_detail, base, number)
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as pull_request_error:
+            raise HTTPException(status_code=404, detail=str(pull_request_error)) from pull_request_error
+
+    async def _github_pull_request_patch(self, root: str, number: int) -> dict[str, str]:
+        try:
+            base = self.files.resolve_confined(root, "")
+            patch = await asyncio.to_thread(self.github_pull_requests.pull_request_patch, base, number)
+            return {"patch": patch}
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as pull_request_error:
+            raise HTTPException(status_code=404, detail=str(pull_request_error)) from pull_request_error
+
+    async def _github_pull_request_review(self, request: GitHubPullRequestReviewRequest) -> dict[str, bool]:
+        await self._run_git_workflow_mutation(self.github_pull_requests.submit_review, request.root, request.number,
+                                              request.action, request.body)
+        return {"submitted": True}
+
     async def _run_git_workflow_mutation(self, operation: Callable[..., object], *arguments: object) -> object:
         try:
             base = self.files.resolve_confined(str(arguments[0]), "")
@@ -1134,6 +1367,13 @@ class TermdeckServer:
             return {"exists": self.files.file_exists(root, path)}
         except (ValueError, PermissionError):
             return {"exists": False}
+
+    async def _open_file_external(self, request: FileOpRequest) -> dict[str, str]:
+        try:
+            path = await asyncio.to_thread(self.files.open_file_external, request.root, request.path)
+            return {"path": path}
+        except (ValueError, FileNotFoundError, PermissionError, OSError, subprocess.SubprocessError) as open_error:
+            raise HTTPException(status_code=404, detail=str(open_error)) from open_error
 
     async def _search_files(self, root: str, q: str, glob: str = "", ignore: str = "", word: bool = False,
                             case_sensitive: bool = False, regex: bool = False, include_hidden: bool = False) -> list[dict[str, str | int]]:
@@ -1410,13 +1650,14 @@ class TermdeckServer:
     async def _list_worktree_branches(self, project: str = "") -> dict[str, str | list[str]]:
         project_name = project.strip()
         if not project_name:
-            return {"current": "", "branches": []}
+            return {"current": "", "branches": [], "default_location": ""}
         root = self.manager.registry.root_for(project_name)
         if root is None:
             raise HTTPException(status_code=404, detail=project_name)
         try:
             current, branches = self.worktrees.list_local_branch_names(root)
-            return {"current": current, "branches": branches}
+            return {"current": current, "branches": branches,
+                    "default_location": str(self.worktrees.default_project_worktree_parent(root))}
         except (ValueError, OSError) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
@@ -1427,11 +1668,33 @@ class TermdeckServer:
             raise HTTPException(status_code=404, detail=project)
         try:
             self.worktrees.repository_root(root)
-            title = request.branch.strip() or request.base_ref.strip() or request.name.strip() or "worktree"
-            return self.worktree_registry.create(project, root, title, request.branch, request.base_ref).to_dict()
         except (ValueError, OSError) as error:
             raise HTTPException(status_code=409,
                                 detail=f"project '{project}' is not a Git repository; select the folder containing .git") from error
+        title = request.name.strip() or request.branch.strip() or request.base_ref.strip() or "worktree"
+        commands: list[str] = []
+        try:
+            record = self.worktree_registry.create(project, root, title, request.branch, request.base_ref,
+                                                   request.location, commands)
+            return {**record.to_dict(), "commands": commands}
+        except WorktreeFolderExists as error:
+            # Structured so the dialog can offer the folder that is in the way, when it is already a
+            # worktree of this repository, instead of only reporting the clash.
+            existing = next((record for record in self.worktree_registry.list_for_project(project, root)
+                             if record.path == error.path), None)
+            raise HTTPException(status_code=409, detail={
+                "error": "worktree_folder_exists", "message": str(error), "path": error.path,
+                "worktree_id": existing.worktree_id if existing else "",
+                "worktree_name": existing.name if existing else "",
+                "worktree_branch": existing.branch if existing else "",
+                "commands": commands,
+            }) from error
+        except (ValueError, OSError) as error:
+            # A bad folder, a taken branch name or a bad base ref each explain themselves; only the
+            # probe above means "this project is not a repository".
+            raise HTTPException(status_code=409,
+                                detail={"error": "worktree_failed", "message": str(error),
+                                        "commands": commands}) from error
 
     async def _delete_worktree(self, worktree_id: str, request: WorktreeDeleteRequest) -> dict[str, object]:
         project = request.project.strip()
@@ -1449,10 +1712,12 @@ class TermdeckServer:
         except (ValueError, OSError) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
-    async def _pick_project_folder(self) -> dict[str, object]:
+    @staticmethod
+    async def _choose_folder(prompt: str) -> str | None:
+        """Native folder chooser. None means the person cancelled."""
         if not PlatformPaths.IS_MACOS:
             raise HTTPException(status_code=501, detail="native folder selection is only available on macOS desktop mode")
-        picker_script = 'POSIX path of (choose folder with prompt "Choose TermDeck project folder")'
+        picker_script = f'POSIX path of (choose folder with prompt "{prompt}")'
         try:
             result = await asyncio.to_thread(
                 subprocess.run,
@@ -1465,17 +1730,30 @@ class TermdeckServer:
             raise HTTPException(status_code=500, detail=f"native folder selection failed: {error}") from error
         if result.returncode != 0:
             if "User canceled" in result.stderr or "User canceled" in result.stdout:
-                return {"cancelled": True}
+                return None
             detail = result.stderr.strip() or "native folder selection failed"
             raise HTTPException(status_code=500, detail=detail)
-        root = result.stdout.strip()
-        if not root:
+        return result.stdout.strip() or None
+
+    async def _pick_project_folder(self) -> dict[str, object]:
+        root = await self._choose_folder("Choose TermDeck project folder")
+        if root is None:
             return {"cancelled": True}
         try:
             project = self.manager.registry.add_project(root)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {"cancelled": False, "project": project}
+
+    async def _pick_worktree_folder(self) -> dict[str, object]:
+        folder = await self._choose_folder("Choose the folder to create the worktree in")
+        if folder is None:
+            return {"cancelled": True}
+        return {"cancelled": False, "location": folder.rstrip("/") or folder}
+
+    @staticmethod
+    async def _list_agent_clis() -> dict[str, dict[str, object]]:
+        return {kind: agent.client_descriptor() for kind, agent in agents.AGENT_CLIS.items()}
 
     async def _list_sessions(self, project: str = "", worktree_id: str = "") -> list[dict[str, object]]:
         return self.manager.list_sessions(project or None, worktree_id or None)
@@ -1668,6 +1946,7 @@ class TermdeckServer:
         assignments = dict(state.session_groups)
         previous_groups = {session_id: assignments.get(session_id) for session_id in request.assignments}
         insertion_offsets: dict[str, int] = {}
+        targeted_ungrouped_session_ids: list[str] = []
         for session_id, group_id in request.assignments.items():
             token = f"session:{session_id}"
             if group_id:
@@ -1675,6 +1954,10 @@ class TermdeckServer:
                 layout = [entry for entry in layout if entry != token]
             else:
                 assignments.pop(session_id, None)
+                if request.target_session_id:
+                    targeted_ungrouped_session_ids.append(session_id)
+                    layout = [entry for entry in layout if entry != token]
+                    continue
                 if token in layout:
                     continue
                 target_token = f"session:{request.target_session_id}" if request.target_session_id else ""
@@ -1688,6 +1971,10 @@ class TermdeckServer:
                 insert_at = base_index + insertion_offsets.get(insertion_key, 0)
                 layout.insert(insert_at, token)
                 insertion_offsets[insertion_key] = insertion_offsets.get(insertion_key, 0) + 1
+        if targeted_ungrouped_session_ids:
+            target_token = f"session:{request.target_session_id}"
+            insert_at = layout.index(target_token) + (1 if request.after else 0) if target_token in layout else len(layout)
+            layout[insert_at:insert_at] = [f"session:{session_id}" for session_id in targeted_ungrouped_session_ids]
         state.session_groups = assignments
         state.terminal_layout = layout
         if request.target_session_id:
@@ -2281,6 +2568,9 @@ class TermdeckServer:
         not the TermDeck one). Hooks run for every Claude Code session on the machine; one that does not
         belong to a terminal here is a normal no-op.
         """
+        if state == TermdeckConfig.AGENT_HOOK_COMPACT_STATE:
+            matched = self.manager.apply_agent_compaction_hook(request.session_id)
+            return {"matched_session_id": matched, "compacting": True}
         attention = state == TermdeckConfig.AGENT_HOOK_ATTENTION_STATE
         matched = self.manager.apply_agent_attention_hook(request.session_id, attention)
         return {"matched_session_id": matched, "attention": attention}
@@ -2377,6 +2667,11 @@ class TermdeckServer:
         return {"requested": len(results), "created": created, "prompt_submitted": submitted,
                 "failed": len(results) - submitted, "placement_failed": placement_failed, "items": results}
 
+    async def _session_usage(self, session_id: str) -> dict[str, int | None]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        return await asyncio.to_thread(self.manager.session_usage, session_id)
+
     async def _session_history(self, session_id: str) -> list[dict[str, object]]:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
@@ -2467,6 +2762,13 @@ class TermdeckServer:
             raise HTTPException(status_code=409, detail="could not terminate the detached terminal process tree")
         return self.manager.session_summary_by_id(session_id)
 
+    async def _dismiss_session_attention(self, session_id: str) -> dict[str, object]:
+        """Drop a terminal's attention badge without answering its prompt."""
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        self.manager.dismiss_attention(session_id)
+        return self.manager.session_summary_by_id(session_id)
+
     async def _fork_session(self, session_id: str, request: ForkSessionRequest) -> dict[str, object]:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
@@ -2552,11 +2854,44 @@ class TermdeckServer:
     async def _kill_stale_terminals(self) -> dict[str, object]:
         return await self.manager.kill_stale_running_sessions(TermdeckConfig.STALE_TERMINAL_AGE_SECONDS)
 
+    async def _restart_server(self) -> dict[str, bool]:
+        asyncio.create_task(self._restart_after_state_recovery())
+        return {"restart_scheduled": True}
+
     async def _terminal_process_report(self) -> dict[str, object]:
         return await self.manager.terminal_process_report()
 
     async def _reclaim_orphan_terminals(self) -> dict[str, object]:
         return await self.manager.reclaim_orphan_dtach_sessions()
+
+    async def _record_diagnostics(self, batch: dict) -> dict[str, object]:
+        """Append one batch of client diagnostic events to this recording's file.
+
+        The faults being chased here are intermittent, live in the browser rather than the server, and
+        are described in prose long after the state that caused them is gone. A recording is the whole
+        session instead -- what was done, what the app decided, and the geometry throughout -- written
+        as JSONL so it can be read with grep and handed over with a bug report.
+
+        The recording id comes from the client and becomes the filename, so it is reduced to safe
+        characters here rather than trusted: an id is not a path.
+        """
+        recording = re.sub(r"[^0-9A-Za-z._-]", "-", str(batch.get("id") or ""))[:64]
+        events = batch.get("events")
+        if not recording or not isinstance(events, list):
+            return {"ok": False}
+        directory = TermdeckConfig.DATA_DIR / TermdeckConfig.DIAGNOSTICS_DIR_NAME
+        path = directory / f"{recording}.jsonl"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            # A runaway recorder must not fill the disk; the cap ends the file rather than the session.
+            if path.exists() and path.stat().st_size > TermdeckConfig.DIAGNOSTICS_MAX_BYTES:
+                return {"ok": False, "full": True}
+            with path.open("a") as handle:
+                for event in events:
+                    handle.write(json.dumps(event, separators=(",", ":"), default=str)[:100_000] + "\n")
+        except OSError:
+            return {"ok": False}
+        return {"ok": True, "path": str(path)}
 
     async def _ws_terminal(self, websocket: WebSocket, session_id: str) -> None:
         if not self.manager.has_session(session_id):
@@ -2566,7 +2901,9 @@ class TermdeckServer:
         screen_repaint = websocket.query_params.get("screen_repaint", "1").lower() not in {"0", "false", "no", "off"}
         have_buffer = websocket.query_params.get("have_buffer", "0").lower() not in {"0", "false", "no", "off"}
         repaint_preserved_buffer = websocket.query_params.get("repaint_preserved_buffer", "0").lower() not in {"0", "false", "no", "off"}
-        scrollback, queue = self.manager.attach_client(session_id, screen_repaint, have_buffer, repaint_preserved_buffer)
+        full_claude_raw_replay = websocket.query_params.get("full_claude_raw_replay", "0").lower() not in {"0", "false", "no", "off"}
+        scrollback, queue = self.manager.attach_client(
+            session_id, screen_repaint, have_buffer, repaint_preserved_buffer, full_claude_raw_replay)
         try:
             await websocket.send_bytes(scrollback)
             await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.DRAFT,

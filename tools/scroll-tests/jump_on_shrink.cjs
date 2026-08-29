@@ -3,7 +3,8 @@
 // box -- and if scrollTop was near the bottom, the browser must clamp it, which the user sees as the view
 // jumping up. This drives that oscillation directly and counts scroll jumps nobody asked for.
 const { chromium } = require('playwright');
-const BASE = 'http://127.0.0.1:8536';
+const PORT = process.argv[2] || process.env.TERMDECK_TEST_PORT || '8536';
+const BASE = `http://127.0.0.1:${PORT}`;
 
 (async () => {
   const r = await fetch(`${BASE}/api/sessions`, {

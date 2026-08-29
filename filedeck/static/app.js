@@ -1,3 +1,10 @@
+// In-app dialogs (dialogs.js) stand in for window.confirm / alert / prompt: the native ones block the
+// event loop, cannot be styled or positioned, and can be permanently suppressed by the browser's
+// "prevent this page from creating more dialogs" checkbox. confirm/prompt must be awaited; alert may be
+// dropped where the caller does not depend on dismissal.
+const uiConfirm = (...args) => window.TermdeckDialogs.confirm(...args);
+const uiAlert = (...args) => window.TermdeckDialogs.alert(...args);
+const uiPrompt = (...args) => window.TermdeckDialogs.prompt(...args);
 const FILEDECK_TAB_SHORTCUTS = { tree: "d", search: "f", git: "g" };
 
 class FileDeckApp {
@@ -446,7 +453,7 @@ class FileDeckApp {
 
   async createPath(parent, directory) {
     const suggested = parent ? `${parent}/` : "";
-    const value = prompt(`${directory ? "Folder" : "File"} path relative to ${this.project.root}`, suggested);
+    const value = await uiPrompt(`${directory ? "Folder" : "File"} path relative to ${this.project.root}`, suggested);
     if (!value || value === suggested) return;
     const result = await this.fsOp("/api/files/create", { path: value, directory }, "Create failed");
     if (!result) return;
@@ -456,7 +463,7 @@ class FileDeckApp {
 
   async renamePath(path) {
     const name = path.split("/").pop() || path;
-    const newName = prompt(`Rename "${name}" to`, name);
+    const newName = await uiPrompt(`Rename "${name}" to`, name);
     if (!newName || newName === name) return;
     const result = await this.fsOp("/api/files/rename", { path, new_name: newName }, "Rename failed");
     if (!result) return;
@@ -470,13 +477,13 @@ class FileDeckApp {
     const dot = path.lastIndexOf(".");
     const slash = path.lastIndexOf("/");
     const suggested = dot > slash ? `${path.slice(0, dot)} copy${path.slice(dot)}` : `${path} copy`;
-    const destination = prompt(`Duplicate "${path}" to`, suggested);
+    const destination = await uiPrompt(`Duplicate "${path}" to`, suggested);
     if (!destination || destination === path) return;
     if (await this.fsOp("/api/files/duplicate", { path, destination }, "Duplicate failed")) await this.loadTree();
   }
 
   async movePath(path) {
-    const destination = prompt(`Move "${path}" to (relative to ${this.project.root})`, path);
+    const destination = await uiPrompt(`Move "${path}" to (relative to ${this.project.root})`, path);
     if (!destination || destination === path) return;
     const result = await this.fsOp("/api/files/move", { path, destination }, "Move failed");
     if (!result) return;
@@ -485,7 +492,7 @@ class FileDeckApp {
   }
 
   async deletePath(path) {
-    if (!confirm(`Move "${path}" to Trash?`)) return;
+    if (!await uiConfirm(`Move "${path}" to Trash?`)) return;
     const result = await this.fsOp("/api/files/delete", { path }, "Delete failed");
     if (!result) return;
     if (this.activePath === path) {
@@ -640,7 +647,7 @@ class FileDeckApp {
     const query = this.$("search-input").value.trim();
     if (!query || this.searchMode !== "content") return;
     const replacement = this.$("replace-input").value;
-    if (!confirm(`Replace all project matches for “${query}”?`)) return;
+    if (!await uiConfirm(`Replace all project matches for “${query}”?`)) return;
     const response = await fetch("/api/files/replace", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ root: this.project.root, q: query, replacement, ignore: this.searchIgnoreTokens(), regex: this.$("search-regex-toggle").classList.contains("on"), case_sensitive: this.$("search-case-toggle").classList.contains("on") }) });
     if (!response.ok) { this.setStatus("Replace failed"); return; }

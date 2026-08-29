@@ -65,3 +65,7 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "W", "B"]
 ignore = ["E501"]
+
+[tool.pytest.ini_options]
+# Retired code parks under _/ directories (repo convention); never collect it.
+norecursedirs = ["_", "node_modules", ".venv"]

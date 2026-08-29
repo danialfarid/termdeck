@@ -1,7 +1,8 @@
 // Cmd+C while scrolled back must not move the view or drop the selection; plain typing still returns
 // to the prompt.
 const { chromium } = require('playwright');
-const BASE = 'http://127.0.0.1:8536';
+const PORT = process.argv[2] || process.env.TERMDECK_TEST_PORT || '8536';
+const BASE = `http://127.0.0.1:${PORT}`;
 
 (async () => {
   const res = await fetch(`${BASE}/api/sessions`, {
@@ -28,14 +29,24 @@ const BASE = 'http://127.0.0.1:8536';
              selection: v.term.getSelection().trim().slice(0, 20) };
   }, id);
 
-  // Scroll back, then select some text (as a user would before copying).
+  // Scroll back, then select some text (as a user would before copying). Headless SwiftShader
+  // swallows wheel events under load, so keep wheeling until the view has actually moved.
   const box = await p.locator('.term-container.visible').boundingBox();
   await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await p.mouse.wheel(0, -2500);
+  const bottomTop = await p.evaluate((i) => window.__td.views.get(i).container.scrollTop, id);
+  for (let k = 0; k < 10; k += 1) {
+    await p.mouse.wheel(0, -500);
+    await p.waitForTimeout(200);
+    const now = await p.evaluate((i) => window.__td.views.get(i).container.scrollTop, id);
+    if (bottomTop - now >= 2000) break;
+  }
   await p.waitForTimeout(700);
   await p.evaluate((i) => {
     const v = window.__td.views.get(i);
-    const row = v.term.buffer.active.viewportY + Math.round(v.container.scrollTop / 21) + 3;
+    // scrollTop is an ABSOLUTE buffer offset in the whole-buffer layout; adding viewportY on
+    // top double-counted the scrollback and selected blank rows past the content.
+    const cell = v.term._core?._renderService?.dimensions?.css?.cell?.height || 21;
+    const row = Math.round((v.container.scrollTop - (v.term.element?.offsetTop || 0)) / cell) + 3;
     v.term.select(0, row, 6);
   }, id);
   await p.waitForTimeout(400);

@@ -3,7 +3,8 @@
 //   A. drag to the bottom while output streams: must not tear (no write may move the view mid-gesture)
 //   B. autoscroll up then back down: the newest line must end up visible again
 const { chromium } = require('playwright');
-const BASE = 'http://127.0.0.1:8536';
+const PORT = process.argv[2] || process.env.TERMDECK_TEST_PORT || '8536';
+const BASE = `http://127.0.0.1:${PORT}`;
 
 const state = (p, id, label) => p.evaluate((i) => {
   const v = window.__td.views.get(i);

@@ -3,13 +3,14 @@ import collections
 import json
 import re
 import shlex
-from datetime import timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 
+from termdeck import agents
+from termdeck.agents.claude import ClaudeCli
+from termdeck.agents.codex import CodexCli
 from termdeck.config import TermdeckConfig
-from termdeck.models import AgentKind
-from termdeck.proc_tree import ProcTreeUtil
-from termdeck.util import TimeUtil
+from termdeck.proc_tree import ProcTreeSnapshot
 
 
 class AgentSessionTracker:
@@ -19,12 +20,7 @@ class AgentSessionTracker:
     attributing unrelated concurrent Claude activity in the same cwd."""
 
     _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-    _CODEX_ROLLOUT_UUID_RE = re.compile(
-        r"rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
-    _COMMAND_SPLIT_RE = re.compile(r"[\s;|&()]+")
     _LSOF_PATH_LINE_PREFIX = "n"
-    _CODEX_SUBAGENT_MARKER = b'"source":{"subagent"'
-    _CLAUDE_SIDECHAIN_MARKER = b'"isSidechain":true'
     _SUBAGENT_SNIFF_BYTES = 2048
     _SUBAGENT_TAIL_BYTES = 256 * 1024
     _AGY_ACTIVITY_TAIL_BYTES = 256 * 1024
@@ -33,6 +29,10 @@ class AgentSessionTracker:
     _CLAUDE_PERMISSION_MODES = {"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
     _CLAUDE_INTERRUPT_TEXT_PREFIX = "[Request interrupted by user"
     _CLAUDE_LOCAL_COMMAND_MARKERS = ("<command-name>", "<local-command-")
+    _CLAUDE_LOCAL_COMMAND_OUTPUT_MARKER = "<local-command-stdout>"
+    # How long a /compact with nothing after it still counts as running. Long enough for a big
+    # conversation, short enough that a compaction which died leaves the tab idle rather than spinning.
+    _CLAUDE_COMPACTION_MAX_SECONDS = 15 * 60.0
     _CLI_TITLE_CACHE_SIZE = 120
     _SUBAGENT_FILE_CACHE_SIZE = 2000
 
@@ -46,7 +46,7 @@ class AgentSessionTracker:
     def codex_thread_name(self, session_id: str | None) -> str | None:
         if not session_id:
             return None
-        path = TermdeckConfig.CODEX_SESSION_INDEX_FILE
+        path = CodexCli.SESSION_INDEX_FILE
         try:
             mtime_ns = path.stat().st_mtime_ns
         except OSError:
@@ -85,7 +85,7 @@ class AgentSessionTracker:
             return title
         needle = f"-{session_id}.jsonl"
         try:
-            path = next(TermdeckConfig.CODEX_SESSIONS_DIR.rglob(f"rollout-*{needle}"), None)
+            path = next(CodexCli.sessions_root.rglob(f"rollout-*{needle}"), None)
         except OSError:
             return None
         if path is None:
@@ -153,22 +153,12 @@ class AgentSessionTracker:
     def codex_session_path(self, session_id: str | None) -> Path | None:
         if not session_id:
             return None
-        try:
-            return next(TermdeckConfig.CODEX_SESSIONS_DIR.rglob(f"rollout-*{session_id}.jsonl"), None)
-        except OSError:
-            return None
+        return agents.agent_cli("codex").transcript_path(None, session_id)
 
-    def session_activity_timestamp(self, kind: AgentKind, cwd: Path, session_id: str | None) -> float:
+    def session_activity_timestamp(self, kind: str, cwd: Path, session_id: str | None) -> float:
         if not session_id:
             return 0.0
-        if kind is AgentKind.CODEX:
-            path = self.codex_session_path(session_id)
-        elif kind is AgentKind.CLAUDE:
-            path = self.claude_project_dir(cwd) / f"{session_id}.jsonl"
-        elif kind is AgentKind.AGY:
-            path = self.agy_session_transcript(session_id)
-        else:
-            return 0.0
+        path = agents.agent_cli(kind).transcript_path(cwd, session_id)
         if path is None:
             return 0.0
         try:
@@ -259,7 +249,7 @@ class AgentSessionTracker:
         reference = reference.strip()
         if not reference:
             return None
-        path = TermdeckConfig.CODEX_SESSION_INDEX_FILE
+        path = CodexCli.SESSION_INDEX_FILE
         try:
             mtime_ns = path.stat().st_mtime_ns
         except OSError:
@@ -270,17 +260,19 @@ class AgentSessionTracker:
             if reference in self._codex_thread_names:
                 return reference
             try:
-                return reference if next(TermdeckConfig.CODEX_SESSIONS_DIR.rglob(f"rollout-*{reference}.jsonl"), None) else None
+                return reference if next(CodexCli.sessions_root.rglob(f"rollout-*{reference}.jsonl"), None) else None
             except OSError:
                 return None
         matches = [session_id for session_id, name in self._codex_thread_names.items() if name == reference]
         return matches[-1] if matches else None
 
-    def _is_subagent_session_file(self, kind: AgentKind, path: Path) -> bool:
+    def _is_subagent_session_file(self, kind: str, path: Path) -> bool:
         cached = self._subagent_file_cache.get(path)
         if cached is not None:
             return cached
-        marker = self._CODEX_SUBAGENT_MARKER if kind is AgentKind.CODEX else self._CLAUDE_SIDECHAIN_MARKER
+        marker = agents.agent_cli(kind).subagent_file_marker
+        if not marker:
+            return False
         try:
             with path.open("rb") as handle:
                 head = handle.read(self._SUBAGENT_SNIFF_BYTES)
@@ -292,43 +284,12 @@ class AgentSessionTracker:
             self._subagent_file_cache.clear()
         return is_subagent
 
-    def detect_agent_kind(self, command: str) -> AgentKind:
-        tokens = {Path(token).name for token in self._COMMAND_SPLIT_RE.split(command) if token}
-        if AgentKind.CLAUDE.value in tokens:
-            return AgentKind.CLAUDE
-        if AgentKind.CODEX.value in tokens:
-            return AgentKind.CODEX
-        if AgentKind.AGY.value in tokens:
-            return AgentKind.AGY
-        return AgentKind.NONE
-
     def claude_project_dir(self, cwd: Path) -> Path:
-        munged = "".join(ch if ch.isalnum() else "-" for ch in str(cwd))
-        return TermdeckConfig.CLAUDE_PROJECTS_DIR / munged
-
-    @staticmethod
-    def agy_session_dir(session_id: str) -> Path:
-        return TermdeckConfig.AGY_SESSIONS_DIR / session_id
+        return agents.agent_cli("claude").project_dir(cwd)
 
     @staticmethod
     def agy_session_transcript(session_id: str, prefer_full: bool = True) -> Path | None:
-        directory = TermdeckConfig.AGY_SESSIONS_DIR / session_id / ".system_generated" / "logs"
-        full_transcript = directory / "transcript_full.jsonl"
-        live_transcript = directory / "transcript.jsonl"
-        if prefer_full and full_transcript.is_file():
-            return full_transcript
-        return live_transcript if live_transcript.is_file() else full_transcript if full_transcript.is_file() else None
-
-    @staticmethod
-    def _agy_session_id_from_path(path: Path) -> str | None:
-        try:
-            relative = path.relative_to(TermdeckConfig.AGY_SESSIONS_DIR)
-        except ValueError:
-            return None
-        if not relative.parts:
-            return None
-        session_id = relative.parts[0]
-        return session_id if AgentSessionTracker._UUID_RE.fullmatch(session_id) else None
+        return agents.agent_cli("agy").transcript_path(None, session_id)
 
     @staticmethod
     def _title_words(title: str | None) -> set[str]:
@@ -378,7 +339,50 @@ class AgentSessionTracker:
             texts = [content]
         else:
             texts = [part.get("text") or "" for part in content or [] if isinstance(part, dict)]
-        return any(marker in text for text in texts for marker in AgentSessionTracker._CLAUDE_LOCAL_COMMAND_MARKERS)
+        return any(text.strip().startswith("/") or any(marker in text for marker in AgentSessionTracker._CLAUDE_LOCAL_COMMAND_MARKERS)
+                   for text in texts)
+
+    @staticmethod
+    def _claude_event_is_recent(event: dict, max_age_seconds: float) -> bool:
+        """Whether a transcript event's own ISO timestamp is younger than max_age_seconds.
+
+        A missing or unparsable timestamp counts as recent: the caller uses this only to expire a state
+        it has already decided is otherwise true, and guessing "stale" there would silently drop the
+        very signal it is guarding.
+        """
+        stamp = event.get("timestamp")
+        if not isinstance(stamp, str) or not stamp:
+            return True
+        try:
+            when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - when).total_seconds() < max_age_seconds
+
+    @staticmethod
+    def _claude_user_event_is_command_output(message: dict) -> bool:
+        """True for the transcript entry a local command writes when it finishes."""
+        content = message.get("content")
+        texts = [content] if isinstance(content, str) else \
+            [part.get("text") or "" for part in content or [] if isinstance(part, dict)]
+        return any(AgentSessionTracker._CLAUDE_LOCAL_COMMAND_OUTPUT_MARKER in text for text in texts)
+
+    @staticmethod
+    def _claude_user_event_is_compaction(message: dict) -> bool:
+        """True for the local-command event Claude writes when /compact starts.
+
+        Compaction is the one local command that then works for minutes, and it is invisible from
+        everywhere else: measured on 2.1.235, Claude writes no OSC title updates and appends nothing at
+        all to the transcript between this event and the summary it produces when it finishes. So this
+        event, with nothing after it, IS the "still compacting" signal -- the same reasoning that makes
+        every other local command a skip makes this one a match.
+        """
+        content = message.get("content")
+        texts = [content] if isinstance(content, str) else \
+            [part.get("text") or "" for part in content or [] if isinstance(part, dict)]
+        return any("/compact" in text for text in texts)
 
     @staticmethod
     def _claude_user_event_is_non_prompt_metadata(message: dict) -> bool:
@@ -407,14 +411,44 @@ class AgentSessionTracker:
             lines = raw.decode(errors="replace").splitlines()
         except OSError:
             return False
+        # Set while walking back past a local command's own result. /compact is the one local command
+        # that then works for minutes with no other trace (measured: no OSC title updates and no
+        # transcript appends until it finishes), so the command event with nothing after it means
+        # "still compacting" -- but the SAME shape with a result after it means it already stopped,
+        # including the common "Not enough messages to compact." refusal that lands within a second.
+        local_command_finished = False
         for line in reversed(lines):
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if event.get("type") == "system" and event.get("subtype") in ("local_command", "compact_boundary"):
+                local_command_finished = True
+                continue
             message = event.get("message") or {}
+            # A finished local command reports back two different ways, and only one of them is the
+            # system event above. A successful /compact writes its result as a USER event carrying
+            # <local-command-stdout> ("Compacted (ctrl+o to see full summary)"), while the refusal path
+            # writes the system event -- so matching only the latter left every SUCCESSFUL compaction
+            # looking like one still in progress, which is the tab stuck on "running".
+            if AgentSessionTracker._claude_user_event_is_command_output(message):
+                local_command_finished = True
+                continue
             if event.get("type") == "user":
-                if event.get("isMeta") or AgentSessionTracker._claude_user_event_is_local_command(message) or \
+                # isCompactSummary is the transcript Claude writes for itself after /compact ("This
+                # session is being continued from a previous conversation..."). It is a user event with
+                # real prose, so without this it reads as a freshly submitted prompt and the session
+                # shows as working forever once a compact finishes.
+                if event.get("isMeta") or event.get("isCompactSummary"):
+                    continue
+                # Reached before the generic local-command skip below, which would otherwise hide it.
+                # Bounded by the event's own timestamp: a compaction that has produced nothing for this
+                # long is not running any more, and an unbounded match would leave the tab spinning
+                # forever the way isCompactSummary once did.
+                if AgentSessionTracker._claude_user_event_is_compaction(message):
+                    return not local_command_finished and AgentSessionTracker._claude_event_is_recent(
+                        event, AgentSessionTracker._CLAUDE_COMPACTION_MAX_SECONDS)
+                if AgentSessionTracker._claude_user_event_is_local_command(message) or \
                         AgentSessionTracker._claude_user_event_is_non_prompt_metadata(message):
                     continue
                 if AgentSessionTracker._claude_user_event_is_interruption(message):
@@ -528,7 +562,7 @@ class AgentSessionTracker:
         if not normalized_title:
             return None
         candidates: list[tuple[float, str]] = []
-        for path, session_id in self._candidate_session_files(AgentKind.CLAUDE, cwd):
+        for path, session_id in self._candidate_session_files("claude", cwd):
             if session_id in claimed_ids:
                 continue
             try:
@@ -610,11 +644,11 @@ class AgentSessionTracker:
             sequence > ai_title_sequence for sequence in pending_tool_sequences.values())
         return ai_title, has_current_pending_tool
 
-    def snapshot_session_files(self, kind: AgentKind, cwd: Path) -> set[Path]:
+    def snapshot_session_files(self, kind: str, cwd: Path) -> set[Path]:
         return {path for path, _ in self._candidate_session_files(kind, cwd)}
 
-    async def session_id_from_open_files(self, kind: AgentKind, socket_path: Path) -> str | None:
-        tree_pids = await ProcTreeUtil.tree_pids_for_socket(str(socket_path))
+    async def session_id_from_open_files(self, kind: str, socket_path: Path) -> str | None:
+        tree_pids = (await ProcTreeSnapshot.capture()).tree_pids_for_socket(str(socket_path))
         pids = ",".join(str(pid) for pid in tree_pids)
         if not pids:
             return None
@@ -635,14 +669,15 @@ class AgentSessionTracker:
                 best_mtime, best_id = mtime, session_id
         return best_id
 
-    async def claude_resume_session_id_from_process_arguments(self, socket_path: Path) -> str | None:
-        tree_pids = await ProcTreeUtil.tree_pids_for_socket(str(socket_path))
+    def claude_resume_session_id_from_process_arguments(self, socket_path: Path,
+                                                        proc_tree: ProcTreeSnapshot) -> str | None:
+        tree_pids = proc_tree.tree_pids_for_socket(str(socket_path))
         found: set[str] = set()
-        for process in await ProcTreeUtil.process_details(tree_pids):
+        for process in proc_tree.process_details(tree_pids):
             parts = self._command_parts(str(process["command"]))
             for index, part in enumerate(parts):
-                candidate = parts[index + 1] if part == TermdeckConfig.CLAUDE_RESUME_FLAG and index + 1 < len(parts) else \
-                    part.removeprefix(f"{TermdeckConfig.CLAUDE_RESUME_FLAG}=") if part.startswith(f"{TermdeckConfig.CLAUDE_RESUME_FLAG}=") else ""
+                candidate = parts[index + 1] if part == ClaudeCli.RESUME_FLAG and index + 1 < len(parts) else \
+                    part.removeprefix(f"{ClaudeCli.RESUME_FLAG}=") if part.startswith(f"{ClaudeCli.RESUME_FLAG}=") else ""
                 if self._UUID_RE.fullmatch(candidate):
                     found.add(candidate)
         return next(iter(found)) if len(found) == 1 else None
@@ -650,7 +685,7 @@ class AgentSessionTracker:
     def claude_session_id_from_recent_file_activity(self, cwd: Path, after_timestamp: float,
                                                      claimed_ids: set[str]) -> str | None:
         candidates: list[tuple[float, str]] = []
-        for path, session_id in self._candidate_session_files(AgentKind.CLAUDE, cwd):
+        for path, session_id in self._candidate_session_files("claude", cwd):
             if session_id in claimed_ids:
                 continue
             try:
@@ -661,15 +696,9 @@ class AgentSessionTracker:
                 candidates.append((mtime, session_id))
         return max(candidates, default=(0.0, None))[1]
 
-    def _session_id_for_path(self, kind: AgentKind, path: Path) -> str | None:
-        if kind is AgentKind.CODEX and path.is_relative_to(TermdeckConfig.CODEX_SESSIONS_DIR):
-            match = self._CODEX_ROLLOUT_UUID_RE.search(path.name)
-            return match.group(1) if match else None
-        if kind is AgentKind.CLAUDE and path.is_relative_to(TermdeckConfig.CLAUDE_PROJECTS_DIR):
-            return path.stem if self._UUID_RE.match(path.stem) else None
-        if kind is AgentKind.AGY and path.is_relative_to(TermdeckConfig.AGY_SESSIONS_DIR):
-            return self._agy_session_id_from_path(path)
-        return None
+    @staticmethod
+    def _session_id_for_path(kind: str, path: Path) -> str | None:
+        return agents.agent_cli(kind).session_id_from_path(path)
 
     @staticmethod
     async def _run_capture(*argv: str) -> str:
@@ -682,7 +711,7 @@ class AgentSessionTracker:
             return ""
         return stdout.decode()
 
-    def absorb_and_find_new_session_file(self, kind: AgentKind, cwd: Path, baseline: set[Path],
+    def absorb_and_find_new_session_file(self, kind: str, cwd: Path, baseline: set[Path],
                                          claimed_ids: set[str], claim_allowed: bool) -> str | None:
         new_candidates: list[tuple[Path, str]] = []
         for path, session_id in self._candidate_session_files(kind, cwd):
@@ -700,56 +729,9 @@ class AgentSessionTracker:
         except FileNotFoundError:
             return 0.0
 
-    def _candidate_session_files(self, kind: AgentKind, cwd: Path) -> list[tuple[Path, str]]:
-        if kind is AgentKind.CLAUDE:
-            project_dir = self.claude_project_dir(cwd)
-            if not project_dir.is_dir():
-                return []
-            return [(path, path.stem) for path in project_dir.glob(TermdeckConfig.JSONL_GLOB)
-                    if self._UUID_RE.match(path.stem)]
-        if kind is AgentKind.CODEX:
-            pairs: list[tuple[Path, str]] = []
-            for day_dir in self._codex_recent_day_dirs():
-                if not day_dir.is_dir():
-                    continue
-                for path in day_dir.glob(TermdeckConfig.JSONL_GLOB):
-                    match = self._CODEX_ROLLOUT_UUID_RE.search(path.name)
-                    if match:
-                        pairs.append((path, match.group(1)))
-            return pairs
-        if kind is AgentKind.AGY and TermdeckConfig.AGY_SESSIONS_DIR.is_dir():
-            pairs: list[tuple[Path, str]] = []
-            for entry in TermdeckConfig.AGY_SESSIONS_DIR.iterdir():
-                if not entry.is_dir() or not self._UUID_RE.fullmatch(entry.name):
-                    continue
-                path = self.agy_session_transcript(entry.name, prefer_full=True)
-                if path is not None:
-                    pairs.append((path, entry.name))
-            return pairs
-        return []
-
     @staticmethod
-    def _codex_recent_day_dirs() -> list[Path]:
-        today = TimeUtil.today_est()
-        days = [today + timedelta(days=offset) for offset in TermdeckConfig.CODEX_DAY_DIR_LOOKAROUND_DAYS]
-        return [TermdeckConfig.CODEX_SESSIONS_DIR / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}"
-                for day in days]
-
-    def build_resume_command(self, kind: AgentKind, original_command: str, agent_session_id: str) -> str:
-        if kind is AgentKind.CLAUDE:
-            parts = self._command_parts(original_command)
-            cleaned = self._strip_resume_flag(parts, TermdeckConfig.CLAUDE_RESUME_FLAG)
-            if not cleaned:
-                return f"claude {TermdeckConfig.CLAUDE_RESUME_FLAG} {agent_session_id}"
-            return f"{shlex.join(cleaned)} {TermdeckConfig.CLAUDE_RESUME_FLAG} {agent_session_id}"
-        if kind is AgentKind.CODEX:
-            parts = self._command_parts(original_command)
-            if not parts:
-                return TermdeckConfig.CODEX_RESUME_TEMPLATE.format(agent_session_id=agent_session_id)
-            cleaned = self._strip_codex_session_arguments(parts)
-            cleaned = self._ensure_codex_searchable_scrollback(cleaned)
-            return f"{shlex.join(cleaned)} resume {agent_session_id}"
-        return original_command
+    def _candidate_session_files(kind: str, cwd: Path) -> list[tuple[Path, str]]:
+        return agents.agent_cli(kind).candidate_session_files(cwd)
 
     @staticmethod
     def _command_parts(command: str) -> list[str]:
@@ -758,82 +740,3 @@ class AgentSessionTracker:
         except ValueError:
             return command.split()
 
-    @staticmethod
-    def _strip_resume_flag(parts: list[str], resume_flag: str) -> list[str]:
-        cleaned: list[str] = []
-        skip_next = False
-        for token in parts:
-            if skip_next:
-                skip_next = False
-                continue
-            if token == resume_flag:
-                skip_next = True
-            else:
-                cleaned.append(token)
-        return cleaned
-
-    def _strip_positional_session_token(self, parts: list[str], command: str, subcommand: str) -> list[str]:
-        cleaned: list[str] = []
-        encountered_command = False
-        skip_next = False
-        for token in parts:
-            if skip_next:
-                skip_next = False
-                continue
-            if not encountered_command and Path(token).name == command:
-                encountered_command = True
-                cleaned.append(token)
-                continue
-            if token == subcommand and encountered_command:
-                skip_next = True
-                continue
-            cleaned.append(token)
-        return cleaned
-
-    @staticmethod
-    def _strip_codex_session_arguments(parts: list[str]) -> list[str]:
-        cleaned: list[str] = []
-        command_seen = False
-        skip_session_id = False
-        for token in parts:
-            if skip_session_id:
-                skip_session_id = False
-                continue
-            if not command_seen:
-                cleaned.append(token)
-                command_seen = Path(token).name == "codex"
-                continue
-            if token in {"fork", "resume"}:
-                skip_session_id = True
-                continue
-            cleaned.append(token)
-        return cleaned
-
-    @staticmethod
-    def _ensure_codex_searchable_scrollback(parts: list[str]) -> list[str]:
-        if TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG in parts:
-            return parts
-        command_index = next((index for index, token in enumerate(parts) if Path(token).name == AgentKind.CODEX.value), None)
-        if command_index is None:
-            return parts
-        return [*parts[:command_index + 1], TermdeckConfig.CODEX_NO_ALT_SCREEN_FLAG, *parts[command_index + 1:]]
-
-    def build_fork_command(self, kind: AgentKind, original_command: str, agent_session_id: str,
-                           session_name: str = "") -> str:
-        if kind is AgentKind.CLAUDE:
-            parts = self._command_parts(original_command)
-            cleaned = self._strip_resume_flag(parts, TermdeckConfig.CLAUDE_RESUME_FLAG)
-            cleaned = self._strip_resume_flag(cleaned, TermdeckConfig.CLAUDE_NAME_FLAG)
-            if not cleaned:
-                cleaned = ["claude"]
-            cleaned.extend((TermdeckConfig.CLAUDE_RESUME_FLAG, agent_session_id, TermdeckConfig.CLAUDE_FORK_FLAG))
-            if session_name.strip():
-                cleaned.extend((TermdeckConfig.CLAUDE_NAME_FLAG, " ".join(session_name.splitlines()).strip()))
-            return shlex.join(cleaned)
-        if kind is AgentKind.CODEX:
-            parts = self._command_parts(original_command)
-            cleaned = self._strip_codex_session_arguments(parts) if parts else [AgentKind.CODEX.value]
-            cleaned = self._ensure_codex_searchable_scrollback(cleaned)
-            cleaned.extend(("fork", agent_session_id))
-            return shlex.join(cleaned)
-        return original_command

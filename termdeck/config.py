@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from termdeck.platform_paths import PlatformPaths
@@ -23,10 +24,35 @@ class TermdeckConfig:
     PROJECTS_FILE = DATA_DIR / "projects.json"
     SCROLLBACK_DIR = DATA_DIR / "scrollback"
     SCROLLBACK_SUFFIX = ".bin"
+    # Historical name on disk; the recording is generic (any agent with records_raw_replay).
+    RAW_REPLAY_SUFFIX = ".claude-replay.bin"
+    # How long after input or output a replay is written to disk. This is the ONLY thing that makes a
+    # replay durable -- there is no periodic sweep and no shutdown hook behind it, because a server dies
+    # by SIGKILL, crash-loop or power loss far more often than it is stopped politely, and a second
+    # mechanism for the same job only hides the gaps in the first. Activity inside an already-scheduled
+    # window joins that write rather than postponing it, so a streaming session costs at most one append
+    # per window however much it writes, and each append carries only the bytes since the last one.
+    REPLAY_CHECKPOINT_DEBOUNCE_SECONDS = 1.0
+    RAW_REPLAY_SESSION_BYTES = 24_000_000
+    RAW_REPLAY_TOTAL_BYTES = 100_000_000
+    # OFF (0). Scrolling the screen into scrollback ahead of a redraw's erase does keep a compaction
+    # from taking the conversation with it, but a cursor jump does not say which redraw is a
+    # compaction: a real session makes ~1,137 jumps past 20 rows per 24MB, nearly all ordinary
+    # repaints. A scroll at each one fills the replay with blank rows, and blanks the cells the CLI
+    # then declines to rewrite (it redraws incrementally, assuming untouched cells still hold their
+    # text), which is where the garbled rows come from. See
+    # ReplayRecorder._preserve_screen_before_erase.
+    REPLAY_PRESERVE_ERASE_MIN_ROWS = 0
+    TERMINAL_HISTORY_RESET_SEQUENCE = b"\x1b[3J\x1b[2J\x1b[H"
     STATE_BACKUP_DIR = DATA_DIR / "backups"
     STATE_BACKUP_MAX_BYTES = 50_000_000
     STATE_BACKUP_INTERVAL_SECONDS = 3600.0
     STATE_BACKUP_PREWRITE_INTERVAL_SECONDS = 300.0
+    # The service log is append-only for the life of the machine otherwise: uvicorn logs every websocket
+    # accept, so an always-on deck adds megabytes a week and nobody reads past the last restart.
+    SERVICE_LOG_MAX_BYTES = 5_000_000
+    SERVICE_LOG_KEEP_BYTES = 2_000_000
+    SERVICE_LOG_TRIM_INTERVAL_SECONDS = 900.0
     UPLOADS_DIR = DATA_DIR / "uploads"
     API_UPLOAD_ROUTE = "/api/upload"
     UPLOAD_MAX_BYTES = 30_000_000
@@ -38,6 +64,7 @@ class TermdeckConfig:
     API_WORKTREE_BRANCHES_ROUTE = "/api/worktrees/branches"
     API_WORKTREE_ROUTE = "/api/worktrees/{worktree_id}"
     API_PROJECT_FOLDER_PICKER_ROUTE = "/api/projects/pick-folder"
+    API_WORKTREE_FOLDER_PICKER_ROUTE = "/api/worktrees/pick-folder"
     API_STATE_RECOVERY_ROUTE = "/api/state-recovery"
     API_STATE_RECOVERY_RESTORE_ROUTE = "/api/state-recovery/restore"
     PROJECT_PAGE_ROUTE = "/p/{project_name}"
@@ -56,6 +83,7 @@ class TermdeckConfig:
     FILEBROWSER_STATIC_DIR = Path(__file__).resolve().parent.parent / "filebrowser" / "static"
     FILEBROWSER_STATIC_ROUTE = "/filebrowser/static"
     FILEBROWSER_STATIC_NAME = "filebrowser-static"
+    API_AGENTS_ROUTE = "/api/agents"
     API_SESSIONS_ROUTE = "/api/sessions"
     API_TERMINAL_TASK_ROUTE = "/api/terminals/task"
     API_TERMINAL_TASK_PROMPT_ROUTE = "/api/terminals/task/{session_id}/prompt"
@@ -66,16 +94,19 @@ class TermdeckConfig:
     API_SESSION_LAST_TURN_ROUTE = "/api/sessions/{session_id}/last_turn"
     API_SESSION_PROMPT_ROUTE = "/api/sessions/{session_id}/prompt"
     API_SESSION_STOP_ROUTE = "/api/sessions/{session_id}/stop"
+    API_SESSION_ATTENTION_ROUTE = "/api/sessions/{session_id}/attention"
     API_SESSION_RESTART_ROUTE = "/api/sessions/{session_id}/restart"
     API_SESSION_FORK_ROUTE = "/api/sessions/{session_id}/fork"
     API_SESSION_WORKTREE_REVIEW_ROUTE = "/api/sessions/{session_id}/worktree/review"
     API_SESSION_WORKTREE_FINISH_ROUTE = "/api/sessions/{session_id}/worktree/finish"
     API_SESSION_RENAME_ROUTE = "/api/sessions/{session_id}/rename"
     API_SESSION_PROJECT_ROUTE = "/api/sessions/{session_id}/project"
+    API_SESSION_USAGE_ROUTE = "/api/sessions/{session_id}/usage"
     API_SESSION_HISTORY_ROUTE = "/api/sessions/{session_id}/history"
     API_SESSION_HISTORY_PAGE_ROUTE = "/api/sessions/{session_id}/history-page"
     API_KILL_ALL_TERMINALS_ROUTE = "/api/terminals/kill-all"
     API_KILL_STALE_TERMINALS_ROUTE = "/api/terminals/kill-stale"
+    API_SERVER_RESTART_ROUTE = "/api/server/restart"
     API_TERMINAL_PROCESSES_ROUTE = "/api/terminals/processes"
     API_RECLAIM_ORPHAN_TERMINALS_ROUTE = "/api/terminals/reclaim-orphans"
     API_TERMINAL_LAYOUT_ROUTE = "/api/terminal-layout"
@@ -94,9 +125,74 @@ class TermdeckConfig:
     # `state=attention` marks the tab as waiting on the user, `state=clear` releases it.
     API_AGENT_HOOK_ROUTE = "/api/agent-hook"
     AGENT_HOOK_ATTENTION_STATE = "attention"
+    # Claude's PreCompact hook, which fires (and is awaited) before a compaction redraws the screen
+    # over the conversation. See TerminalSessionManager.apply_agent_compaction_hook.
+    AGENT_HOOK_COMPACT_STATE = "compact"
+    # OFF (0). The hook announces an INTENT to compact, not a compaction: Claude fires it before
+    # deciding, so a /compact it then refuses ("not enough context") announced a redraw that never
+    # came. The timed fallback below cannot tell that apart from a redraw it merely missed, so it
+    # scrolled a screen away for nothing -- pages of blank rows in a terminal that had just started.
+    # Waiting for the redraw instead of using the fallback is not a fix either: measured over
+    # repeated compactions, that race is lost about half the time. A correct version needs a signal
+    # that a compaction actually began (PostCompact confirms it, but only once it is over) and a
+    # scroll sized to the content rather than to the terminal's height.
+    COMPACTION_HOOK_ENABLED = False
+    COMPACTION_ARM_SECONDS = 300.0
+    COMPACTION_ARM_FALLBACK_SECONDS = 2.0
+    # The compaction redraw walks the cursor up over everything it has drawn before erasing it, so
+    # the jump is as tall as the conversation on screen -- 112 rows in one measurement, but only a
+    # few dozen for a short one, which is why this cannot be set high. It does not need to be: the
+    # arm already limits matching to the moments after a compaction was announced, and the only
+    # repaints in that window are the compaction spinner's, which move at most ~18 rows.
+    COMPACTION_REDRAW_MIN_ROWS = 20
+    COMPACTION_REDRAW_JUMP = re.compile(rb"\x1b\[(\d*)A")
+    # OFF (0), pending review. RepaintFilter (see termdeck/repaint_filter.py) rewrites the status bar's
+    # own walk-cursor-down-then-up redraw so it moves the cursor instead of scrolling through it. Real
+    # and verified -- a captured compaction's spinner alone produced this pattern dozens of times, and
+    # after filtering zero multi-line instances of it survive in the recording -- but proven only to
+    # remove wasted buffer, NOT to be the whole "compaction eats the conversation" story: on a session
+    # left with ~38 rows of headroom before compacting, filtered and unfiltered runs evicted the same
+    # ~468 lines into scrollback either way, because that eviction was 466/470 non-blank -- ordinary
+    # real content (the compaction's own necessary redraw) outgrowing what little room was left, not
+    # blank padding. So this buys headroom (fewer wasted rows before EVERY overflow, compaction or not)
+    # rather than guaranteeing survival once a session is already near its buffer ceiling -- which,
+    # since compaction triggers on long conversations, is close to the common case. Applies to every
+    # agent CLI's output, live and recorded, since status/composer repaints are not Claude-specific.
+    # COMPACTION_HOOK_ENABLED and REPLAY_PRESERVE_ERASE_MIN_ROWS above are a different, complementary
+    # angle -- carrying the screen into TRUE scrollback ahead of the redraw regardless of headroom --
+    # disabled for reasons unrelated to this (PreCompact fires on intent, not completion; see their own
+    # comments), not because this filter replaces them.
+    REPAINT_FILTER_ENABLED = False
+    # ON: enabled 2026-08-29 for live trial. Retroactive rescue: once a compact_boundary is confirmed in the
+    # transcript (never fires on a refused /compact, since that never writes one -- unlike
+    # PreCompact, which fires on the mere intent), check the last couple of pre-compaction
+    # assistant turns' text against the recording's own compaction redraw output and re-inject
+    # whatever never reappears. See termdeck/compaction_rescue.py. No proactive arming, no
+    # cursor-jump sizing guess: the trigger is a completed fact, not an intent, and what gets
+    # injected is exactly what came up missing, nothing blind. User turns are deliberately
+    # excluded from candidates: the composer echoes a typed prompt with absolute column jumps
+    # for its own wrap layout, which reads as "missing" under plain text matching whether or
+    # not it actually is -- caught live on the first end-to-end run, fixed by scoping to
+    # assistant text, which has no such rendering trick. The payload itself used to end with
+    # \x1b[9999;1H + rows blank lines, copied from session_manager's PreCompact-armed carry
+    # payload without reconsidering why that one needs it: that mechanism races an erase that
+    # has not happened yet and must force a full-height scroll to relocate currently-visible
+    # content before it does. This runs well after a compaction has already finished and
+    # settled, so there is nothing left to race -- the padding only flooded a live session
+    # with hundreds of blank rows on every rescue, reported directly by the user and fixed
+    # the same day. Tracking state also used to start at "0 compactions seen" on every fresh
+    # attach, so a session with real prior compaction history (the common case) could mistake
+    # old, already-settled compactions for new ones the moment anything touched the
+    # transcript, including just typing /compact -- now starts unset and syncs to whatever is
+    # already there on first contact instead of treating it as new.
+    COMPACTION_RESCUE_ENABLED = True
+    COMPACTION_RESCUE_DIVIDER = "\x1b[2m──────────── recovered after compaction ────────────\x1b[0m"
     API_HISTORY_SEARCH_ROUTE = "/api/history-search"
     API_HISTORY_CONTEXT_ROUTE = "/api/history-context"
     API_SETTINGS_ROUTE = "/api/settings"
+    API_DIAGNOSTICS_ROUTE = "/api/debug/diagnostics"
+    DIAGNOSTICS_DIR_NAME = "diagnostics"
+    DIAGNOSTICS_MAX_BYTES = 32 * 1024 * 1024
     API_SETTING_ROUTE = "/api/settings/{setting_name}"
     API_SETTING_ENTRY_ROUTE = "/api/settings/{setting_name}/{entry_key}"
     API_REMOTE_STATUS_ROUTE = "/api/remote/status"
@@ -112,6 +208,7 @@ class TermdeckConfig:
     API_FILE_RECENT_ROUTE = "/api/files/recent"
     API_FILE_READ_ROUTE = "/api/files/read"
     API_FILE_EXISTS_ROUTE = "/api/files/exists"
+    API_FILE_OPEN_EXTERNAL_ROUTE = "/api/files/open-external"
     API_FILE_SEARCH_ROUTE = "/api/files/search"
     API_FILE_FIND_ROUTE = "/api/files/find"
     API_FILE_WRITE_ROUTE = "/api/files/write"
@@ -142,6 +239,21 @@ class TermdeckConfig:
     API_GIT_WORKTREE_ROUTE = "/api/git/worktree"
     API_GIT_REMOTE_ROUTE = "/api/git/remote"
     API_GIT_CLONE_ROUTE = "/api/git/clone"
+    API_GIT_REFS_ROUTE = "/api/git/refs"
+    API_GIT_COMPARE_ROUTE = "/api/git/compare"
+    API_GIT_COMPARE_REVIEW_ROUTE = "/api/git/compare/review"
+    API_GIT_DIVERGENCE_ROUTE = "/api/git/divergence"
+    API_GIT_HUNKS_ROUTE = "/api/git/hunks"
+    API_GIT_HUNK_ACTION_ROUTE = "/api/git/hunks/action"
+    API_GIT_COMMIT_ACTION_ROUTE = "/api/git/commit/action"
+    API_GIT_REBASE_PLAN_ROUTE = "/api/git/rebase/plan"
+    API_GIT_REBASE_ROUTE = "/api/git/rebase"
+    API_GIT_OPERATION_ROUTE = "/api/git/operation"
+    API_GIT_IGNORE_ROUTE = "/api/git/ignore"
+    API_GITHUB_PULL_REQUESTS_ROUTE = "/api/git/github/pull-requests"
+    API_GITHUB_PULL_REQUEST_ROUTE = "/api/git/github/pull-request"
+    API_GITHUB_PULL_REQUEST_PATCH_ROUTE = "/api/git/github/pull-request/patch"
+    API_GITHUB_PULL_REQUEST_REVIEW_ROUTE = "/api/git/github/pull-request/review"
     API_FILE_REPLACE_ROUTE = "/api/files/replace"
     REPLACE_MAX_FILES = 200
     FIND_MAX_RESULTS = 200
@@ -223,28 +335,15 @@ class TermdeckConfig:
     KILL_GRACE_POLLS = 30
     KILL_GRACE_POLL_SECONDS = 0.1
     EXIT_CODE_SPAWN_FAILED = -1
-    CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
-    CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
-    AGY_SESSIONS_DIR = Path.home() / ".gemini" / "antigravity-cli" / "brain"
-    JSONL_GLOB = "*.jsonl"
-    CODEX_DAY_DIR_LOOKAROUND_DAYS = (-1, 0, 1)
     AGENT_DETECT_INITIAL_DELAY_SECONDS = 3.0
     AGENT_DETECT_STARTUP_TIMEOUT_SECONDS = 60.0
     AGENT_DETECT_INPUT_DEBOUNCE_SECONDS = 2.0
     AGENT_TRANSCRIPT_ACTIVITY_DEBOUNCE_SECONDS = 0.75
     AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS = 20.0
-    AGY_ACTIVITY_KEEPALIVE_SECONDS = 20.0
     TASK_RESULT_MAX_WAIT_SECONDS = 300.0
     PGREP_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_PGREP_BIN, "pgrep")
     LSOF_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_LSOF_BIN, "lsof")
     SUBPROCESS_TIMEOUT_SECONDS = 10.0
-    CLAUDE_RESUME_FLAG = "--resume"
-    CLAUDE_FORK_FLAG = "--fork-session"
-    CLAUDE_NAME_FLAG = "--name"
-    CODEX_NO_ALT_SCREEN_FLAG = "--no-alt-screen"
-    CODEX_RESUME_TEMPLATE = "codex --no-alt-screen resume {agent_session_id}"
-    CODEX_FORK_TEMPLATE = "codex --no-alt-screen fork {agent_session_id}"
-    CODEX_SESSION_INDEX_FILE = Path.home() / ".codex" / "session_index.jsonl"
     DRAFT_MAX_CHARS = 20000
     TERMINAL_BATCH_MAX_ITEMS = 32
     DRAFT_PERSIST_DEBOUNCE_SECONDS = 2.0
@@ -265,6 +364,7 @@ class TermdeckConfig:
     )
     OSC_QUERY_CARRY_MAX = 8
     SPAWN_BANNER_TEMPLATE = "\x1b[2m[termdeck] spawn: {command}\x1b[0m\r\n"
+    COMPACT_DIVIDER = "\x1b[2m──────────── compacted ────────────\x1b[0m"
     RESPAWN_DIVIDER = "\x1b[2m──────────── restarted ────────────\x1b[0m"
     REATTACH_DIVIDER = "\x1b[2m──────────── reconnected (kept running) ────────────\x1b[0m"
     SPAWN_ERROR_TEMPLATE = "\x1b[31m[termdeck] spawn failed: {error}\x1b[0m\r\n"

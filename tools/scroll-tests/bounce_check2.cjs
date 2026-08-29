@@ -3,7 +3,8 @@
 // already corrected. A capture-phase scroll listener runs ahead of the app's own bubble-phase clamp, so
 // it sees the raw position the browser actually scrolled to.
 const { chromium } = require('playwright');
-const BASE = 'http://127.0.0.1:8536';
+const PORT = process.argv[2] || process.env.TERMDECK_TEST_PORT || '8536';
+const BASE = `http://127.0.0.1:${PORT}`;
 
 (async () => {
   const mk = async (title) => {

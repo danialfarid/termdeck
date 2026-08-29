@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -516,3 +517,18 @@ class ProjectFileService:
 
     def file_exists(self, root: str, rel: str) -> bool:
         return self.resolve_confined(root, rel).is_file()
+
+    def open_file_external(self, root: str, rel: str) -> str:
+        target = self.resolve_confined(root, rel)
+        if not target.is_file() and not target.is_dir():
+            raise FileNotFoundError(str(target))
+        if sys.platform == "darwin":
+            subprocess.run(["/usr/bin/open", str(target)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif os.name == "nt":
+            os.startfile(str(target))
+        else:
+            opener = shutil.which("xdg-open")
+            if not opener:
+                raise FileNotFoundError("xdg-open is not installed")
+            subprocess.run([opener, str(target)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return str(target)

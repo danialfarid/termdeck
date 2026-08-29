@@ -1,14 +1,6 @@
 from dataclasses import asdict, dataclass
-from enum import Enum
 
 from termdeck.config import TermdeckConfig
-
-
-class AgentKind(str, Enum):
-    CLAUDE = "claude"
-    CODEX = "codex"
-    AGY = "agy"
-    NONE = "none"
 
 
 @dataclass
@@ -92,6 +84,7 @@ class WsMessageFields:
     INPUT = "input"
     RESIZE = "resize"
     REPAINT = "repaint"
+    TERMINAL_RESET = "terminal_reset"
     EXIT = "exit"
     CODE = "code"
     AGENT_SESSION = "agent_session"
@@ -147,4 +140,5 @@ class ApiFields:
     DETACHED = "detached"
     CLI_TITLE = "cli_title"
     NEEDS_ATTENTION = "needs_attention"
+    ACTIVITY = "activity"
     DELETED = "deleted"

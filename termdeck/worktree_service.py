@@ -1,4 +1,5 @@
 import re
+import shlex
 import shutil
 import subprocess
 import uuid
@@ -17,40 +18,82 @@ class WorktreeMetadata:
     base_commit: str
     managed: bool = True
     worktree_id: str = ""
+    # False when the worktree checked out a branch that already existed. Removing such a worktree
+    # must leave the branch alone -- it is not ours to delete.
+    created_branch: bool = True
 
     def to_record(self) -> dict[str, str | bool]:
         return {"path": self.path, "repository": self.repository, "branch": self.branch,
                 "base_ref": self.base_ref, "base_commit": self.base_commit, "managed": self.managed,
-                "worktree_id": self.worktree_id}
+                "worktree_id": self.worktree_id, "created_branch": self.created_branch}
+
+
+class WorktreeFolderExists(ValueError):
+    """The folder a worktree would occupy is already taken, so nothing was created."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(f"folder already exists: {path}")
+        self.path = str(path)
 
 
 class GitWorktreeService:
     BRANCH_COMPONENT_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
     MAX_DIFF_BYTES = 300_000
     MAX_LOCAL_BRANCH_NAMES = 300
+    PROJECT_WORKTREE_DIRECTORY_SUFFIX = "-worktrees"
 
     def __init__(self, worktree_directory: Path) -> None:
         self.worktree_directory = worktree_directory.expanduser().resolve()
 
     def create(self, repository_root: str, title: str, branch: str = "", base_ref: str = "") -> WorktreeMetadata:
         repository = self._repository_root(Path(repository_root).expanduser())
-        path_parent = self.worktree_directory / repository.name
-        return self._create_at(repository, path_parent, title, branch, base_ref)
+        leaf = f"{self._slug(title) or 'session'}-{uuid.uuid4().hex[:8]}"
+        return self._create_at(repository, self.worktree_directory / repository.name / leaf, branch, base_ref)
 
-    def create_project_worktree(self, repository_root: str, title: str, branch: str = "", base_ref: str = "") -> WorktreeMetadata:
+    # Named for the branch, with nothing appended: a folder you can recognise. A clash is reported
+    # rather than dodged, because the folder that is in the way is usually the worktree you wanted.
+    def create_project_worktree(self, repository_root: str, title: str, branch: str = "", base_ref: str = "",
+                                location: str = "", log: list[str] | None = None) -> WorktreeMetadata:
         repository = self._repository_root(Path(repository_root).expanduser())
-        path_parent = repository.parent / ".termdeck-worktrees" / repository.name
-        return self._create_at(repository, path_parent, title, branch, base_ref)
+        return self._create_at(repository, self._worktree_path(repository, title, location), branch, base_ref, log)
 
-    def _create_at(self, repository: Path, path_parent: Path, title: str, branch: str, base_ref: str) -> WorktreeMetadata:
+    # Sits beside the repository as "<project>-worktrees", so a project and its worktrees stay
+    # adjacent in the same parent folder rather than in a hidden shared directory.
+    def default_project_worktree_parent(self, repository_root: str | Path) -> Path:
+        repository = self._repository_root(Path(repository_root).expanduser())
+        return repository.parent / f"{repository.name}{self.PROJECT_WORKTREE_DIRECTORY_SUFFIX}"
+
+    # `location` is the worktree folder itself, not a parent to put it in: the dialog shows the exact
+    # path that will be checked out, so it is honoured verbatim.
+    def _worktree_path(self, repository: Path, title: str, location: str) -> Path:
+        chosen = location.strip()
+        if not chosen:
+            return self.default_project_worktree_parent(repository) / (self._slug(title) or "worktree")
+        path = Path(chosen).expanduser()
+        if not path.is_absolute():
+            raise ValueError(f"worktree folder must be an absolute path: {chosen}")
+        if path == repository or repository in path.parents:
+            raise ValueError(f"worktree folder cannot be inside the repository: {chosen}")
+        return path
+
+    # A worktree and a branch are separate things: with no new branch name the worktree simply checks
+    # out the base branch, and only an explicit name creates one.
+    def _create_at(self, repository: Path, path: Path, branch: str, base_ref: str,
+                   log: list[str] | None = None) -> WorktreeMetadata:
         selected_base = base_ref.strip() or self._current_branch(repository) or "HEAD"
-        base_commit = self._run_git(repository, "rev-parse", selected_base).strip()
-        selected_branch = branch.strip() or self._default_branch(title, base_commit)
-        self._validate_branch(selected_branch)
-        path_parent.mkdir(parents=True, exist_ok=True)
-        path = path_parent / f"{self._slug(title) or 'session'}-{uuid.uuid4().hex[:8]}"
-        self._run_git(repository, "worktree", "add", "-b", selected_branch, str(path), selected_base)
-        return WorktreeMetadata(str(path), str(repository), selected_branch, selected_base, base_commit)
+        base_commit = self._run_git(repository, "rev-parse", selected_base, log=log).strip()
+        new_branch = branch.strip()
+        if new_branch:
+            self._validate_branch(new_branch)
+        if path.exists():
+            raise WorktreeFolderExists(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        add_arguments = ["worktree", "add"]
+        if new_branch:
+            add_arguments += ["-b", new_branch]
+        self._run_git(repository, *add_arguments, str(path), selected_base, log=log)
+        return WorktreeMetadata(str(path), str(repository), new_branch or selected_base, selected_base, base_commit,
+                                created_branch=bool(new_branch))
 
     def repository_root(self, path: str | Path) -> Path:
         return self._repository_root(Path(path).expanduser())
@@ -70,7 +113,8 @@ class GitWorktreeService:
             head = fields.get("HEAD", "")
             branch = fields.get("branch", "").removeprefix("refs/heads/")
             if path and head:
-                result.append(WorktreeMetadata(path, str(repository), branch, branch or "HEAD", head, False))
+                result.append(WorktreeMetadata(path, str(repository), branch, branch or "HEAD", head, False,
+                                               created_branch=False))
         return result
 
     def list_local_branch_names(self, repository_root: str | Path) -> tuple[str, list[str]]:
@@ -87,7 +131,8 @@ class GitWorktreeService:
             raise ValueError("the project root worktree cannot be deleted")
         if not source.is_dir():
             self._run_git(repository, "worktree", "prune")
-            self._delete_branch(repository, metadata.branch)
+            if metadata.created_branch:
+                self._delete_branch(repository, metadata.branch)
             return None
         moved_to: str | None = None
         if move_to_trash:
@@ -104,7 +149,8 @@ class GitWorktreeService:
                 raise ValueError(f"worktree control file is missing: {control_file}")
             control_file.unlink()
         self._run_git(repository, "worktree", "prune")
-        self._delete_branch(repository, metadata.branch)
+        if metadata.created_branch:
+            self._delete_branch(repository, metadata.branch)
         return moved_to
 
     def review(self, metadata: WorktreeMetadata) -> dict[str, object]:
@@ -152,7 +198,8 @@ class GitWorktreeService:
             args.append("--force")
         args.append(metadata.path)
         self._run_git(repository, *args)
-        self._run_git(repository, "branch", "-D" if force else "-d", metadata.branch)
+        if metadata.created_branch:
+            self._run_git(repository, "branch", "-D" if force else "-d", metadata.branch)
 
     def _delete_branch(self, repository: Path, branch: str) -> None:
         if branch.strip():
@@ -180,10 +227,6 @@ class GitWorktreeService:
         return GitWorktreeService._run_git(path, "branch", "--show-current").strip()
 
     @classmethod
-    def _default_branch(cls, title: str, base_commit: str) -> str:
-        return f"termdeck/{cls._slug(title) or 'session'}-{base_commit[:8]}-{uuid.uuid4().hex[:6]}"
-
-    @classmethod
     def _slug(cls, value: str) -> str:
         return cls.BRANCH_COMPONENT_PATTERN.sub("-", value.strip().lower()).strip("-._")[:48]
 
@@ -196,7 +239,9 @@ class GitWorktreeService:
             raise ValueError(detail)
 
     @staticmethod
-    def _run_git(path: Path, *arguments: str) -> str:
+    def _run_git(path: Path, *arguments: str, log: list[str] | None = None) -> str:
+        if log is not None:
+            log.append(shlex.join(["git", "-C", str(path), *arguments]))
         result = subprocess.run(["git", "-C", str(path), *arguments], capture_output=True, text=True,
                                 timeout=30, check=False, errors="replace")
         if result.returncode != 0:
