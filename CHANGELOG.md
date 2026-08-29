@@ -10,8 +10,9 @@ All notable changes to this project are documented here. The format follows
 
 - Clicking a desktop notification lands on the tab showing the terminal deck and selects that
   session there, instead of whichever tab happened to post the banner — which with two tabs open
-  could drop you into a file view. Only one tab posts, and no tab posts while TermDeck is focused
-  in any window.
+  could drop you into a file view. Only one tab posts, and the session you are actually looking at
+  stays silent — a session finishing anywhere else still notifies, including from a tab you are not
+  looking at.
 
 - Coming back to a terminal after a restart no longer opens it part-way up the conversation. An attach
   is several paints, not one — the recording replays, then the agent redraws its own screen over the

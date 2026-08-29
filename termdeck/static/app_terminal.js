@@ -3432,19 +3432,29 @@ Object.assign(TermdeckApp.prototype, {
   NOTIFICATION_CLAIM_WINDOW_MS: 4000,
   NOTIFICATION_DECK_CLAIM_DELAY_MS: 150,
   NOTIFICATION_OTHER_CLAIM_DELAY_MS: 500,
-  NOTIFICATION_FOCUS_STALE_MS: 3000,
-  NOTIFICATION_FOCUS_KEY: "termdeck-focused-at",
+  NOTIFICATION_WATCHING_STALE_MS: 3000,
+  NOTIFICATION_WATCHING_STAMP_MS: 1000,
+  NOTIFICATION_WATCHING_KEY_PREFIX: "termdeck-watching:",
 
-  // A tab cannot see whether a SIBLING tab is focused, so the focused one leaves a timestamp the
-  // others read. Without it, sitting in one TermDeck tab still produced banners from the others.
-  markDeckFocused() {
-    try { localStorage.setItem(this.NOTIFICATION_FOCUS_KEY, String(Date.now())); } catch { /* private mode */ }
+  // Only the session you are LOOKING AT needs no banner -- a session finishing in another tab is
+  // exactly what you want to be told about. A tab cannot see what a sibling tab is showing, so the
+  // focused tab publishes which session it is displaying and the others check that one session.
+  markWatchedSession() {
+    // Focused on a file or editor means the session is not actually in front of you, so nothing is
+    // being watched -- claiming otherwise silenced banners the user still wanted.
+    if (!this.activeId || !document.hasFocus() || this.activeFileKey !== null) return;
+    const now = Date.now();
+    if (now - (this.lastWatchedStampAt || 0) < this.NOTIFICATION_WATCHING_STAMP_MS) return;
+    this.lastWatchedStampAt = now;
+    try {
+      localStorage.setItem(this.NOTIFICATION_WATCHING_KEY_PREFIX + this.activeId, String(now));
+    } catch { /* private mode */ }
   },
 
-  deckFocusedInAnotherTab() {
+  sessionWatchedInAnotherTab(sessionId) {
     try {
-      const at = Number(localStorage.getItem(this.NOTIFICATION_FOCUS_KEY) || 0);
-      return at > 0 && Date.now() - at < this.NOTIFICATION_FOCUS_STALE_MS;
+      const at = Number(localStorage.getItem(this.NOTIFICATION_WATCHING_KEY_PREFIX + sessionId) || 0);
+      return at > 0 && Date.now() - at < this.NOTIFICATION_WATCHING_STALE_MS;
     } catch { return false; }
   },
 
@@ -3460,15 +3470,15 @@ Object.assign(TermdeckApp.prototype, {
 
   notifyAgentEvent(session, body) {
     if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-    // Banners are for when TermDeck isn't being looked at; while a tab is focused the deck itself
-    // already shows working, unread, and attention state.
-    if (document.hasFocus()) { this.markDeckFocused(); return; }
+    // The one session you are watching right now needs no banner: its own row is in front of you.
+    // Anything else does, including from a tab you are not looking at.
+    if (document.hasFocus() && session.session_id === this.activeId && this.activeFileKey === null) return;
     const key = `termdeck-notify:${session.session_id}:${body}`;
     const delay = this.activeFileKey === null
       ? this.NOTIFICATION_DECK_CLAIM_DELAY_MS : this.NOTIFICATION_OTHER_CLAIM_DELAY_MS;
-    // The delay is also what lets a focused sibling's timestamp land before anyone claims.
+    // The delay is also what lets a focused sibling's stamp land before anyone claims.
     window.setTimeout(() => {
-      if (this.deckFocusedInAnotherTab() || !this.claimAgentNotification(key)) return;
+      if (this.sessionWatchedInAnotherTab(session.session_id) || !this.claimAgentNotification(key)) return;
       this.postAgentNotification(session, body);
     }, delay);
   },

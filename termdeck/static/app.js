@@ -2780,13 +2780,13 @@ class TermdeckApp {
       this.flushPendingSearchHistoryRecord();
     });
     document.body.classList.toggle("termdeck-page-hidden", document.hidden);
-    // Sibling tabs read this stamp to tell whether TermDeck is being looked at somewhere else
-    // before any of them posts a desktop notification.
-    if (document.hasFocus()) this.markDeckFocused();
-    window.addEventListener("focus", () => this.markDeckFocused());
+    // Sibling tabs read this stamp to learn which session is being watched here, so they do not
+    // post a banner for the one session already in front of the user.
+    this.markWatchedSession();
+    window.addEventListener("focus", () => this.markWatchedSession());
     document.addEventListener("visibilitychange", () => {
       document.body.classList.toggle("termdeck-page-hidden", document.hidden);
-      if (!document.hidden && document.hasFocus()) this.markDeckFocused();
+      this.markWatchedSession();
       if (document.visibilityState === "hidden") {
         this.disconnectRecentFilesWatch();
         this.flushPendingSettingsSave();
@@ -3942,6 +3942,9 @@ class TermdeckApp {
   applySessionStatus(message) {
     const session = this.session(message.session_id);
     if (!session) return;
+    // Keeps the "watched here" stamp fresh (throttled) so a sibling tab knows the session the user
+    // is sitting on, however long they sit there.
+    this.markWatchedSession();
     const previousPresentation = this.titlePresentation(session);
     const previousAgentSessionId = session.agent_session_id;
     const previousAgentKind = session.agent_kind;
