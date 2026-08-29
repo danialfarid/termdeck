@@ -34,13 +34,14 @@ class TermdeckConfig:
     REPLAY_CHECKPOINT_DEBOUNCE_SECONDS = 1.0
     RAW_REPLAY_SESSION_BYTES = 24_000_000
     RAW_REPLAY_TOTAL_BYTES = 100_000_000
-    # OFF (0). Scrolling the screen into scrollback ahead of a redraw's erase does keep the
-    # conversation in the replay, but an upward cursor jump does not identify the redraw worth doing
-    # it for: a real session makes ~1,137 jumps past 20 rows per 24MB, nearly all of them ordinary
-    # frame repaints, and a scroll at each one buried the history it saved under pages of blank
-    # rows. Telling a compaction's redraw from a routine one needs the screen's contents, which the
-    # recorder does not model. See _preserve_screen_before_erase.
-    REPLAY_PRESERVE_ERASE_MIN_ROWS = 0
+    # An upward cursor jump of at least this many rows means the CLI is about to erase and redraw
+    # everything it has rendered, not repaint its status rows (a status repaint measured at most ~18
+    # rows). The recording scrolls the screen into scrollback first, so replaying that erase cannot
+    # take the conversation with it. Recording only -- a live client sees exactly the bytes it always
+    # did. Partial by nature: a jump is a guess at which redraw is a compaction, so some conversation
+    # is still lost and some blank rows are still added; a PreCompact hook is the real signal.
+    # Set to 0 to switch off. See ReplayRecorder._preserve_screen_before_erase.
+    REPLAY_PRESERVE_ERASE_MIN_ROWS = 20
     TERMINAL_HISTORY_RESET_SEQUENCE = b"\x1b[3J\x1b[2J\x1b[H"
     STATE_BACKUP_DIR = DATA_DIR / "backups"
     STATE_BACKUP_MAX_BYTES = 50_000_000

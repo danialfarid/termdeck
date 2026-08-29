@@ -32,11 +32,6 @@ class ReplayRecorder:
     # Cursor jump that marks a CLI about to redraw its whole rendered output, rather than repaint
     # its status rows (see _preserve_screen_before_erase).
     FULL_REDRAW_JUMP = re.compile(rb"\x1b\[(\d*)A")
-    # The unbroken run of control sequences a redraw makes before it writes any text. Its erase-line
-    # count is how far up the redraw actually reaches, which is what has to be scrolled clear.
-    CONTROL_RUN = re.compile(rb"(?:\x1b\[[0-9;?]*[A-Za-z])*")
-    # Scrolled just clear of the erase, a line sits on the last row it can still reach.
-    SCROLL_CLEARANCE_ROWS = 2
     CURSOR_DOWN = b"\x1b[1B"
     CLEAR_ROW = ERASE_LINE + CURSOR_DOWN
     OSC_TITLE_SEQUENCE = re.compile(rb"\x1b\][012];[^\x07\x1b]*(?:\x07|\x1b\\)")
@@ -325,9 +320,11 @@ class ReplayRecorder:
         incrementally, assuming cells it did not rewrite still hold their old text, and those cells
         are blank once the screen has scrolled -- which the next repaint corrects.
 
-        How far to scroll is set by the erase, not by the jump: the two disagree (one measured
-        compaction jumped 112 rows and then erased 119), and scrolling the smaller of them leaves the
-        rows in between still reachable, which is the top of the conversation.
+        The jump alone sets how far to scroll. A redraw erases slightly further than it jumped (one
+        measured compaction jumped 112 rows and then erased 119), so the few rows in between are
+        still lost -- but sizing the scroll from the erase instead costs far more than it saves: an
+        erase run belonging to an ordinary repaint is long, and scrolling that deep every time buried
+        the preserved history under tens of thousands of blank rows.
         """
         minimum = TermdeckConfig.REPLAY_PRESERVE_ERASE_MIN_ROWS
         if not minimum:
@@ -338,13 +335,10 @@ class ReplayRecorder:
             rows = int(match.group(1) or 1)
             if rows < minimum:
                 continue
-            control_run = cls.CONTROL_RUN.match(data, match.start())
-            erased = data.count(cls.ERASE_LINE, match.start(), control_run.end()) if control_run else 0
             out.extend(data[position:match.start()])
             # Save the cursor, drop to the last row so every newline scrolls rather than just moving
             # down, push the screen into scrollback, then put the cursor back for the CLI's own bytes.
-            depth = max(rows, erased) + cls.SCROLL_CLEARANCE_ROWS
-            out.extend(b"\x1b7\x1b[9999;1H" + b"\n" * depth + b"\x1b8")
+            out.extend(b"\x1b7\x1b[9999;1H" + b"\n" * rows + b"\x1b8")
             position = match.start()
         out.extend(data[position:])
         return bytes(out)
