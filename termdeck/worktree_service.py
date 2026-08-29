@@ -28,7 +28,7 @@ class GitWorktreeService:
     BRANCH_COMPONENT_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
     MAX_DIFF_BYTES = 300_000
     MAX_LOCAL_BRANCH_NAMES = 300
-    PROJECT_WORKTREE_DIRECTORY = ".termdeck-worktrees"
+    PROJECT_WORKTREE_DIRECTORY_SUFFIX = "-worktrees"
 
     def __init__(self, worktree_directory: Path) -> None:
         self.worktree_directory = worktree_directory.expanduser().resolve()
@@ -43,16 +43,18 @@ class GitWorktreeService:
         repository = self._repository_root(Path(repository_root).expanduser())
         return self._create_at(repository, self._worktree_parent(repository, location), title, branch, base_ref)
 
+    # Sits beside the repository as "<project>-worktrees", so a project and its worktrees stay
+    # adjacent in the same parent folder rather than in a hidden shared directory.
     def default_project_worktree_parent(self, repository_root: str | Path) -> Path:
         repository = self._repository_root(Path(repository_root).expanduser())
-        return repository.parent / self.PROJECT_WORKTREE_DIRECTORY / repository.name
+        return repository.parent / f"{repository.name}{self.PROJECT_WORKTREE_DIRECTORY_SUFFIX}"
 
     # The chosen folder is the parent: the worktree itself is still a uniquely named directory
     # inside it, so picking one folder twice cannot collide.
     def _worktree_parent(self, repository: Path, location: str) -> Path:
         chosen = location.strip()
         if not chosen:
-            return repository.parent / self.PROJECT_WORKTREE_DIRECTORY / repository.name
+            return self.default_project_worktree_parent(repository)
         parent = Path(chosen).expanduser()
         if not parent.is_absolute():
             raise ValueError(f"worktree folder must be an absolute path: {chosen}")
