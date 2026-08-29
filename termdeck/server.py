@@ -47,7 +47,7 @@ from termdeck.settings_store import UiSettingsStore
 from termdeck.state_backup import StateBackupManager
 from termdeck.stats_service import ResourceStatsService
 from termdeck.transcript_service import TranscriptService
-from termdeck.worktree_service import GitWorktreeService, WorktreeMetadata
+from termdeck.worktree_service import GitWorktreeService, WorktreeFolderExists, WorktreeMetadata
 from termdeck.worktree_registry import ProjectWorktree, WorktreeRegistry
 
 
@@ -1673,6 +1673,17 @@ class TermdeckServer:
         try:
             return self.worktree_registry.create(project, root, title, request.branch, request.base_ref,
                                                  request.location).to_dict()
+        except WorktreeFolderExists as error:
+            # Structured so the dialog can offer the folder that is in the way, when it is already a
+            # worktree of this repository, instead of only reporting the clash.
+            existing = next((record for record in self.worktree_registry.list_for_project(project, root)
+                             if record.path == error.path), None)
+            raise HTTPException(status_code=409, detail={
+                "error": "worktree_folder_exists", "message": str(error), "path": error.path,
+                "worktree_id": existing.worktree_id if existing else "",
+                "worktree_name": existing.name if existing else "",
+                "worktree_branch": existing.branch if existing else "",
+            }) from error
         except (ValueError, OSError) as error:
             # A bad folder, a taken branch name or a bad base ref each explain themselves; only the
             # probe above means "this project is not a repository".

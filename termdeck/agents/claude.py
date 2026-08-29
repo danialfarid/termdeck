@@ -20,6 +20,7 @@ class ClaudeSessionState(AgentSessionState):
         self.activity_signatures: dict[Path, tuple[int, int, int]] = {}
         self.subagents_active = False
         self.main_active = False
+        self.interrupted_at = 0.0                   # wall clock, compared against transcript mtime
         self.background_tasks: dict[str, str] = {}  # task id -> output file path
         self.monitor_tasks: dict[str, str] = {}     # monitor task id -> output file path
         self.background_scan_offset = 0             # transcript bytes already scanned
@@ -380,13 +381,33 @@ class ClaudeCli(AgentCli):
             return
         tracker = manager._tracker
         parent = tracker.claude_project_dir(Path(ms.record.cwd)) / f"{ms.record.agent_session_id}.jsonl"
-        ms.agent_state.main_active = not ms.record.claude_interrupted and parent.is_file() and tracker.claude_session_is_active(parent)
+        active = parent.is_file() and tracker.claude_session_is_active(parent)
+        self.release_interrupt_if_work_resumed(ms, parent, active)
+        ms.agent_state.main_active = not ms.record.claude_interrupted and active
         states = tracker.claude_subagent_states(Path(ms.record.cwd), ms.record.agent_session_id)
         ms.agent_state.subagent_states = states
         ms.agent_state.subagents_active = not ms.record.claude_interrupted and any(states.values())
         ms.agent_state.activity_signatures = self._activity_signatures(parent, set(states))
         ms.agent_state.background_scan_offset = 0
         self.scan_background_tasks(ms.agent_state, parent)
+
+    def release_interrupt_if_work_resumed(self, ms, parent: Path, active: bool) -> None:
+        """Drop the interrupted flag once the transcript shows work that started AFTER the interrupt.
+
+        The flag has to suppress activity because a prompt cancelled before Claude answered leaves a
+        trailing user event that reads as work in progress. But it must not latch: interrupting a
+        busy Claude makes it cancel and immediately start whatever was queued behind it, and holding
+        the flag until the NEXT prompt submitted through TermDeck left that real work with no
+        spinner. Transcript writes newer than the interrupt are that evidence -- the interruption
+        marker itself is not, because it makes the session read as inactive.
+        """
+        if not ms.record.claude_interrupted or not active:
+            return
+        try:
+            if parent.stat().st_mtime > ms.agent_state.interrupted_at:
+                ms.record.claude_interrupted = False
+        except OSError:
+            pass
 
     @staticmethod
     def _file_signature(path: Path) -> tuple[int, int, int] | None:
@@ -418,7 +439,9 @@ class ClaudeCli(AgentCli):
         signatures = self._activity_signatures(parent, subagents)
         if signatures == ms.agent_state.activity_signatures:
             return
-        ms.agent_state.main_active = not ms.record.claude_interrupted and parent.is_file() and tracker.claude_session_is_active(parent)
+        active = parent.is_file() and tracker.claude_session_is_active(parent)
+        self.release_interrupt_if_work_resumed(ms, parent, active)
+        ms.agent_state.main_active = not ms.record.claude_interrupted and active
         ms.agent_state.subagent_states = tracker.claude_subagent_states(Path(ms.record.cwd), ms.record.agent_session_id)
         ms.agent_state.subagents_active = not ms.record.claude_interrupted and any(ms.agent_state.subagent_states.values())
         ms.agent_state.activity_signatures = self._activity_signatures(parent, set(ms.agent_state.subagent_states))
@@ -444,7 +467,9 @@ class ClaudeCli(AgentCli):
             attention_changed = False
             background_changed = False
             if is_parent:
-                ms.agent_state.main_active = not ms.record.claude_interrupted and path.is_file() and tracker.claude_session_is_active(path)
+                active = path.is_file() and tracker.claude_session_is_active(path)
+                self.release_interrupt_if_work_resumed(ms, path, active)
+                ms.agent_state.main_active = not ms.record.claude_interrupted and active
                 title_changed = self.sync_explicit_title(manager, ms)
                 attention_changed = self._refresh_attention_from_transcript(manager, ms)
                 background_changed = self.scan_background_tasks(ms.agent_state, path)
@@ -554,6 +579,7 @@ class ClaudeCli(AgentCli):
         previous_processing = manager._processing_state(ms)
         if interrupted:
             ms.record.claude_interrupted = True
+            ms.agent_state.interrupted_at = time.time()
             ms.agent_state.main_active = False
             ms.agent_state.subagents_active = False
             ms.agent_state.subagent_states = {}

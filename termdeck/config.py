@@ -145,6 +145,18 @@ class TermdeckConfig:
     # repaints in that window are the compaction spinner's, which move at most ~18 rows.
     COMPACTION_REDRAW_MIN_ROWS = 20
     COMPACTION_REDRAW_JUMP = re.compile(rb"\x1b\[(\d*)A")
+    # OFF (0), pending review. RepaintFilter (see termdeck/repaint_filter.py) rewrites the status bar's
+    # own walk-cursor-down-then-up redraw so it moves the cursor instead of scrolling through it -- the
+    # actual mechanism behind "compaction eats the conversation", measured directly: a fresh haiku
+    # session compacting ~950 lines of real content pushed 468 of them into scrollback via this exact
+    # walk-and-return, verified by replaying the raw recording in a real terminal emulator (pyte) and
+    # finding the numbers intact but shifted -- nothing erased in place. COMPACTION_HOOK_ENABLED and
+    # REPLAY_PRESERVE_ERASE_MIN_ROWS above target a different, much smaller effect: on the same capture,
+    # the compaction's own final redraw erased only 17 lines of its own spinner/status chrome in place,
+    # never reaching the real conversation. Applies to every agent CLI's output, live and recorded,
+    # since status/composer repaints are not Claude-specific; unrelated to compaction otherwise (the
+    # same walk-and-return runs constantly, compaction just runs it for much longer while it waits).
+    REPAINT_FILTER_ENABLED = False
     API_HISTORY_SEARCH_ROUTE = "/api/history-search"
     API_HISTORY_CONTEXT_ROUTE = "/api/history-context"
     API_SETTINGS_ROUTE = "/api/settings"

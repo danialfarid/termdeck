@@ -1764,6 +1764,12 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
 #worktree-location-browse { flex: none; border: 1px solid var(--border); border-radius: 7px; background: var(--panel2); color: var(--text); padding: 0 11px; font-size: 12px; cursor: pointer; }
 #worktree-location-browse:hover, #worktree-location-browse:focus { border-color: var(--accent); color: var(--accent); outline: none; }
 #worktree-location-browse.hidden { display: none; }
+#worktree-modal-error { display: flex; align-items: center; gap: 9px; margin: -3px 0 13px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--red) 50%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--red) 9%, var(--panel)); color: var(--red); font: calc(var(--ui-font-size) - 1px)/1.35 Menlo, monospace; }
+#worktree-modal-error.hidden { display: none; }
+#worktree-modal-error-text { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+#worktree-modal-open-existing { flex: none; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--text); padding: 5px 9px; font-size: 12px; cursor: pointer; }
+#worktree-modal-open-existing:hover, #worktree-modal-open-existing:focus { border-color: var(--accent); color: var(--accent); outline: none; }
+#worktree-modal-open-existing.hidden { display: none; }
 #worktree-result-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: flex; align-items: flex-start; justify-content: center; padding-top: 16vh; z-index: 11; }
 #worktree-result-backdrop.hidden { display: none; }
 #worktree-result { width: 500px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5); }

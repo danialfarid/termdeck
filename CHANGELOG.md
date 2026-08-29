@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Interrupting a busy Claude no longer leaves the session without a working indicator. Escape makes
+  Claude cancel and immediately start whatever was queued behind it; the interrupt flag used to hold
+  until the next prompt submitted through TermDeck, so that real work ran with no spinner.
+
 - Right-clicking near the bottom of the window now opens the context menu above the pointer instead of
   pinning it to the bottom edge, where it covered the very selection it was acting on.
 

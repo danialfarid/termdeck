@@ -2467,6 +2467,7 @@ class TermdeckApp {
     this.$("worktree-modal-project").textContent = `${project.name} · ${this.compactProjectPath(project.root)}`;
     this.$("worktree-branch").value = "";
     this.$("worktree-location").value = "";
+    this.clearWorktreeModalError();
     this.$("worktree-modal-backdrop").classList.remove("hidden");
     void this.loadWorktreeDialogOptions(rootWorktree?.branch || "");
     requestAnimationFrame(() => this.$("worktree-base-ref").focus());
@@ -2523,6 +2524,36 @@ class TermdeckApp {
     this.$("worktree-modal-backdrop").classList.add("hidden");
   }
 
+  clearWorktreeModalError() {
+    this.$("worktree-modal-error").classList.add("hidden");
+    this.$("worktree-modal-open-existing").classList.add("hidden");
+    this.worktreeConflictSegment = "";
+  }
+
+  // Failures stay inside the dialog so the fields keep their values and can be corrected. A folder
+  // that is already a worktree of this repository is offered directly rather than just reported.
+  showWorktreeModalError(detail) {
+    const structured = detail && typeof detail === "object" ? detail : null;
+    const message = structured ? structured.message : detail;
+    this.$("worktree-modal-error-text").textContent = message || "worktree creation failed";
+    this.$("worktree-modal-error").classList.remove("hidden");
+    // The URL takes the same segment the create flow uses, not the internal id.
+    this.worktreeConflictSegment = structured?.worktree_id
+      ? structured.worktree_branch || structured.worktree_name || structured.worktree_id : "";
+    const open = this.$("worktree-modal-open-existing");
+    open.classList.toggle("hidden", !this.worktreeConflictSegment);
+    if (this.worktreeConflictSegment) {
+      this.$("worktree-modal-error-text").textContent = `${message} — already a worktree on ${this.worktreeConflictSegment}.`;
+    }
+  }
+
+  openConflictingWorktree() {
+    if (!this.worktreeConflictSegment) return;
+    const target = `/p/${encodeURIComponent(this.projectSlug)}/${encodeURIComponent(this.worktreeConflictSegment)}`;
+    this.closeWorktreeModal();
+    location.href = target;
+  }
+
   async createProjectWorktree() {
     const baseRef = this.$("worktree-base-ref").value.trim();
     const branch = this.$("worktree-branch").value.trim();
@@ -2534,7 +2565,7 @@ class TermdeckApp {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      void uiAlert(payload.detail || "worktree creation failed");
+      this.showWorktreeModalError(payload.detail);
       return;
     }
     this.closeWorktreeModal();
@@ -3057,6 +3088,7 @@ class TermdeckApp {
     this.$("worktree-modal-cancel").onclick = () => this.closeWorktreeModal();
     this.$("worktree-modal-create").onclick = () => void this.createProjectWorktree();
     this.$("worktree-location-browse").onclick = () => void this.browseWorktreeLocation();
+    this.$("worktree-modal-open-existing").onclick = () => this.openConflictingWorktree();
     this.$("worktree-modal-backdrop").addEventListener("mousedown", (event) => {
       if (event.target === this.$("worktree-modal-backdrop")) this.closeWorktreeModal();
     });

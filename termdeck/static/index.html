@@ -456,15 +456,19 @@
   <div id="worktree-modal">
   <div class="modal-title">New worktree</div>
   <div id="worktree-modal-project"></div>
-  <label for="worktree-base-ref">Branch to create from</label>
+  <label for="worktree-base-ref">Branch to check out</label>
   <select id="worktree-base-ref"></select>
-  <label>New branch name <span class="worktree-field-hint">(also the worktree name)</span><input id="worktree-branch" placeholder="optional; generated from source branch" spellcheck="false"></label>
+  <label>New branch <span class="worktree-field-hint">(optional; leave empty to work on the branch above)</span><input id="worktree-branch" placeholder="branch to create from it" spellcheck="false"></label>
   <label for="worktree-location">Folder to create it in</label>
   <div id="worktree-location-row">
     <input id="worktree-location" placeholder="default worktree folder" spellcheck="false" autocomplete="off">
     <button id="worktree-location-browse" type="button" title="Choose a folder">Browse…</button>
   </div>
-  <div id="worktree-location-hint">The resulting Git branch is used as the worktree name. TermDeck creates a uniquely named folder for it inside the folder above.</div>
+  <div id="worktree-location-hint">The worktree folder is named after the branch. A branch can only be checked out in one worktree at a time.</div>
+  <div id="worktree-modal-error" class="hidden" role="alert">
+    <span id="worktree-modal-error-text"></span>
+    <button id="worktree-modal-open-existing" type="button" class="hidden">Open it as is</button>
+  </div>
     <div class="modal-actions">
       <button id="worktree-modal-cancel">Cancel</button>
       <button id="worktree-modal-create">Create</button>

@@ -18,6 +18,7 @@ from termdeck.draft_tracker import DraftInputTracker
 from termdeck.models import ApiFields, SessionRecord, WsMessageFields
 from termdeck.project_registry import ProjectRegistry
 from termdeck.pty_process import PtyProcess
+from termdeck.repaint_filter import RepaintFilter
 from termdeck.replay_recorder import ReplayRecorder
 from termdeck.session_store import ClosedSessionStore, SessionStore
 from termdeck.state_backup import StateBackupManager
@@ -60,6 +61,10 @@ class ManagedSession:
         self.osc_query_carry = b""
         self.last_repaint_offset: int | None = None
         self.repaint_activity_suppressed_until_monotonic = 0.0
+        # Rewrites status-bar walk-and-return redraws so they stop scrolling real content off the top
+        # of the buffer; see TermdeckConfig.REPAINT_FILTER_ENABLED. One instance per session only to
+        # keep its collapsed_lines counter meaningful -- the rewrite itself carries no cross-chunk state.
+        self.repaint_filter = RepaintFilter() if TermdeckConfig.REPAINT_FILTER_ENABLED else None
         self.scrollback_sync_carry = b""
         self.screen_lives_only_in_stripped_sync_frames = False
         self.raw_replay_buffer = bytearray()
@@ -859,6 +864,10 @@ class TerminalSessionManager:
             return
         # Ahead of the recorder and the live queues alike, so every consumer sees the rescued screen.
         data = self._carry_screen_before_compaction_redraw(ms, data)
+        # Same reasoning: rewritten before anything records or forwards it, so a status repaint cannot
+        # scroll real history out of the recording or a live client's buffer in the first place.
+        if ms.repaint_filter is not None:
+            data = ms.repaint_filter.feed(data)
         if mark_activity and time.monotonic() >= ms.repaint_activity_suppressed_until_monotonic:
             ms.last_activity_at = time.time()
             ms.record.last_activity_at = ms.last_activity_at

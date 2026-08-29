@@ -1956,3 +1956,46 @@ class ReplayTrailingWipeTest(unittest.TestCase):
 
     def test_empty_recording_is_unchanged(self) -> None:
         self.assertEqual(ReplayRecorder.raw_bytes(self._session(b"")), b"")
+
+
+class ClaudeInterruptReleaseTest(unittest.TestCase):
+    """Esc suppresses a cancelled prompt, but must not latch past work that resumes after it."""
+
+    def _session(self, transcript, interrupted_at):
+        claude = agents.agent_cli("claude")
+        ms = SimpleNamespace(
+            record=SimpleNamespace(claude_interrupted=True, agent_session_id="abc", cwd="/tmp"),
+            agent_state=claude.new_session_state())
+        ms.agent_state.interrupted_at = interrupted_at
+        return claude, ms
+
+    def test_cancelled_prompt_stays_suppressed(self) -> None:
+        # Nothing was written after the interrupt: the trailing user prompt is the cancelled one.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "abc.jsonl"
+            path.write_text("{}\n")
+            claude, ms = self._session(path, time.time() + 60)  # transcript older than the interrupt
+            claude.release_interrupt_if_work_resumed(ms, path, True)
+            self.assertTrue(ms.record.claude_interrupted)
+
+    def test_work_that_starts_after_the_interrupt_clears_it(self) -> None:
+        # Interrupting a busy Claude makes it cancel and start what was queued behind it.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "abc.jsonl"
+            path.write_text("{}\n")
+            claude, ms = self._session(path, time.time() - 60)  # transcript newer than the interrupt
+            claude.release_interrupt_if_work_resumed(ms, path, True)
+            self.assertFalse(ms.record.claude_interrupted)
+
+    def test_idle_transcript_never_clears_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "abc.jsonl"
+            path.write_text("{}\n")
+            claude, ms = self._session(path, time.time() - 60)
+            claude.release_interrupt_if_work_resumed(ms, path, False)  # not active
+            self.assertTrue(ms.record.claude_interrupted)
+
+    def test_missing_transcript_is_not_evidence(self) -> None:
+        claude, ms = self._session(Path("/nonexistent/abc.jsonl"), time.time() - 60)
+        claude.release_interrupt_if_work_resumed(ms, Path("/nonexistent/abc.jsonl"), True)
+        self.assertTrue(ms.record.claude_interrupted)
