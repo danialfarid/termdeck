@@ -20,9 +20,9 @@ for running, watching, searching, and returning to many agent sessions without l
 
 ## Demo
 
-<video src="https://github.com/danialfarid/termdeck/raw/v0.8.1/docs/media/demo-opening.webm" controls muted playsinline width="900"></video>
+![TermDeck demo: opening an agent, grouping terminals, handing one agent's answer to another for review](docs/media/demo-opening.gif)
 
-*(If the player does not appear, [watch the demo](docs/media/demo-opening.webm).)*
+*[Full-resolution video](docs/media/demo-opening.webm) (1680×900, 73s).*
 
 ---
 
