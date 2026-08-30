@@ -84,7 +84,7 @@ def classify(samples: list[tuple[float, float]]) -> list[str]:
 def cut_plan(samples: list[tuple[float, float]], duration: float) -> list[tuple[float, float, float]]:
     kinds = classify(samples)
     runs: list[list] = []
-    for (time, _), kind in zip(samples, kinds):
+    for (time, _), kind in zip(samples, kinds, strict=True):
         if runs and runs[-1][0] == kind:
             runs[-1][2] = time
         else:
