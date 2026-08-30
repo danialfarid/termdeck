@@ -22,7 +22,7 @@ for running, watching, searching, and returning to many agent sessions without l
 
 ![TermDeck demo: opening two agents, asking for a change, handing one agent's answer to another for review, keeping notes, forking into parallel agents, dragging terminals between groups, and reopening a closed terminal](docs/media/demo-opening.gif)
 
-*[Full-resolution video](docs/media/demo-opening.webm) (1680×900, 64s).*
+*[Full-resolution video](docs/media/demo-opening.webm) (1680×900, 64s). How this clip is built: [docs/demo.md](docs/demo.md).*
 
 ---
 
