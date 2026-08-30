@@ -18,6 +18,14 @@ for running, watching, searching, and returning to many agent sessions without l
 
 ---
 
+## Demo
+
+<video src="https://github.com/danialfarid/termdeck/raw/main/docs/media/demo-opening.webm" controls muted playsinline width="900"></video>
+
+*(If the player does not appear, [watch the demo](docs/media/demo-opening.webm).)*
+
+---
+
 ## What it is
 
 TermDeck puts every coding-agent session in one persistent, searchable workspace instead of scattering valuable
