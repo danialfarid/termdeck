@@ -4490,8 +4490,7 @@ Object.assign(TermdeckApp.prototype, {
       this.addContextItem(menu, "Copy", hasSelection ? () => this.copySelectionToClipboard() : null, "copy");
       this.addContextItem(menu, "New note", hasSelection ? () => { void this.createNotebookNoteFromSelection(); } : null, "new-file");
       this.addContextItem(menu, "Append to note", hasSelection ? () => { void this.appendSelectionToNotebook(); } : null, "comment-add");
-      this.addContextItem(menu, "File contents", hasSelection ? () => this.searchContentFromSelection() : null, "search");
-      this.addContextItem(menu, "File name", hasSelection ? () => this.searchFileFromSelection() : null, "symbol-file");
+      this.addContextItem(menu, "Search in files", hasSelection ? () => this.searchContentFromSelection() : null, "search");
       if (selectionState.kind === "terminal") {
         this.addContextItem(menu, "Repaint display", () => this.repaintActiveTerminalDisplay(), "refresh");
       }
