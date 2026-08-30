@@ -1071,6 +1071,11 @@ Object.assign(TermdeckApp.prototype, {
     return typed === "\x1b";
   },
 
+  // Anything left once the terminal's own replies are stripped was sent by a person.
+  inputIsFromPerson(data) {
+    return !!data && !!data.replace(TERMINAL_REPLY_RE, "");
+  },
+
   sendInput(view, data) {
     const session = this.session(view.sessionId);
     if (data) view.attentionScreenDetectionSuppressed = true;
@@ -1085,7 +1090,12 @@ Object.assign(TermdeckApp.prototype, {
     // Typing and pasting each did this for themselves, which left every other way input reaches a
     // terminal -- a queued prompt, a selection handed to an agent, a scripted run -- writing into a
     // composer that stayed off screen.
-    if (data && !QUERY_RESPONSE_RE.test(data) && view.tallFollowing === false) {
+    //
+    // A PERSON's input only. The terminal answers on this same channel, and the focus report it
+    // sends when the window comes back (ESC[I) is not a cursor-position or device-attribute reply,
+    // so a query-response test let it through: switching away from Chrome and back scrolled a
+    // parked terminal to the composer and lost the reading position.
+    if (this.inputIsFromPerson(data) && view.tallFollowing === false) {
       view.tallFollowing = true;
       view.scrollMode = "follow";
       this.scrollTallContainerToCursor(view);

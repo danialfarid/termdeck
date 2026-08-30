@@ -6,15 +6,30 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-08-30
+
+### Added
+
+- A recorded demo on the project's front page.
+
+### Fixed
+
+- A terminal scrolled back into its history stays there when you switch to another app and return.
+  The focus report a terminal sends on the way back counted as input, which snapped the view down to
+  the composer and lost the reading position.
+
+### Changed
+
+- The terminal selection menu offers one **Search in files** entry instead of separate "File
+  contents" and "File name" ones; searching by file name stays on its toolbar button and keybinding.
+
+## [0.8.0] — 2026-08-29
+
 ### Added
 
 - **Ignore attention** in a terminal's context menu: drop the attention badge on a terminal you do
   not want to answer yet without touching its prompt. The terminal stays unread, so it is still
   visibly waiting for you.
-
-## [0.8.0] — 2026-08-29
-
-### Added
 
 - **A new worktree is described rather than generated.** The dialog asks for a worktree name, the branch to
   check out, an optional new branch, and the exact folder to check out into. The branch field filters as you
@@ -307,7 +322,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/danialfarid/termdeck/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/danialfarid/termdeck/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/danialfarid/termdeck/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/danialfarid/termdeck/compare/v0.6.0...v0.6.1
