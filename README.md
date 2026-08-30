@@ -20,7 +20,7 @@ for running, watching, searching, and returning to many agent sessions without l
 
 ## Demo
 
-<video src="https://github.com/danialfarid/termdeck/raw/main/docs/media/demo-opening.webm" controls muted playsinline width="900"></video>
+<video src="https://github.com/danialfarid/termdeck/raw/v0.8.1/docs/media/demo-opening.webm" controls muted playsinline width="900"></video>
 
 *(If the player does not appear, [watch the demo](docs/media/demo-opening.webm).)*
 
