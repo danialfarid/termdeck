@@ -39,7 +39,7 @@ restart, saved Codex and Claude terminals reopen **resumed into the exact agent 
 fresh one.
 
 The terminal deck stays at the center. Around it are tools that shorten the loop around agent work: grouped
-and searchable sessions, activity and unread state, an MD conversation mode, prompt and clipboard
+and searchable sessions, activity and unread state, Transcript mode, prompt and clipboard
 history, quick notes, a Monaco file editor, project search, Git history, and an automation API for spawning
 parallel agents and coordinating work between them.
 
@@ -57,7 +57,7 @@ parallel agents and coordinating work between them.
 - **Get notified when attention is needed.** Optional browser notifications announce agent attention and finished
   runs even when the TermDeck tab is not in the foreground. Install TermDeck as a browser app (install icon in the
   address bar) and notifications carry the TermDeck name and icon instead of a raw localhost origin.
-- **Read the conversation, not terminal noise.** MD conversation mode renders the agent's native transcript with
+- **Read the conversation, not terminal noise.** Transcript mode renders the agent's native transcript with
   model and status details, collapsible thinking and diffs, prompt history, queues, and a clickable outline.
 - **Search across many agents at once.** Find matching session names and conversation text across open and closed
   terminals, inspect the surrounding context, and jump back to the relevant turn.
@@ -70,7 +70,7 @@ parallel agents and coordinating work between them.
 
 ```
 ┌──────────────────────────┬────────────────────────────────────────────────────┐
-│ stock ▾                  │ terminal / MD conversation / file editor           │
+│ stock ▾                  │ terminal / transcript / file editor                │
 ├──────────────────────────┤                                                    │
 │ TERMINALS          +  ⋯  │ $ codex resume 4f2a…                              │
 │ ▾ ingestion         2 ●  │                                                    │
@@ -82,7 +82,7 @@ parallel agents and coordinating work between them.
 │   ↺ old bugfix run       │                                                    │
 │                          │ > continue                                          │
 ├──────────────────────────┼────────────────────────────────────────────────────┤
-│ Files Search Git Notes   │ MD  refresh  bottom  upload   model · cpu · rss    │
+│ Files Search Git Notes   │ transcript  refresh  bottom  upload  model · stats │
 └──────────────────────────┴────────────────────────────────────────────────────┘
 ```
 
@@ -97,7 +97,7 @@ parallel agents and coordinating work between them.
 - **Agents can delegate through the same UI.** Fork one session or up to 25 copies, or use the local API to
   start named tasks with a model, permission, prompt, placement, and result path. Every child remains a normal,
   inspectable TermDeck terminal.
-- **Useful context can move directly between agents.** Select text in a terminal, MD conversation, file, or note
+- **Useful context can move directly between agents.** Select text in a terminal, transcript, file, or note
   and choose **Ask an agent** to hand it to a new agent without rebuilding the prompt. Agents and scripts can also
   use the API to start another agent, send follow-up prompts, monitor completion, and read its response, enabling
   review, delegation, and cross-agent workflows while every participant remains visible in the deck.
@@ -106,10 +106,10 @@ parallel agents and coordinating work between them.
   layout, file/search view, and Git context; worktrees can be opened in a separate browser tab or moved to trash.
 - **Agent work can stay isolated.** New sessions and forks can run in managed Git worktrees with a visible branch
   identity, parent-relative review diff, and explicit keep, merge, or discard actions.
-- **Use the live terminal and MD mode side by side.** Switch any agent session between its interactive terminal
-  and a rendered MD conversation with model and status information, collapsible thinking and diffs, prompt
+- **Use the live terminal and Transcript mode side by side.** Switch any agent session between its interactive terminal
+  and a rendered transcript with model and status information, collapsible thinking and diffs, prompt
   history, a composer, and a queue.
-- **Your input is recoverable.** Unsent drafts are persisted, terminal and Markdown prompts stay in history,
+- **Your input is recoverable.** Unsent drafts are persisted, terminal and Transcript prompts stay in history,
   and clipboard history and quick notes keep useful snippets nearby.
 - **One browser tab per project — or per task.** Project worktrees are URL-addressable at `/p/<project>/<worktree>`,
   while a terminal or file can append its stable session ID or repo-relative path and open in its own browser tab.
@@ -334,23 +334,24 @@ The worktree selector can show one worktree or **All worktrees**; the latter kee
 groups, and closed-session history in its own collapsible section. Selecting a specific worktree filters the panel
 to that worktree and preserves the selection across reloads.
 
-### MD conversation mode
+### Transcript mode
 
-Click the **MD** icon in the bottom toolbar (or press **⌥G**) to swap an agent terminal for a rendered
+Click the **Transcript** conversation icon in the bottom toolbar (or press **⌥G** on desktop) to swap an agent terminal for a rendered
 transcript read directly from the CLI's own session file:
 
 - Prose rendered as Markdown instead of TUI-wrapped text — selectable and copyable properly
 - Code edits and thinking blocks shown as collapsible sections
 - Live working state, elapsed time, model name, reasoning effort, and context/status information
-- A prompt composer at the bottom: **Enter** submits, **Shift+Enter** newline, **Esc** interrupts
+- A prompt composer at the bottom: use the Send button on touch devices; on desktop, **Enter** inserts a newline,
+  **Shift+Enter** sends, and **Command/Ctrl+Enter** queues
 - Queue follow-up prompts while the agent is still working — they run one after another, and stay editable
   until sent
 - Live context usage for the active session (`ctx 118k/258k`) in the bottom toolbar
-- Persisted prompt history from both terminal and conversation mode
+- Persisted prompt history from both terminal and Transcript mode
 - A conversation outline (**⌥O**) for jumping to earlier prompts and responses
 - An attach button to upload a file or image straight into the prompt
 
-Press **⌥G** again, or hit **TERM**, to go back to the live terminal.
+Press **⌥G** again on desktop, or select the terminal icon, to go back to the live terminal.
 
 ### Files and the editor
 

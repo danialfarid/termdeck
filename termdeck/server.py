@@ -192,6 +192,11 @@ class CloseSessionRequest(BaseModel):
     group_name: str = ""
 
 
+class NotebookNote(BaseModel):
+    note_id: str
+    text: str = ""
+
+
 class StateRecoveryRestoreRequest(BaseModel):
     snapshot: str
 
@@ -213,6 +218,12 @@ class ProjectStatePatch(BaseModel):
     session_groups: dict[str, str] | None = None
     terminal_layout: list[str] | None = None
     session_view_modes: dict[str, str] | None = None
+    notebook_notes: list[NotebookNote] | None = None
+    notebook_active_note_id: str | None = None
+    notebook_notes_initialized: bool | None = None
+    notebook_text: str | None = None
+    selection_copy_history: list[str] | None = None
+    selection_copy_history_initialized: bool | None = None
 
 
 class StoredValueRequest(BaseModel):
@@ -472,11 +483,12 @@ class ProjectUiState(BaseModel):
     session_groups: dict[str, str] = {}
     terminal_layout: list[str] = []
     session_view_modes: dict[str, str] = {}
-
-
-class NotebookNote(BaseModel):
-    note_id: str
-    text: str = ""
+    notebook_notes: list[NotebookNote] = []
+    notebook_active_note_id: str = ""
+    notebook_notes_initialized: bool = False
+    notebook_text: str = ""
+    selection_copy_history: list[str] = []
+    selection_copy_history_initialized: bool = False
 
 
 class UiSettings(BaseModel):
@@ -3058,30 +3070,44 @@ class TermdeckServer:
         try:
             request = json.loads(await websocket.receive_text())
             since_revision = int(request.get(WsMessageFields.REVISION, 0))
+            latest_first = request.get("latest_first") is True
+            initial_limit = max(20, min(TranscriptService.HISTORY_PAGE_TURNS,
+                                        int(request.get("initial_limit", TranscriptService.HISTORY_PAGE_TURNS))))
         except (WebSocketDisconnect, ValueError, TypeError, json.JSONDecodeError):
             return
         agent_kind, cwd, agent_session_id = self.manager.session_history_source(session_id)
         path, turns, revision, queue = self.transcripts.subscribe(agent_kind, cwd, agent_session_id)
         try:
-            if path is not None and revision == 0:
-                # Register the queue first, then initialize only a bounded
-                # tail. This avoids blocking the first Markdown snapshot on
-                # the full 64 MB live-state reload.
-                revision = await asyncio.to_thread(self.transcripts.prime_subscription, agent_kind, path)
-            updates = self.transcripts.updates_since(path, since_revision)
-            if since_revision > 0 and since_revision == revision:
-                await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.TRANSCRIPT_READY,
-                                                       WsMessageFields.SESSION_ID: session_id,
-                                                       WsMessageFields.REVISION: revision}))
-            elif since_revision > 0 and updates is not None:
-                for update in updates:
-                    message = dict(update)
-                    message[WsMessageFields.SESSION_ID] = session_id
-                    await websocket.send_text(json.dumps(message))
-            else:
-                page = await asyncio.to_thread(self.transcripts.history_page, agent_kind, cwd, agent_session_id)
+            if since_revision <= 0:
+                page = await asyncio.to_thread(self.transcripts.history_page, agent_kind, cwd, agent_session_id,
+                                               None, initial_limit)
                 await self._send_transcript_snapshot(websocket, session_id, revision, page["turns"],
-                                                      before=page.get("before"), has_more=bool(page.get("has_more")))
+                                                      before=page.get("before"), has_more=bool(page.get("has_more")),
+                                                      latest_first=latest_first)
+                if path is not None:
+                    revision = await asyncio.to_thread(self.transcripts.prime_subscription, agent_kind, path)
+                    await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.TRANSCRIPT_READY,
+                                                           WsMessageFields.SESSION_ID: session_id,
+                                                           WsMessageFields.REVISION: revision}))
+            else:
+                if path is not None:
+                    revision = await asyncio.to_thread(self.transcripts.prime_subscription, agent_kind, path)
+                updates = self.transcripts.updates_since(path, since_revision)
+                if since_revision == revision:
+                    await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.TRANSCRIPT_READY,
+                                                           WsMessageFields.SESSION_ID: session_id,
+                                                           WsMessageFields.REVISION: revision}))
+                elif updates is not None:
+                    for update in updates:
+                        message = dict(update)
+                        message[WsMessageFields.SESSION_ID] = session_id
+                        await websocket.send_text(json.dumps(message))
+                else:
+                    page = await asyncio.to_thread(self.transcripts.history_page, agent_kind, cwd, agent_session_id,
+                                                   None, initial_limit)
+                    await self._send_transcript_snapshot(websocket, session_id, revision, page["turns"],
+                                                          before=page.get("before"), has_more=bool(page.get("has_more")),
+                                                          latest_first=latest_first)
             while True:
                 update = await queue.get()
                 update[WsMessageFields.SESSION_ID] = session_id
@@ -3093,7 +3119,8 @@ class TermdeckServer:
 
     async def _send_transcript_snapshot(self, websocket: WebSocket, session_id: str,
                                         revision: int, turns: list[dict[str, object]],
-                                        before: int | None = None, has_more: bool = False) -> None:
+                                        before: int | None = None, has_more: bool = False,
+                                        latest_first: bool = False) -> None:
         """Send large transcript snapshots in browser-friendly frames.
 
         Long Codex sessions contain many collapsed tool/result blocks. Sending
@@ -3102,27 +3129,32 @@ class TermdeckServer:
         Keep each frame comfortably below 1 MB; the client reassembles the
         ordered chunks before applying the authoritative snapshot.
         """
-        chunk_limit = 256_000
-        chunks: list[list[dict[str, object]]] = []
+        chunk_limit = 64_000
+        chunk_turn_limit = 12
+        reverse_chunks: list[list[dict[str, object]]] = []
         current: list[dict[str, object]] = []
         current_size = 2
-        for turn in turns:
+        for turn in reversed(turns):
             turn_size = len(json.dumps(turn, ensure_ascii=False, separators=(",", ":"))) + 1
-            if current and current_size + turn_size > chunk_limit:
-                chunks.append(current)
+            if current and (current_size + turn_size > chunk_limit or len(current) >= chunk_turn_limit):
+                reverse_chunks.append(list(reversed(current)))
                 current = []
                 current_size = 2
             current.append(turn)
             current_size += turn_size
-        if current or not chunks:
-            chunks.append(current)
+        if current or not reverse_chunks:
+            reverse_chunks.append(list(reversed(current)))
+        chunks = list(reversed(reverse_chunks))
         await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.TRANSCRIPT_SNAPSHOT_START,
                                                WsMessageFields.SESSION_ID: session_id,
                                                WsMessageFields.REVISION: revision,
                                                "before": before,
                                                "has_more": has_more,
+                                               "latest_first": latest_first,
                                                "chunks": len(chunks)}))
-        for index, chunk in enumerate(chunks):
+        chunk_indexes = range(len(chunks) - 1, -1, -1) if latest_first else range(len(chunks))
+        for index in chunk_indexes:
+            chunk = chunks[index]
             await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.TRANSCRIPT_SNAPSHOT_CHUNK,
                                                    WsMessageFields.SESSION_ID: session_id,
                                                    "index": index,

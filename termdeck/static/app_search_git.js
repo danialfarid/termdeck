@@ -790,8 +790,64 @@ Object.assign(TermdeckApp.prototype, {
       this.setInteractionWorktreeFromElement(label);
       this.openTerminalGroupContextMenu(event, group);
     };
+    this.installMobileSidebarContextMenu(label, (x, y) => {
+      this.setInteractionWorktreeFromElement(label);
+      this.openTerminalGroupContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: x, clientY: y }, group);
+    });
     this.makeLayoutDraggable(label, `group:${group.id}`, "group");
     return label;
+  },
+
+
+  installMobileSidebarContextMenu(element, openAtPoint) {
+    if (!this.touchMobileLayoutEnabled()) return;
+    let pressState = null;
+    let suppressClickUntil = 0;
+    const cancelPress = () => {
+      if (pressState?.timer) window.clearTimeout(pressState.timer);
+      pressState = null;
+      element.classList.remove("mobile-context-hold");
+    };
+    element.addEventListener("pointerdown", (event) => {
+      if (event.pointerType !== "touch" || !event.isPrimary || event.button !== 0 || event.target.closest("button")) return;
+      cancelPress();
+      pressState = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, opened: false, timer: 0 };
+      const currentPress = pressState;
+      currentPress.timer = window.setTimeout(() => {
+        if (pressState !== currentPress) return;
+        currentPress.timer = 0;
+        currentPress.opened = true;
+        suppressClickUntil = performance.now() + 800;
+        element.classList.add("mobile-context-hold");
+        openAtPoint(currentPress.x, currentPress.y);
+      }, MOBILE_SIDEBAR_CONTEXT_LONG_PRESS_MS);
+    }, { passive: true });
+    element.addEventListener("pointermove", (event) => {
+      if (!pressState || pressState.pointerId !== event.pointerId) return;
+      if (Math.hypot(event.clientX - pressState.x, event.clientY - pressState.y) > MOBILE_SIDEBAR_CONTEXT_MOVE_TOLERANCE) cancelPress();
+    }, { passive: true });
+    element.addEventListener("pointerup", (event) => {
+      if (!pressState || pressState.pointerId !== event.pointerId) return;
+      const opened = pressState.opened;
+      cancelPress();
+      if (opened) {
+        suppressClickUntil = performance.now() + 800;
+        event.preventDefault();
+      }
+    });
+    element.addEventListener("pointercancel", cancelPress, { passive: true });
+    element.addEventListener("dragstart", cancelPress, { passive: true });
+    element.addEventListener("contextmenu", (event) => {
+      if (performance.now() < suppressClickUntil) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      } else cancelPress();
+    }, true);
+    element.addEventListener("click", (event) => {
+      if (performance.now() >= suppressClickUntil) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
   },
 
 
@@ -838,13 +894,25 @@ Object.assign(TermdeckApp.prototype, {
     close.textContent = "✕";
     close.title = this.shortcutTitle("Close terminal", "close-item");
     close.onclick = (event) => { event.stopPropagation(); this.closeSession(s.session_id); };
+    const mobileActions = document.createElement("button");
+    mobileActions.className = "item-mobile-actions";
+    mobileActions.innerHTML = '<span class="codicon codicon-more"></span>';
+    mobileActions.title = "Terminal actions";
+    mobileActions.setAttribute("aria-label", mobileActions.title);
+    mobileActions.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.setInteractionWorktreeFromElement(item, s);
+      const rect = mobileActions.getBoundingClientRect();
+      this.openSessionContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: rect.right, clientY: rect.bottom + 2 }, s);
+    };
     const groupIndicator = document.createElement("span");
     groupIndicator.className = "group-drop-indicator";
     groupIndicator.innerHTML = '<span class="codicon codicon-folder-library"></span><span>group</span>';
     groupIndicator.title = "Release to group with this terminal";
-    if (showDesktopBrandIndicator) item.append(dot, typeIcon, title, groupIndicator, close);
-    else if (useTextStatusIndicator) item.append(dot, typeIcon, title, groupIndicator, close);
-    else item.append(dot, typeIcon, title, groupIndicator, close);
+    if (showDesktopBrandIndicator) item.append(dot, typeIcon, title, groupIndicator, close, mobileActions);
+    else if (useTextStatusIndicator) item.append(dot, typeIcon, title, groupIndicator, close, mobileActions);
+    else item.append(dot, typeIcon, title, groupIndicator, close, mobileActions);
     const activityDots = document.createElement("span");
     activityDots.className = "session-activity-dots";
     item.append(activityDots);
@@ -882,6 +950,10 @@ Object.assign(TermdeckApp.prototype, {
       this.setInteractionWorktreeFromElement(item, s);
       this.openSessionContextMenu(event, s);
     };
+    this.installMobileSidebarContextMenu(item, (x, y) => {
+      this.setInteractionWorktreeFromElement(item, s);
+      this.openSessionContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: x, clientY: y }, s);
+    });
     this.makeLayoutDraggable(item, `session:${s.session_id}`, "session");
     list.appendChild(item);
   },
@@ -1198,6 +1270,7 @@ Object.assign(TermdeckApp.prototype, {
     this.$("side-split").classList.toggle("hidden", view === "terminals" || view === CLOSED_SIDE_VIEW || filesVisible);
     this.applySettings();
     this.applySideLayout();
+    this.updateProblemsAvailability();
     if (view === "project" || view === "search") {
       const session = this.session(this.activeId);
       const expectedRoot = session ? session.cwd : (this.worktreeRoot() || "~");
@@ -3903,12 +3976,14 @@ Object.assign(TermdeckApp.prototype, {
 
 
   shortcutLabel(label, actionId) {
+    if (this.touchMobileLayoutEnabled()) return label;
     const binding = this.bindingFor(actionId);
     return binding ? `${label}   ${this.bindingToDisplay(binding)}` : label;
   },
 
 
   shortcutTitle(label, actionId) {
+    if (this.touchMobileLayoutEnabled()) return label;
     const binding = this.bindingToDisplay(this.bindingFor(actionId));
     return binding ? `${label} (${binding})` : label;
   },
@@ -3926,41 +4001,45 @@ Object.assign(TermdeckApp.prototype, {
 
   updateShortcutTitles() {
     this.updateHeaderAddShortcutLabels();
-    const action = this.bindingToDisplay(this.bindingFor("toggle-history"));
     for (const id of ["history-btn", "vscode-history-btn"]) {
       const historyButton = this.$(id);
-      if (historyButton) historyButton.title = `Open Markdown transcript (${action})`;
+      if (historyButton) historyButton.title = this.shortcutTitle("Open transcript", "toggle-history");
     }
     const historyClose = this.$("history-close");
-    if (historyClose) historyClose.title = `Switch to terminal (${action})`;
+    if (historyClose) historyClose.title = this.shortcutTitle("Switch to terminal", "toggle-history");
     const refreshButton = this.$("vscode-refresh-btn");
     if (refreshButton && this.vscodeMode) {
-      refreshButton.title = `Refresh TermDeck (${this.bindingToDisplay(this.bindingFor("vscode-refresh"))})`;
+      refreshButton.title = this.shortcutTitle("Refresh TermDeck", "vscode-refresh");
     }
-    const sidePanelAction = this.bindingToDisplay(this.bindingFor("cycle-side-panel"));
     const sidePanelTitles = [["view-project", "Files", "open-files-panel"],
       ["view-search", "Search & replace", "open-file-search"], ["view-git", "Git", "open-git-panel"],
       ["terminal-search-inline-toggle", "Search terminal names and output", "open-terminal-search"]];
     for (const [id, label, actionId] of sidePanelTitles) {
       const button = this.$(id);
-      const directAction = this.bindingToDisplay(this.bindingFor(actionId));
-      if (button) button.title = `${label} (${directAction}; ${sidePanelAction} cycles tabs)`;
+      if (!button) continue;
+      if (this.touchMobileLayoutEnabled()) button.title = label;
+      else {
+        const directAction = this.bindingToDisplay(this.bindingFor(actionId));
+        const sidePanelAction = this.bindingToDisplay(this.bindingFor("cycle-side-panel"));
+        button.title = `${label} (${directAction}; ${sidePanelAction} cycles tabs)`;
+      }
     }
-    for (const id of ["view-project", "view-search", "view-git"]) {
-      const button = this.$(id);
-      if (button) button.title = `${button.title} · middle/right-click opens file mode in a new tab`;
+    if (!this.touchMobileLayoutEnabled()) {
+      for (const id of ["view-project", "view-search", "view-git"]) {
+        const button = this.$(id);
+        if (button) button.title = `${button.title} · middle/right-click opens file mode in a new tab`;
+      }
     }
-    const notebookTitle = `Quick notebook (${this.bindingToDisplay(this.bindingFor("toggle-notebook"))})`;
+    const notebookTitle = this.shortcutTitle("Quick notebook", "toggle-notebook");
     for (const button of [this.$("notebook-toggle"), this.$("file-tabs-notebook"), this.$("mobile-notebook-toggle")]) {
       if (button) button.title = notebookTitle;
     }
-    const scrollBottomAction = this.bindingToDisplay(this.bindingFor("scroll-bottom"));
     for (const id of ["scroll-bottom-btn", "vscode-scroll-bottom-btn"]) {
       const scrollButton = this.$(id);
-      if (scrollButton) scrollButton.title = `Scroll terminal to bottom (${scrollBottomAction})`;
+      if (scrollButton) scrollButton.title = this.shortcutTitle("Scroll terminal to bottom", "scroll-bottom");
     }
     const historyScrollButton = this.$("history-scroll-bottom");
-    if (historyScrollButton) historyScrollButton.title = `Scroll transcript to bottom (${scrollBottomAction})`;
+    if (historyScrollButton) historyScrollButton.title = this.shortcutTitle("Scroll transcript to bottom", "scroll-bottom");
     const resyncAction = this.bindingToDisplay(this.bindingFor("resync-terminal"));
     for (const id of ["terminal-resync-btn", "vscode-terminal-resync-btn"]) {
       const resyncButton = this.$(id);
@@ -3968,9 +4047,10 @@ Object.assign(TermdeckApp.prototype, {
         // Keep the size-ownership explanation if it is showing: this pass runs on every shortcut refresh
         // and would otherwise replace the only text that says why the button is marked.
         const owned = this.views.get(this.activeId)?.sizeOwnedElsewhere;
-        resyncButton.title = owned
-          ? `Another window is using this terminal at ${owned.cols} columns. Click to resize it to this window. (${resyncAction})`
-          : `Resync terminal content (${resyncAction})`;
+        const resizeTitle = `Another window is using this terminal at ${owned?.cols} columns. Click to resize it to this window.`;
+        resyncButton.title = this.historyOpen ? "Refresh transcript" : owned
+          ? this.touchMobileLayoutEnabled() ? resizeTitle : `${resizeTitle} (${resyncAction})`
+          : this.shortcutTitle("Resync terminal content", "resync-terminal");
         resyncButton.setAttribute("aria-label", resyncButton.title);
       }
     }
@@ -3999,7 +4079,7 @@ Object.assign(TermdeckApp.prototype, {
       ["selection-note-append", "Append selection to note"]];
     for (const [id, label] of selectionButtons) {
       const button = this.$(id);
-      if (button) button.title = `${label} (${this.bindingToDisplay(this.bindingFor(id))})`;
+      if (button) button.title = this.shortcutTitle(label, id);
     }
     this.updateTerminalSearchGroupButton();
   },

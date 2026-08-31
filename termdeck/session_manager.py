@@ -12,7 +12,7 @@ from pathlib import Path
 from termdeck import agents
 from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.claude_activity_watcher import ClaudeActivityWatcher
-from termdeck.compaction_rescue import build_rescue_payload, find_missing_lines
+from termdeck.compaction_rescue import build_rescue_payload, extract_recent_bytes
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot
 from termdeck.draft_tracker import DraftInputTracker
@@ -60,6 +60,11 @@ class ManagedSession:
         self.pending_agent_rename_deadline = 0.0
         self.agent_rename_task: asyncio.Task | None = None
         self.osc_query_carry = b""
+        # Trailing bytes, so a compaction marker split across two pty reads is still matched;
+        # and the conversation as it stood when a compaction started, held until that
+        # compaction finishes. See TerminalSessionManager._detect_compaction_marker.
+        self.compaction_marker_carry = b""
+        self.compaction_snapshot: bytes | None = None
         self.last_repaint_offset: int | None = None
         self.repaint_activity_suppressed_until_monotonic = 0.0
         # Rewrites status-bar walk-and-return redraws so they stop wasting buffer rows on blank lines;
@@ -624,25 +629,47 @@ class TerminalSessionManager:
         return ("\r\n" + TermdeckConfig.COMPACT_DIVIDER + "\x1b[9999;1H" +
                 "\r\n" * (ms.rows + 4)).encode()
 
-    def rescue_missing_compaction_lines(self, ms: ManagedSession, marker_text: str, candidates: list[str]) -> None:
-        """Re-inject conversation lines a compaction's own redraw erased and never rewrote.
+    def _detect_compaction_marker(self, ms: ManagedSession, data: bytes) -> None:
+        """Snapshot the conversation when a compaction starts; replay it once it finishes.
 
-        Called only once a compaction has actually completed (the caller found a compact_boundary
-        already landed in the transcript) -- unlike the PreCompact-armed carry above, a refused
-        /compact never gets this far, since a refusal never writes one. See compaction_rescue.py:
-        this is agent-agnostic on purpose (any future caller with its own way to detect a
-        completed compaction and gather candidate lines can reuse it), even though only Claude
-        wires it up today. Reaches live clients the same way any other output does, through
-        _handle_output below -- so someone watching sees the erase happen, then the recovered
-        lines appended a few seconds later once the transcript confirms it.
+        Pure stream watching, no transcript: this only ever sees bytes freshly arriving from
+        the pty, never a replay to a reconnecting client, so unlike re-reading a transcript
+        file there is no pre-existing history here to mistake for something new.
+
+        Capturing at START is what makes the content trustworthy -- the buffer still holds the
+        conversation intact, with no redraw yet to reason about. The DONE marker only decides
+        WHEN to put it back, so a compaction's own redraw has already run and cannot erase it
+        again. Firing on DONE also dedupes by itself: Claude redraws that finished announcement
+        on every later repaint (a dozen times in one measured session), but only the first
+        redraw after a start finds a snapshot waiting.
+
+        Called before this chunk reaches the recording, so the snapshot ends at the last line
+        the conversation actually had -- the spinner line announcing the compaction is not
+        itself part of what needs rescuing.
         """
-        if not TermdeckConfig.COMPACTION_RESCUE_ENABLED or not candidates:
+        if not TermdeckConfig.COMPACTION_RESCUE_ENABLED:
             return
-        missing = find_missing_lines(candidates, bytes(ms.raw_replay_buffer), marker_text)
-        if not missing:
+        haystack = ms.compaction_marker_carry + data
+        # Carried bytes are re-scanned with the next chunk, so a consumed marker has to be
+        # dropped with them: leaving it in re-armed the rescue off its own start marker, and
+        # the next announcement redraw then replayed a second time.
+        ms.compaction_marker_carry = haystack[-TermdeckConfig.COMPACTION_RESCUE_CARRY_BYTES:]
+        if TermdeckConfig.COMPACTION_RESCUE_START_MARKER in haystack:
+            # Always re-snapshot, even when one is already held: a compaction whose finished
+            # announcement never arrives (measured once at the tail of a real recording) would
+            # otherwise leave a stale snapshot to be replayed by the NEXT compaction instead.
+            ms.compaction_snapshot = extract_recent_bytes(bytes(ms.raw_replay_buffer))
+            ms.compaction_marker_carry = b""
             return
-        payload = build_rescue_payload(missing, TermdeckConfig.COMPACTION_RESCUE_DIVIDER)
-        self._handle_output(ms, payload, mark_activity=False)
+        if ms.compaction_snapshot is None:
+            return
+        if not TermdeckConfig.COMPACTION_RESCUE_DONE_PATTERN.search(haystack):
+            return
+        replay_bytes, ms.compaction_snapshot = ms.compaction_snapshot, None
+        ms.compaction_marker_carry = b""
+        if replay_bytes:
+            self._handle_output(ms, build_rescue_payload(replay_bytes, TermdeckConfig.COMPACTION_RESCUE_DIVIDER),
+                                mark_activity=False)
 
     def _refresh_session_activity(self, ms: ManagedSession) -> None:
         transcript_activity = self._tracker.session_activity_timestamp(ms.record.agent_kind,
@@ -906,6 +933,9 @@ class TerminalSessionManager:
         if mark_activity and time.monotonic() >= ms.repaint_activity_suppressed_until_monotonic:
             ms.last_activity_at = time.time()
             ms.record.last_activity_at = ms.last_activity_at
+        # Before recording, so a compaction's own start marker is not yet in the buffer this
+        # snapshots -- the spinner line announcing it is not part of the conversation to rescue.
+        self._detect_compaction_marker(ms, data)
         self.replay.record_output(ms, data)
         self._append_collapsing_repaints(ms, data)
         self._append_output_path(ms, data)

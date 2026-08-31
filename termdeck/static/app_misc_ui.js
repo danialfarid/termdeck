@@ -444,7 +444,10 @@ Object.assign(TermdeckApp.prototype, {
     else if (actionId === "fork-terminal") { const s = this.session(this.activeId); if (s) this.forkSession(s); }
     else if (actionId === "restart-terminal") { if (this.activeId) this.restartSession(this.activeId); }
     else if (actionId === "restore-last-closed-terminal") void this.restoreLastClosedTerminal();
-    else if (actionId === "resync-terminal") this.resyncActiveTerminal();
+    else if (actionId === "resync-terminal") {
+      if (this.historyOpen) this.refreshActiveTranscript();
+      else this.resyncActiveTerminal();
+    }
     else if (actionId === "rename-terminal") { const s = this.session(this.activeId); if (s) this.renameSession(s); }
     else if (actionId === "copy-session-id") {
       if (this.activeId) this.copyTextToClipboard(this.activeId, "session id copied");
@@ -578,14 +581,9 @@ Object.assign(TermdeckApp.prototype, {
 
   openProjectSwitcher() {
     if (this.vscodeMode) return;
-    const select = this.$("project-select");
-    if (!select || select.disabled || select.classList.contains("hidden")) return;
-    select.focus();
-    if (typeof select.showPicker === "function") {
-      select.showPicker();
-      return;
-    }
-    select.click();
+    const button = this.$("project-select");
+    if (!button || button.disabled || button.classList.contains("hidden")) return;
+    this.openHeaderPicker("project");
   },
 
 

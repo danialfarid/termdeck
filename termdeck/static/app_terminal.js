@@ -297,6 +297,7 @@ Object.assign(TermdeckApp.prototype, {
                    promptDraft: this.session(id)?.draft || "", markdownPromptDraft: this.markdownPromptDraftForSession(id),
                    promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
+                   promptApiSubmitting: false,
                    promptSubmissionReflowGuardUntil: 0, promptSubmissionReflowGuardTimer: 0,
                    attentionScreenDetectionSuppressed: false,
                    reconnectAfterClose: false, claudeInitialReplayCheckTimer: 0,
@@ -312,6 +313,7 @@ Object.assign(TermdeckApp.prototype, {
                    promptEditVersion: 0, promptSubmitVersion: -1,
                    mobileImeTextareaBaseline: null, mobileImeTextareaDeadline: 0, mobileTextareaCleanupTimer: 0,
                    disposeMobileTextareaStabilizer: null };
+    this.adoptTranscriptSessionState(view);
     view.terminalFindResultListener = terminalFindAddon?.onDidChangeResults((result) => this.updateTerminalFindResultCount(view, result)) || null;
     view.mobileSelectionChangeObserver = term.onSelectionChange(() => this.scheduleSelectionActions());
     this.installMobileTerminalLongPressSelection(view);
@@ -1038,7 +1040,7 @@ Object.assign(TermdeckApp.prototype, {
       clearTimeout(view.promptSubmitTimer);
       if (submissionIsCurrent) {
         this.showPromptDraft(view);
-        if (this.historyOpen && id === this.activeId) this.$("history-prompt").focus();
+        if (this.historyOpen && id === this.activeId && !this.touchMobileLayoutEnabled()) this.$("history-prompt").focus();
       }
       return;
     } else if (msg.type === "agent_session") {
@@ -1649,7 +1651,7 @@ Object.assign(TermdeckApp.prototype, {
     const body = this.$("history-body");
     if (!body) return;
     body.scrollTop = body.scrollHeight;
-    this.$("history-prompt")?.focus();
+    if (!this.touchMobileLayoutEnabled()) this.$("history-prompt")?.focus();
   },
 
 
@@ -3653,7 +3655,15 @@ Object.assign(TermdeckApp.prototype, {
     }
     this.settings.show_terminal_age = true;
     if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
-    if (this.normalizeNotebookNotes()) this.saveSettings();
+    this.settings.notebook_open = this.readNotebookOpenState();
+    if (this.normalizeNotebookNotes()) {
+      this.saveNotebookProjectState();
+      this.saveSettings();
+    }
+    if (this.normalizeProjectSelectionCopyHistory()) {
+      this.saveProjectSelectionCopyHistory();
+      this.saveSettings();
+    }
     // V2 is now the only desktop terminal scroll controller. Remove the old
     // browser-only opt-in so a previous preference cannot revive V1.
     localStorage.removeItem("termdeck.terminal_scroll_v2");

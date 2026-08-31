@@ -1,66 +1,47 @@
 import unittest
 
-from termdeck.compaction_rescue import build_rescue_payload, find_missing_lines, strip_ansi
+from termdeck.compaction_rescue import REPLAY_LINE_COUNT, build_rescue_payload, extract_nonblank_lines, extract_recent_bytes, strip_ansi
 
-MARKER = "Conversation compacted"
-
-# A run of erase-and-up pairs then a bigger jump, matching a real capture's shape: the
-# redraw erases line by line on its way up, then jumps once more to where it prints its
-# own announcement.
-ERASE_RUN = b"\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[115A"
+# The exact byte shape of one claude status repaint, taken from a recorded session (same
+# capture repaint_filter.py's own tests use).
+STATUS_REPAINT = (b"\x1b[4B\r\x1b[8A\x1b[38;2;147;165;255m\xe2\x9c\xbb\x1b[39m"
+                  b"\r\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\x1b[2C\x1b[4A\x1b[?25h\x1b[?25l\x1b[2D")
 
 
-class FindMissingLinesTest(unittest.TestCase):
-    def test_erased_line_is_reported_missing(self) -> None:
-        # "line one" reappears after the marker (the redraw rewrote it); "line two" never
-        # does, so only it comes back as missing.
-        data = b"line one\r\nline two\r\n" + ERASE_RUN + b"line one\r\n" + MARKER.encode() + b"\r\n"
+class ExtractNonblankLinesTest(unittest.TestCase):
+    def test_returns_the_lines_the_terminal_showed(self) -> None:
+        self.assertEqual(extract_nonblank_lines(b"line one\r\nline two\r\n"), ["line one", "line two"])
 
-        missing = find_missing_lines(["line one", "line two"], data, MARKER)
+    def test_limits_to_the_most_recent_lines(self) -> None:
+        lines = [f"line {i}" for i in range(REPLAY_LINE_COUNT + 50)]
 
-        self.assertEqual(missing, ["line two"])
+        result = extract_nonblank_lines(extract_recent_bytes(("\r\n".join(lines) + "\r\n").encode()))
 
-    def test_line_reprinted_verbatim_is_not_reported_missing(self) -> None:
-        data = b"important context\r\n" + ERASE_RUN + b"important context\r\n" + MARKER.encode() + b"\r\n"
+        self.assertEqual(len(result), REPLAY_LINE_COUNT)
+        self.assertEqual(result, lines[-REPLAY_LINE_COUNT:])
 
-        self.assertEqual(find_missing_lines(["important context"], data, MARKER), [])
+    def test_preserves_top_to_bottom_order(self) -> None:
+        self.assertEqual(extract_nonblank_lines(b"alpha\r\nbeta\r\ngamma\r\n"), ["alpha", "beta", "gamma"])
 
-    def test_rewrapped_line_is_not_reported_missing(self) -> None:
-        # Same words, re-wrapped with an extra newline the terminal inserted -- not the
-        # kind of difference that should count as "gone".
-        data = b"one\r\n" + ERASE_RUN + b"a long line\r\nthat wrapped\r\n" + MARKER.encode() + b"\r\n"
+    def test_blank_lines_are_dropped(self) -> None:
+        self.assertEqual(extract_nonblank_lines(b"alpha\r\n\r\n\r\nbeta\r\n"), ["alpha", "beta"])
 
-        self.assertEqual(find_missing_lines(["a long line that wrapped"], data, MARKER), [])
+    def test_empty_input_yields_nothing(self) -> None:
+        self.assertEqual(extract_nonblank_lines(b""), [])
 
-    def test_short_candidates_are_skipped(self) -> None:
-        # Too collision-prone to trust a substring match on either side, so it is never
-        # even considered rather than risk a false rescue either way.
-        data = b"47\r\n" + ERASE_RUN + MARKER.encode() + b"\r\n"
+    def test_status_bar_repaint_noise_is_dropped(self) -> None:
+        # Regression: the spinner's own churn (repeated many times a second for the whole
+        # compaction wait) used to fill most of the REPLAY_LINE_COUNT budget with scattered
+        # fragments, crowding out real content further back -- confirmed live, a user's own
+        # prompt fell out of the window entirely on a session whose spinner ran long enough.
+        data = b"my question\r\n" + STATUS_REPAINT * 30
 
-        self.assertEqual(find_missing_lines(["47"], data, MARKER), [])
+        self.assertEqual(extract_nonblank_lines(data), ["my question"])
 
-    def test_no_marker_in_data_returns_nothing(self) -> None:
-        data = b"some ordinary output\r\nwith no compaction in it\r\n"
+    def test_real_content_around_the_noise_survives(self) -> None:
+        data = b"before\r\n" + STATUS_REPAINT * 5 + b"after\r\n"
 
-        self.assertEqual(find_missing_lines(["some ordinary output"], data, MARKER), [])
-
-    def test_blank_marker_text_returns_nothing(self) -> None:
-        data = b"line one\r\n" + MARKER.encode() + b"\r\n"
-
-        self.assertEqual(find_missing_lines(["line one"], data, ""), [])
-
-    def test_preserves_candidate_order(self) -> None:
-        data = b"alpha beta gamma\r\ndelta epsilon zeta\r\n" + ERASE_RUN + MARKER.encode() + b"\r\n"
-
-        self.assertEqual(find_missing_lines(["alpha beta gamma", "delta epsilon zeta"], data, MARKER),
-                         ["alpha beta gamma", "delta epsilon zeta"])
-
-    def test_candidate_before_the_redraw_is_not_confused_with_survival(self) -> None:
-        # The candidate's own original, pre-erasure occurrence sits earlier in this same
-        # append-only recording. Only what the redraw itself writes should count as survival.
-        data = b"line two\r\n" + ERASE_RUN + MARKER.encode() + b"\r\n"
-
-        self.assertEqual(find_missing_lines(["line two"], data, MARKER), ["line two"])
+        self.assertEqual(extract_nonblank_lines(data), ["before", "after"])
 
 
 class StripAnsiTest(unittest.TestCase):
@@ -72,7 +53,7 @@ class StripAnsiTest(unittest.TestCase):
 
 class BuildRescuePayloadTest(unittest.TestCase):
     def test_payload_contains_divider_and_lines(self) -> None:
-        payload = build_rescue_payload(["recovered one", "recovered two"], divider="-- recovered --")
+        payload = build_rescue_payload(b"recovered one\r\nrecovered two", divider="-- recovered --")
 
         text = payload.decode()
         self.assertIn("-- recovered --", text)
@@ -83,7 +64,7 @@ class BuildRescuePayloadTest(unittest.TestCase):
         # about to erase anything, so there is no reason to force a scroll the way the
         # PreCompact-armed carry payload does. Regression coverage for a real live bug: this
         # padding once flooded a session with hundreds of blank rows on every rescue.
-        payload = build_rescue_payload(["one line"], divider="-- recovered --")
+        payload = build_rescue_payload(b"one line", divider="-- recovered --")
 
         self.assertNotIn(b"\x1b[9999", payload)
         self.assertEqual(payload.count(b"\r\n"), 3)

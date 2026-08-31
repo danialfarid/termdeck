@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" href="/static/termdeck-192.png">
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <link rel="stylesheet" href="/static/vendor/codicons/codicon.css">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=20260831-rounded-note-duration">
 <link rel="stylesheet" href="/filebrowser/static/file_browser_shared.css">
 </head>
 <body>
@@ -17,11 +17,29 @@
   <div id="sidebar-header">
     <div id="project-worktree-header">
       <div id="project-header-row">
-        <select id="project-select" title="Project (url: /p/&lt;project&gt;/&lt;worktree&gt;)"></select>
+        <div id="project-select-field" class="header-picker-field">
+          <button id="project-select" type="button" role="combobox" aria-expanded="false" aria-controls="project-select-list" title="Switch project">
+            <span id="project-select-label" class="header-picker-label">All projects</span><span class="codicon codicon-chevron-down"></span>
+          </button>
+          <div id="project-select-menu" class="header-picker-menu hidden">
+            <div class="header-picker-search"><span class="codicon codicon-search"></span><input id="project-select-input" autocomplete="off" spellcheck="false" placeholder="Find project"></div>
+            <div id="project-select-list" class="header-picker-list" role="listbox" aria-label="Projects"></div>
+            <div id="project-select-summary" class="header-picker-summary hidden"></div>
+          </div>
+        </div>
         <button id="project-add-btn" title="Create or open a project, worktree, or terminal" aria-label="Create or open a project, worktree, or terminal"><span class="codicon codicon-add"></span></button>
       </div>
       <div id="worktree-header-row" class="hidden">
-        <select id="worktree-select" title="Current worktree" aria-label="Current worktree"></select>
+        <div id="worktree-select-field" class="header-picker-field">
+          <button id="worktree-select" type="button" role="combobox" aria-expanded="false" aria-controls="worktree-select-list" title="Switch worktree">
+            <span id="worktree-select-label" class="header-picker-label"></span><span class="codicon codicon-chevron-down"></span>
+          </button>
+          <div id="worktree-select-menu" class="header-picker-menu hidden">
+            <div class="header-picker-search"><span class="codicon codicon-search"></span><input id="worktree-select-input" autocomplete="off" spellcheck="false" placeholder="Find worktree"></div>
+            <div id="worktree-select-list" class="header-picker-list" role="listbox" aria-label="Worktrees"></div>
+            <div id="worktree-select-summary" class="header-picker-summary hidden"></div>
+          </div>
+        </div>
         <div id="file-header-controls" class="hidden">
           <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
           <button id="tree-sort-toggle" title="Sort files alphabetically"><span class="codicon codicon-sort-precedence"></span></button>
@@ -117,11 +135,13 @@
   </div>
 </div>
 <button id="mobile-sidebar-toggle" title="Show sidebar" aria-label="Show sidebar"><span class="codicon codicon-layout-sidebar-left"></span></button>
-<div id="mobile-history-controls" aria-label="Mobile Markdown controls">
+<div id="mobile-history-controls" aria-label="Mobile transcript controls">
   <button id="mobile-display-smaller" title="Make mobile text and controls smaller" aria-label="Make mobile text and controls smaller">−</button>
   <button id="mobile-display-larger" title="Make mobile text and controls larger" aria-label="Make mobile text and controls larger">+</button>
-  <button id="mobile-notebook-toggle" title="Quick notebook" aria-label="Quick notebook"><span class="note-taking-icon" aria-hidden="true"><span class="codicon codicon-note"></span><span class="codicon codicon-pencil"></span></span></button>
+  <button id="mobile-history-filter-toggle" title="Filter transcript" aria-label="Filter transcript" aria-expanded="false"><span class="codicon codicon-filter"></span></button>
+  <button id="mobile-notebook-toggle" title="Quick notebook" aria-label="Quick notebook"><span class="note-taking-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M10 15q-.425 0-.712-.288T9 14v-2.425q0-.4.15-.763t.425-.637l8.6-8.6q.3-.3.675-.45t.75-.15q.4 0 .763.15t.662.45L22.425 3q.275.3.425.663T23 4.4t-.137.738t-.438.662l-8.6 8.6q-.275.275-.637.438t-.763.162zm9.6-9.2l1.425-1.4l-1.4-1.4L18.2 4.4zM5 21q-.825 0-1.412-.587T3 19V5q0-.825.588-1.412T5 3h6.5q.35 0 .575.175t.35.45t.087.55t-.287.525l-4.65 4.65q-.275.275-.425.638T7 10.75V15q0 .825.588 1.412T9 17h4.225q.4 0 .763-.15t.637-.425L19.3 11.75q.25-.25.525-.288t.55.088t.45.35t.175.575V19q0 .825-.587 1.413T19 21z"/></svg></span></button>
 </div>
+<div id="mobile-connection-warning" class="hidden" role="alert"><span>Connection lost. Your Transcript draft is saved on this device.</span><button id="mobile-connection-refresh" type="button"><span class="codicon codicon-refresh"></span> Refresh</button></div>
 <div id="keys-backdrop" class="hidden">
   <div id="keys-modal">
     <div class="modal-title">Keyboard shortcuts</div>
@@ -197,7 +217,7 @@
     <div id="file-tabs" role="tablist" aria-label="Open files"></div>
     <div id="file-tabs-actions">
       <button id="file-tabs-more" title="File tab settings" aria-label="File tab settings"><span class="codicon codicon-settings-gear"></span></button>
-      <button id="file-tabs-notebook" title="Quick notebook" aria-label="Quick notebook"><span class="note-taking-icon" aria-hidden="true"><span class="codicon codicon-note"></span><span class="codicon codicon-pencil"></span></span></button>
+      <button id="file-tabs-notebook" title="Quick notebook" aria-label="Quick notebook"><span class="note-taking-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M10 15q-.425 0-.712-.288T9 14v-2.425q0-.4.15-.763t.425-.637l8.6-8.6q.3-.3.675-.45t.75-.15q.4 0 .763.15t.662.45L22.425 3q.275.3.425.663T23 4.4t-.137.738t-.438.662l-8.6 8.6q-.275.275-.637.438t-.763.162zm9.6-9.2l1.425-1.4l-1.4-1.4L18.2 4.4zM5 21q-.825 0-1.412-.587T3 19V5q0-.825.588-1.412T5 3h6.5q.35 0 .575.175t.35.45t.087.55t-.287.525l-4.65 4.65q-.275.275-.425.638T7 10.75V15q0 .825.588 1.412T9 17h4.225q.4 0 .763-.15t.637-.425L19.3 11.75q.25-.25.525-.288t.55.088t.45.35t.175.575V19q0 .825-.587 1.413T19 21z"/></svg></span></button>
     </div>
   </div>
   <div id="editor-area" class="hidden">
@@ -259,27 +279,49 @@
   </div>
   <div id="history-area" class="hidden">
       <div id="history-head">
+      <button id="history-filter-toggle" title="Filter transcript" aria-label="Filter transcript" aria-expanded="false"><span class="codicon codicon-filter"></span></button>
       <div id="history-title-group">
         <span id="history-title"></span>
       </div>
+      <div id="history-head-actions">
+        <button id="history-notebook-toggle" title="Quick notebook (&#8997;N)" aria-label="Quick notebook"><span class="note-taking-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M10 15q-.425 0-.712-.288T9 14v-2.425q0-.4.15-.763t.425-.637l8.6-8.6q.3-.3.675-.45t.75-.15q.4 0 .763.15t.662.45L22.425 3q.275.3.425.663T23 4.4t-.137.738t-.438.662l-8.6 8.6q-.275.275-.637.438t-.763.162zm9.6-9.2l1.425-1.4l-1.4-1.4L18.2 4.4zM5 21q-.825 0-1.412-.587T3 19V5q0-.825.588-1.412T5 3h6.5q.35 0 .575.175t.35.45t.087.55t-.287.525l-4.65 4.65q-.275.275-.425.638T7 10.75V15q0 .825.588 1.412T9 17h4.225q.4 0 .763-.15t.637-.425L19.3 11.75q.25-.25.525-.288t.55.088t.45.35t.175.575V19q0 .825-.587 1.413T19 21z"/></svg></span></button>
+      </div>
+    </div>
+    <div id="history-filter-menu" class="hidden" role="menu" aria-label="Transcript filters">
+      <label><input id="history-filter-hide-prompts" type="checkbox"><span>Hide prompts</span></label>
+      <label><input id="history-filter-hide-thinking" type="checkbox"><span>Hide thinking</span></label>
+      <label><input id="history-filter-code-only" type="checkbox"><span>Only code edits</span></label>
+      <label><input id="history-filter-fold-repetitive" type="checkbox"><span>Fold repetitive responses</span></label>
+      <label><input id="history-filter-collapse-edits" type="checkbox"><span>Collapse code edits</span></label>
     </div>
     <div id="history-body"></div>
     <div id="history-queued" class="hidden" aria-live="polite">
-      <div id="history-queued-head"><span>Queued</span><span id="history-queued-count"></span><span class="history-queued-help">click to edit · blur saves · × removes</span></div>
+      <div id="history-queued-head">
+        <button id="history-queued-toggle" type="button" title="Collapse queued messages" aria-label="Collapse queued messages" aria-expanded="true"><span class="codicon codicon-chevron-down"></span></button>
+        <span>Queued</span><span id="history-queued-count"></span>
+      </div>
       <div id="history-queued-items"></div>
     </div>
     <div id="history-thinking-banner" class="hidden" aria-live="polite">
       <span id="history-thinking-duration"></span>
     </div>
-      <div id="history-composer">
+    <div id="history-composer">
       <div id="history-prompt-wrap">
-        <textarea id="history-prompt" rows="2" placeholder="Continue this session…" spellcheck="false"></textarea>
-      <div id="history-prompt-help"><span id="history-prompt-help-text">Enter submit · Tab queue · ↑↓ edit queued · Shift+Enter newline</span><span id="history-model" class="hidden"></span></div>
-      </div>
-      <div id="history-composer-actions">
-        <button id="history-send" title="Send prompt" aria-label="Send prompt"><span class="codicon codicon-send"></span></button>
-        <button id="history-queue" title="Queue prompt" aria-label="Queue prompt"><span class="codicon codicon-list-ordered"></span></button>
-        <button id="history-prompt-history-btn" title="Recent prompts" aria-label="Recent prompts" aria-expanded="false"><span class="codicon codicon-history"></span></button>
+        <div id="history-prompt-row">
+          <textarea id="history-prompt" rows="1" placeholder="Continue session&hellip;" spellcheck="false"></textarea>
+          <div id="history-send-split">
+            <button id="history-send" type="button" title="Send prompt" aria-label="Send prompt"><span class="codicon codicon-send"></span></button>
+            <button id="history-send-menu-toggle" type="button" title="More send options" aria-label="More send options" aria-haspopup="menu" aria-expanded="false"><span class="codicon codicon-chevron-down"></span></button>
+            <div id="history-send-menu" class="hidden" role="menu">
+              <button id="history-stop" class="hidden" type="button" role="menuitem"><span class="codicon codicon-debug-stop"></span><span>Stop response</span></button>
+              <button id="history-queue" type="button" role="menuitem"><span class="codicon codicon-list-ordered"></span><span>Send to queue</span></button>
+            </div>
+          </div>
+        </div>
+        <div id="history-prompt-footer">
+          <div id="history-prompt-help"><span id="history-prompt-help-text"></span><span id="history-model" class="hidden"></span></div>
+          <button id="history-prompt-history-btn" type="button" title="Recent prompts" aria-label="Recent prompts" aria-expanded="false"><span class="codicon codicon-history"></span></button>
+        </div>
       </div>
     </div>
     <div id="history-prompt-history" class="hidden" role="dialog" aria-label="Recent prompts">
@@ -290,11 +332,11 @@
   <div id="terminal-area">
       <div id="terminal-actions" class="vscode-terminal-actions">
       <button id="vscode-terminal-resync-btn" title="Resync terminal content" aria-label="Resync terminal content"><span class="codicon codicon-refresh"></span></button>
-      <button id="vscode-history-btn" class="transcript-unavailable" title="Open Markdown transcript" aria-label="Open Markdown transcript"><span class="codicon codicon-markdown"></span></button>
+      <button id="vscode-history-btn" class="transcript-unavailable" title="Open transcript" aria-label="Open transcript"><span class="codicon codicon-comment-discussion"></span></button>
       <button id="vscode-scroll-bottom-btn" title="Scroll terminal to bottom" aria-label="Scroll terminal to bottom"><span class="codicon codicon-fold-down"></span></button>
-      <button id="notebook-toggle" title="Quick notebook (&#8997;N)" aria-label="Quick notebook"><span class="note-taking-icon" aria-hidden="true"><span class="codicon codicon-note"></span><span class="codicon codicon-pencil"></span></span></button>
+      <button id="notebook-toggle" title="Quick notebook (&#8997;N)" aria-label="Quick notebook"><span class="note-taking-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M10 15q-.425 0-.712-.288T9 14v-2.425q0-.4.15-.763t.425-.637l8.6-8.6q.3-.3.675-.45t.75-.15q.4 0 .763.15t.662.45L22.425 3q.275.3.425.663T23 4.4t-.137.738t-.438.662l-8.6 8.6q-.275.275-.637.438t-.763.162zm9.6-9.2l1.425-1.4l-1.4-1.4L18.2 4.4zM5 21q-.825 0-1.412-.587T3 19V5q0-.825.588-1.412T5 3h6.5q.35 0 .575.175t.35.45t.087.55t-.287.525l-4.65 4.65q-.275.275-.425.638T7 10.75V15q0 .825.588 1.412T9 17h4.225q.4 0 .763-.15t.637-.425L19.3 11.75q.25-.25.525.088t.45.35t.175.575V19q0 .825-.587 1.413T19 21z"/></svg></span></button>
       </div>
-  <button id="terminal-history-more" class="hidden" title="Open Markdown transcript to see more history" aria-label="Open Markdown transcript to see more history"><span class="codicon codicon-markdown"></span><span>More history in Markdown</span></button>
+  <button id="terminal-history-more" class="hidden" title="Open transcript to see more history" aria-label="Open transcript to see more history"><span class="codicon codicon-comment-discussion"></span><span>More transcript history</span></button>
   <div id="terminal-find" class="hidden" role="search" aria-label="Search terminal output">
     <input id="terminal-find-input" placeholder="Find in terminal" autocomplete="off" spellcheck="false">
     <span id="terminal-find-count" aria-live="polite"></span>
@@ -308,7 +350,7 @@
       <div id="initial-loading-recovery-title">Taking longer than expected</div>
       <div id="initial-loading-recovery-description">Restarting TermDeck leaves terminal processes running.</div>
       <div id="initial-loading-recovery-actions">
-        <button id="initial-loading-markdown" type="button"><span class="codicon codicon-markdown"></span> Switch to Markdown</button>
+        <button id="initial-loading-markdown" type="button"><span class="codicon codicon-comment-discussion"></span> Switch to Transcript</button>
         <button id="initial-loading-refresh" type="button"><span class="codicon codicon-refresh"></span> Refresh page</button>
         <button id="initial-loading-restart" type="button"><span class="codicon codicon-debug-restart"></span> Restart TermDeck server</button>
         <button id="initial-loading-stop-terminals" type="button"><span class="codicon codicon-debug-stop"></span> Stop running terminals</button>
@@ -328,7 +370,7 @@
     <div id="conversation-outline-list"></div>
   </aside>
   <div id="bottombar">
-    <button id="history-btn" class="transcript-unavailable" title="Open Markdown transcript" aria-label="Open Markdown transcript"><span class="codicon codicon-markdown"></span></button>
+    <button id="history-btn" class="transcript-unavailable" title="Open transcript" aria-label="Open transcript"><span class="codicon codicon-comment-discussion"></span></button>
     <button id="terminal-resync-btn" title="Resync terminal content" aria-label="Resync terminal content"><span class="codicon codicon-refresh"></span></button>
     <button id="scroll-bottom-btn" title="Scroll terminal to bottom" aria-label="Scroll terminal to bottom"><span class="codicon codicon-fold-down"></span></button>
     <button id="history-scroll-bottom" class="hidden" title="Scroll transcript to bottom" aria-label="Scroll transcript to bottom"><span class="codicon codicon-fold-down"></span></button>
@@ -498,7 +540,7 @@
   </div>
 </div>
 <script src="/static/dialogs.js"></script>
-<script src="/static/loading_recovery.js"></script>
+<script src="/static/loading_recovery.js?v=20260831-mobile-transcript-offline"></script>
 <script src="/static/vendor/xterm.js"></script>
 <script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/vendor/addon-webgl.js"></script>
@@ -511,12 +553,12 @@
 <script src="/static/lsp_client.js"></script>
 <!-- One class, split across files: app.js declares TermdeckApp (constants, constructor, core);
      the app_*.js files attach method groups to its prototype; app_boot.js instantiates. Order matters. -->
-<script src="/static/app.js"></script>
-<script src="/static/app_search_git.js"></script>
-<script src="/static/app_markdown_files.js"></script>
-<script src="/static/app_terminal.js"></script>
-<script src="/static/app_settings_ui.js"></script>
-<script src="/static/app_misc_ui.js"></script>
+<script src="/static/app.js?v=20260831-lazy-transcript-terminal"></script>
+<script src="/static/app_search_git.js?v=20260831-mobile-transcript-labels"></script>
+<script src="/static/app_markdown_files.js?v=20260831-lazy-transcript-terminal"></script>
+<script src="/static/app_terminal.js?v=20260831-lazy-transcript-terminal"></script>
+<script src="/static/app_settings_ui.js?v=20260831-mobile-transcript-labels"></script>
+<script src="/static/app_misc_ui.js?v=20260831-mobile-transcript-refresh"></script>
 <script src="/static/app_boot.js"></script>
 </body>
 </html>

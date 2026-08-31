@@ -128,15 +128,19 @@ const TERMINAL_FIND_SELECTION_BACKGROUND = TERMINAL_FIND_DECORATIONS.activeMatch
 const TERMINAL_FIND_SELECTION_FOREGROUND = "#ffffff";
 const MOBILE_TERMINAL_LONG_PRESS_MS = 450;
 const MOBILE_TERMINAL_SELECTION_MOVE_TOLERANCE = 12;
+const MOBILE_SIDEBAR_CONTEXT_LONG_PRESS_MS = 500;
+const MOBILE_SIDEBAR_CONTEXT_MOVE_TOLERANCE = 12;
 const MOBILE_TERMINAL_SELECTION_BACKGROUND = "#287fd1";
 const MOBILE_TERMINAL_SELECTION_FOREGROUND = "#ffffff";
 const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
 const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
+const TRANSCRIPT_DRAFT_LOCAL_PREFIX = "termdeck.transcript-draft.v1";
+const MOBILE_CONNECTION_WARNING_DELAY_MS = 1200;
 // Unfinished experiment: hold back writes to hidden terminals and catch them up on activation.
 // No setting and no toggle — flip this constant to work on it. See drainTerminalWrites().
 const DEFER_INACTIVE_TERMINAL_OUTPUT = false;
 const MOBILE_DISPLAY_SCALE_KEY = "termdeck.mobile_display_scale";
-const SERVER_LOCAL_SETTING_KEYS = new Set(["tall_webgl"]);
+const SERVER_LOCAL_SETTING_KEYS = new Set(["tall_webgl", "notebook_open"]);
 const MOBILE_DISPLAY_SCALE_MIN = 0.8;
 const MOBILE_DISPLAY_SCALE_MAX = 1.6;
 const MOBILE_DISPLAY_SCALE_STEP = 0.1;
@@ -259,6 +263,7 @@ const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
 // sends a pty resize, so a tight burst cannot interrupt an agent CLI's multi-line composer redraw.
 const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [150, 800, 2000];
 const TERMINAL_DEBUG_SNAPSHOT_LIMIT = 50;
+const HEADER_PICKER_RESULT_LIMIT = 50;
 const SELECTION_SEARCH_MAX_CHARS = 1000;
 const SELECTION_ACTION_DELAY_MS = 500;
 const IMAGE_ATTACHMENT_MIME_RE = /^image\//i;
@@ -319,13 +324,13 @@ const DESKTOP_KEYBINDINGS = [
   { id: "view-terminals", label: "Terminals view", def: "Meta+Shift+t", section: "Terminal" },
   { id: "switch-project", label: "Switch project", def: "Alt+s", section: "General" },
   { id: "toggle-notebook", label: "Quick notebook", def: "Alt+n", section: "General" },
-  { id: "selection-copy", label: "Copy selected terminal / Markdown text", def: "Meta+c", section: "General" },
+  { id: "selection-copy", label: "Copy selected terminal / transcript text", def: "Meta+c", section: "General" },
   { id: "selection-note-new", label: "Create note from selected text", def: "Meta+Alt+n", section: "General" },
   { id: "selection-note-append", label: "Append selected text to note", def: "Meta+Alt+Shift+n", section: "General" },
   { id: "selection-copy-history", label: "Open copied text history", def: "Meta+Shift+v", section: "General" },
-  { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Alt+g", section: "General" },
+  { id: "toggle-history", label: "Switch terminal / transcript", def: "Alt+g", section: "General" },
   { id: "scroll-bottom", label: "Scroll terminal / transcript to bottom", def: "Meta+Shift+ArrowDown", section: "General" },
-  { id: "focus-prompt", label: "Focus active terminal / editor / Markdown prompt", def: "Alt+f", section: "General" },
+  { id: "focus-prompt", label: "Focus active terminal / editor / transcript prompt", def: "Alt+f", section: "General" },
   { id: "select-active-input", label: "Select active terminal / editor / prompt text", def: "Alt+a", section: "General" },
   { id: "select-terminal-all", label: "Select all terminal text", def: "Meta+Shift+a", section: "Terminal" },
   { id: "recent-terminals", label: "Recently opened terminals", def: "Meta+e", section: "Terminal" },
@@ -350,7 +355,7 @@ const VSCODE_KEYBINDINGS = [
   { id: "toggle-notebook", label: "Quick notebook", def: "Ctrl+Alt+n", section: "General" },
   { id: "open-files-new-tab", label: "Open files in a new browser tab", def: "Ctrl+Alt+d", section: "Files" },
   { id: "open-search-new-tab", label: "Open file search in a new browser tab", def: "Ctrl+Alt+f", section: "Files" },
-  { id: "toggle-history", label: "Switch terminal / Markdown transcript", def: "Ctrl+Alt+m", section: "General" },
+  { id: "toggle-history", label: "Switch terminal / transcript", def: "Ctrl+Alt+m", section: "General" },
   { id: "select-terminal-all", label: "Select all terminal text", def: "Ctrl+Alt+Shift+a", section: "Terminal" },
   { id: "vscode-refresh", label: "Refresh TermDeck", def: "Ctrl+r", section: "General" },
   { id: "vscode-reload", label: "Reload TermDeck webview", def: "Ctrl+Shift+r", section: "General" },
@@ -570,6 +575,7 @@ class TermdeckApp {
     this.initialLoadComplete = false;
     this.initialPageContentReady = false;
     this.views = new Map();
+    this.transcriptSessionStates = new Map();
     this.openFiles = new Map();
     this.lspClient = null;
     this.openFilesPersistPromise = Promise.resolve();
@@ -603,6 +609,7 @@ class TermdeckApp {
     this.historyWs = null;
     this.historyWsReconnectTimer = 0;
     this.historyStreamSessionId = null;
+    this.historyManualRefreshSessionId = "";
     this.historySnapshotBuffers = new Map();
     this.historyTurnsBySession = new Map();
     this.historyScrollBySession = new Map();
@@ -611,16 +618,22 @@ class TermdeckApp {
     this.historyBeforeBySession = new Map();
     this.historyHasMoreBySession = new Map();
     this.historyOlderLoadBusy = false;
+    this.historyTopLoadObserver = null;
     this.historyBackgroundLoadTimer = 0;
     this.historyBackgroundLoadSessionId = "";
+    this.historyFilteredLoadTimer = 0;
     this.historyStreamFresh = false;
     this.historyRevisions = new Map();
     this.historyPendingPrompts = new Map();
     this.historyPendingPromptSequence = 0;
     this.historyFingerprint = "";
     this.historyTurns = [];
+    this.historyRenderedTurns = [];
     this.historyLoaded = false;
     this.historyEditsCollapsed = false;
+    this.historyFilters = { hidePrompts: false, hideThinking: false, codeOnly: false, foldRepetitive: false };
+    this.historyFilterProjectKey = "";
+    this.headerPickerActiveIndices = { project: 0, worktree: 0 };
     this.closedExpanded = false;
     this.restoreLastClosedTerminalBusy = false;
     this.restoreLastClosedTerminalNeedsConfirmation = false;
@@ -817,6 +830,7 @@ class TermdeckApp {
     this.selectionActionUpdateFrame = 0;
     this.selectionActionUpdateTimer = 0;
     this.pendingNewAgentSelection = "";
+    this.pendingNewAgentSelectionUseHistory = false;
     this.nativeSessionIds = new Set();
     this.sessionModelById = new Map();
     this.selectedTreeRow = null;
@@ -824,6 +838,7 @@ class TermdeckApp {
     this.lastValidNavState = null;
     this.statusWs = null;
     this.statusWsReconnectTimer = 0;
+    this.mobileConnectionWarningTimer = 0;
     this.serverInstanceId = "";
     this.serverRestartReloading = false;
     this.remoteIdleTimeoutMs = 0;
@@ -833,6 +848,11 @@ class TermdeckApp {
     this.remoteBrowserEmail = "";
     this.remoteIdleActivityHandler = () => this.recordRemoteBrowserActivity();
     this.remoteIdleVisibilityHandler = () => this.handleRemoteBrowserVisibilityChange();
+    this.mobileOnlineHandler = () => {
+      this.connectStatusStream();
+      this.scheduleMobileConnectionWarning();
+    };
+    this.mobileOfflineHandler = () => this.setMobileConnectionWarning(true);
     this.layoutFitSettleTimer = 0;
     this.mobileOrientationChangeTimer = 0;
     this.mobileViewportResizeHandler = this.syncMobileVisualViewport.bind(this);
@@ -957,6 +977,7 @@ class TermdeckApp {
     if (!this.touchMobileLayoutEnabled()) return;
     const next = !!collapsed && !this.mobileSidebarPinned();
     document.body.classList.toggle("mobile-sidebar-collapsed", next);
+    if (!next) this.closeHistoryFilterMenu?.();
     document.body.scrollTo({ left: 0, behavior: "auto" });
     requestAnimationFrame(() => {
       this.syncMobileVisualViewport();
@@ -971,7 +992,7 @@ class TermdeckApp {
   initializeMobileSidebar() {
     if (!this.touchMobileLayoutEnabled()) return;
     document.body.classList.add("mobile-touch-layout");
-    document.body.classList.remove("mobile-sidebar-collapsed");
+    document.body.classList.toggle("mobile-sidebar-collapsed", !this.mobileSidebarPinned());
     this.syncMobileSidebarControls();
     this.$("mobile-sidebar-collapse").onclick = () => this.setMobileSidebarCollapsed(true);
     this.$("mobile-sidebar-toggle").onclick = () => this.setMobileSidebarCollapsed(false);
@@ -1125,8 +1146,7 @@ class TermdeckApp {
     if (!this.vscodeMode) {
       if (this.vscodeProjectName) {
         if (this.projectSlug !== this.vscodeProjectName) this.projectSlug = this.vscodeProjectName;
-        const select = this.$("project-select");
-        if (select && select.value !== this.projectSlug) select.value = this.projectSlug;
+        this.updateHeaderPickerDisplay("project");
         return;
       }
       if (this.projectFallbackFromWorkspaceRoot()) {
@@ -1226,6 +1246,8 @@ class TermdeckApp {
       recent_file_exclude_glob: "!*.json, !*.log, !*.csv",
       recently_opened_terminal_ids: [], unread_sessions: [],
       terminal_groups: [], session_groups: {}, session_view_modes: {},
+      notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, notebook_text: "",
+      selection_copy_history: [], selection_copy_history_initialized: false,
       ...state,
       recent_files_collapsed: state.recent_files_collapsed ?? true,
     };
@@ -1379,7 +1401,9 @@ class TermdeckApp {
     const nextState = {};
     for (const field of ["active_session_id", "open_files", "open_files_collapsed", "recent_files_collapsed",
       "recent_file_exclude_glob", "recently_opened_terminal_ids", "session_order", "pinned_sessions", "pinned_groups",
-      "unread_sessions", "terminal_groups", "session_groups", "terminal_layout", "session_view_modes"]) {
+      "unread_sessions", "terminal_groups", "session_groups", "terminal_layout", "session_view_modes", "notebook_notes",
+      "notebook_active_note_id", "notebook_notes_initialized", "notebook_text", "selection_copy_history",
+      "selection_copy_history_initialized"]) {
       if (Object.prototype.hasOwnProperty.call(payload, field)) nextState[field] = payload[field];
     }
     const previous = this.settings.project_state?.[stateKey] || {};
@@ -2276,12 +2300,10 @@ class TermdeckApp {
   async loadProjects() {
     if (this.vscodeMode) {
       this.projects = [];
-      const select = this.$("project-select");
-      select.textContent = "";
-      select.onchange = null;
-      select.disabled = true;
-      select.style.display = "none";
-      select.classList.add("hidden");
+      const button = this.$("project-select");
+      button.disabled = true;
+      button.style.display = "none";
+      button.classList.add("hidden");
       if (!this.vscodeEditorMode) this.projectSlug = null;
       return;
     }
@@ -2291,38 +2313,25 @@ class TermdeckApp {
     } catch (err) {
       this.projects = [];
     }
-    const select = this.$("project-select");
-    select.textContent = "";
-    const allOption = document.createElement("option");
-    allOption.value = "";
-    allOption.textContent = "All projects";
-    select.appendChild(allOption);
-    for (const p of this.projects) {
-      const option = document.createElement("option");
-      option.value = p.name;
-      option.textContent = p.name;
-      option.title = p.root;
-      select.appendChild(option);
-    }
+    const button = this.$("project-select");
+    button.disabled = false;
+    button.style.display = "";
+    button.classList.remove("hidden");
     this.applyVscodeDefaultProjectState();
     if (this.vscodeMode) {
-      select.onchange = null;
-      select.disabled = true;
-      select.style.display = "none";
-      select.classList.add("hidden");
+      button.disabled = true;
+      button.style.display = "none";
+      button.classList.add("hidden");
       return;
     }
-    select.value = this.projectSlug || "";
-    select.onchange = () => {
-      location.href = select.value ? `/p/${encodeURIComponent(select.value)}` : "/";
-    };
+    this.updateHeaderPickerDisplay("project");
     await this.loadWorktrees();
   }
 
   async loadWorktrees() {
     const row = this.$("worktree-header-row");
-    const select = this.$("worktree-select");
-    if (!row || !select || !this.projectSlug || this.vscodeMode) {
+    const button = this.$("worktree-select");
+    if (!row || !button || !this.projectSlug || this.vscodeMode) {
       this.worktrees = [];
       row?.classList.add("hidden");
       this.updateHeaderAddMenu();
@@ -2335,26 +2344,7 @@ class TermdeckApp {
     } catch (error) {
       this.worktrees = [];
     }
-    select.textContent = "";
     const availableWorktrees = this.worktrees.filter((worktree) => worktree.available);
-    if (availableWorktrees.length > 1) {
-      const allOption = document.createElement("option");
-      allOption.value = ALL_WORKTREES_ID;
-      allOption.textContent = "All worktrees";
-      allOption.title = "Show terminals and closed sessions from every worktree";
-      select.appendChild(allOption);
-    }
-    for (const worktree of this.worktrees) {
-      const option = document.createElement("option");
-      option.value = worktree.id;
-      option.textContent = worktree.branch || worktree.name || worktree.path;
-      option.title = `${worktree.branch || worktree.path}\n${worktree.path}`;
-      if (!worktree.available) {
-        option.textContent += " (missing)";
-        option.disabled = true;
-      }
-      select.appendChild(option);
-    }
     const requestedWorktreeUrlSegment = this.requestedWorktreeUrlSegment;
     const requestedWorktree = this.worktreeForUrlSegment(requestedWorktreeUrlSegment);
     if (requestedWorktreeUrlSegment && !requestedWorktree) {
@@ -2373,10 +2363,9 @@ class TermdeckApp {
     if (availableWorktrees.length > 1) availableIds.add(ALL_WORKTREES_ID);
     if (!availableIds.has(this.worktreeId)) this.worktreeId = availableIds.has(saved) ? saved : "root";
     if (!availableIds.has(this.worktreeId)) this.worktreeId = "root";
-    select.value = this.worktreeId;
+    this.updateHeaderPickerDisplay("worktree");
     row.classList.remove("hidden");
     this.updateHeaderAddMenu();
-    select.onchange = () => this.switchWorktree(select.value);
   }
 
   async switchWorktree(worktreeId) {
@@ -2388,6 +2377,7 @@ class TermdeckApp {
       this.worktreeId = selected.id;
     }
     this.interactionWorktreeId = this.worktreeId === ALL_WORKTREES_ID ? this.interactionWorktreeId : this.worktreeId;
+    this.updateHeaderPickerDisplay("worktree");
     this.disconnectRecentFilesWatch();
     this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
     this.settings.selected_worktrees = { ...(this.settings.selected_worktrees || {}), [this.projectSlug]: this.worktreeId };
@@ -2407,6 +2397,184 @@ class TermdeckApp {
     await this.chooseProjectFolder();
   }
 
+  headerPickerElements(kind) {
+    return {
+      button: this.$(`${kind}-select`), input: this.$(`${kind}-select-input`), label: this.$(`${kind}-select-label`),
+      list: this.$(`${kind}-select-list`), menu: this.$(`${kind}-select-menu`), summary: this.$(`${kind}-select-summary`),
+    };
+  }
+
+  headerPickerOptions(kind) {
+    if (kind === "project") {
+      return [{ value: "", label: "All projects", detail: "", disabled: false }, ...this.projects.map((project) => ({
+        value: project.name, label: project.name, detail: this.compactProjectPath(project.root), disabled: false,
+      }))];
+    }
+    const available = this.worktrees.filter((worktree) => worktree.available);
+    const options = available.length > 1
+      ? [{ value: ALL_WORKTREES_ID, label: "All worktrees", detail: "Every worktree", disabled: false }]
+      : [];
+    return [...options, ...this.worktrees.map((worktree) => ({
+      value: worktree.id, label: `${worktree.branch || worktree.name || worktree.path}${worktree.available ? "" : " (missing)"}`,
+      detail: this.compactProjectPath(worktree.path), disabled: !worktree.available,
+    }))];
+  }
+
+  currentHeaderPickerValue(kind) {
+    return kind === "project" ? this.projectSlug || "" : this.worktreeId;
+  }
+
+  matchingHeaderPickerOptions(kind) {
+    const input = this.headerPickerElements(kind).input;
+    const query = String(input?.value || "").trim().toLowerCase();
+    const options = this.headerPickerOptions(kind);
+    if (!query) return options;
+    const prefix = options.filter((option) => option.label.toLowerCase().startsWith(query));
+    const rest = options.filter((option) => !option.label.toLowerCase().startsWith(query) &&
+      `${option.label} ${option.detail}`.toLowerCase().includes(query));
+    return [...prefix, ...rest];
+  }
+
+  updateHeaderPickerDisplay(kind) {
+    const elements = this.headerPickerElements(kind);
+    if (!elements.label || !elements.button) return;
+    const current = this.headerPickerOptions(kind).find((option) => option.value === this.currentHeaderPickerValue(kind));
+    elements.label.textContent = current?.label || (kind === "project" ? "All projects" : "Worktree");
+    elements.button.title = current?.detail || (kind === "project" ? "Switch project" : "Switch worktree");
+  }
+
+  renderHeaderPicker(kind) {
+    const elements = this.headerPickerElements(kind);
+    const matches = this.matchingHeaderPickerOptions(kind);
+    const shown = matches.slice(0, HEADER_PICKER_RESULT_LIMIT);
+    const activeIndex = Math.max(0, Math.min(this.headerPickerActiveIndices[kind], shown.length - 1));
+    this.headerPickerActiveIndices[kind] = shown.length ? activeIndex : -1;
+    elements.list.textContent = "";
+    if (!shown.length) {
+      const empty = document.createElement("div");
+      empty.className = "header-picker-empty";
+      empty.textContent = `No matching ${kind === "project" ? "project" : "worktree"}`;
+      elements.list.appendChild(empty);
+    }
+    for (const [index, option] of shown.entries()) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = `header-picker-option${index === activeIndex ? " active" : ""}${option.value === this.currentHeaderPickerValue(kind) ? " selected" : ""}${option.disabled ? " disabled" : ""}`;
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", String(option.value === this.currentHeaderPickerValue(kind)));
+      row.disabled = option.disabled;
+      const check = document.createElement("span");
+      check.className = `header-picker-option-check codicon ${option.value === this.currentHeaderPickerValue(kind) ? "codicon-check" : ""}`;
+      const copy = document.createElement("span");
+      copy.className = "header-picker-option-copy";
+      const label = document.createElement("span");
+      label.className = "header-picker-option-label";
+      label.textContent = option.label;
+      copy.appendChild(label);
+      if (option.detail) {
+        const detail = document.createElement("span");
+        detail.className = "header-picker-option-detail";
+        detail.textContent = option.detail;
+        copy.appendChild(detail);
+      }
+      row.append(check, copy);
+      row.onmouseenter = () => {
+        this.headerPickerActiveIndices[kind] = index;
+        elements.list.querySelectorAll(".header-picker-option.active").forEach((item) => item.classList.remove("active"));
+        row.classList.add("active");
+      };
+      row.onmousedown = (event) => {
+        event.preventDefault();
+        if (!option.disabled) this.selectHeaderPickerOption(kind, option.value);
+      };
+      elements.list.appendChild(row);
+    }
+    elements.summary.classList.toggle("hidden", matches.length <= HEADER_PICKER_RESULT_LIMIT);
+    elements.summary.textContent = matches.length > HEADER_PICKER_RESULT_LIMIT
+      ? `Showing 50 of ${matches.length}; type to narrow` : "";
+    elements.list.querySelector(".header-picker-option.active")?.scrollIntoView({ block: "nearest" });
+  }
+
+  openHeaderPicker(kind) {
+    this.closeHeaderPickers();
+    this.closeHeaderAddMenu();
+    const elements = this.headerPickerElements(kind);
+    if (!elements.button || elements.button.disabled) return;
+    elements.input.value = "";
+    const currentIndex = this.headerPickerOptions(kind).findIndex((option) => option.value === this.currentHeaderPickerValue(kind));
+    this.headerPickerActiveIndices[kind] = currentIndex >= 0 && currentIndex < HEADER_PICKER_RESULT_LIMIT ? currentIndex : 0;
+    this.renderHeaderPicker(kind);
+    elements.menu.classList.remove("hidden");
+    elements.button.setAttribute("aria-expanded", "true");
+    elements.input.focus();
+  }
+
+  closeHeaderPickers() {
+    for (const kind of ["project", "worktree"]) {
+      const elements = this.headerPickerElements(kind);
+      elements.menu?.classList.add("hidden");
+      elements.button?.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  toggleHeaderPicker(kind) {
+    const elements = this.headerPickerElements(kind);
+    if (elements.menu.classList.contains("hidden")) this.openHeaderPicker(kind);
+    else this.closeHeaderPickers();
+  }
+
+  selectHeaderPickerOption(kind, value) {
+    const option = this.headerPickerOptions(kind).find((candidate) => candidate.value === value);
+    if (!option || option.disabled) return;
+    this.closeHeaderPickers();
+    if (kind === "project") location.href = value ? `/p/${encodeURIComponent(value)}` : "/";
+    else void this.switchWorktree(value);
+  }
+
+  handleHeaderPickerKeydown(kind, event) {
+    const elements = this.headerPickerElements(kind);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeHeaderPickers();
+      elements.button.focus();
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return;
+    event.preventDefault();
+    event.stopPropagation();
+    const shown = this.matchingHeaderPickerOptions(kind).slice(0, HEADER_PICKER_RESULT_LIMIT);
+    if (!shown.length) return;
+    if (event.key === "Enter") {
+      const option = shown[this.headerPickerActiveIndices[kind]];
+      if (option && !option.disabled) this.selectHeaderPickerOption(kind, option.value);
+      return;
+    }
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    let next = this.headerPickerActiveIndices[kind];
+    for (let attempts = 0; attempts < shown.length; attempts += 1) {
+      next = (next + step + shown.length) % shown.length;
+      if (!shown[next].disabled) break;
+    }
+    this.headerPickerActiveIndices[kind] = next;
+    this.renderHeaderPicker(kind);
+  }
+
+  initHeaderPickers() {
+    for (const kind of ["project", "worktree"]) {
+      const elements = this.headerPickerElements(kind);
+      elements.button.onclick = (event) => {
+        event.stopPropagation();
+        this.toggleHeaderPicker(kind);
+      };
+      elements.input.oninput = () => {
+        this.headerPickerActiveIndices[kind] = 0;
+        this.renderHeaderPicker(kind);
+      };
+      elements.input.onkeydown = (event) => this.handleHeaderPickerKeydown(kind, event);
+    }
+  }
+
   updateHeaderAddMenu() {
     const button = this.$("header-add-worktree");
     if (!button) return;
@@ -2422,7 +2590,7 @@ class TermdeckApp {
       ["header-add-terminal", "new-terminal"]];
     for (const [id, actionId] of actions) {
       const shortcut = this.$(id)?.querySelector(".header-add-shortcut");
-      if (shortcut) shortcut.textContent = this.bindingToDisplay(this.bindingFor(actionId));
+      if (shortcut) shortcut.textContent = this.touchMobileLayoutEnabled() ? "" : this.bindingToDisplay(this.bindingFor(actionId));
     }
   }
 
@@ -3104,8 +3272,10 @@ class TermdeckApp {
     this.$("file-history-diff-previous").onclick = () => this.navigateFileHistoryDiff(-1);
     this.$("file-history-diff-next").onclick = () => this.navigateFileHistoryDiff(1);
     this.initNotebook();
+    this.initHistoryFilters();
     this.initSelectionActions();
     this.initIdeFeatures();
+    this.initHeaderPickers();
     for (const view of ["terminals", "project", "search", "git"]) {
       this.$("view-" + view).onclick = () => this.handleFileModeNavigationClick(view);
       this.$("view-" + view).onauxclick = (event) => this.handleNavigationAuxClick(event, view);
@@ -3249,10 +3419,15 @@ class TermdeckApp {
       const headerAddMenu = this.$("header-add-menu");
       if (headerAddMenu && !headerAddMenu.classList.contains("hidden") && !headerAddMenu.contains(e.target) &&
           !this.$("project-add-btn")?.contains(e.target)) this.closeHeaderAddMenu();
+      if (!e.target.closest?.(".header-picker-field")) this.closeHeaderPickers();
       const promptHistory = this.$("history-prompt-history");
       const promptHistoryButton = this.$("history-prompt-history-btn");
       if (promptHistory && !promptHistory.classList.contains("hidden") &&
           !promptHistory.contains(e.target) && !promptHistoryButton?.contains(e.target)) this.closePromptHistory();
+      const sendMenu = this.$("history-send-menu");
+      if (sendMenu && !sendMenu.classList.contains("hidden") && !e.target.closest?.("#history-send-split")) {
+        this.closeHistorySendMenu();
+      }
       const selectionActions = this.$("selection-actions");
       if (selectionActions && !selectionActions.classList.contains("hidden") && !selectionActions.contains(e.target)) {
         this.hideSelectionActions();
@@ -3339,16 +3514,16 @@ class TermdeckApp {
       this.scrollHistoryToBottom();
       this.refocusActiveInputAfterToolbarAction();
     };
-    this.$("history-body").addEventListener("scroll", () => {
-      if (this.historyOpen && this.$("history-body").scrollTop < 80) this.loadOlderHistory();
-    });
+    this.$("history-body").addEventListener("scroll", () => this.loadOlderHistoryWhenNearTop(), { passive: true });
+    this.$("history-body").addEventListener("touchend", () => this.loadOlderHistoryWhenNearTop(), { passive: true });
     this.$("history-body").addEventListener("click", (event) => this.handleHistoryFileLink(event));
     for (const id of ["terminal-resync-btn", "vscode-terminal-resync-btn"]) {
       const button = this.$(id);
       if (button) {
         button.onmousedown = (event) => event.preventDefault();
         button.onclick = () => {
-          this.resyncActiveTerminal();
+          if (this.historyOpen) this.refreshActiveTranscript();
+          else this.resyncActiveTerminal();
           this.refocusActiveInputAfterToolbarAction();
         };
       }
@@ -3378,28 +3553,45 @@ class TermdeckApp {
       event.preventDefault();
       this.toggleStatsMaintenanceMenu(event.currentTarget);
     };
-    this.$("history-send").onclick = () => this.handleHistorySendButton();
-    this.$("history-queue").onclick = () => this.sendHistoryPrompt({ queue: true });
+    this.$("history-send").onclick = () => {
+      this.closeHistorySendMenu();
+      this.handleHistorySendButton();
+    };
+    this.$("history-send-menu-toggle").onclick = (event) => {
+      event.stopPropagation();
+      this.toggleHistorySendMenu();
+    };
+    this.$("history-queue").onclick = () => {
+      this.closeHistorySendMenu();
+      this.sendHistoryPrompt({ queue: true });
+    };
+    this.$("history-stop").onclick = () => {
+      this.closeHistorySendMenu();
+      this.interruptHistoryPrompt();
+    };
+    this.$("history-queued-toggle").onclick = () => this.toggleHistoryQueueCollapsed();
     this.$("history-prompt-history-btn").onclick = () => this.togglePromptHistory();
+    this.$("history-prompt-help-text").textContent = this.touchMobileLayoutEnabled() ? "" :
+      `Shift+Enter submit · ${PRIMARY_MODIFIER_DISPLAY}+Enter queue · Enter newline · ↑↓ edit queued`;
     this.$("history-prompt").addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
+        if (!this.$("history-send-menu").classList.contains("hidden")) {
+          this.closeHistorySendMenu();
+          return;
+        }
+        if (this.touchMobileLayoutEnabled()) return;
         this.interruptHistoryPrompt();
         return;
       }
-      if (e.key === "Tab") {
-        e.preventDefault();
-        e.stopPropagation();
-        this.sendHistoryPrompt({ queue: true });
-        return;
-      }
       if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.metaKey && !e.ctrlKey && !e.altKey &&
-          !this.$("history-prompt").value && this.views.get(this.activeId)?.promptQueue?.length) {
+          !this.$("history-prompt").value && this.sessionInteractionState(this.activeId, false)?.promptQueue?.length) {
         e.preventDefault();
         e.stopPropagation();
-        const view = this.views.get(this.activeId);
+        const view = this.sessionInteractionState(this.activeId, false);
         const queueLength = view.promptQueue.length;
+        view.promptQueueCollapsed = false;
         const current = Number.isInteger(view.promptQueueEditIndex) ? view.promptQueueEditIndex :
           (e.key === "ArrowUp" ? queueLength - 1 : 0);
         view.promptQueueEditIndex = Math.max(0, Math.min(queueLength - 1,
@@ -3416,11 +3608,12 @@ class TermdeckApp {
         return;
       }
       if (e.key !== "Enter" || e.isComposing) return;
+      const submitPrompt = e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey;
+      const queuePrompt = !e.shiftKey && !e.altKey && (e.metaKey || e.ctrlKey);
+      if (!submitPrompt && !queuePrompt) return;
+      e.preventDefault();
       e.stopPropagation();
-      if (!e.shiftKey) {
-        e.preventDefault();
-        this.sendHistoryPrompt({ queue: false });
-      }
+      this.sendHistoryPrompt({ queue: queuePrompt });
     }, true);
     const historyPrompt = this.$("history-prompt");
     historyPrompt.addEventListener("paste", (event) => {
@@ -3428,7 +3621,7 @@ class TermdeckApp {
       if (!files.length) return;
       event.preventDefault();
       event.stopPropagation();
-      void this.insertHistoryAttachmentFiles(this.views.get(this.activeId), files);
+      void this.insertHistoryAttachmentFiles(this.sessionInteractionState(this.activeId), files);
     });
     historyPrompt.addEventListener("dragover", (event) => {
       const files = this.historyImageFilesFromDataTransfer(event.dataTransfer);
@@ -3445,13 +3638,14 @@ class TermdeckApp {
       if (!files.length) return;
       event.preventDefault();
       event.stopPropagation();
-      void this.insertHistoryAttachmentFiles(this.views.get(this.activeId), files);
+      void this.insertHistoryAttachmentFiles(this.sessionInteractionState(this.activeId), files);
     });
     historyPrompt.addEventListener("input", () => {
-      const view = this.views.get(this.activeId);
+      const view = this.sessionInteractionState(this.activeId, false);
       if (!view) return;
       this.persistMarkdownPromptDraft(view, this.$("history-prompt").value);
       this.resizeHistoryPrompt();
+      this.updateHistorySendMenu();
     });
     this.$("attach-btn").onclick = () => this.historyOpen ? this.attachToHistory() : this.attachToActive();
     this.$("reveal-session-btn").onclick = () => {
@@ -3559,6 +3753,12 @@ class TermdeckApp {
         this.closeHeaderAddMenu();
         return;
       }
+      if (e.key === "Escape" && ["project", "worktree"].some((kind) =>
+        !this.headerPickerElements(kind).menu.classList.contains("hidden"))) {
+        e.preventDefault();
+        this.closeHeaderPickers();
+        return;
+      }
       const worktreeResultOpen = !this.$("worktree-result-backdrop").classList.contains("hidden");
       if (worktreeResultOpen) {
         if (e.key === "Escape") this.closeWorktreeResult();
@@ -3646,6 +3846,7 @@ class TermdeckApp {
       if (event.persisted) scheduleLayoutFit();
     });
     this.installTerminalSizeDebugOverlay();
+    this.initializeMobileConnectionWarning();
     void this.initializeRemoteIdleMode();
     this.refresh().finally(() => this.connectStatusStream());
     setInterval(() => this.refresh(), SESSION_LIST_REFRESH_MS);
@@ -3963,7 +4164,7 @@ class TermdeckApp {
     }
     for (const s of this.sessions) {
       this.cacheSessionModel(s);
-      const view = this.views.get(s.session_id);
+      const view = this.sessionInteractionState(s.session_id, false);
       if (view && !view.promptEditing && !view.promptSubmitting && !view.promptDraftSyncPending &&
           view.pendingDraftSync === null && view.pendingTerminalDraft === null && view.promptDraft !== (s.draft || "")) {
         view.promptDraft = s.draft || "";
@@ -4001,6 +4202,9 @@ class TermdeckApp {
         this.postVscodeNativeClose(id);
         this.destroyView(id, view);
       }
+    }
+    for (const id of [...this.transcriptSessionStates.keys()]) {
+      if (!ids.has(id)) this.transcriptSessionStates.delete(id);
     }
     if (this.activeId && !ids.has(this.activeId)) this.activeId = null;
     if (this.initialNav) {
@@ -4043,6 +4247,11 @@ class TermdeckApp {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws/status`);
     this.statusWs = ws;
+    ws.onopen = () => {
+      clearTimeout(this.mobileConnectionWarningTimer);
+      this.mobileConnectionWarningTimer = 0;
+      this.setMobileConnectionWarning(false);
+    };
     ws.onmessage = (event) => {
       if (typeof event.data !== "string") return;
       try {
@@ -4066,9 +4275,34 @@ class TermdeckApp {
     ws.onclose = () => {
       if (this.statusWs !== ws) return;
       this.statusWs = null;
+      this.scheduleMobileConnectionWarning();
       clearTimeout(this.statusWsReconnectTimer);
       this.statusWsReconnectTimer = setTimeout(() => this.connectStatusStream(), RECONNECT_MS);
     };
+  }
+
+  initializeMobileConnectionWarning() {
+    const refreshButton = this.$("mobile-connection-refresh");
+    if (refreshButton) refreshButton.onclick = () => location.reload();
+    window.addEventListener("online", this.mobileOnlineHandler);
+    window.addEventListener("offline", this.mobileOfflineHandler);
+    if (!navigator.onLine) this.setMobileConnectionWarning(true);
+  }
+
+  scheduleMobileConnectionWarning() {
+    clearTimeout(this.mobileConnectionWarningTimer);
+    if (!this.touchMobileLayoutEnabled()) return;
+    this.mobileConnectionWarningTimer = window.setTimeout(() => {
+      this.mobileConnectionWarningTimer = 0;
+      const connected = navigator.onLine && this.statusWs?.readyState === WebSocket.OPEN;
+      this.setMobileConnectionWarning(!connected);
+    }, MOBILE_CONNECTION_WARNING_DELAY_MS);
+  }
+
+  setMobileConnectionWarning(disconnected) {
+    const warning = this.$("mobile-connection-warning");
+    if (!warning) return;
+    warning.classList.toggle("hidden", !disconnected || !this.touchMobileLayoutEnabled());
   }
 
   async initializeRemoteIdleMode() {
@@ -4156,6 +4390,7 @@ class TermdeckApp {
     loadingState.classList.add("loading");
     loadingState.classList.remove("hidden");
     this.$("initial-loading-message").textContent = "loading TermDeck…";
+    window.TermdeckLoadingRecovery?.schedule();
   }
 
   showInitialLoadFailure() {
@@ -4178,6 +4413,7 @@ class TermdeckApp {
       loadingState.classList.add("loading");
       loadingState.classList.remove("hidden");
       this.$("initial-loading-message").textContent = "loading terminal session…";
+      window.TermdeckLoadingRecovery?.schedule();
       return;
     }
     this.finishInitialPageContentLoading();
@@ -4210,7 +4446,7 @@ class TermdeckApp {
     else if (this.sideView === "git") feature = "Git history, blame, and changed-file review";
     else if (this.sideView === "search") feature = "Search across files and agents";
     else if (this.activeFileKey !== null) feature = "File editing, history, and usages";
-    else if (this.historyOpen) feature = "Markdown transcript and cross-agent review";
+    else if (this.historyOpen) feature = "Transcript and cross-agent review";
     else if (activityEntries.length) feature = `Background activity: ${activityEntries.map((entry) => entry.label).join(" · ")}`;
     caption.textContent = `Caption: ${feature} · ${groupName} · ${session?.title || "Select a feature terminal"}`;
   }
@@ -4583,7 +4819,7 @@ class TermdeckApp {
     this.updateUnreadIndicator(id);
     this.updateHistoryThinkingIndicator();
     this.renderHistoryMeta();
-    const queuedPromptDispatched = !spinning && this.dispatchNextMarkdownPrompt(this.views.get(id));
+    const queuedPromptDispatched = !spinning && this.dispatchNextMarkdownPrompt(this.sessionInteractionState(id, false));
     const completed = !dormant && previous === true && !spinning && !queuedPromptDispatched;
     const userIsViewingSession = id === this.activeId && !document.hidden && document.hasFocus();
     if (completed && !userIsViewingSession && !this.viewedCompletedSessions.has(id) && !this.unreadSessions.has(id)) {
@@ -4599,23 +4835,84 @@ class TermdeckApp {
     return saved.map((text) => ({ text: String(text || "") })).filter((item) => item.text.trim());
   }
 
+  ensureTranscriptSessionState(sessionId) {
+    const terminalView = this.views.get(sessionId);
+    if (terminalView) return terminalView;
+    const existing = this.transcriptSessionStates.get(sessionId);
+    if (existing) return existing;
+    const state = {
+      sessionId, closed: false, markdownPromptDraft: this.markdownPromptDraftForSession(sessionId),
+      promptQueue: this.markdownPromptQueueForSession(sessionId), promptQueueEditIndex: null,
+      promptQueueDispatching: false, promptQueueHold: false, promptQueueCollapsed: false,
+      promptApiSubmitting: false, promptSubmitting: false, promptSubmitEntered: false,
+      promptSubmitTimer: 0, promptEditing: false, promptEditVersion: 0, promptSubmitVersion: -1,
+      promptDraft: this.session(sessionId)?.draft || "",
+    };
+    this.transcriptSessionStates.set(sessionId, state);
+    return state;
+  }
+
+  sessionInteractionState(sessionId, create = true) {
+    return this.views.get(sessionId) || this.transcriptSessionStates.get(sessionId) ||
+      (create ? this.ensureTranscriptSessionState(sessionId) : null);
+  }
+
+  adoptTranscriptSessionState(view) {
+    const state = this.transcriptSessionStates.get(view.sessionId);
+    if (!state) return view;
+    for (const key of ["markdownPromptDraft", "promptQueue", "promptQueueEditIndex", "promptQueueDispatching",
+      "promptQueueHold", "promptQueueCollapsed", "promptApiSubmitting", "promptSubmitting",
+      "promptSubmitEntered", "promptSubmitTimer", "promptEditing", "promptEditVersion", "promptSubmitVersion",
+      "promptDraft"]) {
+      if (Object.hasOwn(state, key)) view[key] = state[key];
+    }
+    this.transcriptSessionStates.delete(view.sessionId);
+    return view;
+  }
+
   markdownPromptDraftForSession(sessionId) {
+    const localDraft = this.localTranscriptDraft(sessionId);
+    if (localDraft !== null) return localDraft;
     const drafts = this.settings.md_prompt_drafts && typeof this.settings.md_prompt_drafts === "object"
       ? this.settings.md_prompt_drafts : {};
     return String(drafts[sessionId] || "");
   }
 
-  persistMarkdownPromptDraft(view, text = view?.markdownPromptDraft || "") {
+  transcriptDraftLocalStorageKey(sessionId) {
+    return `${TRANSCRIPT_DRAFT_LOCAL_PREFIX}.${encodeURIComponent(this.projectStateKey())}.${encodeURIComponent(sessionId)}`;
+  }
+
+  localTranscriptDraft(sessionId) {
+    try {
+      const value = localStorage.getItem(this.transcriptDraftLocalStorageKey(sessionId));
+      return value === null ? null : String(value).slice(0, 20000);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  persistLocalTranscriptDraft(sessionId, text) {
+    try {
+      const key = this.transcriptDraftLocalStorageKey(sessionId);
+      if (text) localStorage.setItem(key, text);
+      else localStorage.removeItem(key);
+    } catch (_error) {
+    }
+  }
+
+  persistMarkdownPromptDraft(view, text = view?.markdownPromptDraft || "", options = {}) {
     if (!view) return;
     const drafts = this.settings.md_prompt_drafts && typeof this.settings.md_prompt_drafts === "object"
       ? this.settings.md_prompt_drafts : {};
     const nextDrafts = { ...drafts };
     const normalized = String(text || "").slice(0, 20000);
+    this.persistLocalTranscriptDraft(view.sessionId, normalized);
     if (normalized) nextDrafts[view.sessionId] = normalized;
     else delete nextDrafts[view.sessionId];
     this.settings.md_prompt_drafts = nextDrafts;
     view.markdownPromptDraft = normalized;
-    this.saveSettings();
+    if (options.immediate) this.saveSettingsImmediately();
+    else this.saveSettings();
   }
 
   persistMarkdownPromptQueue(view) {
@@ -4627,32 +4924,50 @@ class TermdeckApp {
     if (texts.length) nextQueues[view.sessionId] = texts;
     else delete nextQueues[view.sessionId];
     this.settings.md_prompt_queues = nextQueues;
-    this.saveSettings();
+    this.saveSettingsImmediately();
   }
 
   dispatchNextMarkdownPrompt(view) {
     if (!view || view.closed || view.promptQueueHold || view.promptQueueDispatching || !view.promptQueue.length ||
-        this.processingStates.get(view.sessionId) || this.session(view.sessionId)?.processing === true ||
-        this.historyPendingProcessing.has(view.sessionId) || !view.ws || view.ws.readyState !== WebSocket.OPEN) return false;
-    const item = view.promptQueue.shift();
+        this.processingStates.get(view.sessionId) || this.historyPendingProcessing.has(view.sessionId)) return false;
+    const item = view.promptQueue[0];
     const text = String(item?.draftText ?? item?.text ?? "");
     if (!text.trim()) {
+      view.promptQueue.shift();
       this.persistMarkdownPromptQueue(view);
       this.renderHistoryQueue(view);
       return this.dispatchNextMarkdownPrompt(view);
     }
     view.promptQueueDispatching = true;
-    this.persistMarkdownPromptQueue(view);
     this.renderHistoryQueue(view);
-    const sent = this.submitHistoryPromptText(view, text, { fromQueue: true });
-    view.promptQueueDispatching = false;
-    if (!sent) {
-      view.promptQueue.unshift({ text });
+    void this.submitHistoryPromptViaApi(view, text, { fromQueue: true }).then((sent) => {
+      if (sent) this.acknowledgeSubmittedMarkdownQueueItem(view, item, text);
+    }).finally(() => {
+      view.promptQueueDispatching = false;
       this.persistMarkdownPromptQueue(view);
       this.renderHistoryQueue(view);
-      return false;
-    }
+    });
     return true;
+  }
+
+  acknowledgeSubmittedMarkdownQueueItem(view, item, text) {
+    if (!view) return;
+    const comparisonText = this.historyPromptComparisonText(text);
+    let itemIndex = view.promptQueue.indexOf(item);
+    if (itemIndex < 0) itemIndex = view.promptQueue.findIndex((candidate) =>
+      this.historyPromptComparisonText(candidate?.draftText ?? candidate?.text ?? "") === comparisonText);
+    if (itemIndex >= 0) view.promptQueue.splice(itemIndex, 1);
+    const prompt = this.historyOpen && this.activeId === view.sessionId ? this.$("history-prompt") : null;
+    const savedDraftMatches = this.historyPromptComparisonText(view.markdownPromptDraft) === comparisonText;
+    const visibleDraftMatches = prompt && this.historyPromptComparisonText(prompt.value) === comparisonText;
+    if (comparisonText && (savedDraftMatches || visibleDraftMatches)) {
+      this.persistMarkdownPromptDraft(view, "", { immediate: true });
+      if (prompt) this.showPromptDraft(view);
+    }
+    view.promptQueueEditIndex = null;
+    view.promptQueueHold = false;
+    this.persistMarkdownPromptQueue(view);
+    this.renderHistoryQueue(view);
   }
 
   session(id) {
@@ -5552,7 +5867,7 @@ class TermdeckApp {
       text.className = "terminal-search-snippet-text";
       this.appendTerminalSearchHighlightedText(text, this.searchMatchText(snippet.text), this.terminalSearchText);
       if (snippet.result) {
-        text.title = "Open this turn in the Markdown transcript";
+        text.title = "Open this turn in the transcript";
         text.onclick = (event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -5606,7 +5921,7 @@ class TermdeckApp {
         content.className = "terminal-search-context-text";
         this.appendTerminalSearchHighlightedText(content, this.searchMatchText(line.text), this.terminalSearchText);
         contextLine.appendChild(content);
-        contextLine.title = "Open this turn in the Markdown transcript";
+        contextLine.title = "Open this turn in the transcript";
         contextLine.onclick = (event) => {
           event.preventDefault();
           event.stopPropagation();
