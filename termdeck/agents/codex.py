@@ -184,8 +184,10 @@ class CodexCli(AgentCli):
             if model:
                 current_model = model
             model = current_model
+            timestamp = TurnBuilder.extract_turn_timestamp(payload)
             if entry_type == "event_msg" and body_type == "agent_message":
-                candidate = TurnBuilder.turn(TurnBuilder.ROLE_ASSISTANT, str(body.get("message", "")), model=model)
+                candidate = TurnBuilder.turn(TurnBuilder.ROLE_ASSISTANT, str(body.get("message", "")), model=model,
+                                             timestamp=timestamp)
                 phase = str(body.get("phase", ""))
                 if phase:
                     candidate["phase"] = phase
@@ -195,7 +197,7 @@ class CodexCli(AgentCli):
                 item = body.get("item")
                 if isinstance(item, dict) and item.get("type") == "AgentMessage":
                     text = TurnBuilder.join_text(item.get("content"), ("Text", "text", "output_text"))
-                    candidate = TurnBuilder.turn(TurnBuilder.ROLE_ASSISTANT, text, model=model)
+                    candidate = TurnBuilder.turn(TurnBuilder.ROLE_ASSISTANT, text, model=model, timestamp=timestamp)
                     phase = str(item.get("phase", ""))
                     if phase:
                         candidate["phase"] = phase
@@ -205,7 +207,7 @@ class CodexCli(AgentCli):
                 text_keys = ("input_text", "text") if body.get("role") == "user" else ("output_text", "text")
                 text = TurnBuilder.join_text(body.get("content"), text_keys)
                 if text and not self._is_boilerplate(text):
-                    candidate = TurnBuilder.turn(str(body["role"]), text, model=model)
+                    candidate = TurnBuilder.turn(str(body["role"]), text, model=model, timestamp=timestamp)
                     if body.get("role") == "assistant":
                         phase = str(body.get("phase", ""))
                         if phase:
@@ -217,10 +219,11 @@ class CodexCli(AgentCli):
             elif entry_type == "response_item" and body_type in ("custom_tool_call", "function_call"):
                 name = str(body.get("name") or "tool")
                 value = body.get("input") if body_type == "custom_tool_call" else body.get("arguments", "")
-                turns.append(TurnBuilder.tool_event(name, value, model=model))
+                turns.append(TurnBuilder.tool_event(name, value, model=model, timestamp=timestamp))
             elif entry_type == "response_item" and body_type in ("custom_tool_call_output", "function_call_output"):
                 output = body.get("output", body.get("result", ""))
-                turns.append(TurnBuilder.turn("event", TurnBuilder.format_result_value(output), "result", "Result", model=model))
+                turns.append(TurnBuilder.turn("event", TurnBuilder.format_result_value(output), "result", "Result",
+                                              model=model, timestamp=timestamp))
         return turns
 
     @staticmethod
@@ -386,6 +389,8 @@ class CodexCli(AgentCli):
     def on_api_prompt_submitted(self, manager, ms, queue: bool) -> None:
         if not queue:
             ms.agent_state.transcript_active = True
+            ms.agent_state.activity_signature = self.activity_signature(manager, ms)
+            ms.agent_state.activity_checked_monotonic = time.monotonic()
             manager._broadcast_status(ms)
 
     def _before_send_rename(self, ms, title: str) -> None:

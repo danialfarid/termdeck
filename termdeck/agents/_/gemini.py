@@ -129,9 +129,10 @@ class GeminiCli(AgentCli):
             content = str(message.get("content") or "")
             message_type = message.get("type")
             model = str(message.get("model") or "") or None
+            timestamp = TurnBuilder.extract_turn_timestamp(message)
             if message_type == "user":
                 if content.strip():
-                    turns.append(TurnBuilder.turn(TurnBuilder.ROLE_USER, content, model=model))
+                    turns.append(TurnBuilder.turn(TurnBuilder.ROLE_USER, content, model=model, timestamp=timestamp))
             elif message_type == "gemini":
                 thoughts = message.get("thoughts")
                 if isinstance(thoughts, list) and thoughts:
@@ -139,12 +140,15 @@ class GeminiCli(AgentCli):
                         f"{item.get('subject', '')}: {item.get('description', '')}".strip(": ")
                         for item in thoughts if isinstance(item, dict))
                     if thought_text.strip():
-                        turns.append(TurnBuilder.turn("event", thought_text, "thinking", "Thinking", model=model))
+                        turns.append(TurnBuilder.turn("event", thought_text, "thinking", "Thinking", model=model,
+                                                      timestamp=timestamp))
                 if content.strip():
-                    turns.append(TurnBuilder.turn(TurnBuilder.ROLE_ASSISTANT, content, model=model))
+                    turns.append(TurnBuilder.turn(TurnBuilder.ROLE_ASSISTANT, content, model=model,
+                                                  timestamp=timestamp))
             elif content.strip():
                 turns.append(TurnBuilder.turn("event", content, kind="result",
-                                              title=str(message_type or "info").title(), model=model))
+                                              title=str(message_type or "info").title(), model=model,
+                                              timestamp=timestamp))
         return turns
 
     def latest_usage(self, cwd: Path | None, agent_session_id: str | None) -> dict[str, int | None] | None:

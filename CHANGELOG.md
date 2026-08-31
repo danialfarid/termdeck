@@ -6,6 +6,93 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Mobile terminal rows expose their actions through a movement-cancelled long press, while the selected row
+  shows a discoverable actions button in place of its close button.
+- Mobile Transcript mode now keeps drafts in browser-local storage during server or network outages and
+  shows a fixed connection-loss warning with a Refresh action.
+- Each queued Transcript prompt now has a Send now action that immediately submits that item without
+  replacing the current composer draft.
+- Transcripts now expose Quick Notes and project-scoped filters for hiding prompts or thinking,
+  showing only structured code edits, and folding adjacent responses whose text is at least 80% similar.
+- Conversation outlines show each turn's transcript timestamp and include every older page loaded by
+  scrolling transcript history instead of remaining limited to the initial transcript page.
+
+### Changed
+
+- Transcript activation no longer constructs xterm or opens a terminal replay connection; each terminal is
+  materialized and connected only when that session is explicitly switched to Terminal mode.
+- Add-terminal, add-group, project-add, branch-add, and note-add glyphs are about 25% larger without changing
+  their button dimensions or surrounding layout.
+- Quick Notes uses a single rounded edit-square glyph, and the Transcript progress elapsed time gently pulses
+  while a response is running.
+- Touch layouts omit keyboard-shortcut suffixes from menus and Transcript hints, while Transcript controls now
+  use a conversation icon and the README consistently calls the surface Transcript mode.
+- Mobile Transcript keeps Notes, filters, and zoom controls right-aligned, with Notes nearest the edge and
+  zoom controls grouped to their left.
+- Transcript code-edit collapse now lives in the filter menu, and Problems is available only on file,
+  search, and Git surfaces.
+- The app now calls the rendered agent-history surface Transcript mode instead of Markdown mode.
+- Mobile Transcript mode no longer opens the terminal replay socket in the background, so switching
+  sessions starts from the small newest-turn transcript page without downloading the terminal buffer,
+  including when a phone requests the browser's desktop-site layout.
+- Transcripts render their newest snapshot chunk first while older chunks continue loading,
+  reducing the time to visible content on mobile and slower connections.
+- Mobile transcripts load a small newest-turn page first and fetch older pages only when the reader
+  scrolls upward instead of eagerly rendering hundreds of turns during every tab switch.
+- Ask an agent actions started from Transcript mode now place the selected text directly into the chosen
+  existing or newly created agent's persisted Transcript composer and focus it.
+- Transcript prompts now use Enter for new lines, Shift+Enter to send, and Command/Ctrl+Enter to queue,
+  while saved drafts appear immediately when a transcript is restored after a page reload.
+- The Transcript composer now starts at one line, keeps prompt history beneath the editor, and combines
+  immediate Send with an attached menu that clearly offers Send to queue.
+- Project and worktree titles now open searchable TermDeck menus with keyboard navigation instead of
+  native browser selects, showing up to 50 choices before asking for a narrower search.
+- Transcript prompt queues use a stronger separator, subtle panel tint, roomier prompt padding, and
+  scrollbars only when a queued message exceeds its height limit, plus an expandable header that can
+  collapse the queue while keeping its message count visible.
+- Transcript Send remains available while a response is running; the arrow menu offers Stop and, when a
+  prompt is present, Send to queue, while submitted prompts bring the transcript to the latest turn.
+- The recent-prompt history control now stays at the right edge of the Transcript composer footer.
+- The Transcript composer uses a compact one-line continuation placeholder, while its send controls stay
+  one-line tall as the prompt grows.
+- Touch layouts start with the sidebar collapsed so the main surface is immediately visible; the sidebar
+  can be expanded when terminal switching is needed.
+- A mobile Transcript Send tap made while the selected terminal is still connecting is held and submitted once
+  its websocket opens, so progressing sessions do not silently drop the prompt.
+
+### Fixed
+
+- Mobile Transcript exposes its filter menu, keeps the active multiline composer line visible while typing,
+  and re-arms long-load recovery actions for later terminal switches.
+- The bottom refresh action now reloads Transcript content instead of doing nothing in Transcript mode,
+  while mobile toolbar actions dismiss rather than reopen the on-screen composer keyboard.
+- Mobile Transcript zoom and Notes controls now hide while the sidebar is expanded, preventing them from
+  overlapping the sidebar controls and terminal list.
+- Successful Transcript queue sends now remove the acknowledged item from persisted queue state and clear
+  only an identical composer draft, while multiline drafts grow to a larger scrollable editor.
+- Transcript reconnect parsing now runs outside the server request loop and paints the newest page before
+  refreshing the live cache, keeping mobile Send, Queue, and history paging responsive on large sessions.
+- Remote and touch Transcript readers use the same lightweight paging policy, prefetch older turns before
+  reaching the exact top, and persist queue changes immediately instead of waiting for the settings debounce.
+- Queued Transcript prompts now dispatch through the server even when the terminal websocket is unavailable,
+  so an idle prompt no longer waits for a full page refresh before it starts.
+- Transcript Send and queued dispatch now use the acknowledged prompt API, preserving the composer or queue
+  when submission fails instead of depending on a potentially stale mobile terminal websocket.
+- Mobile Transcript history loads older transcript pages before the scroll reaches the exact top and
+  keeps loading through touch momentum instead of depending on one narrow scroll-event threshold.
+- Transcript history pages apply their turn limit after collapsing tool activity, so scrolling upward
+  receives a full page of visible conversation instead of a handful of rows from a raw-event page.
+- Mobile Transcript controls remain available whether the sidebar is open or collapsed, terminal resync
+  fits the phone-width surface, and Quick Notes stays within the mobile viewport without focus zoom or
+  duplicate Notes buttons.
+- Transcript mode preserves the hidden terminal's geometry while live output continues and resets its
+  renderer after returning to Terminal mode, preventing stale glyph rows from garbling Codex's TUI.
+
+- Codex terminals no longer remain marked as processing after a Transcript/API prompt completes before
+  the transcript watcher receives its final lifecycle event.
+
 ## [0.8.1] — 2026-08-30
 
 ### Added

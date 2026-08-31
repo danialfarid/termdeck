@@ -32,6 +32,7 @@ class _TranscriptState:
     update_log: list[dict[str, object]] = field(default_factory=list)
     last_user_at: float | None = None
     last_access: float = 0.0
+    refresh_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
 class _TranscriptFileHandler(FileSystemEventHandler):
@@ -82,6 +83,8 @@ class TranscriptService:
         self._observer: Observer | None = None
         self._codex_leaf_observer = None
         self._file_change_listeners: list[Callable[[Path], None]] = []
+        self._refresh_tasks: dict[Path, asyncio.Task] = {}
+        self._refresh_pending_paths: set[Path] = set()
 
     def add_file_change_listener(self, listener: Callable[[Path], None]) -> None:
         self._file_change_listeners.append(listener)
@@ -137,6 +140,10 @@ class TranscriptService:
             closer.join(timeout=2)
         self._loop = None
         self._subscribers.clear()
+        for task in self._refresh_tasks.values():
+            task.cancel()
+        self._refresh_tasks.clear()
+        self._refresh_pending_paths.clear()
 
     @staticmethod
     def _close_observer(watcher) -> None:
@@ -157,8 +164,6 @@ class TranscriptService:
         # without waiting for a potentially huge JSONL file.
         agents.agent_cli(agent_kind)
         state = self._states.get(path)
-        if state is not None:
-            self._refresh_state(state)
         self._touch_state(path)
         self._subscribers.setdefault(path, set()).add(queue)
         self._prune_state_cache()
@@ -179,9 +184,11 @@ class TranscriptService:
         if state is None or state.agent is not agent:
             state = _TranscriptState(path=path, agent=agent)
             self._states[path] = state
-            self._reload_state(state, max_bytes=self.HISTORY_PAGE_MAX_BYTES)
-        else:
-            self._refresh_state(state)
+        with state.refresh_lock:
+            if state.inode is None:
+                self._reload_state(state, max_bytes=self.HISTORY_PAGE_MAX_BYTES)
+            else:
+                self._refresh_state(state)
         self._touch_state(path)
         self._prune_state_cache()
         return state.revision
@@ -267,7 +274,7 @@ class TranscriptService:
                 parsed = agent.parse_transcript_lines([raw_line.decode(errors="replace")])
                 if parsed:
                     parsed_records.append((offset, parsed))
-            total_turns = sum(len(turns) for _, turns in parsed_records)
+            total_turns = len(self._collapse_parsed_history_records(parsed_records))
             if total_turns >= limit or not records or records[0][0] == 0 or window_bytes >= self.HISTORY_PAGE_MAX_BYTES:
                 break
             window_bytes = min(window_bytes * 2, self.HISTORY_PAGE_MAX_BYTES)
@@ -275,20 +282,29 @@ class TranscriptService:
             return {"turns": [], "before": records[0][0] if records and records[0][0] > 0 else None,
                     "has_more": bool(records and records[0][0] > 0)}
 
-        first_record = len(parsed_records) - 1
-        collected = 0
-        for index in range(len(parsed_records) - 1, -1, -1):
-            collected += len(parsed_records[index][1])
-            first_record = index
-            if collected >= limit:
-                break
+        first_record = 0
+        turns = self._collapse_parsed_history_records(parsed_records)
+        low = 0
+        high = len(parsed_records) - 1
+        while low <= high:
+            middle = (low + high) // 2
+            candidate = self._collapse_parsed_history_records(parsed_records, middle)
+            if len(candidate) >= limit:
+                first_record = middle
+                turns = candidate
+                low = middle + 1
+            else:
+                high = middle - 1
         page_start = parsed_records[first_record][0]
-        page_lines = [raw for offset, raw in records if offset >= page_start]
-        turns = TurnBuilder.collapse_thinking_events(
-            agent.parse_transcript_lines([line.decode(errors="replace") for line in page_lines]))
         next_before = page_start if page_start > 0 else None
         return {"turns": turns, "before": next_before, "has_more": next_before is not None,
                 "file_size": size}
+
+    @staticmethod
+    def _collapse_parsed_history_records(parsed_records: list[tuple[int, list[dict[str, object]]]],
+                                         start_index: int = 0) -> list[dict[str, object]]:
+        turns = [turn for _, record_turns in parsed_records[start_index:] for turn in record_turns]
+        return TurnBuilder.collapse_thinking_events(turns)
 
     @staticmethod
     def _read_history_window(path: Path, end_byte: int, max_bytes: int) -> tuple[int, list[tuple[int, bytes]]]:
@@ -359,23 +375,39 @@ class TranscriptService:
         self._on_file_change_from_thread(path)
 
     def _refresh_changed_path(self, path: Path) -> None:
+        if path in self._refresh_tasks:
+            self._refresh_pending_paths.add(path)
+            return
+        self._refresh_tasks[path] = asyncio.create_task(self._refresh_changed_path_until_current(path))
+
+    async def _refresh_changed_path_until_current(self, path: Path) -> None:
+        try:
+            while True:
+                self._refresh_pending_paths.discard(path)
+                payload = await asyncio.to_thread(self._refresh_changed_path_in_worker, path)
+                if payload is not None:
+                    for queue in list(self._subscribers.get(path, ())):
+                        queue.put_nowait(payload)
+                if path not in self._refresh_pending_paths:
+                    return
+        finally:
+            self._refresh_tasks.pop(path, None)
+
+    def _refresh_changed_path_in_worker(self, path: Path) -> dict[str, object] | None:
         state = self._states.get(path)
         if state is None:
-            return
-        previous = state.turns
-        self._refresh_state(state)
-        if state.turns == previous:
-            return
-        # The browser keeps only the newest bounded live window. Older pages
-        # are fetched separately by byte cursor, so every live update can
-        # replace that tail without invalidating the older-page positions.
-        payload = {"type": "transcript_update", "revision": state.revision,
-                   "replace_from": 0, "windowed": True,
-                   "turns": state.turns[-self.HISTORY_PAGE_TURNS:]}
-        state.update_log.append(payload)
-        del state.update_log[:-128]
-        for queue in list(self._subscribers.get(path, ())):
-            queue.put_nowait(payload)
+            return None
+        with state.refresh_lock:
+            previous = state.turns
+            self._refresh_state(state)
+            if state.turns == previous:
+                return None
+            payload = {"type": "transcript_update", "revision": state.revision,
+                       "replace_from": 0, "windowed": True,
+                       "turns": state.turns[-self.HISTORY_PAGE_TURNS:]}
+            state.update_log.append(payload)
+            del state.update_log[:-128]
+            return payload
 
     def _reload_state(self, state: _TranscriptState, max_bytes: int | None = None) -> None:
         try:
@@ -514,4 +546,3 @@ class TranscriptService:
         if len(turns) <= self.MAX_TURNS:
             return turns
         return turns[-self.MAX_TURNS:]
-
