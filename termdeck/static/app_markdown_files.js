@@ -1111,6 +1111,7 @@ Object.assign(TermdeckApp.prototype, {
 
 
   applyMainLayout() {
+    this.ensureHistoryFiltersForProject();
     const fileMode = this.activeFileKey !== null;
     if (!fileMode && this.fileHistoryOpen) {
       this.fileHistoryOpen = false;
@@ -1131,7 +1132,8 @@ Object.assign(TermdeckApp.prototype, {
     this.$("git-review-area").classList.toggle("hidden", !gitReviewMode);
     this.$("history-area").classList.toggle("hidden", !historyMode);
     this.$("history-area").classList.toggle("transcript-first", transcriptFirstMode);
-    this.$("terminal-area").classList.toggle("hidden", fileMode || historyMode || gitReviewMode);
+    this.$("terminal-area").classList.toggle("hidden", fileMode || gitReviewMode);
+    this.$("terminal-area").classList.toggle("history-suspended", historyMode);
     this.$("conversation-outline").classList.toggle("hidden",
       fileMode || gitReviewMode || !transcriptSupported || !this.conversationOutlineOpen);
     this.$("conversation-outline-toggle").classList.toggle("transcript-unavailable", !fileMode && !transcriptSupported);
@@ -1143,16 +1145,15 @@ Object.assign(TermdeckApp.prototype, {
       historyButton.classList.toggle("transcript-unavailable", !transcriptSupported);
       historyButton.classList.toggle("on", historyMode);
       const openTerminal = transcriptFirstMode && historyMode;
-      const label = openTerminal ? "Open terminal" : "Open Markdown transcript";
+      const label = openTerminal ? "Open terminal" : "Open transcript";
       historyButton.title = label;
       historyButton.setAttribute("aria-label", label);
       const icon = historyButton.querySelector(".codicon");
-      if (icon) icon.className = `codicon codicon-${openTerminal ? "terminal" : "markdown"}`;
+      if (icon) icon.className = `codicon codicon-${openTerminal ? "terminal" : "comment-discussion"}`;
     }
-    for (const id of ["history-edits-toggle", "history-scroll-bottom"]) {
-      const button = this.$(id);
-      if (button) button.classList.toggle("hidden", !historyMode);
-    }
+    this.$("history-edits-toggle")?.classList.add("hidden");
+    this.$("history-scroll-bottom")?.classList.toggle("hidden", !historyMode);
+    this.updateProblemsAvailability();
     this.updateShortcutTitles();
     this.$("attach-btn").classList.toggle("hidden", fileMode || gitReviewMode);
     const revealButton = this.$("reveal-session-btn");
@@ -1162,13 +1163,18 @@ Object.assign(TermdeckApp.prototype, {
     revealButton.setAttribute("aria-label", revealLabel);
     const attachButton = this.$("attach-btn");
     if (attachButton) {
-      const label = historyMode ? "Upload file/image into Markdown prompt" : "Attach file/image to terminal";
+      const label = historyMode ? "Upload file/image into transcript prompt" : "Attach file/image to terminal";
       attachButton.title = label;
       attachButton.setAttribute("aria-label", label);
     }
     for (const id of ["terminal-resync-btn"]) {
       const button = this.$(id);
-      if (button) button.classList.toggle("hidden", fileMode || gitReviewMode);
+      if (button) {
+        button.classList.toggle("hidden", fileMode || gitReviewMode);
+        const label = historyMode ? "Refresh transcript" : "Resync terminal content";
+        button.title = label;
+        button.setAttribute("aria-label", label);
+      }
     }
     const terminalScrollButton = this.$("scroll-bottom-btn");
     if (terminalScrollButton) {
@@ -1217,30 +1223,60 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  updateHistorySendButton(stopping = !!this.historyOpen &&
+  updateHistorySendButton(spinning = !!this.historyOpen &&
     (!!this.processingStates.get(this.activeId) || this.historyPendingProcessing.has(this.activeId))) {
     const button = this.$("history-send");
     if (!button) return;
-    const label = stopping ? "Stop current response" : "Send prompt";
+    const label = "Send prompt";
     const icon = button.querySelector(".codicon");
-    if (icon) icon.className = `codicon codicon-${stopping ? "debug-stop" : "send"}`;
+    if (icon) icon.className = "codicon codicon-send";
     button.title = label;
     button.setAttribute("aria-label", label);
+    this.updateHistorySendMenu(spinning);
+  },
+
+
+  updateHistorySendMenu(spinning = !!this.historyOpen &&
+    (!!this.processingStates.get(this.activeId) || this.historyPendingProcessing.has(this.activeId))) {
+    const queue = this.$("history-queue");
+    const stop = this.$("history-stop");
+    const prompt = this.$("history-prompt");
+    if (!queue || !stop) return;
+    const hasPrompt = !!prompt?.value.trim();
+    queue.classList.toggle("hidden", !this.historyOpen || (spinning && !hasPrompt));
+    stop.classList.toggle("hidden", !this.historyOpen || !spinning);
   },
 
 
   handleHistorySendButton() {
-    if (this.historyOpen && (this.processingStates.get(this.activeId) || this.historyPendingProcessing.has(this.activeId))) {
-      this.interruptHistoryPrompt();
-      return;
-    }
     this.sendHistoryPrompt();
+  },
+
+
+  toggleHistorySendMenu() {
+    const menu = this.$("history-send-menu");
+    const toggle = this.$("history-send-menu-toggle");
+    if (!menu || !toggle || !this.historyOpen || this.activeFileKey !== null) return;
+    this.updateHistorySendMenu();
+    const opening = menu.classList.contains("hidden");
+    menu.classList.toggle("hidden", !opening);
+    toggle.setAttribute("aria-expanded", String(opening));
+    if (opening) this.closePromptHistory();
+  },
+
+
+  closeHistorySendMenu() {
+    const menu = this.$("history-send-menu");
+    const toggle = this.$("history-send-menu-toggle");
+    if (!menu || !toggle) return;
+    menu.classList.add("hidden");
+    toggle.setAttribute("aria-expanded", "false");
   },
 
 
   interruptHistoryPrompt() {
     if (!this.historyOpen || !this.activeId) return;
-    const view = this.views.get(this.activeId);
+    const view = this.views.get(this.activeId) || this.ensureView(this.activeId);
     if (!view) return;
     this.sendInput(view, "\x03");
     this.historyPendingProcessing.delete(this.activeId);
@@ -1284,13 +1320,21 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  renderHistoryQueue(view = this.views.get(this.activeId)) {
+  renderHistoryQueue(view = this.sessionInteractionState(this.activeId, false)) {
     const container = this.$("history-queued");
     const items = this.$("history-queued-items");
     const count = this.$("history-queued-count");
-    if (!container || !items || !count) return;
+    const toggle = this.$("history-queued-toggle");
+    if (!container || !items || !count || !toggle) return;
     const queued = view?.promptQueue || [];
     container.classList.toggle("hidden", !this.historyOpen || !queued.length);
+    const collapsed = view?.promptQueueCollapsed === true;
+    container.classList.toggle("collapsed", collapsed);
+    toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    toggle.setAttribute("aria-label", collapsed ? "Expand queued messages" : "Collapse queued messages");
+    toggle.title = collapsed ? "Expand queued messages" : "Collapse queued messages";
+    const toggleIcon = toggle.querySelector(".codicon");
+    if (toggleIcon) toggleIcon.className = `codicon codicon-chevron-${collapsed ? "right" : "down"}`;
     count.textContent = queued.length ? `${queued.length} message${queued.length === 1 ? "" : "s"}` : "";
     const activeEditor = document.activeElement?.classList?.contains("history-queued-editor") ? document.activeElement : null;
     if (activeEditor && items.contains(activeEditor) && activeEditor.dataset.sessionId === view?.sessionId &&
@@ -1312,7 +1356,9 @@ Object.assign(TermdeckApp.prototype, {
       editor.setAttribute("aria-label", `Queued prompt ${index + 1}`);
       const resize = () => {
         editor.style.height = "auto";
-        editor.style.height = `${Math.min(editor.scrollHeight, 120)}px`;
+        const contentHeight = editor.scrollHeight;
+        editor.style.height = `${Math.min(contentHeight, 120)}px`;
+        editor.classList.toggle("scrollable", contentHeight > 120);
       };
       editor.addEventListener("focus", () => { if (view) view.promptQueueEditIndex = index; });
       editor.addEventListener("input", () => {
@@ -1346,6 +1392,14 @@ Object.assign(TermdeckApp.prototype, {
         this.commitHistoryQueueEdit(view, index, next);
       });
       resize();
+      const sendNow = document.createElement("button");
+      sendNow.className = "history-queued-send-now";
+      sendNow.type = "button";
+      sendNow.title = "Send this queued prompt now";
+      sendNow.setAttribute("aria-label", `Send queued prompt ${index + 1} now`);
+      sendNow.innerHTML = '<span class="codicon codicon-send"></span>';
+      sendNow.addEventListener("mousedown", (event) => event.preventDefault());
+      sendNow.addEventListener("click", () => this.sendHistoryQueueItemNow(view, index));
       const remove = document.createElement("button");
       remove.className = "history-queued-remove";
       remove.type = "button";
@@ -1354,9 +1408,17 @@ Object.assign(TermdeckApp.prototype, {
       remove.textContent = "×";
       remove.addEventListener("mousedown", (event) => event.preventDefault());
       remove.addEventListener("click", () => this.removeHistoryQueueItem(view, index));
-      row.append(number, editor, remove);
+      row.append(number, editor, sendNow, remove);
       items.appendChild(row);
     });
+  },
+
+
+  toggleHistoryQueueCollapsed() {
+    const view = this.sessionInteractionState(this.activeId, false);
+    if (!view?.promptQueue?.length) return;
+    view.promptQueueCollapsed = view.promptQueueCollapsed !== true;
+    this.renderHistoryQueue(view);
   },
 
 
@@ -1382,8 +1444,26 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  async sendHistoryQueueItemNow(view, index) {
+    const item = view?.promptQueue?.[index];
+    const text = String(item?.draftText ?? item?.text ?? "");
+    if (!view || !item || !text.trim()) return false;
+    if (view.promptQueueDispatching) return false;
+    view.promptQueueDispatching = true;
+    this.renderHistoryQueue(view);
+    const sent = await this.submitHistoryPromptViaApi(view, text, { fromQueue: true });
+    view.promptQueueDispatching = false;
+    if (!sent) {
+      this.renderHistoryQueue(view);
+      return false;
+    }
+    this.acknowledgeSubmittedMarkdownQueueItem(view, item, text);
+    return true;
+  },
+
+
   focusActiveEditor() {
-    const view = this.views.get(this.activeId);
+    const view = this.sessionInteractionState(this.activeId, false);
     if (this.activeFileKey !== null) {
       if (this.fileHistoryOpen && this.fileHistoryTabKey === this.activeFileKey) {
         const diffEditor = this.fileHistoryDiffEditor;
@@ -1412,6 +1492,10 @@ Object.assign(TermdeckApp.prototype, {
 
 
   refocusActiveInputAfterToolbarAction() {
+    if (this.touchMobileLayoutEnabled()) {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      return;
+    }
     requestAnimationFrame(() => requestAnimationFrame(() => this.focusActiveEditor()));
   },
 
@@ -1452,7 +1536,10 @@ Object.assign(TermdeckApp.prototype, {
     if (this.historyOpen && !enabled) this.rememberHistoryScrollPosition(this.activeId);
     this.closeTerminalFind();
     this.hideSelectionActions(true);
-    if (!enabled) this.closePromptHistory();
+    if (!enabled) {
+      this.closePromptHistory();
+      this.closeHistoryFilterMenu();
+    }
     const mode = enabled ? "markdown" : "terminal";
     if (options.persist !== false && !mobileTranscriptMode) {
       const sessionViewModes = { ...(this.getProjectState().session_view_modes || {}), [this.activeId]: mode };
@@ -1464,27 +1551,27 @@ Object.assign(TermdeckApp.prototype, {
     this.disconnectHistoryStream();
     this.historyFingerprint = "";
     this.historyTurns = [];
+    this.historyRenderedTurns = [];
     this.historyLoaded = false;
-    const view = this.views.get(this.activeId);
-    this.beginTerminalLayoutTransition(view);
+    let view = this.sessionInteractionState(this.activeId);
+    this.beginTerminalLayoutTransition(view?.term ? view : null);
     this.historyOpen = !!enabled && this.activeFileKey === null && !!this.activeId;
+    if (this.historyOpen && view?.term) this.suspendMobileTranscriptTerminalSocket(view);
     this.postVscodeNativeSession(this.session(this.activeId), !this.historyOpen);
     this.applyMainLayout();
     this.scheduleTerminalLayoutFit();
     if (this.historyOpen) {
       const sessionId = this.activeId;
-      this.showPromptDraft(this.views.get(sessionId));
+      this.showPromptDraft(view);
       const cached = this.historyTurnsBySession.get(sessionId);
       if (cached) this.applyHistoryTurns(sessionId, cached, { preserveScroll: false });
       this.connectHistoryStream(sessionId, { fresh: true });
     } else {
+      view = this.ensureView(this.activeId);
       if (view) {
+        this.resumeMobileTerminalSocket(view);
         if (this.nativeVscodeMode) this.postVscodeNativeSession(this.session(this.activeId), true);
         else view.term.focus();
-        // Output keeps flowing into the hidden zero-height surface while Markdown mode is up,
-        // and glyphs drawn there can bake stale cell metrics into the renderer's atlas --
-        // rows come back with mixed widths and overlapping characters. One atlas-clearing
-        // repaint after the layout fits settle redraws everything at the current metrics.
         setTimeout(() => {
           if (!view.closed && this.activeId === view.sessionId && !this.historyOpen) {
             this.refreshTerminalAppearance(view, true);
@@ -1492,6 +1579,29 @@ Object.assign(TermdeckApp.prototype, {
         }, 500);
       }
     }
+  },
+
+
+  suspendMobileTranscriptTerminalSocket(view) {
+    if (!view || !this.usesLightweightTranscriptTransport() || !this.historyOpen || view.sessionId !== this.activeId) return false;
+    view.suppressReconnect = true;
+    view.reconnectAfterClose = false;
+    clearTimeout(view.reconnectTimer);
+    view.reconnectTimer = 0;
+    if (view.ws) view.ws.close();
+    return true;
+  },
+
+
+  resumeMobileTerminalSocket(view) {
+    if (!view || !this.usesLightweightTranscriptTransport() || this.historyOpen || view.sessionId !== this.activeId) return;
+    view.suppressReconnect = false;
+    if (!view.ws) this.connect(view.sessionId, view);
+  },
+
+
+  usesLightweightTranscriptTransport() {
+    return this.touchMobileLayoutEnabled() || location.protocol === "https:";
   },
 
 
@@ -1510,6 +1620,7 @@ Object.assign(TermdeckApp.prototype, {
 
   disconnectHistoryStream() {
     this.cancelHistoryBackgroundLoad();
+    this.cancelFilteredHistoryContinuation();
     clearTimeout(this.historyWsReconnectTimer);
     this.historyWsReconnectTimer = 0;
     const ws = this.historyWs;
@@ -1535,7 +1646,9 @@ Object.assign(TermdeckApp.prototype, {
       // changed the underlying rollout. Request the authoritative snapshot in
       // that case instead of treating inherited history as current.
       const revision = fresh ? 0 : (this.historyRevisions.get(sessionId) || 0);
-      ws.send(JSON.stringify({ type: "transcript_subscribe", revision, fresh }));
+      const initialLimit = this.usesLightweightTranscriptTransport() ? 20 : HISTORY_BACKGROUND_PAGE_TURNS;
+      ws.send(JSON.stringify({ type: "transcript_subscribe", revision, fresh, latest_first: true,
+        initial_limit: initialLimit }));
     };
     ws.onmessage = (event) => {
       if (typeof event.data !== "string") return;
@@ -1562,18 +1675,33 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  refreshActiveTranscript() {
+    if (!this.historyOpen || this.activeFileKey !== null || !this.activeId) return false;
+    this.historyManualRefreshSessionId = this.activeId;
+    this.$("status-name").textContent = "refreshing transcript…";
+    this.connectHistoryStream(this.activeId, { fresh: true });
+    return true;
+  },
+
+
   applyHistoryStreamMessage(sessionId, message) {
     if (sessionId !== this.activeId || !this.historyOpen) return;
     const type = message.type;
     if (type === "transcript_snapshot_start") {
       this.historySnapshotBuffers.set(sessionId, { revision: Number(message.revision || 0), turns: [],
+        chunks: [], latestFirst: message.latest_first === true, rendered: false,
         before: message.before == null ? null : Number(message.before), hasMore: !!message.has_more });
       return;
     }
     if (type === "transcript_snapshot_chunk") {
       const buffer = this.historySnapshotBuffers.get(sessionId);
       if (!buffer || !Array.isArray(message.turns)) return;
-      buffer.turns.push(...message.turns);
+      const index = Number(message.index);
+      if (buffer.latestFirst && Number.isInteger(index) && index >= 0) {
+        buffer.chunks[index] = message.turns;
+        buffer.turns = buffer.chunks.filter(Array.isArray).flat();
+        this.renderHistorySnapshotProgress(sessionId, buffer);
+      } else buffer.turns.push(...message.turns);
       return;
     }
     if (type === "transcript_snapshot_end") {
@@ -1583,14 +1711,24 @@ Object.assign(TermdeckApp.prototype, {
       const turns = this.mergePendingHistoryPrompts(sessionId, buffer.turns);
       this.historyRevisions.set(sessionId, Number(message.revision || buffer.revision || 0));
       this.applyHistoryWindow(sessionId, turns, { before: buffer.before, hasMore: buffer.hasMore },
-        { resetOlder: this.historyStreamFresh, preserveScroll: this.historyLoaded && this.historyTurns.length > 0 });
+        { resetOlder: this.historyStreamFresh && this.historyManualRefreshSessionId !== sessionId,
+          preserveScroll: this.historyLoaded && this.historyTurns.length > 0 });
+      if (this.historyManualRefreshSessionId === sessionId) {
+        this.historyManualRefreshSessionId = "";
+        this.$("status-name").textContent = "transcript refreshed";
+      }
       return;
     }
     if (type === "transcript_snapshot") {
       const turns = this.mergePendingHistoryPrompts(sessionId, Array.isArray(message.turns) ? message.turns : []);
       this.historyRevisions.set(sessionId, Number(message.revision || 0));
       this.applyHistoryWindow(sessionId, turns, { before: message.before, hasMore: !!message.has_more },
-        { resetOlder: this.historyStreamFresh, preserveScroll: this.historyLoaded && this.historyTurns.length > 0 });
+        { resetOlder: this.historyStreamFresh && this.historyManualRefreshSessionId !== sessionId,
+          preserveScroll: this.historyLoaded && this.historyTurns.length > 0 });
+      if (this.historyManualRefreshSessionId === sessionId) {
+        this.historyManualRefreshSessionId = "";
+        this.$("status-name").textContent = "transcript refreshed";
+      }
       return;
     }
     if (type === "transcript_ready") {
@@ -1627,6 +1765,23 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  renderHistorySnapshotProgress(sessionId, buffer) {
+    if (!buffer.latestFirst || !buffer.turns.length || sessionId !== this.activeId || !this.historyOpen) return;
+    if (!buffer.rendered && this.historyStreamFresh && this.historyManualRefreshSessionId !== sessionId) {
+      this.historyOlderTurnsBySession.set(sessionId, []);
+    }
+    this.historyLiveTurnsBySession.set(sessionId, buffer.turns);
+    this.historyBeforeBySession.set(sessionId, buffer.before);
+    this.historyHasMoreBySession.set(sessionId, buffer.hasMore);
+    const combined = this.combineHistoryWindow(sessionId, buffer.turns);
+    this.applyHistoryTurns(sessionId, combined, {
+      preserveScroll: buffer.rendered || (this.historyLoaded && this.historyTurns.length > 0),
+      followLatest: !buffer.rendered,
+    });
+    buffer.rendered = true;
+  },
+
+
   combineHistoryWindow(sessionId, liveTurns) {
     const older = this.historyOlderTurnsBySession.get(sessionId) || [];
     return older.concat(liveTurns);
@@ -1640,8 +1795,63 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  cancelFilteredHistoryContinuation() {
+    clearTimeout(this.historyFilteredLoadTimer);
+    this.historyFilteredLoadTimer = 0;
+  },
+
+
+  historyFiltersActive() {
+    return Object.values(this.historyFilters).some(Boolean);
+  },
+
+
+  historyBodyNearTop(body = this.$("history-body")) {
+    if (!body) return false;
+    const viewportFactor = this.usesLightweightTranscriptTransport() ? 1.5 : 0.3;
+    return body.scrollTop <= Math.max(160, Math.round(body.clientHeight * viewportFactor));
+  },
+
+
+  loadOlderHistoryWhenNearTop() {
+    if (!this.historyOpen || this.activeFileKey !== null || !this.historyBodyNearTop()) return;
+    void this.loadOlderHistory();
+  },
+
+
+  observeHistoryTopForPaging() {
+    const body = this.$("history-body");
+    if (!body || typeof IntersectionObserver !== "function") return;
+    if (!this.historyTopLoadObserver) {
+      this.historyTopLoadObserver = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) this.loadOlderHistoryWhenNearTop();
+      }, { root: body, rootMargin: "240px 0px 0px", threshold: 0 });
+    }
+    this.historyTopLoadObserver.disconnect();
+    if (!this.historyOpen || this.activeFileKey !== null || !this.historyHasMoreBySession.get(this.activeId)) return;
+    const firstTurn = body.firstElementChild;
+    if (firstTurn) this.historyTopLoadObserver.observe(firstTurn);
+  },
+
+
+  scheduleFilteredHistoryContinuation(sessionId = this.activeId, delay = 80) {
+    this.cancelFilteredHistoryContinuation();
+    if (!sessionId || sessionId !== this.activeId || !this.historyOpen || this.activeFileKey !== null ||
+        !this.historyFiltersActive() || !this.historyHasMoreBySession.get(sessionId)) return;
+    this.historyFilteredLoadTimer = window.setTimeout(() => {
+      this.historyFilteredLoadTimer = 0;
+      if (sessionId !== this.activeId || !this.historyOpen || this.activeFileKey !== null ||
+          !this.historyHasMoreBySession.get(sessionId)) return;
+      const body = this.$("history-body");
+      if (body.scrollTop >= 80 && body.scrollHeight > body.clientHeight + 4) return;
+      void this.loadOlderHistory({ sessionId, limit: HISTORY_BACKGROUND_PAGE_TURNS });
+    }, delay);
+  },
+
+
   scheduleHistoryBackgroundLoad(sessionId, delay = HISTORY_BACKGROUND_LOAD_DELAY_MS) {
     this.cancelHistoryBackgroundLoad();
+    if (this.usesLightweightTranscriptTransport()) return;
     if (!sessionId || sessionId !== this.activeId || !this.historyOpen || this.activeFileKey !== null ||
         !this.historyHasMoreBySession.get(sessionId)) return;
     const loadedTurns = this.historyTurnsBySession.get(sessionId) || [];
@@ -1686,10 +1896,9 @@ Object.assign(TermdeckApp.prototype, {
     const before = this.historyBeforeBySession.get(sessionId);
     if (before == null) return false;
     this.historyOlderLoadBusy = true;
-    const body = this.$("history-body");
-    const previousHeight = body.scrollHeight;
     try {
-      const requestedLimit = Math.max(20, Math.min(HISTORY_BACKGROUND_PAGE_TURNS, Number(options.limit) || HISTORY_BACKGROUND_PAGE_TURNS));
+      const defaultLimit = this.usesLightweightTranscriptTransport() ? 40 : HISTORY_BACKGROUND_PAGE_TURNS;
+      const requestedLimit = Math.max(20, Math.min(HISTORY_BACKGROUND_PAGE_TURNS, Number(options.limit) || defaultLimit));
       const params = new URLSearchParams({ before: String(before), limit: String(requestedLimit) });
       const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/history-page?${params}`);
       if (!response.ok) throw new Error(`history page failed: ${response.status}`);
@@ -1710,19 +1919,7 @@ Object.assign(TermdeckApp.prototype, {
       this.historyHasMoreBySession.set(sessionId, !!page.has_more);
       const live = this.historyLiveTurnsBySession.get(sessionId) || [];
       const combined = this.combineHistoryWindow(sessionId, live);
-      this.historyTurnsBySession.set(sessionId, combined);
-      this.historyTurns = combined;
-      const empty = body.querySelector(".history-empty");
-      if (empty) empty.remove();
-      if (olderPage.length) {
-        const scratch = document.createElement("div");
-        this.renderHistoryTurns(olderPage, { target: scratch });
-        while (scratch.firstChild) body.insertBefore(scratch.firstChild, body.firstChild);
-        await new Promise((resolve) => requestAnimationFrame(() => {
-          body.scrollTop += body.scrollHeight - previousHeight;
-          resolve();
-        }));
-      }
+      this.applyHistoryTurns(sessionId, combined, { preserveScroll: true });
       return olderPage.length > 0 || nextBefore !== before;
     } catch (error) {
       console.warn("unable to load older transcript history", error);
@@ -1749,7 +1946,8 @@ Object.assign(TermdeckApp.prototype, {
         if (optimisticIndex >= 0) merged.splice(optimisticIndex, 1);
         continue;
       }
-      if (optimisticIndex < 0) merged.push({ role: "user", text: item.text, pending_id: pendingId });
+      if (optimisticIndex < 0) merged.push({ role: "user", text: item.text, pending_id: pendingId,
+        timestamp: item.timestamp || Date.now() });
       remaining.push(item);
     }
     if (remaining.length) this.historyPendingPrompts.set(sessionId, remaining);
@@ -1769,7 +1967,7 @@ Object.assign(TermdeckApp.prototype, {
     const rawText = prompt.value;
     const text = rawText;
     if (!text.trim()) return;
-    const view = this.views.get(this.activeId);
+    const view = this.sessionInteractionState(this.activeId);
     if (!view) return;
     view.promptQueueHold = false;
     if (options.queue) {
@@ -1777,32 +1975,64 @@ Object.assign(TermdeckApp.prototype, {
       this.persistMarkdownPromptQueue(view);
       this.renderHistoryQueue(view);
       this.recordPromptHistory(view.sessionId, text);
-      this.persistMarkdownPromptDraft(view, "");
+      this.persistMarkdownPromptDraft(view, "", { immediate: true });
       this.showPromptDraft(view);
-      prompt.focus();
+      if (this.touchMobileLayoutEnabled()) prompt.blur();
+      else prompt.focus();
       this.$("status-name").textContent = "prompt queued";
       this.dispatchNextMarkdownPrompt(view);
       return;
     }
-    if (!view.ws || view.ws.readyState !== WebSocket.OPEN) {
-      this.$("status-name").textContent = "terminal is still connecting…";
-      return;
+    void this.submitHistoryPromptViaApi(view, text);
+  },
+
+
+  async submitHistoryPromptViaApi(view, text, options = {}) {
+    if (!view || view.closed || !String(text || "").trim()) return false;
+    if (view.promptApiSubmitting) {
+      this.$("status-name").textContent = "prompt is already sending";
+      return false;
     }
-    this.submitHistoryPromptText(view, text);
+    view.promptApiSubmitting = true;
+    this.$("status-name").textContent = "sending prompt…";
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(view.sessionId)}/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: String(text), bracketed: true, queue: false }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({}));
+        throw new Error(String(failure.detail || `prompt submission failed (${response.status})`));
+      }
+      const result = await response.json();
+      const submitted = this.submitHistoryPromptText(view, text, options);
+      if (result.session) this.applySessionStatus({ ...result.session, session_id: view.sessionId });
+      return submitted;
+    } catch (error) {
+      this.$("status-name").textContent = error?.name === "AbortError" ? "prompt send timed out · message kept" :
+        error instanceof Error ? error.message : "unable to send prompt";
+      return false;
+    } finally {
+      clearTimeout(timeout);
+      view.promptApiSubmitting = false;
+    }
   },
 
 
   submitHistoryPromptText(view, text, options = {}) {
-    if (!view || !view.ws || view.ws.readyState !== WebSocket.OPEN || !String(text || "").trim()) return false;
+    if (!view || !String(text || "").trim()) return false;
     const promptText = String(text);
     const prompt = this.$("history-prompt");
     view.promptSubmitting = true;
     view.promptSubmitEntered = false;
     view.promptEditing = false;
     view.promptSubmitVersion = view.promptEditVersion;
-    const bracketed = !view.term.modes || view.term.modes.bracketedPasteMode !== false;
     const sessionId = view.sessionId;
-    this.deferTerminalReflowAfterPrompt(view);
+    if (view.term) this.deferTerminalReflowAfterPrompt(view);
     this.historyPendingProcessing.set(sessionId, Date.now());
     this.updateHistoryThinkingIndicator();
     if (this.historyOpen && this.activeId === sessionId) {
@@ -1815,41 +2045,34 @@ Object.assign(TermdeckApp.prototype, {
       const beforeCount = authoritativeCount + pending.filter((item) =>
         this.historyPromptComparisonText(item.text) === comparisonText).length;
       const pendingId = `${Date.now()}-${this.historyPendingPromptSequence++}`;
-      pending.push({ text: promptText, beforeCount, pending_id: pendingId });
+      pending.push({ text: promptText, beforeCount, pending_id: pendingId, timestamp: Date.now() });
       this.historyPendingPrompts.set(sessionId, pending);
       const optimisticLive = this.mergePendingHistoryPrompts(sessionId, live);
       this.historyLiveTurnsBySession.set(sessionId, optimisticLive);
       const optimisticTurns = this.combineHistoryWindow(sessionId, optimisticLive);
-      this.applyHistoryTurns(sessionId, optimisticTurns, { preserveScroll: true });
+      this.applyHistoryTurns(sessionId, optimisticTurns, { preserveScroll: true, followLatest: true });
     }
-    // Submitting from TermDeck's own composer never touches the terminal's key handler (it goes straight
-    // out over the websocket), so it needs to resume following on its own -- sending a prompt is an
-    // unambiguous request to watch what comes back.
-    view.tallFollowing = true;
-    this.scrollTallContainerToCursor(view);
-    try {
-      view.ws.send(JSON.stringify({ type: "submit", text: promptText, bracketed, queue: false }));
-    } catch (error) {
-      this.historyPendingProcessing.delete(sessionId);
-      this.updateHistoryThinkingIndicator();
-      view.promptSubmitting = false;
-      this.$("status-name").textContent = "unable to send prompt";
-      console.warn("unable to send Markdown prompt", error);
-      return false;
+    if (view.term) {
+      view.tallFollowing = true;
+      this.scrollTallContainerToCursor(view);
     }
     if (!options.fromQueue) this.recordPromptHistory(sessionId, promptText);
-    if (!options.fromQueue) this.persistMarkdownPromptDraft(view, "");
+    if (!options.fromQueue) this.persistMarkdownPromptDraft(view, "", { immediate: true });
     if (this.historyOpen && this.activeId === sessionId) {
       this.showPromptDraft(view);
-      prompt.focus();
+      this.scrollHistoryToBottom();
+      if (this.touchMobileLayoutEnabled()) prompt.blur();
+      else prompt.focus();
     }
     clearTimeout(view.promptSubmitTimer);
     view.promptSubmitTimer = setTimeout(() => {
       view.promptSubmitting = false;
       view.promptSubmitEntered = false;
     }, 1500);
-    view.keepBottom = true;
-    view.pinBottomUntil = Date.now() + 5000;
+    if (view.term) {
+      view.keepBottom = true;
+      view.pinBottomUntil = Date.now() + 5000;
+    }
     this.$("status-name").textContent = options.fromQueue ? "queued prompt sent" : "prompt sent";
     return true;
   },
@@ -1898,7 +2121,10 @@ Object.assign(TermdeckApp.prototype, {
     const button = this.$("history-prompt-history-btn");
     if (!panel || !button || !this.historyOpen || this.activeFileKey !== null) return;
     const opening = panel.classList.contains("hidden");
-    if (opening) this.renderPromptHistory();
+    if (opening) {
+      this.closeHistorySendMenu();
+      this.renderPromptHistory();
+    }
     panel.classList.toggle("hidden", !opening);
     button.classList.toggle("on", opening);
     button.setAttribute("aria-expanded", String(opening));
@@ -1916,7 +2142,7 @@ Object.assign(TermdeckApp.prototype, {
 
 
   restorePromptHistoryEntry(text) {
-    const view = this.views.get(this.activeId);
+    const view = this.sessionInteractionState(this.activeId, false);
     const prompt = this.$("history-prompt");
     if (!view || !prompt || !this.historyOpen || this.activeFileKey !== null) return;
     prompt.value = text;
@@ -1930,18 +2156,26 @@ Object.assign(TermdeckApp.prototype, {
   resizeHistoryPrompt() {
     const prompt = this.$("history-prompt");
     if (!prompt) return;
+    const followCaret = prompt.selectionEnd === prompt.value.length;
+    prompt.style.overflowY = "hidden";
     prompt.style.height = "auto";
-    const height = Math.min(prompt.scrollHeight, 150);
-    prompt.style.height = `${height}px`;
-    prompt.style.overflowY = prompt.scrollHeight > height ? "auto" : "hidden";
+    prompt.style.height = `${prompt.scrollHeight + 2}px`;
+    prompt.style.overflowY = prompt.scrollHeight > prompt.clientHeight + 1 ? "auto" : "hidden";
+    if (followCaret) {
+      prompt.scrollTop = prompt.scrollHeight;
+      requestAnimationFrame(() => {
+        if (prompt.selectionEnd === prompt.value.length) prompt.scrollTop = prompt.scrollHeight;
+      });
+    }
   },
 
 
   showPromptDraft(view) {
-    if (!this.historyOpen || view !== this.views.get(this.activeId)) return;
+    if (!this.historyOpen || view !== this.sessionInteractionState(this.activeId, false)) return;
     const prompt = this.$("history-prompt");
     if (!prompt) return;
     prompt.value = view.markdownPromptDraft || "";
+    this.updateHistorySendMenu();
     this.resizeHistoryPrompt();
     requestAnimationFrame(() => {
       if (prompt.value !== (view.markdownPromptDraft || "")) return;
@@ -2003,7 +2237,7 @@ Object.assign(TermdeckApp.prototype, {
 
 
   deferTerminalReflowAfterPrompt(view) {
-    if (!view || !this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.deferReflowAfterPrompt) return;
+    if (!view?.term || !this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.deferReflowAfterPrompt) return;
     view.promptSubmissionReflowGuardUntil = Date.now() + CODEX_PROMPT_REFLOW_GUARD_MS;
     clearTimeout(view.promptSubmissionReflowGuardTimer);
     view.promptSubmissionReflowGuardTimer = setTimeout(() => {
@@ -2304,7 +2538,172 @@ Object.assign(TermdeckApp.prototype, {
 
 
   historyTurnKey(turn) {
-    return JSON.stringify([turn.role, turn.kind, turn.title, turn.text, turn.diff, turn.diff_files, turn.plan, turn.items]);
+    return JSON.stringify([turn.role, turn.kind, turn.title, turn.text, turn.timestamp, turn.diff, turn.diff_files,
+      turn.plan, turn.items, turn.folded_responses]);
+  },
+
+
+  historyFilterStorageKey() {
+    return `termdeck.history-filters.v1.${encodeURIComponent(this.projectSlug || "__all__")}`;
+  },
+
+
+  ensureHistoryFiltersForProject() {
+    const storageKey = this.historyFilterStorageKey();
+    if (storageKey === this.historyFilterProjectKey) return;
+    this.historyFilterProjectKey = storageKey;
+    let stored = {};
+    try {
+      stored = JSON.parse(window.localStorage.getItem(storageKey) || "{}");
+    } catch (_error) {
+      stored = {};
+    }
+    this.historyFilters = {
+      hidePrompts: stored.hidePrompts === true,
+      hideThinking: stored.hideThinking === true,
+      codeOnly: stored.codeOnly === true,
+      foldRepetitive: stored.foldRepetitive === true,
+    };
+    this.updateHistoryFilterControls();
+  },
+
+
+  saveHistoryFilters() {
+    try {
+      window.localStorage.setItem(this.historyFilterStorageKey(), JSON.stringify(this.historyFilters));
+    } catch (_error) {
+    }
+  },
+
+
+  initHistoryFilters() {
+    const toggles = [this.$("history-filter-toggle"), this.$("mobile-history-filter-toggle")].filter(Boolean);
+    const menu = this.$("history-filter-menu");
+    if (!toggles.length || !menu) return;
+    this.ensureHistoryFiltersForProject();
+    for (const toggle of toggles) {
+      toggle.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const open = menu.classList.contains("hidden");
+        menu.classList.toggle("hidden", !open);
+        for (const item of toggles) item.setAttribute("aria-expanded", String(open));
+      };
+    }
+    const bindings = [
+      ["history-filter-hide-prompts", "hidePrompts"],
+      ["history-filter-hide-thinking", "hideThinking"],
+      ["history-filter-code-only", "codeOnly"],
+      ["history-filter-fold-repetitive", "foldRepetitive"],
+    ];
+    for (const [id, key] of bindings) {
+      this.$(id).onchange = (event) => {
+        this.historyFilters = { ...this.historyFilters, [key]: event.currentTarget.checked };
+        this.saveHistoryFilters();
+        this.updateHistoryFilterControls();
+        this.refreshFilteredHistoryView();
+      };
+    }
+    this.$("history-filter-collapse-edits").onchange = (event) => {
+      if (event.currentTarget.checked !== this.historyEditsCollapsed) this.toggleHistoryEdits();
+    };
+    document.addEventListener("pointerdown", (event) => {
+      if (menu.classList.contains("hidden") || menu.contains(event.target) || toggles.some((toggle) => toggle.contains(event.target))) return;
+      this.closeHistoryFilterMenu();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || menu.classList.contains("hidden")) return;
+      event.preventDefault();
+      this.closeHistoryFilterMenu();
+      this.$("history-prompt")?.focus();
+    }, true);
+  },
+
+
+  closeHistoryFilterMenu() {
+    this.$("history-filter-menu")?.classList.add("hidden");
+    this.$("history-filter-toggle")?.setAttribute("aria-expanded", "false");
+    this.$("mobile-history-filter-toggle")?.setAttribute("aria-expanded", "false");
+  },
+
+
+  updateHistoryFilterControls() {
+    const mapping = {
+      "history-filter-hide-prompts": this.historyFilters.hidePrompts,
+      "history-filter-hide-thinking": this.historyFilters.hideThinking,
+      "history-filter-code-only": this.historyFilters.codeOnly,
+      "history-filter-fold-repetitive": this.historyFilters.foldRepetitive,
+    };
+    for (const [id, checked] of Object.entries(mapping)) {
+      const input = this.$(id);
+      if (input) input.checked = checked;
+    }
+    const count = Object.values(this.historyFilters).filter(Boolean).length;
+    for (const toggle of [this.$("history-filter-toggle"), this.$("mobile-history-filter-toggle")].filter(Boolean)) {
+      toggle.classList.toggle("on", count > 0);
+      toggle.title = count ? `Filter transcript · ${count} active` : "Filter transcript";
+    }
+  },
+
+
+  refreshFilteredHistoryView() {
+    const sessionId = this.activeId;
+    const turns = this.historyTurnsBySession.get(sessionId) || this.historyTurns;
+    if (this.historyOpen && sessionId) {
+      this.historyFingerprint = "";
+      this.applyHistoryTurns(sessionId, turns, { preserveScroll: true, forceRender: true });
+      requestAnimationFrame(() => this.scheduleFilteredHistoryContinuation(sessionId));
+    }
+    if (this.conversationOutlineOpen && sessionId) this.renderConversationOutline(turns, { preserveScroll: true });
+  },
+
+
+  historyResponseShingles(text) {
+    const words = String(text || "").toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(/\s+/).filter(Boolean);
+    if (words.length < 3) return new Set(words);
+    return new Set(words.slice(0, -2).map((word, index) => `${word} ${words[index + 1]} ${words[index + 2]}`));
+  },
+
+
+  historyResponseSimilarity(left, right) {
+    const leftText = String(left || "").replace(/\s+/g, " ").trim();
+    const rightText = String(right || "").replace(/\s+/g, " ").trim();
+    if (!leftText || !rightText) return 0;
+    if (leftText === rightText) return 1;
+    if (Math.min(leftText.length, rightText.length) / Math.max(leftText.length, rightText.length) < 0.8) return 0;
+    const leftShingles = this.historyResponseShingles(leftText);
+    const rightShingles = this.historyResponseShingles(rightText);
+    if (!leftShingles.size || !rightShingles.size) return 0;
+    let common = 0;
+    for (const shingle of leftShingles) if (rightShingles.has(shingle)) common += 1;
+    return (2 * common) / (leftShingles.size + rightShingles.size);
+  },
+
+
+  foldRepetitiveHistoryResponses(turns) {
+    const folded = [];
+    for (const turn of turns) {
+      const previous = folded[folded.length - 1];
+      const previousResponses = Array.isArray(previous?.folded_responses) ? previous.folded_responses : [previous];
+      const previousResponse = previousResponses[previousResponses.length - 1];
+      if (turn.role === "assistant" && previousResponse?.role === "assistant" &&
+          this.historyResponseSimilarity(previousResponse.text, turn.text) >= 0.8) {
+        folded[folded.length - 1] = { ...turn, folded_responses: previousResponses.concat(turn) };
+      } else {
+        folded.push(turn);
+      }
+    }
+    return folded;
+  },
+
+
+  filteredHistoryTurns(turns) {
+    this.ensureHistoryFiltersForProject();
+    let filtered = Array.isArray(turns) ? turns : [];
+    if (this.historyFilters.codeOnly) filtered = filtered.filter((turn) => turn.kind === "edit");
+    if (this.historyFilters.hidePrompts) filtered = filtered.filter((turn) => turn.role !== "user");
+    if (this.historyFilters.hideThinking) filtered = filtered.filter((turn) => turn.kind !== "thinking");
+    return this.historyFilters.foldRepetitive ? this.foldRepetitiveHistoryResponses(filtered) : filtered;
   },
 
 
@@ -2334,15 +2733,23 @@ Object.assign(TermdeckApp.prototype, {
 
   updateHistoryEditToggle() {
     const button = this.$("history-edits-toggle");
-    if (!button) return;
     const hasEdits = !!this.$("history-body").querySelector(".history-event.edit");
-    button.disabled = !hasEdits;
-    button.classList.toggle("on", this.historyEditsCollapsed && hasEdits);
+    if (button) {
+      button.disabled = !hasEdits;
+      button.classList.toggle("on", this.historyEditsCollapsed && hasEdits);
+    }
     const label = this.historyEditsCollapsed ? "Expand all code edits" : "Collapse all code edits";
-    button.title = label;
-    button.setAttribute("aria-label", label);
-    const icon = button.querySelector(".codicon");
-    if (icon) icon.className = `codicon codicon-${this.historyEditsCollapsed ? "expand-all" : "collapse-all"}`;
+    if (button) {
+      button.title = label;
+      button.setAttribute("aria-label", label);
+      const icon = button.querySelector(".codicon");
+      if (icon) icon.className = `codicon codicon-${this.historyEditsCollapsed ? "expand-all" : "collapse-all"}`;
+    }
+    const menuToggle = this.$("history-filter-collapse-edits");
+    if (menuToggle) {
+      menuToggle.checked = this.historyEditsCollapsed && hasEdits;
+      menuToggle.disabled = !hasEdits;
+    }
   },
 
 
@@ -2406,6 +2813,25 @@ Object.assign(TermdeckApp.prototype, {
     const append = options.append === true;
     const expandedByKey = options.expandedByKey || null;
     for (const turn of turns) {
+      if (Array.isArray(turn.folded_responses) && turn.folded_responses.length > 1) {
+        const group = document.createElement("details");
+        group.className = "history-repetition-group";
+        group.dataset.outlineKey = this.conversationOutlineTurnKey(turn);
+        const summary = document.createElement("summary");
+        const count = document.createElement("span");
+        count.className = "history-repetition-count";
+        count.textContent = `${turn.folded_responses.length} similar responses`;
+        const preview = document.createElement("span");
+        preview.className = "history-repetition-preview";
+        preview.textContent = String(turn.text || "").replace(/\s+/g, " ").trim();
+        summary.append(count, preview);
+        const items = document.createElement("div");
+        items.className = "history-repetition-items";
+        this.renderHistoryTurns(turn.folded_responses, { target: items });
+        group.append(summary, items);
+        body.appendChild(group);
+        continue;
+      }
       if (turn.kind === "compaction") {
         // Not a <details>: there is nothing to expand, and collapsing it away would defeat the
         // point -- the boundary needs to stay visible so turns from before and after it don't read
@@ -2421,6 +2847,7 @@ Object.assign(TermdeckApp.prototype, {
       if (turn.kind && turn.kind !== "message") {
         const event = document.createElement("details");
         event.className = "history-event " + turn.kind;
+        event.dataset.outlineKey = this.conversationOutlineTurnKey(turn);
         event.open = turn.kind === "edit" ? !this.historyEditsCollapsed : turn.kind === "plan" ? true : turn.expanded === true;
         const summary = document.createElement("summary");
         if (turn.kind === "thinking" && Array.isArray(turn.items)) {
@@ -2649,24 +3076,39 @@ Object.assign(TermdeckApp.prototype, {
   applyHistoryTurns(sessionId, turns, options = {}) {
     const body = this.$("history-body");
     const preserveScroll = options.preserveScroll === true;
+    const followLatest = options.followLatest === true;
     if (sessionId !== this.activeId || !this.historyOpen) return;
     this.cacheSessionModelFromHistory(sessionId, turns);
+    const renderedTurns = this.filteredHistoryTurns(turns);
+    const previousRenderedTurns = this.historyRenderedTurns;
     // Capture this after the request completes so scrolling while the refresh
     // is in flight is never overwritten by an older scroll position.
-    const scrollSnapshot = preserveScroll
-      ? this.captureHistoryScroll(body, this.historyTurns)
-      : (this.historyScrollBySession.get(sessionId) || null);
-    const fingerprint = `${turns.length}|${JSON.stringify(turns.slice(-3).map((turn) => [turn.role, turn.kind, turn.text, turn.diff?.length, turn.diff_files, turn.plan, turn.items]))}`;
-    if (preserveScroll && fingerprint === this.historyFingerprint) return;
+    const scrollSnapshot = followLatest
+      ? null
+      : preserveScroll
+        ? this.captureHistoryScroll(body, this.historyTurns)
+        : (this.historyScrollBySession.get(sessionId) || null);
+    const fingerprint = `${renderedTurns.length}|${JSON.stringify(renderedTurns.slice(-3).map((turn) =>
+      [turn.role, turn.kind, turn.text, turn.timestamp, turn.diff?.length, turn.diff_files, turn.plan, turn.items,
+        turn.folded_responses?.length]))}`;
+    if (preserveScroll && !options.forceRender && fingerprint === this.historyFingerprint) {
+      this.historyTurns = turns;
+      this.historyTurnsBySession.set(sessionId, turns);
+      if (this.conversationOutlineOpen) this.renderConversationOutline(turns, { preserveScroll: true });
+      if (followLatest) this.scrollHistoryToBottom();
+      this.observeHistoryTopForPaging();
+      requestAnimationFrame(() => this.scheduleFilteredHistoryContinuation(sessionId));
+      return;
+    }
     let commonPrefix = 0;
     if (preserveScroll && this.historyLoaded) {
-      while (commonPrefix < this.historyTurns.length && commonPrefix < turns.length &&
-        this.historyTurnKey(this.historyTurns[commonPrefix]) === this.historyTurnKey(turns[commonPrefix])) commonPrefix += 1;
+      while (commonPrefix < previousRenderedTurns.length && commonPrefix < renderedTurns.length &&
+        this.historyTurnKey(previousRenderedTurns[commonPrefix]) === this.historyTurnKey(renderedTurns[commonPrefix])) commonPrefix += 1;
     }
-    const canAppend = preserveScroll && this.historyLoaded && this.historyTurns.length > 0 &&
-      commonPrefix === this.historyTurns.length && turns.length >= this.historyTurns.length;
-    const canPatchTail = preserveScroll && this.historyLoaded && this.historyTurns.length > 0 &&
-      commonPrefix === this.historyTurns.length - 1 && turns.length >= this.historyTurns.length;
+    const canAppend = !options.forceRender && preserveScroll && this.historyLoaded && previousRenderedTurns.length > 0 &&
+      commonPrefix === previousRenderedTurns.length && renderedTurns.length >= previousRenderedTurns.length;
+    const canPatchTail = !options.forceRender && preserveScroll && this.historyLoaded && previousRenderedTurns.length > 0 &&
+      commonPrefix === previousRenderedTurns.length - 1 && renderedTurns.length >= previousRenderedTurns.length;
     this.historyFingerprint = fingerprint;
     this.historyLoaded = true;
     const s = this.sessionOrClosed(sessionId);
@@ -2675,9 +3117,9 @@ Object.assign(TermdeckApp.prototype, {
     if (canPatchTail) {
       // Keep the unchanged transcript nodes in place so browser-find selection
       // and the user's reading position survive live output updates.
-      const existing = body.children[this.historyTurns.length - 1];
+      const existing = body.children[previousRenderedTurns.length - 1];
       const scratch = document.createElement("div");
-      this.renderHistoryTurns([turns[this.historyTurns.length - 1]], { target: scratch });
+      this.renderHistoryTurns([renderedTurns[previousRenderedTurns.length - 1]], { target: scratch });
       const replacement = scratch.firstElementChild;
       if (existing && replacement) {
         const wasOpen = existing.matches("details") ? existing.open : false;
@@ -2689,8 +3131,8 @@ Object.assign(TermdeckApp.prototype, {
           existing.replaceWith(replacement);
         }
       }
-      if (turns.length > this.historyTurns.length) {
-        this.renderHistoryTurns(turns.slice(this.historyTurns.length), { target: body });
+      if (renderedTurns.length > previousRenderedTurns.length) {
+        this.renderHistoryTurns(renderedTurns.slice(previousRenderedTurns.length), { target: body });
       }
     } else if (!canAppend) {
       // Expanded state must be captured BEFORE the clear below wipes the DOM, keyed by the
@@ -2707,24 +3149,30 @@ Object.assign(TermdeckApp.prototype, {
         }
       }
       body.textContent = "";
-      if (!turns.length) {
+      if (!renderedTurns.length) {
         const empty = document.createElement("div");
         empty.className = "history-empty";
-        empty.textContent = "no transcript found yet (send a message first, or the session id isn't resolved)";
+        empty.textContent = turns.length
+          ? "no transcript turns match the active filters"
+          : "no transcript found yet (send a message first, or the session id isn't resolved)";
         body.appendChild(empty);
       } else {
-        this.renderHistoryTurns(turns, { expandedByKey });
+        this.renderHistoryTurns(renderedTurns, { expandedByKey });
       }
     } else {
-      this.renderHistoryTurns(turns.slice(this.historyTurns.length), { append: true });
+      this.renderHistoryTurns(renderedTurns.slice(previousRenderedTurns.length), { append: true });
     }
     this.historyTurns = turns;
+    this.historyRenderedTurns = renderedTurns;
     this.historyTurnsBySession.set(sessionId, turns);
+    if (this.conversationOutlineOpen) this.renderConversationOutline(turns, { preserveScroll: true });
     this.renderHistoryMeta();
     this.updateHistoryEditToggle();
     this.updateActiveThinkingBlock();
     this.restoreHistoryScroll(body, scrollSnapshot, turns);
+    this.observeHistoryTopForPaging();
     this.schedulePendingHistorySearchReveal();
+    requestAnimationFrame(() => this.scheduleFilteredHistoryContinuation(sessionId));
   },
 
 
@@ -2792,12 +3240,28 @@ Object.assign(TermdeckApp.prototype, {
 
 
   initNotebook() {
-    const toggles = [this.$("notebook-toggle"), this.$("file-tabs-notebook"), this.$("mobile-notebook-toggle")].filter(Boolean);
+    const toggles = [this.$("notebook-toggle"), this.$("history-notebook-toggle"), this.$("file-tabs-notebook"),
+      this.$("mobile-notebook-toggle")].filter(Boolean);
     const panel = this.$("notebook-panel");
     const host = this.$("notebook-editor-host");
     if (!toggles.length || !panel || !host) return;
     this.normalizeNotebookNotes();
     for (const toggle of toggles) toggle.onclick = () => this.toggleNotebook();
+    const notebookTabs = this.$("notebook-tabs");
+    notebookTabs.addEventListener("pointerdown", (event) => {
+      const tab = event.target.closest?.(".notebook-tab[data-note-id]");
+      if (!tab || event.target.closest?.(".notebook-tab-close") || event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void this.selectNotebookNote(tab.dataset.noteId);
+    }, true);
+    notebookTabs.addEventListener("click", (event) => {
+      const tab = event.target.closest?.(".notebook-tab[data-note-id]");
+      if (!tab || event.target.closest?.(".notebook-tab-close") || event.detail !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void this.selectNotebookNote(tab.dataset.noteId);
+    }, true);
     this.$("notebook-new").onclick = () => { void this.createNotebookNote(); };
     this.$("notebook-find").onclick = () => this.openNotebookFind();
     this.$("notebook-find-close").onclick = () => this.closeNotebookFind(true);
@@ -2968,7 +3432,9 @@ Object.assign(TermdeckApp.prototype, {
         return;
       }
       if (!this.conversationOutlineOpen) return;
-      if (this.$("conversation-outline").contains(event.target) || this.$("conversation-outline-toggle").contains(event.target)) return;
+      if (this.$("conversation-outline").contains(event.target) || this.$("conversation-outline-toggle").contains(event.target) ||
+          this.$("history-filter-toggle").contains(event.target) || this.$("mobile-history-filter-toggle").contains(event.target) ||
+          this.$("history-filter-menu").contains(event.target)) return;
       this.setConversationOutlineOpen(false);
     });
   },
@@ -3062,7 +3528,7 @@ Object.assign(TermdeckApp.prototype, {
       { title: "Open Quick Notes", icon: "notebook", run: () => this.setNotebookOpen(true) },
     ];
     if (this.sessionSupportsTranscript()) commands.splice(commands.length - 1, 0,
-      { title: "Open Markdown transcript", icon: "markdown", run: () => this.setHistoryMode(true) });
+      { title: "Open transcript", icon: "comment-discussion", run: () => this.setHistoryMode(true) });
     return commands;
   },
 
@@ -3907,12 +4373,25 @@ Object.assign(TermdeckApp.prototype, {
 
 
   toggleProblemsPanel() {
+    if (!this.problemsAvailableForCurrentSurface()) return;
     this.setProblemsOpen(!this.problemsOpen);
   },
 
 
+  problemsAvailableForCurrentSurface() {
+    return this.activeFileKey !== null || this.gitReviewOpen || FILES_SIDE_PANEL_TABS.includes(this.sideView);
+  },
+
+
+  updateProblemsAvailability() {
+    const available = this.problemsAvailableForCurrentSurface();
+    this.$("problems-toggle")?.classList.toggle("hidden", !available);
+    if (!available && this.problemsOpen) this.setProblemsOpen(false);
+  },
+
+
   setProblemsOpen(open) {
-    this.problemsOpen = !!open;
+    this.problemsOpen = !!open && this.problemsAvailableForCurrentSurface();
     this.$("problems-panel").classList.toggle("hidden", !this.problemsOpen);
     this.$("problems-toggle").classList.toggle("on", this.problemsOpen);
     if (this.problemsOpen) this.refreshProblems();
@@ -4022,8 +4501,9 @@ Object.assign(TermdeckApp.prototype, {
     const sessionId = this.activeId;
     if (!this.conversationOutlineOpen || !sessionId || this.activeFileKey !== null) return;
     const list = this.$("conversation-outline-list");
-    let turns = !force ? this.conversationOutlineTurnsBySession.get(sessionId) : null;
-    if (!turns?.length || force) {
+    let turns = this.historyTurnsBySession.get(sessionId) || this.conversationOutlineTurnsBySession.get(sessionId) || [];
+    const needsFetch = !turns.length || (force && !this.historyOpen);
+    if (needsFetch) {
       list.textContent = "";
       const loading = document.createElement("div");
       loading.className = "file-inspector-empty";
@@ -4039,36 +4519,72 @@ Object.assign(TermdeckApp.prototype, {
       this.conversationOutlineTurnsBySession.set(sessionId, turns);
     }
     this.conversationOutlineSessionId = sessionId;
-    this.renderConversationOutline(turns || []);
+    this.renderConversationOutline(turns, { revealLatestPrompt: true });
   },
 
 
   conversationOutlineTurnKey(turn) {
-    return `${turn.role || ""}|${turn.kind || ""}|${String(turn.text || "").replace(/\s+/g, " ").trim().slice(0, 220)}`;
+    return `${turn.role || ""}|${turn.kind || ""}|${turn.timestamp || ""}|${String(turn.text || "").replace(/\s+/g, " ").trim().slice(0, 220)}|${turn.folded_responses?.length || 0}`;
   },
 
 
-  renderConversationOutline(turns) {
+  formatConversationOutlineTimestamp(value) {
+    if (value == null || value === "") return null;
+    const numeric = typeof value === "number" ? (value < 1e12 ? value * 1000 : value) : value;
+    const date = new Date(numeric);
+    if (Number.isNaN(date.getTime())) return null;
+    const currentYear = new Date().getFullYear();
+    const options = date.getFullYear() === currentYear
+      ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }
+      : { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" };
+    return { compact: new Intl.DateTimeFormat(undefined, options).format(date), exact: date.toLocaleString() };
+  },
+
+
+  conversationOutlineText(turn) {
+    if (turn.kind === "edit") {
+      const files = Array.isArray(turn.diff_files) ? turn.diff_files.map((file) => this.historyDiffPath(file?.path)).filter(Boolean) : [];
+      return files.length ? `${files.join(", ")} · ${this.historyEditSummary(turn)}` : this.historyEditSummary(turn);
+    }
+    return String(turn.text || "").replace(/\s+/g, " ").trim();
+  },
+
+
+  renderConversationOutline(turns, options = {}) {
     const list = this.$("conversation-outline-list");
+    const previousScrollTop = list.scrollTop;
     list.textContent = "";
-    const messages = turns.filter((turn) => ["user", "assistant"].includes(turn.role) && String(turn.text || "").trim());
+    const messages = this.filteredHistoryTurns(turns).filter((turn) =>
+      (["user", "assistant"].includes(turn.role) && String(turn.text || "").trim()) || turn.kind === "edit");
     let latestPromptItem = null;
     for (const turn of messages) {
       const item = document.createElement("button");
       item.type = "button";
       const prompt = turn.role === "user";
-      const question = !prompt && /[?？]\s*$/.test(String(turn.text || "").trim());
-      const messageType = prompt ? "prompt" : question ? "question" : "response";
+      const edit = turn.kind === "edit";
+      const foldedCount = Array.isArray(turn.folded_responses) ? turn.folded_responses.length : 0;
+      const question = !prompt && !edit && /[?？]\s*$/.test(String(turn.text || "").trim());
+      const messageType = prompt ? "prompt" : edit ? "edit" : question ? "question" : "response";
       item.className = `conversation-outline-item ${messageType}`;
       const role = document.createElement("span");
-      role.className = `conversation-outline-role codicon codicon-${prompt ? "arrow-right" : question ? "question" : "sparkle"}`;
+      role.className = `conversation-outline-role codicon codicon-${prompt ? "arrow-right" : edit ? "diff" : question ? "question" : "sparkle"}`;
       const label = document.createElement("span");
       label.className = "conversation-outline-label";
-      label.textContent = prompt ? "Prompt" : question ? "Question" : "LLM response";
+      label.textContent = prompt ? "Prompt" : edit ? "Code edit" : foldedCount > 1
+        ? `${foldedCount} similar responses` : question ? "Question" : "LLM response";
+      const timestamp = this.formatConversationOutlineTimestamp(turn.timestamp);
+      const time = document.createElement("time");
+      time.className = "conversation-outline-time";
+      if (timestamp) {
+        time.textContent = timestamp.compact;
+        time.title = timestamp.exact;
+      }
       const text = document.createElement("span");
       text.className = "conversation-outline-text";
-      text.textContent = String(turn.text || "").replace(/\s+/g, " ").trim();
-      item.append(role, label, text);
+      text.textContent = this.conversationOutlineText(turn);
+      item.append(role, label);
+      if (timestamp) item.append(time);
+      item.append(text);
       item.onclick = () => this.openConversationOutlineTurn(turn);
       list.appendChild(item);
       if (prompt) latestPromptItem = item;
@@ -4079,11 +4595,13 @@ Object.assign(TermdeckApp.prototype, {
       empty.textContent = "No user prompts or assistant responses yet.";
       list.appendChild(empty);
     }
-    if (latestPromptItem) {
+    if (options.revealLatestPrompt && latestPromptItem) {
       requestAnimationFrame(() => {
         if (!this.conversationOutlineOpen || !latestPromptItem.isConnected) return;
         list.scrollTop = Math.max(0, latestPromptItem.offsetTop - list.offsetTop - 6);
       });
+    } else if (options.preserveScroll) {
+      list.scrollTop = previousScrollTop;
     }
   },
 
@@ -4571,9 +5089,10 @@ Object.assign(TermdeckApp.prototype, {
   recordSelectionCopyHistory(text) {
     const copied = this.normalizeSelectionText(text);
     if (!copied) return;
-    const previous = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
-    this.settings.selection_copy_history = [copied, ...previous.filter((item) => item !== copied)].slice(0, 50);
-    this.saveSettings();
+    const notebookState = this.notebookProjectState();
+    const previous = this.projectSelectionCopyHistory();
+    notebookState.selection_copy_history = [copied, ...previous.filter((item) => item !== copied)].slice(0, 50);
+    this.saveProjectSelectionCopyHistory();
     const panel = this.$("selection-copy-history-panel");
     if (panel && !panel.classList.contains("hidden")) this.renderSelectionCopyHistory();
     if (this.settings.notebook_open) {
@@ -4587,7 +5106,7 @@ Object.assign(TermdeckApp.prototype, {
     const panel = this.$("selection-copy-history-panel");
     if (!panel) return;
     panel.textContent = "";
-    const history = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
+    const history = this.projectSelectionCopyHistory();
     const head = document.createElement("div");
     head.className = "selection-copy-history-head";
     const title = document.createElement("span");
@@ -4797,9 +5316,16 @@ Object.assign(TermdeckApp.prototype, {
     const session = this.session(sessionId);
     if (!value || !session || !session.agent_kind || session.agent_kind === "none" ||
         (!session.running && !session.dormant)) return false;
+    const useHistoryComposer = this.historyOpen;
     this.hideSelectionActions(true);
     this.activate(sessionId, { reveal: true });
     const view = this.views.get(sessionId) || this.ensureView(sessionId);
+    if (useHistoryComposer && this.sessionSupportsTranscript(session)) {
+      if (!this.historyOpen) this.setHistoryMode(true);
+      this.appendTextToHistoryPrompt(value);
+      this.$("status-name").textContent = "selected text added to transcript composer for " + this.agentSessionContextLabel(session);
+      return true;
+    }
     if (!this.queuePendingAgentPaste(view, value)) return false;
     if (!view.ws) this.connect(sessionId, view);
     this.$("status-name").textContent = "selected text queued for " + this.agentSessionContextLabel(session);
@@ -4811,7 +5337,7 @@ Object.assign(TermdeckApp.prototype, {
     const value = this.normalizeSelectionText(text || this.selectionActionState?.text);
     if (!value) return false;
     this.hideSelectionActions(true);
-    this.openModal(null, null, value);
+    this.openModal(null, null, value, { useHistoryComposer: this.historyOpen });
     return true;
   },
 
@@ -4831,7 +5357,7 @@ Object.assign(TermdeckApp.prototype, {
     const value = this.normalizeSelectionText(text);
     if (!value) return;
     if (!this.historyOpen) this.setHistoryMode(true);
-    const view = this.views.get(this.activeId);
+    const view = this.sessionInteractionState(this.activeId);
     const prompt = this.$("history-prompt");
     if (!view || !prompt || !this.historyOpen) return;
     const current = String(prompt.value || view.markdownPromptDraft || "").trimEnd();
@@ -4888,7 +5414,8 @@ Object.assign(TermdeckApp.prototype, {
     if (fallback) fallback.value = this.activeNotebookNote()?.text || "";
     this.settings.notebook_open = true;
     this.renderNotebook();
-    this.saveSettings();
+    this.saveNotebookProjectState();
+    this.persistNotebookOpenState();
     void this.mountNotebookEditor().then(() => this.focusNotebookEditor());
     this.$("status-name").textContent = status;
   },
@@ -4901,10 +5428,11 @@ Object.assign(TermdeckApp.prototype, {
     this.hideSelectionActions(true);
     await this.prepareNotebookSelectionEdit();
     const note = { note_id: this.createNotebookNoteId(), text: `${text}\n` };
-    this.settings.notebook_notes.push(note);
-    this.settings.notebook_active_note_id = note.note_id;
-    this.settings.notebook_notes_initialized = true;
-    this.settings.notebook_text = note.text;
+    const notebookState = this.notebookProjectState();
+    notebookState.notebook_notes.push(note);
+    notebookState.notebook_active_note_id = note.note_id;
+    notebookState.notebook_notes_initialized = true;
+    notebookState.notebook_text = note.text;
     this.openNotebookAfterSelectionEdit("selection added as new note");
   },
 
@@ -4916,15 +5444,16 @@ Object.assign(TermdeckApp.prototype, {
     this.hideSelectionActions(true);
     await this.prepareNotebookSelectionEdit();
     let note = this.activeNotebookNote();
+    const notebookState = this.notebookProjectState();
     if (!note) {
       note = { note_id: this.createNotebookNoteId(), text: "" };
-      this.settings.notebook_notes.push(note);
-      this.settings.notebook_active_note_id = note.note_id;
-      this.settings.notebook_notes_initialized = true;
+      notebookState.notebook_notes.push(note);
+      notebookState.notebook_active_note_id = note.note_id;
+      notebookState.notebook_notes_initialized = true;
     }
     const current = String(note.text || "").trimEnd();
     note.text = current ? `${current}\n\n${text}\n` : `${text}\n`;
-    this.settings.notebook_text = note.text;
+    notebookState.notebook_text = note.text;
     const fallback = this.$("notebook-editor-host")?.querySelector(".notes-area");
     if (fallback) fallback.value = note.text;
     this.openNotebookAfterSelectionEdit("selection appended to note");
@@ -4936,9 +5465,97 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  notebookProjectStateKey() {
+    return this.projectSlug || "__all__";
+  },
+
+
+  notebookOpenSessionKey() {
+    return `termdeck.notebook_open.${this.projectSlug || "__all__"}`;
+  },
+
+
+  readNotebookOpenState() {
+    try {
+      return window.sessionStorage.getItem(this.notebookOpenSessionKey()) === "1";
+    } catch (error) {
+      return false;
+    }
+  },
+
+
+  persistNotebookOpenState() {
+    try {
+      window.sessionStorage.setItem(this.notebookOpenSessionKey(), this.settings.notebook_open ? "1" : "0");
+    } catch (error) {
+      return;
+    }
+  },
+
+
+  notebookProjectState() {
+    const stateKey = this.notebookProjectStateKey();
+    const states = this.settings.project_state || {};
+    states[stateKey] = states[stateKey] || {};
+    this.settings.project_state = states;
+    return states[stateKey];
+  },
+
+
+  saveNotebookProjectState() {
+    const stateKey = this.notebookProjectStateKey();
+    const notebookState = this.notebookProjectState();
+    const patch = {
+      notebook_notes: notebookState.notebook_notes || [],
+      notebook_active_note_id: notebookState.notebook_active_note_id || "",
+      notebook_notes_initialized: !!notebookState.notebook_notes_initialized,
+      notebook_text: notebookState.notebook_text || "",
+    };
+    this.applyLocalProjectStatePatch(patch, stateKey);
+    this.queueProjectResourceRequest(stateKey, "/api/terminal-layout", "PATCH", patch);
+  },
+
+
+  projectSelectionCopyHistory() {
+    const history = this.notebookProjectState().selection_copy_history;
+    return Array.isArray(history) ? history : [];
+  },
+
+
+  normalizeProjectSelectionCopyHistory() {
+    const notebookState = this.notebookProjectState();
+    if (notebookState.selection_copy_history_initialized === true) return false;
+    const legacyHistory = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
+    notebookState.selection_copy_history = [...new Set(legacyHistory.map((item) => String(item || "").trim()).filter(Boolean))].slice(0, 50);
+    notebookState.selection_copy_history_initialized = true;
+    this.settings.selection_copy_history = [];
+    return true;
+  },
+
+
+  saveProjectSelectionCopyHistory() {
+    const stateKey = this.notebookProjectStateKey();
+    const notebookState = this.notebookProjectState();
+    const patch = {
+      selection_copy_history: this.projectSelectionCopyHistory(),
+      selection_copy_history_initialized: true,
+    };
+    notebookState.selection_copy_history_initialized = true;
+    this.applyLocalProjectStatePatch(patch, stateKey);
+    this.queueProjectResourceRequest(stateKey, "/api/terminal-layout", "PATCH", patch);
+  },
+
+
   normalizeNotebookNotes() {
-    const sourcePresent = Array.isArray(this.settings.notebook_notes);
-    const source = sourcePresent ? this.settings.notebook_notes : [];
+    const notebookState = this.notebookProjectState();
+    const scopedInitialized = notebookState.notebook_notes_initialized === true;
+    const legacyNotes = Array.isArray(this.settings.notebook_notes) ? this.settings.notebook_notes : [];
+    const hasLegacyNotebook = !scopedInitialized && (this.settings.notebook_notes_initialized === true ||
+      legacyNotes.length > 0 || String(this.settings.notebook_text || "").length > 0);
+    const sourcePresent = Array.isArray(notebookState.notebook_notes) || hasLegacyNotebook;
+    const source = hasLegacyNotebook ? legacyNotes : Array.isArray(notebookState.notebook_notes) ? notebookState.notebook_notes : [];
+    const sourceActiveNoteId = hasLegacyNotebook ? this.settings.notebook_active_note_id : notebookState.notebook_active_note_id;
+    const sourceNotebookText = hasLegacyNotebook ? this.settings.notebook_text : notebookState.notebook_text;
     const seen = new Set();
     const notes = [];
     for (const raw of source) {
@@ -4947,25 +5564,32 @@ Object.assign(TermdeckApp.prototype, {
       seen.add(noteId);
       notes.push({ note_id: noteId, text: String(raw?.text || "") });
     }
-    if (!notes.length && !this.settings.notebook_notes_initialized) {
-      notes.push({ note_id: this.createNotebookNoteId(), text: String(this.settings.notebook_text || "") });
+    if (!notes.length && (!scopedInitialized || hasLegacyNotebook)) {
+      notes.push({ note_id: this.createNotebookNoteId(), text: String(sourceNotebookText || "") });
     }
-    const activeNoteId = notes.some((note) => note.note_id === this.settings.notebook_active_note_id)
-      ? this.settings.notebook_active_note_id : notes[0]?.note_id || "";
+    const activeNoteId = notes.some((note) => note.note_id === sourceActiveNoteId)
+      ? sourceActiveNoteId : notes[0]?.note_id || "";
     const active = notes.find((note) => note.note_id === activeNoteId) || null;
-    const changed = JSON.stringify(source) !== JSON.stringify(notes) || this.settings.notebook_active_note_id !== activeNoteId ||
-      this.settings.notebook_text !== (active?.text || "") || !sourcePresent || !this.settings.notebook_notes_initialized;
-    this.settings.notebook_notes = notes;
-    this.settings.notebook_active_note_id = activeNoteId;
-    this.settings.notebook_text = active?.text || "";
-    this.settings.notebook_notes_initialized = true;
+    const changed = JSON.stringify(source) !== JSON.stringify(notes) || notebookState.notebook_active_note_id !== activeNoteId ||
+      notebookState.notebook_text !== (active?.text || "") || !sourcePresent || !scopedInitialized || hasLegacyNotebook;
+    notebookState.notebook_notes = notes;
+    notebookState.notebook_active_note_id = activeNoteId;
+    notebookState.notebook_text = active?.text || "";
+    notebookState.notebook_notes_initialized = true;
+    if (hasLegacyNotebook) {
+      this.settings.notebook_notes = [];
+      this.settings.notebook_active_note_id = "";
+      this.settings.notebook_text = "";
+      this.settings.notebook_notes_initialized = false;
+    }
     return changed;
   },
 
 
   activeNotebookNote() {
     this.normalizeNotebookNotes();
-    return this.settings.notebook_notes.find((note) => note.note_id === this.settings.notebook_active_note_id) || null;
+    const notebookState = this.notebookProjectState();
+    return notebookState.notebook_notes.find((note) => note.note_id === notebookState.notebook_active_note_id) || null;
   },
 
 
@@ -4981,11 +5605,13 @@ Object.assign(TermdeckApp.prototype, {
     const tabs = this.$("notebook-tabs");
     if (!tabs) return;
     this.normalizeNotebookNotes();
+    const notebookState = this.notebookProjectState();
     tabs.textContent = "";
-    for (const note of this.settings.notebook_notes) {
+    for (const note of notebookState.notebook_notes) {
       const tab = document.createElement("div");
-      const active = !this.notebookCopiesOpen && note.note_id === this.settings.notebook_active_note_id;
+      const active = !this.notebookCopiesOpen && note.note_id === notebookState.notebook_active_note_id;
       tab.className = "notebook-tab" + (active ? " active" : "");
+      tab.dataset.noteId = note.note_id;
       tab.setAttribute("role", "tab");
       tab.setAttribute("aria-selected", String(active));
       const label = document.createElement("button");
@@ -4993,7 +5619,6 @@ Object.assign(TermdeckApp.prototype, {
       label.className = "notebook-tab-label";
       label.title = this.notebookTabTitle(note);
       label.textContent = this.notebookTabTitle(note);
-      label.onclick = () => { void this.selectNotebookNote(note.note_id); };
       const close = document.createElement("button");
       close.type = "button";
       close.className = "notebook-tab-close codicon codicon-close";
@@ -5006,7 +5631,7 @@ Object.assign(TermdeckApp.prototype, {
       };
       tab.append(label, close);
       tabs.appendChild(tab);
-      if (note.note_id === this.settings.notebook_active_note_id) requestAnimationFrame(() => tab.scrollIntoView({ block: "nearest", inline: "nearest" }));
+      if (note.note_id === notebookState.notebook_active_note_id) requestAnimationFrame(() => tab.scrollIntoView({ block: "nearest", inline: "nearest" }));
     }
     const copiedTab = document.createElement("button");
     copiedTab.type = "button";
@@ -5021,7 +5646,7 @@ Object.assign(TermdeckApp.prototype, {
     copiedLabel.textContent = "Copied";
     const copiedCount = document.createElement("span");
     copiedCount.className = "notebook-copies-count";
-    const history = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
+    const history = this.projectSelectionCopyHistory();
     copiedCount.textContent = history.length ? String(history.length) : "";
     copiedTab.append(copiedIcon, copiedLabel, copiedCount);
     copiedTab.onclick = () => this.selectNotebookCopies();
@@ -5033,7 +5658,7 @@ Object.assign(TermdeckApp.prototype, {
     const items = this.$("notebook-recent-copies-items");
     const count = this.$("notebook-recent-copies-count");
     if (!items || !count) return;
-    const history = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
+    const history = this.projectSelectionCopyHistory();
     count.textContent = history.length ? String(history.length) : "";
     items.textContent = "";
     if (!history.length) {
@@ -5100,9 +5725,9 @@ Object.assign(TermdeckApp.prototype, {
     const normalizedText = String(text || "");
     const changed = note.text !== normalizedText;
     note.text = normalizedText;
-    this.settings.notebook_text = normalizedText;
+    this.notebookProjectState().notebook_text = normalizedText;
     if (changed && renderTitle) this.renderNotebookTabs();
-    if (save) this.saveSettings();
+    if (save) this.saveNotebookProjectState();
   },
 
 
@@ -5163,35 +5788,51 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  collapseNotebookEditorSelection() {
+    const selection = this.notebookEditor?.getSelection();
+    if (!selection || selection.isEmpty) return;
+    this.notebookEditor.setPosition({ lineNumber: selection.endLineNumber, column: selection.endColumn });
+  },
+
+
   async selectNotebookNote(noteId) {
     this.normalizeNotebookNotes();
+    const notebookState = this.notebookProjectState();
     this.notebookCopiesOpen = false;
-    if (!this.settings.notebook_notes.some((note) => note.note_id === noteId) || noteId === this.settings.notebook_active_note_id) {
+    this.collapseNotebookEditorSelection();
+    this.hideSelectionActions(true);
+    if (!notebookState.notebook_notes.some((note) => note.note_id === noteId) || noteId === notebookState.notebook_active_note_id) {
       this.renderNotebook();
       void this.mountNotebookEditor();
       this.focusNotebookEditor();
       return;
     }
-    await this.flushNotebook();
-    if (this.notebookEditor) this.notebookEditor.setModel(null);
-    this.notebookMounted = false;
-    this.settings.notebook_active_note_id = noteId;
-    this.settings.notebook_text = this.activeNotebookNote()?.text || "";
+    const currentNote = this.activeNotebookNote();
+    const currentModel = currentNote ? this.notebookEditorModels.get(currentNote.note_id) : null;
+    if (currentNote && currentModel && this.notebookEditor?.getModel() === currentModel) {
+      currentNote.text = this.notebookEditor.getValue();
+    }
+    notebookState.notebook_active_note_id = noteId;
+    notebookState.notebook_text = this.activeNotebookNote()?.text || "";
     this.notebookSearchIndex = 0;
-    this.renderNotebook();
-    this.saveSettings();
+    this.notebookMounted = false;
+    this.saveNotebookProjectState();
+    this.renderNotebookTabs();
     await this.mountNotebookEditor();
+    this.collapseNotebookEditorSelection();
+    this.renderNotebook();
     this.focusNotebookEditor();
   },
 
 
   async closeNotebookNote(noteId) {
     this.normalizeNotebookNotes();
-    const index = this.settings.notebook_notes.findIndex((note) => note.note_id === noteId);
+    const notebookState = this.notebookProjectState();
+    const index = notebookState.notebook_notes.findIndex((note) => note.note_id === noteId);
     if (index < 0) return;
-    const wasActive = noteId === this.settings.notebook_active_note_id;
+    const wasActive = noteId === notebookState.notebook_active_note_id;
     if (wasActive) await this.flushNotebook();
-    const note = this.settings.notebook_notes[index];
+    const note = notebookState.notebook_notes[index];
     const title = this.notebookTabTitle(note);
     if (!await uiConfirm(`Move "${title}" to the macOS Trash?`)) return;
     const response = await fetch("/api/notebook/trash", {
@@ -5202,7 +5843,7 @@ Object.assign(TermdeckApp.prototype, {
       void uiAlert(error.detail || "could not move note to Trash");
       return;
     }
-    const notes = this.settings.notebook_notes.filter((note) => note.note_id !== noteId);
+    const notes = notebookState.notebook_notes.filter((note) => note.note_id !== noteId);
     const next = wasActive ? notes[Math.min(index, notes.length - 1)] || null : this.activeNotebookNote();
     if (wasActive) {
       if (this.notebookEditor) this.notebookEditor.setModel(null);
@@ -5211,13 +5852,13 @@ Object.assign(TermdeckApp.prototype, {
     const model = this.notebookEditorModels.get(noteId);
     if (model) model.dispose();
     this.notebookEditorModels.delete(noteId);
-    this.settings.notebook_notes = notes;
-    this.settings.notebook_active_note_id = next?.note_id || "";
-    this.settings.notebook_text = next?.text || "";
-    this.settings.notebook_notes_initialized = true;
+    notebookState.notebook_notes = notes;
+    notebookState.notebook_active_note_id = next?.note_id || "";
+    notebookState.notebook_text = next?.text || "";
+    notebookState.notebook_notes_initialized = true;
     this.notebookSearchIndex = 0;
     this.renderNotebook();
-    this.saveSettings();
+    this.saveNotebookProjectState();
     if (next && wasActive) {
       await this.mountNotebookEditor();
       this.focusNotebookEditor();
@@ -5228,15 +5869,16 @@ Object.assign(TermdeckApp.prototype, {
   async createNotebookNote() {
     await this.flushNotebook();
     const note = { note_id: this.createNotebookNoteId(), text: "" };
-    this.settings.notebook_notes.push(note);
+    const notebookState = this.notebookProjectState();
+    notebookState.notebook_notes.push(note);
     this.notebookCopiesOpen = false;
     if (this.notebookEditor) this.notebookEditor.setModel(null);
     this.notebookMounted = false;
-    this.settings.notebook_active_note_id = note.note_id;
-    this.settings.notebook_text = note.text;
+    notebookState.notebook_active_note_id = note.note_id;
+    notebookState.notebook_text = note.text;
     this.notebookSearchIndex = 0;
     this.renderNotebook();
-    this.saveSettings();
+    this.saveNotebookProjectState();
     await this.mountNotebookEditor();
     this.focusNotebookEditor();
   },
@@ -5340,7 +5982,8 @@ Object.assign(TermdeckApp.prototype, {
 
   renderNotebook() {
     const panel = this.$("notebook-panel");
-    const toggles = [this.$("notebook-toggle"), this.$("file-tabs-notebook"), this.$("mobile-notebook-toggle")].filter(Boolean);
+    const toggles = [this.$("notebook-toggle"), this.$("history-notebook-toggle"), this.$("file-tabs-notebook"),
+      this.$("mobile-notebook-toggle")].filter(Boolean);
     if (!panel || !toggles.length) return;
     panel.classList.toggle("notebook-over-file-area",
       this.activeFileKey !== null || FILES_SIDE_PANEL_TABS.includes(this.sideView));
@@ -5414,7 +6057,7 @@ Object.assign(TermdeckApp.prototype, {
     this.settings.notebook_open = shouldOpen;
     this.renderNotebook();
     if (animateClose) this.notebookCloseTimer = window.setTimeout(this.finishNotebookClose.bind(this), 180);
-    this.saveSettings();
+    this.persistNotebookOpenState();
     if (!shouldOpen && options.focus !== false) requestAnimationFrame(() => this.focusActiveEditor());
     if (this.settings.notebook_open && options.focus !== false) {
       requestAnimationFrame(() => this.focusNotebookEditor());
@@ -5445,6 +6088,7 @@ Object.assign(TermdeckApp.prototype, {
 
   activate(id, options = {}) {
     this.closePromptHistory();
+    this.closeHistorySendMenu();
     this.hideSelectionActions(true);
     const previousId = this.activeId;
     const selected = this.session(id);
@@ -5487,6 +6131,7 @@ Object.assign(TermdeckApp.prototype, {
     this.historyFingerprint = "";
     const cachedHistory = this.historyTurnsBySession.get(id) || [];
     this.historyTurns = cachedHistory;
+    this.historyRenderedTurns = [];
     this.historyLoaded = cachedHistory.length > 0;
     const previousView = previousId ? this.views.get(previousId) : null;
     this.activeId = id;
@@ -5503,7 +6148,8 @@ Object.assign(TermdeckApp.prototype, {
     if (s && this.treeRoot !== null && this.treeRoot !== s.cwd && !this.$("files-section").classList.contains("hidden")) {
       this.reloadTree();
     }
-    const view = this.ensureView(id);
+    const view = this.historyOpen ? this.ensureTranscriptSessionState(id) : this.ensureView(id);
+    if (view.promptQueue?.length) this.dispatchNextMarkdownPrompt(view);
     if (previousView && previousView !== view) previousView.term.clearSelection();
     if (previousView && previousView !== view) {
       if (this.isTerminalScrollV2()) {
@@ -5544,10 +6190,12 @@ Object.assign(TermdeckApp.prototype, {
     if (!this.$("terminal-find").classList.contains("hidden")) this.updateTerminalFindMatches();
     if (this.historyOpen) {
       const historyId = id;
+      this.showPromptDraft(view);
       if (previousId !== id) {
         // Do not leave the previous tab's transcript rendered while a fork's
         // authoritative snapshot is being loaded.
         this.historyTurns = [];
+        this.historyRenderedTurns = [];
         this.historyLoaded = false;
         const body = this.$("history-body");
         if (body) {
@@ -5562,14 +6210,15 @@ Object.assign(TermdeckApp.prototype, {
       }
       this.connectHistoryStream(historyId, { fresh: previousId !== id });
     }
-    if (view) {
+    if (view?.term && !this.historyOpen) {
       this.drainTerminalWrites(view);
       this.scheduleV2ViewportSync(view);
       this.prepareTerminalForFirstPaint(view);
       this.scheduleClaudeWebglColdPrimeCompletion(view);
       if (this.isTerminalScrollV2() && !view.userScrollIntent) view.scrollMode = "follow";
       this.refreshTerminalAppearance(view);
-      if (options.startDormant !== false) {
+      const terminalSocketSuspended = this.suspendMobileTranscriptTerminalSocket(view);
+      if (options.startDormant !== false && !terminalSocketSuspended) {
         if (!view.ws) this.connect(id, view);
       }
       if (this.isTerminalScrollV2()) {

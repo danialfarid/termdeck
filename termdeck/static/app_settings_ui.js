@@ -230,6 +230,8 @@ Object.assign(TermdeckApp.prototype, {
             automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
             fontSize: this.scaledSettingSize("code_font_size"), lineNumbersMinChars: 2, lineDecorationsWidth: 8, glyphMargin: false,
             renderLineHighlight: "all", folding: true, wordWrap: this.settings.editor_no_wrap ? "off" : "on",
+            selectionHighlight: false, occurrencesHighlight: "off", matchBrackets: "never",
+            unicodeHighlight: { nonBasicASCII: false, invisibleCharacters: false, ambiguousCharacters: false },
             fixedOverflowWidgets: true, padding: { top: 10, bottom: 10 },
           });
           this.notebookEditor.onDidChangeModelContent(() => {
@@ -241,7 +243,7 @@ Object.assign(TermdeckApp.prototype, {
             clearTimeout(this.notebookTitleTimer);
             this.notebookTitleTimer = setTimeout(() => {
               this.renderNotebookTabs();
-              this.saveSettings();
+              this.saveNotebookProjectState();
             }, 160);
           });
           this.notebookEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { void this.flushNotebook(); });
@@ -269,6 +271,13 @@ Object.assign(TermdeckApp.prototype, {
       this.saveTimer = null;
       this.queueSettingsPatch();
     }, 400);
+  },
+
+
+  saveSettingsImmediately() {
+    clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    this.queueSettingsPatch();
   },
 
 
@@ -512,7 +521,7 @@ Object.assign(TermdeckApp.prototype, {
       system_font_size: '<section class="font-sample-stage font-sample-menu"><div><span class="codicon codicon-go-to-file"></span>Open</div><div><span class="codicon codicon-edit"></span>Rename</div><div><span class="codicon codicon-arrow-swap"></span>Move to</div></section>',
       code_font_size: '<section class="font-sample-stage font-sample-code"><pre><span class="line-number">12</span> <span class="keyword">const</span> cache = <span class="function">loadFeatures</span>(<span class="string">"stock"</span>);\n<span class="line-number">13</span> cache.validate();</pre></section>',
       files_tab_font_size: '<section class="font-sample-stage font-sample-file-tabs"><div class="active">model_config.py<span class="codicon codicon-close"></span></div><div>universe.py<span class="codicon codicon-close"></span></div></section>',
-      bottom_font_size: '<section class="font-sample-stage font-sample-bottom"><span class="codicon codicon-markdown"></span><span class="codicon codicon-refresh"></span><span class="codicon codicon-fold-down"></span><span class="codicon codicon-cloud-upload"></span></section>',
+      bottom_font_size: '<section class="font-sample-stage font-sample-bottom"><span class="codicon codicon-comment-discussion"></span><span class="codicon codicon-refresh"></span><span class="codicon codicon-fold-down"></span><span class="codicon codicon-cloud-upload"></span></section>',
       diff_font_size: '<section class="font-sample-stage font-sample-diff"><pre><div class="removed">− old_feature = cache.final_value</div><div class="added">+ feature = cache.point_in_time_value</div></pre></section>',
       tree_font_size: '<section class="font-sample-stage font-sample-tree"><div class="folder"><span class="codicon codicon-folder-opened"></span>trainer</div><div class="child"><span class="codicon codicon-file-code"></span><span class="match">model_<mark>config</mark>.py</span></div><div class="child"><span class="codicon codicon-file"></span>features.py</div></section>',
     };
@@ -1276,7 +1285,10 @@ Object.assign(TermdeckApp.prototype, {
       const button = this.$(buttonId);
       if (!button) continue;
       button.classList.toggle("size-owned-elsewhere", active);
-      if (active) {
+      if (this.historyOpen) {
+        button.title = "Refresh transcript";
+        button.setAttribute("aria-label", button.title);
+      } else if (active) {
         button.title = `Another window is using this terminal at ${owned.cols} columns. Click to resize it to this window.`;
         button.setAttribute("aria-label", button.title);
       } else {
@@ -3062,8 +3074,9 @@ Object.assign(TermdeckApp.prototype, {
     if (ordered.some((spec) => spec.kind === previous)) select.value = previous;
   },
 
-  openModal(groupId = null, afterSessionId = null, initialAgentText = "") {
+  openModal(groupId = null, afterSessionId = null, initialAgentText = "", options = {}) {
     this.pendingNewAgentSelection = this.normalizeSelectionText(initialAgentText);
+    this.pendingNewAgentSelectionUseHistory = options.useHistoryComposer === true;
     this.modalGroupId = !this.vscodeMode && groupId && this.terminalGroups().some((group) => group.id === groupId)
       ? groupId : null;
     this.modalAfterSessionId = !this.modalGroupId && afterSessionId && this.session(afterSessionId) ? afterSessionId : null;
@@ -3086,6 +3099,7 @@ Object.assign(TermdeckApp.prototype, {
     this.modalGroupId = null;
     this.modalAfterSessionId = null;
     this.pendingNewAgentSelection = "";
+    this.pendingNewAgentSelectionUseHistory = false;
     this.$("modal-backdrop").classList.add("hidden");
   },
 
@@ -3121,6 +3135,7 @@ Object.assign(TermdeckApp.prototype, {
 
   async createSessionFromModal() {
     const pendingAgentText = this.pendingNewAgentSelection;
+    const pendingAgentTextUseHistory = this.pendingNewAgentSelectionUseHistory;
     const targetGroupId = this.modalGroupId;
     const requestedAfterSessionId = this.modalAfterSessionId;
     const model = this.$("modal-model").value;
@@ -3167,7 +3182,14 @@ Object.assign(TermdeckApp.prototype, {
       this.repositionSelectedSessions([created.session_id], anchorSessionId, true);
     }
     this.activate(created.session_id, { reveal: true });
-    if (pendingAgentText) this.pasteSelectionIntoNewAgentWhenReady(created.session_id, pendingAgentText, title);
+    const createdSession = this.session(created.session_id) || created;
+    if (pendingAgentText && pendingAgentTextUseHistory && this.sessionSupportsTranscript(createdSession)) {
+      if (!this.historyOpen) this.setHistoryMode(true);
+      this.appendTextToHistoryPrompt(pendingAgentText);
+      this.$("status-name").textContent = "selected text added to new agent transcript composer";
+    } else if (pendingAgentText) {
+      this.pasteSelectionIntoNewAgentWhenReady(created.session_id, pendingAgentText, title);
+    }
   },
 
 

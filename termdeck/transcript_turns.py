@@ -28,26 +28,29 @@ class TurnBuilder:
 
     @classmethod
     def turn(cls, role: str, text: str, kind: str = "message", title: str = "", expanded: bool = False,
-             model: str | None = None) -> dict[str, object]:
+             model: str | None = None, timestamp: object = None) -> dict[str, object]:
         clean = text.strip()
         if len(clean) > cls.MAX_TEXT_CHARS:
             clean = clean[:cls.MAX_TEXT_CHARS] + "\n… (truncated)"
         turn: dict[str, object] = {"role": role, "text": clean}
         if model:
             turn["model"] = model
+        if timestamp not in (None, ""):
+            turn["timestamp"] = timestamp
         if kind != "message":
             turn.update({"kind": kind, "title": title or kind.title(), "expanded": expanded})
         return turn
 
     @classmethod
-    def tool_event(cls, name: str, value: object, role: str = "event", model: str | None = None) -> dict[str, object]:
+    def tool_event(cls, name: str, value: object, role: str = "event", model: str | None = None,
+                   timestamp: object = None) -> dict[str, object]:
         text = cls.format_value(value)
         kind = cls.tool_kind(name, text)
         diff, diff_files = cls.edit_diff_parts(name, value, text) if kind == "edit" else ([], [])
         if kind == "edit" and not diff and name.strip().lower() not in {"edit", "write", "notebookedit", "apply_patch"}:
             kind = "tool"
         title = "Code edit" if kind == "edit" else "Plan" if kind == "plan" else name or "Tool"
-        turn = cls.turn(role, text, kind, title, expanded=kind == "edit", model=model)
+        turn = cls.turn(role, text, kind, title, expanded=kind == "edit", model=model, timestamp=timestamp)
         if diff:
             # The structured diff is what the Markdown view renders. Keeping
             # the original apply_patch wrapper as well duplicates a large
@@ -61,6 +64,14 @@ class TurnBuilder:
             if plan:
                 turn["plan"] = plan
         return turn
+
+    @staticmethod
+    def extract_turn_timestamp(payload: dict[str, object]) -> object:
+        for key in ("timestamp", "created_at", "createdAt", "time"):
+            value = payload.get(key)
+            if isinstance(value, (str, int, float)) and value not in ("", 0):
+                return value
+        return None
 
     @classmethod
     def extract_turn_model(
@@ -383,12 +394,17 @@ class TurnBuilder:
                     items.append(item)
                     used += len(item["text"])
                 items.reverse()
-                collapsed.append({
+                collapsed_turn: dict[str, object] = {
                     "role": "event",
                     "text": "",
                     "kind": "thinking",
                     "title": f"Thinking · {len(raw_items)} operations",
                     "expanded": False,
                     "items": items,
-                })
+                }
+                timestamp = next((item.get("timestamp") for item in turns[start:index]
+                                  if item.get("timestamp") not in (None, "")), None)
+                if timestamp is not None:
+                    collapsed_turn["timestamp"] = timestamp
+                collapsed.append(collapsed_turn)
         return collapsed

@@ -11,9 +11,17 @@
   const status = document.getElementById("initial-loading-recovery-status");
   if (!loadingState || !recovery || !markdownButton || !refreshButton || !restartButton || !stopButton || !status) return;
 
-  window.setTimeout(() => {
-    if (!loadingState.classList.contains("hidden")) recovery.classList.remove("hidden");
-  }, RECOVERY_ACTION_DELAY_MS);
+  let recoveryTimer = 0;
+  const scheduleRecovery = () => {
+    clearTimeout(recoveryTimer);
+    recovery.classList.add("hidden");
+    recoveryTimer = window.setTimeout(() => {
+      recoveryTimer = 0;
+      if (!loadingState.classList.contains("hidden")) recovery.classList.remove("hidden");
+    }, RECOVERY_ACTION_DELAY_MS);
+  };
+  window.TermdeckLoadingRecovery = { schedule: scheduleRecovery };
+  scheduleRecovery();
 
   const setActionsDisabled = (disabled) => {
     markdownButton.disabled = disabled;
@@ -29,7 +37,7 @@
       return;
     }
     if (!app.sessionSupportsTranscript()) {
-      status.textContent = "Markdown transcript is unavailable for this terminal.";
+      status.textContent = "Transcript is unavailable for this terminal.";
       return;
     }
     app.setHistoryMode(true);

@@ -80,7 +80,7 @@ before it binds.
 | Module | Responsibility |
 |---|---|
 | `agent_session_tracker.py` | Resolves which CLI session a terminal is on *right now*. See below. |
-| `transcript_service.py` | Reads the CLI's own on-disk log (codex rollout / claude jsonl) into a clean conversation transcript for the Markdown view. |
+| `transcript_service.py` | Reads the CLI's own on-disk log (codex rollout / claude jsonl) into a clean conversation transcript for Transcript mode. |
 | `claude_activity_watcher.py` | Delivers Claude JSONL changes via `watchdog` instead of polling transcript files. |
 | `draft_tracker.py` | Reconstructs unsubmitted input from the raw keystroke stream so a restart can re-inject it. |
 
@@ -152,7 +152,7 @@ One WebSocket per terminal, at `/ws/<session_id>`.
 - **Text frames (JSON)** — `input`, `resize`, `draft_sync`, `submit`, `queue_edit`.
 
 Two more sockets exist: `/ws/status` (a single connection carrying title, status, and processing changes for
-every terminal, so the sidebar updates without polling) and `/ws/transcript/<session_id>` (Markdown
+every terminal, so the sidebar updates without polling) and `/ws/transcript/<session_id>` (Transcript mode
 transcript updates driven by `watchdog` file events).
 
 Because output is a ring buffer rather than a log, memory per terminal is bounded and a slow client can't

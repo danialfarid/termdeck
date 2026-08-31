@@ -116,10 +116,11 @@ class AgyCli(AgentCli):
             content = payload.get("content")
             tool_calls = payload.get("tool_calls")
             model = TurnBuilder.extract_turn_model(payload)
+            timestamp = TurnBuilder.extract_turn_timestamp(payload)
             if self.is_user_payload(payload) and isinstance(content, str):
                 text = self._wrap_text(content)
                 if text:
-                    turns.append(TurnBuilder.turn(TurnBuilder.ROLE_USER, text, model=model))
+                    turns.append(TurnBuilder.turn(TurnBuilder.ROLE_USER, text, model=model, timestamp=timestamp))
                 continue
             if isinstance(tool_calls, list) and tool_calls:
                 for call in tool_calls:
@@ -129,22 +130,26 @@ class AgyCli(AgentCli):
                     else:
                         name = str(call)
                         arguments = {}
-                    turns.append(TurnBuilder.tool_event(name, arguments, role="event", model=model))
+                    turns.append(TurnBuilder.tool_event(name, arguments, role="event", model=model,
+                                                        timestamp=timestamp))
                 continue
             thinking = payload.get("thinking")
             if isinstance(thinking, str) and thinking.strip():
                 turns.append(TurnBuilder.turn("event", self._wrap_text(thinking), "thinking",
-                                              f"{self._turn_title(event_type)} Thinking", model=model))
+                                              f"{self._turn_title(event_type)} Thinking", model=model,
+                                              timestamp=timestamp))
             if isinstance(content, str):
                 text = self._wrap_text(content)
                 if not text:
                     continue
                 if event_type in {"CONVERSATION_HISTORY", "CHECKPOINT", "SYSTEM"}:
-                    turns.append(TurnBuilder.turn("event", text, kind="result", title=self._turn_title(event_type), model=model))
+                    turns.append(TurnBuilder.turn("event", text, kind="result", title=self._turn_title(event_type),
+                                                  model=model, timestamp=timestamp))
                 else:
-                    turns.append(TurnBuilder.turn(TurnBuilder.ROLE_ASSISTANT, text, model=model))
+                    turns.append(TurnBuilder.turn(TurnBuilder.ROLE_ASSISTANT, text, model=model, timestamp=timestamp))
             elif thinking:
-                turns.append(TurnBuilder.turn("event", "", kind="result", title=self._turn_title(event_type), model=model))
+                turns.append(TurnBuilder.turn("event", "", kind="result", title=self._turn_title(event_type),
+                                              model=model, timestamp=timestamp))
         return TurnBuilder.collapse_thinking_events(turns)
 
     def is_user_payload(self, payload: dict[str, object]) -> bool:
