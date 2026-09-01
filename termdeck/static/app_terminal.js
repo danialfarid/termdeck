@@ -677,6 +677,17 @@ Object.assign(TermdeckApp.prototype, {
     // A reconnect that lands with less than a screen of scrollback gets one more chance to restore: the
     view.suppressReconnect = false;
     const proto = location.protocol === "https:" ? "wss" : "ws";
+    // A server restart is the one reconnect where the client's buffer cannot be trusted to line up
+    // with the agent's screen any more: the recording it was built from ended wherever the old
+    // server stopped. Keeping it meant the agent repainted INTO stale content -- the status line
+    // landing mid-conversation, a composer drawn twice -- which a manual browser refresh fixed,
+    // because a refresh is exactly this: an empty buffer and a full replay. So do that here rather
+    // than make the user do it.
+    if (view.replayFromScratchOnNextConnect) {
+      view.replayFromScratchOnNextConnect = false;
+      view.term.reset();
+      this.tallResetScrollState(view);
+    }
     const hasPopulatedBuffer = view.everConnected && !view.closed && view.term?.buffer?.active?.baseY > 0;
     // A fresh client has no trustworthy terminal screen after a server restart. Ask the live agent to
     // repaint it; a reconnect that already has a populated xterm buffer can skip the SIGWINCH nudge.
