@@ -2154,3 +2154,41 @@ class ProcessingRequiresALiveProcessTest(unittest.TestCase):
         session.proc = SimpleNamespace(alive=True)
         session.detached_live = False
         self.assertTrue(manager._processing_state(session))
+
+
+class ReleaseSessionGroupTest(unittest.TestCase):
+    """Closing a terminal hands its group name to the archive and frees the assignment."""
+
+    class Store:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def load(self):
+            return json.loads(json.dumps(self.payload))
+
+        def save(self, payload):
+            self.payload = payload
+
+    def _server(self, assignments, groups):
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.settings_store = self.Store({"project_state": {
+            "stock": {"session_groups": assignments, "terminal_groups": groups}}})
+        return server
+
+    def test_group_name_is_returned_and_assignment_released(self) -> None:
+        server = self._server({"doomed": "g1", "kept": "g1"}, [{"id": "g1", "name": "cpcv"}])
+        self.assertEqual(server._release_session_group("doomed"), "cpcv")
+        stored = server.settings_store.payload["project_state"]["stock"]["session_groups"]
+        self.assertNotIn("doomed", stored)
+        self.assertEqual(stored.get("kept"), "g1", "other members stay in the group")
+
+    def test_ungrouped_session_changes_nothing(self) -> None:
+        server = self._server({"kept": "g1"}, [{"id": "g1", "name": "cpcv"}])
+        before = server.settings_store.payload
+        self.assertEqual(server._release_session_group("never-grouped"), "")
+        self.assertIs(server.settings_store.payload, before, "no write when there was nothing to release")
+
+    def test_assignment_is_released_even_when_the_group_has_no_name(self) -> None:
+        server = self._server({"doomed": "g1"}, [{"id": "g1"}])
+        self.assertEqual(server._release_session_group("doomed"), "")
+        self.assertNotIn("doomed", server.settings_store.payload["project_state"]["stock"]["session_groups"])
