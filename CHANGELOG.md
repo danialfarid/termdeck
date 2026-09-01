@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Transcript composers provide an agent-specific slash-command palette for safe noninteractive commands,
+  submitted through the existing session without creating a terminal renderer.
 - Mobile terminal rows expose their actions through a movement-cancelled long press, while the selected row
   shows a discoverable actions button in place of its close button.
 - Mobile Transcript mode now keeps drafts in browser-local storage during server or network outages and
@@ -21,12 +23,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Transcript prompts awaiting authoritative history confirmation keep a distinct pending background and show
+  a compact blue Submitting state directly below the message.
+- Transcript history collapses Codex's mirrored `item_completed` and `response_item` records even when
+  incremental file reads or history paging parse the two records in separate batches.
+- Agent sessions remain Transcript-only on touch/mobile layouts, and a live Transcript connection now clears
+  stale connection-loss warnings even while the status socket is reconnecting.
+- Transcript Send controls use less horizontal space, stacking the options arrow underneath Send so the
+  composer gains the full width previously occupied by the arrow segment.
 - Transcript activation no longer constructs xterm or opens a terminal replay connection; each terminal is
   materialized and connected only when that session is explicitly switched to Terminal mode.
 - Add-terminal, add-group, project-add, branch-add, and note-add glyphs are about 25% larger without changing
   their button dimensions or surrounding layout.
-- Quick Notes uses a single rounded edit-square glyph, and the Transcript progress elapsed time gently pulses
-  while a response is running.
+- Side-panel add controls keep their larger cross shape with thin CSS strokes instead of a heavier enlarged font glyph.
+- Mobile Quick Notes keeps a reachable toggle for closing the panel and places the panel close control above other mobile controls.
+- Transcript elapsed-time blinking now uses the same 1.65-second cadence as the active thinking indicator.
+- Quick Notes uses a smaller single rounded edit-square glyph, and the Transcript progress elapsed time gently
+  pulses while a response is running.
 - Touch layouts omit keyboard-shortcut suffixes from menus and Transcript hints, while Transcript controls now
   use a conversation icon and the README consistently calls the surface Transcript mode.
 - Mobile Transcript keeps Notes, filters, and zoom controls right-aligned, with Notes nearest the edge and
@@ -64,6 +77,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Returning focus to a disconnected TermDeck page now reconnects only the status and active-surface sockets,
+  shows a temporary Reconnecting message, and preserves existing views instead of offering a full-page reload.
+- Transcript prompt submissions remain visibly pending in per-project browser storage through refreshes and
+  server restarts, and clear only after the authoritative agent transcript contains the matching user turn.
+- Pending Transcript prompts now confirm when Codex records multiple submissions as one newline-delimited user
+  turn, with a one-time authoritative-history reconciliation for pending records restored after reconnect.
+- Sending a Transcript prompt while an agent is working submits it directly without automatically interrupting
+  the current response or routing it through TermDeck's queue; interruption and queuing remain explicit actions.
+- Transcript Stop sends each agent's actual interrupt input, including Escape for Codex instead of the
+  previously ineffective universal Ctrl-C, without pulling queued prompts back into the composer.
+- Touching a queued Transcript message now expands its editor to the mobile Transcript surface and keeps the
+  active final line visible while typing instead of resetting the queue scroll position.
 - Mobile Transcript exposes its filter menu, keeps the active multiline composer line visible while typing,
   and re-arms long-load recovery actions for later terminal switches.
 - The bottom refresh action now reloads Transcript content instead of doing nothing in Transcript mode,

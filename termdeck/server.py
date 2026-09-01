@@ -121,6 +121,7 @@ class SubmitPromptRequest(BaseModel):
     text: str
     bracketed: bool = True
     queue: bool = False
+    automatically_queue_when_busy: bool = True
 
 
 class FollowUpTaskPromptRequest(BaseModel):
@@ -722,6 +723,7 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_SESSION_TASK_RESULT_ROUTE, response_model=None)(self._task_result)
         app.get(TermdeckConfig.API_SESSION_LAST_TURN_ROUTE, response_model=None)(self._task_result)
         app.post(TermdeckConfig.API_SESSION_PROMPT_ROUTE, response_model=None)(self._submit_prompt)
+        app.post(TermdeckConfig.API_SESSION_INTERRUPT_ROUTE, response_model=None)(self._interrupt_session)
         app.post(TermdeckConfig.API_AGENT_HOOK_ROUTE, response_model=None)(self._agent_hook)
         app.post(TermdeckConfig.API_KILL_ALL_TERMINALS_ROUTE, response_model=None)(self._kill_all_terminals)
         app.post(TermdeckConfig.API_KILL_STALE_TERMINALS_ROUTE, response_model=None)(self._kill_stale_terminals)
@@ -2567,11 +2569,20 @@ class TermdeckServer:
             raise HTTPException(status_code=400, detail="prompt text cannot be empty")
         try:
             self.manager.ensure_session_running(session_id)
-            queued = request.queue or (automatically_queue_when_busy and bool(self.manager.session_summary_by_id(session_id).get("processing")))
+            processing = bool(self.manager.session_summary_by_id(session_id).get("processing"))
+            queued = request.queue or (automatically_queue_when_busy and request.automatically_queue_when_busy and processing)
             await self.manager.submit_prompt(session_id, request.text, request.bracketed, queued)
         except ValueError as prompt_error:
             raise HTTPException(status_code=409, detail=str(prompt_error)) from prompt_error
         return {"session": self.manager.session_summary_by_id(session_id), "prompt_submitted": True, "queued": queued}
+
+    async def _interrupt_session(self, session_id: str) -> dict[str, object]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        self.manager.ensure_session_running(session_id)
+        summary = self.manager.session_summary_by_id(session_id)
+        self.manager.write_input(session_id, agents.agent_cli(str(summary.get("agent_kind", "none"))).interrupt_input)
+        return self.manager.session_summary_by_id(session_id)
 
     async def _agent_hook(self, request: AgentHookRequest, state: str = "") -> dict[str, object]:
         """Receive a Claude Code hook payload and flag the matching terminal as waiting on the user.

@@ -1096,7 +1096,7 @@ Object.assign(TermdeckApp.prototype, {
 
   selectedHistoryMode(session = this.session(this.activeId)) {
     if (!this.sessionSupportsTranscript(session)) return false;
-    if (this.touchMobileLayoutEnabled()) return !this.mobileTerminalSurfaceSessions.has(session.session_id);
+    if (this.touchMobileLayoutEnabled()) return true;
     const savedMode = this.getProjectState().session_view_modes?.[session.session_id];
     if (savedMode === "markdown" || savedMode === "terminal") return savedMode === "markdown";
     return this.settings.transcript_first_surface === "markdown";
@@ -1180,7 +1180,8 @@ Object.assign(TermdeckApp.prototype, {
     if (terminalScrollButton) {
       terminalScrollButton.classList.toggle("hidden", historyMode || fileMode || gitReviewMode);
     }
-    this.$("history-btn").classList.toggle("hidden", fileMode || gitReviewMode);
+    this.$("history-btn").classList.toggle("hidden", fileMode || gitReviewMode ||
+      (this.touchMobileLayoutEnabled() && transcriptSupported));
     this.updateTerminalHistoryMoreButton();
     this.syncFileHistorySurface();
     this.renderHistoryMeta();
@@ -1274,29 +1275,29 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  interruptHistoryPrompt() {
+  async interruptHistoryPrompt() {
     if (!this.historyOpen || !this.activeId) return;
-    const view = this.views.get(this.activeId) || this.ensureView(this.activeId);
-    if (!view) return;
-    this.sendInput(view, "\x03");
+    const view = this.sessionInteractionState(this.activeId);
+    if (!view || view.promptApiInterrupting) return;
+    view.promptApiInterrupting = true;
     this.historyPendingProcessing.delete(this.activeId);
-    // Stop means stop: the interrupt's idle transition must not auto-dispatch the queue.
-    // The first queued prompt moves into the composer so the user decides whether it still
-    // goes; the hold lifts on their next send or queue action.
-    if (view.promptQueue?.length) {
-      view.promptQueueHold = true;
-      if (!this.$("history-prompt").value.trim()) {
-        const item = view.promptQueue.shift();
-        this.persistMarkdownPromptQueue(view);
-        this.renderHistoryQueue(view);
-        this.persistMarkdownPromptDraft(view, String(item?.draftText ?? item?.text ?? ""));
-        this.showPromptDraft(view);
-        this.$("status-name").textContent = "stopped · queued prompt moved to composer";
-      }
-    }
+    view.promptQueueHold = false;
     this.updateHistoryThinkingIndicator();
-    view.keepBottom = true;
-    view.pinBottomUntil = Date.now() + 3000;
+    this.$("status-name").textContent = "stopping response…";
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(view.sessionId)}/interrupt`, { method: "POST" });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({}));
+        throw new Error(String(failure.detail || `interrupt failed (${response.status})`));
+      }
+      const session = await response.json();
+      this.applySessionStatus({ ...session, session_id: view.sessionId });
+      this.$("status-name").textContent = "stop requested";
+    } catch (error) {
+      this.$("status-name").textContent = error instanceof Error ? error.message : "unable to stop response";
+    } finally {
+      view.promptApiInterrupting = false;
+    }
   },
 
 
@@ -1328,6 +1329,7 @@ Object.assign(TermdeckApp.prototype, {
     if (!container || !items || !count || !toggle) return;
     const queued = view?.promptQueue || [];
     container.classList.toggle("hidden", !this.historyOpen || !queued.length);
+    if (!queued.length) container.classList.remove("editing");
     const collapsed = view?.promptQueueCollapsed === true;
     container.classList.toggle("collapsed", collapsed);
     toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
@@ -1354,19 +1356,47 @@ Object.assign(TermdeckApp.prototype, {
       editor.rows = 1;
       editor.spellcheck = false;
       editor.setAttribute("aria-label", `Queued prompt ${index + 1}`);
+      const keepActiveQueuedEditorCaretVisible = () => {
+        if (document.activeElement !== editor || editor.selectionEnd !== editor.value.length) return;
+        editor.scrollTop = editor.scrollHeight;
+        requestAnimationFrame(() => {
+          if (document.activeElement === editor && editor.selectionEnd === editor.value.length) {
+            editor.scrollTop = editor.scrollHeight;
+          }
+        });
+      };
       const resize = () => {
+        if (row.classList.contains("editing")) {
+          editor.style.height = "100%";
+          editor.classList.add("scrollable");
+          keepActiveQueuedEditorCaretVisible();
+          return;
+        }
+        const previousScrollTop = editor.scrollTop;
         editor.style.height = "auto";
         const contentHeight = editor.scrollHeight;
         editor.style.height = `${Math.min(contentHeight, 120)}px`;
         editor.classList.toggle("scrollable", contentHeight > 120);
+        if (document.activeElement === editor && editor.selectionEnd === editor.value.length) {
+          keepActiveQueuedEditorCaretVisible();
+        } else {
+          editor.scrollTop = previousScrollTop;
+        }
       };
-      editor.addEventListener("focus", () => { if (view) view.promptQueueEditIndex = index; });
+      editor.addEventListener("focus", () => {
+        if (view) view.promptQueueEditIndex = index;
+        container.classList.add("editing");
+        row.classList.add("editing");
+        resize();
+        keepActiveQueuedEditorCaretVisible();
+      });
       editor.addEventListener("input", () => {
         const current = view?.promptQueue?.[index];
         if (!current) return;
         current.draftText = editor.value;
         this.persistMarkdownPromptQueue(view);
         resize();
+        keepActiveQueuedEditorCaretVisible();
       });
       editor.addEventListener("keydown", (event) => {
         if (event.key === "Escape") {
@@ -1385,6 +1415,9 @@ Object.assign(TermdeckApp.prototype, {
         }
       });
       editor.addEventListener("blur", () => {
+        container.classList.remove("editing");
+        row.classList.remove("editing");
+        editor.style.height = "";
         const current = view?.promptQueue?.[index];
         if (!current) return;
         const next = editor.value;
@@ -1521,6 +1554,7 @@ Object.assign(TermdeckApp.prototype, {
 
   async toggleHistory() {
     if (this.activeFileKey !== null || (!this.historyOpen && !this.sessionSupportsTranscript())) return;
+    if (this.touchMobileLayoutEnabled() && this.sessionSupportsTranscript()) return;
     this.setHistoryMode(!this.historyOpen);
   },
 
@@ -1529,12 +1563,10 @@ Object.assign(TermdeckApp.prototype, {
     if (!this.activeId) return;
     if (enabled && !this.sessionSupportsTranscript()) return;
     const mobileTranscriptMode = this.touchMobileLayoutEnabled() && this.sessionSupportsTranscript();
-    if (mobileTranscriptMode) {
-      if (enabled) this.mobileTerminalSurfaceSessions.delete(this.activeId);
-      else this.mobileTerminalSurfaceSessions.add(this.activeId);
-    }
+    if (mobileTranscriptMode) enabled = true;
     if (this.historyOpen && !enabled) this.rememberHistoryScrollPosition(this.activeId);
     this.closeTerminalFind();
+    this.closeHistorySlashMenu();
     this.hideSelectionActions(true);
     if (!enabled) {
       this.closePromptHistory();
@@ -1642,6 +1674,11 @@ Object.assign(TermdeckApp.prototype, {
     this.historyWs = ws;
     this.historyStreamSessionId = sessionId;
     ws.onopen = () => {
+      if (this.touchMobileLayoutEnabled()) {
+        clearTimeout(this.mobileConnectionWarningTimer);
+        this.mobileConnectionWarningTimer = 0;
+        this.setMobileConnectionWarning(false);
+      }
       // A tab switch can carry a cached revision from before a fork/resume
       // changed the underlying rollout. Request the authoritative snapshot in
       // that case instead of treating inherited history as current.
@@ -1649,6 +1686,7 @@ Object.assign(TermdeckApp.prototype, {
       const initialLimit = this.usesLightweightTranscriptTransport() ? 20 : HISTORY_BACKGROUND_PAGE_TURNS;
       ws.send(JSON.stringify({ type: "transcript_subscribe", revision, fresh, latest_first: true,
         initial_limit: initialLimit }));
+      this.scheduleHistoryPendingPromptReconciliation(sessionId);
     };
     ws.onmessage = (event) => {
       if (typeof event.data !== "string") return;
@@ -1668,10 +1706,97 @@ Object.assign(TermdeckApp.prototype, {
       if (this.historyWs !== ws) return;
       this.historyWs = null;
       this.historyStreamSessionId = null;
+      this.scheduleMobileConnectionWarning();
       if (!this.historyOpen || sessionId !== this.activeId) return;
       clearTimeout(this.historyWsReconnectTimer);
       this.historyWsReconnectTimer = setTimeout(() => this.connectHistoryStream(sessionId), RECONNECT_MS);
     };
+  },
+
+
+  historySlashMenuOpen() {
+    return !this.$("history-slash-menu")?.classList.contains("hidden");
+  },
+
+
+  historySlashCommands() {
+    const commands = this.agentSpec(this.session(this.activeId)?.agent_kind)?.transcript_commands;
+    return Array.isArray(commands) ? commands.filter((item) => item && typeof item.command === "string") : [];
+  },
+
+
+  updateHistorySlashMenu() {
+    const menu = this.$("history-slash-menu");
+    const prompt = this.$("history-prompt");
+    if (!menu || !prompt || !this.historyOpen) return;
+    const firstLine = prompt.value.split("\n", 1)[0];
+    if (!firstLine.startsWith("/") || /\s/.test(firstLine)) {
+      this.closeHistorySlashMenu();
+      return;
+    }
+    const query = firstLine.toLowerCase();
+    const commands = this.historySlashCommands().filter((item) =>
+      item.command.toLowerCase().includes(query) || String(item.description || "").toLowerCase().includes(query.slice(1)));
+    if (!commands.length) {
+      this.closeHistorySlashMenu();
+      return;
+    }
+    this.historySlashMenuMatches = commands;
+    this.historySlashMenuIndex = Math.max(0, Math.min(this.historySlashMenuIndex, commands.length - 1));
+    menu.replaceChildren();
+    commands.forEach((item, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "history-slash-command";
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", String(index === this.historySlashMenuIndex));
+      button.classList.toggle("selected", index === this.historySlashMenuIndex);
+      const command = document.createElement("span");
+      command.className = "history-slash-command-name";
+      command.textContent = item.command;
+      const description = document.createElement("span");
+      description.className = "history-slash-command-description";
+      description.textContent = String(item.description || "");
+      button.append(command, description);
+      button.onmousedown = (event) => event.preventDefault();
+      button.onclick = () => this.selectHistorySlashCommand(index);
+      menu.append(button);
+    });
+    menu.classList.remove("hidden");
+  },
+
+
+  moveHistorySlashMenuSelection(delta) {
+    if (!this.historySlashMenuMatches.length) return;
+    this.historySlashMenuIndex = (this.historySlashMenuIndex + delta + this.historySlashMenuMatches.length) %
+      this.historySlashMenuMatches.length;
+    this.updateHistorySlashMenu();
+    this.$("history-slash-menu")?.querySelector(".history-slash-command.selected")?.scrollIntoView({ block: "nearest" });
+  },
+
+
+  selectHistorySlashCommand(index) {
+    const item = this.historySlashMenuMatches[index];
+    const view = this.sessionInteractionState(this.activeId, false);
+    if (!item || !view) return;
+    const prompt = this.$("history-prompt");
+    prompt.value = item.command;
+    this.persistMarkdownPromptDraft(view, prompt.value);
+    this.resizeHistoryPrompt();
+    this.closeHistorySlashMenu();
+    prompt.focus();
+    prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+  },
+
+
+  closeHistorySlashMenu() {
+    const menu = this.$("history-slash-menu");
+    if (menu) {
+      menu.classList.add("hidden");
+      menu.replaceChildren();
+    }
+    this.historySlashMenuIndex = -1;
+    this.historySlashMenuMatches = [];
   },
 
 
@@ -1931,28 +2056,111 @@ Object.assign(TermdeckApp.prototype, {
 
 
   mergePendingHistoryPrompts(sessionId, turns) {
-    const pending = this.historyPendingPrompts.get(sessionId) || [];
+    const pending = this.persistedHistoryPendingPrompts(sessionId);
     if (!pending.length) return turns;
     const merged = turns.slice();
     const remaining = [];
     for (const item of pending) {
       const pendingId = item.pending_id || `${Date.now()}-${this.historyPendingPromptSequence++}`;
       item.pending_id = pendingId;
-      const comparisonText = this.historyPromptComparisonText(item.text);
       const authoritativeCount = merged.filter((turn) => turn.role === "user" && !turn.pending_id &&
-        this.historyPromptComparisonText(turn.text) === comparisonText).length;
+        this.historyAuthoritativePromptMatchesPending(turn.text, item.text)).length;
+      const timestampConfirmed = merged.some((turn) => turn.role === "user" && !turn.pending_id &&
+        this.historyAuthoritativePromptMatchesPending(turn.text, item.text) &&
+        this.historyTurnTimestampMillis(turn) >= item.timestamp - 5000);
       const optimisticIndex = merged.findIndex((turn) => turn.pending_id === pendingId);
-      if (authoritativeCount > item.beforeCount) {
+      if (timestampConfirmed || authoritativeCount > item.beforeCount) {
         if (optimisticIndex >= 0) merged.splice(optimisticIndex, 1);
         continue;
       }
-      if (optimisticIndex < 0) merged.push({ role: "user", text: item.text, pending_id: pendingId,
-        timestamp: item.timestamp || Date.now() });
+      const optimisticTurn = { role: "user", text: item.text, pending_id: pendingId,
+        pending_delivery_state: item.delivery_state || "awaiting_transcript", timestamp: item.timestamp || Date.now() };
+      if (optimisticIndex < 0) merged.push(optimisticTurn);
+      else merged[optimisticIndex] = { ...merged[optimisticIndex], ...optimisticTurn };
       remaining.push(item);
     }
     if (remaining.length) this.historyPendingPrompts.set(sessionId, remaining);
     else this.historyPendingPrompts.delete(sessionId);
+    this.persistHistoryPendingPrompts(sessionId, remaining);
     return merged;
+  },
+
+
+  historyPendingPromptStorageKey(sessionId) {
+    return `termdeck.transcript-pending-prompts.v1.${encodeURIComponent(this.projectStateKey())}.${encodeURIComponent(sessionId)}`;
+  },
+
+
+  persistedHistoryPendingPrompts(sessionId) {
+    if (this.historyPendingPrompts.has(sessionId)) return this.historyPendingPrompts.get(sessionId);
+    let pending = [];
+    try {
+      const parsed = JSON.parse(localStorage.getItem(this.historyPendingPromptStorageKey(sessionId)) || "[]");
+      if (Array.isArray(parsed)) {
+        pending = parsed.slice(-25).map((item) => ({
+          text: String(item?.text || "").slice(0, 20000),
+          beforeCount: Math.max(0, Number(item?.beforeCount) || 0),
+          pending_id: String(item?.pending_id || `${Date.now()}-${this.historyPendingPromptSequence++}`),
+          timestamp: Number(item?.timestamp) || Date.now(),
+          delivery_state: ["sending", "awaiting_transcript", "unconfirmed"].includes(item?.delivery_state)
+            ? item.delivery_state : "awaiting_transcript",
+        })).filter((item) => item.text.trim());
+      }
+    } catch (_error) {
+      pending = [];
+    }
+    if (pending.length) this.historyPendingPrompts.set(sessionId, pending);
+    return pending;
+  },
+
+
+  persistHistoryPendingPrompts(sessionId, pending = this.historyPendingPrompts.get(sessionId) || []) {
+    try {
+      const key = this.historyPendingPromptStorageKey(sessionId);
+      if (pending.length) localStorage.setItem(key, JSON.stringify(pending.slice(-25)));
+      else localStorage.removeItem(key);
+    } catch (_error) {
+    }
+  },
+
+
+  stageHistoryPendingPrompt(view, text) {
+    const sessionId = view.sessionId;
+    const promptText = String(text);
+    const pending = this.persistedHistoryPendingPrompts(sessionId);
+    const live = this.historyLiveTurnsBySession.get(sessionId) || this.historyTurnsBySession.get(sessionId) || [];
+    const authoritativeCount = live.filter((turn) => turn.role === "user" && !turn.pending_id &&
+      this.historyAuthoritativePromptMatchesPending(turn.text, promptText)).length;
+    const comparisonText = this.historyPromptComparisonText(promptText);
+    const beforeCount = authoritativeCount + pending.filter((item) =>
+      this.historyPromptComparisonText(item.text) === comparisonText).length;
+    const pendingId = `${Date.now()}-${this.historyPendingPromptSequence++}`;
+    pending.push({ text: promptText, beforeCount, pending_id: pendingId, timestamp: Date.now(), delivery_state: "sending" });
+    this.historyPendingPrompts.set(sessionId, pending);
+    this.persistHistoryPendingPrompts(sessionId, pending);
+    this.renderHistoryPendingPromptState(sessionId, live);
+    return pendingId;
+  },
+
+
+  setHistoryPendingPromptDeliveryState(sessionId, pendingId, deliveryState) {
+    const pending = this.persistedHistoryPendingPrompts(sessionId);
+    const item = pending.find((candidate) => candidate.pending_id === pendingId);
+    if (!item) return;
+    item.delivery_state = deliveryState;
+    this.historyPendingPrompts.set(sessionId, pending);
+    this.persistHistoryPendingPrompts(sessionId, pending);
+    const live = this.historyLiveTurnsBySession.get(sessionId) || this.historyTurnsBySession.get(sessionId) || [];
+    this.renderHistoryPendingPromptState(sessionId, live);
+  },
+
+
+  renderHistoryPendingPromptState(sessionId, live) {
+    if (!this.historyOpen || this.activeId !== sessionId) return;
+    const optimisticLive = this.mergePendingHistoryPrompts(sessionId, live);
+    this.historyLiveTurnsBySession.set(sessionId, optimisticLive);
+    this.applyHistoryTurns(sessionId, this.combineHistoryWindow(sessionId, optimisticLive),
+      { preserveScroll: true, followLatest: true });
   },
 
 
@@ -1961,8 +2169,66 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  historyAuthoritativePromptMatchesPending(authoritativeText, pendingText) {
+    const authoritative = this.historyPromptComparisonText(authoritativeText);
+    const pending = this.historyPromptComparisonText(pendingText);
+    if (!pending) return false;
+    return authoritative === pending || authoritative.startsWith(`${pending}\n`) ||
+      authoritative.endsWith(`\n${pending}`) || authoritative.includes(`\n${pending}\n`);
+  },
+
+
+  historyTurnTimestampMillis(turn) {
+    if (typeof turn?.timestamp === "number") return turn.timestamp > 100000000000 ? turn.timestamp : turn.timestamp * 1000;
+    const parsed = Date.parse(String(turn?.timestamp || ""));
+    return Number.isFinite(parsed) ? parsed : 0;
+  },
+
+
+  scheduleHistoryPendingPromptReconciliation(sessionId) {
+    if (!this.persistedHistoryPendingPrompts(sessionId).length) return;
+    if (!this.historyPendingPromptReconcileTimers) this.historyPendingPromptReconcileTimers = new Map();
+    if (this.historyPendingPromptReconcileTimers.has(sessionId)) return;
+    const timer = window.setTimeout(() => {
+      this.historyPendingPromptReconcileTimers.delete(sessionId);
+      void this.reconcileHistoryPendingPrompts(sessionId);
+    }, 1200);
+    this.historyPendingPromptReconcileTimers.set(sessionId, timer);
+  },
+
+
+  async reconcileHistoryPendingPrompts(sessionId) {
+    const pending = this.persistedHistoryPendingPrompts(sessionId);
+    if (!pending.length) return;
+    let turns;
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/history`);
+      if (!response.ok) return;
+      turns = await response.json();
+    } catch (_error) {
+      return;
+    }
+    if (!Array.isArray(turns)) return;
+    const remaining = pending.filter((item) => !turns.some((turn) => turn.role === "user" &&
+      this.historyAuthoritativePromptMatchesPending(turn.text, item.text) &&
+      this.historyTurnTimestampMillis(turn) >= item.timestamp - 5000));
+    if (remaining.length === pending.length) return;
+    if (remaining.length) this.historyPendingPrompts.set(sessionId, remaining);
+    else this.historyPendingPrompts.delete(sessionId);
+    this.persistHistoryPendingPrompts(sessionId, remaining);
+    if (!this.historyOpen || this.activeId !== sessionId) return;
+    const remainingIds = new Set(remaining.map((item) => item.pending_id));
+    const live = (this.historyLiveTurnsBySession.get(sessionId) || []).filter((turn) =>
+      !turn.pending_id || remainingIds.has(turn.pending_id));
+    this.historyLiveTurnsBySession.set(sessionId, live);
+    this.applyHistoryTurns(sessionId, this.combineHistoryWindow(sessionId, live),
+      { preserveScroll: true, followLatest: true, forceRender: true });
+  },
+
+
   sendHistoryPrompt(options = {}) {
     if (!this.historyOpen || this.activeFileKey !== null || !this.activeId) return;
+    this.closeHistorySlashMenu();
     const prompt = this.$("history-prompt");
     const rawText = prompt.value;
     const text = rawText;
@@ -1993,6 +2259,7 @@ Object.assign(TermdeckApp.prototype, {
       this.$("status-name").textContent = "prompt is already sending";
       return false;
     }
+    const pendingId = this.stageHistoryPendingPrompt(view, text);
     view.promptApiSubmitting = true;
     this.$("status-name").textContent = "sending prompt…";
     const controller = new AbortController();
@@ -2001,7 +2268,8 @@ Object.assign(TermdeckApp.prototype, {
       const response = await fetch(`/api/sessions/${encodeURIComponent(view.sessionId)}/prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: String(text), bracketed: true, queue: false }),
+        body: JSON.stringify({ text: String(text), bracketed: true, queue: false,
+          automatically_queue_when_busy: false }),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -2009,10 +2277,12 @@ Object.assign(TermdeckApp.prototype, {
         throw new Error(String(failure.detail || `prompt submission failed (${response.status})`));
       }
       const result = await response.json();
-      const submitted = this.submitHistoryPromptText(view, text, options);
+      this.setHistoryPendingPromptDeliveryState(view.sessionId, pendingId, "awaiting_transcript");
+      const submitted = this.submitHistoryPromptText(view, text, { ...options, pendingId });
       if (result.session) this.applySessionStatus({ ...result.session, session_id: view.sessionId });
       return submitted;
     } catch (error) {
+      this.setHistoryPendingPromptDeliveryState(view.sessionId, pendingId, "unconfirmed");
       this.$("status-name").textContent = error?.name === "AbortError" ? "prompt send timed out · message kept" :
         error instanceof Error ? error.message : "unable to send prompt";
       return false;
@@ -2035,23 +2305,6 @@ Object.assign(TermdeckApp.prototype, {
     if (view.term) this.deferTerminalReflowAfterPrompt(view);
     this.historyPendingProcessing.set(sessionId, Date.now());
     this.updateHistoryThinkingIndicator();
-    if (this.historyOpen && this.activeId === sessionId) {
-      const turns = this.historyTurnsBySession.get(sessionId) || this.historyTurns;
-      const pending = this.historyPendingPrompts.get(sessionId) || [];
-      const live = this.historyLiveTurnsBySession.get(sessionId) || turns;
-      const comparisonText = this.historyPromptComparisonText(promptText);
-      const authoritativeCount = live.filter((turn) => turn.role === "user" && !turn.pending_id &&
-        this.historyPromptComparisonText(turn.text) === comparisonText).length;
-      const beforeCount = authoritativeCount + pending.filter((item) =>
-        this.historyPromptComparisonText(item.text) === comparisonText).length;
-      const pendingId = `${Date.now()}-${this.historyPendingPromptSequence++}`;
-      pending.push({ text: promptText, beforeCount, pending_id: pendingId, timestamp: Date.now() });
-      this.historyPendingPrompts.set(sessionId, pending);
-      const optimisticLive = this.mergePendingHistoryPrompts(sessionId, live);
-      this.historyLiveTurnsBySession.set(sessionId, optimisticLive);
-      const optimisticTurns = this.combineHistoryWindow(sessionId, optimisticLive);
-      this.applyHistoryTurns(sessionId, optimisticTurns, { preserveScroll: true, followLatest: true });
-    }
     if (view.term) {
       view.tallFollowing = true;
       this.scrollTallContainerToCursor(view);
@@ -2073,7 +2326,8 @@ Object.assign(TermdeckApp.prototype, {
       view.keepBottom = true;
       view.pinBottomUntil = Date.now() + 5000;
     }
-    this.$("status-name").textContent = options.fromQueue ? "queued prompt sent" : "prompt sent";
+    this.$("status-name").textContent = options.fromQueue
+      ? "queued prompt sent · waiting for transcript" : "prompt sent · waiting for transcript";
     return true;
   },
 
@@ -2539,7 +2793,7 @@ Object.assign(TermdeckApp.prototype, {
 
   historyTurnKey(turn) {
     return JSON.stringify([turn.role, turn.kind, turn.title, turn.text, turn.timestamp, turn.diff, turn.diff_files,
-      turn.plan, turn.items, turn.folded_responses]);
+      turn.plan, turn.items, turn.folded_responses, turn.pending_id, turn.pending_delivery_state]);
   },
 
 
@@ -2941,6 +3195,7 @@ Object.assign(TermdeckApp.prototype, {
       }
       const block = document.createElement("div");
       block.className = "turn " + turn.role;
+      if (turn.pending_id) block.classList.add("pending-delivery");
       block.dataset.outlineKey = this.conversationOutlineTurnKey(turn);
       const text = document.createElement("div");
       text.className = "turn-text markdown";
@@ -2953,6 +3208,17 @@ Object.assign(TermdeckApp.prototype, {
         block.append(role);
       }
       block.append(text);
+      if (turn.pending_id) {
+        const delivery = document.createElement("div");
+        delivery.className = `history-pending-delivery ${turn.pending_delivery_state || "awaiting_transcript"}`;
+        const icon = document.createElement("span");
+        icon.className = `codicon ${turn.pending_delivery_state === "unconfirmed" ? "codicon-warning" : "codicon-cloud-upload"}`;
+        const label = document.createElement("span");
+        label.textContent = turn.pending_delivery_state === "unconfirmed"
+          ? "Submission not confirmed · saved on this device" : "Submitting";
+        delivery.append(icon, label);
+        block.append(delivery);
+      }
       body.appendChild(block);
     }
     this.updateHistoryEditToggle();
@@ -3090,7 +3356,7 @@ Object.assign(TermdeckApp.prototype, {
         : (this.historyScrollBySession.get(sessionId) || null);
     const fingerprint = `${renderedTurns.length}|${JSON.stringify(renderedTurns.slice(-3).map((turn) =>
       [turn.role, turn.kind, turn.text, turn.timestamp, turn.diff?.length, turn.diff_files, turn.plan, turn.items,
-        turn.folded_responses?.length]))}`;
+        turn.folded_responses?.length, turn.pending_id, turn.pending_delivery_state]))}`;
     if (preserveScroll && !options.forceRender && fingerprint === this.historyFingerprint) {
       this.historyTurns = turns;
       this.historyTurnsBySession.set(sessionId, turns);
@@ -5985,6 +6251,8 @@ Object.assign(TermdeckApp.prototype, {
     const toggles = [this.$("notebook-toggle"), this.$("history-notebook-toggle"), this.$("file-tabs-notebook"),
       this.$("mobile-notebook-toggle")].filter(Boolean);
     if (!panel || !toggles.length) return;
+    const notebookOpen = !!this.settings.notebook_open;
+    document.body.classList.toggle("notebook-open", notebookOpen);
     panel.classList.toggle("notebook-over-file-area",
       this.activeFileKey !== null || FILES_SIDE_PANEL_TABS.includes(this.sideView));
     this.renderNotebookTabs();
@@ -5997,8 +6265,11 @@ Object.assign(TermdeckApp.prototype, {
       panel.classList.add("hidden");
     }
     panel.classList.toggle("notebook-copies-open", this.notebookCopiesOpen);
-    for (const toggle of toggles) toggle.classList.toggle("on", !!this.settings.notebook_open);
-    if (this.settings.notebook_open && this.activeNotebookNote() && !this.notebookMounted) {
+    for (const toggle of toggles) {
+      toggle.classList.toggle("on", notebookOpen);
+      toggle.setAttribute("aria-pressed", String(notebookOpen));
+    }
+    if (notebookOpen && this.activeNotebookNote() && !this.notebookMounted) {
       void this.mountNotebookEditor();
     }
     this.updateEventlyDemoFeatureBanner();
@@ -6127,6 +6398,7 @@ Object.assign(TermdeckApp.prototype, {
     this.activeFileKey = null;
     this.stopHistoryRefresh();
     this.disconnectHistoryStream();
+    this.closeHistorySlashMenu();
     this.historyOpen = false;
     this.historyFingerprint = "";
     const cachedHistory = this.historyTurnsBySession.get(id) || [];
