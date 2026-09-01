@@ -3531,6 +3531,31 @@ Object.assign(TermdeckApp.prototype, {
     }, delay);
   },
 
+  // A notification click arrives before the browser has actually brought the tab forward, and
+  // activating into a hidden page leaves the terminal sized against a zero-height viewport --
+  // clicks then land on a surface that is still settling. Wait for the page to be visible, and
+  // reveal the row so the sidebar scrolls the terminal into view rather than selecting it
+  // somewhere off screen.
+  activateFromNotification(sessionId) {
+    const open = () => this.activate(sessionId, { reveal: true });
+    if (!document.hidden) {
+      open();
+      return;
+    }
+    let done = false;
+    const onVisible = () => {
+      if (done || document.hidden) return;
+      done = true;
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+      open();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    // Some browsers focus the window without firing either event; do not strand the click.
+    window.setTimeout(onVisible, 1200);
+  },
+
   postAgentNotification(session, body) {
     const title = this.titlePresentation(session).text || session.title || "terminal";
     try {
@@ -3541,9 +3566,8 @@ Object.assign(TermdeckApp.prototype, {
       });
       notification.onclick = () => {
         window.focus();
-        // activate() leaves any open file, selects the row, and pushes the terminal's own URL.
-        this.activate(session.session_id);
         notification.close();
+        this.activateFromNotification(session.session_id);
       };
     } catch { /* notification construction can throw in odd embedding contexts */ }
   },

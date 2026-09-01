@@ -1388,6 +1388,13 @@ class TermdeckApp {
 
   async refreshCurrentProjectState() {
     const stateKey = this.projectStateKey();
+    // Captured before the first await, not after: this runs when the tab becomes visible, which is
+    // exactly when a notification click hands the user back to the deck and they immediately act.
+    // Anything they do from here on is newer than what the fetch returns, and applying the response
+    // then reverted the selected terminal and the transcript/terminal mode under them
+    // (reconcileActiveSessionViewMode forces the mode back to the fetched copy), which read as
+    // clicks not registering.
+    const revision = this.projectStateLocalRevision || 0;
     await this.projectStateSavePromise;
     const params = this.projectStateSearchParams(stateKey);
     let response;
@@ -1398,6 +1405,7 @@ class TermdeckApp {
     }
     if (!response.ok || stateKey !== this.projectStateKey()) return;
     const payload = await response.json();
+    if ((this.projectStateLocalRevision || 0) !== revision) return;
     const nextState = {};
     for (const field of ["active_session_id", "open_files", "open_files_collapsed", "recent_files_collapsed",
       "recent_file_exclude_glob", "recently_opened_terminal_ids", "session_order", "pinned_sessions", "pinned_groups",
@@ -1418,6 +1426,9 @@ class TermdeckApp {
   }
 
   queueProjectResourceRequest(stateKey, path, method, body = null) {
+    // Every local change to project state goes through here, so this counter is how a refresh
+    // in flight can tell that what it fetched is already out of date.
+    this.projectStateLocalRevision = (this.projectStateLocalRevision || 0) + 1;
     const params = this.projectStateSearchParams(stateKey);
     const separator = path.includes("?") ? "&" : "?";
     const query = params.toString();
