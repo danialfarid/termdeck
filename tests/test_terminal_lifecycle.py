@@ -2115,3 +2115,42 @@ class DismissAttentionTest(unittest.TestCase):
         manager.dismiss_attention(session.record.session_id)
         self.assertEqual(session.attention_text_carry, "")
         manager._broadcast_status.assert_called_once()
+
+
+class ProcessingRequiresALiveProcessTest(unittest.TestCase):
+    """A terminal with no live process is not working, whatever its last signal said."""
+
+    def _manager_with_session(self, kind="codex"):
+        manager = TerminalSessionManager()
+        saved = record()
+        saved.agent_kind = kind
+        session = ManagedSession(saved)
+        # a spinner in the OSC title, refreshed just now: ms.processing is derived from these
+        session.cli_title = "⠋ working"
+        session.title_updated_monotonic = time.monotonic()
+        session.agent_state = agents.agent_cli(kind).new_session_state()
+        if hasattr(session.agent_state, "transcript_active"):
+            session.agent_state.transcript_active = True
+        manager._sessions = {saved.session_id: session}
+        return manager, session
+
+    def test_stopped_terminal_stops_reporting_work(self) -> None:
+        manager, session = self._manager_with_session()
+        session.proc = None
+        session.detached_live = False              # the process is gone
+        self.assertFalse(session.running)
+        self.assertFalse(manager._processing_state(session))
+
+    def test_detached_but_live_terminal_still_reports_work(self) -> None:
+        # Nobody is attached, but the agent is still running under dtach and still working.
+        manager, session = self._manager_with_session()
+        session.proc = None
+        session.detached_live = True
+        self.assertTrue(session.running)
+        self.assertTrue(manager._processing_state(session))
+
+    def test_attached_running_terminal_still_reports_work(self) -> None:
+        manager, session = self._manager_with_session()
+        session.proc = SimpleNamespace(alive=True)
+        session.detached_live = False
+        self.assertTrue(manager._processing_state(session))

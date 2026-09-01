@@ -511,6 +511,13 @@ class TerminalSessionManager:
     def _processing_state(self, ms: ManagedSession) -> bool:
         if ms.attention_required:
             return False
+        # Nothing without a live process is working, whatever its last transcript or title said.
+        # Both are latched signals -- a spinner in the OSC title, a transcript whose newest event
+        # reads as work in progress -- and neither is revisited when the process goes away, so a
+        # terminal stopped or closed mid-turn kept its spinner forever. ms.running covers a
+        # detached-but-live terminal, which IS still working with nobody attached.
+        if not ms.running:
+            return False
         return agents.agent_cli(ms.record.agent_kind).is_processing(ms)
 
     def _update_attention_from_title(self, ms: ManagedSession, title: str | None) -> bool:
