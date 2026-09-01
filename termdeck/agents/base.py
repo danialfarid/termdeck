@@ -75,6 +75,8 @@ class AgentCli:
     # viewport instead of the tall canvas: given hundreds of rows, such a TUI top-anchors the
     # conversation and bottom-anchors the composer, leaving the visible window on a blank gap.
     fullscreen_tui = False
+    transcript_commands: tuple[tuple[str, str], ...] = ()
+    interrupt_input = "\x03"
 
     # -- command lifecycle ------------------------------------------------
     base_flags: tuple[str, ...] = ()    # always-on flags injected right after the executable
@@ -396,7 +398,9 @@ class AgentCli:
                 "supports_resume": self.supports_resume, "supports_fork": self.supports_fork,
                 "accepts_session_ref": self.accepts_session_ref, "sessionless": self.sessionless,
                 "fullscreen_tui": self.fullscreen_tui,
-                "records_raw_replay": self.records_raw_replay, "has_prompt_queue": self.has_prompt_queue}
+                "records_raw_replay": self.records_raw_replay, "has_prompt_queue": self.has_prompt_queue,
+                "transcript_commands": [{"command": command, "description": description}
+                                        for command, description in self.transcript_commands]}
 
     @staticmethod
     def command_parts(command: str) -> list[str]:

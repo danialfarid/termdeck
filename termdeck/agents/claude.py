@@ -48,6 +48,9 @@ class ClaudeCli(AgentCli):
     records_raw_replay = True
     supports_agent_rename = True
     accepts_session_ref = True
+    transcript_commands = (("/compact", "Compact the conversation context"),
+                           ("/context", "Show current context usage"),
+                           ("/usage", "Show plan usage and session cost"))
 
     permission_flags = {
         "default": (),

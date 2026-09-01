@@ -297,7 +297,7 @@ Object.assign(TermdeckApp.prototype, {
                    promptDraft: this.session(id)?.draft || "", markdownPromptDraft: this.markdownPromptDraftForSession(id),
                    promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
-                   promptApiSubmitting: false,
+                   promptApiSubmitting: false, promptApiInterrupting: false,
                    promptSubmissionReflowGuardUntil: 0, promptSubmissionReflowGuardTimer: 0,
                    attentionScreenDetectionSuppressed: false,
                    reconnectAfterClose: false, claudeInitialReplayCheckTimer: 0,

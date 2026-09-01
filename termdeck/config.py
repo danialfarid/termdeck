@@ -93,6 +93,7 @@ class TermdeckConfig:
     API_SESSION_TASK_RESULT_ROUTE = "/api/sessions/{session_id}/task-result"
     API_SESSION_LAST_TURN_ROUTE = "/api/sessions/{session_id}/last_turn"
     API_SESSION_PROMPT_ROUTE = "/api/sessions/{session_id}/prompt"
+    API_SESSION_INTERRUPT_ROUTE = "/api/sessions/{session_id}/interrupt"
     API_SESSION_STOP_ROUTE = "/api/sessions/{session_id}/stop"
     API_SESSION_ATTENTION_ROUTE = "/api/sessions/{session_id}/attention"
     API_SESSION_RESTART_ROUTE = "/api/sessions/{session_id}/restart"

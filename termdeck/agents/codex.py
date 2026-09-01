@@ -37,6 +37,12 @@ class CodexCli(AgentCli):
     has_prompt_queue = True
     supports_agent_rename = True
     accepts_session_ref = True
+    interrupt_input = "\x1b"
+    transcript_commands = (("/compact", "Compact the conversation context"),
+                           ("/status", "Show model, context, and usage status"),
+                           ("/ps", "Show background terminals and tasks"),
+                           ("/plan", "Switch to plan mode"),
+                           ("/fast", "Toggle fast mode"))
 
     base_flags = (NO_ALT_SCREEN_FLAG,)
     permission_flags = {

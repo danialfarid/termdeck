@@ -21,9 +21,10 @@ from termdeck.models import SessionRecord
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot, ProcTreeUtil
 from termdeck.pty_process import PtyProcess
-from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, TermdeckServer, UiSettings
+from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, SubmitPromptRequest, TermdeckServer, UiSettings
 from termdeck.replay_recorder import ReplayRecorder
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
+from termdeck.transcript_turns import TurnBuilder
 
 
 def record(session_id: str = "abc123") -> SessionRecord:
@@ -329,6 +330,13 @@ class AgentCliRegistryTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             agents.agent_cli("codex").build_command("nonsense", "", "", None)
 
+    def test_transcript_commands_are_exposed_by_agent_descriptor(self) -> None:
+        codex_commands = agents.agent_cli("codex").client_descriptor()["transcript_commands"]
+        claude_commands = agents.agent_cli("claude").client_descriptor()["transcript_commands"]
+        self.assertIn({"command": "/status", "description": "Show model, context, and usage status"}, codex_commands)
+        self.assertIn({"command": "/context", "description": "Show current context usage"}, claude_commands)
+        self.assertEqual(agents.agent_cli("none").client_descriptor()["transcript_commands"], [])
+
     def test_set_permission_swaps_existing_flags(self) -> None:
         self.assertEqual(
             agents.agent_cli("claude").set_permission("claude --permission-mode auto --foo", "full-access"),
@@ -510,6 +518,26 @@ class CodexTranscriptParsingTest(unittest.TestCase):
         self.assertEqual(turns[0]["text"], text)
         self.assertEqual(turns[0]["phase"], "commentary")
         self.assertFalse(turns[0]["final"])
+
+    def test_codex_mirrored_records_parsed_in_separate_batches_are_one_turn(self) -> None:
+        text = "Assembly finished and validation is running."
+        lines = [
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "item_completed", "item": {"type": "AgentMessage", "phase": "commentary",
+                "content": [{"type": "Text", "text": text}]},
+            }}),
+            json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "assistant", "phase": "commentary",
+                "content": [{"type": "output_text", "text": text}],
+            }}),
+        ]
+        agent = agents.agent_cli("codex")
+        separately_parsed = [turn for line in lines for turn in agent.parse_transcript_lines([line])]
+
+        turns = TurnBuilder.collapse_thinking_events(separately_parsed)
+
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["text"], text)
 
 
 class ClaudeTranscriptParsingTest(unittest.TestCase):
@@ -1204,6 +1232,34 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.submit_prompt.assert_awaited_once_with("child-01", "summarize the result", True, False)
         self.assertTrue(response["prompt_submitted"])
         self.assertFalse(response["queued"])
+
+    async def test_transcript_prompt_directly_steers_busy_session_without_silent_tui_queue(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.has_session.return_value = True
+        server.manager.session_summary_by_id.return_value = {"processing": True, "session_id": "busy-01"}
+        server.manager.submit_prompt = AsyncMock()
+
+        response = await server._submit_prompt("busy-01", SubmitPromptRequest(
+            text="run this next", automatically_queue_when_busy=False))
+
+        server.manager.submit_prompt.assert_awaited_once_with("busy-01", "run this next", True, False)
+        self.assertTrue(response["prompt_submitted"])
+        self.assertFalse(response["queued"])
+
+    async def test_transcript_interrupt_uses_agent_interrupt_input_without_stopping_terminal(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.has_session.return_value = True
+        server.manager.session_summary_by_id.return_value = {
+            "processing": False, "session_id": "busy-01", "agent_kind": "codex"}
+
+        response = await server._interrupt_session("busy-01")
+
+        server.manager.ensure_session_running.assert_called_once_with("busy-01")
+        server.manager.write_input.assert_called_once_with("busy-01", "\x1b")
+        server.manager.stop_session.assert_not_called()
+        self.assertFalse(response["processing"])
 
     async def test_run_terminal_task_forwards_model_name_to_session_builder(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)
