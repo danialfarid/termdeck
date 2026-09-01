@@ -401,6 +401,22 @@ class ReplayRecorder:
         removed = len(tail) - len(cls.TRAILING_WIPE.sub(b"", tail))
         return data[:len(data) - removed] if removed else data
 
+    @staticmethod
+    def ends_inside_sync_update(data: bytes) -> bool:
+        """Whether a recording stops part-way through a synchronized update.
+
+        A TUI wraps a repaint in ESC[?2026h ... ESC[?2026l and the terminal holds rendering until
+        the closing marker arrives. Recording can stop between them -- a server restart is the usual
+        way -- and replaying that leaves the client mid-frame: it shows whatever the half-written
+        frame contained (a screen landed in the middle, a composer drawn twice, no status line) and
+        holds every later update until enough new output finally closes the frame. Which is why the
+        screen only came back after typing, or after a resync forced a repaint.
+        """
+        if not data:
+            return False
+        start = data.rfind(TermdeckConfig.SYNC_UPDATE_START)
+        return start >= 0 and data.rfind(TermdeckConfig.SYNC_UPDATE_END) < start
+
     @classmethod
     def raw_bytes(cls, ms) -> bytes:
         return cls._without_trailing_wipe(bytes(ms.raw_replay_buffer)) + ms.raw_replay_last_title
