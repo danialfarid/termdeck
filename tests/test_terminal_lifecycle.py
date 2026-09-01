@@ -2195,7 +2195,7 @@ class ReleaseSessionGroupTest(unittest.TestCase):
 
 
 class ColdAttachRepaintTest(unittest.TestCase):
-    """The first attach after a server restart repaints, even when a raw replay was served."""
+    """Serving a raw replay leaves the repaint to the client, which orders it after the write."""
 
     def _manager(self):
         manager = TerminalSessionManager()
@@ -2208,18 +2208,12 @@ class ColdAttachRepaintTest(unittest.TestCase):
         manager._recover_title_from_buffer = MagicMock()
         return manager, session
 
-    def test_first_attach_repaints_after_a_raw_replay(self) -> None:
-        # The recording ends wherever the server stopped, so the replayed screen can be mid-draw.
+    def test_a_served_replay_does_not_also_repaint(self) -> None:
+        # The client asks for its own repaint once it has written the replay, ordered against it
+        # rather than racing it, so a second repaint from here would land mid-write.
         manager, session = self._manager()
         replay, _ = manager.attach_client(session.record.session_id, full_claude_raw_replay=True)
         self.assertTrue(replay, "the replay is still served")
-        manager._schedule_screen_repaint.assert_called_once()
-
-    def test_later_attaches_do_not_repaint_again(self) -> None:
-        manager, session = self._manager()
-        manager.attach_client(session.record.session_id, full_claude_raw_replay=True)
-        manager._schedule_screen_repaint.reset_mock()
-        manager.attach_client(session.record.session_id, full_claude_raw_replay=True)
         manager._schedule_screen_repaint.assert_not_called()
 
 
