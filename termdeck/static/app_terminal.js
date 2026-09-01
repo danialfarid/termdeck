@@ -890,6 +890,16 @@ Object.assign(TermdeckApp.prototype, {
       view.reconnectAfterClose = false;
       view.ws = null;
       if (reconnectAfterClose) view.suppressReconnect = false;
+      // An unplanned close is the server going away, and a restart is the common one. Whatever is
+      // in this buffer was built from that server's stream, so the new one cannot repaint into it
+      // safely -- that is what put the status line mid-conversation and drew the composer twice.
+      // Rebuild from the replay on the way back, which is what a manual refresh does. Marking it
+      // here rather than when the status stream reports a new server instance is deliberate: this
+      // socket reconnects on its own timer, long before that message arrives.
+      if (!view.closed && !reconnectAfterClose &&
+          this.agentSpec(this.session(id)?.agent_kind)?.records_raw_replay) {
+        view.replayFromScratchOnNextConnect = true;
+      }
       if (reconnectAfterClose && !view.closed && id === this.activeId && this.activeFileKey === null &&
           !this.session(id)?.dormant) {
         this.connect(id, view);
