@@ -17,7 +17,6 @@ const TITLE_STATUS_PREFIX_RE = /^(?:[⠀-⣿○-◗⏳⚡✳]|\.\.\.|…)\s*/;
 const RECONNECT_MS = 1500;
 // A restarted server answers the moment its port opens, and a page reloaded into that instant can come
 // back without its terminals. Let the new instance settle before reloading onto it.
-const SERVER_RESTART_RELOAD_DELAY_MS = 5000;
 const TERMINAL_ATTACH_ACTIVITY_SUPPRESSION_MS = 1800;
 // How far from the top the view must travel before the "More history in Markdown" button hides again.
 // Well clear of one row: the button is re-evaluated on every write, and a row-sized nudge from the
@@ -85,29 +84,37 @@ const AGENT_SPEC_DEFAULTS = {
   none: { kind: "none", label: "Shell", is_agent: false, prompt_marker: "", icon_svg: "",
     permissions: [{ value: "default", label: "Shell permissions" }],
     supports_resume: false, supports_fork: false, accepts_session_ref: false,
-    records_raw_replay: false, has_prompt_queue: false },
+    records_raw_replay: false, has_prompt_queue: false, transcript_commands: [] },
   claude: { kind: "claude", label: "Claude", is_agent: true, prompt_marker: "❯", icon_svg: FALLBACK_ICON_SVGS.claude,
     permissions: [{ value: "default", label: "Default (Claude config)" }, { value: "accept-edits", label: "Accept edits" },
       { value: "auto", label: "Auto" }, { value: "full-access", label: "Full access" }],
     supports_resume: true, supports_fork: true, accepts_session_ref: true,
-    records_raw_replay: true, has_prompt_queue: false },
+    records_raw_replay: true, has_prompt_queue: false,
+    transcript_commands: [{ command: "/compact", description: "Compact the conversation context" },
+      { command: "/context", description: "Show current context usage" },
+      { command: "/usage", description: "Show plan usage and session cost" }] },
   codex: { kind: "codex", label: "Codex", is_agent: true, prompt_marker: "›", icon_svg: FALLBACK_ICON_SVGS.codex,
     permissions: [{ value: "default", label: "Default (Codex config)" }, { value: "read-only", label: "Read only" },
       { value: "workspace-write", label: "Workspace write" }, { value: "full-access", label: "Full access" }],
     supports_resume: true, supports_fork: true, accepts_session_ref: true,
-    records_raw_replay: true, has_prompt_queue: true },
+    records_raw_replay: true, has_prompt_queue: true,
+    transcript_commands: [{ command: "/compact", description: "Compact the conversation context" },
+      { command: "/status", description: "Show model, context, and usage status" },
+      { command: "/ps", description: "Show background terminals and tasks" },
+      { command: "/plan", description: "Switch to plan mode" },
+      { command: "/fast", description: "Toggle fast mode" }] },
   agy: { kind: "agy", label: "AGY", is_agent: true, prompt_marker: "", icon_svg: FALLBACK_ICON_SVGS.agy,
     permissions: [{ value: "default", label: "Default" }, { value: "full-access", label: "Full access" }],
     supports_resume: true, supports_fork: false, accepts_session_ref: false,
-    records_raw_replay: false, has_prompt_queue: false },
+    records_raw_replay: false, has_prompt_queue: false, transcript_commands: [] },
   aider: { kind: "aider", label: "Aider", is_agent: true, prompt_marker: "", icon_svg: FALLBACK_ICON_SVGS.aider,
     permissions: [{ value: "default", label: "Default (confirm actions)" }, { value: "auto", label: "Auto-approve (--yes-always)" }],
     supports_resume: true, supports_fork: false, accepts_session_ref: false, sessionless: true,
-    records_raw_replay: false, has_prompt_queue: false },
+    records_raw_replay: false, has_prompt_queue: false, transcript_commands: [] },
   opencode: { kind: "opencode", label: "OpenCode", is_agent: true, prompt_marker: "┃", icon_svg: FALLBACK_ICON_SVGS.opencode,
     permissions: [{ value: "default", label: "Default" }],
     supports_resume: true, supports_fork: true, accepts_session_ref: true, fullscreen_tui: true,
-    records_raw_replay: true, has_prompt_queue: false },
+    records_raw_replay: true, has_prompt_queue: false, transcript_commands: [] },
 };
 const SEARCH_DEBOUNCE_MS = 500;
 const TERMINAL_SEARCH_DEBOUNCE_MS = 700;
@@ -601,7 +608,8 @@ class TermdeckApp {
     this.fileHistoryDiffBlockIndex = -1;
     this.fileHistoryDiffPending = false;
     this.historyOpen = false;
-    this.mobileTerminalSurfaceSessions = new Set();
+    this.historySlashMenuIndex = -1;
+    this.historySlashMenuMatches = [];
     this.terminalLayoutTransitionGeneration = 0;
     this.terminalLayoutTransitioning = false;
     this.historyRefreshTimer = 0;
@@ -840,7 +848,6 @@ class TermdeckApp {
     this.statusWsReconnectTimer = 0;
     this.mobileConnectionWarningTimer = 0;
     this.serverInstanceId = "";
-    this.serverRestartReloading = false;
     this.remoteIdleTimeoutMs = 0;
     this.remoteIdleLastInteractionAt = 0;
     this.remoteIdleTimer = 0;
@@ -849,10 +856,10 @@ class TermdeckApp {
     this.remoteIdleActivityHandler = () => this.recordRemoteBrowserActivity();
     this.remoteIdleVisibilityHandler = () => this.handleRemoteBrowserVisibilityChange();
     this.mobileOnlineHandler = () => {
-      this.connectStatusStream();
-      this.scheduleMobileConnectionWarning();
+      this.reconnectFocusedConnections();
     };
-    this.mobileOfflineHandler = () => this.setMobileConnectionWarning(true);
+    this.mobileOfflineHandler = () => this.setMobileConnectionWarning(true, "offline");
+    this.focusedConnectionRecoveryHandler = () => this.reconnectFocusedConnections();
     this.layoutFitSettleTimer = 0;
     this.mobileOrientationChangeTimer = 0;
     this.mobileViewportResizeHandler = this.syncMobileVisualViewport.bind(this);
@@ -3439,6 +3446,10 @@ class TermdeckApp {
       if (sendMenu && !sendMenu.classList.contains("hidden") && !e.target.closest?.("#history-send-split")) {
         this.closeHistorySendMenu();
       }
+      const slashMenu = this.$("history-slash-menu");
+      if (slashMenu && !slashMenu.classList.contains("hidden") && !e.target.closest?.("#history-prompt-wrap")) {
+        this.closeHistorySlashMenu();
+      }
       const selectionActions = this.$("selection-actions");
       if (selectionActions && !selectionActions.classList.contains("hidden") && !selectionActions.contains(e.target)) {
         this.hideSelectionActions();
@@ -3588,12 +3599,28 @@ class TermdeckApp {
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
+        if (this.historySlashMenuOpen()) {
+          this.closeHistorySlashMenu();
+          return;
+        }
         if (!this.$("history-send-menu").classList.contains("hidden")) {
           this.closeHistorySendMenu();
           return;
         }
         if (this.touchMobileLayoutEnabled()) return;
         this.interruptHistoryPrompt();
+        return;
+      }
+      if (this.historySlashMenuOpen() && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.moveHistorySlashMenuSelection(e.key === "ArrowUp" ? -1 : 1);
+        return;
+      }
+      if (this.historySlashMenuOpen() && (e.key === "Enter" || e.key === "Tab")) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.selectHistorySlashCommand(this.historySlashMenuIndex);
         return;
       }
       if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.metaKey && !e.ctrlKey && !e.altKey &&
@@ -3657,6 +3684,7 @@ class TermdeckApp {
       this.persistMarkdownPromptDraft(view, this.$("history-prompt").value);
       this.resizeHistoryPrompt();
       this.updateHistorySendMenu();
+      this.updateHistorySlashMenu();
     });
     this.$("attach-btn").onclick = () => this.historyOpen ? this.attachToHistory() : this.attachToActive();
     this.$("reveal-session-btn").onclick = () => {
@@ -4270,12 +4298,13 @@ class TermdeckApp {
         if (message.type === "server_instance") {
           const instanceId = String(message.instance_id || "");
           if (!instanceId) return;
-          if (this.serverInstanceId && this.serverInstanceId !== instanceId && !this.serverRestartReloading) {
-            this.serverRestartReloading = true;
-            setTimeout(() => location.reload(), SERVER_RESTART_RELOAD_DELAY_MS);
-            return;
-          }
+          const serverRestarted = !!this.serverInstanceId && this.serverInstanceId !== instanceId;
           this.serverInstanceId = instanceId;
+          if (serverRestarted) {
+            this.setMobileConnectionWarning(true, "reconnecting");
+            void this.refresh();
+            this.reconnectFocusedConnections();
+          }
           return;
         }
         if (message.type === "session_status") this.applySessionStatus(message);
@@ -4293,11 +4322,56 @@ class TermdeckApp {
   }
 
   initializeMobileConnectionWarning() {
-    const refreshButton = this.$("mobile-connection-refresh");
-    if (refreshButton) refreshButton.onclick = () => location.reload();
     window.addEventListener("online", this.mobileOnlineHandler);
     window.addEventListener("offline", this.mobileOfflineHandler);
-    if (!navigator.onLine) this.setMobileConnectionWarning(true);
+    window.addEventListener("focus", this.focusedConnectionRecoveryHandler);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) this.reconnectFocusedConnections();
+    });
+    if (!navigator.onLine) this.setMobileConnectionWarning(true, "offline");
+  }
+
+  reconnectFocusedConnections() {
+    if (document.hidden || !navigator.onLine) {
+      if (!navigator.onLine) this.setMobileConnectionWarning(true, "offline");
+      return;
+    }
+    let reconnecting = false;
+    if (!this.statusWs || ![WebSocket.OPEN, WebSocket.CONNECTING].includes(this.statusWs.readyState)) {
+      clearTimeout(this.statusWsReconnectTimer);
+      this.statusWsReconnectTimer = 0;
+      this.connectStatusStream();
+      reconnecting = true;
+    } else if (this.statusWs.readyState === WebSocket.CONNECTING) reconnecting = true;
+    if (this.historyOpen && this.activeId && this.activeFileKey === null) {
+      const historyConnected = this.historyStreamSessionId === this.activeId && this.historyWs &&
+        [WebSocket.OPEN, WebSocket.CONNECTING].includes(this.historyWs.readyState);
+      if (!historyConnected) {
+        clearTimeout(this.historyWsReconnectTimer);
+        this.historyWsReconnectTimer = 0;
+        this.connectHistoryStream(this.activeId);
+        reconnecting = true;
+      } else if (this.historyWs.readyState === WebSocket.CONNECTING) reconnecting = true;
+    } else if (this.activeId && this.activeFileKey === null) {
+      const view = this.views.get(this.activeId);
+      if (view && !view.closed && !this.session(this.activeId)?.dormant) {
+        if (!view.ws || view.ws.readyState === WebSocket.CLOSED) {
+          clearTimeout(view.reconnectTimer);
+          view.reconnectTimer = 0;
+          view.ws = null;
+          view.suppressReconnect = false;
+          this.connect(this.activeId, view);
+          reconnecting = true;
+        } else if (view.ws.readyState === WebSocket.CLOSING) {
+          view.suppressReconnect = false;
+          view.reconnectAfterClose = true;
+          reconnecting = true;
+        } else if (view.ws.readyState === WebSocket.CONNECTING) reconnecting = true;
+      }
+    }
+    if (reconnecting) this.setMobileConnectionWarning(true, "reconnecting");
+    else this.setMobileConnectionWarning(!this.mobileConnectionAvailable(), "reconnecting");
+    this.scheduleMobileConnectionWarning();
   }
 
   scheduleMobileConnectionWarning() {
@@ -4305,14 +4379,25 @@ class TermdeckApp {
     if (!this.touchMobileLayoutEnabled()) return;
     this.mobileConnectionWarningTimer = window.setTimeout(() => {
       this.mobileConnectionWarningTimer = 0;
-      const connected = navigator.onLine && this.statusWs?.readyState === WebSocket.OPEN;
-      this.setMobileConnectionWarning(!connected);
+      this.setMobileConnectionWarning(!this.mobileConnectionAvailable(), navigator.onLine ? "reconnecting" : "offline");
     }, MOBILE_CONNECTION_WARNING_DELAY_MS);
   }
 
-  setMobileConnectionWarning(disconnected) {
+  mobileConnectionAvailable() {
+    if (!navigator.onLine) return false;
+    if (this.statusWs?.readyState === WebSocket.OPEN) return true;
+    return !!this.historyOpen && this.historyWs?.readyState === WebSocket.OPEN;
+  }
+
+  setMobileConnectionWarning(disconnected, state = "reconnecting") {
     const warning = this.$("mobile-connection-warning");
     if (!warning) return;
+    const message = this.$("mobile-connection-message");
+    if (message && disconnected) {
+      message.textContent = state === "offline"
+        ? "Connection lost. Reconnecting when this device is online; your Transcript draft is saved."
+        : "Reconnecting… Your Transcript draft is saved on this device.";
+    }
     warning.classList.toggle("hidden", !disconnected || !this.touchMobileLayoutEnabled());
   }
 
@@ -4855,7 +4940,7 @@ class TermdeckApp {
       sessionId, closed: false, markdownPromptDraft: this.markdownPromptDraftForSession(sessionId),
       promptQueue: this.markdownPromptQueueForSession(sessionId), promptQueueEditIndex: null,
       promptQueueDispatching: false, promptQueueHold: false, promptQueueCollapsed: false,
-      promptApiSubmitting: false, promptSubmitting: false, promptSubmitEntered: false,
+      promptApiSubmitting: false, promptApiInterrupting: false, promptSubmitting: false, promptSubmitEntered: false,
       promptSubmitTimer: 0, promptEditing: false, promptEditVersion: 0, promptSubmitVersion: -1,
       promptDraft: this.session(sessionId)?.draft || "",
     };
@@ -4873,7 +4958,7 @@ class TermdeckApp {
     if (!state) return view;
     for (const key of ["markdownPromptDraft", "promptQueue", "promptQueueEditIndex", "promptQueueDispatching",
       "promptQueueHold", "promptQueueCollapsed", "promptApiSubmitting", "promptSubmitting",
-      "promptSubmitEntered", "promptSubmitTimer", "promptEditing", "promptEditVersion", "promptSubmitVersion",
+      "promptApiInterrupting", "promptSubmitEntered", "promptSubmitTimer", "promptEditing", "promptEditVersion", "promptSubmitVersion",
       "promptDraft"]) {
       if (Object.hasOwn(state, key)) view[key] = state[key];
     }

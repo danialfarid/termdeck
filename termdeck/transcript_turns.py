@@ -354,6 +354,12 @@ class TurnBuilder:
         index = 0
         while index < len(turns):
             turn = turns[index]
+            if (turn.get("role") == cls.ROLE_ASSISTANT and collapsed
+                    and collapsed[-1].get("role") == cls.ROLE_ASSISTANT
+                    and collapsed[-1].get("text") == turn.get("text")):
+                collapsed[-1] = turn
+                index += 1
+                continue
             if turn.get("kind") not in {"tool", "result"}:
                 collapsed.append(turn)
                 index += 1

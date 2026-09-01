@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" href="/static/termdeck-192.png">
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <link rel="stylesheet" href="/static/vendor/codicons/codicon.css">
-<link rel="stylesheet" href="/static/style.css?v=20260831-rounded-note-duration">
+<link rel="stylesheet" href="/static/style.css?v=20260831-submitting-prompt">
 <link rel="stylesheet" href="/filebrowser/static/file_browser_shared.css">
 </head>
 <body>
@@ -141,7 +141,7 @@
   <button id="mobile-history-filter-toggle" title="Filter transcript" aria-label="Filter transcript" aria-expanded="false"><span class="codicon codicon-filter"></span></button>
   <button id="mobile-notebook-toggle" title="Quick notebook" aria-label="Quick notebook"><span class="note-taking-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M10 15q-.425 0-.712-.288T9 14v-2.425q0-.4.15-.763t.425-.637l8.6-8.6q.3-.3.675-.45t.75-.15q.4 0 .763.15t.662.45L22.425 3q.275.3.425.663T23 4.4t-.137.738t-.438.662l-8.6 8.6q-.275.275-.637.438t-.763.162zm9.6-9.2l1.425-1.4l-1.4-1.4L18.2 4.4zM5 21q-.825 0-1.412-.587T3 19V5q0-.825.588-1.412T5 3h6.5q.35 0 .575.175t.35.45t.087.55t-.287.525l-4.65 4.65q-.275.275-.425.638T7 10.75V15q0 .825.588 1.412T9 17h4.225q.4 0 .763-.15t.637-.425L19.3 11.75q.25-.25.525-.288t.55.088t.45.35t.175.575V19q0 .825-.587 1.413T19 21z"/></svg></span></button>
 </div>
-<div id="mobile-connection-warning" class="hidden" role="alert"><span>Connection lost. Your Transcript draft is saved on this device.</span><button id="mobile-connection-refresh" type="button"><span class="codicon codicon-refresh"></span> Refresh</button></div>
+<div id="mobile-connection-warning" class="hidden" role="status" aria-live="polite"><span id="mobile-connection-message">Reconnecting&hellip; Your Transcript draft is saved on this device.</span></div>
 <div id="keys-backdrop" class="hidden">
   <div id="keys-modal">
     <div class="modal-title">Keyboard shortcuts</div>
@@ -318,6 +318,7 @@
             </div>
           </div>
         </div>
+        <div id="history-slash-menu" class="hidden" role="listbox" aria-label="Agent commands"></div>
         <div id="history-prompt-footer">
           <div id="history-prompt-help"><span id="history-prompt-help-text"></span><span id="history-model" class="hidden"></span></div>
           <button id="history-prompt-history-btn" type="button" title="Recent prompts" aria-label="Recent prompts" aria-expanded="false"><span class="codicon codicon-history"></span></button>
@@ -553,9 +554,9 @@
 <script src="/static/lsp_client.js"></script>
 <!-- One class, split across files: app.js declares TermdeckApp (constants, constructor, core);
      the app_*.js files attach method groups to its prototype; app_boot.js instantiates. Order matters. -->
-<script src="/static/app.js?v=20260831-lazy-transcript-terminal"></script>
+<script src="/static/app.js?v=20260831-focus-reconnect"></script>
 <script src="/static/app_search_git.js?v=20260831-mobile-transcript-labels"></script>
-<script src="/static/app_markdown_files.js?v=20260831-lazy-transcript-terminal"></script>
+<script src="/static/app_markdown_files.js?v=20260831-submitting-prompt"></script>
 <script src="/static/app_terminal.js?v=20260831-lazy-transcript-terminal"></script>
 <script src="/static/app_settings_ui.js?v=20260831-mobile-transcript-labels"></script>
 <script src="/static/app_misc_ui.js?v=20260831-mobile-transcript-refresh"></script>
