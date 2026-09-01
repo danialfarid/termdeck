@@ -2192,3 +2192,48 @@ class ReleaseSessionGroupTest(unittest.TestCase):
         server = self._server({"doomed": "g1"}, [{"id": "g1"}])
         self.assertEqual(server._release_session_group("doomed"), "")
         self.assertNotIn("doomed", server.settings_store.payload["project_state"]["stock"]["session_groups"])
+
+
+class ColdAttachRepaintTest(unittest.TestCase):
+    """The first attach after a server restart repaints, even when a raw replay was served."""
+
+    def _manager(self):
+        manager = TerminalSessionManager()
+        saved = record()
+        saved.agent_kind = "claude"
+        session = ManagedSession(saved)
+        session.raw_replay_buffer.extend(b"conversation so far\r\n> composer")
+        manager._sessions = {saved.session_id: session}
+        manager._schedule_screen_repaint = MagicMock()
+        manager._recover_title_from_buffer = MagicMock()
+        return manager, session
+
+    def test_first_attach_repaints_after_a_raw_replay(self) -> None:
+        # The recording ends wherever the server stopped, so the replayed screen can be mid-draw.
+        manager, session = self._manager()
+        replay, _ = manager.attach_client(session.record.session_id, full_claude_raw_replay=True)
+        self.assertTrue(replay, "the replay is still served")
+        manager._schedule_screen_repaint.assert_called_once()
+
+    def test_later_attaches_do_not_repaint_again(self) -> None:
+        manager, session = self._manager()
+        manager.attach_client(session.record.session_id, full_claude_raw_replay=True)
+        manager._schedule_screen_repaint.reset_mock()
+        manager.attach_client(session.record.session_id, full_claude_raw_replay=True)
+        manager._schedule_screen_repaint.assert_not_called()
+
+
+class SyncUpdateTailTest(unittest.TestCase):
+    """A recording that stops inside a synchronized update must not leave the client mid-frame."""
+
+    def test_unterminated_frame_is_detected(self) -> None:
+        self.assertTrue(ReplayRecorder.ends_inside_sync_update(b"rows\x1b[?2026hhalf a frame"))
+
+    def test_closed_frame_is_not(self) -> None:
+        self.assertFalse(ReplayRecorder.ends_inside_sync_update(
+            b"\x1b[?2026hframe\x1b[?2026lafter"))
+
+    def test_stream_without_markers_is_not(self) -> None:
+        # Claude emits none of these at all, so this must never fire for it.
+        self.assertFalse(ReplayRecorder.ends_inside_sync_update(b"plain output\r\n> composer"))
+        self.assertFalse(ReplayRecorder.ends_inside_sync_update(b""))
