@@ -4302,6 +4302,9 @@ class TermdeckApp {
           this.serverInstanceId = instanceId;
           if (serverRestarted) {
             this.setMobileConnectionWarning(true, "reconnecting");
+            // Every terminal's buffer was built from the old server's recording; rebuild rather
+            // than let the new one repaint into it. See connect().
+            for (const view of this.views.values()) view.replayFromScratchOnNextConnect = true;
             void this.refresh();
             this.reconnectFocusedConnections();
           }

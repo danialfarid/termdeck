@@ -1188,14 +1188,9 @@ class TerminalSessionManager:
         # to be witnessed). Cover exactly that first-attach-since-restart case, once, without turning every
         # later reattach of every agent session into an unconditional pty resize.
         #
-        # A served raw replay is no longer exempt. The recording ends wherever the server stopped, which
-        # after a restart is the middle of whatever the agent was drawing: the replayed screen came back
-        # landed mid-content, missing its status line, or with the composer drawn twice, and stayed that
-        # way until the agent happened to redraw -- pressing resync, which is this same repaint, fixed it
-        # every time. Claude emits no synchronized-update markers at all (measured: 0 of 4 recordings), so
-        # there is nothing in the stream to detect that ending from; the repaint is the only answer, and
-        # it stays bounded to once per session per server run.
-        if not needs_repaint and not ms.cold_attach_repaint_done and \
+        # A session served a raw replay stays exempt: the client asks for its own repaint once it has
+        # finished writing that replay, which is ordered against the replay rather than racing it.
+        if not use_claude_raw_replay and not needs_repaint and not ms.cold_attach_repaint_done and \
                 agents.agent_cli(ms.record.agent_kind).records_raw_replay:
             needs_repaint = True
         ms.cold_attach_repaint_done = True
