@@ -198,6 +198,10 @@ class NotebookNote(BaseModel):
     text: str = ""
 
 
+class NotebookNoteSaveRequest(BaseModel):
+    text: str = ""
+
+
 class StateRecoveryRestoreRequest(BaseModel):
     snapshot: str
 
@@ -770,6 +774,8 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_LAN_STATUS_ROUTE, response_model=None)(self._lan_status)
         app.put(TermdeckConfig.API_LAN_ACCESS_ROUTE, response_model=None)(self._set_lan_access)
         app.post(TermdeckConfig.API_NOTEBOOK_TRASH_ROUTE, response_model=None)(self._trash_notebook_note)
+        app.put(TermdeckConfig.API_NOTEBOOK_NOTE_ROUTE, response_model=None)(self._save_notebook_note)
+        app.delete(TermdeckConfig.API_NOTEBOOK_NOTE_ROUTE, response_model=None)(self._delete_notebook_note)
         app.get(TermdeckConfig.API_FILE_LIST_ROUTE, response_model=None)(self._list_files)
         app.get(TermdeckConfig.API_FILE_RECENT_ROUTE, response_model=None)(self._recent_files)
         app.get(TermdeckConfig.API_FILE_READ_ROUTE, response_model=None)(self._read_file)
@@ -2086,7 +2092,7 @@ class TermdeckServer:
 
     async def _patch_terminal_layout(self, patch: ProjectStatePatch, project: str = "", worktree_id: str = "") -> dict[str, object]:
         resource_fields = {"terminal_groups", "session_groups", "terminal_layout", "session_order",
-                           "unread_sessions", "recently_opened_terminal_ids", "session_view_modes"}
+                           "unread_sessions", "recently_opened_terminal_ids", "session_view_modes", "notebook_notes"}
         supplied_resource_fields = resource_fields & patch.model_fields_set
         if supplied_resource_fields:
             raise HTTPException(status_code=409,
@@ -2099,6 +2105,32 @@ class TermdeckServer:
         payload = settings.model_dump()
         self.settings_store.save(payload)
         return self._terminal_layout_payload(project, UiSettings(**payload), worktree_id)
+
+    async def _save_notebook_note(self, request: NotebookNoteSaveRequest, note_id: str, project: str = "",
+                                  worktree_id: str = "") -> dict[str, object]:
+        """Write one note, leaving every other note alone.
+
+        Each open deck page holds its own copy of the note list. A page that sent the whole list back
+        deleted the notes other pages had added since it loaded, so a note added in one window
+        vanished as soon as any other window saved.
+        """
+        if not note_id.strip():
+            raise HTTPException(status_code=422, detail="note_id is required")
+        settings, key, state = self._project_state_context(project, worktree_id)
+        notes = [note.model_copy(update={"text": request.text}) if note.note_id == note_id else note
+                 for note in state.notebook_notes]
+        if all(note.note_id != note_id for note in state.notebook_notes):
+            notes.append(NotebookNote(note_id=note_id, text=request.text))
+        state.notebook_notes = notes
+        state.notebook_notes_initialized = True
+        return self._save_project_state(settings, key, state, project, worktree_id)
+
+    async def _delete_notebook_note(self, note_id: str, project: str = "", worktree_id: str = "") -> dict[str, object]:
+        settings, key, state = self._project_state_context(project, worktree_id)
+        if all(note.note_id != note_id for note in state.notebook_notes):
+            raise HTTPException(status_code=404, detail=note_id)
+        state.notebook_notes = [note for note in state.notebook_notes if note.note_id != note_id]
+        return self._save_project_state(settings, key, state, project, worktree_id)
 
     def _place_session_after(self, project: str, session_id: str, after: str,
                              anchor_token: str | None = None, worktree_id: str = "root") -> dict[str, object]:

@@ -77,6 +77,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Quick Notes added or edited in one window stay put: notes are stored one at a time instead of as a whole
+  list, so a note added in one window or device is no longer deleted by the next save from another one.
 - Returning focus to a disconnected TermDeck page now reconnects only the status and active-surface sockets,
   shows a temporary Reconnecting message, and preserves existing views instead of offering a full-page reload.
 - Transcript prompt submissions remain visibly pending in per-project browser storage through refreshes and

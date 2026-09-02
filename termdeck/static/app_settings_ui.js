@@ -243,7 +243,7 @@ Object.assign(TermdeckApp.prototype, {
             clearTimeout(this.notebookTitleTimer);
             this.notebookTitleTimer = setTimeout(() => {
               this.renderNotebookTabs();
-              this.saveNotebookProjectState();
+              this.saveActiveNotebookNote();
             }, 160);
           });
           this.notebookEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { void this.flushNotebook(); });

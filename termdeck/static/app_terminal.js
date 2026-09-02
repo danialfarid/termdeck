@@ -3702,6 +3702,7 @@ Object.assign(TermdeckApp.prototype, {
     if (!THEME_BY_ID[this.settings.theme]) this.settings.theme = SETTINGS_DEFAULTS.theme;
     this.settings.notebook_open = this.readNotebookOpenState();
     if (this.normalizeNotebookNotes()) {
+      this.saveNotebookNotes();
       this.saveNotebookProjectState();
       this.saveSettings();
     }

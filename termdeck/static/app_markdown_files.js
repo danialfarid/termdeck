@@ -5680,6 +5680,7 @@ Object.assign(TermdeckApp.prototype, {
     if (fallback) fallback.value = this.activeNotebookNote()?.text || "";
     this.settings.notebook_open = true;
     this.renderNotebook();
+    this.saveActiveNotebookNote();
     this.saveNotebookProjectState();
     this.persistNotebookOpenState();
     void this.mountNotebookEditor().then(() => this.focusNotebookEditor());
@@ -5772,13 +5773,43 @@ Object.assign(TermdeckApp.prototype, {
     const stateKey = this.notebookProjectStateKey();
     const notebookState = this.notebookProjectState();
     const patch = {
-      notebook_notes: notebookState.notebook_notes || [],
       notebook_active_note_id: notebookState.notebook_active_note_id || "",
       notebook_notes_initialized: !!notebookState.notebook_notes_initialized,
       notebook_text: notebookState.notebook_text || "",
     };
     this.applyLocalProjectStatePatch(patch, stateKey);
     this.queueProjectResourceRequest(stateKey, "/api/terminal-layout", "PATCH", patch);
+  },
+
+
+  // The notes themselves go one at a time, never as a list. Every open page of the deck -- another
+  // window, another device -- keeps its own copy of the notes, and a page that sent its whole copy
+  // deleted the notes the other pages had added since it loaded: a note added in one window
+  // disappeared the moment any other window saved anything of its own.
+  saveNotebookNote(note) {
+    if (!note?.note_id) return;
+    this.queueProjectResourceRequest(this.notebookProjectStateKey(),
+      `/api/notebook/notes/${encodeURIComponent(note.note_id)}`, "PUT", { text: note.text || "" });
+  },
+
+
+  saveActiveNotebookNote() {
+    this.saveNotebookNote(this.activeNotebookNote());
+  },
+
+
+  saveNotebookNotes() {
+    // Only normalizing at load writes every note at once -- to carry the notes of the old global
+    // notebook into this project. The page has just read those notes from the server, so writing
+    // them all back cannot overwrite anyone else's work.
+    for (const note of this.notebookProjectState().notebook_notes || []) this.saveNotebookNote(note);
+  },
+
+
+  deleteNotebookNote(noteId) {
+    if (!noteId) return;
+    this.queueProjectResourceRequest(this.notebookProjectStateKey(),
+      `/api/notebook/notes/${encodeURIComponent(noteId)}`, "DELETE");
   },
 
 
@@ -5996,7 +6027,7 @@ Object.assign(TermdeckApp.prototype, {
     note.text = normalizedText;
     this.notebookProjectState().notebook_text = normalizedText;
     if (changed && renderTitle) this.renderNotebookTabs();
-    if (save) this.saveNotebookProjectState();
+    if (save) this.saveNotebookNote(note);
   },
 
 
@@ -6094,6 +6125,7 @@ Object.assign(TermdeckApp.prototype, {
     const currentModel = currentNote ? this.notebookEditorModels.get(currentNote.note_id) : null;
     if (currentNote && currentModel && this.notebookEditor?.getModel() === currentModel) {
       currentNote.text = this.notebookEditor.getValue();
+      this.saveNotebookNote(currentNote);
     }
     notebookState.notebook_active_note_id = noteId;
     notebookState.notebook_text = this.activeNotebookNote()?.text || "";
@@ -6141,6 +6173,7 @@ Object.assign(TermdeckApp.prototype, {
     notebookState.notebook_notes_initialized = true;
     this.notebookSearchIndex = 0;
     this.renderNotebook();
+    this.deleteNotebookNote(noteId);
     this.saveNotebookProjectState();
     if (next && wasActive) {
       await this.mountNotebookEditor();
@@ -6161,6 +6194,7 @@ Object.assign(TermdeckApp.prototype, {
     notebookState.notebook_text = note.text;
     this.notebookSearchIndex = 0;
     this.renderNotebook();
+    this.saveNotebookNote(note);
     this.saveNotebookProjectState();
     await this.mountNotebookEditor();
     this.focusNotebookEditor();
