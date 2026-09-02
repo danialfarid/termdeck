@@ -23,6 +23,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Filename search keeps every name that contains what was typed in Exact matches, wherever in the name it
+  sits, and reserves Fuzzy matches for names that need editing to fit.
+- Fuzzy filename matching now means one or two typos -- a wrong, missing, doubled or swapped letter -- close
+  to the query, instead of the query's letters collected from anywhere in the name, and it is consulted only
+  when what was typed matched almost nothing.
 - The editor line holding the caret keeps its tint but loses the outline above and below it, so it no longer
   reads as a selected line.
 - Transcript prompts awaiting authoritative history confirmation keep a distinct pending background and show
