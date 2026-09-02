@@ -8,6 +8,97 @@ from termdeck.config import TermdeckConfig
 from termdeck.file_service import ProjectFileService
 
 
+class FilenameMatcher:
+    """Ranks file names against one filename-search query.
+
+    Ranks, best first: the whole name, the name without its extension, a name starting with the
+    query, a name containing the query, and last a name that needs a typo's worth of editing to fit
+    it. Everything up to and including "contains" matched what was typed, letter for letter; only
+    the last rank is a fuzzy match.
+
+    Built once per search because the query's typo budget and pieces are the same for every
+    candidate, and a repository hands this a lot of candidates.
+    """
+
+    CONTAINS_RANK = 3
+    FUZZY_RANK = 4
+
+    def __init__(self, query: str, case_sensitive: bool = False) -> None:
+        self.case_sensitive = case_sensitive
+        self.query = query if case_sensitive else query.lower()
+        self.budget = self._edit_budget(len(self.query))
+        # Pigeonhole: cut the query into 2 * budget + 1 pieces and a match within the budget has to
+        # leave one of them untouched, since an edit spoils one piece and a swap of two neighbouring
+        # letters at most two. A name holding none of the pieces cannot match, and skipping those
+        # keeps the distance calculation away from most of a repository.
+        count = 2 * self.budget + 1
+        size = len(self.query) // count
+        pieces = [self.query[index * size:(index + 1) * size] for index in range(count - 1)]
+        pieces.append(self.query[(count - 1) * size:])
+        self.pieces = [piece for piece in pieces if piece] if self.budget else []
+
+    @staticmethod
+    def _edit_budget(length: int) -> int:
+        """How many typos a query of this length is allowed.
+
+        Fuzzy matching is for what a slipped finger produces -- a wrong, missing, doubled or swapped
+        letter -- so the budget stays small, and short queries get none at all: with even one edit
+        allowed, a three-letter query would match half a repository.
+        """
+        if length < 4:
+            return 0
+        if length <= 7:
+            return 1
+        if length <= 12:
+            return 2
+        return 3
+
+    def literal_score(self, basename: str, is_directory: bool) -> tuple[int, int | None]:
+        """Rank and placing for a name that holds the query as typed, or None as the placing if it does not."""
+        name = basename if self.case_sensitive else basename.lower()
+        if name == self.query:
+            return 0, 0
+        if not is_directory and name.rsplit(".", 1)[0] == self.query:
+            return 1, 0
+        if name.startswith(self.query):
+            return 2, 0
+        position = name.find(self.query)
+        return (self.CONTAINS_RANK, position) if position >= 0 else (self.CONTAINS_RANK, None)
+
+    def fuzzy_distance(self, basename: str) -> int | None:
+        """Typos between the query and the closest-matching stretch of the name, or None if too many."""
+        name = basename if self.case_sensitive else basename.lower()
+        if not self.pieces or not name:
+            return None
+        if not any(piece in name for piece in self.pieces):
+            return None
+        return self._closest_substring_distance(self.query, name, self.budget)
+
+    @staticmethod
+    def _closest_substring_distance(needle: str, haystack: str, budget: int) -> int | None:
+        """Edit distance from the needle to the closest-matching stretch of the haystack.
+
+        Free at both ends -- the match may start and stop anywhere in the name -- and a swap of two
+        neighbouring letters costs one edit, which is what mistyping usually produces. Returns None
+        as soon as the budget is exceeded: the best distance only grows with each further row, so a
+        name that cannot match is abandoned after a few rows instead of being scored in full.
+        """
+        previous = [0] * (len(haystack) + 1)
+        before_previous: list[int] = []
+        for row, needle_character in enumerate(needle, 1):
+            current = [row] + [0] * len(haystack)
+            for column, haystack_character in enumerate(haystack, 1):
+                cost = 0 if needle_character == haystack_character else 1
+                current[column] = min(previous[column - 1] + cost, previous[column] + 1, current[column - 1] + 1)
+                if (row > 1 and column > 1 and needle_character == haystack[column - 2]
+                        and needle[row - 2] == haystack_character):
+                    current[column] = min(current[column], before_previous[column - 2] + 1)
+            if min(current) > budget:
+                return None
+            before_previous, previous = previous, current
+        return min(previous)
+
+
 class ProjectSearchService:
     """Project-wide text search via ripgrep (fixed-string, smart-case, gitignore-aware). `word` restricts to
     whole-word matches (used for find-usages). `glob` is a comma list of rg -g filters; `ignore` a comma list
@@ -15,6 +106,7 @@ class ProjectSearchService:
 
     _LINE_PARTS = 3
     _HIDDEN_IGNORE_PATTERNS = frozenset({".*", "**/.*"})
+    FUZZY_FALLBACK_BELOW_RESULTS = 5
 
     def __init__(self, files: ProjectFileService) -> None:
         self._files = files
@@ -285,16 +377,11 @@ class ProjectSearchService:
             candidates.add((rel, False))
             parts = rel.split("/")
             candidates.update(("/".join(parts[:index]), True) for index in range(1, len(parts)))
-        scored: list[tuple[int, int, int, int, str, bool]] = []
-        for rel, is_dir in candidates:
-            basename = rel.rsplit("/", 1)[-1]
-            match_rank, basename_score = self._filename_match_score(query, basename, is_dir, case_sensitive)
-            if basename_score is None:
-                continue
-            scored.append((match_rank,
-                           basename_score, len(rel), int(is_dir), rel, is_dir))
-        scored.sort()
-        results = [self._file_find_result(base, rel, is_dir) for _, _, _, _, rel, is_dir in scored[:TermdeckConfig.FIND_MAX_RESULTS]]
+        # Ranking a whole repository's names is quick when the query matches literally and slow when
+        # it has to measure typo distances, so it runs off the event loop either way: terminals share
+        # this process, and their output should not wait behind a keystroke in the search box.
+        ranked = await asyncio.to_thread(self._ranked_candidates, candidates, query, case_sensitive)
+        results = [self._file_find_result(base, rel, is_dir) for _, _, _, _, rel, is_dir in ranked[:TermdeckConfig.FIND_MAX_RESULTS]]
         return self._attach_git_statuses(base, results)
 
     def _python_find_files(self, base: os.PathLike[str], query: str, ignore: str, glob: str, case_sensitive: bool) -> list[dict[str, str | bool | int]]:
@@ -328,17 +415,32 @@ class ProjectSearchService:
                 if include_patterns and not self._path_matches_glob(rel_path, include_patterns):
                     continue
                 candidates.add((rel_path, False))
-        scored: list[tuple[int, int, int, int, str, bool]] = []
-        for rel, is_dir in candidates:
-            basename = rel.rsplit("/", 1)[-1]
-            match_rank, basename_score = self._filename_match_score(query, basename, is_dir, case_sensitive)
-            if basename_score is None:
-                continue
-            scored.append((match_rank,
-                           basename_score, len(rel), int(is_dir), rel, is_dir))
-        scored.sort()
-        results = [self._file_find_result(base, rel, is_dir) for _, _, _, _, rel, is_dir in scored[:TermdeckConfig.FIND_MAX_RESULTS]]
+        ranked = self._ranked_candidates(candidates, query, case_sensitive)
+        results = [self._file_find_result(base, rel, is_dir) for _, _, _, _, rel, is_dir in ranked[:TermdeckConfig.FIND_MAX_RESULTS]]
         return self._attach_git_statuses(base, results)
+
+    def _ranked_candidates(self, candidates: set[tuple[str, bool]], query: str,
+                           case_sensitive: bool) -> list[tuple[int, int, int, int, str, bool]]:
+        matcher = FilenameMatcher(query, case_sensitive)
+        ranked: list[tuple[int, int, int, int, str, bool]] = []
+        unmatched: list[tuple[str, bool]] = []
+        for rel, is_dir in candidates:
+            rank, placing = matcher.literal_score(rel.rsplit("/", 1)[-1], is_dir)
+            if placing is None:
+                unmatched.append((rel, is_dir))
+                continue
+            ranked.append((rank, placing, len(rel), int(is_dir), rel, is_dir))
+        # Typos are worth chasing only when what was typed found next to nothing. With real matches
+        # on screen the near-misses are noise, and measuring the distance to every other name in the
+        # repository is the expensive part of the search.
+        if len(ranked) < self.FUZZY_FALLBACK_BELOW_RESULTS:
+            for rel, is_dir in unmatched:
+                distance = matcher.fuzzy_distance(rel.rsplit("/", 1)[-1])
+                if distance is None:
+                    continue
+                ranked.append((FilenameMatcher.FUZZY_RANK, distance, len(rel), int(is_dir), rel, is_dir))
+        ranked.sort()
+        return ranked
 
     @staticmethod
     def _file_find_result(base: os.PathLike[str], relative_path: str, is_directory: bool) -> dict[str, str | bool | int]:
@@ -348,31 +450,3 @@ class ProjectSearchService:
             modified_time = 0
         return {"path": relative_path, "is_dir": is_directory, "mtime": modified_time}
 
-    @staticmethod
-    def _filename_fuzzy_score(query: str, candidate: str, case_sensitive: bool = False) -> int | None:
-        normalized_candidate = candidate if case_sensitive else candidate.lower()
-        normalized_query = query if case_sensitive else query.lower()
-        cursor = 0
-        first_position = None
-        gap_score = 0
-        for character in normalized_query:
-            position = normalized_candidate.find(character, cursor)
-            if position < 0:
-                return None
-            if first_position is None:
-                first_position = position
-            gap_score += position - cursor
-            cursor = position + 1
-        return (first_position or 0) * 4 + gap_score
-
-    @classmethod
-    def _filename_match_score(cls, query: str, basename: str, is_directory: bool, case_sensitive: bool) -> tuple[int, int | None]:
-        normalized_query = query if case_sensitive else query.lower()
-        normalized_name = basename if case_sensitive else basename.lower()
-        if normalized_name == normalized_query:
-            return 0, 0
-        if not is_directory and normalized_name.rsplit(".", 1)[0] == normalized_query:
-            return 1, 0
-        if normalized_name.startswith(normalized_query):
-            return 2, 0
-        return 4, cls._filename_fuzzy_score(query, basename, case_sensitive)

@@ -1346,15 +1346,20 @@ Object.assign(TermdeckApp.prototype, {
     if (fuzzy) {
       const sourceValue = caseSensitive ? source : source.toLocaleLowerCase();
       const queryValue = caseSensitive ? needle : needle.toLocaleLowerCase();
-      const ranges = [];
+      // Literal occurrences first; a name that contains what was typed is not a fuzzy match at all.
+      // Only when there is none does this look for a near-miss, and then it marks the one stretch of
+      // the name the query nearly is -- not the query's letters gathered from all over the name.
+      const literal = [];
       let cursor = 0;
-      for (const character of queryValue) {
-        const index = sourceValue.indexOf(character, cursor);
-        if (index < 0) return [];
-        ranges.push([index, index + character.length]);
-        cursor = index + character.length;
+      while (true) {
+        const index = sourceValue.indexOf(queryValue, cursor);
+        if (index < 0) break;
+        literal.push([index, index + queryValue.length]);
+        cursor = index + queryValue.length;
       }
-      return ranges;
+      if (literal.length) return literal;
+      const window = this.searchTypoWindow(sourceValue, queryValue);
+      return window ? [window] : [];
     }
     const sourceValue = caseSensitive ? source : source.toLocaleLowerCase();
     const queryValue = caseSensitive ? needle : needle.toLocaleLowerCase();
@@ -1367,6 +1372,68 @@ Object.assign(TermdeckApp.prototype, {
       cursor = index + queryValue.length;
     }
     return ranges;
+  },
+
+
+  // The same typo budget the server's FilenameMatcher uses, so both agree on what counts as a
+  // near-miss: nothing for short queries, one or two typos for ordinary ones.
+  searchTypoBudget(length) {
+    if (length < 4) return 0;
+    if (length <= 7) return 1;
+    if (length <= 12) return 2;
+    return 3;
+  },
+
+
+  // The stretch of `name` that the query nearly is, or null when the query is further away than its
+  // typo budget. Free at both ends, and a swap of two neighbouring letters counts as one typo.
+  searchTypoWindow(name, query) {
+    const budget = this.searchTypoBudget(query.length);
+    if (!budget || !name) return null;
+    const count = 2 * budget + 1;
+    const size = Math.floor(query.length / count);
+    const pieces = [];
+    for (let index = 0; index < count - 1; index += 1) pieces.push(query.slice(index * size, (index + 1) * size));
+    pieces.push(query.slice((count - 1) * size));
+    if (!pieces.some((piece) => piece && name.includes(piece))) return null;
+    const width = name.length;
+    let previous = new Array(width + 1).fill(0);
+    let previousStart = Array.from({ length: width + 1 }, (unused, column) => column);
+    let beforePrevious = null;
+    let beforePreviousStart = null;
+    for (let row = 1; row <= query.length; row += 1) {
+      const current = new Array(width + 1);
+      const currentStart = new Array(width + 1);
+      current[0] = row;
+      currentStart[0] = 0;
+      let best = current[0];
+      for (let column = 1; column <= width; column += 1) {
+        let value = previous[column - 1] + (query[row - 1] === name[column - 1] ? 0 : 1);
+        let start = previousStart[column - 1];
+        if (previous[column] + 1 < value) { value = previous[column] + 1; start = previousStart[column]; }
+        if (current[column - 1] + 1 < value) { value = current[column - 1] + 1; start = currentStart[column - 1]; }
+        if (row > 1 && column > 1 && query[row - 1] === name[column - 2] && query[row - 2] === name[column - 1] &&
+            beforePrevious[column - 2] + 1 < value) {
+          value = beforePrevious[column - 2] + 1;
+          start = beforePreviousStart[column - 2];
+        }
+        current[column] = value;
+        currentStart[column] = start;
+        if (value < best) best = value;
+      }
+      if (best > budget) return null;
+      beforePrevious = previous;
+      beforePreviousStart = previousStart;
+      previous = current;
+      previousStart = currentStart;
+    }
+    let bestColumn = 0;
+    for (let column = 1; column <= width; column += 1) {
+      if (previous[column] < previous[bestColumn]) bestColumn = column;
+    }
+    if (previous[bestColumn] > budget) return null;
+    const start = previousStart[bestColumn];
+    return bestColumn > start ? [start, bestColumn] : null;
   },
 
 
@@ -1595,6 +1662,9 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // Mirrors the server's ranks (FilenameMatcher): 0 the whole name, 1 the name without its
+  // extension, 2 a name starting with the query, 3 a name containing it, 4 a name a typo away.
+  // Ranks up to 3 hold what was typed letter for letter and are not fuzzy matches.
   nameSearchMatchRank(entry, query) {
     const basename = String(entry.path || "").split("/").pop() || "";
     const normalizedName = this.nameSearchCase ? basename : basename.toLowerCase();
@@ -1602,6 +1672,7 @@ Object.assign(TermdeckApp.prototype, {
     if (normalizedName === normalizedQuery) return 0;
     if (!entry.is_dir && normalizedName.replace(/\.[^.]+$/, "") === normalizedQuery) return 1;
     if (normalizedName.startsWith(normalizedQuery)) return 2;
+    if (normalizedName.includes(normalizedQuery)) return 3;
     return this.searchHighlightRanges(basename, query, { caseSensitive: this.nameSearchCase, fuzzy: true }).length ? 4 : 5;
   },
 
@@ -1857,8 +1928,8 @@ Object.assign(TermdeckApp.prototype, {
     const folderCount = orderedHits.filter((hit) => hit.is_dir).length;
     summary.textContent = `${orderedHits.length} result${orderedHits.length === 1 ? "" : "s"}${folderCount ? ` · ${folderCount} folder${folderCount === 1 ? "" : "s"}` : ""}`;
     resultsEl.appendChild(summary);
-    const exactHits = orderedHits.filter((hit) => this.nameSearchMatchRank(hit, query) < 2);
-    const fuzzyHits = orderedHits.filter((hit) => this.nameSearchMatchRank(hit, query) >= 2);
+    const exactHits = orderedHits.filter((hit) => this.nameSearchMatchRank(hit, query) <= 3);
+    const fuzzyHits = orderedHits.filter((hit) => this.nameSearchMatchRank(hit, query) > 3);
     for (const [label, sectionHits] of [["Exact matches", exactHits], ["Fuzzy matches", fuzzyHits]]) {
       if (!sectionHits.length) continue;
       const section = document.createElement("div");
