@@ -6019,13 +6019,27 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  notebookNoteForEditorModel() {
+    const model = this.notebookEditor?.getModel();
+    if (!model) return null;
+    const mountedId = [...this.notebookEditorModels].find(([, candidate]) => candidate === model)?.[0];
+    if (!mountedId) return null;
+    return this.notebookProjectState().notebook_notes.find((note) => note.note_id === mountedId) || null;
+  },
+
+
   setActiveNotebookText(text, save = true, renderTitle = true) {
-    const note = this.activeNotebookNote();
+    this.setNotebookNoteText(this.activeNotebookNote(), text, save, renderTitle);
+  },
+
+
+  setNotebookNoteText(note, text, save = true, renderTitle = true) {
     if (!note) return;
     const normalizedText = String(text || "");
     const changed = note.text !== normalizedText;
     note.text = normalizedText;
-    this.notebookProjectState().notebook_text = normalizedText;
+    const notebookState = this.notebookProjectState();
+    if (notebookState.notebook_active_note_id === note.note_id) notebookState.notebook_text = normalizedText;
     if (changed && renderTitle) this.renderNotebookTabs();
     if (save) this.saveNotebookNote(note);
   },
@@ -6097,7 +6111,7 @@ Object.assign(TermdeckApp.prototype, {
 
   flushNotebook() {
     if (!this.notebookEditor || !this.notebookMounted) return Promise.resolve();
-    this.setActiveNotebookText(this.activeNotebookText());
+    this.setNotebookNoteText(this.notebookNoteForEditorModel(), this.notebookEditor.getValue());
     return Promise.resolve();
   },
 
@@ -6160,11 +6174,14 @@ Object.assign(TermdeckApp.prototype, {
     }
     const notes = notebookState.notebook_notes.filter((note) => note.note_id !== noteId);
     const next = wasActive ? notes[Math.min(index, notes.length - 1)] || null : this.activeNotebookNote();
-    if (wasActive) {
-      if (this.notebookEditor) this.notebookEditor.setModel(null);
+    const model = this.notebookEditorModels.get(noteId);
+    // What is about to be disposed is decided by the model on screen, not by which note is marked
+    // active: leaving a disposed model mounted showed an empty editor next to a tab that was
+    // already highlighted as the selected note.
+    if (this.notebookEditor && model && this.notebookEditor.getModel() === model) {
+      this.notebookEditor.setModel(null);
       this.notebookMounted = false;
     }
-    const model = this.notebookEditorModels.get(noteId);
     if (model) model.dispose();
     this.notebookEditorModels.delete(noteId);
     notebookState.notebook_notes = notes;
@@ -6175,10 +6192,9 @@ Object.assign(TermdeckApp.prototype, {
     this.renderNotebook();
     this.deleteNotebookNote(noteId);
     this.saveNotebookProjectState();
-    if (next && wasActive) {
-      await this.mountNotebookEditor();
-      this.focusNotebookEditor();
-    }
+    if (!next) return;
+    await this.mountNotebookEditor();
+    if (wasActive) this.focusNotebookEditor();
   },
 
 

@@ -236,14 +236,16 @@ Object.assign(TermdeckApp.prototype, {
           });
           this.notebookEditor.onDidChangeModelContent(() => {
             if (!this.notebookMounted) return;
-            const note = this.activeNotebookNote();
-            const model = note ? this.notebookEditorModels.get(note.note_id) : null;
-            if (!note || model !== this.notebookEditor.getModel()) return;
-            this.setActiveNotebookText(this.notebookEditor.getValue(), false, false);
+            // Typing belongs to the note whose model is on screen. Keying this off the active note
+            // instead dropped the edit whenever the two had drifted apart -- the text stayed in the
+            // editor, was never written, and came back as it was on the next reload.
+            const note = this.notebookNoteForEditorModel();
+            if (!note) return;
+            this.setNotebookNoteText(note, this.notebookEditor.getValue(), false, false);
             clearTimeout(this.notebookTitleTimer);
             this.notebookTitleTimer = setTimeout(() => {
               this.renderNotebookTabs();
-              this.saveActiveNotebookNote();
+              this.saveNotebookNote(note);
             }, 160);
           });
           this.notebookEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { void this.flushNotebook(); });
