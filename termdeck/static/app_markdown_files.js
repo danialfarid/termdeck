@@ -5860,10 +5860,13 @@ Object.assign(TermdeckApp.prototype, {
 
 
   notebookTabTitle(note) {
-    const source = String(note?.text || "").replace(/!\[[^\]]*\]\([^)]*\)|\[([^\]]+)\]\([^)]*\)/g, "$1")
+    // The first line that actually has something on it, and only that line: a note's opening line is
+    // its title, and running words together from later lines made tabs that did not match the note.
+    // The label is width-clamped with an ellipsis in CSS, so it needs no word count here.
+    const firstLine = String(note?.text || "").split("\n").find((line) => line.trim()) || "";
+    const title = firstLine.replace(/!\[[^\]]*\]\([^)]*\)|\[([^\]]+)\]\([^)]*\)/g, "$1")
       .replace(/[`*_~>#]/g, " ").replace(/\s+/g, " ").trim();
-    const words = source.split(" ").filter(Boolean).slice(0, 6);
-    return words.length ? words.join(" ") : "Untitled note";
+    return title || "Untitled note";
   },
 
 
@@ -6037,9 +6040,17 @@ Object.assign(TermdeckApp.prototype, {
 
 
   async mountNotebookEditor() {
+    // Mounted is not enough: the editor may still hold ANOTHER note's model, because the active note
+    // can change without a mount in between (adding a note from a selection does exactly that). Then
+    // typing went into the wrong model, the switch away could not capture it -- it only captures when
+    // the editor's model matches the note it is leaving -- and the edit was gone. Re-point whenever
+    // the model on screen is not the active note's.
     if (this.notebookMounted && this.notebookEditor) {
-      this.notebookEditor.layout();
-      return;
+      const mounted = this.activeNotebookNote();
+      if (!mounted || this.notebookEditor.getModel() === this.notebookEditorModels.get(mounted.note_id)) {
+        this.notebookEditor.layout();
+        return;
+      }
     }
     const host = this.$("notebook-editor-host");
     if (!host) return;
