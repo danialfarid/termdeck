@@ -6023,7 +6023,13 @@ Object.assign(TermdeckApp.prototype, {
       const uri = monaco.Uri.parse(`inmemory://termdeck/notebook/${encodeURIComponent(note.note_id)}.txt`);
       model = monaco.editor.createModel(note.text, "plaintext", uri);
       this.notebookEditorModels.set(note.note_id, model);
-    } else if (model.getValue() !== note.text) {
+    } else if (model.getValue() !== note.text && this.notebookEditor?.getModel() !== model) {
+      // Only a model that is NOT on screen may be reset from the stored text. The model the user is
+      // typing into holds the newest version of the note; the stored text is only as fresh as the
+      // last flush. Overwriting it here threw away every unsaved edit, and mountNotebookEditor runs
+      // from nine places -- opening the notebook, re-rendering, selecting a tab -- so a sentence
+      // vanished on the next thing that touched the panel. An external change to the note on screen
+      // (appending a selection to it) sets the model's value at its own call site.
       model.setValue(note.text);
     }
     return model;
