@@ -226,6 +226,7 @@ class TermdeckConfig:
     API_LAN_STATUS_ROUTE = "/api/lan/status"
     API_LAN_ACCESS_ROUTE = "/api/lan/access"
     API_NOTEBOOK_TRASH_ROUTE = "/api/notebook/trash"
+    API_NOTEBOOK_NOTE_ROUTE = "/api/notebook/notes/{note_id}"
     API_CLOSED_ROUTE = "/api/closed"
     API_CLOSED_ITEM_ROUTE = "/api/closed/{session_id}"
     API_CLOSED_REOPEN_ROUTE = "/api/closed/{session_id}/reopen"

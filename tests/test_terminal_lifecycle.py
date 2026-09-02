@@ -21,7 +21,7 @@ from termdeck.models import SessionRecord
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot, ProcTreeUtil
 from termdeck.pty_process import PtyProcess
-from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, SubmitPromptRequest, TermdeckServer, UiSettings
+from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, NotebookNoteSaveRequest, ProjectStatePatch, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, SubmitPromptRequest, TermdeckServer, UiSettings
 from termdeck.replay_recorder import ReplayRecorder
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
 from termdeck.transcript_turns import TurnBuilder
@@ -263,6 +263,82 @@ class UiSettingsTest(unittest.TestCase):
         payload = UiSettings(ui_font_size=15, vscode_keybindings={"toggle-notebook": "Ctrl+Alt+n"}).model_dump()
         self.assertEqual(payload["ui_font_size"], 15)
         self.assertEqual(payload["vscode_keybindings"], {"toggle-notebook": "Ctrl+Alt+n"})
+
+
+class NotebookNoteApiTest(unittest.TestCase):
+    def server(self, notes: list[NotebookNote]) -> TermdeckServer:
+        class Store:
+            def __init__(self) -> None:
+                self.payload = UiSettings(project_state={
+                    "stock": ProjectUiState(notebook_notes=notes, notebook_notes_initialized=True),
+                }).model_dump()
+
+            def load(self) -> dict[str, object]:
+                return self.payload
+
+            def save(self, payload: dict[str, object]) -> None:
+                self.payload = payload
+
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.settings_store = Store()
+        server.manager = MagicMock()
+        server.manager.list_sessions.return_value = []
+        return server
+
+    def notes(self, server: TermdeckServer) -> list[tuple[str, str]]:
+        state = server.settings_store.payload["project_state"]["stock"]
+        return [(note["note_id"], note["text"]) for note in state["notebook_notes"]]
+
+    def test_saving_one_note_leaves_notes_another_page_added_alone(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first"), NotebookNote(note_id="note-2", text="second")])
+
+        asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="first edited"), note_id="note-1",
+                                               project="stock", worktree_id="root"))
+
+        self.assertEqual(self.notes(server), [("note-1", "first edited"), ("note-2", "second")])
+
+    def test_saving_an_unknown_note_appends_it(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first")])
+
+        asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="added"), note_id="note-2",
+                                               project="stock", worktree_id="root"))
+
+        self.assertEqual(self.notes(server), [("note-1", "first"), ("note-2", "added")])
+
+    def test_deleting_a_note_removes_only_that_note(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first"), NotebookNote(note_id="note-2", text="second")])
+
+        asyncio.run(server._delete_notebook_note(note_id="note-1", project="stock", worktree_id="root"))
+
+        self.assertEqual(self.notes(server), [("note-2", "second")])
+
+    def test_deleting_a_missing_note_is_rejected(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first")])
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(server._delete_notebook_note(note_id="note-9", project="stock", worktree_id="root"))
+
+        self.assertEqual(raised.exception.status_code, 404)
+
+    def test_patching_the_whole_note_list_is_rejected(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first")])
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(server._patch_terminal_layout(
+                ProjectStatePatch(notebook_notes=[NotebookNote(note_id="note-1", text="first")]),
+                project="stock", worktree_id="root"))
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("notebook_notes", raised.exception.detail)
+
+    def test_patching_the_active_note_still_works(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first")])
+
+        asyncio.run(server._patch_terminal_layout(ProjectStatePatch(notebook_active_note_id="note-1"),
+                                                  project="stock", worktree_id="root"))
+
+        self.assertEqual(server.settings_store.payload["project_state"]["stock"]["notebook_active_note_id"], "note-1")
+        self.assertEqual(self.notes(server), [("note-1", "first")])
 
 
 class NotebookTrashTest(unittest.TestCase):
