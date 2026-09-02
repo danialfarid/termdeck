@@ -470,9 +470,16 @@ const monacoThemeColor = (color) => {
   const alpha = Math.round((rgba[4] == null ? 1 : Number(rgba[4])) * 255).toString(16).padStart(2, "0");
   return `#${[rgba[1], rgba[2], rgba[3]].map((channel) => Number(channel).toString(16).padStart(2, "0")).join("")}${alpha}`;
 };
+// A softer version of a theme colour, for surfaces that should register without claiming attention.
+const fadedThemeColor = (color, factor) => {
+  const hex = monacoThemeColor(color);
+  const alpha = Math.round(Number.parseInt(hex.slice(7, 9), 16) * factor);
+  return `${hex.slice(0, 7)}${Math.max(0, Math.min(255, alpha)).toString(16).padStart(2, "0")}`;
+};
 const makeTheme = (id, label, kind, colors, ansi, monacoBase = kind === "light" ? "vs" : "vs-dark") => {
   const activeBackground = colors.activeBg || rgbaThemeColor(colors.accent, 0.14);
   const activeBorder = colors.activeBorder || rgbaThemeColor(colors.accent, 0.45);
+  const lineHighlightBackground = fadedThemeColor(colors.activeBg || rgbaThemeColor(colors.accent, 0.14), 0.85);
   const treeSelectedBackground = colors.treeSelectedBg || rgbaThemeColor(colors.accent, 0.17);
   const treeSelectedBorder = colors.treeSelectedBorder || rgbaThemeColor(colors.accent, 0.48);
   const terminalBackground = colors.term || colors.bg;
@@ -488,6 +495,7 @@ const makeTheme = (id, label, kind, colors, ansi, monacoBase = kind === "light" 
       "--scroll-thumb": colors.scroll || colors.border,
       "--scroll-thumb-hover": colors.scrollHover || colors.accent, "--active-bg": activeBackground,
       "--active-border": activeBorder, "--active-text": colors.activeText || colors.text,
+      "--line-highlight": lineHighlightBackground,
       "--tree-selected-bg": treeSelectedBackground, "--tree-selected-border": treeSelectedBorder,
     },
     terminal: makeTerminalTheme(terminalBackground, terminalForeground, colors.cursor || colors.accent,
@@ -497,7 +505,9 @@ const makeTheme = (id, label, kind, colors, ansi, monacoBase = kind === "light" 
       "editorGutter.background": monacoThemeColor(colors.monacoBg || terminalBackground), "editorLineNumber.foreground": monacoThemeColor(colors.dim),
       "editorLineNumber.activeForeground": monacoThemeColor(colors.accent), "editor.selectionBackground": monacoThemeColor(colors.selection || activeBorder),
       "editorCursor.foreground": monacoThemeColor(colors.cursor || colors.accent),
-      "editor.lineHighlightBackground": monacoThemeColor(activeBackground), "editor.lineHighlightBorder": monacoThemeColor(activeBorder),
+      // The line the cursor is on marks itself with a faint tint and no outline: at the full active
+      // colour, with a border top and bottom, it read as a selection rather than as the caret's line.
+      "editor.lineHighlightBackground": lineHighlightBackground, "editor.lineHighlightBorder": "#00000000",
       "editorIndentGuide.background1": monacoThemeColor(colors.border), "editorIndentGuide.activeBackground1": monacoThemeColor(activeBorder),
     },
   };
@@ -3424,7 +3434,9 @@ class TermdeckApp {
     setInterval(() => this.pollStats(), STATS_POLL_MS);
     this.pollStats();
     document.addEventListener("mousedown", (e) => {
-      if (e.target.closest?.(".inline-size-controls, #inline-size-done, #font-samples-backdrop")) return;
+      // A dialog belongs to whatever opened it, so answering one is not a click outside that thing:
+      // confirming "Move note to Trash" used to close Quick Notes along with the note's tab.
+      if (e.target.closest?.(".inline-size-controls, #inline-size-done, #font-samples-backdrop, .td-modal-backdrop")) return;
       for (const id of ["settings-popover", "context-menu"]) {
         const pop = this.$(id);
         if (pop.classList.contains("hidden") || pop.contains(e.target)) continue;

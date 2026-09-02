@@ -23,6 +23,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The editor line holding the caret keeps its tint but loses the outline above and below it, so it no longer
+  reads as a selected line.
 - Transcript prompts awaiting authoritative history confirmation keep a distinct pending background and show
   a compact blue Submitting state directly below the message.
 - Transcript history collapses Codex's mirrored `item_completed` and `response_item` records even when
@@ -79,6 +81,11 @@ All notable changes to this project are documented here. The format follows
 
 - Quick Notes added or edited in one window stay put: notes are stored one at a time instead of as a whole
   list, so a note added in one window or device is no longer deleted by the next save from another one.
+- Text typed into a note is saved to the note showing in the editor, so an edit is never silently dropped
+  when the selected tab and the editor disagree about which note is open.
+- Moving a note to the Trash leaves Quick Notes open and selects the neighbouring note, instead of closing
+  the panel when the confirmation is answered and reopening on an empty editor.
+- Answering any confirmation dialog no longer counts as a click outside the popup that opened it.
 - Returning focus to a disconnected TermDeck page now reconnects only the status and active-surface sockets,
   shows a temporary Reconnecting message, and preserves existing views instead of offering a full-page reload.
 - Transcript prompt submissions remain visibly pending in per-project browser storage through refreshes and
