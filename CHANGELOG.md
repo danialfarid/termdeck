@@ -23,6 +23,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The selected row in the file side panel is a plain band across the panel, the way a selected terminal is,
+  rather than an outlined box.
 - Filename search keeps every name that contains what was typed in Exact matches, wherever in the name it
   sits, and reserves Fuzzy matches for names that need editing to fit.
 - Fuzzy filename matching now means one or two typos -- a wrong, missing, doubled or swapped letter -- close
