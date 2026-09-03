@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" href="/static/termdeck-192.png">
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <link rel="stylesheet" href="/static/vendor/codicons/codicon.css">
-<link rel="stylesheet" href="/static/style.css?v=20260831-submitting-prompt">
+<link rel="stylesheet" href="/static/style.css?v=20260901-terminal-add-size">
 <link rel="stylesheet" href="/filebrowser/static/file_browser_shared.css">
 </head>
 <body>
@@ -216,13 +216,25 @@
   <div id="file-tabs-bar" class="hidden">
     <div id="file-tabs" role="tablist" aria-label="Open files"></div>
     <div id="file-tabs-actions">
-      <button id="file-tabs-more" title="File tab settings" aria-label="File tab settings"><span class="codicon codicon-settings-gear"></span></button>
+      <button id="file-tabs-more" title="File tab settings" aria-label="File tab settings"><span class="codicon codicon-chevron-down"></span></button>
       <button id="file-tabs-notebook" title="Quick notebook" aria-label="Quick notebook"><span class="note-taking-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M10 15q-.425 0-.712-.288T9 14v-2.425q0-.4.15-.763t.425-.637l8.6-8.6q.3-.3.675-.45t.75-.15q.4 0 .763.15t.662.45L22.425 3q.275.3.425.663T23 4.4t-.137.738t-.438.662l-8.6 8.6q-.275.275-.637.438t-.763.162zm9.6-9.2l1.425-1.4l-1.4-1.4L18.2 4.4zM5 21q-.825 0-1.412-.587T3 19V5q0-.825.588-1.412T5 3h6.5q.35 0 .575.175t.35.45t.087.55t-.287.525l-4.65 4.65q-.275.275-.425.638T7 10.75V15q0 .825.588 1.412T9 17h4.225q.4 0 .763-.15t.637-.425L19.3 11.75q.25-.25.525-.288t.55.088t.45.35t.175.575V19q0 .825-.587 1.413T19 21z"/></svg></span></button>
+      <button id="file-tabs-markdown" class="hidden" title="Markdown view" aria-label="Markdown view" aria-pressed="false"><span class="codicon codicon-markdown"></span></button>
     </div>
   </div>
   <div id="editor-area" class="hidden">
     <div id="file-editor-workspace">
       <div id="monaco-host"></div>
+      <div id="markdown-file-view" class="markdown hidden" tabindex="0" aria-label="Rendered Markdown"></div>
+      <div id="media-file-view" class="hidden" tabindex="0" aria-label="Media preview"></div>
+      <div id="file-unavailable" class="hidden" tabindex="-1" role="alert">
+        <span class="codicon codicon-warning"></span>
+        <div id="file-unavailable-title"></div>
+        <div id="file-unavailable-detail"></div>
+        <div id="file-unavailable-actions">
+          <button id="file-unavailable-retry" type="button">Try again</button>
+          <button id="file-unavailable-close" type="button">Close tab</button>
+        </div>
+      </div>
       <div id="secondary-editor-pane" class="hidden">
         <div id="secondary-editor-head">
           <select id="secondary-file-select" aria-label="Secondary file"></select>
@@ -555,9 +567,9 @@
 <!-- One class, split across files: app.js declares TermdeckApp (constants, constructor, core);
      the app_*.js files attach method groups to its prototype; app_boot.js instantiates. Order matters. -->
 <script src="/static/app.js?v=20260831-focus-reconnect"></script>
-<script src="/static/app_search_git.js?v=20260831-mobile-transcript-labels"></script>
+<script src="/static/app_search_git.js?v=20260901-group-header-order"></script>
 <script src="/static/app_markdown_files.js?v=20260831-submitting-prompt"></script>
-<script src="/static/app_terminal.js?v=20260831-lazy-transcript-terminal"></script>
+<script src="/static/app_terminal.js?v=20260903-claude-renderer-resume"></script>
 <script src="/static/app_settings_ui.js?v=20260831-mobile-transcript-labels"></script>
 <script src="/static/app_misc_ui.js?v=20260831-mobile-transcript-refresh"></script>
 <script src="/static/app_boot.js"></script>

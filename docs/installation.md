@@ -45,16 +45,27 @@ termdeck service restart
 `uv` brings its own Python, so the system Python version doesn't matter.
 
 ```sh
-uv tool install "git+https://github.com/danialfarid/termdeck.git@v0.6.1"
+uv tool install "git+https://github.com/danialfarid/termdeck.git"
 ```
 
-Upgrade to a newer release by re-running with the new tag. Pin to `main` instead of a tag for the latest
-development version.
+Without a `@ref` that installs the default branch, which is where releases are cut from. Re-run the same
+command with `--force` to upgrade.
+
+To install the newest tagged release instead, resolve the tag first — `git ls-remote` sorts tags by version
+and needs no GitHub account:
+
+```sh
+TERMDECK_REPO=https://github.com/danialfarid/termdeck.git
+TERMDECK_TAG=$(git ls-remote --tags --refs --sort=-v:refname $TERMDECK_REPO | head -1 | sed 's#.*/##')
+uv tool install "git+$TERMDECK_REPO@$TERMDECK_TAG"
+```
+
+Append `@<tag>` yourself to pin an older release.
 
 ## pipx
 
 ```sh
-pipx install "git+https://github.com/danialfarid/termdeck.git@v0.6.1"
+pipx install "git+https://github.com/danialfarid/termdeck.git"
 ```
 
 ## pip
@@ -62,7 +73,7 @@ pipx install "git+https://github.com/danialfarid/termdeck.git@v0.6.1"
 Only if you want it inside a specific environment rather than as a standalone tool:
 
 ```sh
-python3 -m pip install "git+https://github.com/danialfarid/termdeck.git@v0.6.1"
+python3 -m pip install "git+https://github.com/danialfarid/termdeck.git"
 ```
 
 ### Installing the external tools
@@ -181,9 +192,9 @@ Remove it with `termdeck service uninstall`.
 | Installed with | Upgrade |
 |---|---|
 | Homebrew | `brew update && brew upgrade danialfarid/tap/termdeck && termdeck service restart` |
-| uv | `uv tool install --force "git+https://github.com/danialfarid/termdeck.git@v0.5.0"` |
-| pipx | `pipx install --force "git+https://github.com/danialfarid/termdeck.git@v0.5.0"` |
-| pip | `pip install --upgrade "git+https://github.com/danialfarid/termdeck.git@v0.5.0"` |
+| uv | `uv tool install --force "git+https://github.com/danialfarid/termdeck.git"` |
+| pipx | `pipx install --force "git+https://github.com/danialfarid/termdeck.git"` |
+| pip | `pip install --upgrade "git+https://github.com/danialfarid/termdeck.git"` |
 | Source | `git pull` |
 
 If you run it as a service, restart it afterwards so the new version is picked up:

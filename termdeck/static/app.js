@@ -291,9 +291,39 @@ const KEYBOARD_SHORTCUT_SECTIONS = ["Terminal", "Files", "General"];
 const FILES_PANEL_WIDTH_RATIO = 1.5;
 const FILES_PANEL_MIN_WIDTH = 300;
 const FILES_SIDE_PANEL_TABS = ["project", "search", "git"];
+// Navigation states that name a file, and therefore belong on the /f/ route no matter which side panel
+// is open. Everything else lets the panel pick the route (see navUrl).
+const FILE_ROUTE_NAV_KINDS = ["file", "open-file", "file-history", "file-history-path", "path"];
 const CLOSED_SIDE_VIEW = "closed";
 const ALL_WORKTREES_ID = "all";
 const FILES_SIDE_PANEL_LAST_TAB_KEY = "termdeck.files_panel_last_tab";
+// Which open files get the rendered-document toggle beside the tab strip, and how long a change to the
+// source waits before the reading view is rebuilt (a save arrives as a burst of model edits).
+// Monaco draws its own scrollbars rather than using the page's, and its default is noticeably fatter than
+// everything else here. Matched to the app's 12px track (see ::-webkit-scrollbar in style.css) so the
+// editor does not stand out beside a terminal; --editor-scrollbar-inset tracks this.
+// The gutter is sized by Monaco from the EDITOR's font, so shrinking the digits in CSS alone leaves the
+// width it reserved behind. Three characters is the minimum, not the maximum -- a file past 999 lines
+// still gets the column it needs -- and the decorations strip beside it only has to separate the two.
+const EDITOR_LINE_NUMBER_MIN_CHARS = 3;
+const EDITOR_LINE_DECORATIONS_WIDTH = 4;
+const EDITOR_SCROLLBAR_SIZE = 12;
+const EDITOR_SCROLLBAR_OPTIONS = Object.freeze({
+  verticalScrollbarSize: EDITOR_SCROLLBAR_SIZE, horizontalScrollbarSize: EDITOR_SCROLLBAR_SIZE,
+  verticalSliderSize: EDITOR_SCROLLBAR_SIZE, horizontalSliderSize: EDITOR_SCROLLBAR_SIZE, useShadows: false,
+});
+// Files the editor cannot show but the browser can: opened as a preview instead of being refused as
+// binary. The server serves the bytes from an allowlist of its own (ProjectFileService.MEDIA_CONTENT_TYPES);
+// this map only decides which element to render them in.
+const MEDIA_FILE_KINDS = {
+  ".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image", ".webp": "image", ".bmp": "image",
+  ".ico": "image", ".avif": "image", ".svg": "image",
+  ".mp4": "video", ".m4v": "video", ".webm": "video", ".mov": "video", ".ogv": "video",
+  ".mp3": "audio", ".wav": "audio", ".m4a": "audio", ".flac": "audio", ".oga": "audio", ".ogg": "audio",
+  ".pdf": "document",
+};
+const MARKDOWN_FILE_EXTENSIONS = [".md", ".markdown", ".mdown", ".mkd", ".mdx"];
+const MARKDOWN_FILE_VIEW_RENDER_DEBOUNCE_MS = 150;
 const CLIENT_PLATFORM = String(globalThis.navigator?.userAgentData?.platform || globalThis.navigator?.platform || globalThis.navigator?.userAgent || "").toLowerCase();
 const IS_MAC_KEYBOARD_PLATFORM = /mac|iphone|ipad|ipod/.test(CLIENT_PLATFORM);
 const PRIMARY_MODIFIER_DISPLAY = IS_MAC_KEYBOARD_PLATFORM ? "⌘" : "Ctrl";
@@ -316,6 +346,7 @@ const DESKTOP_KEYBINDINGS = [
   { id: "open-terminal-new-tab", label: "Open active terminal in a new browser tab", def: "Meta+Alt+o", section: "Terminal" },
   { id: "toggle-diagnostics-recording", label: "Record diagnostics for a bug report", def: "Ctrl+Alt+Shift+k", section: "Terminal" },
   { id: "save-file", label: "Save open file", def: "Meta+s", section: "Files" },
+  { id: "toggle-markdown-view", label: "Markdown view for the open file", def: "Alt+Shift+m", section: "Files" },
   { id: "file-history-previous-change", label: "File history: previous change", def: "Alt+Shift+ArrowUp", section: "Files" },
   { id: "file-history-next-change", label: "File history: next change", def: "Alt+Shift+ArrowDown", section: "Files" },
   { id: "file-history-apply-change", label: "File history: apply change to current file", def: "Alt+Shift+ArrowRight", section: "Files" },
@@ -509,6 +540,12 @@ const makeTheme = (id, label, kind, colors, ansi, monacoBase = kind === "light" 
       // colour, with a border top and bottom, it read as a selection rather than as the caret's line.
       "editor.lineHighlightBackground": lineHighlightBackground, "editor.lineHighlightBorder": "#00000000",
       "editorIndentGuide.background1": monacoThemeColor(colors.border), "editorIndentGuide.activeBackground1": monacoThemeColor(activeBorder),
+      // The same thumb the rest of the app uses, so the editor's scrollbar is not a different object
+      // from the terminal's (see ::-webkit-scrollbar in style.css).
+      "scrollbarSlider.background": monacoThemeColor(colors.scroll || colors.border),
+      "scrollbarSlider.hoverBackground": monacoThemeColor(colors.scrollHover || colors.accent),
+      "scrollbarSlider.activeBackground": monacoThemeColor(colors.scrollHover || colors.accent),
+      "editorOverviewRuler.border": "#00000000",
     },
   };
 };
@@ -594,6 +631,11 @@ class TermdeckApp {
     this.views = new Map();
     this.transcriptSessionStates = new Map();
     this.openFiles = new Map();
+    this.markdownFileViews = new Set();
+    this.markdownFileViewScroll = new Map();
+    this.markdownFileViewListener = null;
+    this.markdownFileViewModel = null;
+    this.markdownFileViewRenderTimer = 0;
     this.lspClient = null;
     this.openFilesPersistPromise = Promise.resolve();
     this.sidebarSelectedFileKeys = new Set();
@@ -818,6 +860,7 @@ class TermdeckApp {
     this.fileBlameActiveKey = null;
     this.fileBlameRecordsByLine = new Map();
     this.fileBlameAuthorWidth = 0;
+    this.fileBlameLineNumberWidth = 0;
     this.fileBlameDecorationIds = [];
     this.fileGitHunkGeneration = 0;
     this.fileGitHunkDecorationIds = [];
@@ -896,7 +939,9 @@ class TermdeckApp {
     const requestedFileView = gitModeRoute ? "git"
       : ["project", "search", "git"].includes(urlParams.get("view")) ? urlParams.get("view") : "project";
     if (urlParams.get("t")) this.initialNav = { kind: "term", id: urlParams.get("t") };
-    else if (gitModeRoute && urlParams.get("git_path")) {
+    // Not gated on the route any more: an open diff is ?git_path= on the files route (older addresses put
+    // it on /g/, which still arrives here with the same parameters).
+    else if (urlParams.get("git_path")) {
       this.initialNav = { kind: "git-diff", path: urlParams.get("git_path"), scope: urlParams.get("git_scope") || "working",
         revision: urlParams.get("git_revision") || "", previous_path: urlParams.get("git_previous_path") || "",
         base: urlParams.get("git_base") || "", target: urlParams.get("git_target") || "" };
@@ -916,7 +961,10 @@ class TermdeckApp {
         view: requestedFileView,
         return_to: String(urlParams.get("rt") || "").trim(),
       };
-    } else if (fileModeRoute && this.requestedNavigationPath) {
+    } else if ((fileModeRoute || gitModeRoute) && this.requestedNavigationPath) {
+      // A path segment on /g/ is a file, not part of the git route: TermDeck used to put an open file
+      // there whenever the Git panel was up, and those addresses are in people's history and bookmarks.
+      // They open the file with the Git panel selected, which is what they always meant.
       this.initialNav = { kind: "path", selector: this.requestedNavigationPath, view: requestedFileView };
     } else if (fileModeRoute || gitModeRoute || ["project", "search", "git"].includes(urlParams.get("view"))) {
       this.initialNav = { kind: "files", view: requestedFileView, q: urlParams.get("q") || "" };
@@ -1081,11 +1129,6 @@ class TermdeckApp {
   encodedFileModeWorktreePath(project = this.projectSlug, worktreeId = this.stateWorktreeId()) {
     if (!project) return location.pathname;
     return `/f/${encodeURIComponent(project)}/${encodeURIComponent(this.worktreeUrlSegment(worktreeId))}`;
-  }
-
-  encodedGitModeWorktreePath(project = this.projectSlug, worktreeId = this.stateWorktreeId()) {
-    if (!project) return location.pathname;
-    return `/g/${encodeURIComponent(project)}/${encodeURIComponent(this.worktreeUrlSegment(worktreeId))}`;
   }
 
   encodedRelativeFilePath(path) {
@@ -3096,13 +3139,10 @@ class TermdeckApp {
     params.set("view", view === "tree" ? "project" : view);
     const selectedWorktreeId = this.worktreeId && this.worktreeId !== ALL_WORKTREES_ID && root === this.worktreeRoot()
       ? this.worktreeId : "root";
-    const basePath = view === "git"
-      ? project.name === this.projectSlug
-        ? this.encodedGitModeWorktreePath(project.name, selectedWorktreeId)
-        : `/g/${encodeURIComponent(project.name)}/${encodeURIComponent(selectedWorktreeId)}`
-      : project.name === this.projectSlug
-        ? this.encodedFileModeWorktreePath(project.name, selectedWorktreeId)
-        : `/f/${encodeURIComponent(project.name)}/${encodeURIComponent(selectedWorktreeId)}`;
+    // Git included: it is the same files route with ?view=git, which params already carries.
+    const basePath = project.name === this.projectSlug
+      ? this.encodedFileModeWorktreePath(project.name, selectedWorktreeId)
+      : `/f/${encodeURIComponent(project.name)}/${encodeURIComponent(selectedWorktreeId)}`;
     let navigationPath = "";
     if (relativePath) {
       const fileRoot = this.worktreeId && this.worktreeId !== "root" && this.worktreeId !== ALL_WORKTREES_ID && root === this.worktreeRoot() ? root : project.root;
@@ -3912,17 +3952,18 @@ class TermdeckApp {
     if (this.projectSlug === "evently-demo" && new URLSearchParams(location.search).get("demo") === "evently") {
       params.set("demo", "evently");
     }
-    // A state that names a side-panel tab picks the route itself. Consulting the pathname for those
-    // is what pinned the URL to /g/: once git had been opened, every later switch to files or search
-    // saw "/g/" and kept it, so the address never moved off git mode.
-    const tabbedView = FILES_SIDE_PANEL_TABS.includes(state.view) ? state.view : "";
-    const gitModeNavigation = state.kind === "git-diff" || state.kind !== "term" && state.kind !== "file-history" &&
-      (tabbedView ? tabbedView === "git" : location.pathname.startsWith("/g/"));
+    // One route for every files surface. Git is a side panel and a diff is something shown in the same
+    // tabbed workspace, so both ride in the query (?view=git, git_path=...) rather than owning a route of
+    // their own. /g/ read its path segment as part of the Git route, which meant an open file addressed
+    // there lost its path on reload and came back on whatever the panel had selected; and once the URL
+    // was on /g/, every later switch to files or search inherited it. Addresses of that shape still load
+    // -- the server keeps the routes and the boot parser reads them as ?view=git.
+    const panelView = state.kind === "git-diff" ? "git"
+      : FILES_SIDE_PANEL_TABS.includes(state.view) ? state.view : "";
     const fileModeNavigation = state.kind !== "term" &&
-      (location.pathname.startsWith("/f/") || state.kind === "files" || state.kind === "file" ||
-       state.kind === "open-file" || state.kind === "file-history");
-    const basePath = gitModeNavigation ? this.encodedGitModeWorktreePath()
-      : fileModeNavigation ? this.encodedFileModeWorktreePath() : this.encodedProjectWorktreePath();
+      (FILE_ROUTE_NAV_KINDS.includes(state.kind) || state.kind === "files" || state.kind === "git-diff" ||
+       !!panelView || location.pathname.startsWith("/f/") || location.pathname.startsWith("/g/"));
+    const basePath = fileModeNavigation ? this.encodedFileModeWorktreePath() : this.encodedProjectWorktreePath();
     let navigationPath = "";
     let fragment = "";
     if (state.kind === "term") {
@@ -3976,10 +4017,8 @@ class TermdeckApp {
       if (state.key) params.set("f", state.key);
       navigationPath = "";
     }
-    // /f/ and /g/ already say which tab is open; the param is only needed for a tab the route
-    // cannot express, which today is search on a file route and git on a file-history route.
-    const routeView = gitModeNavigation ? "git" : "project";
-    if (tabbedView && tabbedView !== routeView) params.set("view", tabbedView);
+    // /f/ means the project panel unless the query says otherwise, so only the other two need saying.
+    if (panelView && panelView !== "project") params.set("view", panelView);
     const qs = params.toString();
     return `${basePath}${navigationPath ? `/${navigationPath}` : ""}${qs ? `?${qs}` : ""}${fragment}`;
   }
@@ -4536,7 +4575,7 @@ class TermdeckApp {
 
   initializeEventlyDemoPresentation() {
     const params = new URLSearchParams(location.search);
-    if (this.projectSlug !== "evently-demo" || params.get("demo") !== "evently") return;
+    if (!(this.projectSlug === "evently-demo" || this.projectSlug === "evently-python-demo") || params.get("demo") !== "evently") return;
     document.body.classList.add("evently-demo-presentation");
     if (this.$("evently-demo-feature-banner")) return;
     const banner = document.createElement("div");

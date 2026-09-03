@@ -304,7 +304,7 @@ Object.assign(TermdeckApp.prototype, {
                    initialCodexRepaintTimer: 0, initialCodexRepaintWatchdogTimer: 0,
                    claudeInitialReplayRecoveryAttempted: false,
                    claudeStatusRowRefreshTimer: 0, historyModelRefreshTimer: 0, lastClaudeStatusRowRefreshAt: 0,
-                   codexFocusRefreshFrame: 0,
+                   codexFocusRefreshFrame: 0, claudeActivationRefreshFrame: 0,
                    promptQueue: this.markdownPromptQueueForSession(id), promptQueueEditIndex: null, promptQueueDispatching: false,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, promptDraftSyncDebounceTimer: 0,
                    pendingDraftSync: null, pendingTerminalDraft: null, pendingAgentPaste: "", pendingAgentPasteTimer: 0,
@@ -2180,6 +2180,20 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  scheduleClaudeActivationRendererRefresh(view) {
+    if (!view || view.closed || view.claudeActivationRefreshFrame || view.sessionId !== this.activeId ||
+        this.session(view.sessionId)?.agent_kind !== "claude" || !view.container.classList.contains("visible")) return;
+    view.claudeActivationRefreshFrame = requestAnimationFrame(() => {
+      view.claudeActivationRefreshFrame = requestAnimationFrame(() => {
+        view.claudeActivationRefreshFrame = 0;
+        if (view.closed || view.sessionId !== this.activeId || this.historyOpen || this.activeFileKey !== null ||
+            !view.container.classList.contains("visible")) return;
+        this.refreshTerminalAppearance(view, true);
+      });
+    });
+  },
+
+
   normalizeTerminalTailLine(line) {
     return String(line || "").replace(/\u00a0/g, " ").replace(/\s+$/g, "");
   },
@@ -3447,6 +3461,7 @@ Object.assign(TermdeckApp.prototype, {
     if (view.v2InitialFitFrame) cancelAnimationFrame(view.v2InitialFitFrame);
     if (view.activationRepairFrame) cancelAnimationFrame(view.activationRepairFrame);
     if (view.codexFocusRefreshFrame) cancelAnimationFrame(view.codexFocusRefreshFrame);
+    if (view.claudeActivationRefreshFrame) cancelAnimationFrame(view.claudeActivationRefreshFrame);
     clearTimeout(view.layoutFitRetryTimer);
     if (view.layoutObserver) view.layoutObserver.disconnect();
     if (view.scrollObserver) view.scrollObserver.disconnect();
@@ -3758,6 +3773,8 @@ Object.assign(TermdeckApp.prototype, {
     }
     this.openFiles.delete(key);
     this.sidebarSelectedFileKeys.delete(key);
+    this.markdownFileViews.delete(key);
+    this.markdownFileViewScroll.delete(key);
     if (this.sidebarFileSelectionAnchorKey === key) this.sidebarFileSelectionAnchorKey = null;
     if (this.secondaryFileKey === key) this.secondaryFileKey = null;
   },

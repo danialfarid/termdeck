@@ -779,8 +779,8 @@ Object.assign(TermdeckApp.prototype, {
         this.setInteractionWorktreeFromElement(label);
         this.openModal(group.id);
       });
-      label.insertBefore(search, attention);
-      label.appendChild(add);
+      label.insertBefore(search, indicator);
+      label.insertBefore(add, indicator);
     }
     label.onclick = () => {
       this.setInteractionWorktreeFromElement(label);
@@ -1231,7 +1231,10 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  setSideView(view, allowToggle = true) {
+  // `syncAddress` false is for callers that are mid-navigation and about to write the address themselves
+  // (activateFile picks the panel before it knows which file is active). Everyone else is a deliberate
+  // panel switch, and the address carries the panel in ?view= so a reload comes back to the same one.
+  setSideView(view, allowToggle = true, { syncAddress = true } = {}) {
     if (this.vscodeMode && view !== "terminals") return;
     if (!this.filesSidePanelCycleTransition) this.filesSidePanelCycleView = null;
     const nextView = allowToggle && this.sideView === view
@@ -1267,6 +1270,12 @@ Object.assign(TermdeckApp.prototype, {
       }
     }
     this.renderFileEditorChrome();
+    if (syncAddress && this.activeFileKey !== null) {
+      const current = this.parseNavState(this.lastNavJson);
+      if (current?.kind === "file" && current.key === this.activeFileKey && current.view !== view) {
+        this.replaceNav({ ...current, view });
+      }
+    }
     this.$("side-split").classList.toggle("hidden", view === "terminals" || view === CLOSED_SIDE_VIEW || filesVisible);
     this.applySettings();
     this.applySideLayout();
@@ -2065,7 +2074,8 @@ Object.assign(TermdeckApp.prototype, {
     }
     this.gitSelectionExplicitlyCleared = this.gitSelectedPaths.size === 0;
     this.gitFocusedFile = { root, path: file.path, scope };
-    if (this.gitSideState) this.renderGitSidePanelState(container, root, this.gitSideState);
+    const results = this.$("git-results");
+    if (this.gitSideState && results) this.renderGitSidePanelState(results, root, this.gitSideState);
     if (!additive && !event.shiftKey) void this.openGitReviewDiff(root, file.path, scope, false, { updateUrl: true });
   },
 
@@ -3004,7 +3014,9 @@ Object.assign(TermdeckApp.prototype, {
     const base = String(options.base || "");
     const target = String(options.target || "");
     const reviewKey = `${root}\u0000${path}\u0000${scope}\u0000${revision}\u0000${previousPath}\u0000${base}\u0000${target}`;
-    if (!focus && this.gitReviewOpen && this.gitReviewKey === reviewKey) {
+    // "Already showing this diff" means the flag AND the panel: a file activated on top of the review
+    // takes the middle panel, and re-requesting the same diff then has real work to do.
+    if (!focus && this.gitReviewOpen && this.activeFileKey === null && this.gitReviewKey === reviewKey) {
       if (options.history !== false && options.updateUrl) {
         this.pushNav({ kind: "git-diff", path, scope, revision, previous_path: previousPath, base, target });
       }
@@ -4277,6 +4289,7 @@ Object.assign(TermdeckApp.prototype, {
       if (entry) {
         this.addContextItem(menu, "Open this file in a new browser tab", () => this.openFileDeckInNewTab(entry.root, entry.path), "new-window");
         this.addOpenFileExternallyContextItem(menu, entry.root, entry.path);
+        this.addContextItem(menu, "Find Usages in Project", () => this.showEditorUsages(), "search");
         this.addGitPathContextActions(menu, entry.root, entry.path, false);
         this.addFileHistoryContextSubmenu(menu, entry.root, entry.path);
       }
@@ -4295,6 +4308,7 @@ Object.assign(TermdeckApp.prototype, {
     this.contextMenuTarget = { type: "filedeck", root, path: relativePath };
     this.addContextItem(menu, "Open this file in a new browser tab", () => this.openFileDeckInNewTab(root, relativePath), "new-window");
     this.addOpenFileExternallyContextItem(menu, root, relativePath);
+    this.addContextItem(menu, "Find Usages in Project", () => this.showEditorUsages(), "search");
     this.addGitPathContextActions(menu, root, relativePath, false);
     this.addFileHistoryContextSubmenu(menu, root, relativePath);
     this.positionContextMenu(menu, event.clientX, event.clientY);
@@ -4345,9 +4359,43 @@ Object.assign(TermdeckApp.prototype, {
     this.contextMenuTarget = { type: "file-tab", key };
     this.addContextItem(menu, "Open this file in a new browser tab", () => this.openFileDeckInNewTab(entry.root, entry.path), "new-window");
     this.addOpenFileExternallyContextItem(menu, entry.root, entry.path);
+    this.addContextItem(menu, "Find Usages in Project", () => this.showEditorUsages(), "search");
     this.addGitPathContextActions(menu, entry.root, entry.path, false);
     this.addFileHistoryContextSubmenu(menu, entry.root, entry.path);
     this.addContextItem(menu, "Close file", () => this.closeFile(key), "close");
+    this.positionContextMenu(menu, event.clientX, event.clientY);
+  },
+
+
+  openFileEditorContextMenu(event, targetPosition = null) {
+    const key = this.activeFileKey;
+    const entry = key !== null ? this.openFiles.get(key) : null;
+    if (!entry || !this.editor) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const target = targetPosition ? { position: targetPosition } : this.editor.getTargetAtClientPoint?.(event.clientX, event.clientY);
+    const selection = this.editor.getSelection();
+    if (target?.position && (!selection || selection.isEmpty)) {
+      this.editor.setPosition(target.position);
+      this.editor.revealPositionInCenterIfOutsideViewport(target.position);
+    }
+    const selectionState = this.readSelectionActionState(this.$("monaco-host"));
+    const menu = this.$("context-menu");
+    menu.textContent = "";
+    this.contextMenuTarget = { type: "file-editor", key };
+    this.addContextItem(menu, "Save file", () => void this.saveActiveFile(), "save");
+    this.addContextItem(menu, "Find in file", () => this.editor.getAction("actions.find")?.run(), "search");
+    this.addContextItem(menu, "Replace in file", () => this.editor.getAction("editor.action.startFindReplaceAction")?.run(), "replace-all");
+    this.addContextItem(menu, "Find Usages in Project", () => this.showEditorUsages(), "references");
+    if (selectionState?.text) {
+      this.addContextItem(menu, "Copy selected text", () => this.copySelectionToClipboard(), "copy");
+      this.addContextItem(menu, "Search selected text in files", () => this.searchContentFromSelection(), "search-fuzzy");
+    }
+    this.addFileHistoryContextSubmenu(menu, entry.root, entry.path);
+    this.addGitPathContextActions(menu, entry.root, entry.path, false);
+    this.addContextItem(menu, "Copy relative path", () => this.copyTextToClipboard(entry.path, "relative path copied"), "copy");
+    this.addContextItem(menu, "Open in a new browser tab", () => this.openFileDeckInNewTab(entry.root, entry.path), "new-window");
+    this.addContextItem(menu, "Close file", () => void this.closeFile(key), "close");
     this.positionContextMenu(menu, event.clientX, event.clientY);
   },
 

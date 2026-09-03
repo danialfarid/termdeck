@@ -779,6 +779,7 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_FILE_LIST_ROUTE, response_model=None)(self._list_files)
         app.get(TermdeckConfig.API_FILE_RECENT_ROUTE, response_model=None)(self._recent_files)
         app.get(TermdeckConfig.API_FILE_READ_ROUTE, response_model=None)(self._read_file)
+        app.get(TermdeckConfig.API_FILE_MEDIA_ROUTE, response_model=None)(self._read_media_file)
         app.get(TermdeckConfig.API_FILE_EXISTS_ROUTE, response_model=None)(self._file_exists)
         app.post(TermdeckConfig.API_FILE_OPEN_EXTERNAL_ROUTE, response_model=None)(self._open_file_external)
         app.get(TermdeckConfig.API_FILE_SEARCH_ROUTE, response_model=None)(self._search_files)
@@ -1381,6 +1382,27 @@ class TermdeckServer:
             return result
         except (ValueError, FileNotFoundError, IsADirectoryError, PermissionError) as read_error:
             raise HTTPException(status_code=404, detail=str(read_error)) from read_error
+
+    # Raw bytes, so the headers matter as much as the allowlist behind it. nosniff keeps the browser from
+    # re-deciding the type; the CSP and sandbox neutralise the one allowed type that can carry script
+    # (SVG) if someone opens the URL directly instead of letting an <img> render it.
+    MEDIA_RESPONSE_HEADERS = {
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; img-src 'self' data:; media-src 'self'; sandbox",
+        "Cache-Control": "no-cache",
+    }
+
+    async def _read_media_file(self, root: str, path: str) -> FileResponse:
+        try:
+            target, content_type = self.files.media_file(root, path)
+        except (FileNotFoundError, IsADirectoryError) as missing:
+            raise HTTPException(status_code=404, detail=str(missing)) from missing
+        except PermissionError as forbidden:
+            raise HTTPException(status_code=403, detail=str(forbidden)) from forbidden
+        except ValueError as unsupported:
+            raise HTTPException(status_code=415, detail=str(unsupported)) from unsupported
+        return FileResponse(target, media_type=content_type, headers=dict(self.MEDIA_RESPONSE_HEADERS),
+                            content_disposition_type="inline")
 
     async def _file_exists(self, root: str, path: str) -> dict[str, bool]:
         try:

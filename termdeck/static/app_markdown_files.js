@@ -690,8 +690,10 @@ Object.assign(TermdeckApp.prototype, {
 
   fileHistoryEditorOptions() {
     return { automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
-      fontSize: this.scaledSettingSize("code_font_size"), lineNumbersMinChars: 4, renderLineHighlight: "all", folding: true,
-      wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true };
+      fontSize: this.scaledSettingSize("code_font_size"), lineNumbersMinChars: EDITOR_LINE_NUMBER_MIN_CHARS,
+      lineDecorationsWidth: EDITOR_LINE_DECORATIONS_WIDTH, renderLineHighlight: "all", folding: true,
+      wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true,
+      scrollbar: { ...EDITOR_SCROLLBAR_OPTIONS }, overviewRulerBorder: false };
   },
 
 
@@ -3452,7 +3454,10 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  linkHistoryFileReferences(container) {
+  // `skipCode` leaves fenced blocks and inline code alone. A transcript wants every path it prints to be
+  // clickable, code included -- but a document's code block is a literal to be read, and linkifying it
+  // turns `git clone https://host/x.git` into a link to a file named /host/x.git that does not exist.
+  linkHistoryFileReferences(container, { skipCode = false } = {}) {
     for (const anchor of container.querySelectorAll("a")) {
       const linkText = anchor.getAttribute("href") || "";
       if (this.parseVscodeFileLink(linkText)) {
@@ -3476,7 +3481,9 @@ Object.assign(TermdeckApp.prototype, {
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
     const textNodes = [];
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (!node.parentElement?.closest("a")) textNodes.push(node);
+      if (node.parentElement?.closest("a")) continue;
+      if (skipCode && node.parentElement?.closest("pre, code")) continue;
+      textNodes.push(node);
     }
     for (const node of textNodes) {
       const source = node.nodeValue || "";
@@ -3630,6 +3637,10 @@ Object.assign(TermdeckApp.prototype, {
     document.addEventListener("contextmenu", (event) => {
       const source = event.target.closest?.(".xterm, #history-body, #monaco-host, #notebook-editor-host");
       if (!source) return;
+      if (source.id === "monaco-host" && this.activeFileKey !== null) {
+        this.openFileEditorContextMenu(event);
+        return;
+      }
       const fileLink = this.fileLinkAtContextEvent(event, source);
       if (fileLink) {
         this.openFileLinkContextMenu(event, fileLink);
@@ -3677,6 +3688,10 @@ Object.assign(TermdeckApp.prototype, {
       void this.renderSecondaryEditor(true);
     };
     this.$("file-tabs-more").onclick = (event) => this.openFileTabsMenu(event.currentTarget);
+    this.$("file-tabs-markdown").onclick = () => this.toggleMarkdownFileView();
+    this.$("file-unavailable-retry").onclick = () => void this.retryUnavailableFile();
+    this.$("file-unavailable-close").onclick = () => this.closeUnavailableFile();
+    this.$("markdown-file-view").addEventListener("click", (event) => this.handleMarkdownFileViewLink(event));
     const fileTabs = this.$("file-tabs");
     fileTabs.addEventListener("wheel", (event) => {
       if (fileTabs.scrollWidth <= fileTabs.clientWidth) return;
@@ -3962,6 +3977,248 @@ Object.assign(TermdeckApp.prototype, {
     if (this.fileInspectorMode === "outline") this.renderFileOutline();
     if (this.problemsOpen) this.scheduleProblemsRefresh();
     this.syncFileHistorySurface();
+    // A tab closed while its "could not be opened" notice was up takes the notice with it.
+    const unavailable = this.$("file-unavailable");
+    if (unavailable?.dataset.fileKey && !this.openFiles.has(unavailable.dataset.fileKey)) this.hideFileUnavailable();
+    this.syncMarkdownFileView();
+  },
+
+
+  mediaFileKind(entry) {
+    const name = String(entry?.name || entry?.path || "").toLowerCase();
+    const suffix = name.includes(".") ? name.slice(name.lastIndexOf(".")) : "";
+    return MEDIA_FILE_KINDS[suffix] || "";
+  },
+
+
+  mediaFileUrl(entry) {
+    return `/api/files/media?root=${encodeURIComponent(entry.root)}&path=${encodeURIComponent(entry.path)}`;
+  },
+
+
+  // Images, video, audio and PDFs open as a preview rather than being refused as binary. Nothing is loaded
+  // into a Monaco model: the bytes go straight from the server to the element that can play them, so a
+  // 40 MB screen recording costs the deck nothing but the <video> that streams it.
+  showMediaFileView(entry) {
+    const host = this.$("media-file-view");
+    if (!host) return;
+    const kind = this.mediaFileKind(entry);
+    const url = this.mediaFileUrl(entry);
+    host.textContent = "";
+    host.dataset.fileKey = `${entry.root}|${entry.path}`;
+    let element;
+    if (kind === "image") {
+      element = document.createElement("img");
+      element.alt = entry.path;
+    } else if (kind === "video" || kind === "audio") {
+      element = document.createElement(kind);
+      element.controls = true;
+      element.preload = "metadata";
+    } else {
+      element = document.createElement("iframe");
+      element.title = entry.path;
+    }
+    element.src = url;
+    const meta = document.createElement("div");
+    meta.className = "media-file-meta";
+    meta.textContent = entry.path;
+    // An element that cannot decode what it was given says so where the file would be, the same way an
+    // unreadable text file does.
+    element.addEventListener("error", () => {
+      if (host.dataset.fileKey !== `${entry.root}|${entry.path}`) return;
+      meta.textContent = `${entry.path} — this file could not be displayed`;
+    });
+    host.append(element, meta);
+    host.classList.remove("hidden");
+    this.$("monaco-host")?.classList.add("editor-covered");
+  },
+
+
+  hideMediaFileView() {
+    const host = this.$("media-file-view");
+    if (!host || host.classList.contains("hidden")) return;
+    host.classList.add("hidden");
+    // Emptied, not just hidden: a hidden <video> keeps its stream and its buffer.
+    host.textContent = "";
+    host.dataset.fileKey = "";
+  },
+
+
+  // A Markdown file has two useful surfaces: the source, and the document it describes. The toggle is a
+  // per-file state rather than a global mode -- an open README wants reading, the CHANGELOG next to it
+  // may be mid-edit -- and it only ever appears for files Markdown actually applies to.
+  isMarkdownFileEntry(entry) {
+    const name = String(entry?.name || entry?.path || "").toLowerCase();
+    return MARKDOWN_FILE_EXTENSIONS.some((extension) => name.endsWith(extension));
+  },
+
+
+  markdownFileViewEntry() {
+    if (this.vscodeMode || this.activeFileKey === null || this.fileHistoryOpen) return null;
+    const entry = this.openFiles.get(this.activeFileKey);
+    // A model is what the reading view renders, so a file that has not loaded has nothing to offer yet.
+    return entry?.model && this.isMarkdownFileEntry(entry) ? entry : null;
+  },
+
+
+  markdownFileViewActive() {
+    return !!this.markdownFileViewEntry() && this.markdownFileViews.has(this.activeFileKey);
+  },
+
+
+  toggleMarkdownFileView() {
+    if (!this.markdownFileViewEntry()) return;
+    if (this.markdownFileViews.has(this.activeFileKey)) this.markdownFileViews.delete(this.activeFileKey);
+    else this.markdownFileViews.add(this.activeFileKey);
+    this.syncMarkdownFileView();
+    if (!this.markdownFileViewActive()) this.editor?.focus();
+    else this.$("markdown-file-view").focus({ preventScroll: true });
+  },
+
+
+  syncMarkdownFileView() {
+    const button = this.$("file-tabs-markdown");
+    const host = this.$("markdown-file-view");
+    if (!button || !host) return;
+    const entry = this.markdownFileViewEntry();
+    const active = !!entry && this.markdownFileViews.has(this.activeFileKey);
+    button.classList.toggle("hidden", !entry);
+    button.classList.toggle("on", active);
+    button.setAttribute("aria-pressed", String(active));
+    button.title = this.shortcutTitle(active ? "Edit Markdown source" : "Markdown view", "toggle-markdown-view");
+    // The hanging Notes/Markdown row is one button wide or two, which decides where Notes sits and which
+    // end wears the rounded corner (see the CSS).
+    this.$("file-tabs-actions")?.classList.toggle("with-markdown", !!entry);
+    // Before the visibility flips: a hidden element reports no scroll position, so the reading position
+    // has to be taken while the outgoing document is still on screen.
+    this.rememberMarkdownFileViewScroll();
+    this.$("monaco-host")?.classList.toggle("editor-covered", active);
+    host.classList.toggle("hidden", !active);
+    if (!active) {
+      this.disposeMarkdownFileViewListener();
+      host.textContent = "";
+      host.dataset.fileKey = "";
+      return;
+    }
+    this.renderMarkdownFileView(entry);
+    if (this.markdownFileViewModel !== entry.model) {
+      this.disposeMarkdownFileViewListener();
+      this.markdownFileViewModel = entry.model;
+      // The source can still change underneath a reading view -- saving from a split, a disk refresh, an
+      // agent writing the file -- so the rendered document follows the model rather than a one-shot copy.
+      this.markdownFileViewListener = entry.model?.onDidChangeContent(() => {
+        clearTimeout(this.markdownFileViewRenderTimer);
+        this.markdownFileViewRenderTimer = setTimeout(() => {
+          if (this.markdownFileViewActive()) this.renderMarkdownFileView(this.markdownFileViewEntry());
+        }, MARKDOWN_FILE_VIEW_RENDER_DEBOUNCE_MS);
+      }) || null;
+    }
+  },
+
+
+  disposeMarkdownFileViewListener() {
+    clearTimeout(this.markdownFileViewRenderTimer);
+    this.markdownFileViewRenderTimer = 0;
+    this.markdownFileViewListener?.dispose?.();
+    this.markdownFileViewListener = null;
+    this.markdownFileViewModel = null;
+  },
+
+
+  // Where the reader had got to in each document, so switching tabs and coming back is not a trip back
+  // to the top of a long file. Recorded whenever the rendered content is about to be replaced -- once it
+  // is, the element's own scrollTop is gone.
+  rememberMarkdownFileViewScroll() {
+    const host = this.$("markdown-file-view");
+    const key = host?.dataset.fileKey || "";
+    if (!key || host.classList.contains("hidden")) return;
+    this.markdownFileViewScroll.set(key, host.scrollTop);
+  },
+
+
+  renderMarkdownFileView(entry) {
+    const host = this.$("markdown-file-view");
+    if (!host || !entry?.model) return;
+    this.rememberMarkdownFileViewScroll();
+    const key = `${entry.root}|${entry.path}`;
+    host.innerHTML = this.renderMarkdown(entry.model.getValue());
+    host.dataset.fileKey = key;
+    this.markLocalMarkdownImages(host, entry);
+    this.linkHistoryFileReferences(host, { skipCode: true });
+    host.scrollTop = this.markdownFileViewScroll.get(key) || 0;
+  },
+
+
+  // An image stored beside the document is resolved against the document and fetched from the media
+  // endpoint, the same one the preview surface uses. Anything that endpoint will not serve -- a type off
+  // its allowlist, a path that does not exist -- falls back to a link to the file, which the deck can
+  // still open, rather than leaving a broken-image icon in the middle of a README.
+  markLocalMarkdownImages(host, entry) {
+    const directory = entry.path.includes("/") ? entry.path.slice(0, entry.path.lastIndexOf("/")) : "";
+    for (const image of [...host.querySelectorAll("img")]) {
+      const source = image.getAttribute("src") || "";
+      if (!source || /^[a-z][a-z0-9+.-]*:/i.test(source) || source.startsWith("//")) continue;
+      const path = source.startsWith("/") || !directory ? source.replace(/^\//, "")
+        : this.normalizedRelativeFilePath(`${directory}/${source}`);
+      image.src = this.mediaFileUrl({ root: entry.root, path });
+      image.addEventListener("error", () => {
+        const link = document.createElement("a");
+        link.className = "markdown-image-link";
+        link.href = source;
+        link.title = `Open ${source}`;
+        const icon = document.createElement("span");
+        icon.className = "codicon codicon-file-media";
+        link.append(icon, document.createTextNode(image.getAttribute("alt") || source));
+        image.replaceWith(link);
+      }, { once: true });
+    }
+  },
+
+
+  // Links inside a document resolve against the document, not against whichever terminal happens to be
+  // active -- that is what makes a relative "docs/agent-cli-api.md" in a README open the right file.
+  handleMarkdownFileViewLink(event) {
+    const anchor = event.target.closest?.("a");
+    if (!anchor || event.button !== 0 || event.ctrlKey || event.metaKey) return;
+    const linkText = anchor.dataset.terminalFile || anchor.getAttribute("href") || "";
+    // A table-of-contents link points inside this document, not at another file -- and the shared
+    // linkifier has already given it target="_blank", so leaving it alone opens a tab on the app itself.
+    if (linkText.startsWith("#")) {
+      event.preventDefault();
+      event.stopPropagation();
+      const host = this.$("markdown-file-view");
+      const slug = decodeURIComponent(linkText.slice(1)).toLowerCase();
+      const heading = [...host.querySelectorAll("h1, h2, h3, h4, h5, h6")].find((element) =>
+        element.id.toLowerCase() === slug ||
+        element.textContent.trim().toLowerCase().replace(/[^\w\- ]+/g, "").replace(/\s+/g, "-") === slug);
+      heading?.scrollIntoView({ block: "start" });
+      return;
+    }
+    const entry = this.markdownFileViewEntry();
+    // Anything with a scheme or a host belongs to the browser; everything else in a document is a path
+    // into the repository the document lives in. Extension-less names ("[LICENSE](LICENSE)") are in that
+    // second group even though the shared path matcher does not recognise them as paths -- inside a
+    // document the target is unambiguous, and left alone they open a tab on the app's own URL.
+    if (!entry || !linkText || /^[a-z][a-z0-9+.-]*:/i.test(linkText) || linkText.startsWith("//")) return;
+    const parsed = this.parseVscodeFileLink(linkText) || { path: linkText.split("#")[0], line: null };
+    if (!parsed.path) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const directory = entry.path.includes("/") ? entry.path.slice(0, entry.path.lastIndexOf("/")) : "";
+    const path = parsed.path.startsWith("/") || !directory ? parsed.path.replace(/^\//, "")
+      : this.normalizedRelativeFilePath(`${directory}/${parsed.path}`);
+    void this.openFile(entry.root, path, parsed.line, null, { view: "project" });
+  },
+
+
+  normalizedRelativeFilePath(path) {
+    const parts = [];
+    for (const part of String(path).split("/")) {
+      if (!part || part === ".") continue;
+      if (part === ".." && parts.length) parts.pop();
+      else if (part !== "..") parts.push(part);
+    }
+    return parts.join("/");
   },
 
 
@@ -4292,9 +4549,10 @@ Object.assign(TermdeckApp.prototype, {
     const authorLabels = records.filter((record) => !this.fileBlameRecordIsUncommitted(record)).map((record) => this.fileBlameAuthorLabel(record.author));
     this.fileBlameAuthorWidth = Math.min(4, Math.max(2, ...authorLabels.map((label) => label.length)));
     const lineNumberWidth = String(this.editor.getModel()?.getLineCount() || records.length).length;
+    this.fileBlameLineNumberWidth = lineNumberWidth;
     this.fileBlameDecorationIds = this.editor.deltaDecorations(this.fileBlameDecorationIds, records.filter((record) => this.fileBlameRecordIsUncommitted(record)).map((record) => ({
       range: new monaco.Range(Number(record.line), 1, Number(record.line), 1),
-      options: { linesDecorationsClassName: "git-blame-uncommitted-gutter" },
+      options: { linesDecorationsClassName: "git-blame-uncommitted-gutter", lineNumberClassName: "git-blame-uncommitted-line-number" },
     })));
     this.editor.updateOptions({
       lineNumbers: (lineNumber) => this.fileBlameLineNumberLabel(lineNumber),
@@ -4310,7 +4568,7 @@ Object.assign(TermdeckApp.prototype, {
   fileBlameRecordIsUncommitted(record) {
     const commitId = String(record.commit_id || "").trim().toLowerCase();
     const author = String(record.author || "").trim();
-    return /^0+$/.test(commitId) || /not committed yet|uncommitted/i.test(author);
+    return !commitId || /^0+$/.test(commitId) || /not committed yet|uncommitted/i.test(author);
   },
 
 
@@ -4325,7 +4583,9 @@ Object.assign(TermdeckApp.prototype, {
     const record = this.fileBlameRecordsByLine.get(lineNumber);
     if (!record) return String(lineNumber);
     const author = this.fileBlameRecordIsUncommitted(record) ? "" : this.fileBlameAuthorLabel(record.author);
-    return `${author.padEnd(this.fileBlameAuthorWidth)} ${lineNumber}`;
+    const paddedAuthor = author.padEnd(this.fileBlameAuthorWidth).replaceAll(" ", "\u00a0");
+    const paddedLineNumber = String(lineNumber).padStart(this.fileBlameLineNumberWidth, " ").replaceAll(" ", "\u00a0");
+    return `${paddedAuthor}\u00a0${paddedLineNumber}`;
   },
 
 
@@ -4346,9 +4606,10 @@ Object.assign(TermdeckApp.prototype, {
     this.fileBlameActiveKey = null;
     this.fileBlameRecordsByLine.clear();
     this.fileBlameAuthorWidth = 0;
+    this.fileBlameLineNumberWidth = 0;
     if (this.editor) this.fileBlameDecorationIds = this.editor.deltaDecorations(this.fileBlameDecorationIds, []);
     this.$("monaco-host")?.classList.remove("git-blame-active");
-    this.editor?.updateOptions({ lineNumbers: "on", lineNumbersMinChars: 4 });
+    this.editor?.updateOptions({ lineNumbers: "on", lineNumbersMinChars: EDITOR_LINE_NUMBER_MIN_CHARS });
     this.editor?.layout();
   },
 
@@ -6556,6 +6817,9 @@ Object.assign(TermdeckApp.prototype, {
       this.scheduleClaudeWebglColdPrimeCompletion(view);
       if (this.isTerminalScrollV2() && !view.userScrollIntent) view.scrollMode = "follow";
       this.refreshTerminalAppearance(view);
+      if (previousId !== id && view.everConnected && this.session(id)?.agent_kind === "claude") {
+        this.scheduleClaudeActivationRendererRefresh(view);
+      }
       const terminalSocketSuspended = this.suspendMobileTranscriptTerminalSocket(view);
       if (options.startDormant !== false && !terminalSocketSuspended) {
         if (!view.ws) this.connect(id, view);
