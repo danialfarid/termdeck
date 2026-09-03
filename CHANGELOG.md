@@ -20,6 +20,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Mobile transcripts give their margins back to the text: side padding down to the safe area, a narrower
+  marker column, and lists with a shallower indent and no gaps between items. On a 390px screen a line is
+  361px wide rather than 328, and the same answer takes 8% less height.
 - Side-panel project, Terminals-header, and terminal-group add glyphs share the same 25%-smaller thin-plus
   treatment while retaining their existing click targets.
 - The file-tab menu button at the end of the tab strip is a chevron rather than a gear: it opens a dropdown
@@ -41,6 +44,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A phone that has been away reconnects on its own. The page retries every few seconds while the
+  connection-loss message is up, notices a return from the browser's back/forward cache as well as focus,
+  and takes the message down only once a socket is genuinely open — no tap needed to get terminals back.
+- A submitted prompt stops claiming to be in flight forever. It waits for the agent's transcript to carry
+  it back, which never happens for a slash command the CLI handles itself: after a minute the message says
+  the submission could not be confirmed, and after ten it leaves the transcript to speak for itself.
 - Reloading with a file open no longer loses it. The open file now owns the address whichever side panel is
   showing, and the panel rides along in `?view=`; previously a file opened while the Git panel was up was
   addressed under `/g/`, where the path is read as part of the Git route and dropped — so the reload came
