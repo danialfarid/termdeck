@@ -2209,6 +2209,24 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   }
   #bottombar::-webkit-scrollbar { display: none; }
   #settings-popover { max-height: calc(100dvh - 24px); }
+  /* A phone has no room to spare: the transcript keeps its side margins to the safe area, and lists
+     lose the deep indent and the airy gaps between items, so more of the answer fits on the screen. */
+  #history-area.transcript-first #history-body,
+  #history-body {
+    padding-right: max(6px, env(safe-area-inset-right));
+    padding-left: max(6px, env(safe-area-inset-left));
+  }
+  /* The ›/• marker column is a single narrow glyph; on a phone its 26px gutter is worth more as text. */
+  #history-area.transcript-first .turn { grid-template-columns: 12px minmax(0, 1fr); column-gap: 5px; margin: 0 0 12px; }
+  #history-area.transcript-first .turn.user .turn-text { padding: 7px 8px; }
+  #history-area.transcript-first .markdown p { margin: 0 0 8px; }
+  #history-area.transcript-first .markdown ul { margin: 1px 0 8px; }
+  #history-area.transcript-first .markdown ol { margin: 1px 0 8px; padding-left: 18px; }
+  #history-area.transcript-first .markdown ul > li { padding-left: 1.4ch; }
+  #history-area.transcript-first .markdown li { margin: 0; line-height: 1.24; }
+  #history-area.transcript-first .markdown li > ul,
+  #history-area.transcript-first .markdown li > ol { margin-bottom: 2px; }
+  #history-area.transcript-first .markdown pre { padding: 7px 8px; margin: 0 0 8px; }
 }
 
 @media (max-width: 900px) and (orientation: portrait), (hover: none) and (pointer: coarse) and (orientation: portrait) {

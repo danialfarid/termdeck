@@ -2075,6 +2075,13 @@ Object.assign(TermdeckApp.prototype, {
         if (optimisticIndex >= 0) merged.splice(optimisticIndex, 1);
         continue;
       }
+      const waited = Date.now() - (item.timestamp || Date.now());
+      if (waited > PENDING_PROMPT_DISCARD_MS) {
+        // It is never coming back as a user turn. The transcript itself is authoritative from here.
+        if (optimisticIndex >= 0) merged.splice(optimisticIndex, 1);
+        continue;
+      }
+      if (waited > PENDING_PROMPT_UNCONFIRMED_MS) item.delivery_state = "unconfirmed";
       const optimisticTurn = { role: "user", text: item.text, pending_id: pendingId,
         pending_delivery_state: item.delivery_state || "awaiting_transcript", timestamp: item.timestamp || Date.now() };
       if (optimisticIndex < 0) merged.push(optimisticTurn);

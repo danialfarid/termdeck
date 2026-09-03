@@ -143,6 +143,14 @@ const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
 const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
 const TRANSCRIPT_DRAFT_LOCAL_PREFIX = "termdeck.transcript-draft.v1";
 const MOBILE_CONNECTION_WARNING_DELAY_MS = 1200;
+// How long to wait before trying again once a reconnect attempt has not landed.
+const MOBILE_CONNECTION_RETRY_MS = 3000;
+// A submitted prompt shows as Submitting until the agent's own transcript carries it back. Some
+// submissions never come back as a user turn -- a slash command is handled by the CLI rather than
+// recorded as a message -- so the wait is bounded: first the message says it could not be confirmed,
+// and eventually it stops claiming to be in flight at all.
+const PENDING_PROMPT_UNCONFIRMED_MS = 60000;
+const PENDING_PROMPT_DISCARD_MS = 600000;
 // Unfinished experiment: hold back writes to hidden terminals and catch them up on activation.
 // No setting and no toggle — flip this constant to work on it. See drainTerminalWrites().
 const DEFER_INACTIVE_TERMINAL_OUTPUT = false;
@@ -4383,13 +4391,17 @@ class TermdeckApp {
     window.addEventListener("online", this.mobileOnlineHandler);
     window.addEventListener("offline", this.mobileOfflineHandler);
     window.addEventListener("focus", this.focusedConnectionRecoveryHandler);
+    // A phone restores the page from its back/forward cache without a focus or visibility event, so
+    // returning to the deck through the app switcher or the back gesture arrives here and nowhere
+    // else. Without it the page sat on a dead socket until something was tapped.
+    window.addEventListener("pageshow", this.focusedConnectionRecoveryHandler);
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) this.reconnectFocusedConnections();
     });
     if (!navigator.onLine) this.setMobileConnectionWarning(true, "offline");
   }
 
-  reconnectFocusedConnections() {
+  reconnectFocusedConnections(retryDelay = MOBILE_CONNECTION_WARNING_DELAY_MS) {
     if (document.hidden || !navigator.onLine) {
       if (!navigator.onLine) this.setMobileConnectionWarning(true, "offline");
       return;
@@ -4429,16 +4441,25 @@ class TermdeckApp {
     }
     if (reconnecting) this.setMobileConnectionWarning(true, "reconnecting");
     else this.setMobileConnectionWarning(!this.mobileConnectionAvailable(), "reconnecting");
-    this.scheduleMobileConnectionWarning();
+    this.scheduleMobileConnectionWarning(retryDelay);
   }
 
-  scheduleMobileConnectionWarning() {
+  // Keeps checking until the deck is genuinely connected, and tries again itself between checks. A
+  // phone that has just been picked up should not need a tap to get its terminals back, and the
+  // message should stay up for exactly as long as the reconnecting lasts.
+  scheduleMobileConnectionWarning(delay = MOBILE_CONNECTION_WARNING_DELAY_MS) {
     clearTimeout(this.mobileConnectionWarningTimer);
     if (!this.touchMobileLayoutEnabled()) return;
     this.mobileConnectionWarningTimer = window.setTimeout(() => {
       this.mobileConnectionWarningTimer = 0;
-      this.setMobileConnectionWarning(!this.mobileConnectionAvailable(), navigator.onLine ? "reconnecting" : "offline");
-    }, MOBILE_CONNECTION_WARNING_DELAY_MS);
+      const connected = this.mobileConnectionAvailable();
+      this.setMobileConnectionWarning(!connected, navigator.onLine ? "reconnecting" : "offline");
+      if (connected) return;
+      // Offline or in the background, waiting costs nothing and reconnecting cannot work: the
+      // online and visibility handlers bring it back the moment either changes.
+      if (document.hidden || !navigator.onLine) this.scheduleMobileConnectionWarning(MOBILE_CONNECTION_RETRY_MS);
+      else this.reconnectFocusedConnections(MOBILE_CONNECTION_RETRY_MS);
+    }, delay);
   }
 
   mobileConnectionAvailable() {
