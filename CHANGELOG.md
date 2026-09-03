@@ -23,6 +23,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- File tabs are sized by their name rather than a fixed minimum width, and their pin and close controls
+  appear on the tab under the pointer, so a tab is its name with the controls a hover away.
 - The selected row in the file side panel is a plain band across the panel, the way a selected terminal is,
   rather than an outlined box.
 - Filename search keeps every name that contains what was typed in Exact matches, wherever in the name it
