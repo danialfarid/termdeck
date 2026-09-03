@@ -1249,11 +1249,13 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
 #file-tabs::-webkit-scrollbar { height: 4px; }
 #file-tabs::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 #file-tabs-empty { align-self: center; padding: 0 10px; color: var(--dim); font: calc(var(--files-tab-font-size) - 1px)/1 Menlo, monospace; white-space: nowrap; }
-.file-editor-tab { display: inline-flex; align-items: center; gap: calc(var(--files-tab-font-size) * 0.55); min-width: calc(var(--files-tab-font-size) * 10); max-width: calc(var(--files-tab-font-size) * 20); height: calc(var(--files-tab-row-height) - 1px); flex: 0 0 auto; padding: 0 calc(var(--files-tab-font-size) * 0.64) 0 calc(var(--files-tab-font-size) * 0.82); border: 0; border-right: 1px solid var(--border); background: transparent; color: var(--dim); cursor: pointer; font: var(--files-tab-font-size)/1 Menlo, monospace; }
+/* A tab is as wide as the name in it. The old floor of ten characters' width padded every short name
+   with a stretch of nothing between it and its own controls. */
+.file-editor-tab { display: inline-flex; align-items: center; gap: calc(var(--files-tab-font-size) * 0.18); min-width: calc(var(--files-tab-font-size) * 5); max-width: calc(var(--files-tab-font-size) * 20); height: calc(var(--files-tab-row-height) - 1px); flex: 0 0 auto; padding: 0 calc(var(--files-tab-font-size) * 0.34) 0 calc(var(--files-tab-font-size) * 0.6); border: 0; border-right: 1px solid var(--border); background: transparent; color: var(--dim); cursor: pointer; font: var(--files-tab-font-size)/1 Menlo, monospace; }
 .file-editor-tab.closing { width: 0 !important; min-width: 0 !important; flex-basis: 0 !important; gap: 0; padding-left: 0; padding-right: 0; border-right-width: 0; opacity: 0; transform: scale(0.82); transform-origin: center; overflow: hidden; pointer-events: none; transition: width 120ms ease-in, min-width 120ms ease-in, flex-basis 120ms ease-in, padding 120ms ease-in, gap 120ms ease-in, border-width 120ms ease-in, opacity 90ms ease-in, transform 120ms ease-in; }
 .file-editor-tab.active { background: var(--term-bg); color: var(--text); box-shadow: inset 0 2px var(--accent); }
 .file-editor-tab.preview .file-editor-tab-name { font-style: italic; }
-.file-editor-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-editor-tab-name { min-width: 0; margin-right: calc(var(--files-tab-font-size) * 0.22); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Both codicon.css and Monaco's editor.main.css size every icon through
    `.codicon[class*='codicon-']`, and Monaco's copy is injected after this sheet — so sizing a tab
    icon takes an id in the selector to outrank it. The history icon then overrides this one. */
@@ -1261,7 +1263,13 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
 #file-tabs .file-editor-tab .file-editor-tab-history-icon { flex: none; color: var(--accent); font-size: calc(var(--files-tab-font-size) + 2px); }
 .file-editor-tab.history-tab { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .file-editor-tab.history-tab.active { background: var(--term-bg); }
-.file-editor-tab-pin, .file-editor-tab-close { width: calc(var(--files-tab-font-size) + 5px); height: calc(var(--files-tab-font-size) + 5px); flex: none; border: 0; background: transparent; color: var(--dim); cursor: pointer; }
+/* Pin and close belong to the tab under the pointer. They keep their space while hidden so the strip
+   does not shuffle as the pointer crosses it, and stay visible where there is no pointer to hover. */
+.file-editor-tab-pin, .file-editor-tab-close { width: calc(var(--files-tab-font-size) + 1px); height: calc(var(--files-tab-font-size) + 1px); flex: none; border: 0; background: transparent; color: var(--dim); cursor: pointer; visibility: hidden; }
+#file-tabs .file-editor-tab .file-editor-tab-pin, #file-tabs .file-editor-tab .file-editor-tab-close { font-size: calc(var(--files-tab-font-size) - 1px); }
+.file-editor-tab:hover .file-editor-tab-pin, .file-editor-tab:hover .file-editor-tab-close,
+.file-editor-tab:focus-within .file-editor-tab-pin, .file-editor-tab:focus-within .file-editor-tab-close,
+body.mobile-touch-layout .file-editor-tab-pin, body.mobile-touch-layout .file-editor-tab-close { visibility: visible; }
 .file-editor-tab-pin:hover, .file-editor-tab-close:hover { color: var(--text); }
 #file-tabs-actions { position: relative; width: var(--files-tab-row-height); height: var(--files-tab-row-height); flex: none; }
 #file-tabs-notebook, #file-tabs-more { position: absolute; right: 0; width: var(--files-tab-row-height); height: var(--files-tab-row-height); border: 0; border-left: 1px solid var(--border); background: var(--panel); color: var(--dim); cursor: pointer; }
