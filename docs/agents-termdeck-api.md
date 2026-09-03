@@ -1,4 +1,13 @@
-#Spawining subagents for tasks:
+# TermDeck API for agents
+
+How one agent puts another agent to work. Every terminal TermDeck opens carries its own session id in
+`$TERMDECK_SESSION_ID`, so an agent running inside the deck can start a second agent, send it prompts, read
+what it answered, and close it — all over `http://127.0.0.1:8530`, and all of it visible to you as ordinary
+terminals in the deck.
+
+## Start an agent
+
+`POST /api/terminals/task`
 
 ```sh
 curl -sS -X POST http://127.0.0.1:8530/api/terminals/task \
@@ -13,7 +22,7 @@ curl -sS -X POST http://127.0.0.1:8530/api/terminals/task \
 | `permission` | Agent permission mode, such as `default`, `workspace-write`, or `full-access`. |
 | `title` | Child terminal title. |
 | `prompt` | Prompt sent to the child agent. |
-| `origin_session` | leave as env variable |
+| `origin_session` | Your own session id — pass `$TERMDECK_SESSION_ID` unchanged. It files the child under the session that started it. |
 | `fork` | `false` starts a new agent; `true` forks from your session/memory. |
 | `worktree_id` | Starts the child in an existing project worktree returned by `GET /api/worktrees`. Omit it for the project root. |
 | `worktree` | `true` starts the child in a separate Git worktree and branch. The response includes its path and branch. |

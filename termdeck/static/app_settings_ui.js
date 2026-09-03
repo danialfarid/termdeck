@@ -172,13 +172,16 @@ Object.assign(TermdeckApp.prototype, {
         this.editor = monaco.editor.create(this.$("monaco-host"), {
           readOnly: false, theme: this.monacoThemeName(),
           automaticLayout: true, minimap: { enabled: false },
-          scrollBeyondLastLine: false, fontSize: this.scaledSettingSize("code_font_size"), lineNumbersMinChars: 4,
+          scrollBeyondLastLine: false, fontSize: this.scaledSettingSize("code_font_size"),
+          lineNumbersMinChars: EDITOR_LINE_NUMBER_MIN_CHARS, lineDecorationsWidth: EDITOR_LINE_DECORATIONS_WIDTH,
           renderLineHighlight: "all", folding: true, wordWrap: this.settings.editor_no_wrap ? "off" : "on", fixedOverflowWidgets: true,
+          scrollbar: { ...EDITOR_SCROLLBAR_OPTIONS }, overviewRulerBorder: false,
         });
         this.lspClient = new TermdeckLspClient(this);
         this.lspClient.registerProviders();
         monaco.editor.onDidChangeMarkers(() => this.scheduleProblemsRefresh());
         this.editor.onMouseMove((event) => this.updateFileBlameGutterHover(event));
+        this.editor.onContextMenu((event) => this.openFileEditorContextMenu(event.event.browserEvent, event.target.position));
         this.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => this.saveActiveFile());
         this.editor.addAction({
           id: "termdeck-save", label: "Save (⌘S)", contextMenuGroupId: "1_modification", contextMenuOrder: 0.5,
@@ -233,6 +236,7 @@ Object.assign(TermdeckApp.prototype, {
             selectionHighlight: false, occurrencesHighlight: "off", matchBrackets: "never",
             unicodeHighlight: { nonBasicASCII: false, invisibleCharacters: false, ambiguousCharacters: false },
             fixedOverflowWidgets: true, padding: { top: 10, bottom: 10 },
+            scrollbar: { ...EDITOR_SCROLLBAR_OPTIONS }, overviewRulerBorder: false,
           });
           this.notebookEditor.onDidChangeModelContent(() => {
             if (!this.notebookMounted) return;
@@ -2068,6 +2072,43 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  showFileUnavailable(key, entry) {
+    const host = this.$("file-unavailable");
+    if (!host) return;
+    this.$("file-unavailable-title").textContent = entry.path;
+    this.$("file-unavailable-detail").textContent = entry.loadError || "This file could not be opened.";
+    host.dataset.fileKey = key;
+    host.classList.remove("hidden");
+    this.$("editor-area")?.classList.remove("hidden");
+    host.focus({ preventScroll: true });
+  },
+
+
+  hideFileUnavailable() {
+    const host = this.$("file-unavailable");
+    if (!host) return;
+    host.dataset.fileKey = "";
+    host.classList.add("hidden");
+  },
+
+
+  async retryUnavailableFile() {
+    const key = this.$("file-unavailable")?.dataset.fileKey || "";
+    const entry = key ? this.openFiles.get(key) : null;
+    if (!entry) return;
+    entry.loadError = "";
+    await this.activateFile(key, null, { history: false });
+  },
+
+
+  closeUnavailableFile() {
+    const key = this.$("file-unavailable")?.dataset.fileKey || "";
+    if (!key) return;
+    this.hideFileUnavailable();
+    void this.closeFile(key);
+  },
+
+
   saveActiveFileViewState() {
     if (this.activeFileKey === null || !this.editor) return;
     const entry = this.openFiles.get(this.activeFileKey);
@@ -2322,16 +2363,24 @@ Object.assign(TermdeckApp.prototype, {
     // whatever the file had to do with git.
     if (!this.vscodeMode) {
       const requested = FILES_SIDE_PANEL_TABS.includes(options.view) ? options.view : "";
+      // syncAddress off: this runs before activeFileKey moves to the file being opened, so the panel it
+      // picks belongs to the navigation this function is about to write, not to the one in the address.
       if (requested) {
-        this.setSideView(requested, false);
+        this.setSideView(requested, false, { syncAddress: false });
       } else if (!FILES_SIDE_PANEL_TABS.includes(this.sideView)) {
         const fallback = FILES_SIDE_PANEL_TABS.includes(this.lastFilesSidePanelTab)
           ? this.lastFilesSidePanelTab : "project";
-        this.setSideView(fallback, false);
+        this.setSideView(fallback, false, { syncAddress: false });
       }
     }
     this.closeTerminalFind();
     this.closePromptHistory();
+    // A file and a Git diff are two claims on the same middle panel, and the layout already resolves that
+    // in the file's favour (applyMainLayout's gitReviewMode requires no active file). Leaving the review
+    // flagged open while it is off screen left the two disagreeing, and openGitReviewDiff trusts the flag:
+    // clicking the same Git row again saw "already showing this diff", returned, and the panel kept the
+    // file -- the Git panel stopped being able to change what was on screen at all.
+    this.closeGitReview(false);
     if (this.activeFileKey === null && this.historyOpen && this.activeId) {
       this.rememberHistoryScrollPosition(this.activeId);
     }
@@ -2366,12 +2415,33 @@ Object.assign(TermdeckApp.prototype, {
     this.applyMainLayout();
     this.renderList();
     this.renderTopbar();
+    // Media never becomes a text model: the browser renders the bytes itself, so the editor is skipped
+    // entirely rather than asked to read a file it would only refuse as binary.
+    if (this.mediaFileKind(entry)) {
+      this.hideFileUnavailable();
+      this.syncMarkdownFileView();
+      this.showMediaFileView(entry);
+      this.renderList();
+      this.renderTopbar();
+      if (activeFileChanged && options.revealInTree !== false && this.sideView === "project") {
+        await this.revealActiveFile({ switchToProject: false, switchExplorerMode: false });
+      }
+      return;
+    }
+    this.hideMediaFileView();
     await this.monacoReady;
     if (!entry.model || !entry.dirty) {
       const loaded = await this.refreshFileModelFromDisk(entry);
-      if (!loaded && !entry.model) return;
+      // Nothing to show. Returning here used to leave the PREVIOUS file rendered under a tab and an
+      // address that both named this one -- a deleted or moved file (a stale tab from a past session is
+      // the common way in) looked like the tab simply refused to switch.
+      if (!loaded && !entry.model) {
+        if (this.activeFileKey === key) this.showFileUnavailable(key, entry);
+        return;
+      }
     }
     if (this.activeFileKey !== key) return;
+    this.hideFileUnavailable();
     this.editor.setModel(entry.model);
     void this.lspClient?.activate(entry, entry.model);
     if (line) {
@@ -2383,6 +2453,9 @@ Object.assign(TermdeckApp.prototype, {
     this.renderList();
     this.renderTopbar();
     if (this.fileInspectorMode) this.refreshFileInspector();
+    // After the model, not with the rest of the chrome above: the reading view renders the model's text,
+    // and until setModel has run there is nothing to render.
+    this.syncMarkdownFileView();
     void this.renderSecondaryEditor(true);
     if (activeFileChanged && options.revealInTree !== false && this.sideView === "project") {
       await this.revealActiveFile({ switchToProject: false, switchExplorerMode: false });
@@ -2406,6 +2479,9 @@ Object.assign(TermdeckApp.prototype, {
     this.lspClient?.deactivate();
     this.clearActiveFileGitHunks();
     this.activeFileKey = null;
+    this.hideFileUnavailable();
+    this.hideMediaFileView();
+    this.syncMarkdownFileView();
     this.applyMainLayout();
     this.renderList();
     this.renderTopbar();
@@ -2424,11 +2500,16 @@ Object.assign(TermdeckApp.prototype, {
     if (!res.ok) {
       if (!entry.model) {
         const err = await res.json().catch(() => ({}));
-        this.$("stat-text").textContent = err.detail || `${entry.path} — cannot open`;
+        // Kept on the entry, not only in the status line: the status line is overwritten by the next
+        // thing that happens, and activateFile needs to be able to SAY why the panel is not showing this
+        // file rather than silently leaving the previous one on screen.
+        entry.loadError = err.detail || `${entry.path} — cannot open`;
+        this.$("stat-text").textContent = entry.loadError;
       }
       return false;
     }
     const data = await res.json();
+    entry.loadError = "";
     entry.fullPath = data.path;
     entry.truncated = data.truncated;
     const previousMtime = Number(entry.mtime) || 0;

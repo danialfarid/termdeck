@@ -475,6 +475,7 @@ Object.assign(TermdeckApp.prototype, {
     }
     else if (actionId === "toggle-diagnostics-recording") this.toggleDiagnosticsRecorder();
     else if (actionId === "save-file") { if (this.activeFileKey !== null) this.saveActiveFile(); }
+    else if (actionId === "toggle-markdown-view") this.toggleMarkdownFileView();
     else if (actionId === "file-history-previous-change") this.navigateFileHistoryDiff(-1);
     else if (actionId === "file-history-next-change") this.navigateFileHistoryDiff(1);
     else if (actionId === "file-history-apply-change") this.applyFileHistoryDiffBlockToCurrent();
@@ -1253,8 +1254,7 @@ Object.assign(TermdeckApp.prototype, {
       return;
     }
     if (this.sideView !== "search") {
-      this.sideView = "terminals";
-      this.setSideView("search");
+      this.setSideView("search", false);
     }
     this.searchWord = true;
     this.$("search-word-toggle").classList.add("on");

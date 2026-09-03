@@ -66,6 +66,11 @@ TESTS=(
   fold_keeps_composer
   codex_tab_return
   attach_settles_at_bottom
+  file_tab_owns_url
+  missing_file_tab
+  markdown_view_toggle
+  hidden_class_coverage
+  media_file_preview
   scroll_round_trip
   short_session_scrollback
   parked_under_chunks

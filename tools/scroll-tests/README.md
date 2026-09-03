@@ -54,6 +54,11 @@ Run a TermDeck instance on 8536 with a throwaway data dir, then run any file wit
 | `fold_keeps_composer.cjs` | deleting earlier lines moves the view with the composer -- no float, no snap-back |
 | `codex_tab_return.cjs` | returning to a codex tab whose commands folded while hidden lands at the bottom |
 | `attach_settles_at_bottom.cjs` | a bad attach paint recovers to the composer; a gesture in that window wins |
+| `file_tab_owns_url.cjs` | the open file owns the address; the side panel rides in `?view=` and a reload keeps both |
+| `missing_file_tab.cjs` | a tab whose file will not open says so instead of leaving the previous file up |
+| `markdown_view_toggle.cjs` | the Markdown toggle appears only for Markdown files, beside Notes, clear of the scrollbar |
+| `hidden_class_coverage.cjs` | every element the client hides with `.hidden` is actually hidden by the stylesheet |
+| `media_file_preview.cjs` | images and video open from the tree; the media route serves an allowlist and nothing else |
 | `symptom_detector.cjs` | the live fault recorder can fire, and does not fire on look-alike states |
 | `overtravel_detector.cjs` | the wheel-accounting detector fires on interference, not on clean gestures |
 

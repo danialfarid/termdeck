@@ -1,39 +1,43 @@
-# The README demo
+# The README demos
 
-The clip at the top of the README is built from raw screen recordings by
-[`tools/build_demo.py`](../tools/build_demo.py). Nothing about it is hand-edited, so a
-re-record is a re-run of one command.
+The README shows two focused demos: the multi-agent terminal workflow and the Files/Git workflow. Each is built
+from a raw screen recording by
+[`tools/build_demo.py`](../tools/build_demo.py). Nothing about the pacing or GIF conversion is hand-edited, so
+each demo can be regenerated independently.
 
 ## Where the recordings live
 
-Source recordings are **not in the repo** — they are 4K-ish and only the built clip is
-worth versioning. They sit in the demo project's own data directory:
+Source recordings are **not in the repo** — they are larger than the README assets and only the built clips are
+versioned. They sit in the demo project's own data directory:
 
 ```
 ~/data/termdeck-evently-demo/
-├── segment-1-opening.keep.webm    3360x1800, 73s   opening two agents, asking for a change,
-│                                                   handing an answer to another agent, taking a note
-└── segment-2-fanout.webm          1680x900,  75s   forking into parallel agents, dragging a terminal
-                                                    between groups, background jobs, closing/reopening
+├── termdeck-evently-terminals-demo.webm    1680x900, 206s   multi-agent terminal workflow
+└── termdeck-evently-files-git-demo.webm    1680x900,  64s   project files and Git workflow
 ```
 
-`.keep` marks a take worth keeping; the same directory holds discarded takes under plain
-names. The recordings carry their own burnt-in captions ("Caption: Ask the agent for a
-change"), which is why the build never crops or overlays anything.
+The recordings carry their own burnt-in captions ("Caption: Ask the agent for a change"), which is why the build
+never crops or overlays anything.
 
 Built output, committed:
 
 ```
 docs/media/demo-opening.webm    1680x900, 64s, ~5.6 MB   full resolution, linked under the player
 docs/media/demo-opening.gif     700px,    64s, ~6.2 MB   what the README actually shows
+docs/media/demo-terminals.webm  1680x900, 93s,  ~8.9 MB  multi-agent terminal workflow
+docs/media/demo-terminals.gif   700px,    93s,  ~9.7 MB  GitHub-compatible terminal workflow
+docs/media/demo-files-git.webm  1680x900, 26s,  ~3.1 MB  Files/Git workflow
+docs/media/demo-files-git.gif   700px,    26s,  ~3.4 MB  GitHub-compatible Files/Git workflow
 ```
 
 ## Rebuilding it
 
 ```sh
-python3 tools/build_demo.py --out docs/media/demo-opening \
-    ~/data/termdeck-evently-demo/segment-1-opening.keep.webm \
-    ~/data/termdeck-evently-demo/segment-2-fanout.webm
+python3 tools/build_demo.py --out docs/media/demo-terminals \
+    ~/data/termdeck-evently-demo/termdeck-evently-terminals-demo.webm
+
+python3 tools/build_demo.py --out docs/media/demo-files-git \
+    ~/data/termdeck-evently-demo/termdeck-evently-files-git-demo.webm
 
 python3 tools/build_demo.py --plan-only <inputs...>   # print the cut plan, encode nothing
 ```

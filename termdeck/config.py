@@ -233,6 +233,7 @@ class TermdeckConfig:
     API_FILE_LIST_ROUTE = "/api/files/list"
     API_FILE_RECENT_ROUTE = "/api/files/recent"
     API_FILE_READ_ROUTE = "/api/files/read"
+    API_FILE_MEDIA_ROUTE = "/api/files/media"
     API_FILE_EXISTS_ROUTE = "/api/files/exists"
     API_FILE_OPEN_EXTERNAL_ROUTE = "/api/files/open-external"
     API_FILE_SEARCH_ROUTE = "/api/files/search"

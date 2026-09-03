@@ -6,6 +6,61 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Markdown files open as rendered documents as well as source: a toggle beside the notes button under the
+  tab strip, a rebindable shortcut (**⌥⇧M**), and one remembered choice and reading position per file.
+  Links to other files in the project resolve against the document and open in the deck; code blocks are
+  left as literals rather than linkified.
+- Images, video, audio and PDFs open from the file tree instead of being refused as binary — pictures in
+  a viewer, video and audio in a player that seeks, PDFs in the browser's own reader. Images stored beside
+  a Markdown document now load in the rendered view for the same reason. The bytes come from a route that
+  serves an allowlist of media types and nothing that a browser could treat as a document, confined to the
+  same directory every other file read is.
+
+### Changed
+
+- Side-panel project, Terminals-header, and terminal-group add glyphs share the same 25%-smaller thin-plus
+  treatment while retaining their existing click targets.
+- The file-tab menu button at the end of the tab strip is a chevron rather than a gear: it opens a dropdown
+  about the tabs, not the application's settings, which is what a gear in that corner promises.
+- The selected file tab fills its whole slot and is marked by a tint plus an accent line underneath, joining
+  it to the editor, instead of a bar above it over the editor's background. The vertical dividers between
+  tabs are gone with it.
+- Notes and the Markdown toggle sit side by side in one row under the file tabs, Markdown on the right,
+  held clear of the editor's own scrollbar instead of hanging over it.
+- The file editor's scrollbars match the rest of the app — same width, colour, and rounded inset thumb as
+  the terminal's — rather than Monaco's wider default.
+- The editor's line-number column is narrower and its digits smaller and dimmer: the gutter reserves three
+  characters instead of four (files past 999 lines still get the room they need) and a thinner strip beside
+  them, taking it from 55px to 49px on a long file and 48px to 42px on a short one.
+- Every files surface shares one route. The Git panel and an open diff are now `?view=git` and `git_path=`
+  on `/f/…` rather than a `/g/` route of their own, matching the fact that both show the same file tabs.
+  Existing `/g/` addresses still load and are read the same way.
+- Terminal-group headers place unread activity beside the group name, followed by right-aligned Search and Add controls.
+
+### Fixed
+
+- Reloading with a file open no longer loses it. The open file now owns the address whichever side panel is
+  showing, and the panel rides along in `?view=`; previously a file opened while the Git panel was up was
+  addressed under `/g/`, where the path is read as part of the Git route and dropped — so the reload came
+  back on whatever the Git panel had selected. Addresses of the old shape still open their file.
+- The Markdown toggle appears only for Markdown files. It was being given the `hidden` class correctly,
+  but nothing in the stylesheet acts on that class for it, so it stayed on screen for every file.
+- Four more controls that the client hides the same way now actually hide: the Git refresh button outside
+  the Git panel, the transcript Stop button, the language-server status, the project-add button in the new
+  terminal dialog, and the terminal list when the side panel is closed. There is no blanket rule for the
+  `hidden` class — each element needs its own, and these were missing (the terminal list had one that lost
+  to a more specific selector). A check now forces the class onto every element the client uses it on and
+  fails if the element is still displayed.
+- A file tab whose file cannot be opened now says so, with Try again and Close tab, instead of leaving the
+  previously open file on screen under a tab and an address that both name the new one. A tab restored
+  from an earlier session whose file has since been deleted is the usual way in: switching to it looked
+  like the tab simply refused to change, and reloading onto it showed an empty panel.
+- The Git panel can change the middle panel again after a file has been opened over a diff. Opening a file
+  hid the diff but left it flagged as showing, and clicking that same Git row then decided it was already
+  on screen and did nothing at all.
+
 ## [0.9.0] — 2026-09-03
 
 ### Added

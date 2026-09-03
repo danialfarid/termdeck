@@ -515,6 +515,44 @@ class ProjectFileService:
         return {"path": str(target), "size": size, "mtime": int(stat.st_mtime), "truncated": size > len(raw),
                 "content": raw.decode("utf-8", errors="replace")}
 
+    # Only these are served as bytes, and each is served as exactly this type. An allowlist rather than a
+    # guess from the extension: this endpoint hands raw file contents to the browser from the app's own
+    # origin, so a file that could be interpreted as a document (HTML, or anything sniffed into one) must
+    # never reach it. SVG is on the list because images are the point, and it is the one entry that can
+    # carry script -- the response headers (see the route) sandbox it.
+    MEDIA_CONTENT_TYPES = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+        ".webp": "image/webp", ".bmp": "image/bmp", ".ico": "image/x-icon", ".avif": "image/avif",
+        ".svg": "image/svg+xml",
+        ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+        ".ogv": "video/ogg",
+        ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".flac": "audio/flac",
+        ".oga": "audio/ogg", ".ogg": "audio/ogg",
+        ".pdf": "application/pdf",
+    }
+
+    def media_file(self, root: str, rel: str) -> tuple[Path, str]:
+        """Resolve a media file to (path, content type), confined the same way every other read is.
+
+        The two refusals are kept apart so the route can answer them apart: a path outside the allowed
+        root is forbidden, a type off the allowlist is an unsupported media type.
+        """
+        try:
+            target = self.resolve_confined(root, rel)
+        except ValueError as outside_root:
+            raise PermissionError(str(outside_root)) from outside_root
+        if not target.is_file():
+            raise FileNotFoundError(str(target))
+        content_type = self.MEDIA_CONTENT_TYPES.get(target.suffix.lower())
+        if content_type is None:
+            raise ValueError(f"not a media file: {target.name}")
+        return target, content_type
+
+    @classmethod
+    def media_content_type(cls, name: str) -> str | None:
+        suffix = Path(name).suffix.lower()
+        return cls.MEDIA_CONTENT_TYPES.get(suffix)
+
     def file_exists(self, root: str, rel: str) -> bool:
         return self.resolve_confined(root, rel).is_file()
 
