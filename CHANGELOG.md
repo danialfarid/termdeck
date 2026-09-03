@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-03
+
 ### Added
 
 - Transcript composers provide an agent-specific slash-command palette for safe noninteractive commands,
@@ -456,7 +458,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/danialfarid/termdeck/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/danialfarid/termdeck/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/danialfarid/termdeck/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/danialfarid/termdeck/compare/v0.6.1...v0.7.0
