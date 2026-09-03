@@ -22,7 +22,7 @@ All notable changes to this project are documented here. The format follows
 
 - Mobile transcripts give their margins back to the text: side padding down to the safe area, a narrower
   marker column, and lists with a shallower indent and no gaps between items. On a 390px screen a line is
-  361px wide rather than 328, and the same answer takes 8% less height.
+  370px wide rather than 328, and the same answer takes 14% less height.
 - Side-panel project, Terminals-header, and terminal-group add glyphs share the same 25%-smaller thin-plus
   treatment while retaining their existing click targets.
 - The file-tab menu button at the end of the tab strip is a chevron rather than a gear: it opens a dropdown
