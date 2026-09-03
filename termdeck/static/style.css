@@ -404,9 +404,10 @@ body.termdeck-page-hidden * { animation-play-state: paused !important; }
 .closed-search-empty { padding: 5px 10px 8px; color: var(--dim); font: var(--system-font-size) Menlo, monospace; }
 .file-item, .closed-item { padding: 4px 10px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 7px; border: 1px solid transparent; margin-bottom: 1px; min-width: 0; }
 .file-item:hover, .closed-item:hover { background: var(--panel2); }
-.file-item.sidebar-selected { background: var(--tree-selected-bg); border-color: var(--tree-selected-border); }
+.file-item:hover { border-radius: 0; }
+.file-item.sidebar-selected { background: var(--tree-selected-bg); border-color: transparent; border-radius: 0; }
 .file-item.sidebar-selected:hover { background: var(--active-bg); }
-.file-item.active { background: var(--tree-selected-bg); border-color: var(--tree-selected-border); }
+.file-item.active { background: var(--tree-selected-bg); border-color: transparent; border-radius: 0; }
 .file-item.active .file-item-name { color: var(--active-text); }
 body:not(.vscode-mode) .file-item.active .file-item-name { color: var(--sidebar-text-color); }
 .file-item-name { font-size: var(--system-font-size); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
@@ -1096,7 +1097,9 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
 
 .tree-row { cursor: pointer; padding: 2px 6px; white-space: nowrap; display: flex; align-items: center; gap: 6px; color: var(--text); border: 1px solid transparent; }
 .tree-row:hover { background: var(--panel2); }
-.tree-row.selected { background: var(--tree-selected-bg); border-color: var(--tree-selected-border); }
+/* The selected row is a band across the panel, like a selected terminal: no outline around it, and
+   nothing that stops short of either edge. */
+.tree-row.selected { background: var(--tree-selected-bg); border-color: transparent; }
 .tree-row .codicon { font-size: calc(var(--tree-font-size) - 1px); flex: none; }
 .tree-row > .tree-chevron { margin-right: -1px; }
 .tree-chevron { color: var(--dim); transition: transform 0.08s ease; }
