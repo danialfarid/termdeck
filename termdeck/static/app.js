@@ -3239,10 +3239,14 @@ class TermdeckApp {
     // Sibling tabs read this stamp to learn which session is being watched here, so they do not
     // post a banner for the one session already in front of the user.
     this.markWatchedSession();
-    window.addEventListener("focus", () => this.markWatchedSession());
+    window.addEventListener("focus", () => {
+      this.markWatchedSession();
+      this.markActiveSessionRead();
+    });
     document.addEventListener("visibilitychange", () => {
       document.body.classList.toggle("termdeck-page-hidden", document.hidden);
       this.markWatchedSession();
+      this.markActiveSessionRead();
       if (document.visibilityState === "hidden") {
         this.disconnectRecentFilesWatch();
         this.flushPendingSettingsSave();
@@ -4832,6 +4836,18 @@ class TermdeckApp {
     this.setSessionsUnread([id], unread);
   }
 
+  // Coming back to the page is reading the terminal that is already on screen. Unread was cleared only
+  // when the selection MOVED, so a session that finished a turn while its own tab sat in the background
+  // kept the badge for good: returning to that tab selects nothing new, and neither does leaving it.
+  markActiveSessionRead() {
+    const id = this.activeId;
+    if (document.hidden || !id || !this.session(id)) return;
+    if (!this.processingStates.get(id)) this.viewedCompletedSessions.add(id);
+    if (!this.unreadSessions.delete(id)) return;
+    this.updateUnreadIndicator(id);
+    this.persistUnreadSessionDelta([id], false);
+  }
+
   setSessionsUnread(sessionIds, unread) {
     const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id));
     if (!ids.length) return;
@@ -4935,6 +4951,9 @@ class TermdeckApp {
     const userIsViewingSession = id === this.activeId && !document.hidden && document.hasFocus();
     if (completed && !userIsViewingSession && !this.viewedCompletedSessions.has(id) && !this.unreadSessions.has(id)) {
       this.unreadSessions.add(id);
+      // After the set, not before: the indicator was refreshed further up, while the session was still
+      // marked read, so the badge waited for whatever redrew the list next.
+      this.updateUnreadIndicator(id);
       this.persistUnreadSessionDelta([id], true);
     }
   }
