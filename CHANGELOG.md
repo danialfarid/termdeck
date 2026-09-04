@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A colour for each project and worktree, chosen from a row of swatches at the bottom of its picker. The header
+  label and the browser tab's favicon take the colour — a worktree's own colour when it has one, the project's
+  otherwise — so several deck tabs tell apart from the tab strip.
+
+### Changed
+
+- The chevron beside the project and worktree names sits right after the name rather than at the far end of
+  the row, where a short name left a panel-wide gap.
+
 ## [0.10.1] — 2026-09-03
 
 ### Fixed

@@ -209,8 +209,10 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 
 **Projects and worktrees**
 
-- A project is a folder; the first terminal opened there registers it. Switching projects swaps terminals,
-  files, closed history, and defaults.
+- A project is a folder: add one from the **+** menu with a folder picker, or open a terminal in it and it
+  registers itself. Switching projects swaps terminals, files, closed history, and defaults.
+- Give a project or worktree a colour from its picker; the header label and the browser tab's favicon take
+  it, so ten tabs tell apart at a glance.
 - Every project, worktree, terminal, and file has a stable URL — one browser tab per project, or per task.
 - Worktrees are discovered and created (named, on a chosen branch, in a remembered folder); view one or all;
   each keeps its own terminals, groups, and closed history.

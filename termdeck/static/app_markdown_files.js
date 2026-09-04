@@ -19,6 +19,12 @@ Object.assign(TermdeckApp.prototype, {
 
   showPageTitleFaviconState(faviconState) {
     if (!this.pageFavicon) return;
+    const color = this.effectiveDeckColor?.() || "";
+    if (color) {
+      this.pageFavicon.type = "image/svg+xml";
+      this.pageFavicon.href = this.coloredFaviconHref(color, faviconState);
+      return;
+    }
     if (faviconState === "plain") {
       this.restorePageFavicon();
       return;
@@ -27,6 +33,26 @@ Object.assign(TermdeckApp.prototype, {
     this.pageFavicon.href = faviconState === "processing"
       ? "/static/favicon-processing.svg"
       : "/static/favicon-unread.svg";
+  },
+
+
+  // The favicon redrawn when a project or worktree has a colour: the tile takes the colour, the
+  // letters stay light, and the working / unread dot sits where the stock icons put it. Redrawn on
+  // every state change rather than cached: the same colour shows up under several states.
+  refreshPageFavicon() {
+    this.showPageTitleFaviconState(this.pageTitleFaviconState || "plain");
+  },
+
+
+  coloredFaviconHref(color, faviconState) {
+    const dot = faviconState === "processing"
+      ? '<circle cx="49" cy="15" r="12" fill="#ffffff" opacity=".35"/><circle cx="49" cy="15" r="8" fill="#ffffff"/>'
+      : faviconState === "unread" ? '<circle cx="49" cy="49" r="8" fill="#ffffff"/>' : "";
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` +
+      `<rect x="2" y="2" width="60" height="60" rx="16" fill="${color}" stroke="rgba(0,0,0,.35)" stroke-width="2"/>` +
+      `<text x="32" y="44" fill="#ffffff" fill-opacity=".92" font-family="Arial, Helvetica, sans-serif" font-size="27" ` +
+      `font-weight="800" letter-spacing="-2" text-anchor="middle">TD</text>${dot}</svg>`;
+    return `data:image/svg+xml,${encodeURIComponent(svg)}`;
   },
 
 

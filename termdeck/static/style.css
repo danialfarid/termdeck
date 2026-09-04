@@ -40,7 +40,18 @@ body:not(.vscode-mode) #sidebar { color: var(--sidebar-text-color); --text: var(
 #worktree-header-row.hidden { display: none; }
 .header-picker-field { position: relative; min-width: 0; flex: 1; }
 #project-select, #worktree-select { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; border: 0; background: none; cursor: pointer; text-align: left; outline: none; }
-.header-picker-label { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The label takes only the room its text needs, so the chevron sits right after the name instead
+   of at the far end of the row -- a short project name used to leave a gap the width of the panel. */
+.header-picker-label { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.header-picker-dot { width: 9px; height: 9px; flex: none; border-radius: 50%; }
+.header-picker-dot.hidden { display: none; }
+.header-picker-colors { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 7px 9px; border-top: 1px solid var(--border); }
+.header-picker-colors.hidden { display: none; }
+.header-picker-colors-label { margin-right: 4px; color: var(--dim); font: calc(var(--system-font-size) - 1px)/1.25 Menlo, Monaco, monospace; }
+.header-picker-color { width: 16px; height: 16px; padding: 0; border: 2px solid transparent; border-radius: 50%; cursor: pointer; box-shadow: 0 0 0 1px rgba(0, 0, 0, .25); }
+.header-picker-color.none { background: transparent; border: 1px dashed var(--dim); box-shadow: none; }
+.header-picker-color:hover { transform: scale(1.15); }
+.header-picker-color.selected { border-color: var(--text); }
 #project-select > .codicon, #worktree-select > .codicon { flex: none; color: var(--dim); font-size: calc(11px * var(--ui-scale)); }
 #project-select[aria-expanded="true"] > .codicon, #worktree-select[aria-expanded="true"] > .codicon { color: var(--accent); transform: rotate(180deg); }
 .header-picker-menu { position: absolute; z-index: 70; top: calc(100% + 4px); left: 0; width: min(360px, calc(100vw - 20px)); max-width: none; overflow: hidden; border: 1px solid var(--active-border); border-radius: 8px; background: var(--panel); box-shadow: 0 14px 34px rgba(0, 0, 0, .5); }

@@ -208,6 +208,7 @@ class StateRecoveryRestoreRequest(BaseModel):
 
 class ProjectStatePatch(BaseModel):
     active_session_id: str | None = None
+    color: str | None = None
     open_files: list[dict[str, str]] | None = None
     open_files_collapsed: bool | None = None
     recent_files_collapsed: bool | None = None
@@ -474,6 +475,8 @@ class LanAccessRequest(BaseModel):
 
 class ProjectUiState(BaseModel):
     active_session_id: str = ""
+    # A colour the user gave this project or worktree; the header label and the favicon carry it.
+    color: str = ""
     open_files: list[dict[str, str]] = []
     open_files_collapsed: bool = False
     recent_files_collapsed: bool = True

@@ -143,6 +143,10 @@ const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
 const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
 const TRANSCRIPT_DRAFT_LOCAL_PREFIX = "termdeck.transcript-draft.v1";
 const ADDRESS_RECOVERY_KEY = "termdeck.address-recovery";
+// Colours a project or worktree can be given. Bright enough to read as a dot and as label text on
+// every theme, distinct enough from one another to tell ten tabs apart from the tab strip.
+const DECK_COLOR_PALETTE = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#14b8a6", "#06b6d4", "#3b82f6",
+  "#8b5cf6", "#ec4899", "#94a3b8"];
 const MOBILE_CONNECTION_WARNING_DELAY_MS = 1200;
 // How long to wait before trying again once a reconnect attempt has not landed.
 const MOBILE_CONNECTION_RETRY_MS = 3000;
@@ -1317,7 +1321,7 @@ class TermdeckApp {
       recently_opened_terminal_ids: [], unread_sessions: [],
       terminal_groups: [], session_groups: {}, session_view_modes: {},
       notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, notebook_text: "",
-      selection_copy_history: [], selection_copy_history_initialized: false,
+      selection_copy_history: [], selection_copy_history_initialized: false, color: "",
       ...state,
       recent_files_collapsed: state.recent_files_collapsed ?? true,
     };
@@ -1481,7 +1485,7 @@ class TermdeckApp {
       "recent_file_exclude_glob", "recently_opened_terminal_ids", "session_order", "pinned_sessions", "pinned_groups",
       "unread_sessions", "terminal_groups", "session_groups", "terminal_layout", "session_view_modes", "notebook_notes",
       "notebook_active_note_id", "notebook_notes_initialized", "notebook_text", "selection_copy_history",
-      "selection_copy_history_initialized"]) {
+      "selection_copy_history_initialized", "color"]) {
       if (Object.prototype.hasOwnProperty.call(payload, field)) nextState[field] = payload[field];
     }
     const previous = this.settings.project_state?.[stateKey] || {};
@@ -2528,6 +2532,88 @@ class TermdeckApp {
     const current = this.headerPickerOptions(kind).find((option) => option.value === this.currentHeaderPickerValue(kind));
     elements.label.textContent = current?.label || (kind === "project" ? "All projects" : "Worktree");
     elements.button.title = current?.detail || (kind === "project" ? "Switch project" : "Switch worktree");
+    this.applyHeaderPickerColor(kind);
+    this.refreshPageFavicon();
+  }
+
+  // -- project and worktree colours ------------------------------------------------------------
+  // A colour lives in the project state of the thing it names: the project's root key, or the
+  // worktree's own key. The worktree's colour, when it has one, is what the deck shows.
+
+  headerPickerColorKey(kind) {
+    if (!this.projectSlug || this.vscodeMode) return null;
+    if (kind === "project") return this.projectStateKeyFor("root");
+    if (!this.worktreeId || this.worktreeId === "root" || this.worktreeId === ALL_WORKTREES_ID) return null;
+    return this.projectStateKeyFor(this.worktreeId);
+  }
+
+  deckColorForKey(stateKey) {
+    const color = String(this.settings.project_state?.[stateKey]?.color || "").trim();
+    return /^#[0-9a-f]{6}$/i.test(color) ? color : "";
+  }
+
+  headerPickerColor(kind) {
+    const key = this.headerPickerColorKey(kind);
+    return key ? this.deckColorForKey(key) : "";
+  }
+
+  effectiveDeckColor() {
+    return this.headerPickerColor("worktree") || this.headerPickerColor("project");
+  }
+
+  setHeaderPickerColor(kind, color) {
+    const key = this.headerPickerColorKey(kind);
+    if (!key) return;
+    this.applyLocalProjectStatePatch({ color }, key);
+    this.queueProjectStatePatch(key, { color });
+    for (const each of ["project", "worktree"]) {
+      this.applyHeaderPickerColor(each);
+      this.renderHeaderPickerColors(each);
+    }
+    this.refreshPageFavicon();
+  }
+
+  applyHeaderPickerColor(kind) {
+    const elements = this.headerPickerElements(kind);
+    if (!elements.label || !elements.button) return;
+    const color = this.headerPickerColor(kind);
+    let dot = elements.button.querySelector(".header-picker-dot");
+    if (color && !dot) {
+      dot = document.createElement("span");
+      dot.className = "header-picker-dot";
+      elements.button.insertBefore(dot, elements.label);
+    }
+    if (dot) {
+      dot.style.background = color;
+      dot.classList.toggle("hidden", !color);
+    }
+    elements.label.style.color = color;
+  }
+
+  renderHeaderPickerColors(kind) {
+    const container = this.$(`${kind}-select-colors`);
+    if (!container) return;
+    const key = this.headerPickerColorKey(kind);
+    container.classList.toggle("hidden", !key);
+    container.textContent = "";
+    if (!key) return;
+    const current = this.deckColorForKey(key);
+    const title = document.createElement("span");
+    title.className = "header-picker-colors-label";
+    title.textContent = kind === "project" ? "Project colour" : "Worktree colour";
+    container.appendChild(title);
+    for (const color of ["", ...DECK_COLOR_PALETTE]) {
+      const swatch = document.createElement("button");
+      swatch.type = "button";
+      swatch.className = `header-picker-color${color ? "" : " none"}${color === current ? " selected" : ""}`;
+      swatch.title = color ? `Use ${color}` : "No colour";
+      if (color) swatch.style.background = color;
+      swatch.onmousedown = (event) => {
+        event.preventDefault();
+        this.setHeaderPickerColor(kind, color);
+      };
+      container.appendChild(swatch);
+    }
   }
 
   renderHeaderPicker(kind) {
@@ -2591,6 +2677,7 @@ class TermdeckApp {
     const currentIndex = this.headerPickerOptions(kind).findIndex((option) => option.value === this.currentHeaderPickerValue(kind));
     this.headerPickerActiveIndices[kind] = currentIndex >= 0 && currentIndex < HEADER_PICKER_RESULT_LIMIT ? currentIndex : 0;
     this.renderHeaderPicker(kind);
+    this.renderHeaderPickerColors(kind);
     elements.menu.classList.remove("hidden");
     elements.button.setAttribute("aria-expanded", "true");
     elements.input.focus();
