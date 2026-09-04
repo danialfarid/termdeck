@@ -6,10 +6,10 @@
 
 </div>
 
-Puppet-master all your agents from one light browser tab. Never lose a session again: group them, give them
-worktrees, and let them talk to each other. Around them, a light IDE — code, search, find usages, Git, pull
-requests, syntax highlighting, linters, and notes on the fly. From your desk, or from the couch or the road on
-your phone.
+Puppeteer all your agents from one lightweight browser tab. Never lose a session or a half-written prompt
+again — group them, give them worktrees, and let them talk to each other. Around them, a light IDE: an
+editor, search, find-usages, Git, pull requests, syntax highlighting, linters, and notes on the fly. All of it
+reachable from anywhere, phone included.
 
 ## Demos
 
