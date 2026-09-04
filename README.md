@@ -272,6 +272,8 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 - Optional bearer-token protection for direct LAN, VPN, SSH-tunnel, and reverse-proxy access; server-wide
   read-only mode keeps monitoring live while blocking terminal input and mutations.
 - Touch layouts with long-press row actions, drafts kept through outages, and automatic reconnection.
+- Agent CLIs use the touch-friendly Transcript surface on phones; plain shell sessions keep the live terminal
+  and mobile keyboard/paste input for commands that do not depend on TUI arrow-key menus.
 
 **Look and feel**
 
