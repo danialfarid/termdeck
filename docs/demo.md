@@ -25,9 +25,9 @@ Built output, committed:
 docs/media/demo-opening.webm    1680x900, 64s, ~5.6 MB   full resolution, linked under the player
 docs/media/demo-opening.gif     700px,    64s, ~6.2 MB   what the README actually shows
 docs/media/demo-terminals.webm  1680x900, 93s,  ~8.9 MB  multi-agent terminal workflow
-docs/media/demo-terminals.gif   1200px,   93s, ~18.4 MB  what the README shows for the terminal workflow
+docs/media/demo-terminals.gif   1200px,   93s, ~22.3 MB  what the README shows for the terminal workflow
 docs/media/demo-files-git.webm  1680x900, 26s,  ~3.1 MB  Files/Git workflow
-docs/media/demo-files-git.gif   1200px,   26s,  ~6.5 MB  what the README shows for the Files/Git workflow
+docs/media/demo-files-git.gif   1200px,   26s,  ~8.2 MB  what the README shows for the Files/Git workflow
 ```
 
 ## Rebuilding it
@@ -58,9 +58,11 @@ gh api -H "Accept: application/vnd.github.html" repos/danialfarid/termdeck/readm
   | grep -o '<img[^>]*demo[^>]*>'
 ```
 
-GIF settings (700px / 6fps / 48 colours) are chosen to stay under the size where GitHub
-stops animating while keeping terminal text legible — verify by pulling a frame back out of
-the finished GIF, not by trusting the source:
+GIF settings (1200px / 4fps / 64 colours, palette from the whole clip, saturation ×1.5 before
+quantising) keep terminal text legible at README width and keep the accent colours: a
+diff-weighted palette spent its slots on text edges and turned every cyan, red and green to
+grey, and 4fps is what keeps 1200px near 20 MB. Verify by pulling a frame back out of the
+finished GIF, not by trusting the source:
 
 ```sh
 ffmpeg -ss 10 -i docs/media/demo-opening.gif -frames:v 1 /tmp/check.png

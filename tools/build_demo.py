@@ -42,9 +42,14 @@ STILL_MIN_OUTPUT = 0.35  # a pause keeps this much screen time, so it reads as a
 ANALYSIS_FPS = 5         # sampling rate for the motion profile (1 / SAMPLE_STEP)
 ANALYSIS_WIDTH = 320     # the profile only needs relative change, not detail
 
-# The GIF is what renders on GitHub, and GitHub stops animating large ones, so this
-# trades resolution for the ability to play at all. 700px keeps terminal text legible.
-GIF_WIDTH, GIF_FPS, GIF_COLORS = 700, 6, 48
+# The GIF is what renders on GitHub. 1200px keeps terminal text legible at README width; 4fps is
+# what pays for it (the same clip at 6fps is a third larger, and the pacing pass already spends
+# time only where things move). The palette is built from the WHOLE clip, not from what changes
+# between frames: a dark terminal is almost entirely greys, and a diff-weighted palette spent its
+# slots on anti-aliased text edges and quantised every accent -- cyan identifiers, the red
+# permission banner, green paths -- to grey. The saturation lift before quantising gives those few
+# accent pixels enough weight to keep their palette entries.
+GIF_WIDTH, GIF_FPS, GIF_COLORS, GIF_SATURATION = 1200, 4, 64, 1.5
 
 
 def run(argv: list[str]) -> None:
@@ -117,12 +122,11 @@ def render_segment(path: str, plan: list[tuple[float, float, float]], width: int
 
 def write_gif(source: str, target: str, work: str) -> None:
     palette = os.path.join(work, "palette.png")
+    frames = f"fps={GIF_FPS},scale={GIF_WIDTH}:-1:flags=lanczos,eq=saturation={GIF_SATURATION}"
     run(["ffmpeg", "-y", "-i", source, "-vf",
-         f"fps={GIF_FPS},scale={GIF_WIDTH}:-1:flags=lanczos,"
-         f"palettegen=max_colors={GIF_COLORS}:stats_mode=diff", palette, "-loglevel", "error"])
+         f"{frames},palettegen=max_colors={GIF_COLORS}:stats_mode=full", palette, "-loglevel", "error"])
     run(["ffmpeg", "-y", "-i", source, "-i", palette, "-lavfi",
-         f"fps={GIF_FPS},scale={GIF_WIDTH}:-1:flags=lanczos[x];"
-         "[x][1:v]paletteuse=dither=none:diff_mode=rectangle", target, "-loglevel", "error"])
+         f"{frames}[x];[x][1:v]paletteuse=dither=none:diff_mode=rectangle", target, "-loglevel", "error"])
 
 
 def main() -> int:
