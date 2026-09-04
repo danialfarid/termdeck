@@ -39,7 +39,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_fo
   ui_font_size: 11, system_font_size: 13, code_font_size: 12, diff_font_size: 13, tree_font_size: 12, bottom_font_size: 14, files_tab_font_size: 11, active_session_id: "", open_files: [], project_state: {}, theme: "dark",
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
-  last_command: "codex", last_model: "codex", last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
+  last_command: "codex", last_model: "codex", last_model_names: {}, last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
   recent_terminal_hours: 24,
   show_terminal_icons: false, terminal_icon_agents: {}, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
@@ -3641,7 +3641,11 @@ class TermdeckApp {
       event.preventDefault();
       void this.createSession();
     });
-    this.$("modal-model").onchange = () => { this.clearModalError(); this.updateModalPermissions(); };
+    this.$("modal-model").onchange = () => {
+      this.clearModalError();
+      this.updateModalModelField();
+      this.updateModalPermissions();
+    };
     this.$("worktree-modal-cancel").onclick = () => this.closeWorktreeModal();
     this.$("worktree-modal-create").onclick = () => void this.createProjectWorktree();
     this.$("worktree-location-browse").onclick = () => void this.browseWorktreeLocation();

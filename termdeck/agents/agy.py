@@ -35,14 +35,35 @@ class AgyCli(AgentCli):
     # Restarted terminals resume via --conversation; attaching to an EXISTING agy session from
     # the create dialog is unsupported (new_session_resume_arguments raises), as is forking.
     supports_resume = True
+    accepts_session_ref = True
     detection_claims_new_files = True
+    activity_source = "transcript"
+    attention_output_markers = ("allow once", "allow always", "permission required", "request permission")
+    model_placeholder = "model, optionally followed by low, medium, or high"
+    model_help = "A trailing low, medium, or high value sets AGY reasoning effort."
 
     permission_flags = {
         "default": (),
+        "accept-edits": ("--mode", "accept-edits"),
+        "plan": ("--mode", "plan"),
+        "sandbox": ("--sandbox",),
         "full-access": ("--dangerously-skip-permissions",),
     }
-    ui_permission_options = (("default", "Default"), ("full-access", "Full access"))
-    permission_switch_flags = ("--dangerously-skip-permissions",)
+    ui_permission_options = (("default", "Default"), ("accept-edits", "Accept edits"), ("plan", "Plan"),
+                             ("sandbox", "Sandbox"), ("full-access", "Full access"))
+    permission_switch_flags = ("--dangerously-skip-permissions", "--sandbox")
+    permission_value_flags = ("--mode",)
+
+    def model_arguments(self, model_name: str) -> tuple[str, ...]:
+        parts = model_name.split()
+        if len(parts) > 1 and parts[-1].lower() in {"low", "medium", "high"}:
+            return ("--model", " ".join(parts[:-1]), "--effort", parts[-1].lower())
+        return ("--model", model_name)
+
+    def new_session_resume_arguments(self, session_ref: str, tracker) -> tuple[str, ...]:
+        if not UUID_RE.fullmatch(session_ref):
+            raise ValueError("AGY resume requires a conversation UUID")
+        return (self.CONVERSATION_FLAG, session_ref)
 
     def resume_command(self, original_command: str, agent_session_id: str) -> str:
         cleaned = self.strip_session_arguments(self.command_parts(original_command))
@@ -176,6 +197,9 @@ class AgyCli(AgentCli):
 
     def is_processing(self, ms) -> bool:
         return bool(ms.processing or ms.agent_state.transcript_active)
+
+    def activity_detail(self, ms) -> dict[str, object] | None:
+        return {"main": True} if self.is_processing(ms) else None
 
     def refresh_persisted_activity(self, manager, ms) -> None:
         ms.agent_state.transcript_active = manager._tracker.agy_session_is_active(ms.record.agent_session_id)

@@ -91,6 +91,10 @@ class AgentCli:
 
     # -- client presentation ---------------------------------------------
     prompt_marker = ""                  # composer-row marker used to locate the input line
+    model_placeholder = ""
+    model_help = ""
+    activity_source = "terminal-title"
+    attention_output_markers: tuple[str, ...] = ()
     # Inline SVG markup for the sidebar terminal icon (single-color, fill="currentColor").
     # Empty means the client falls back to its generic terminal glyph.
     icon_svg = ""
@@ -280,7 +284,7 @@ class AgentCli:
 
         Read from state the transcript watchers already maintain — never poll here; this runs
         on every status payload."""
-        return None
+        return {"main": True} if self.processing_from_output and self.is_processing(ms) else None
 
     def on_transcript_event(self, manager, ms, path: Path) -> None:
         """A watched transcript file changed; update this session's activity if the file is its own."""
@@ -304,7 +308,16 @@ class AgentCli:
         return False
 
     def update_attention_from_output(self, manager, ms, data: bytes) -> bool:
-        return False
+        if not self.attention_output_markers:
+            return False
+        text = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))", "",
+                      ms.attention_text_carry + data.decode(errors="replace")).lower()
+        ms.attention_text_carry = text[-4096:]
+        if manager.user_recently_typed(ms, 1.0) or not any(marker in text for marker in self.attention_output_markers):
+            return False
+        changed = not ms.attention_required
+        ms.attention_required = True
+        return changed
 
     def title_requires_attention(self, title: str | None) -> bool:
         return False
@@ -316,9 +329,14 @@ class AgentCli:
 
     def pre_write_input(self, manager, ms, text: str, draft_before: str) -> None:
         """Interpret user keystrokes headed to the pty (prompt submits, interrupts) before the write."""
+        if self.processing_from_output and ms.agent_state is not None and ("\r" in text or "\n" in text):
+            ms.agent_state.output_active_until = time.monotonic() + self.OUTPUT_ACTIVITY_KEEPALIVE_SECONDS
 
     def post_write_input(self, manager, ms, text: str) -> None:
         """React after the keystrokes reached the pty."""
+        if self.processing_from_output and ("\r" in text or "\n" in text):
+            manager._schedule_output_activity_expiry(ms)
+            manager._broadcast_status(ms)
 
     def on_api_prompt_submitted(self, manager, ms, queue: bool) -> None:
         """A prompt is about to be pasted through the API/Markdown path."""
@@ -398,6 +416,9 @@ class AgentCli:
                 "supports_resume": self.supports_resume, "supports_fork": self.supports_fork,
                 "accepts_session_ref": self.accepts_session_ref, "sessionless": self.sessionless,
                 "fullscreen_tui": self.fullscreen_tui,
+                "supports_agent_rename": self.supports_agent_rename,
+                "model_placeholder": self.model_placeholder, "model_help": self.model_help,
+                "activity_source": self.activity_source,
                 "records_raw_replay": self.records_raw_replay, "has_prompt_queue": self.has_prompt_queue,
                 "transcript_commands": [{"command": command, "description": description}
                                         for command, description in self.transcript_commands]}

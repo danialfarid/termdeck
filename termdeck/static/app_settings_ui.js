@@ -3166,6 +3166,9 @@ Object.assign(TermdeckApp.prototype, {
     this.populateModalModelOptions();
     const model = this.settings.last_model || DEFAULT_COMMAND;
     this.$("modal-model").value = this.agentSpecs[model] ? model : DEFAULT_COMMAND;
+    this.modalModelDrafts = { ...(this.settings.last_model_names || {}) };
+    this.$("modal-model-name").dataset.agentKind = "";
+    this.updateModalModelField();
     this.updateModalPermissions();
     this.updateModalSessionSuggestions();
     this.$("modal-project-add-btn").classList.toggle("hidden", !!this.vscodeMode);
@@ -3203,6 +3206,20 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  updateModalModelField() {
+    const model = this.$("modal-model").value;
+    const input = this.$("modal-model-name");
+    const previous = input.dataset.agentKind || "";
+    if (previous) this.modalModelDrafts[previous] = input.value;
+    const spec = this.agentSpec(model);
+    this.$("modal-model-name-field").classList.toggle("hidden", !spec?.is_agent);
+    input.dataset.agentKind = model;
+    input.value = this.modalModelDrafts[model] || "";
+    input.placeholder = spec?.model_placeholder || "agent default";
+    this.$("modal-model-help").textContent = spec?.model_help || "Leave blank to use the agent's configured default.";
+  },
+
+
   async createSession() {
     if (this.$("modal-backdrop").classList.contains("hidden")) return;
     const createButton = this.$("modal-create");
@@ -3222,12 +3239,14 @@ Object.assign(TermdeckApp.prototype, {
     const targetGroupId = this.modalGroupId;
     const requestedAfterSessionId = this.modalAfterSessionId;
     const model = this.$("modal-model").value;
+    const modelName = this.$("modal-model-name").value.trim();
     const permission = this.$("modal-permission").value;
     const resolved = this.resolveSessionNameAndReference(model, this.$("modal-session-title").value);
     const { title, session_ref: sessionRef } = resolved;
     const project = this.projectSlug || "";
     const cwd = this.worktreeRoot() || this.resolveVscodeDefaultCwd();
     this.settings.last_model = model;
+    this.settings.last_model_names = { ...(this.settings.last_model_names || {}), [model]: modelName };
     this.settings.last_permissions = { ...(this.settings.last_permissions || {}), [model]: permission };
     this.saveSettings();
     // Land the new terminal directly below the one in focus rather than at the end of the sidebar.
@@ -3236,7 +3255,7 @@ Object.assign(TermdeckApp.prototype, {
       ? requestedAfterSessionId : !targetGroupId && this.activeId && this.session(this.activeId) ? this.activeId : null;
     const res = await fetch("/api/sessions", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, permission, session_ref: sessionRef, cwd, title,
+      body: JSON.stringify({ model, model_name: modelName, permission, session_ref: sessionRef, cwd, title,
         project, worktree_id: this.stateWorktreeId() }),
     });
     if (!res.ok) {

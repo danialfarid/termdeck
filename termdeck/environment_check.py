@@ -27,10 +27,13 @@ class EnvironmentCheck:
     CLAUDE_INSTALL_HINT = "npm install -g @anthropic-ai/claude-code"
     CODEX_INSTALL_HINT = "npm install -g @openai/codex"
     AGY_INSTALL_HINT = "install the AGY/Antigravity CLI"
+    AIDER_INSTALL_HINT = "uv tool install --force --python python3.12 --with pip aider-chat@latest"
+    OPENCODE_INSTALL_HINT = "brew install anomalyco/tap/opencode"
     MODEL_ALIASES = {"agd": "agy", "agy-cli": "agy", "agycli": "agy", "gemini": "agy",
                      "antigravity": "agy", "antigravity-cli": "agy", "antigravitycli": "agy"}
     MODEL_INSTALL_COMMANDS = {"codex": "brew install --cask codex", "claude": "brew install --cask claude-code",
-                               "agy": "brew install --cask antigravity"}
+                              "agy": "brew install --cask antigravity", "aider": AIDER_INSTALL_HINT,
+                              "opencode": OPENCODE_INSTALL_HINT}
 
     @staticmethod
     def package_install_hint(program: str) -> str:
@@ -67,9 +70,13 @@ class EnvironmentCheck:
             ("claude", PlatformPaths.resolve_binary("", "claude"), False, "claude session resume"),
             ("codex", PlatformPaths.resolve_binary("", "codex"), False, "codex session resume"),
             ("agy", PlatformPaths.resolve_binary("", "agy"), False, "AGY terminal and transcript support"),
+            ("aider", PlatformPaths.resolve_binary("", "aider"), False, "Aider terminal and activity status"),
+            ("opencode", PlatformPaths.resolve_binary("", "opencode"), False, "OpenCode terminal and session status"),
         )
         hints = {"claude": EnvironmentCheck.CLAUDE_INSTALL_HINT, "codex": EnvironmentCheck.CODEX_INSTALL_HINT,
-                 "agy": EnvironmentCheck.AGY_INSTALL_HINT, "rg": EnvironmentCheck.package_install_hint("ripgrep")}
+                 "agy": EnvironmentCheck.AGY_INSTALL_HINT, "aider": EnvironmentCheck.AIDER_INSTALL_HINT,
+                 "opencode": EnvironmentCheck.OPENCODE_INSTALL_HINT,
+                 "rg": EnvironmentCheck.package_install_hint("ripgrep")}
         if PlatformPaths.IS_MACOS:
             hints.update({program: EnvironmentCheck.MODEL_INSTALL_COMMANDS[program] for program in EnvironmentCheck.MODEL_INSTALL_COMMANDS})
         return [DependencyReport(program=program, resolved_path=resolved, is_present=EnvironmentCheck.program_is_usable(program, resolved), is_required=required, used_for=used_for,

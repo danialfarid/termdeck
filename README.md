@@ -183,6 +183,8 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 - File paths and `path:line` references printed in any terminal are clickable.
 - Drop a file or paste an image into a terminal and its path lands at the cursor.
 - Per-agent icons in the terminal list, each toggleable; working state animates, unread stays until you look.
+- Choose an explicit model at launch for Codex, Claude, AGY, Aider, or OpenCode. Aider and OpenCode accept
+  OpenRouter model IDs while retaining their own terminal icon, activity signal, permissions, and resume rules.
 - Live activity dots for background commands, monitors, and subagents under the session that owns them.
 - The favicon shows the selected terminal's working and unread state.
 - CPU and memory for the app and for each terminal's process tree in the bottom bar; under Maintenance, a

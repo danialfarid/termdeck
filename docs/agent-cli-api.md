@@ -40,6 +40,10 @@ Every per-agent behavior in the codebase falls into one of these concerns:
    composer prompt marker, replay flags on the websocket URL, JS-only quirks (codex
    command-collapse anchor, claude status-row refresh).
 
+OpenRouter is a provider rather than a terminal agent. It therefore uses the Codex, Aider, or OpenCode
+adapter that launches it; the model field carries the provider-specific model ID while lifecycle, activity,
+permissions, transcript handling, and the brand icon continue to come from the underlying CLI adapter.
+
 ## Design
 
 ### Python: `termdeck/agents/` package
@@ -176,7 +180,8 @@ Explicit dict, no metaclass/auto-registration magic — debuggable, and one obvi
   base `on_pty_output` arms a keepalive window on each chunk — ignoring input echo, resize
   repaints, and the reattach-repaint suppression window — `is_processing` reads it, and the
   manager's `_schedule_output_activity_expiry` broadcasts the idle transition when silence
-  outlasts the window. Requires `new_session_state()` returning an `OutputActivityState`.
+  outlasts the window. Prompt submission arms this state before the first response byte arrives. Requires
+  `new_session_state()` returning an `OutputActivityState`.
 - **OpencodeCli** (`opencode`): sessions live in a sqlite database, not files, so every
   file-shaped base hook stays unimplemented and the adapter uses read-only queries for
   detection (the `detection_fallback_session_id` hook), titles, and token usage; resume is
@@ -184,7 +189,8 @@ Explicit dict, no metaclass/auto-registration magic — debuggable, and one obvi
   TUI manages its own scrolling and must see the real viewport height, so the client sizes the
   pty to the visible rows instead of the tall canvas (on a tall pty it top-anchors the
   conversation and bottom-anchors the composer, leaving the visible window on the blank gap
-  between them).
+  between them). Its session database also restores processing state after a TermDeck refresh without
+  starting or attaching to the terminal.
 - **GeminiCli was built and then retired** (`termdeck/agents/_/gemini.py`): Google deprecated
   gemini-cli outright in favor of the Antigravity suite, which AgyCli already covers ("gemini"
   stays an agy model alias). The retired adapter remains a worked example of a foreign format —

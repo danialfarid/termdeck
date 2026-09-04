@@ -18,6 +18,12 @@ CREATE TABLE session (
   time_created integer NOT NULL, time_updated integer NOT NULL)
 """
 
+MESSAGE_SCHEMA = """
+CREATE TABLE message (
+  id text PRIMARY KEY, session_id text NOT NULL, time_created integer NOT NULL,
+  time_updated integer NOT NULL, data text NOT NULL)
+"""
+
 
 class DescriptorPresentationTest(unittest.TestCase):
     def test_every_agent_ships_an_icon_and_the_tui_flag(self) -> None:
@@ -25,6 +31,8 @@ class DescriptorPresentationTest(unittest.TestCase):
             descriptor = cli.client_descriptor()
             self.assertIn("icon_svg", descriptor, cli.kind)
             self.assertIn("fullscreen_tui", descriptor, cli.kind)
+            self.assertIn("activity_source", descriptor, cli.kind)
+            self.assertIn("supports_agent_rename", descriptor, cli.kind)
             if cli.is_agent:
                 self.assertIn("<svg", str(descriptor["icon_svg"]), cli.kind)
         self.assertTrue(agents.agent_cli("opencode").fullscreen_tui)
@@ -90,6 +98,17 @@ class OutputActivityProcessingTest(unittest.TestCase):
             aider.on_pty_output(None, ms)
             self.assertTrue(aider.is_processing(ms))
 
+    def test_submit_arms_output_agent_before_first_response_chunk(self) -> None:
+        aider = agents.agent_cli("aider")
+        manager = SimpleNamespace(_schedule_output_activity_expiry=lambda ms: None,
+                                  _broadcast_status=lambda ms: None)
+        ms = self._ms(aider)
+        with patch("termdeck.agents.base.time") as clock:
+            clock.monotonic.return_value = 100.0
+            aider.pre_write_input(manager, ms, "\r", "run the task")
+            self.assertTrue(aider.is_processing(ms))
+            aider.post_write_input(manager, ms, "\r")
+
     def test_title_driven_agents_are_untouched(self) -> None:
         claude = agents.agent_cli("claude")
         self.assertFalse(claude.processing_from_output)
@@ -113,6 +132,7 @@ class OpencodeAgentTest(unittest.TestCase):
         path = Path(directory) / "opencode.db"
         with sqlite3.connect(path) as connection:
             connection.execute(SESSION_SCHEMA)
+            connection.execute(MESSAGE_SCHEMA)
             connection.executemany(
                 "INSERT INTO session (id, project_id, parent_id, slug, directory, title, "
                 "tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, "
@@ -127,6 +147,8 @@ class OpencodeAgentTest(unittest.TestCase):
         self.assertEqual(opencode.fork_command("opencode -c", "abc"), "opencode -s abc --fork")
         self.assertEqual(opencode.build_command("default", "anthropic/claude-sonnet-4", "ses_1", None),
                          "opencode -m anthropic/claude-sonnet-4 -s ses_1")
+        self.assertEqual(opencode.build_command("auto", "openrouter/anthropic/claude-sonnet-4", "", None),
+                         "opencode --auto -m openrouter/anthropic/claude-sonnet-4")
 
     def test_detection_titles_and_usage_from_database(self) -> None:
         opencode = agents.agent_cli("opencode")
@@ -157,3 +179,20 @@ class OpencodeAgentTest(unittest.TestCase):
             ms = SimpleNamespace(record=SimpleNamespace(cwd="/x", created_at_est="2020-01-01 00:00:00"))
             self.assertIsNone(opencode.detection_fallback_session_id(None, ms, set()))
             self.assertIsNone(opencode.latest_usage(Path("/x"), "any"))
+
+    def test_database_activity_survives_server_refresh_without_starting_session(self) -> None:
+        opencode = agents.agent_cli("opencode")
+        with tempfile.TemporaryDirectory() as directory:
+            db = self._db(directory, [])
+            with sqlite3.connect(db) as connection:
+                connection.execute(
+                    "INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+                    ("msg1", "ses_active", 1000, 1000,
+                     '{"role":"assistant","time":{"created":1000}}'))
+                connection.execute(
+                    "INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+                    ("msg2", "ses_done", 1000, 1000,
+                     '{"role":"assistant","time":{"created":900,"completed":1000}}'))
+            with patch.object(type(opencode), "DB_PATH", db):
+                self.assertTrue(opencode._database_session_is_active("ses_active"))
+                self.assertFalse(opencode._database_session_is_active("ses_done"))

@@ -535,6 +535,7 @@ class UiSettings(BaseModel):
     vscode_keybindings: dict[str, str] = {}
     last_command: str = "codex"
     last_model: str = "codex"
+    last_model_names: dict[str, str] = {}
     last_permissions: dict[str, str] = {}
     show_terminal_icons: bool = False
     terminal_icon_agents: dict[str, bool] = {}

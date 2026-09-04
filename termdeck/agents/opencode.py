@@ -1,3 +1,4 @@
+import json
 import shlex
 import sqlite3
 import time
@@ -5,6 +6,13 @@ from pathlib import Path
 
 from termdeck.agents.base import AgentCli, OutputActivityState
 from termdeck.util import TimeUtil
+
+
+class OpencodeSessionState(OutputActivityState):
+    def __init__(self) -> None:
+        super().__init__()
+        self.database_active = False
+        self.database_refresh_after = 0.0
 
 
 class OpencodeCli(AgentCli):
@@ -24,6 +32,7 @@ class OpencodeCli(AgentCli):
     # A fresh session row appears within moments of the TUI starting; only claim rows born
     # around this terminal's own lifetime so a concurrent opencode elsewhere is never adopted.
     DETECTION_CLAIM_WINDOW_SECONDS = 15 * 60
+    DATABASE_ACTIVITY_REFRESH_SECONDS = 1.0
 
     supports_resume = True
     supports_fork = True
@@ -34,6 +43,16 @@ class OpencodeCli(AgentCli):
     # Titles name the session ("OC | <title>"), never a spinner; the TUI animates continuously
     # while generating and is silent at rest (measured), so output flow is the working signal.
     processing_from_output = True
+    activity_source = "session-database+terminal-output"
+    attention_output_markers = ("allow once", "allow always", "permission required", "request permission")
+    model_placeholder = "provider/model, for example openrouter/anthropic/claude-sonnet-4"
+    model_help = "OpenRouter is built into OpenCode; connect it once with /connect, then use openrouter/model IDs."
+    transcript_commands = (("/models", "Choose a provider and model"), ("/connect", "Configure a model provider"),
+                           ("/sessions", "Switch OpenCode sessions"), ("/compact", "Compact conversation context"))
+
+    permission_flags = {"default": (), "auto": ("--auto",), "full-access": ("--auto",)}
+    ui_permission_options = (("default", "Default (confirm actions)"), ("auto", "Auto-approve"))
+    permission_switch_flags = ("--auto",)
 
     prompt_marker = "┃"
     # Terminal frame with opencode's block cursor.
@@ -42,8 +61,8 @@ class OpencodeCli(AgentCli):
                 'width="5" height="7" fill="currentColor"/><path d="M14 15.5h3.5" stroke="currentColor" '
                 'stroke-width="2" stroke-linecap="round"/></svg>')
 
-    def new_session_state(self) -> OutputActivityState:
-        return OutputActivityState()
+    def new_session_state(self) -> OpencodeSessionState:
+        return OpencodeSessionState()
 
     def _query(self, sql: str, parameters: tuple = ()) -> list[tuple]:
         if not self.DB_PATH.exists():
@@ -127,3 +146,40 @@ class OpencodeCli(AgentCli):
                 "output_tokens": tokens_output,
                 "context_window": None,
                 "total_tokens": tokens_input + cache_read + cache_write + tokens_output}
+
+    def is_processing(self, ms) -> bool:
+        return bool(ms.processing or ms.agent_state.database_active or self.output_activity_remaining(ms) > 0.0)
+
+    def refresh_persisted_activity(self, manager, ms) -> None:
+        self._refresh_database_activity(ms, True)
+
+    def refresh_activity_for_status(self, manager, ms) -> None:
+        self._refresh_database_activity(ms, False)
+
+    def activity_detail(self, ms) -> dict[str, object] | None:
+        return {"main": True} if self.is_processing(ms) else None
+
+    def _refresh_database_activity(self, ms, force: bool) -> None:
+        now = time.monotonic()
+        if not force and now < ms.agent_state.database_refresh_after:
+            return
+        ms.agent_state.database_refresh_after = now + self.DATABASE_ACTIVITY_REFRESH_SECONDS
+        session_id = ms.record.agent_session_id
+        ms.agent_state.database_active = self._database_session_is_active(session_id) if session_id else False
+
+    def _database_session_is_active(self, session_id: str) -> bool:
+        rows = self._query("SELECT data FROM message WHERE session_id = ? ORDER BY time_created DESC, id DESC LIMIT 1",
+                           (session_id,))
+        if not rows:
+            return False
+        try:
+            payload = json.loads(rows[0][0])
+        except (json.JSONDecodeError, TypeError):
+            return False
+        if not isinstance(payload, dict):
+            return False
+        role = str(payload.get("role") or "")
+        if role == "user":
+            return True
+        timing = payload.get("time")
+        return role == "assistant" and isinstance(timing, dict) and timing.get("completed") is None

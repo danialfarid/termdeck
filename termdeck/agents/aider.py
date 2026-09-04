@@ -20,6 +20,12 @@ class AiderCli(AgentCli):
     # No spinner-marked titles; the waiting spinner and streamed reply are the working signal
     # (measured: output every second of a turn, silence at rest).
     processing_from_output = True
+    activity_source = "terminal-output"
+    attention_output_markers = ("(y)es/(n)o", "waiting up to 5 minutes for you to finish in the browser")
+    transcript_commands = (("/model", "Switch the active model"), ("/tokens", "Show context token usage"),
+                           ("/undo", "Undo the latest Aider commit"), ("/help", "Show Aider commands"))
+    model_placeholder = "model or openrouter/provider/model"
+    model_help = "OpenRouter models use openrouter/provider/model and your existing OPENROUTER_API_KEY."
 
     # Two overlapping circles: pair programming.
     icon_svg = ('<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8.8" cy="12" r="6.4" fill='

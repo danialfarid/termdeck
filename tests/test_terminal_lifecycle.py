@@ -536,6 +536,14 @@ class NewAgentCommandModelTest(unittest.TestCase):
         command = TerminalSessionManager().command_for_new_session("agy", "default", "", "gemini-2.5-pro")
         self.assertEqual(command, "agy --model gemini-2.5-pro")
 
+    def test_agy_model_effort_permissions_and_resume_are_adapter_driven(self) -> None:
+        manager = TerminalSessionManager()
+        session_id = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+        self.assertEqual(manager.command_for_new_session("agy", "accept-edits", "", "gemini-2.5-pro high"),
+                         "agy --mode accept-edits --model gemini-2.5-pro --effort high")
+        self.assertEqual(manager.command_for_new_session("agy", "sandbox", session_id, ""),
+                         f"agy --sandbox --conversation {session_id}")
+
 
 class CodexTranscriptParsingTest(unittest.TestCase):
     def test_current_codex_agent_message_format_is_parsed_without_duplicate_response(self) -> None:
