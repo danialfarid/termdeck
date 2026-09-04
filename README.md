@@ -92,8 +92,8 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
 - **[Agents talking to agents](docs/agents-termdeck-api.md)** — Codex hands Claude a task, watches its answer
   come back, and asks a follow-up, all through one local API. Every agent it starts is an ordinary terminal in
   your deck, so you can read the whole exchange as it happens.
-- **Notifications** — attention and finished runs reach you while the tab is in the background. Install TermDeck
-  as a browser app and they arrive under its own name and icon instead of a localhost address.
+- **Notifications** — attention and finished runs reach you while the tab is in the background, and a quiet
+  release badge appears when a newer TermDeck version is available. Nothing updates automatically.
 - **Transcript mode** — read clean conversations, queue follow-ups, run an agent's slash commands, inspect
   models, and open a conversation outline.
 - **Search** — find sessions, prompts, responses, file names, and code across a project.

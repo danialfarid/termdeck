@@ -4094,6 +4094,7 @@ class TermdeckApp {
     this.installTerminalSizeDebugOverlay();
     this.initializeMobileConnectionWarning();
     void this.initializeRemoteIdleMode();
+    setTimeout(() => void this.checkForUpdates(), 1200);
     this.refresh().finally(() => this.connectStatusStream());
     setInterval(() => this.refresh(), SESSION_LIST_REFRESH_MS);
   }

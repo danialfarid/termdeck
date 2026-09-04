@@ -31,6 +31,7 @@ Aider, or OpenCode adapter that runs them.
 - `GET /api/terminal-search` searches terminal titles, prompts, and responses.
 - `GET /api/files`, `GET /api/search`, and `GET /api/filename-search` expose project-confined file browsing and search.
 - `GET /api/lsp/status` and `WS /ws/lsp` expose language-server capabilities.
+- `GET /api/update/status` reports the installed and latest GitHub release versions from a daily cache.
 - `GET /api/debug/support-bundle` downloads a sanitized issue-report bundle without terminal text, prompts, source, project paths, titles, or credentials.
 
 All mutation APIs are local-user control surfaces. Treat terminal input, file writes, Git actions, and session lifecycle calls as privileged operations. Prefer the task API over terminal escape-sequence automation.

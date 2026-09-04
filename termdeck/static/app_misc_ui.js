@@ -4,6 +4,33 @@
 Object.assign(TermdeckApp.prototype, {
 
 
+  async checkForUpdates(force = false) {
+    const notice = this.$("update-notice");
+    try {
+      const response = await fetch(`/api/update/status${force ? "?force=true" : ""}`);
+      if (!response.ok) return;
+      const update = await response.json();
+      const latestVersion = String(update.latest_version || "");
+      const dismissed = localStorage.getItem("termdeck.dismissed-update-version");
+      if (!update.update_available || (!force && dismissed === latestVersion)) {
+        notice.classList.add("hidden");
+        return;
+      }
+      const link = this.$("update-notice-link");
+      link.href = String(update.release_url || "https://github.com/danialfarid/termdeck/releases");
+      link.textContent = `TermDeck ${latestVersion} is available`;
+      link.title = `Installed ${update.current_version} · Open release notes`;
+      this.$("update-notice-close").onclick = () => {
+        localStorage.setItem("termdeck.dismissed-update-version", latestVersion);
+        notice.classList.add("hidden");
+      };
+      notice.classList.remove("hidden");
+    } catch (error) {
+      notice.classList.add("hidden");
+    }
+  },
+
+
   renderKeybindingsList() {
     const list = this.$("keys-list");
     list.textContent = "";

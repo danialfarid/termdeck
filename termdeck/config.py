@@ -21,6 +21,7 @@ class TermdeckConfig:
     SESSIONS_FILE = DATA_DIR / "sessions.json"
     SETTINGS_FILE = DATA_DIR / "settings.json"
     REMOTE_CREDENTIALS_FILE = DATA_DIR / "remote-credentials.json"
+    UPDATE_CHECK_FILE = DATA_DIR / "update-check.json"
     CLOSED_SESSIONS_FILE = DATA_DIR / "closed_sessions.json"
     CLOSED_HISTORY_MAX = 100
     PROJECTS_FILE = DATA_DIR / "projects.json"
@@ -240,6 +241,7 @@ class TermdeckConfig:
     API_ACCESS_STATUS_ROUTE = "/api/access/status"
     API_ACCESS_LOGIN_ROUTE = "/api/access/login"
     API_ACCESS_LOGOUT_ROUTE = "/api/access/logout"
+    API_UPDATE_STATUS_ROUTE = "/api/update/status"
     API_LAN_STATUS_ROUTE = "/api/lan/status"
     API_LAN_ACCESS_ROUTE = "/api/lan/access"
     API_NOTEBOOK_TRASH_ROUTE = "/api/notebook/trash"
@@ -429,3 +431,5 @@ class TermdeckConfig:
     REMOTE_RECONNECT_MAX_SECONDS = 20.0
     REMOTE_HTTP_TIMEOUT_SECONDS = 60.0
     REMOTE_DEMAND_POLL_SECONDS = 5.0
+    UPDATE_CHECK_CACHE_SECONDS = 24 * 60 * 60
+    UPDATE_CHECK_TIMEOUT_SECONDS = 5.0

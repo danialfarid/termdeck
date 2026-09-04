@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- A dismissible update notice backed by an on-demand GitHub release check cached for 24 hours; it never installs
+  or restarts anything automatically.
 - Optional bearer-token authentication for direct HTTP/WebSocket access and a server-wide read-only monitoring
   mode; the hosted relay authenticates locally without disclosing the direct-access token to its browser.
 - Portable session export/import archives preserve the resume profile, draft, normalized transcript, and

@@ -485,6 +485,12 @@ body.dragging { user-select: none; cursor: col-resize; }
 #status-name { min-width: 0; font-size: var(--ui-font-size); color: var(--dim); font-family: Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.8; }
 #access-mode-badge { flex: none; padding: 2px 6px; border: 1px solid var(--active-border); border-radius: 8px; color: var(--accent); font: 600 calc(var(--ui-font-size) - 1px)/1.1 Menlo, monospace; text-transform: uppercase; letter-spacing: .04em; }
 body.termdeck-read-only #history-prompt { color: var(--dim); cursor: not-allowed; }
+#update-notice { position: fixed; z-index: 120; top: max(10px, env(safe-area-inset-top)); right: 12px; display: flex; align-items: center; gap: 7px; max-width: min(430px, calc(100vw - 24px)); padding: 7px 8px 7px 10px; border: 1px solid var(--active-border); border-radius: 8px; background: var(--panel2); box-shadow: 0 10px 30px rgba(0,0,0,.4); color: var(--accent); font: var(--ui-font-size)/1.2 Menlo, monospace; }
+#update-notice.hidden { display: none; }
+#update-notice a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); text-decoration: none; }
+#update-notice a:hover { color: var(--accent); text-decoration: underline; }
+#update-notice button { flex: none; width: 22px; height: 22px; padding: 0; border: 0; background: transparent; color: var(--dim); cursor: pointer; }
+#update-notice button:hover { color: var(--text); }
 #lsp-status { flex: none; max-width: 180px; overflow: hidden; color: var(--green); font-family: Menlo, monospace; font-size: var(--ui-font-size); text-overflow: ellipsis; white-space: nowrap; opacity: 0.82; }
 #lsp-status.unavailable { color: #e8a15b; font-weight: 600; }
 #lsp-status.installable { cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); text-underline-offset: 2px; }

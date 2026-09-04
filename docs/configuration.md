@@ -38,6 +38,7 @@ Layout inside the data directory:
 | `backups/` | Rotating snapshots of sessions, settings, projects, and closed-session metadata, capped at 50 MB |
 | `dtach/` | One socket per live terminal |
 | `uploads/` | Files pasted or dropped into a prompt |
+| `update-check.json` | Latest GitHub release metadata, refreshed at most once per day when a UI is opened |
 | `termdeck.log` | Service log (macOS; Linux logs to the journal) |
 
 Running two instances against the same data directory is not supported — give each one its own
