@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-09-03
+
+### Fixed
+
+- A finished turn is marked unread even when the page was not listening at the moment it ended. Unread was
+  driven by watching a terminal go from working to idle, so a page whose status socket was reconnecting, a
+  phone that was asleep, or a suspended tab saw neither edge and never marked anything — while a sibling
+  page that was listening did, which is how the same Codex turn showed unread on one device and idle on
+  another. The server now stamps when each turn ends, and a page treats a stamp it has not accounted for as
+  a completion it missed. A page that loads after a turn ended does not report it.
+
 ## [0.10.0] — 2026-09-03
 
 ### Added
@@ -534,7 +545,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/danialfarid/termdeck/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/danialfarid/termdeck/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/danialfarid/termdeck/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/danialfarid/termdeck/compare/v0.8.0...v0.8.1

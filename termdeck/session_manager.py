@@ -103,6 +103,9 @@ class ManagedSession:
         # by the AgentCli, None for plain shells.
         self.agent_state = agents.agent_cli(record.agent_kind).new_session_state()
         self.processing_started_at: float | None = None
+        # When the last turn ended. A page that missed the working→idle transition -- socket down,
+        # phone asleep -- compares this against the last stamp it accounted for to find turns it never saw.
+        self.last_completed_at: float | None = None
         self.notified_attention = False
         self.notified_processing = False
         self.notified_processing_since = 0.0
@@ -720,6 +723,10 @@ class TerminalSessionManager:
             # transition, so use the current wall clock instead.
             ms.processing_started_at = time.time()
         elif not current:
+            # Only a run that was seen to start counts as finished: the resets on restart and kill
+            # clear processing_started_at directly, and a terminal that was stopped did not finish a turn.
+            if ms.processing_started_at is not None:
+                ms.last_completed_at = time.time()
             ms.processing_started_at = None
         return current
 
@@ -759,6 +766,7 @@ class TerminalSessionManager:
             ApiFields.NEEDS_ATTENTION: ms.attention_required,
             ApiFields.ACTIVITY: agents.agent_cli(ms.record.agent_kind).activity_detail(ms),
             "processing_since": ms.processing_started_at,
+            "last_completed_at": ms.last_completed_at,
             "last_activity_at": ms.last_activity_at,
         }
 
@@ -1829,6 +1837,7 @@ class TerminalSessionManager:
         summary["processing"] = processing
         summary[ApiFields.NEEDS_ATTENTION] = ms.attention_required
         summary["processing_since"] = ms.processing_started_at
+        summary["last_completed_at"] = ms.last_completed_at
         summary["last_activity_at"] = ms.last_activity_at
         return summary
 

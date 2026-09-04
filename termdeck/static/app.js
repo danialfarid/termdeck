@@ -858,6 +858,7 @@ class TermdeckApp {
     this.pageFaviconHref = this.pageFavicon?.getAttribute("href") || "/static/favicon.svg";
     this.pageFaviconType = this.pageFavicon?.getAttribute("type") || "image/svg+xml";
     this.viewedCompletedSessions = new Set();
+    this.completionSeenAt = new Map();
     this.unreadSessions = new Set();
     this.statHistory = [];
     this.editor = null;
@@ -4298,6 +4299,7 @@ class TermdeckApp {
         if (spinning && !this.processingSince.has(s.session_id)) this.processingSince.set(s.session_id, Date.now());
       }
       else this.updateProcessingState(s.session_id, spinning);
+      this.noteCompletionStamp(s, spinning);
     }
     for (const s of this.closedSessions) this.cacheSessionModel(s);
     const ids = new Set(sessions.map((s) => s.session_id));
@@ -4701,6 +4703,7 @@ class TermdeckApp {
       if (activity > 0) this.touchSessionActivity(session.session_id, activity > 1e12 ? activity : activity * 1000);
     }
     if (Object.prototype.hasOwnProperty.call(message, "processing")) session.processing = !!message.processing;
+    if (Object.prototype.hasOwnProperty.call(message, "last_completed_at")) session.last_completed_at = message.last_completed_at;
     if (Object.prototype.hasOwnProperty.call(message, "processing_since")) {
       session.processing_since = message.processing_since;
       const processingSince = Number(message.processing_since);
@@ -4739,6 +4742,7 @@ class TermdeckApp {
     if (processingChanged || (spinning && this.historyPendingProcessing.has(session.session_id))) {
       this.updateProcessingState(session.session_id, spinning);
     }
+    this.noteCompletionStamp(session, spinning);
     if (activityDetailChanged) {
       this.updateSessionActivityDots(session.session_id);
       this.updateEventlyDemoFeatureBanner();
@@ -4934,6 +4938,25 @@ class TermdeckApp {
   // Coming back to the page is reading the terminal that is already on screen. Unread was cleared only
   // when the selection MOVED, so a session that finished a turn while its own tab sat in the background
   // kept the badge for good: returning to that tab selects nothing new, and neither does leaving it.
+  // Unread has been driven by watching a session go working→idle. A page that was not listening at
+  // that moment -- status socket reconnecting, phone asleep, tab suspended -- never sees the pair of
+  // edges and never marks anything, while a sibling page that was listening does: the same finished
+  // turn showed unread on one device and idle on another. The server stamps when each turn ended;
+  // a stamp newer than the last one this page accounted for is a completion it missed. The first
+  // stamp a page sees is its baseline, so a page that loads after a turn ended does not report it.
+  noteCompletionStamp(session, spinning) {
+    const id = session?.session_id;
+    if (!id) return;
+    const completedAt = Number(session.last_completed_at || 0);
+    const seen = this.completionSeenAt.get(id);
+    this.completionSeenAt.set(id, completedAt);
+    if (seen === undefined || completedAt <= seen || spinning || this.unreadSessions.has(id)) return;
+    if (id === this.activeId && !document.hidden && document.hasFocus()) return;
+    this.unreadSessions.add(id);
+    this.updateUnreadIndicator(id);
+    this.persistUnreadSessionDelta([id], true);
+  }
+
   markActiveSessionRead() {
     const id = this.activeId;
     if (document.hidden || !id || !this.session(id)) return;
