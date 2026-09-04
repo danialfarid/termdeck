@@ -15,13 +15,13 @@ your phone.
 
 Persistent agents, queues, notes, grouping, search, cross-agent handoff, and background activity.
 
-![TermDeck terminal workflow](docs/media/demo-terminals-hd.gif)
+![TermDeck terminal workflow](docs/media/demo-terminals.gif)
 
 *[Full-resolution terminal workflow video](docs/media/demo-terminals.webm)*
 
 File tree, usages, history, blame, pending diffs, worktrees, remotes, and stashes.
 
-![TermDeck Files and Git workflow](docs/media/demo-files-git-hd.gif)
+![TermDeck Files and Git workflow](docs/media/demo-files-git.gif)
 
 *[Full-resolution Files/Git workflow video](docs/media/demo-files-git.webm)*
 
@@ -141,8 +141,12 @@ terminal. In order:
    terminal comes back into the same session.
 
 If the page itself will not load, the loading screen offers **Refresh page**, **Restart TermDeck server**, and
-**Stop running terminals** after a few seconds; from a shell, `termdeck service restart` does the same. More in
-[docs/troubleshooting.md](docs/troubleshooting.md).
+**Stop running terminals** after a few seconds; from a shell, `termdeck service restart` does the same.
+
+If the server will not start with *address already in use*, something else has port 8530: run it on another
+with `termdeck --port 9000`, or bake that in with `termdeck --port 9000 service install`.
+
+More in [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Roadmap
 

@@ -25,9 +25,9 @@ Built output, committed:
 docs/media/demo-opening.webm    1680x900, 64s, ~5.6 MB   full resolution, linked under the player
 docs/media/demo-opening.gif     700px,    64s, ~6.2 MB   what the README actually shows
 docs/media/demo-terminals.webm  1680x900, 93s,  ~8.9 MB  multi-agent terminal workflow
-docs/media/demo-terminals.gif   700px,    93s,  ~9.7 MB  GitHub-compatible terminal workflow
+docs/media/demo-terminals.gif   1200px,   93s, ~18.4 MB  what the README shows for the terminal workflow
 docs/media/demo-files-git.webm  1680x900, 26s,  ~3.1 MB  Files/Git workflow
-docs/media/demo-files-git.gif   700px,    26s,  ~3.4 MB  GitHub-compatible Files/Git workflow
+docs/media/demo-files-git.gif   1200px,   26s,  ~6.5 MB  what the README shows for the Files/Git workflow
 ```
 
 ## Rebuilding it
