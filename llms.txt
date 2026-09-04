@@ -12,6 +12,7 @@ Aider, or OpenCode adapter that runs them.
 - [README](https://github.com/danialfarid/termdeck/blob/main/README.md): installation, workflow, and features
 - [Agent task API](https://github.com/danialfarid/termdeck/blob/main/docs/agents-termdeck-api.md): spawn an agent, send prompts, monitor completion, and read results
 - [Agent adapter API](https://github.com/danialfarid/termdeck/blob/main/docs/agent-cli-api.md): add or extend an agent CLI integration
+- [Declarative agent profiles](https://github.com/danialfarid/termdeck/blob/main/docs/agent-profiles.md): add launch, resume, fork, rename, transcript, activity, permission, and icon support without Python
 - [Session export and import](https://github.com/danialfarid/termdeck/blob/main/docs/session-export-import.md): portable archive format, trust boundary, and API
 - [Architecture](https://github.com/danialfarid/termdeck/blob/main/docs/architecture.md): server, terminal, transcript, file, Git, and LSP boundaries
 - [Configuration](https://github.com/danialfarid/termdeck/blob/main/docs/configuration.md): environment variables, services, agents, remote access, and language servers

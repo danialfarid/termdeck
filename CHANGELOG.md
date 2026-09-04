@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Declarative agent profiles in the data directory can add a CLI's launch/model arguments, permissions,
+  resume, fork, rename, JSONL transcript mapping, activity detector, attention markers, and brand icon without
+  changing TermDeck; complex integrations continue to use Python adapters.
 - A dismissible update notice backed by an on-demand GitHub release check cached for 24 hours; it never installs
   or restarts anything automatically.
 - Optional bearer-token authentication for direct HTTP/WebSocket access and a server-wide read-only monitoring

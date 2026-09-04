@@ -20,6 +20,7 @@ class TermdeckConfig:
     DATA_DIR = PlatformPaths.env_directory(PlatformPaths.ENV_DATA_DIR, PlatformPaths.default_data_dir())
     SESSIONS_FILE = DATA_DIR / "sessions.json"
     SETTINGS_FILE = DATA_DIR / "settings.json"
+    AGENT_PROFILES_FILE = DATA_DIR / "agent-profiles.json"
     REMOTE_CREDENTIALS_FILE = DATA_DIR / "remote-credentials.json"
     UPDATE_CHECK_FILE = DATA_DIR / "update-check.json"
     CLOSED_SESSIONS_FILE = DATA_DIR / "closed_sessions.json"

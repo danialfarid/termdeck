@@ -34,6 +34,7 @@ Layout inside the data directory:
 | `closed_sessions.json` | The last 100 closed terminals, so they can be reopened |
 | `projects.json` | Registered project directories and their slugs |
 | `settings.json` | Fonts, panel widths, theme, keybindings, open files, active terminal |
+| `agent-profiles.json` | Optional declarative launch, resume, fork, transcript, activity, permission, and icon profiles |
 | `scrollback/` | One ring-buffer file per terminal |
 | `backups/` | Rotating snapshots of sessions, settings, projects, and closed-session metadata, capped at 50 MB |
 | `dtach/` | One socket per live terminal |
@@ -43,6 +44,9 @@ Layout inside the data directory:
 
 Running two instances against the same data directory is not supported — give each one its own
 `TERMDECK_DATA_DIR` and port.
+
+`agent-profiles.json` is loaded once at startup. See [Declarative agent profiles](agent-profiles.md) for the
+schema and a complete example.
 
 TermDeck writes a state snapshot before critical JSON changes, throttled to one pre-write snapshot every five
 minutes, and once per hour. The backup directory is

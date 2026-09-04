@@ -77,7 +77,7 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
 ## Features
 
 - **Any agent CLI** — Codex, Claude Code, AGY, Aider, OpenCode, and plain shells, side by side. Teaching it a
-  new CLI is one adapter class.
+  new CLI is one [declarative profile](docs/agent-profiles.md), with Python adapters reserved for unusual formats.
 - **Persistent sessions** — terminals and agent sessions survive browser and server restarts, and reopen into
   the same conversation after a machine restart.
 - **Portable sessions** — export a terminal with its resume profile, draft, transcript, and available replay;
@@ -189,6 +189,8 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 - Per-agent icons in the terminal list, each toggleable; working state animates, unread stays until you look.
 - Choose an explicit model at launch for Codex, Claude, AGY, Aider, or OpenCode. Aider and OpenCode accept
   OpenRouter model IDs while retaining their own terminal icon, activity signal, permissions, and resume rules.
+- Add another CLI through `agent-profiles.json`: launch/model arguments, permission presets, resume, fork,
+  rename, generic JSONL transcripts, event-driven activity, attention markers, and a brand icon are declarative.
 - Live activity dots for background commands, monitors, and subagents under the session that owns them.
 - The favicon shows the selected terminal's working and unread state.
 - CPU and memory for the app and for each terminal's process tree in the bottom bar; under Maintenance, a

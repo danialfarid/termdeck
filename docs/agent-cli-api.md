@@ -1,8 +1,9 @@
 # Agent CLI API — one class per agent
 
-Goal: adding a new agent CLI (a `claude`/`codex`-like tool) means writing **one Python class**,
-registering it in one list, and optionally adding one small client behavior object + icon. No
-scattered `if kind == CLAUDE` branches.
+Goal: a straightforward agent CLI is described by one local JSON profile; a complex
+`claude`/`codex`-like tool needs one Python class, one registry entry, and optionally one small client
+behavior object. Neither path adds scattered `if kind == CLAUDE` branches. See
+[Declarative agent profiles](agent-profiles.md) for the no-code path.
 
 ## Why
 
@@ -56,6 +57,7 @@ termdeck/agents/
   claude.py      # ClaudeCli
   codex.py       # CodexCli
   agy.py         # AgyCli
+  declarative.py # validated JSON profiles mapped onto AgentCli hooks
 ```
 
 - Adapters are **stateless singletons** (small path caches allowed). All session state stays

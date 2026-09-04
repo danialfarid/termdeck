@@ -43,7 +43,9 @@ class EnvironmentCheck:
     @staticmethod
     def normalize_model(model: str) -> str:
         raw_model = model.strip().strip("\"'").lower()
-        return EnvironmentCheck.MODEL_ALIASES.get(raw_model, raw_model)
+        normalized = EnvironmentCheck.MODEL_ALIASES.get(raw_model, raw_model)
+        from termdeck import agents
+        return agents.resolve_model_alias(normalized)
 
     @staticmethod
     def program_is_usable(program: str, resolved_path: str) -> bool:
@@ -59,6 +61,7 @@ class EnvironmentCheck:
 
     @staticmethod
     def collect_reports() -> list[DependencyReport]:
+        from termdeck import agents
         from termdeck.config import TermdeckConfig
 
         specs: tuple[tuple[str, str, bool, str], ...] = (
@@ -79,9 +82,20 @@ class EnvironmentCheck:
                  "rg": EnvironmentCheck.package_install_hint("ripgrep")}
         if PlatformPaths.IS_MACOS:
             hints.update({program: EnvironmentCheck.MODEL_INSTALL_COMMANDS[program] for program in EnvironmentCheck.MODEL_INSTALL_COMMANDS})
-        return [DependencyReport(program=program, resolved_path=resolved, is_present=EnvironmentCheck.program_is_usable(program, resolved), is_required=required, used_for=used_for,
-                                 install_hint=hints.get(program, EnvironmentCheck.package_install_hint(program)))
-                for program, resolved, required, used_for in specs]
+        reports = [DependencyReport(program=program, resolved_path=resolved, is_present=EnvironmentCheck.program_is_usable(program, resolved), is_required=required, used_for=used_for,
+                                    install_hint=hints.get(program, EnvironmentCheck.package_install_hint(program)))
+                   for program, resolved, required, used_for in specs]
+        known = {report.program for report in reports}
+        for agent in agents.AGENT_CLIS.values():
+            if not agent.is_agent or not agent.launchable or not agent.executable or agent.executable in known:
+                continue
+            resolved = PlatformPaths.resolve_binary("", agent.executable)
+            reports.append(DependencyReport(
+                program=agent.executable, resolved_path=resolved,
+                is_present=EnvironmentCheck.program_is_usable(agent.executable, resolved), is_required=False,
+                used_for=f"{agent.label} terminal integration",
+                install_hint=getattr(agent, "install_hint", "") or EnvironmentCheck.package_install_hint(agent.executable)))
+        return reports
 
     @staticmethod
     def missing_model_dependency(model: str) -> DependencyReport | None:
@@ -93,7 +107,15 @@ class EnvironmentCheck:
 
     @staticmethod
     def model_install_command(model: str) -> str:
-        return EnvironmentCheck.MODEL_INSTALL_COMMANDS.get(EnvironmentCheck.normalize_model(model), "")
+        normalized = EnvironmentCheck.normalize_model(model)
+        built_in = EnvironmentCheck.MODEL_INSTALL_COMMANDS.get(normalized)
+        if built_in is not None:
+            return built_in
+        from termdeck import agents
+        try:
+            return str(getattr(agents.agent_cli(normalized), "install_hint", ""))
+        except ValueError:
+            return ""
 
     @staticmethod
     def missing_required(reports: list[DependencyReport]) -> list[DependencyReport]:
