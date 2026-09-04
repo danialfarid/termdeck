@@ -28,6 +28,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Inside an expanded thinking block, each operation shows its first four lines with a "N more lines" control
+  under it; opening one keeps it open through re-renders while the agent is still streaming. A block of
+  twenty tool calls used to be twenty full outputs end to end.
 - The chevron beside the project and worktree names sits right after the name rather than at the far end of
   the row, where a short name left a panel-wide gap.
 

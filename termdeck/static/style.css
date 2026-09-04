@@ -656,6 +656,11 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 .history-thinking-label { padding: 6px 10px 2px; color: var(--dim); font: 600 calc(var(--ui-font-size) - 1px) Menlo, monospace; text-transform: uppercase; letter-spacing: 0.05em; }
 .history-thinking pre { margin: 0; border-top: 0; border-bottom: 1px solid var(--border); }
 .history-thinking pre:last-child { border-bottom: 0; }
+/* Four lines of a long operation, then a control to open the rest; the fade says there is more. */
+.history-thinking-item.clamped { max-height: calc(4 * 1.45em + 16px); overflow: hidden; border-bottom: 0; -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 1.6em), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 1.6em), transparent); }
+.history-thinking-more { display: block; width: 100%; padding: 3px 10px 6px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--accent); cursor: pointer; text-align: left; font: 600 calc(var(--ui-font-size) - 1px)/1.4 Menlo, monospace; }
+.history-thinking-more:hover { background: var(--active-bg); }
+.history-thinking-more:last-child { border-bottom: 0; }
 .history-thinking-footer { display: flex; justify-content: flex-end; padding: 7px 9px; border-top: 1px solid var(--border); background: rgba(0, 0, 0, 0.08); }
 .history-thinking-collapse { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--dim); cursor: pointer; font: 600 calc(var(--ui-font-size) - 1px) Menlo, monospace; }
 .history-thinking-collapse:hover { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }

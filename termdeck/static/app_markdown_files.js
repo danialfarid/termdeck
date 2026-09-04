@@ -3157,14 +3157,8 @@ Object.assign(TermdeckApp.prototype, {
         if (turn.kind === "thinking" && Array.isArray(turn.items) && turn.items.length) {
           const results = document.createElement("div");
           results.className = "history-thinking";
-          for (const item of turn.items) {
-            const label = document.createElement("div");
-            label.className = "history-thinking-label";
-            label.textContent = item.kind === "result" ? "Result" : (item.title || "Tool");
-            const result = document.createElement("pre");
-            result.textContent = item.text || "";
-            results.append(label, result);
-          }
+          const turnKey = turn.pending_id || this.conversationOutlineTurnKey(turn);
+          turn.items.forEach((item, index) => this.appendHistoryThinkingItem(results, item, `${turnKey}:${index}`));
           const footer = document.createElement("div");
           footer.className = "history-thinking-footer";
           const collapse = document.createElement("button");
@@ -3257,6 +3251,47 @@ Object.assign(TermdeckApp.prototype, {
       body.appendChild(block);
     }
     this.updateHistoryEditToggle();
+  },
+
+
+  // One operation inside an expanded thinking block. Anything longer than a few lines shows its
+  // first four with a "N more lines" control under it: a block of twenty tool calls used to be twenty
+  // full outputs end to end, and the one the reader wanted was somewhere in the middle of them.
+  HISTORY_THINKING_PREVIEW_LINES: 4,
+  HISTORY_THINKING_PREVIEW_CHARS: 320,
+
+  appendHistoryThinkingItem(container, item, itemKey) {
+    const label = document.createElement("div");
+    label.className = "history-thinking-label";
+    label.textContent = item.kind === "result" ? "Result" : (item.title || "Tool");
+    const text = String(item.text || "");
+    const result = document.createElement("pre");
+    result.className = "history-thinking-item";
+    result.textContent = text;
+    container.append(label, result);
+    const lines = text.split("\n").length;
+    // Long single lines wrap into many rows too; the character count stands in for that.
+    const clampable = lines > this.HISTORY_THINKING_PREVIEW_LINES || text.length > this.HISTORY_THINKING_PREVIEW_CHARS;
+    if (!clampable) return;
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "history-thinking-more";
+    const hidden = Math.max(1, lines - this.HISTORY_THINKING_PREVIEW_LINES);
+    const apply = (expanded) => {
+      result.classList.toggle("clamped", !expanded);
+      toggle.textContent = expanded ? "show less" : `… ${hidden} more line${hidden === 1 ? "" : "s"}`;
+      toggle.title = expanded ? "Back to the first four lines" : "Show the whole thing";
+    };
+    apply(this.historyThinkingExpandedItems.has(itemKey));
+    toggle.onclick = (eventClick) => {
+      eventClick.preventDefault();
+      eventClick.stopPropagation();
+      const expanded = !this.historyThinkingExpandedItems.has(itemKey);
+      if (expanded) this.historyThinkingExpandedItems.add(itemKey);
+      else this.historyThinkingExpandedItems.delete(itemKey);
+      apply(expanded);
+    };
+    container.appendChild(toggle);
   },
 
 

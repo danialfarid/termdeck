@@ -879,6 +879,9 @@ class TermdeckApp {
     this.pageFaviconType = this.pageFavicon?.getAttribute("type") || "image/svg+xml";
     this.viewedCompletedSessions = new Set();
     this.completionSeenAt = new Map();
+    // Thinking items the reader has opened past their four-line preview, keyed by turn and position,
+    // so a re-render while streaming does not fold them back.
+    this.historyThinkingExpandedItems = new Set();
     this.unreadSessions = new Set();
     this.statHistory = [];
     this.editor = null;
