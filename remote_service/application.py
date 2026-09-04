@@ -79,7 +79,12 @@ class RemoteRelayApplication:
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     async def idle_page(self, request: Request, return_to: str = "/") -> Response:
-        self._require_browser_user(request)
+        # A page, so an expired session sends the browser to the login page rather than answering
+        # with JSON. This is the address a phone comes back to after hours away -- the deck parks
+        # itself here when idle -- and a 401 body here left it stuck: reloading fetched the same
+        # 401, and the deck's own login handling never ran because the deck never loaded.
+        if self._browser_user(request.cookies.get(self.SESSION_COOKIE, "")) is None:
+            return self._login_redirect(self._safe_return_to(return_to))
         idle_config = {"returnTo": self._safe_return_to(return_to)}
         html = self.STATIC_IDLE_FILE.read_text().replace(
             "__TERMDECK_REMOTE_IDLE_CONFIG__", json.dumps(idle_config).replace("</", "<\\/"))
@@ -180,7 +185,12 @@ class RemoteRelayApplication:
     async def proxy_http(self, request: Request, path: str = "") -> Response:
         user = self._browser_user(request.cookies.get(self.SESSION_COOKIE, ""))
         if user is None:
-            return RedirectResponse(f"{self.SPECIAL_PREFIX}/login?return_to={quote(self._request_target(request))}", status_code=303)
+            # Only a navigation is sent to the login page. A fetch from the deck's own scripts gets a
+            # plain 401 it can act on: redirecting it handed the login page's HTML to code expecting
+            # JSON, and a later login would have returned the user to /api/sessions.
+            if not self._is_navigation(request):
+                raise HTTPException(status_code=401, detail="Google login required")
+            return self._login_redirect(self._request_target(request))
         if request.method not in {"GET", "HEAD"}:
             self._require_mutation_origin(request)
         connector = self.registry.get(user.user_id)
@@ -303,6 +313,18 @@ class RemoteRelayApplication:
 
     def _request_target(self, request: Request) -> str:
         return request.url.path + (f"?{request.url.query}" if request.url.query else "")
+
+    def _login_redirect(self, return_to: str) -> RedirectResponse:
+        return RedirectResponse(f"{self.SPECIAL_PREFIX}/login?return_to={quote(return_to)}", status_code=303,
+                                headers={"Cache-Control": "no-store"})
+
+    @staticmethod
+    def _is_navigation(request: Request) -> bool:
+        """A request the browser made to show a page, as opposed to one the deck's scripts made."""
+        mode = request.headers.get("sec-fetch-mode", "")
+        if mode:
+            return mode == "navigate"
+        return "text/html" in request.headers.get("accept", "")
 
     @staticmethod
     def _safe_return_to(return_to: str) -> str:

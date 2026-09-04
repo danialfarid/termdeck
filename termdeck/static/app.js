@@ -1493,6 +1493,7 @@ class TermdeckApp {
     } catch (error) {
       return;
     }
+    if (this.remoteLoginRequired(response)) return;
     if (!response.ok || stateKey !== this.projectStateKey()) return;
     const payload = await response.json();
     if ((this.projectStateLocalRevision || 0) !== revision) return;
@@ -4419,6 +4420,7 @@ class TermdeckApp {
     try {
       const [sessionsRes, closedRes] = await Promise.all(
         [fetch("/api/sessions" + this.projectQuery()), fetch("/api/closed" + this.projectQuery())]);
+      if (this.remoteLoginRequired(sessionsRes)) return;
       sessions = await sessionsRes.json();
       closed = await closedRes.json();
     } catch (err) {
@@ -4653,6 +4655,20 @@ class TermdeckApp {
         : "Reconnecting… Your Transcript draft is saved on this device.";
     }
     warning.classList.toggle("hidden", !disconnected || !this.touchMobileLayoutEnabled());
+  }
+
+  // Through the remote relay a session lasts hours, not forever. When it runs out under an open
+  // deck, the relay answers the deck's own fetches with 401 -- this is what the list refresh and the
+  // project-state refresh see -- and the deck takes itself to the login page with this address as
+  // the way back, instead of reconnecting to nothing until someone types the login URL by hand.
+  remoteLoginRequired(response) {
+    if (!response || response.status !== 401 || this.remoteIdleTransitioning) return false;
+    this.remoteIdleTransitioning = true;
+    clearTimeout(this.remoteIdleTimer);
+    const loginUrl = new URL("/_remote/login", location.origin);
+    loginUrl.searchParams.set("return_to", `${location.pathname}${location.search}${location.hash}`);
+    location.replace(loginUrl.href);
+    return true;
   }
 
   async initializeRemoteIdleMode() {

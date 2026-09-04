@@ -103,3 +103,41 @@ class RemoteAccessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExpiredSessionTest(unittest.TestCase):
+    """What a browser gets back once its relay session has run out, page by page and fetch by fetch."""
+
+    @staticmethod
+    def relay() -> RemoteRelayApplication:
+        return RemoteRelayApplication(config=RemoteAccessTest.config(), token_store=MemoryConnectorTokenStore(),
+                                      identity_verifier=FakeGoogleIdentityVerifier())
+
+    def test_the_idle_page_sends_an_expired_session_to_login_with_the_way_back(self) -> None:
+        client = TestClient(self.relay().app)
+
+        response = client.get("/_remote/idle?return_to=/p/project%3Ft%3Dterminal", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/_remote/login?return_to=/p/project%3Ft%3Dterminal")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_a_page_navigation_is_sent_to_login_but_a_script_fetch_gets_a_plain_401(self) -> None:
+        client = TestClient(self.relay().app)
+
+        navigation = client.get("/p/project?t=terminal", headers={"Sec-Fetch-Mode": "navigate"}, follow_redirects=False)
+        self.assertEqual(navigation.status_code, 303)
+        self.assertEqual(navigation.headers["location"], "/_remote/login?return_to=/p/project%3Ft%3Dterminal")
+
+        fetch = client.get("/api/sessions", headers={"Sec-Fetch-Mode": "cors", "Accept": "application/json"})
+        self.assertEqual(fetch.status_code, 401)
+        self.assertEqual(fetch.json(), {"detail": "Google login required"})
+
+    def test_without_fetch_metadata_the_accept_header_decides(self) -> None:
+        client = TestClient(self.relay().app)
+
+        page = client.get("/p/project", headers={"Accept": "text/html,application/xhtml+xml"}, follow_redirects=False)
+        self.assertEqual(page.status_code, 303)
+
+        script = client.get("/api/sessions", headers={"Accept": "application/json"})
+        self.assertEqual(script.status_code, 401)

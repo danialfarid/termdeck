@@ -39,6 +39,15 @@ All notable changes to this project are documented here. The format follows
 - Read-only monitoring blocks language-server saves, command execution, and workspace edits while retaining
   read-only language-server features; the fallback agent catalog matches the richer Aider, AGY, and OpenCode UI.
 
+### Fixed
+
+- A phone coming back to TermDeck Remote after its session ran out no longer lands on
+  `{"detail":"Google login required"}` with no way forward. The deck parks itself on the relay's idle page
+  when unattended, and that page answered an expired session with JSON — reloading fetched the same JSON.
+  It now sends the browser to the login page with the deck as the way back. A session that runs out under
+  an open deck is caught by the deck's own refreshes, which now get a plain 401 from the relay instead of the
+  login page's HTML, and it takes itself to login the same way.
+
 ## [0.10.1] — 2026-09-03
 
 ### Fixed
