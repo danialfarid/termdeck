@@ -106,6 +106,23 @@ class ReplayRecorder:
                     ms.raw_replay_compaction_generation += 1
             self.seed_from_durable_buffer(ms)
 
+    def import_replay(self, ms, replay_kind: str, payload: bytes) -> None:
+        if not payload or replay_kind == "none":
+            return
+        agent = agents.agent_cli(ms.record.agent_kind)
+        if replay_kind == self.RAW_KIND:
+            if not agent.records_raw_replay:
+                raise ValueError(f"{agent.kind} sessions do not support raw terminal replay")
+            ms.raw_replay_buffer.extend(payload)
+            self._total_bytes += len(payload)
+            self._write_checkpoint_atomically(self.raw_path(ms.record.session_id), payload)
+            self.enforce_total_limit()
+            return
+        if replay_kind != self.SCROLLBACK_KIND or agent.is_agent:
+            raise ValueError(f"unsupported replay type for {agent.kind}: {replay_kind}")
+        ms.buffer.extend(payload)
+        self._write_checkpoint_atomically(self.scrollback_path(ms.record.session_id), payload)
+
     # -- checkpoint scheduling ---------------------------------------------
 
     @staticmethod

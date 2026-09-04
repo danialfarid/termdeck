@@ -287,7 +287,65 @@ class TerminalSessionManager:
             agent = agents.agent_cli(kind)
         except ValueError:
             raise ValueError(f"unknown model: {model}") from None
+        if not agent.launchable:
+            raise ValueError(f"agent cannot be launched: {model}")
         return agent.build_command(permission, model_name.strip(), session_ref.strip(), self._tracker)
+
+    def session_bundle_state(self, session_id: str) -> tuple[dict[str, object], str, bytes]:
+        ms = self._sessions[session_id]
+        agent = agents.agent_cli(ms.record.agent_kind)
+        if agent.records_raw_replay and ms.raw_replay_buffer:
+            return dict(ms.record.to_dict()), ReplayRecorder.RAW_KIND, self.replay.raw_bytes(ms)
+        if not agent.is_agent and ms.buffer:
+            return dict(ms.record.to_dict()), ReplayRecorder.SCROLLBACK_KIND, self.replay.replay_bytes(ms)
+        return dict(ms.record.to_dict()), "none", b""
+
+    def import_session_bundle(self, session_id: str, payload: dict[str, object], cwd: Path, project: str,
+                              worktree: WorktreeMetadata | None, worktree_id: str,
+                              imported_transcript_id: str | None, replay_kind: str, replay: bytes) -> ManagedSession:
+        if session_id in self._sessions:
+            raise ValueError(f"session already exists: {session_id}")
+        agent_kind = str(payload.get("agent_kind") or "")
+        agent = agents.agent_cli(agent_kind)
+        if not agent.launchable:
+            raise ValueError(f"session agent cannot be imported: {agent_kind}")
+        command = str(payload.get("command") or "")
+        detected_agent = agents.detect_agent_cli(command)
+        if agent.is_agent and detected_agent.kind != agent.kind:
+            raise ValueError(f"session command does not launch {agent.kind}")
+        agent_session_id = payload.get("agent_session_id")
+        fork_parent_id = payload.get("fork_parent_agent_session_id")
+        record = SessionRecord(
+            session_id=session_id, title=str(payload.get("title") or "Imported session"),
+            title_user_set=bool(payload.get("title_user_set", True)), command=command, cwd=str(cwd),
+            agent_kind=agent.kind, agent_session_id=str(agent_session_id) if agent_session_id else None,
+            created_at_est=str(payload.get("created_at_est") or TimeUtil.now_est_naive_iso()),
+            draft=str(payload.get("draft") or ""), project=project,
+            last_activity_at=float(payload.get("last_activity_at") or 0),
+            cols=max(20, min(1000, int(payload.get("cols") or TermdeckConfig.INITIAL_COLS))),
+            rows=max(5, min(1000, int(payload.get("rows") or TermdeckConfig.INITIAL_ROWS))),
+            cli_title=str(payload.get("cli_title")) if payload.get("cli_title") else None,
+            worktree_path=worktree.path if worktree else None,
+            worktree_repository=worktree.repository if worktree else None,
+            worktree_branch=worktree.branch if worktree else None,
+            worktree_base_ref=worktree.base_ref if worktree else None,
+            worktree_base_commit=worktree.base_commit if worktree else None,
+            worktree_managed=worktree.managed if worktree else False,
+            worktree_id=worktree_id or (worktree.worktree_id if worktree else "root"),
+            fork_parent_agent_session_id=str(fork_parent_id) if fork_parent_id else None,
+            imported_transcript_id=imported_transcript_id,
+        )
+        self._canonicalize_agent_resume_command(record)
+        ms = ManagedSession(record)
+        ms.lazy_start_pending = True
+        self._sessions[session_id] = ms
+        try:
+            self.replay.import_replay(ms, replay_kind, replay)
+        except (OSError, ValueError):
+            self._sessions.pop(session_id, None)
+            raise
+        self._persist()
+        return ms
 
     def _set_restart_permission(self, record: SessionRecord, permission: str) -> None:
         agent = agents.agent_cli(record.agent_kind)
@@ -1847,6 +1905,11 @@ class TerminalSessionManager:
     def session_history_source(self, session_id: str) -> tuple[str, str, str | None]:
         record = self._sessions[session_id].record
         transcript_session_id = record.agent_session_id or record.fork_parent_agent_session_id
+        if record.imported_transcript_id:
+            native_path = agents.agent_cli(record.agent_kind).transcript_path(
+                Path(record.cwd), transcript_session_id) if transcript_session_id else None
+            if native_path is None or not native_path.is_file():
+                return "termdeck-archive", "", record.imported_transcript_id
         return record.agent_kind, record.cwd, transcript_session_id
 
     def session_usage(self, session_id: str) -> dict[str, int | None]:

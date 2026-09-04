@@ -95,6 +95,7 @@ before it binds.
 | `proc_tree.py` | Socket → master pid → descendant pids, from one machine-wide sample. |
 | `stats_service.py` | Per-terminal and whole-app cpu/rss sampling. |
 | `service_log.py` | Bounds the supervisor-owned log, found from this process's stdout descriptor. |
+| `session_bundle.py` | Builds and validates portable session archives and their normalized transcript fallback. |
 | `util.py` | `OscTitleParser` (OSC 0/1/2 titles across chunk boundaries) and `TimeUtil` (EST-naive timestamps). |
 
 ### Packaging

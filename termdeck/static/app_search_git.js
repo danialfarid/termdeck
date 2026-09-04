@@ -4129,6 +4129,7 @@ Object.assign(TermdeckApp.prototype, {
         () => this.copyTextToClipboard(this.titlePresentation(session).text, "session name copied"), "copy");
       this.addContextItem(menu, this.shortcutLabel("Copy session id", "copy-session-id"),
         () => this.copyTextToClipboard(session.session_id, "session id copied"), "copy");
+      this.addContextItem(menu, "Export session…", () => void this.exportSessionArchive(session), "cloud-download");
       if (session.worktree_branch) {
         this.addContextItem(menu, "Review isolated worktree", () => this.openWorktreeReview(session.session_id), "git-commit");
       }
@@ -4192,6 +4193,27 @@ Object.assign(TermdeckApp.prototype, {
         () => this.openTerminalInNewTab(session), "new-window");
     }
     this.positionContextMenu(menu, event.clientX, event.clientY);
+  },
+
+
+  async exportSessionArchive(session) {
+    this.$("context-menu").classList.add("hidden");
+    this.$("status-name").textContent = `exporting ${this.titlePresentation(session).text}…`;
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(session.session_id)}/export`);
+      if (!response.ok) throw new Error(`session export failed: ${response.status}`);
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "session.termdeck-session";
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      this.$("status-name").textContent = `exported ${this.titlePresentation(session).text}`;
+    } catch (error) {
+      this.$("status-name").textContent = `unable to export session: ${error.message}`;
+    }
   },
 
 

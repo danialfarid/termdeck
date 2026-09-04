@@ -43,6 +43,7 @@ class SessionRecord:
     worktree_id: str = "root"
     claude_interrupted: bool = False
     fork_parent_agent_session_id: str | None = None
+    imported_transcript_id: str | None = None
 
     def to_dict(self) -> dict[str, str | bool | int | float | None]:
         return asdict(self)
@@ -70,7 +71,9 @@ class SessionRecord:
                              worktree_id=str(payload.get("worktree_id") or "root"),
                              claude_interrupted=bool(payload.get("claude_interrupted", False)),
                              fork_parent_agent_session_id=str(payload["fork_parent_agent_session_id"])
-                             if payload.get("fork_parent_agent_session_id") else None)
+                             if payload.get("fork_parent_agent_session_id") else None,
+                             imported_transcript_id=str(payload["imported_transcript_id"])
+                             if payload.get("imported_transcript_id") else None)
 
 
 class WsMessageFields:

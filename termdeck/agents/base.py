@@ -52,6 +52,8 @@ class AgentCli:
     label = ""                          # display name in the UI
     model_aliases: tuple[str, ...] = () # extra names accepted in the create-session model field
     is_agent = True                     # False only for the shell null object
+    launcher_visible = True
+    launchable = True
 
     # -- transcript tree ---------------------------------------------------
     sessions_root: Path | None = None   # root of the CLI's on-disk transcript tree

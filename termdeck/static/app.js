@@ -2488,6 +2488,38 @@ class TermdeckApp {
     await this.chooseProjectFolder();
   }
 
+  chooseSessionArchive() {
+    if (!this.projectSlug) {
+      void uiAlert("Select a project before importing a session.");
+      return;
+    }
+    const input = this.$("session-import-input");
+    input.value = "";
+    input.click();
+  }
+
+  async importSessionArchive(file) {
+    const confirmed = await uiConfirm(
+      `Import ${file.name}? Importing creates a dormant tab and runs nothing. Opening that tab may run or resume ` +
+      "the command saved in the archive, so import only a session you trust.",
+      { title: "Import session", confirmLabel: "Import", cancelLabel: "Cancel" });
+    if (!confirmed) return;
+    const form = new FormData();
+    form.append("file", file);
+    const params = new URLSearchParams({ project: this.projectSlug, worktree_id: this.stateWorktreeId(), trusted: "true" });
+    this.$("status-name").textContent = "importing session…";
+    try {
+      const response = await fetch(`/api/sessions/import?${params}`, { method: "POST", body: form });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || `session import failed: ${response.status}`);
+      await this.refresh();
+      const title = payload.session?.title || "session";
+      this.$("status-name").textContent = `imported ${title} · opens dormant`;
+    } catch (error) {
+      this.$("status-name").textContent = `unable to import session: ${error.message}`;
+    }
+  }
+
   headerPickerElements(kind) {
     return {
       button: this.$(`${kind}-select`), input: this.$(`${kind}-select-input`), label: this.$(`${kind}-select-label`),
@@ -2756,6 +2788,11 @@ class TermdeckApp {
     const gitAvailable = !!this.projectSlug && !this.vscodeMode && !!rootWorktree && rootWorktree.git_repository !== false;
     button.disabled = !gitAvailable;
     button.title = gitAvailable ? "Create a worktree" : "Select a Git project to create a worktree";
+    const importButton = this.$("header-import-session");
+    if (importButton) {
+      importButton.disabled = !this.projectSlug || this.vscodeMode;
+      importButton.title = importButton.disabled ? "Select a project to import a session" : "Import a TermDeck session archive";
+    }
     this.updateHeaderAddShortcutLabels();
   }
 
@@ -2798,6 +2835,7 @@ class TermdeckApp {
     if (action === "project") void this.addProjectFromHeader();
     else if (action === "worktree") this.openWorktreeModal();
     else if (action === "terminal") this.openModal();
+    else if (action === "import-session") this.chooseSessionArchive();
   }
 
   openWorktreeModal() {
@@ -3473,6 +3511,11 @@ class TermdeckApp {
     this.$("header-add-project").onclick = () => this.runHeaderAddAction("project");
     this.$("header-add-worktree").onclick = () => this.runHeaderAddAction("worktree");
     this.$("header-add-terminal").onclick = () => this.runHeaderAddAction("terminal");
+    this.$("header-import-session").onclick = () => this.runHeaderAddAction("import-session");
+    this.$("session-import-input").onchange = (event) => {
+      const file = event.target.files?.[0];
+      if (file) void this.importSessionArchive(file);
+    };
     this.updateHeaderAddMenu();
     const queryInput = this.$("search-query");
     queryInput.autocomplete = "off";

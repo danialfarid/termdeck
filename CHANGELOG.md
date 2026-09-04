@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Portable session export/import archives preserve the resume profile, draft, normalized transcript, and
+  available terminal replay, and restore as dormant tabs without executing on import.
 - An agent-readable `/llms.txt` capability and API index, plus a one-click diagnostics bundle containing
   sanitized dependency, session-state, process, language-server, remote-access, and bounded log information.
 - A richer adapter surface for Aider, AGY, and OpenCode: model IDs and provider routes can be chosen when a

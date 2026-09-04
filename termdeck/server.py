@@ -42,6 +42,7 @@ from termdeck.remote_access import RemoteAccessManager, RemoteAccessStatus
 from termdeck.remote_credentials import RemoteCredentialStore
 from termdeck.search_service import ProjectSearchService
 from termdeck.service_log import ServiceLogTrimmer
+from termdeck.session_bundle import SessionBundleService
 from termdeck.session_manager import TerminalSessionManager
 from termdeck.settings_store import UiSettingsStore
 from termdeck.state_backup import StateBackupManager
@@ -617,6 +618,7 @@ class TermdeckServer:
         self.search = ProjectSearchService(self.files)
         self.stats = ResourceStatsService()
         self.transcripts = TranscriptService()
+        self.session_bundles = SessionBundleService(TermdeckConfig.IMPORTED_TRANSCRIPTS_DIR)
         self.history_index = HistorySearchIndex(TermdeckConfig.HISTORY_INDEX_FILE)
         if self.manager is not None:
             self.manager.attach_transcript_service(self.transcripts)
@@ -719,6 +721,8 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_AGENTS_ROUTE, response_model=None)(self._list_agent_clis)
         app.get(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._list_sessions)
         app.post(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._create_session)
+        app.get(TermdeckConfig.API_SESSION_EXPORT_ROUTE, response_model=None)(self._export_session)
+        app.post(TermdeckConfig.API_SESSION_IMPORT_ROUTE, response_model=None)(self._import_session)
         app.post(TermdeckConfig.API_TERMINAL_TASK_ROUTE, response_model=None)(self._run_terminal_task)
         app.post(TermdeckConfig.API_TERMINAL_TASK_PROMPT_ROUTE, response_model=None)(self._follow_up_task_prompt)
         app.post(TermdeckConfig.API_TERMINALS_BATCH_ROUTE, response_model=None)(self._launch_terminal_batch)
@@ -1814,10 +1818,51 @@ class TermdeckServer:
 
     @staticmethod
     async def _list_agent_clis() -> dict[str, dict[str, object]]:
-        return {kind: agent.client_descriptor() for kind, agent in agents.AGENT_CLIS.items()}
+        return {kind: agent.client_descriptor() for kind, agent in agents.AGENT_CLIS.items() if agent.launcher_visible}
 
     async def _list_sessions(self, project: str = "", worktree_id: str = "") -> list[dict[str, object]]:
         return self.manager.list_sessions(project or None, worktree_id or None)
+
+    async def _export_session(self, session_id: str) -> Response:
+        from termdeck import __version__
+
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        record, replay_kind, replay = self.manager.session_bundle_state(session_id)
+        agent_kind, cwd, agent_session_id = self.manager.session_history_source(session_id)
+        turns = await asyncio.to_thread(self.transcripts.transcript_for, agent_kind, cwd, agent_session_id)
+        project_root = record.get("worktree_path") or self.manager.registry.root_for(str(record.get("project") or "")) \
+            or record.get("cwd") or TermdeckConfig.DEFAULT_CWD
+        filename, archive = await asyncio.to_thread(
+            self.session_bundles.build, __version__, record, Path(str(project_root)), turns, replay_kind, replay)
+        return Response(archive, media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+    async def _import_session(self, file: UploadFile, project: str = "", worktree_id: str = "root",
+                              trusted: bool = False) -> dict[str, object]:
+        if not trusted:
+            raise HTTPException(status_code=400, detail="trusted=true is required because opening an imported session may run its saved command")
+        archive_bytes = await file.read(TermdeckConfig.SESSION_BUNDLE_MAX_BYTES + 1)
+        imported_transcript_id: str | None = None
+        session_id = uuid.uuid4().hex[:12]
+        try:
+            bundle = await asyncio.to_thread(self.session_bundles.read, archive_bytes)
+            project_name, selected = self._selected_worktree(project, "", worktree_id)
+            root = Path(selected.path if selected else self.manager.registry.root_for(project_name) or "").resolve()
+            relative_cwd = Path(str(bundle.session.get("cwd_relative") or "."))
+            candidate_cwd = (root / relative_cwd).resolve()
+            cwd = candidate_cwd if candidate_cwd.is_relative_to(root) and candidate_cwd.is_dir() else root
+            imported_transcript_id = await asyncio.to_thread(
+                self.session_bundles.store_imported_transcript, session_id, bundle.transcript)
+            worktree = selected.metadata() if selected else None
+            ms = self.manager.import_session_bundle(
+                session_id, bundle.session, cwd, project_name, worktree, worktree_id,
+                imported_transcript_id, bundle.replay_kind, bundle.replay)
+        except (ValueError, OSError) as import_error:
+            if imported_transcript_id:
+                self.session_bundles.remove_imported_transcript(session_id)
+            raise HTTPException(status_code=400, detail=str(import_error)) from import_error
+        return {"imported": True, "starts_when_opened": True, "session": self.manager.session_summary(ms)}
 
     @staticmethod
     def _project_state_key(project: str, worktree_id: str) -> str:

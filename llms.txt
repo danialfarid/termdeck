@@ -12,6 +12,7 @@ Aider, or OpenCode adapter that runs them.
 - [README](https://github.com/danialfarid/termdeck/blob/main/README.md): installation, workflow, and features
 - [Agent task API](https://github.com/danialfarid/termdeck/blob/main/docs/agents-termdeck-api.md): spawn an agent, send prompts, monitor completion, and read results
 - [Agent adapter API](https://github.com/danialfarid/termdeck/blob/main/docs/agent-cli-api.md): add or extend an agent CLI integration
+- [Session export and import](https://github.com/danialfarid/termdeck/blob/main/docs/session-export-import.md): portable archive format, trust boundary, and API
 - [Architecture](https://github.com/danialfarid/termdeck/blob/main/docs/architecture.md): server, terminal, transcript, file, Git, and LSP boundaries
 - [Configuration](https://github.com/danialfarid/termdeck/blob/main/docs/configuration.md): environment variables, services, agents, remote access, and language servers
 - [Troubleshooting](https://github.com/danialfarid/termdeck/blob/main/docs/troubleshooting.md): diagnosis and recovery
@@ -25,6 +26,7 @@ Aider, or OpenCode adapter that runs them.
 - `GET /api/sessions/{session_id}/task-result` returns the extracted final response when available.
 - `POST /api/terminals/task/{session_id}/prompt` sends a follow-up to an existing task.
 - `GET /api/sessions/{session_id}/history` returns normalized transcript turns.
+- `GET /api/sessions/{session_id}/export` downloads a portable session; `POST /api/sessions/import` restores it as a dormant tab.
 - `GET /api/terminal-search` searches terminal titles, prompts, and responses.
 - `GET /api/files`, `GET /api/search`, and `GET /api/filename-search` expose project-confined file browsing and search.
 - `GET /api/lsp/status` and `WS /ws/lsp` expose language-server capabilities.
