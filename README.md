@@ -9,7 +9,7 @@
 Puppeteer all your agents from one lightweight browser tab. Never lose a session or a half-written prompt
 again — group them, give them worktrees, and let them talk to each other. Around them, a light IDE: an
 editor, search, find-usages, Git, pull requests, syntax highlighting, linters, and notes on the fly. Remote
-access built in: reach the whole deck from any device, phone included.
+access built in: reach the whole deck from anywhere.
 
 ## Demos
 
