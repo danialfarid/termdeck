@@ -164,6 +164,119 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 - [Troubleshooting](docs/troubleshooting.md)
 - [Architecture](docs/architecture.md)
 
+## Features in detail
+
+**Terminals and agents**
+
+- Codex, Claude Code, AGY, Aider, OpenCode, or a plain shell, launched with the CLI's own permission mode
+  (read-only, workspace-write, accept-edits, full access, …).
+- Every terminal runs under `dtach`: closing the tab or restarting the server leaves the process running.
+- Claude, Codex, and OpenCode sessions are tracked continuously — through `/clear` and in-TUI session switches —
+  and resumed after a machine restart.
+- Unsent input is reconstructed and saved as you type, and re-injected when the terminal comes back.
+- Fork a session into one copy or up to 25 numbered ones, placed beside the original.
+- Restart with a different permission mode, rename, copy the session ID, mark unread, ignore attention, or
+  open a terminal alone in its own browser tab.
+- Drag to reorder; collapsible, nameable groups; move one or many terminals between groups and projects.
+- Search names and output across open and closed terminals, with match navigation inside a terminal.
+- Recently closed terminals keep their history and group and reopen from the list.
+- File paths and `path:line` references printed in any terminal are clickable.
+- Drop a file or paste an image into a terminal and its path lands at the cursor.
+- Per-agent icons in the terminal list, each toggleable; working state animates, unread stays until you look.
+- Live activity dots for background commands, monitors, and subagents under the session that owns them.
+- The favicon shows the selected terminal's working and unread state.
+- CPU and memory for the app and for each terminal's process tree in the bottom bar; under Maintenance, a
+  process report, orphan cleanup, kill terminals older than 24 hours, and kill all.
+
+**Transcript mode**
+
+- The agent's own session file rendered as Markdown: code edits and thinking collapsible; model, reasoning
+  effort, and elapsed time shown.
+- A composer where Enter is a newline, Shift+Enter sends, ⌘Enter queues; queued prompts run in order, stay
+  editable, and any one can be sent now.
+- The agent's slash commands from a palette.
+- Filters: hide prompts or thinking, show only code edits, fold near-duplicate responses.
+- Conversation outline with timestamps for jumping between turns.
+- Live context usage (`ctx 118k/258k`) and persisted prompt history.
+- A submitted prompt stays visibly pending until the transcript confirms it — through reloads and restarts.
+
+**Notifications**
+
+- Desktop notifications when an agent needs attention or finishes a run longer than five seconds, unless you
+  are looking at that terminal.
+- Installed as a browser app, they carry TermDeck's name and icon.
+- A Claude Code hook endpoint drives the attention badge from real permission prompts.
+
+**Projects and worktrees**
+
+- A project is a folder; the first terminal opened there registers it. Switching projects swaps terminals,
+  files, closed history, and defaults.
+- Every project, worktree, terminal, and file has a stable URL — one browser tab per project, or per task.
+- Worktrees are discovered and created (named, on a chosen branch, in a remembered folder); view one or all;
+  each keeps its own terminals, groups, and closed history.
+- Delegated tasks can run in an isolated worktree with a review diff and keep, merge, or discard.
+
+**Files and editor**
+
+- VS Code's Monaco editor: highlighting, folding, find and replace, symbols, definitions and usages, Problems.
+- Language servers add rename, code actions, hover documentation, and diagnostics.
+- Markdown renders as a document with working links; images, video, audio, and PDFs open in place.
+- Local snapshots and Git history for any open file, with diffs and targeted restore.
+- Create, rename, duplicate, move, refresh, and trash from the tree — deletes go to the system trash.
+- Open files and navigation history survive reloads; external changes are re-read.
+
+**Git**
+
+- Stage and unstage files or single hunks, commit, branches, stashes, and the commit graph.
+- Diffs for pending changes and any commit, blame, compare any two versions, cherry-pick, and revert.
+- Conflicts resolved ours, theirs, or by hand.
+- Remotes: fetch, fast-forward pull, push over SSH or HTTPS, and clone straight into a project.
+- GitHub pull requests listed in the panel; open on GitHub or copy the URL.
+
+**Search**
+
+- ripgrep across the project — plain or regex, case, whole word, include patterns, exclusion chips — with
+  results that keep the tree, Git state, and modified time.
+- Project-wide replace, capped at 200 files per run.
+- Filename search: exact and contains first, typos second, with its own history and filters.
+- Quick Open across commands, recent terminals, open files, file names, and symbols.
+
+**Notes and clipboard**
+
+- Multi-tab plain-text notes over the workspace, autosaved, edited in Monaco, filled from any selection;
+  closed notes go to the trash.
+- Copied-text history, with a picker that pastes into whatever is focused.
+- Right-click any selection to copy it, note it, search from it, or hand it to an agent as **Ask an agent**.
+
+**Automation**
+
+- A local API to start a named agent with a model, permission mode, and placement; send it prompts; poll its
+  last turn; write its output to a file; close it.
+- Batch launch of up to 32 named tasks.
+- Everything an agent starts is an ordinary terminal in the deck.
+
+**Remote and mobile**
+
+- Local Wi-Fi access on its own listener — no relay, no login.
+- TermDeck Remote: Google sign-in through a hosted relay, with pairing controls.
+- Touch layouts with long-press row actions, drafts kept through outages, and automatic reconnection.
+
+**Look and feel**
+
+- Themes: Nord, macOS Terminal, GitHub, One Dark, Monokai, Dracula, Solarized, Gruvbox, Tokyo Night,
+  Catppuccin, Rosé Pine, Ayu, and high contrast.
+- Font size per region — title, terminal list, terminal, editor, tree, tabs, diffs, icons, bottom bar — with an
+  in-place slider over each.
+- Every shortcut rebindable; panel widths remembered.
+- Settings, notes, keybindings, and layout live in `~/.termdeck/settings.json` and can be exported.
+
+**CLI and service**
+
+- `termdeck` runs in the foreground; `termdeck service` installs, starts, stops, restarts, and tails a launchd
+  or systemd user service.
+- `termdeck doctor` names any missing program with its install command.
+- Every flag is a `TERMDECK_*` variable, so a shell profile and a service unit are configured the same way.
+
 ## Security
 
 TermDeck runs commands on your machine and binds to localhost by default. Do not expose it to a network without
