@@ -15,7 +15,7 @@ from pathlib import Path
 import uvicorn
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -1630,21 +1630,29 @@ class TermdeckServer:
         index_file = "recovery.html" if self.recovery_mode else TermdeckConfig.INDEX_FILE
         return FileResponse(TermdeckConfig.STATIC_DIR / index_file)
 
-    async def _project_page(self, project_name: str) -> FileResponse:
+    async def _project_page(self, project_name: str) -> FileResponse | RedirectResponse:
         if self.recovery_mode:
             return FileResponse(TermdeckConfig.STATIC_DIR / "recovery.html")
         if self.manager.registry.root_for(project_name) is None:
-            raise HTTPException(status_code=404, detail=project_name)
+            return self._all_projects_redirect()
         return FileResponse(TermdeckConfig.STATIC_DIR / TermdeckConfig.INDEX_FILE)
+
+    @staticmethod
+    def _all_projects_redirect() -> RedirectResponse:
+        # An address naming a project this deck does not have -- a stale bookmark, a link from another
+        # machine, a typo -- lands on the all-projects root rather than a JSON 404 the reader cannot act
+        # on. The path is relative on purpose: through the remote relay the browser's origin is the
+        # relay's, and a relative Location keeps it there.
+        return RedirectResponse("/", status_code=302)
 
     async def _project_navigation_page(self, project_name: str, navigation_path: str) -> FileResponse:
         return await self._project_page(project_name)
 
-    async def _filedeck_page(self, project_name: str) -> FileResponse:
+    async def _filedeck_page(self, project_name: str) -> FileResponse | RedirectResponse:
         if self.recovery_mode:
             return FileResponse(TermdeckConfig.STATIC_DIR / "recovery.html")
         if self.manager.registry.root_for(project_name) is None:
-            raise HTTPException(status_code=404, detail=project_name)
+            return self._all_projects_redirect()
         return FileResponse(TermdeckConfig.STATIC_DIR / TermdeckConfig.INDEX_FILE)
 
     async def _filedeck_navigation_page(self, project_name: str, navigation_path: str) -> FileResponse:

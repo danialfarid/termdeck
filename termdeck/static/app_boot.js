@@ -4,4 +4,4 @@
 // .xterm-viewport.scrollTop/scrollHeight do not reliably correspond to xterm's real internal
 // buffer.viewportY/baseY in V2 scroll mode. Remove once that investigation concludes.
 window.__td = new TermdeckApp();
-window.__td.init();
+window.__td.init().catch((error) => window.__td.recoverFromBrokenAddress(error));

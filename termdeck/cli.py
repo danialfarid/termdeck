@@ -23,6 +23,8 @@ class TermdeckCli:
     SERVICE_ACTION_DEST = "service_action"
     SERVICE_INSTALL = "install"
     SERVICE_UNINSTALL = "uninstall"
+    SERVICE_START = "start"
+    SERVICE_STOP = "stop"
     SERVICE_RESTART = "restart"
     SERVICE_STATUS = "status"
     SERVICE_LOGS = "logs"
@@ -64,6 +66,7 @@ class TermdeckCli:
         service_parser = subparsers.add_parser(TermdeckCli.SERVICE_COMMAND, help="manage the always-on background service")
         service_parser.add_argument(TermdeckCli.SERVICE_ACTION_DEST,
                                     choices=(TermdeckCli.SERVICE_INSTALL, TermdeckCli.SERVICE_UNINSTALL,
+                                             TermdeckCli.SERVICE_START, TermdeckCli.SERVICE_STOP,
                                              TermdeckCli.SERVICE_RESTART, TermdeckCli.SERVICE_STATUS,
                                              TermdeckCli.SERVICE_LOGS))
         return parser
@@ -124,20 +127,35 @@ class TermdeckCli:
     def run_service_action(action: str) -> int:
         from termdeck.service_installer import ServiceInstaller
 
-        if action == TermdeckCli.SERVICE_INSTALL:
-            unit_file = ServiceInstaller.install()
-            from termdeck.config import TermdeckConfig
+        # A service-manager refusal is an answer, not a crash: it goes to stderr as one line. A
+        # traceback out of launchctl told a new install nothing it could act on.
+        try:
+            return TermdeckCli._run_service_action(action, ServiceInstaller)
+        except RuntimeError as failure:
+            print(f"termdeck service {action}: {failure}", file=sys.stderr)
+            return TermdeckCli.EXIT_FAILURE
 
-            print(f"installed {unit_file}\nrunning at http://{TermdeckConfig.HOST}:{TermdeckConfig.PORT}")
+    @staticmethod
+    def _run_service_action(action: str, installer) -> int:
+        from termdeck.config import TermdeckConfig
+
+        url = f"http://{TermdeckConfig.HOST}:{TermdeckConfig.PORT}"
+        if action == TermdeckCli.SERVICE_INSTALL:
+            print(f"installed {installer.install()}\nrunning at {url}")
             return TermdeckCli.EXIT_OK
         if action == TermdeckCli.SERVICE_UNINSTALL:
-            print(f"removed {ServiceInstaller.uninstall()}")
+            print(f"removed {installer.uninstall()}")
+            return TermdeckCli.EXIT_OK
+        if action == TermdeckCli.SERVICE_START:
+            print(f"{installer.start()} · {url}")
+            return TermdeckCli.EXIT_OK
+        if action == TermdeckCli.SERVICE_STOP:
+            print(installer.stop())
             return TermdeckCli.EXIT_OK
         if action == TermdeckCli.SERVICE_RESTART:
-            ServiceInstaller.restart()
-            print("restarted")
+            print(f"{installer.restart()} · {url}")
             return TermdeckCli.EXIT_OK
-        argv = ServiceInstaller.status_argv() if action == TermdeckCli.SERVICE_STATUS else ServiceInstaller.logs_argv()
+        argv = installer.status_argv() if action == TermdeckCli.SERVICE_STATUS else installer.logs_argv()
         return subprocess.run(argv).returncode
 
 

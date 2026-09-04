@@ -101,13 +101,67 @@ WantedBy=default.target
         return unit_file
 
     @staticmethod
-    def restart() -> None:
+    def is_loaded() -> bool:
+        """Whether the service manager currently knows the unit -- bootstrapped on macOS, loaded on Linux."""
+        if PlatformPaths.IS_MACOS:
+            return ServiceInstaller._succeeds(ServiceInstaller.LAUNCHCTL_BIN, "print",
+                                              f"{ServiceInstaller._launchd_domain()}/{ServiceInstaller.LABEL}")
+        return ServiceInstaller._succeeds(ServiceInstaller.SYSTEMCTL_BIN, "--user", "cat",
+                                          ServiceInstaller.SYSTEMD_UNIT_NAME)
+
+    @staticmethod
+    def start() -> str:
+        """Start the service, installing it first if it has never been installed.
+
+        Returns what was done, for the CLI to print. A `start` (or `restart`) on a machine where only
+        `brew install` has run used to die in launchctl with "Could not find service": the unit had
+        never been bootstrapped. Nothing about that situation needs a person to sort out, so it is
+        sorted out here -- an existing unit file is loaded, a missing one is written and loaded."""
+        if ServiceInstaller.is_loaded():
+            if PlatformPaths.IS_MACOS:
+                ServiceInstaller._run(ServiceInstaller.LAUNCHCTL_BIN, "kickstart",
+                                      f"{ServiceInstaller._launchd_domain()}/{ServiceInstaller.LABEL}")
+            else:
+                ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "start",
+                                      ServiceInstaller.SYSTEMD_UNIT_NAME)
+            return "started"
+        if not ServiceInstaller.unit_file().exists():
+            ServiceInstaller.install()
+            return "installed and started"
+        if PlatformPaths.IS_MACOS:
+            ServiceInstaller._run(ServiceInstaller.LAUNCHCTL_BIN, "bootstrap", ServiceInstaller._launchd_domain(),
+                                  str(ServiceInstaller.unit_file()))
+        else:
+            ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "daemon-reload")
+            ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "start",
+                                  ServiceInstaller.SYSTEMD_UNIT_NAME)
+        return "loaded and started"
+
+    @staticmethod
+    def stop() -> str:
+        """Stop the service until the next `start` or login. The unit file stays, so this is the
+        counterpart of `start`, not of `install`: `uninstall` is what removes it for good."""
+        if not ServiceInstaller.is_loaded():
+            return "not running"
+        if PlatformPaths.IS_MACOS:
+            # KeepAlive would revive a merely killed process; unloading the job is what stops it.
+            ServiceInstaller._bootout_launchd_quietly()
+        else:
+            ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "stop",
+                                  ServiceInstaller.SYSTEMD_UNIT_NAME)
+        return "stopped"
+
+    @staticmethod
+    def restart() -> str:
+        if not ServiceInstaller.is_loaded():
+            return ServiceInstaller.start()
         if PlatformPaths.IS_MACOS:
             ServiceInstaller._run(ServiceInstaller.LAUNCHCTL_BIN, "kickstart", "-kp",
                                   f"{ServiceInstaller._launchd_domain()}/{ServiceInstaller.LABEL}")
         else:
             ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "restart",
                                   ServiceInstaller.SYSTEMD_UNIT_NAME)
+        return "restarted"
 
     @staticmethod
     def status_argv() -> list[str]:
@@ -155,6 +209,10 @@ WantedBy=default.target
     def _bootout_launchd_quietly() -> None:
         ServiceInstaller._run(ServiceInstaller.LAUNCHCTL_BIN, "bootout",
                               f"{ServiceInstaller._launchd_domain()}/{ServiceInstaller.LABEL}", check=False)
+
+    @staticmethod
+    def _succeeds(*argv: str) -> bool:
+        return subprocess.run(argv, capture_output=True, text=True).returncode == 0
 
     @staticmethod
     def _run(*argv: str, check: bool = True) -> None:

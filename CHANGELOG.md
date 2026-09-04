@@ -6,8 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-09-03
+
 ### Added
 
+- `termdeck service start` and `termdeck service stop`. `stop` unloads the service until the next `start` or
+  login and leaves its unit file in place; `uninstall` remains the way to remove it.
 - Markdown files open as rendered documents as well as source: a toggle beside the notes button under the
   tab strip, a rebindable shortcut (**⌥⇧M**), and one remembered choice and reading position per file.
   Links to other files in the project resolve against the document and open in the deck; code blocks are
@@ -44,6 +48,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `termdeck service restart` (and `start`) on a machine where the service was never installed now installs
+  it, and loads a unit file that exists but is not loaded, instead of dying in `launchctl` with "Could not
+  find service". A service-manager refusal that does remain is one line on stderr, not a traceback.
+- An address the deck cannot open no longer sits on "loading TermDeck…" forever. A worktree or terminal the
+  project does not have drops back to the project root; a project this deck does not have lands on the
+  all-projects root; and anything that still fails during boot is retried once at the nearest working
+  address before the loading screen's own recovery actions take over. The same rules apply through the
+  remote relay.
 - A phone that has been away reconnects on its own. The page retries every few seconds while the
   connection-loss message is up, notices a return from the browser's back/forward cache as well as focus,
   and takes the message down only once a socket is genuinely open — no tap needed to get terminals back.
@@ -522,7 +534,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/danialfarid/termdeck/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/danialfarid/termdeck/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/danialfarid/termdeck/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/danialfarid/termdeck/compare/v0.7.0...v0.8.0

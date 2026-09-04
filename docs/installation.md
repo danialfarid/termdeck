@@ -175,7 +175,12 @@ termdeck --port 9000 --default-cwd ~/projects service install
 | Mechanism | launchd user agent | systemd user unit |
 | Unit file | `~/Library/LaunchAgents/com.termdeck.plist` | `~/.config/systemd/user/termdeck.service` |
 | Logs | `~/.termdeck/termdeck.log` | systemd journal |
+| Start / stop | `termdeck service start` / `stop` | `termdeck service start` / `stop` |
 | Restart | `termdeck service restart` | `termdeck service restart` |
+
+`start` and `restart` install the service if it has never been installed, and load its unit file if it is
+present but not loaded — so either one is safe as the first command on a fresh machine. `stop` unloads it
+until the next `start` or login; the unit file stays.
 
 On Linux, to have the service run without a graphical login session:
 

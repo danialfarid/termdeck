@@ -15,13 +15,13 @@ your phone.
 
 Persistent agents, queues, notes, grouping, search, cross-agent handoff, and background activity.
 
-![TermDeck terminal workflow](docs/media/demo-terminals.gif)
+![TermDeck terminal workflow](docs/media/demo-terminals-hd.gif)
 
 *[Full-resolution terminal workflow video](docs/media/demo-terminals.webm)*
 
 File tree, usages, history, blame, pending diffs, worktrees, remotes, and stashes.
 
-![TermDeck Files and Git workflow](docs/media/demo-files-git.gif)
+![TermDeck Files and Git workflow](docs/media/demo-files-git-hd.gif)
 
 *[Full-resolution Files/Git workflow video](docs/media/demo-files-git.webm)*
 
@@ -60,7 +60,9 @@ termdeck service restart
 
 ```sh
 termdeck --open              # run in the foreground; Ctrl-C stops it
-termdeck service restart     # restart the background service
+termdeck service start       # start the background service (installs it if it never was)
+termdeck service stop        # stop it until the next start or login
+termdeck service restart     # restart it; installs it too if it never was
 termdeck service status      # is it running?
 termdeck service logs        # tail the log
 termdeck service uninstall   # stop it and remove the service

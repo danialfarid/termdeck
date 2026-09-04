@@ -142,6 +142,7 @@ const MOBILE_TERMINAL_SELECTION_FOREGROUND = "#ffffff";
 const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
 const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
 const TRANSCRIPT_DRAFT_LOCAL_PREFIX = "termdeck.transcript-draft.v1";
+const ADDRESS_RECOVERY_KEY = "termdeck.address-recovery";
 const MOBILE_CONNECTION_WARNING_DELAY_MS = 1200;
 // How long to wait before trying again once a reconnect attempt has not landed.
 const MOBILE_CONNECTION_RETRY_MS = 3000;
@@ -2427,7 +2428,13 @@ class TermdeckApp {
     const requestedWorktreeUrlSegment = this.requestedWorktreeUrlSegment;
     const requestedWorktree = this.worktreeForUrlSegment(requestedWorktreeUrlSegment);
     if (requestedWorktreeUrlSegment && !requestedWorktree) {
-      throw new Error(`unknown or ambiguous worktree URL segment: ${requestedWorktreeUrlSegment}`);
+      // A worktree segment nothing here answers to -- deleted since the link was made, or never a
+      // worktree at all. Throwing here left the page on "loading TermDeck…" for good; the project
+      // root is what the address was about, so that is where it lands. Whatever the rest of the
+      // address asked for (a terminal, a file) belonged to that worktree and goes with it.
+      console.warn(`unknown worktree in address, opening the project root instead: ${requestedWorktreeUrlSegment}`);
+      this.worktreeId = "root";
+      this.initialNav = null;
     }
     if (requestedWorktree) this.worktreeId = requestedWorktree.id;
     this.requestedWorktreeUrlSegment = "";
@@ -4312,7 +4319,11 @@ class TermdeckApp {
     if (this.initialNav) {
       const nav = this.initialNav;
       this.initialNav = null;
-      this.applyNavState(nav);
+      // A terminal this project no longer has (closed, or another machine's id) cannot be opened, and
+      // an address that still names it would have sat on the loading screen waiting for it. The
+      // address drops back to the project root and the deck opens as it would with no address at all.
+      if (nav.kind === "term" && !this.session(nav.id)) this.replaceNav({ kind: "init" });
+      else this.applyNavState(nav);
     }
     if (!this.activeId && sessions.length && this.activeFileKey === null) {
       const remembered = this.getProjectState().active_session_id;
@@ -4568,11 +4579,35 @@ class TermdeckApp {
     window.TermdeckLoadingRecovery?.schedule();
   }
 
-  showInitialLoadFailure() {
+  showInitialLoadFailure(message = "unable to load TermDeck — retrying…") {
     const loadingState = this.$("initial-loading-state");
     loadingState.classList.remove("loading", "hidden");
-    this.$("initial-loading-message").textContent = "unable to load TermDeck — retrying…";
+    this.$("initial-loading-message").textContent = message;
     this.$("initial-loading-recovery").classList.remove("hidden");
+  }
+
+  // The last line of defence for an address the deck cannot open: whatever threw during boot, the
+  // page must not sit on "loading TermDeck…" forever. It goes to the nearest address that is known
+  // to work -- the project root, or the all-projects root when the project itself is the problem.
+  // Once only: if that address fails as well, the loading screen's own recovery actions take over
+  // rather than the page bouncing between two addresses that both fail.
+  recoverFromBrokenAddress(error) {
+    console.error("TermDeck could not open this address", error);
+    // The project root is the guess whenever the address named a project: the server answers that
+    // address with the all-projects root itself when the project does not exist, so there is no need
+    // to know here -- and boot may have failed before the project list ever arrived.
+    const fallback = this.projectSlug ? `/p/${encodeURIComponent(this.projectSlug)}` : "/";
+    const current = `${location.pathname}${location.search}`;
+    let alreadyTried = false;
+    try {
+      alreadyTried = sessionStorage.getItem(ADDRESS_RECOVERY_KEY) === fallback;
+      sessionStorage.setItem(ADDRESS_RECOVERY_KEY, fallback);
+    } catch { /* private mode: at worst we redirect once more */ }
+    if (current === fallback || alreadyTried) {
+      this.showInitialLoadFailure("this address could not be opened");
+      return;
+    }
+    location.replace(fallback);
   }
 
   finishInitialLoadingState() {
