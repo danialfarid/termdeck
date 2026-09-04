@@ -1,0 +1,33 @@
+# TermDeck
+
+> A persistent workspace for coding agents.
+
+TermDeck is a local-first browser workspace for persistent agent terminals, transcript reading and prompting,
+project files, language-server intelligence, Git workflows, notes, search, and remote monitoring. It supports
+Codex, Claude Code, AGY, Aider, OpenCode, and plain shells. OpenRouter models are selected through the Codex,
+Aider, or OpenCode adapter that runs them.
+
+## Canonical documentation
+
+- [README](https://github.com/danialfarid/termdeck/blob/main/README.md): installation, workflow, and features
+- [Agent task API](https://github.com/danialfarid/termdeck/blob/main/docs/agents-termdeck-api.md): spawn an agent, send prompts, monitor completion, and read results
+- [Agent adapter API](https://github.com/danialfarid/termdeck/blob/main/docs/agent-cli-api.md): add or extend an agent CLI integration
+- [Architecture](https://github.com/danialfarid/termdeck/blob/main/docs/architecture.md): server, terminal, transcript, file, Git, and LSP boundaries
+- [Configuration](https://github.com/danialfarid/termdeck/blob/main/docs/configuration.md): environment variables, services, agents, remote access, and language servers
+- [Troubleshooting](https://github.com/danialfarid/termdeck/blob/main/docs/troubleshooting.md): diagnosis and recovery
+- [Security](https://github.com/danialfarid/termdeck/blob/main/SECURITY.md): threat model and reporting
+
+## Stable local interfaces
+
+- `GET /api/agents` lists available declarative agent capabilities, permissions, model guidance, and commands.
+- `POST /api/terminals/task` creates an agent task with a model, permission profile, prompt, placement, and optional result path.
+- `GET /api/sessions/{session_id}/task` reports whether a task is queued, running, waiting, complete, or exited.
+- `GET /api/sessions/{session_id}/task-result` returns the extracted final response when available.
+- `POST /api/terminals/task/{session_id}/prompt` sends a follow-up to an existing task.
+- `GET /api/sessions/{session_id}/history` returns normalized transcript turns.
+- `GET /api/terminal-search` searches terminal titles, prompts, and responses.
+- `GET /api/files`, `GET /api/search`, and `GET /api/filename-search` expose project-confined file browsing and search.
+- `GET /api/lsp/status` and `WS /ws/lsp` expose language-server capabilities.
+- `GET /api/debug/support-bundle` downloads a sanitized issue-report bundle without terminal text, prompts, source, project paths, titles, or credentials.
+
+All mutation APIs are local-user control surfaces. Treat terminal input, file writes, Git actions, and session lifecycle calls as privileged operations. Prefer the task API over terminal escape-sequence automation.

@@ -103,6 +103,8 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
 - **Notes, clipboard history, and attachments** — keep decisions and reusable context beside the agents, and
   drop a file or an image straight into a prompt.
 - **Yours to rebind** — every keyboard shortcut, from the sidebar footer.
+- **Issue-ready diagnostics** — one click downloads a bounded, sanitized support bundle; opt-in recording adds
+  browser geometry and interaction timing without terminal output, prompts, source files, or credentials.
 - **Phone and remote** — touch layouts, local Wi-Fi, and authenticated remote access when you are away from the
   machine.
 

@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- An agent-readable `/llms.txt` capability and API index, plus a one-click diagnostics bundle containing
+  sanitized dependency, session-state, process, language-server, remote-access, and bounded log information.
 - A richer adapter surface for Aider, AGY, and OpenCode: model IDs and provider routes can be chosen when a
   terminal is opened, AGY exposes its resume, effort, and permission modes, OpenCode restores working state
   from its session database, and output-driven agents report work immediately when a prompt is submitted.

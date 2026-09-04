@@ -7,7 +7,7 @@ import signal
 import subprocess
 import time
 import uuid
-from dataclasses import replace
+from dataclasses import asdict, replace
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -46,7 +46,9 @@ from termdeck.session_manager import TerminalSessionManager
 from termdeck.settings_store import UiSettingsStore
 from termdeck.state_backup import StateBackupManager
 from termdeck.stats_service import ResourceStatsService
+from termdeck.support_bundle import SupportBundleBuilder
 from termdeck.transcript_service import TranscriptService
+from termdeck.util import TimeUtil
 from termdeck.worktree_service import GitWorktreeService, WorktreeFolderExists, WorktreeMetadata
 from termdeck.worktree_registry import ProjectWorktree, WorktreeRegistry
 
@@ -697,6 +699,7 @@ class TermdeckServer:
         app.mount(TermdeckConfig.FILEBROWSER_STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.FILEBROWSER_STATIC_DIR),
                   name=TermdeckConfig.FILEBROWSER_STATIC_NAME)
         app.get("/", response_model=None)(self._index)
+        app.get(TermdeckConfig.LLMS_ROUTE, response_model=None)(self._llms_document)
         app.get(TermdeckConfig.PROJECT_PAGE_ROUTE, response_model=None)(self._project_page)
         app.get(TermdeckConfig.PROJECT_NAVIGATION_PAGE_ROUTE, response_model=None)(self._project_navigation_page)
         app.get(TermdeckConfig.FILEDECK_PAGE_ROUTE, response_model=None)(self._filedeck_page)
@@ -843,6 +846,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_LSP_APPLY_WORKSPACE_EDIT_ROUTE, response_model=None)(self._apply_lsp_workspace_edit)
         app.get(TermdeckConfig.API_STATS_ROUTE, response_model=None)(self._resource_stats)
         app.post(TermdeckConfig.API_DIAGNOSTICS_ROUTE, response_model=None)(self._record_diagnostics)
+        app.get(TermdeckConfig.API_SUPPORT_BUNDLE_ROUTE, response_model=None)(self._download_support_bundle)
         app.websocket(TermdeckConfig.STATUS_WS_ROUTE)(self._ws_status)
         app.websocket(TermdeckConfig.FILE_TREE_WS_ROUTE)(self._ws_file_tree)
         app.websocket(TermdeckConfig.TRANSCRIPT_WS_ROUTE)(self._ws_transcript)
@@ -1633,6 +1637,9 @@ class TermdeckServer:
     async def _index(self) -> FileResponse:
         index_file = "recovery.html" if self.recovery_mode else TermdeckConfig.INDEX_FILE
         return FileResponse(TermdeckConfig.STATIC_DIR / index_file)
+
+    async def _llms_document(self) -> FileResponse:
+        return FileResponse(TermdeckConfig.LLMS_FILE, media_type="text/plain; charset=utf-8")
 
     async def _project_page(self, project_name: str) -> FileResponse | RedirectResponse:
         if self.recovery_mode:
@@ -3010,6 +3017,24 @@ class TermdeckServer:
         except OSError:
             return {"ok": False}
         return {"ok": True, "path": str(path)}
+
+    async def _download_support_bundle(self) -> Response:
+        from termdeck import __version__
+        from termdeck.environment_check import EnvironmentCheck
+        from termdeck.service_installer import ServiceInstaller
+
+        dependency_reports, process_report, lsp_status = await asyncio.gather(
+            asyncio.to_thread(EnvironmentCheck.collect_reports), self.manager.terminal_process_report(),
+            asyncio.to_thread(self.language_servers.status))
+        dependencies = [asdict(report) for report in dependency_reports]
+        builder = SupportBundleBuilder(TermdeckConfig.DATA_DIR, ServiceInstaller.log_file())
+        archive = await asyncio.to_thread(
+            builder.build, __version__, self.server_instance_id, self.settings_store.load(),
+            self.manager.list_sessions(None), dependencies, process_report, lsp_status,
+            dict(self.remote_access.status()), len(self.manager.registry.list_projects()))
+        timestamp = TimeUtil.now_est_naive().strftime("%Y%m%d-%H%M%S")
+        return Response(archive, media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="termdeck-diagnostics-{timestamp}.zip"'})
 
     async def _ws_terminal(self, websocket: WebSocket, session_id: str) -> None:
         if not self.manager.has_session(session_id):

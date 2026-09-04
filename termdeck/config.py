@@ -216,6 +216,11 @@ class TermdeckConfig:
     API_HISTORY_CONTEXT_ROUTE = "/api/history-context"
     API_SETTINGS_ROUTE = "/api/settings"
     API_DIAGNOSTICS_ROUTE = "/api/debug/diagnostics"
+    API_SUPPORT_BUNDLE_ROUTE = "/api/debug/support-bundle"
+    LLMS_ROUTE = "/llms.txt"
+    LLMS_FILE = (Path(__file__).resolve().parent.parent / "llms.txt"
+                 if (Path(__file__).resolve().parent.parent / "llms.txt").is_file()
+                 else Path(__file__).resolve().parent / "llms.txt")
     DIAGNOSTICS_DIR_NAME = "diagnostics"
     DIAGNOSTICS_MAX_BYTES = 32 * 1024 * 1024
     API_SETTING_ROUTE = "/api/settings/{setting_name}"

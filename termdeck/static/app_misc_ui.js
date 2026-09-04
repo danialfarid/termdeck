@@ -131,6 +131,7 @@ Object.assign(TermdeckApp.prototype, {
     this.addContextItem(menu, "Reclaim orphan terminals", () => void this.reclaimOrphanTerminals(), "debug-disconnect");
     this.addContextItem(menu, "Kill terminals older than 24 hours", () => void this.killStaleTerminals(), "trash");
     this.addContextItem(menu, "Kill all running terminals", () => void this.killAllRunningTerminals(), "close-all");
+    this.addContextItem(menu, "Download diagnostics bundle", () => void this.downloadDiagnosticsBundle(), "cloud-download");
     // Diagnostics belong here for the same reason the rest do: this is where you come when the app is
     // misbehaving. Off by default and free when off -- see toggleDiagnosticsRecorder.
     this.addContextItem(menu,
@@ -139,6 +140,27 @@ Object.assign(TermdeckApp.prototype, {
       this.diagnosticsRecording() ? "debug-stop" : "record");
     const rect = anchor.getBoundingClientRect();
     this.positionContextMenu(menu, rect.right - menu.offsetWidth, rect.top - menu.offsetHeight - 4);
+  },
+
+
+  async downloadDiagnosticsBundle() {
+    this.$("context-menu").classList.add("hidden");
+    this.$("status-name").textContent = "building diagnostics bundle…";
+    try {
+      const response = await fetch("/api/debug/support-bundle");
+      if (!response.ok) throw new Error(`bundle request failed: ${response.status}`);
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "termdeck-diagnostics.zip";
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      this.$("status-name").textContent = "diagnostics bundle downloaded";
+    } catch (error) {
+      this.$("status-name").textContent = `unable to download diagnostics: ${error.message}`;
+    }
   },
 
 

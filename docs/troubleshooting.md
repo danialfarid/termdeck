@@ -206,7 +206,9 @@ The variable is copied into the unit's environment block.
 
 Open an issue at <https://github.com/danialfarid/termdeck/issues> with:
 
-- `termdeck doctor` output
-- `termdeck --version`, your OS and version
-- Relevant lines from `termdeck service logs`
+- The diagnostics bundle from the CPU/memory readout's **Maintenance** menu. It packages version, dependency,
+  terminal-process, language-server, remote-state, and bounded log information while excluding terminal text,
+  prompts, source files, project paths, titles, and credentials.
+- For an intermittent browser-layout problem, start **Record diagnostics for a bug report** first, reproduce it,
+  stop recording, then download the bundle so the latest geometry trace is included.
 - What you did, what happened, what you expected
