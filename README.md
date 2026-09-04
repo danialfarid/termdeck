@@ -78,8 +78,10 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
 
 - **Any agent CLI** — Codex, Claude Code, AGY, Aider, OpenCode, and plain shells, side by side. Teaching it a
   new CLI is one adapter class.
-- **Persistent sessions** — prompts, drafts, terminals, and agent sessions survive browser and server restarts,
-  and reopen into the same conversation after a machine restart.
+- **Persistent sessions** — terminals and agent sessions survive browser and server restarts, and reopen into
+  the same conversation after a machine restart.
+- **Never lose a half-written prompt** — what you have typed is saved as you type. Refresh the page, restart
+  the server, come back tomorrow: it is still in the box, and everything you have sent is in the history.
 - **Parallel work** — group, reorder, fork, rename, close, reopen, and monitor many terminals. Background
   commands, monitors, and subagents show as live dots under the session that started them: nine agents, one deck,
   and a dot that tells you which one is actually waiting on you.
@@ -128,6 +130,19 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
 - Python 3.11+ (Homebrew installs it for you on macOS)
 - `dtach` required; `ripgrep` recommended
 - A current Chrome, Safari, Firefox, or Edge browser
+
+## Troubleshooting
+
+A terminal that looks wrong — garbled, blank, or behind — is almost always the browser's copy of it, not the
+terminal. In order:
+
+1. Reload the tab. If that is not enough, hard-refresh it (**⌘⇧R** / **Ctrl+Shift+R**).
+2. Right-click the terminal in the side panel and choose **Restart**. The process is replaced; an agent
+   terminal comes back into the same session.
+
+If the page itself will not load, the loading screen offers **Refresh page**, **Restart TermDeck server**, and
+**Stop running terminals** after a few seconds; from a shell, `termdeck service restart` does the same. More in
+[docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Roadmap
 
