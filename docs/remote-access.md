@@ -11,9 +11,33 @@ TermDeck starts a separate listener on port `8532` and shows the local URL to op
 local network and does not use Google sign-in, the hosted relay, or the internet.
 
 The listener accepts only loopback clients and clients inside a private subnet currently assigned to the computer.
-It is plain HTTP with no user authentication, so anyone on that local network can control terminals and access the
-files exposed by TermDeck. Enable it only on a trusted home or office network and disable it on public Wi-Fi. The
-port can be changed with `TERMDECK_LAN_PORT` or `termdeck --lan-port`.
+It is plain HTTP and, unless `TERMDECK_ACCESS_TOKEN` is configured, anyone on that local network can control
+terminals and access the files exposed by TermDeck. Enable it only on a trusted home or office network and disable
+it on public Wi-Fi. The port can be changed with `TERMDECK_LAN_PORT` or `termdeck --lan-port`.
+
+## Direct access with a bearer token
+
+TermDeck can protect every local HTTP, API, and WebSocket route with `TERMDECK_ACCESS_TOKEN`. This mode is for
+an SSH-forwarded port, Tailscale/private VPN address, LAN listener, or your own HTTPS reverse proxy. Browsers get
+a token login page and a derived HttpOnly cookie; scripts use `Authorization: Bearer <token>`.
+
+`TERMDECK_READ_ONLY=1` can be used with or without the token. It preserves live terminal output, transcripts,
+file reads and searches, Git inspection, and session export, while rejecting terminal input, starting dormant
+terminals, and every mutating HTTP request. It is intended for dashboards and remote review, not as a sandbox:
+the viewer can still read files and session content.
+
+This is separate from TermDeck Remote:
+
+| | Direct bearer-token access | `remote.termdeck.workers.dev` |
+|---|---|---|
+| Connection | You expose or tunnel a local listener | Local TermDeck opens an outbound relay connection on demand |
+| Identity | One server token shared with approved clients | Google account login and per-computer pairing |
+| Public infrastructure | None unless you provide a proxy/VPN | Managed Cloudflare/Cloud Run relay |
+| Encryption | Supplied by SSH, VPN, or HTTPS proxy | HTTPS/WSS to and from the hosted relay |
+| Read-only policy | Optional server-wide mode | Uses the same server-wide mode when enabled |
+
+When both modes are enabled, the local relay connector adds the configured bearer token to its forwarded local
+requests. The hosted browser still signs in with Google; it never receives the local token.
 
 ## Connect a computer
 

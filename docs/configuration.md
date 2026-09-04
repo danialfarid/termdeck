@@ -17,6 +17,8 @@ no effect — restart instead.
 | `TERMDECK_PORT` | `--port` | `8530` | |
 | `TERMDECK_LOG_LEVEL` | `--log-level` | `info` | `critical`, `error`, `warning`, `info`, `debug`, `trace` |
 | `TERMDECK_REMOTE_URL` | | TermDeck hosted relay | Hosted relay used by Settings → Remote access |
+| `TERMDECK_ACCESS_TOKEN` | | disabled | Bearer token required by direct HTTP, API, and WebSocket access |
+| `TERMDECK_READ_ONLY` | | `false` | Allow reads and live monitoring but reject terminal input and mutating HTTP requests |
 
 ## Storage
 
@@ -151,11 +153,25 @@ them later, run `service install` again with the new flags — it overwrites the
 
 ## Binding to other interfaces
 
-TermDeck has **no authentication**. Whoever can reach the port can run arbitrary commands as your user, read
-any file under the file root, and drive your agent sessions.
+Without `TERMDECK_ACCESS_TOKEN`, whoever can reach the port can run arbitrary commands as your user, read any
+file under the file root, and drive your agent sessions. Binding to `0.0.0.0` without an access token therefore
+exposes a remote shell to the network.
 
-Binding to `0.0.0.0` therefore exposes a remote shell to the network. Don't, unless you have deliberately put
-an authenticating reverse proxy in front of it.
+Set a long random bearer token before direct network access:
+
+```sh
+export TERMDECK_ACCESS_TOKEN="$(openssl rand -hex 32)"
+termdeck service install
+```
+
+The browser redirects to a local token form and stores a derived HttpOnly session cookie. API clients send
+`Authorization: Bearer <token>`. TermDeck's generated launchd/systemd unit is owner-readable only when it
+persists this environment variable. A token authenticates the client but does not encrypt traffic, so use an
+SSH tunnel, a VPN such as Tailscale, or an HTTPS reverse proxy on untrusted networks.
+
+For a monitoring-only server, also set `TERMDECK_READ_ONLY=1`. Read-only mode allows pages, searches, files,
+transcripts, Git status, session exports, and live terminal output. It rejects terminal input, terminal startup,
+and all non-GET APIs. It is not a confidentiality boundary: the viewer can still read everything TermDeck exposes.
 
 To reach TermDeck from another device, forward the port over SSH instead:
 

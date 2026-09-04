@@ -717,6 +717,7 @@ class TermdeckApp {
     this.sidebarAnimationVisibilityObserver = null;
     this.settings = { ...SETTINGS_DEFAULTS };
     this.persistedSettings = { ...SETTINGS_DEFAULTS };
+    this.readOnlyMode = false;
     this.fontSampleSelectionIndex = 0;
     this.fontSampleReturnFocus = null;
     this.saveTimer = null;
@@ -3439,7 +3440,7 @@ class TermdeckApp {
         if (!this.sectionCollapsed("recent_files_collapsed")) void this.refreshRecentFiles(true);
       }
     });
-    await Promise.all([this.loadAgentSpecs(), this.loadSettings()]);
+    await Promise.all([this.loadAgentSpecs(), this.loadSettings(), this.loadAccessMode()]);
     if (this.settings.notify_attention !== false || this.settings.notify_agent_idle !== false) {
       // Chrome ignores a permission request that arrives without a user gesture, so a
       // page-load request leaves the permission stuck at "default" forever. Ask again on
@@ -4095,6 +4096,17 @@ class TermdeckApp {
     void this.initializeRemoteIdleMode();
     this.refresh().finally(() => this.connectStatusStream());
     setInterval(() => this.refresh(), SESSION_LIST_REFRESH_MS);
+  }
+
+  async loadAccessMode() {
+    const response = await fetch("/api/access/status");
+    if (!response.ok) throw new Error(`access status failed (${response.status})`);
+    const access = await response.json();
+    this.readOnlyMode = access.read_only === true;
+    document.body.classList.toggle("termdeck-read-only", this.readOnlyMode);
+    const badge = this.$("access-mode-badge");
+    badge.classList.toggle("hidden", !this.readOnlyMode);
+    this.$("history-prompt").readOnly = this.readOnlyMode;
   }
 
   navUrl(state) {

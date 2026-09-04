@@ -1,8 +1,9 @@
 # Automation API
 
-TermDeck exposes a small local HTTP API for agents and scripts. The default server is
-`http://127.0.0.1:8530`. There is no authentication, so keep the server bound to localhost or place it
-behind your own access control before exposing it to a network.
+TermDeck exposes a local HTTP API for agents and scripts. The default server is `http://127.0.0.1:8530`.
+Authentication is disabled by default; configure `TERMDECK_ACCESS_TOKEN` before direct network exposure. When
+enabled, add `Authorization: Bearer <token>` to every request. `TERMDECK_READ_ONLY=1` rejects all mutating API
+calls even after authentication.
 
 These endpoints start real persistent TermDeck terminals. A successful prompt response means the prompt was
 written to the terminal and submitted; it does not mean the agent has finished processing it. Use

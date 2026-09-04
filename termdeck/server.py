@@ -15,11 +15,12 @@ from pathlib import Path
 import uvicorn
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from termdeck import agents
+from termdeck.access_control import DirectAccessMiddleware, DirectAccessPolicy
 from termdeck.config import TermdeckConfig
 from termdeck.file_history_service import FileHistoryService
 from termdeck.file_service import ProjectFileService
@@ -601,6 +602,7 @@ class TermdeckServer:
                                              TermdeckConfig.SERVICE_LOG_TRIM_INTERVAL_SECONDS)
         self.state_recovery = self.state_backup.recovery_status()
         self.recovery_mode = bool(self.state_recovery["required"])
+        self.access_control = DirectAccessPolicy(TermdeckConfig.ACCESS_TOKEN, TermdeckConfig.READ_ONLY)
         self.manager: TerminalSessionManager | None = None
         if not self.recovery_mode:
             self.manager = TerminalSessionManager(self.state_backup)
@@ -642,7 +644,8 @@ class TermdeckServer:
             reconnect_min_seconds=TermdeckConfig.REMOTE_RECONNECT_MIN_SECONDS,
             reconnect_max_seconds=TermdeckConfig.REMOTE_RECONNECT_MAX_SECONDS,
             http_timeout_seconds=TermdeckConfig.REMOTE_HTTP_TIMEOUT_SECONDS,
-            demand_poll_seconds=TermdeckConfig.REMOTE_DEMAND_POLL_SECONDS)
+            demand_poll_seconds=TermdeckConfig.REMOTE_DEMAND_POLL_SECONDS,
+            local_access_token=TermdeckConfig.ACCESS_TOKEN)
         self.lan_access: LanAccessManager | None = None
         self._lan_stop_task: asyncio.Task[None] | None = None
         self._state_backup_task: asyncio.Task | None = None
@@ -693,6 +696,7 @@ class TermdeckServer:
 
     def build_app(self) -> FastAPI:
         app = FastAPI(lifespan=self._lifespan)
+        app.add_middleware(DirectAccessMiddleware, policy=self.access_control)
         self.lan_access = LanAccessManager(app, TermdeckConfig.LAN_PORT, TermdeckConfig.UVICORN_LOG_LEVEL)
         app.middleware("http")(self._no_cache_middleware)
         app.mount(TermdeckConfig.STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.STATIC_DIR), name=TermdeckConfig.STATIC_NAME)
@@ -701,6 +705,10 @@ class TermdeckServer:
         app.mount(TermdeckConfig.FILEBROWSER_STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.FILEBROWSER_STATIC_DIR),
                   name=TermdeckConfig.FILEBROWSER_STATIC_NAME)
         app.get("/", response_model=None)(self._index)
+        app.get(TermdeckConfig.ACCESS_PAGE_ROUTE, response_model=None)(self._access_page)
+        app.get(TermdeckConfig.API_ACCESS_STATUS_ROUTE, response_model=None)(self._access_status)
+        app.post(TermdeckConfig.API_ACCESS_LOGIN_ROUTE, response_model=None)(self._access_login)
+        app.post(TermdeckConfig.API_ACCESS_LOGOUT_ROUTE, response_model=None)(self._access_logout)
         app.get(TermdeckConfig.LLMS_ROUTE, response_model=None)(self._llms_document)
         app.get(TermdeckConfig.PROJECT_PAGE_ROUTE, response_model=None)(self._project_page)
         app.get(TermdeckConfig.PROJECT_NAVIGATION_PAGE_ROUTE, response_model=None)(self._project_navigation_page)
@@ -1636,6 +1644,45 @@ class TermdeckServer:
         response = await call_next(request)
         if not request.url.path.startswith("/static/vendor/"):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+
+    async def _access_page(self, request: Request, next: str = "/") -> Response:
+        return_path = self.access_control.safe_return_path(next)
+        if not self.access_control.authentication_enabled or self.access_control.scope_is_authenticated(request.scope):
+            return RedirectResponse(return_path, status_code=303)
+        return self.access_control.login_page(return_path)
+
+    async def _access_status(self, request: Request) -> dict[str, bool]:
+        return {"authentication_enabled": self.access_control.authentication_enabled,
+                "authenticated": self.access_control.scope_is_authenticated(request.scope),
+                "read_only": self.access_control.read_only}
+
+    async def _access_login(self, request: Request, next: str = "/") -> Response:
+        return_path = self.access_control.safe_return_path(next)
+        json_request = request.headers.get("content-type", "").split(";", 1)[0].strip() == "application/json"
+        if json_request:
+            try:
+                payload = await request.json()
+            except json.JSONDecodeError as error:
+                raise HTTPException(status_code=400, detail="access login body must be JSON") from error
+            token = str(payload.get("token") or "") if isinstance(payload, dict) else ""
+        else:
+            form = await request.form()
+            token = str(form.get("token") or "")
+        if not self.access_control.token_matches(token):
+            if json_request:
+                return JSONResponse({"detail": "invalid TermDeck access token"}, status_code=401)
+            response = self.access_control.login_page(return_path, invalid_token=True)
+            response.status_code = 401
+            return response
+        response = JSONResponse({"authenticated": True, "read_only": self.access_control.read_only}) \
+            if json_request else RedirectResponse(return_path, status_code=303)
+        self.access_control.set_browser_cookie(response)
+        return response
+
+    async def _access_logout(self) -> Response:
+        response = RedirectResponse(TermdeckConfig.ACCESS_PAGE_ROUTE, status_code=303)
+        self.access_control.delete_browser_cookie(response)
         return response
 
     async def _index(self) -> FileResponse:
@@ -3073,10 +3120,14 @@ class TermdeckServer:
             asyncio.to_thread(self.language_servers.status))
         dependencies = [asdict(report) for report in dependency_reports]
         builder = SupportBundleBuilder(TermdeckConfig.DATA_DIR, ServiceInstaller.log_file())
+        remote_status = dict(self.remote_access.status()) | {
+            "direct_authentication": self.access_control.authentication_enabled,
+            "read_only": self.access_control.read_only,
+        }
         archive = await asyncio.to_thread(
             builder.build, __version__, self.server_instance_id, self.settings_store.load(),
             self.manager.list_sessions(None), dependencies, process_report, lsp_status,
-            dict(self.remote_access.status()), len(self.manager.registry.list_projects()))
+            remote_status, len(self.manager.registry.list_projects()))
         timestamp = TimeUtil.now_est_naive().strftime("%Y%m%d-%H%M%S")
         return Response(archive, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="termdeck-diagnostics-{timestamp}.zip"'})
@@ -3084,6 +3135,10 @@ class TermdeckServer:
     async def _ws_terminal(self, websocket: WebSocket, session_id: str) -> None:
         if not self.manager.has_session(session_id):
             await websocket.close(code=TermdeckConfig.WS_CODE_UNKNOWN_SESSION)
+            return
+        read_only = bool(websocket.scope.get("state", {}).get("termdeck_read_only"))
+        if read_only and self.manager.session_summary_by_id(session_id).get("dormant"):
+            await websocket.close(code=4403, reason="read-only mode cannot start a dormant terminal")
             return
         await websocket.accept()
         screen_repaint = websocket.query_params.get("screen_repaint", "1").lower() not in {"0", "false", "no", "off"}
@@ -3096,7 +3151,9 @@ class TermdeckServer:
             await websocket.send_bytes(scrollback)
             await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.DRAFT,
                                                    WsMessageFields.DRAFT: self.manager.session_draft(session_id)}))
-            client_pump = asyncio.create_task(self._pump_client_to_pty(websocket, session_id))
+            if read_only:
+                await websocket.send_text(json.dumps({WsMessageFields.TYPE: "access_mode", "read_only": True}))
+            client_pump = asyncio.create_task(self._pump_client_to_pty(websocket, session_id, read_only))
             output_pump = asyncio.create_task(self._pump_queue_to_client(websocket, queue))
             done, pending = await asyncio.wait({client_pump, output_pump}, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
@@ -3343,13 +3400,19 @@ class TermdeckServer:
                                                "has_more": has_more,
                                                "chunks": len(chunks)}))
 
-    async def _pump_client_to_pty(self, websocket: WebSocket, session_id: str) -> None:
+    async def _pump_client_to_pty(self, websocket: WebSocket, session_id: str, read_only: bool = False) -> None:
         while True:
             try:
                 raw = await websocket.receive_text()
             except WebSocketDisconnect:
                 return
             message = json.loads(raw)
+            if read_only:
+                if message.get(WsMessageFields.TYPE) == WsMessageFields.RESIZE:
+                    summary = self.manager.session_summary_by_id(session_id)
+                    await websocket.send_json({"type": "resize_rejected", "cols": summary[WsMessageFields.COLS],
+                                               "rows": summary[WsMessageFields.ROWS]})
+                continue
             message_type = message[WsMessageFields.TYPE]
             if message_type == WsMessageFields.INPUT:
                 self.manager.write_input(session_id, message[WsMessageFields.DATA])

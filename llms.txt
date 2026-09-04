@@ -15,6 +15,7 @@ Aider, or OpenCode adapter that runs them.
 - [Session export and import](https://github.com/danialfarid/termdeck/blob/main/docs/session-export-import.md): portable archive format, trust boundary, and API
 - [Architecture](https://github.com/danialfarid/termdeck/blob/main/docs/architecture.md): server, terminal, transcript, file, Git, and LSP boundaries
 - [Configuration](https://github.com/danialfarid/termdeck/blob/main/docs/configuration.md): environment variables, services, agents, remote access, and language servers
+- [Remote access](https://github.com/danialfarid/termdeck/blob/main/docs/remote-access.md): hosted Google login, direct bearer-token access, and read-only monitoring
 - [Troubleshooting](https://github.com/danialfarid/termdeck/blob/main/docs/troubleshooting.md): diagnosis and recovery
 - [Security](https://github.com/danialfarid/termdeck/blob/main/SECURITY.md): threat model and reporting
 

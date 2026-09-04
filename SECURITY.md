@@ -5,8 +5,8 @@
 TermDeck is a **local, single-user tool that runs arbitrary commands as you**. That is its purpose, not a
 flaw. The security boundary is the network interface it binds to.
 
-By default it binds `127.0.0.1`, so only processes on your own machine can reach it. There is **no
-authentication and no authorization** — anyone who can reach the port can:
+By default it binds `127.0.0.1`, so only processes on your own machine can reach it. Authentication is disabled
+unless `TERMDECK_ACCESS_TOKEN` is configured. Without it, anyone who can reach the port can:
 
 - run any command as your user
 - read, write, and delete any file under the file root (your home directory by default)
@@ -21,6 +21,10 @@ Consequences:
   or put an authenticating reverse proxy in front of it.
 - On a shared machine, remember that any local user who can reach `127.0.0.1:8530` has your shell.
 - Narrow the file root (`--file-root ~/projects`) if you want a smaller blast radius.
+- Set `TERMDECK_ACCESS_TOKEN` for direct access and carry it only over SSH, a trusted VPN, or HTTPS. The token
+  authenticates requests but does not encrypt plain HTTP traffic.
+- `TERMDECK_READ_ONLY=1` blocks terminal input and mutating HTTP methods, but still exposes terminal output,
+  transcripts, project files, Git metadata, and exports. It is a mutation boundary, not a secrecy boundary.
 
 ## What counts as a vulnerability
 
@@ -35,7 +39,7 @@ Things we want to hear about:
 Things that are **not** vulnerabilities, because they're the documented design:
 
 - Running commands through the terminal API — that's the product
-- No authentication on a loopback bind
+- Authentication disabled on a loopback bind unless the optional token is configured
 - Exposure caused by binding `0.0.0.0` yourself
 
 ## Reporting

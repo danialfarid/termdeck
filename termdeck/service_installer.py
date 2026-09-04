@@ -28,7 +28,7 @@ class ServiceInstaller:
                           PlatformPaths.ENV_DATA_DIR,
                           PlatformPaths.ENV_DEFAULT_CWD, PlatformPaths.ENV_FILE_ROOT, PlatformPaths.ENV_SHELL,
                           PlatformPaths.ENV_DTACH_BIN, PlatformPaths.ENV_RG_BIN, PlatformPaths.ENV_LOG_LEVEL,
-                          PlatformPaths.ENV_REMOTE_URL)
+                          PlatformPaths.ENV_REMOTE_URL, PlatformPaths.ENV_ACCESS_TOKEN, PlatformPaths.ENV_READ_ONLY)
     SYSTEMD_UNIT_TEMPLATE = """[Unit]
 Description=TermDeck - browser terminal deck with agent session resume
 After=default.target
@@ -76,11 +76,13 @@ WantedBy=default.target
         unit_file.parent.mkdir(parents=True, exist_ok=True)
         if PlatformPaths.IS_MACOS:
             ServiceInstaller._write_launchd_plist(unit_file)
+            unit_file.chmod(0o600)
             ServiceInstaller._bootout_launchd_quietly()
             ServiceInstaller._run(ServiceInstaller.LAUNCHCTL_BIN, "bootstrap", ServiceInstaller._launchd_domain(),
                                   str(unit_file))
         else:
             unit_file.write_text(ServiceInstaller._render_systemd_unit())
+            unit_file.chmod(0o600)
             ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "daemon-reload")
             ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "enable", "--now",
                                   ServiceInstaller.SYSTEMD_UNIT_NAME)

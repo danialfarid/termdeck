@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Optional bearer-token authentication for direct HTTP/WebSocket access and a server-wide read-only monitoring
+  mode; the hosted relay authenticates locally without disclosing the direct-access token to its browser.
 - Portable session export/import archives preserve the resume profile, draft, normalized transcript, and
   available terminal replay, and restore as dormant tabs without executing on import.
 - An agent-readable `/llms.txt` capability and API index, plus a one-click diagnostics bundle containing

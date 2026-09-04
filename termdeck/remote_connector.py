@@ -21,7 +21,8 @@ class RemoteConnector:
     WEBSOCKET_HEADER_PREFIX = "sec-websocket-"
 
     def __init__(self, relay_url: str, connector_token: str, local_url: str, reconnect_min_seconds: float,
-                 reconnect_max_seconds: float, http_timeout_seconds: float, demand_poll_seconds: float = 5.0) -> None:
+                 reconnect_max_seconds: float, http_timeout_seconds: float, demand_poll_seconds: float = 5.0,
+                 local_access_token: str = "") -> None:
         self.relay_url = relay_url.rstrip("/")
         self.connector_token = connector_token
         self.local_url = local_url.rstrip("/")
@@ -29,6 +30,7 @@ class RemoteConnector:
         self.reconnect_max_seconds = reconnect_max_seconds
         self.http_timeout_seconds = http_timeout_seconds
         self.demand_poll_seconds = demand_poll_seconds
+        self.local_access_token = local_access_token.strip()
         self.connected = False
         self.last_error = ""
         self._stop_event = asyncio.Event()
@@ -145,7 +147,7 @@ class RemoteConnector:
         try:
             response = await self._http_client.request(
                 method=message["method"], url=self._local_http_url(message["path"], message.get("query", "")),
-                headers=self._filtered_request_headers(message.get("headers", [])), content=message.get("body", b""))
+                headers=self._local_request_headers(message.get("headers", [])), content=message.get("body", b""))
             await self._send({"type": RemoteMessageType.HTTP_RESPONSE, "request_id": request_id,
                               "status": response.status_code, "headers": self._filtered_response_headers(response.headers),
                               "body": response.content})
@@ -158,7 +160,7 @@ class RemoteConnector:
         channel_id = message["channel_id"]
         try:
             local_websocket = await connect(self._local_websocket_url(message["path"], message.get("query", "")),
-                                            additional_headers=self._filtered_websocket_headers(message.get("headers", [])),
+                                            additional_headers=self._local_websocket_headers(message.get("headers", [])),
                                             max_size=None, ping_interval=20, ping_timeout=20, open_timeout=15)
         except (OSError, TimeoutError, WebSocketException) as websocket_error:
             await self._send({"type": RemoteMessageType.ERROR, "channel_id": channel_id, "status": 502,
@@ -249,6 +251,16 @@ class RemoteConnector:
     def _filtered_websocket_headers(self, headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
         return [(name, value) for name, value in self._filtered_request_headers(headers)
                 if not name.lower().startswith(self.WEBSOCKET_HEADER_PREFIX) and name.lower() != "origin"]
+
+    def _local_request_headers(self, headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        filtered = self._filtered_request_headers(headers)
+        if not self.local_access_token:
+            return filtered
+        return [(name, value) for name, value in filtered if name.lower() != "authorization"] + \
+            [("Authorization", f"Bearer {self.local_access_token}")]
+
+    def _local_websocket_headers(self, headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        return self._local_request_headers(self._filtered_websocket_headers(headers))
 
     def _filtered_response_headers(self, headers: httpx.Headers) -> list[tuple[str, str]]:
         return [(name, value) for name, value in headers.multi_items() if name.lower() not in self.RESPONSE_HEADER_EXCLUSIONS]

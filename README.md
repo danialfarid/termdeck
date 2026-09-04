@@ -107,8 +107,8 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
 - **Yours to rebind** — every keyboard shortcut, from the sidebar footer.
 - **Issue-ready diagnostics** — one click downloads a bounded, sanitized support bundle; opt-in recording adds
   browser geometry and interaction timing without terminal output, prompts, source files, or credentials.
-- **Phone and remote** — touch layouts, local Wi-Fi, and authenticated remote access when you are away from the
-  machine.
+- **Phone and remote** — touch layouts, local Wi-Fi, Google-authenticated hosted access, or your own bearer-token
+  tunnel with an optional monitoring-only mode.
 
 ```
 ┌──────────────────────────┬────────────────────────────────────────────────────┐
@@ -267,6 +267,8 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 
 - Local Wi-Fi access on its own listener — no relay, no login.
 - TermDeck Remote: Google sign-in through a hosted relay, with pairing controls.
+- Optional bearer-token protection for direct LAN, VPN, SSH-tunnel, and reverse-proxy access; server-wide
+  read-only mode keeps monitoring live while blocking terminal input and mutations.
 - Touch layouts with long-press row actions, drafts kept through outages, and automatic reconnection.
 
 **Look and feel**
@@ -287,8 +289,9 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Security
 
-TermDeck runs commands on your machine and binds to localhost by default. Do not expose it to a network without
-authentication and a protected tunnel or reverse proxy.
+TermDeck runs commands on your machine and binds to localhost by default. For direct network access, configure
+`TERMDECK_ACCESS_TOKEN` and use an encrypted SSH/VPN/HTTPS path; read-only mode limits mutation but still exposes
+files and session content.
 
 ## License
 

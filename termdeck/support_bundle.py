@@ -132,7 +132,9 @@ class SupportBundleBuilder:
 
     def _safe_remote_status(self, remote_status: dict[str, object]) -> dict[str, object]:
         return {"state": remote_status.get("state"), "configured": bool(remote_status.get("relay_url")),
-                "public_url_configured": bool(remote_status.get("public_url")), "has_error": bool(remote_status.get("error"))}
+                "public_url_configured": bool(remote_status.get("public_url")), "has_error": bool(remote_status.get("error")),
+                "direct_authentication": bool(remote_status.get("direct_authentication")),
+                "read_only": bool(remote_status.get("read_only"))}
 
     def _latest_diagnostics_recording(self) -> Path | None:
         diagnostics_directory = self.data_dir / "diagnostics"

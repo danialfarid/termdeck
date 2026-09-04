@@ -34,6 +34,8 @@ class PlatformPaths:
     ENV_LOG_LEVEL = "TERMDECK_LOG_LEVEL"
     ENV_REMOTE_URL = "TERMDECK_REMOTE_URL"
     ENV_REMOTE_PUBLIC_URL = "TERMDECK_REMOTE_PUBLIC_URL"
+    ENV_ACCESS_TOKEN = "TERMDECK_ACCESS_TOKEN"
+    ENV_READ_ONLY = "TERMDECK_READ_ONLY"
 
     @staticmethod
     def env_text(name: str, default: str) -> str:
@@ -43,6 +45,11 @@ class PlatformPaths:
     def env_int(name: str, default: int) -> int:
         raw = os.environ.get(name, "").strip()
         return int(raw) if raw else default
+
+    @staticmethod
+    def env_bool(name: str, default: bool = False) -> bool:
+        raw = os.environ.get(name, "").strip().casefold()
+        return raw in {"1", "true", "yes", "on"} if raw else default
 
     @staticmethod
     def env_directory(name: str, default: Path) -> Path:

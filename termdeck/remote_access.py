@@ -41,7 +41,8 @@ class RemotePairingState:
 class RemoteAccessManager:
     def __init__(self, relay_url: str, public_url: str, local_url: str, credential_store: RemoteCredentialStore,
                  pair_poll_seconds: float, pair_timeout_seconds: float, reconnect_min_seconds: float,
-                 reconnect_max_seconds: float, http_timeout_seconds: float, demand_poll_seconds: float) -> None:
+                 reconnect_max_seconds: float, http_timeout_seconds: float, demand_poll_seconds: float,
+                 local_access_token: str = "") -> None:
         self.relay_url = relay_url.rstrip("/")
         self.public_url = public_url.rstrip("/")
         self.local_url = local_url.rstrip("/")
@@ -52,6 +53,7 @@ class RemoteAccessManager:
         self.reconnect_max_seconds = reconnect_max_seconds
         self.http_timeout_seconds = http_timeout_seconds
         self.demand_poll_seconds = demand_poll_seconds
+        self.local_access_token = local_access_token
         self.credentials: RemoteCredentials | None = None
         self.connector: RemoteConnector | None = None
         self.connector_task: asyncio.Task[None] | None = None
@@ -156,7 +158,8 @@ class RemoteAccessManager:
         self.connector = RemoteConnector(
             relay_url=credentials.relay_url, connector_token=credentials.connector_token, local_url=self.local_url,
             reconnect_min_seconds=self.reconnect_min_seconds, reconnect_max_seconds=self.reconnect_max_seconds,
-            http_timeout_seconds=self.http_timeout_seconds, demand_poll_seconds=self.demand_poll_seconds)
+            http_timeout_seconds=self.http_timeout_seconds, demand_poll_seconds=self.demand_poll_seconds,
+            local_access_token=self.local_access_token)
         self.connector_task = asyncio.create_task(self.connector.run())
 
     async def _stop_connector(self) -> None:

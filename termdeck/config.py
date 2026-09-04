@@ -15,6 +15,8 @@ class TermdeckConfig:
     HOST = PlatformPaths.env_text(PlatformPaths.ENV_HOST, "127.0.0.1")
     PORT = PlatformPaths.env_int(PlatformPaths.ENV_PORT, 8530)
     LAN_PORT = PlatformPaths.env_int(PlatformPaths.ENV_LAN_PORT, 8532)
+    ACCESS_TOKEN = PlatformPaths.env_text(PlatformPaths.ENV_ACCESS_TOKEN, "")
+    READ_ONLY = PlatformPaths.env_bool(PlatformPaths.ENV_READ_ONLY)
     DATA_DIR = PlatformPaths.env_directory(PlatformPaths.ENV_DATA_DIR, PlatformPaths.default_data_dir())
     SESSIONS_FILE = DATA_DIR / "sessions.json"
     SETTINGS_FILE = DATA_DIR / "settings.json"
@@ -234,6 +236,10 @@ class TermdeckConfig:
     API_REMOTE_STATUS_ROUTE = "/api/remote/status"
     API_REMOTE_PAIR_ROUTE = "/api/remote/pair"
     API_REMOTE_DISCONNECT_ROUTE = "/api/remote/disconnect"
+    ACCESS_PAGE_ROUTE = "/access"
+    API_ACCESS_STATUS_ROUTE = "/api/access/status"
+    API_ACCESS_LOGIN_ROUTE = "/api/access/login"
+    API_ACCESS_LOGOUT_ROUTE = "/api/access/logout"
     API_LAN_STATUS_ROUTE = "/api/lan/status"
     API_LAN_ACCESS_ROUTE = "/api/lan/access"
     API_NOTEBOOK_TRASH_ROUTE = "/api/notebook/trash"

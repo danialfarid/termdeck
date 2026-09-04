@@ -388,6 +388,10 @@ Object.assign(TermdeckApp.prototype, {
     container.addEventListener("paste", (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (this.readOnlyMode) {
+        this.$("status-name").textContent = "read-only mode · terminal input is disabled";
+        return;
+      }
       const cd = e.clipboardData || window.clipboardData;
       const files = cd && cd.files && cd.files.length ? [...cd.files] : [];
       if (files.length) { this.uploadAndInsert(view, files); return; }
@@ -462,6 +466,10 @@ Object.assign(TermdeckApp.prototype, {
       return this.handleTerminalEditingKeys(view, e);
     });
     term.onData((data) => {
+      if (this.readOnlyMode) {
+        this.$("status-name").textContent = "read-only mode · terminal input is disabled";
+        return;
+      }
       const normalizedInput = this.normalizeMobileTerminalInput(view, data);
       if (normalizedInput) this.sendTrackedInput(view, normalizedInput);
     });
