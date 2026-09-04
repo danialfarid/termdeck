@@ -128,7 +128,7 @@ class AgentProfileLoader:
             raise ValueError(f"{prefix} sessionless profiles cannot define resume, fork, or transcript identity")
         return AgentProfile(
             kind=kind, label=cls._required_text(raw, "label", prefix), executable=executable,
-            aliases=cls._texts(raw.get("aliases", []), f"{prefix}.aliases"),
+            aliases=tuple(alias.lower() for alias in cls._texts(raw.get("aliases", []), f"{prefix}.aliases")),
             base_arguments=base_arguments,
             model_arguments=model_arguments, permissions=permissions, resume_arguments=resume_arguments,
             fork_arguments=fork_arguments,

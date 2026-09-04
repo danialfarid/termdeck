@@ -2,6 +2,7 @@ import io
 import json
 import unittest
 import uuid
+import warnings
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -49,6 +50,49 @@ class SessionBundleServiceTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unexpected archive entry"):
                 SessionBundleService(Path(directory)).read(payload.getvalue())
 
+    def test_import_rejects_duplicate_archive_entries(self) -> None:
+        payload = io.BytesIO()
+        with warnings.catch_warnings(), zipfile.ZipFile(payload, "w") as archive:
+            warnings.simplefilter("ignore", UserWarning)
+            archive.writestr("manifest.json", '{"format":"termdeck-session","format_version":1}')
+            archive.writestr("session.json", '{"title":"x","command":"","agent_kind":"none",'
+                                          '"cwd_relative":"."}')
+            archive.writestr("manifest.json", '{"format":"termdeck-session","format_version":1}')
+
+        with TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "duplicate archive entry"):
+                SessionBundleService(Path(directory)).read(payload.getvalue())
+
+    def test_import_wraps_unsupported_zip_compression_as_validation_error(self) -> None:
+        service = SessionBundleService(Path("/tmp"))
+        _filename, archive_bytes = service.build(
+            "1.2.3", {"title": "x", "command": "", "agent_kind": "none", "cwd": "/tmp"},
+            Path("/tmp"), [], "none", b"")
+        corrupted = bytearray(archive_bytes)
+        local_header = corrupted.find(b"PK\x03\x04")
+        central_header = corrupted.find(b"PK\x01\x02")
+        corrupted[local_header + 8:local_header + 10] = (99).to_bytes(2, "little")
+        corrupted[central_header + 10:central_header + 12] = (99).to_bytes(2, "little")
+
+        with self.assertRaisesRegex(ValueError, "invalid TermDeck session archive"):
+            service.read(bytes(corrupted))
+
+    def test_imported_shell_replay_stays_within_scrollback_bound(self) -> None:
+        with TemporaryDirectory() as directory:
+            scrollback = Path(directory) / "scrollback"
+            manager = MagicMock()
+            recorder = ReplayRecorder(manager)
+            ms = MagicMock()
+            ms.record.agent_kind = "none"
+            ms.record.session_id = "abc123def456"
+            ms.buffer = bytearray()
+            with patch.object(TermdeckConfig, "SCROLLBACK_DIR", scrollback), \
+                    patch.object(TermdeckConfig, "SCROLLBACK_BYTES", 10):
+                recorder.import_replay(ms, ReplayRecorder.SCROLLBACK_KIND, b"0123456789abcdef")
+
+            self.assertEqual(bytes(ms.buffer), b"6789abcdef")
+            self.assertEqual((scrollback / "abc123def456.bin").read_bytes(), b"6789abcdef")
+
     def test_import_rejects_invalid_terminal_dimensions(self) -> None:
         payload = io.BytesIO()
         with zipfile.ZipFile(payload, "w") as archive:
@@ -58,6 +102,17 @@ class SessionBundleServiceTest(unittest.TestCase):
 
         with TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "invalid dimensions"):
+                SessionBundleService(Path(directory)).read(payload.getvalue())
+
+    def test_import_rejects_non_finite_activity_time(self) -> None:
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w") as archive:
+            archive.writestr("manifest.json", '{"format":"termdeck-session","format_version":1}')
+            archive.writestr("session.json", '{"title":"x","command":"","agent_kind":"none",'
+                                          '"cwd_relative":".","last_activity_at":"NaN"}')
+
+        with TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "activity time"):
                 SessionBundleService(Path(directory)).read(payload.getvalue())
 
     def test_imported_session_stays_dormant_and_uses_portable_transcript_fallback(self) -> None:

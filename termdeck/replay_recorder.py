@@ -120,8 +120,9 @@ class ReplayRecorder:
             return
         if replay_kind != self.SCROLLBACK_KIND or agent.is_agent:
             raise ValueError(f"unsupported replay type for {agent.kind}: {replay_kind}")
-        ms.buffer.extend(payload)
-        self._write_checkpoint_atomically(self.scrollback_path(ms.record.session_id), payload)
+        bounded_payload = payload[-TermdeckConfig.SCROLLBACK_BYTES:]
+        ms.buffer.extend(bounded_payload)
+        self._write_checkpoint_atomically(self.scrollback_path(ms.record.session_id), bounded_payload)
 
     # -- checkpoint scheduling ---------------------------------------------
 

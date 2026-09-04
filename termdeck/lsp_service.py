@@ -267,11 +267,13 @@ class LanguageServerRegistry:
 class LanguageServerManager:
     def __init__(self, files: ProjectFileService, workspace_edits: LspWorkspaceEditService,
                  command_overrides_provider: Callable[[], dict[str, dict[str, str]]] | None = None,
-                 enabled_provider: Callable[[], bool] | None = None) -> None:
+                 enabled_provider: Callable[[], bool] | None = None,
+                 read_only_provider: Callable[[], bool] | None = None) -> None:
         self._files = files
         self._workspace_edits = workspace_edits
         self._command_overrides_provider = command_overrides_provider or (lambda: {})
         self._enabled_provider = enabled_provider or (lambda: True)
+        self._read_only_provider = read_only_provider or (lambda: False)
         self._connections: dict[tuple[str, str], LanguageServerConnection] = {}
         self._document_clients: dict[tuple[LanguageServerConnection, str], int] = {}
         self._lock = asyncio.Lock()
@@ -319,6 +321,8 @@ class LanguageServerManager:
         return connection, uri
 
     async def _apply_workspace_edit(self, root: Path, workspace_edit: dict[str, object]) -> dict[str, object]:
+        if self._read_only_provider():
+            return {"applied": False, "failureReason": "TermDeck is running in read-only mode", "changed": []}
         try:
             changed = self._workspace_edits.apply(str(root), workspace_edit)
             return {"applied": True, "changed": changed}

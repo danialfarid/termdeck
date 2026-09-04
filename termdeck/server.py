@@ -592,6 +592,10 @@ class TermdeckServer:
     events as JSON text frames; client sends JSON text frames for input and resize."""
 
     LAN_DISABLE_RESPONSE_DELAY_SECONDS = 0.25
+    READ_ONLY_LSP_REQUEST_METHODS = frozenset({
+        "textDocument/codeAction", "textDocument/definition", "textDocument/diagnostic", "textDocument/hover",
+        "textDocument/prepareRename", "textDocument/references", "textDocument/rename", "workspace/symbol",
+    })
 
     def __init__(self) -> None:
         self.server_instance_id = uuid.uuid4().hex
@@ -637,7 +641,8 @@ class TermdeckServer:
             self.manager.attach_settings_reader(self.settings_store.load)
         self.lsp_workspace_edits = LspWorkspaceEditService(self.files, self.file_history)
         self.language_servers = LanguageServerManager(
-            self.files, self.lsp_workspace_edits, self._lsp_command_overrides, self._lsp_enabled)
+            self.files, self.lsp_workspace_edits, self._lsp_command_overrides, self._lsp_enabled,
+            lambda: self.access_control.read_only)
         self.remote_access = RemoteAccessManager(
             relay_url=TermdeckConfig.REMOTE_SERVICE_URL, public_url=TermdeckConfig.REMOTE_PUBLIC_URL,
             local_url=f"http://127.0.0.1:{TermdeckConfig.PORT}",
@@ -3110,14 +3115,22 @@ class TermdeckServer:
         try:
             directory.mkdir(parents=True, exist_ok=True)
             # A runaway recorder must not fill the disk; the cap ends the file rather than the session.
-            if path.exists() and path.stat().st_size > TermdeckConfig.DIAGNOSTICS_MAX_BYTES:
+            current_size = path.stat().st_size if path.exists() else 0
+            if current_size >= TermdeckConfig.DIAGNOSTICS_MAX_BYTES:
                 return {"ok": False, "full": True}
-            with path.open("a") as handle:
+            remaining = TermdeckConfig.DIAGNOSTICS_MAX_BYTES - current_size
+            full = False
+            with path.open("ab") as handle:
                 for event in events:
-                    handle.write(json.dumps(event, separators=(",", ":"), default=str)[:100_000] + "\n")
+                    line = (json.dumps(event, separators=(",", ":"), default=str)[:100_000] + "\n").encode()
+                    if len(line) > remaining:
+                        full = True
+                        break
+                    handle.write(line)
+                    remaining -= len(line)
         except OSError:
             return {"ok": False}
-        return {"ok": True, "path": str(path)}
+        return {"ok": True, "path": str(path), "full": full}
 
     async def _download_support_bundle(self) -> Response:
         from termdeck import __version__
@@ -3177,6 +3190,7 @@ class TermdeckServer:
     async def _ws_lsp(self, websocket: WebSocket) -> None:
         await websocket.accept()
         send_lock = asyncio.Lock()
+        read_only = bool(websocket.scope.get("state", {}).get("termdeck_read_only"))
         root = websocket.query_params.get("root", "")
         path = websocket.query_params.get("path", "")
         language = websocket.query_params.get("language", "")
@@ -3211,6 +3225,8 @@ class TermdeckServer:
                     text = message.get("text")
                     if not isinstance(text, str):
                         raise ValueError("language-server save has no text")
+                    if read_only:
+                        continue
                     await connection.save_document(uri, text)
                     continue
                 if message_type != "request":
@@ -3220,6 +3236,12 @@ class TermdeckServer:
                 params = message.get("params", {})
                 if not isinstance(request_id, int) or not isinstance(method, str) or not isinstance(params, dict):
                     raise ValueError("invalid language-server request")
+                if read_only and method not in self.READ_ONLY_LSP_REQUEST_METHODS:
+                    await self._send_lsp_message(
+                        websocket, send_lock,
+                        {"type": "response", "requestId": request_id,
+                         "error": {"message": "TermDeck is running in read-only mode"}})
+                    continue
                 try:
                     result = await connection.request(method, params)
                     response = {"type": "response", "requestId": request_id, "result": result}

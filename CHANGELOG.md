@@ -31,6 +31,14 @@ All notable changes to this project are documented here. The format follows
 - The chevron beside the project and worktree names sits right after the name rather than at the far end of
   the row, where a short name left a panel-wide gap.
 
+### Fixed
+
+- Diagnostics recordings, imported shell replays, and session archive contents stay within their configured size
+  and structure limits; malformed ZIP compression is reported as an invalid archive.
+- Support bundles redact complete authorization and cookie values, including values in JSON diagnostics.
+- Read-only monitoring blocks language-server saves, command execution, and workspace edits while retaining
+  read-only language-server features; the fallback agent catalog matches the richer Aider, AGY, and OpenCode UI.
+
 ## [0.10.1] — 2026-09-03
 
 ### Fixed

@@ -1,7 +1,9 @@
 import io
 import json
+import math
 import re
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,7 +76,8 @@ class SessionBundleService:
                 transcript = archive.read(self.TRANSCRIPT_NAME) if self.TRANSCRIPT_NAME in archive.namelist() else b""
                 replay = archive.read(self.REPLAY_NAME) if self.REPLAY_NAME in archive.namelist() else b""
                 replay_kind = str(manifest.get("replay_kind") or "none")
-        except (zipfile.BadZipFile, KeyError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        except (zipfile.BadZipFile, KeyError, json.JSONDecodeError, UnicodeDecodeError,
+                NotImplementedError, RuntimeError, EOFError, zlib.error) as error:
             raise ValueError("invalid TermDeck session archive") from error
         if replay_kind not in {"none", "scrollback", "raw-replay"}:
             raise ValueError("unsupported terminal replay type")
@@ -129,14 +132,25 @@ class SessionBundleService:
         allowed = {SessionBundleService.MANIFEST_NAME, SessionBundleService.SESSION_NAME,
                    SessionBundleService.TRANSCRIPT_NAME, SessionBundleService.REPLAY_NAME,
                    SessionBundleService.README_NAME}
-        for entry in archive.infolist():
+        entries = archive.infolist()
+        if len(entries) > 32:
+            raise ValueError("session archive has too many entries")
+        seen: set[str] = set()
+        total_size = 0
+        for entry in entries:
             if entry.filename not in allowed:
                 raise ValueError(f"unexpected archive entry: {entry.filename}")
+            if entry.filename in seen:
+                raise ValueError(f"duplicate archive entry: {entry.filename}")
+            seen.add(entry.filename)
             limit = TermdeckConfig.SESSION_BUNDLE_REPLAY_MAX_BYTES if entry.filename == SessionBundleService.REPLAY_NAME \
                 else TermdeckConfig.SESSION_BUNDLE_TRANSCRIPT_MAX_BYTES if entry.filename == SessionBundleService.TRANSCRIPT_NAME \
                 else 1_000_000
             if entry.file_size > limit:
                 raise ValueError(f"archive entry is too large: {entry.filename}")
+            total_size += entry.file_size
+        if total_size > TermdeckConfig.SESSION_BUNDLE_MAX_BYTES:
+            raise ValueError("session archive contents exceed the 64 MB limit")
 
     @staticmethod
     def _validate_session(session: dict[str, object]) -> None:
@@ -159,9 +173,11 @@ class SessionBundleService:
         try:
             cols = int(session.get("cols") or TermdeckConfig.INITIAL_COLS)
             rows = int(session.get("rows") or TermdeckConfig.INITIAL_ROWS)
-            float(session.get("last_activity_at") or 0)
+            activity_time = float(session.get("last_activity_at") or 0)
         except (TypeError, ValueError) as error:
             raise ValueError("session archive has invalid dimensions or activity time") from error
+        if not math.isfinite(activity_time):
+            raise ValueError("session archive has invalid dimensions or activity time")
         if not 1 <= cols <= 10_000 or not 1 <= rows <= 10_000:
             raise ValueError("session archive has invalid dimensions")
         cwd_relative = session.get("cwd_relative")

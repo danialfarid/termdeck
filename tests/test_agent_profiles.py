@@ -109,6 +109,12 @@ class DeclarativeAgentProfileTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unsupported placeholders"):
                 self._load(root, {"model_arguments": ["--model", "{shell_command}"]})
 
+    def test_profile_aliases_are_case_insensitive_like_model_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            agent = self._load(Path(directory), {"aliases": ["Review"]})
+
+        self.assertEqual(agent.model_aliases, ("review",))
+
     def test_missing_profile_file_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             self.assertEqual(AgentProfileLoader.load(Path(directory) / "missing.json"), ())

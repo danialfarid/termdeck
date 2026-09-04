@@ -26,8 +26,12 @@ class SupportBundleBuilder:
     UUID_PATTERN = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,36}\b")
     EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
     URL_QUERY_PATTERN = re.compile(r"(https?://[^\s?]+)\?[^\s]+")
+    AUTHORIZATION_PATTERN = re.compile(
+        r"(?i)([\"']?authorization[\"']?\s*[:=]\s*)(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\r\n,;}]+)")
+    COOKIE_PATTERN = re.compile(
+        r"(?i)([\"']?cookie[\"']?\s*[:=]\s*)(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\r\n]+)")
     SECRET_PATTERN = re.compile(
-        r"(?i)(authorization|cookie|token|secret|password|api[-_]?key)(\s*[:=]\s*)([^\s,;]+)")
+        r"(?i)([\"']?(?:token|secret|password|api[-_]?key)[\"']?\s*[:=]\s*)(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,;}]+)")
 
     def __init__(self, data_dir: Path, service_log_path: Path, home_directory: Path | None = None) -> None:
         self.data_dir = data_dir
@@ -161,4 +165,6 @@ class SupportBundleBuilder:
         redacted = self.UUID_PATTERN.sub("<session>", redacted)
         redacted = self.EMAIL_PATTERN.sub("<email>", redacted)
         redacted = self.URL_QUERY_PATTERN.sub(r"\1?<redacted>", redacted)
-        return self.SECRET_PATTERN.sub(r"\1\2<redacted>", redacted)
+        redacted = self.AUTHORIZATION_PATTERN.sub(r"\1<redacted>", redacted)
+        redacted = self.COOKIE_PATTERN.sub(r"\1<redacted>", redacted)
+        return self.SECRET_PATTERN.sub(r"\1<redacted>", redacted)

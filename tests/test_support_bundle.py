@@ -15,7 +15,11 @@ class SupportBundleBuilderTest(unittest.TestCase):
             log_path = data_dir / "termdeck.log"
             log_path.write_text(
                 "GET http://127.0.0.1/api/search?q=private-query\n"
-                "Authorization: Bearer-secret token=abc user@example.com /Users/example/private/file.py\n")
+                "Authorization: Bearer-secret token=abc user@example.com /Users/example/private/file.py\n"
+                "Authorization: Bearer bearer-secret\n"
+                "Cookie: sid=session-cookie; csrf=csrf-secret\n"
+                '{"token":"json-secret","authorization":"Bearer json-bearer",'
+                '"cookie":"sid=json-cookie; csrf=json-csrf"}\n')
             diagnostics = data_dir / "diagnostics"
             diagnostics.mkdir()
             (diagnostics / "recording.jsonl").write_text('{"session":"123e4567-e89b-12d3-a456-426614174000"}\n')
@@ -48,7 +52,9 @@ class SupportBundleBuilderTest(unittest.TestCase):
             self.assertNotIn("title", sessions[0])
             self.assertNotIn("command", sessions[0])
             self.assertNotIn("cwd", sessions[0])
-            for private_value in ("private-query", "Bearer-secret", "token=abc", "user@example.com",
+            for private_value in ("private-query", "Bearer-secret", "bearer-secret", "token=abc", "json-secret",
+                                  "json-bearer", "session-cookie", "csrf-secret", "json-cookie", "json-csrf",
+                                  "user@example.com",
                                   "/Users/example", "123e4567-e89b-12d3-a456-426614174000"):
                 self.assertNotIn(private_value, combined)
 
