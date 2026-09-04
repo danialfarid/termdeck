@@ -3879,7 +3879,14 @@ class TermdeckApp {
     const historyPrompt = this.$("history-prompt");
     historyPrompt.addEventListener("paste", (event) => {
       const files = this.historyImageFilesFromDataTransfer(event.clipboardData);
-      if (!files.length) return;
+      if (!files.length) {
+        // The default paste goes ahead (it inserts whatever text there is); an image on a phone's
+        // clipboard arrives only through the asynchronous clipboard, so that is asked as well.
+        if (this.touchMobileLayoutEnabled()) {
+          void this.pasteClipboardImagesIntoHistory(this.sessionInteractionState(this.activeId));
+        }
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       void this.insertHistoryAttachmentFiles(this.sessionInteractionState(this.activeId), files);

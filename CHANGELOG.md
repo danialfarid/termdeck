@@ -41,6 +41,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The attach button works in a phone's transcript. It looked the session up among the terminal
+  renderers, and on a phone the transcript has none, so it did nothing.
+- Pasting an image into the transcript prompt on a phone attaches it. Android's keyboard does not hand an
+  image to the paste event, so the deck also asks the clipboard directly, with the browser's permission
+  prompt the first time.
 - A phone coming back to TermDeck Remote after its session ran out no longer lands on
   `{"detail":"Google login required"}` with no way forward. The deck parks itself on the relay's idle page
   when unattended, and that page answered an expired session with JSON — reloading fetched the same JSON.

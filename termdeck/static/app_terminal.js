@@ -1195,6 +1195,31 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // Android's keyboard does not hand an image to the paste event -- it shows its own "not supported
+  // here" toast instead -- but the asynchronous clipboard API can read one, with the user's permission.
+  async pasteClipboardImagesIntoHistory(view) {
+    if (!view || !navigator.clipboard?.read) return;
+    let items;
+    try {
+      items = await navigator.clipboard.read();
+    } catch (error) {
+      return;   // permission refused, or nothing the browser will hand over
+    }
+    const files = [];
+    for (const item of items) {
+      const type = item.types.find((candidate) => candidate.startsWith("image/"));
+      if (!type) continue;
+      try {
+        const blob = await item.getType(type);
+        files.push(new File([blob], `pasted.${type.split("/")[1] || "png"}`, { type }));
+      } catch (error) {
+        // an item the browser advertised but would not deliver; the others may still come
+      }
+    }
+    if (files.length) await this.insertHistoryAttachmentFiles(view, files);
+  },
+
+
   async uploadFiles(files) {
     this.$("status-name").textContent = `uploading ${files.length} file${files.length === 1 ? "" : "s"}…`;
     const paths = [];
@@ -1225,7 +1250,10 @@ Object.assign(TermdeckApp.prototype, {
 
 
   async attachToHistory() {
-    const view = this.views.get(this.activeId);
+    // The transcript's own state, not the xterm view: on a phone the transcript is all there is --
+    // no terminal renderer is built for it -- so looking the session up among the xterm views found
+    // nothing, and the button did nothing.
+    const view = this.sessionInteractionState(this.activeId);
     if (!view || this.activeFileKey !== null || !this.historyOpen) return;
     const input = document.createElement("input");
     input.type = "file";
