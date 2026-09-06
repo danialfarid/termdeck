@@ -193,7 +193,13 @@ class RemoteRelayApplication:
             return self._login_redirect(self._request_target(request))
         if request.method not in {"GET", "HEAD"}:
             self._require_mutation_origin(request)
+        # A page navigation gets the offline page at once: it explains itself and keeps asking. A fetch
+        # from the deck's own scripts instead waits for the connector to answer the demand this raises,
+        # because a 503 to those meant the deck's refreshes and reconnects failed for the several
+        # seconds a computer takes to dial back in, every time a phone came back to it.
         connector = self.registry.get(user.user_id)
+        if connector is None and not self._is_navigation(request):
+            connector = await self._await_connector(user.user_id)
         if connector is None:
             self.registry.request_connection(user.user_id)
             return HTMLResponse(self._offline_page(user), status_code=503, headers={"Retry-After": "3"})
@@ -226,7 +232,7 @@ class RemoteRelayApplication:
         if user is None or websocket.headers.get("origin", "") != self.public_origin:
             await websocket.close(code=4401)
             return
-        connector = self.registry.get(user.user_id)
+        connector = await self._await_connector(user.user_id)
         if connector is None:
             self.registry.request_connection(user.user_id)
             await websocket.close(code=1013)
@@ -287,6 +293,23 @@ class RemoteRelayApplication:
             elif message_type == RemoteMessageType.ERROR:
                 await websocket.close(code=1011, reason=message.get("text", "connector error"))
                 return
+
+    async def _await_connector(self, user_id: str) -> ConnectorConnection | None:
+        """The user's connector, waiting up to `connector_wait_seconds` for one to dial in.
+
+        The computer only connects on demand and polls for that demand every few seconds, so the first
+        requests after a phone wakes used to arrive before it. Registering the demand and holding the
+        request lets the same request succeed instead of failing and being retried."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.config.connector_wait_seconds
+        while True:
+            connector = self.registry.get(user_id)
+            if connector is not None:
+                return connector
+            self.registry.request_connection(user_id)
+            if loop.time() >= deadline:
+                return None
+            await asyncio.sleep(0.25)
 
     def _require_browser_user(self, request: Request) -> AuthenticatedUser:
         user = self._browser_user(request.cookies.get(self.SESSION_COOKIE, ""))

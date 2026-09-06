@@ -17,6 +17,9 @@ class RemoteServiceConfig:
     connector_idle_seconds: float
     browser_idle_seconds: float
     anonymous_requests_per_hour: int
+    # How long a script fetch or websocket waits for the user's computer to dial in before it is
+    # refused; 0 refuses at once (tests).
+    connector_wait_seconds: float = 15.0
 
     @staticmethod
     def from_environment() -> "RemoteServiceConfig":
@@ -41,4 +44,5 @@ class RemoteServiceConfig:
             connector_idle_seconds=float(os.environ.get("TERMDECK_REMOTE_CONNECTOR_IDLE_SECONDS", "45")),
             browser_idle_seconds=float(os.environ.get("TERMDECK_REMOTE_BROWSER_IDLE_SECONDS", "600")),
             anonymous_requests_per_hour=int(os.environ.get("TERMDECK_REMOTE_ANONYMOUS_REQUESTS_PER_HOUR", "30")),
+            connector_wait_seconds=float(os.environ.get("TERMDECK_REMOTE_CONNECTOR_WAIT_SECONDS", "15")),
         )

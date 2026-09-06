@@ -27,7 +27,7 @@ class RemoteAccessTest(unittest.TestCase):
             public_url="http://testserver", firestore_project="", session_max_age_seconds=3600,
             connector_max_age_seconds=3600, pairing_max_age_seconds=600, relay_request_timeout_seconds=5,
             max_body_bytes=2_000_000, cookie_secure=False, connector_idle_seconds=5,
-            browser_idle_seconds=600, anonymous_requests_per_hour=30)
+            browser_idle_seconds=600, anonymous_requests_per_hour=30, connector_wait_seconds=0)
 
     @staticmethod
     def login_csrf_token(login_html: str) -> str:
@@ -100,6 +100,27 @@ class RemoteAccessTest(unittest.TestCase):
                              headers={"Authorization": f"Bearer {connector_token}"})
         self.assertEqual(demand.status_code, 200)
         self.assertTrue(demand.json()["connect"])
+
+    def test_a_script_fetch_waits_for_the_connector_while_a_navigation_is_told_at_once(self) -> None:
+        import dataclasses
+        import time
+        config = dataclasses.replace(self.config(), connector_wait_seconds=0.4)
+        relay = RemoteRelayApplication(config=config, token_store=MemoryConnectorTokenStore(),
+                                       identity_verifier=FakeGoogleIdentityVerifier())
+        user = AuthenticatedUser(user_id="google-subject-3", email="third@example.com")
+        client = TestClient(relay.app)
+        client.cookies.set(relay.SESSION_COOKIE, relay.token_service.issue_session(user))
+
+        started = time.monotonic()
+        page = client.get("/p/project", headers={"Sec-Fetch-Mode": "navigate", "Accept": "text/html"})
+        self.assertEqual(page.status_code, 503)
+        self.assertLess(time.monotonic() - started, 0.3, "a navigation gets the offline page without waiting")
+
+        started = time.monotonic()
+        fetch = client.get("/api/sessions", headers={"Sec-Fetch-Mode": "cors", "Accept": "application/json"})
+        self.assertEqual(fetch.status_code, 503)
+        self.assertGreaterEqual(time.monotonic() - started, 0.35, "a script fetch holds on for the connector")
+        self.assertTrue(relay.registry.connection_requested(user.user_id))
 
 
 if __name__ == "__main__":

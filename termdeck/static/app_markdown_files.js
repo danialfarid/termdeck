@@ -2101,7 +2101,20 @@ Object.assign(TermdeckApp.prototype, {
         if (optimisticIndex >= 0) merged.splice(optimisticIndex, 1);
         continue;
       }
-      const waited = Date.now() - (item.timestamp || Date.now());
+      // A prompt handed to an agent that was still on its previous turn sits in the agent's own queue,
+      // and the transcript cannot show it until that turn ends -- minutes, not seconds. Aging it to
+      // "not confirmed" meanwhile read as a failed send, and the natural reply was to send it again;
+      // Claude then delivered both copies as one message. So while the agent is still working the
+      // entry says "queued", and the confirmation clock only starts once the agent goes idle.
+      const agentBusy = this.processingStates.get(sessionId) === true || this.session(sessionId)?.processing === true;
+      if (item.busy_at_submit && agentBusy && item.delivery_state !== "sending") {
+        item.delivery_state = "queued";
+        item.idle_since = 0;
+      } else if (item.delivery_state === "queued") {
+        item.delivery_state = "awaiting_transcript";
+        item.idle_since = Date.now();
+      }
+      const waited = Date.now() - (item.idle_since || item.timestamp || Date.now());
       if (waited > PENDING_PROMPT_DISCARD_MS) {
         // It is never coming back as a user turn. The transcript itself is authoritative from here.
         if (optimisticIndex >= 0) merged.splice(optimisticIndex, 1);
@@ -2139,7 +2152,9 @@ Object.assign(TermdeckApp.prototype, {
           timestamp: Number(item?.timestamp) || Date.now(),
           delivery_state: ["sending", "awaiting_transcript", "unconfirmed"].includes(item?.delivery_state)
             ? item.delivery_state : "awaiting_transcript",
-        })).filter((item) => item.text.trim());
+          busy_at_submit: item?.busy_at_submit === true,
+          idle_since: Number(item?.idle_since) || 0,
+        })).filter((item) => item.text.trim() && !this.historySlashCommandForText(item.text, sessionId));
       }
     } catch (_error) {
       pending = [];
@@ -2170,7 +2185,9 @@ Object.assign(TermdeckApp.prototype, {
     const beforeCount = authoritativeCount + pending.filter((item) =>
       this.historyPromptComparisonText(item.text) === comparisonText).length;
     const pendingId = `${Date.now()}-${this.historyPendingPromptSequence++}`;
-    pending.push({ text: promptText, beforeCount, pending_id: pendingId, timestamp: Date.now(), delivery_state: "sending" });
+    const busyAtSubmit = this.processingStates.get(sessionId) === true || this.session(sessionId)?.processing === true;
+    pending.push({ text: promptText, beforeCount, pending_id: pendingId, timestamp: Date.now(), delivery_state: "sending",
+      busy_at_submit: busyAtSubmit, idle_since: 0 });
     this.historyPendingPrompts.set(sessionId, pending);
     this.persistHistoryPendingPrompts(sessionId, pending);
     this.renderHistoryPendingPromptState(sessionId, live);
@@ -2208,8 +2225,22 @@ Object.assign(TermdeckApp.prototype, {
     const authoritative = this.historyPromptComparisonText(authoritativeText);
     const pending = this.historyPromptComparisonText(pendingText);
     if (!pending) return false;
-    return authoritative === pending || authoritative.startsWith(`${pending}\n`) ||
-      authoritative.endsWith(`\n${pending}`) || authoritative.includes(`\n${pending}\n`);
+    if (authoritative === pending || authoritative.startsWith(`${pending}\n`) ||
+        authoritative.endsWith(`\n${pending}`) || authoritative.includes(`\n${pending}\n`)) return true;
+    // Claude Code hands queued messages over as ONE turn, run together with no separator, and shows an
+    // attached image as "[Image #N]" where the deck wrote the upload's path. Neither form matched, so
+    // both prompts stayed "not confirmed" for ten minutes after they had plainly arrived. A prompt of
+    // any length found inside the turn, with images reduced to a common token, is that prompt.
+    const loose = this.historyPromptLooseMatchText(pending);
+    return loose.length >= 24 && this.historyPromptLooseMatchText(authoritative).includes(loose);
+  },
+
+
+  historyPromptLooseMatchText(text) {
+    return String(text || "")
+      .replace(/\[Image #\d+\]/g, "   ")
+      .replace(/'?\S*\/uploads\/[^\s']+\.(?:png|jpe?g|gif|webp|bmp|heic)'?/gi, "   ")
+      .replace(/\s+/g, " ").trim();
   },
 
 
@@ -3263,10 +3294,11 @@ Object.assign(TermdeckApp.prototype, {
         const delivery = document.createElement("div");
         delivery.className = `history-pending-delivery ${turn.pending_delivery_state || "awaiting_transcript"}`;
         const icon = document.createElement("span");
-        icon.className = `codicon ${turn.pending_delivery_state === "unconfirmed" ? "codicon-warning" : "codicon-cloud-upload"}`;
+        icon.className = `codicon ${deliveryState === "unconfirmed" ? "codicon-warning"
+          : deliveryState === "queued" ? "codicon-history" : "codicon-cloud-upload"}`;
         const label = document.createElement("span");
-        label.textContent = turn.pending_delivery_state === "unconfirmed"
-          ? "Submission not confirmed · saved on this device" : "Submitting";
+        label.textContent = deliveryState === "unconfirmed" ? "Submission not confirmed · saved on this device"
+          : deliveryState === "queued" ? "Queued · the agent is still on its previous turn" : "Submitting";
         delivery.append(icon, label);
         block.append(delivery);
       }
@@ -3479,6 +3511,7 @@ Object.assign(TermdeckApp.prototype, {
       const scratch = document.createElement("div");
       this.renderHistoryTurns([renderedTurns[previousRenderedTurns.length - 1]], { target: scratch });
       const replacement = scratch.firstElementChild;
+        const deliveryState = turn.pending_delivery_state || "awaiting_transcript";
       if (existing && replacement) {
         const wasOpen = existing.matches("details") ? existing.open : false;
         if (existing.tagName === replacement.tagName && existing.className === replacement.className) {

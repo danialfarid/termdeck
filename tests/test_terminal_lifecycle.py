@@ -1989,7 +1989,7 @@ class TerminalInputClassificationTest(unittest.TestCase):
 
     def test_terminal_replies_do_not_count_as_typing(self) -> None:
         for text in ("\x1b[I", "\x1b[O", "\x1b[0n", "\x1b[?1;2c", "\x1b[>0;276;0c",
-                     "\x1b[24;80R", "\x1b[<0;10;5M", "\x1b]11;rgb:1e/22/2e\x07"):
+                     "\x1b[24;80R", "\x1b[<0;10;5M", "\x1b]11;rgb:1e/22/2e\x07", "\x1b[?12;2$y", "\x1b[?1u"):
             self.assertFalse(self._typing(text), text)
 
     def test_a_keystroke_mixed_with_a_reply_still_counts(self) -> None:
@@ -2027,6 +2027,8 @@ class ClaudeCancelClearsProcessingTest(unittest.TestCase):
     Only Ctrl-C used to count, so a prompt cancelled with Escape left the tab spinning indefinitely:
     the last transcript event is the user's prompt with nothing after it, Claude writes no interruption
     marker when it never started answering, and the activity scan reads a trailing user prompt as work
+        # The last two are a DECRPM mode report (the answer to a cursor-blink DECRQM query, which a
+        # shell on another machine received as typed "12;2$y") and a kitty keyboard-flags report.
     in progress.
     """
 

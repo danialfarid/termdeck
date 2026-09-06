@@ -1279,6 +1279,8 @@ class TerminalSessionManager:
         r"|\x1b\[[?>][0-9;]*c"           # device attributes
         r"|\x1b\[[0-9;]*R"               # cursor position report
         r"|\x1b\[M...|\x1b\[<[0-9;]*[Mm]"  # mouse reports
+        r"|\x1b\[\?[0-9;]*\$y"           # DECRPM mode report (answer to a DECRQM query)
+        r"|\x1b\[\?[0-9;]*u"             # kitty keyboard flags report
         r"|\x1bP.*?\x1b\\"               # DCS reply
         r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)",  # OSC reply
         re.DOTALL)

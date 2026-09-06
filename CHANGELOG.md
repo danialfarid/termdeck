@@ -28,6 +28,8 @@ All notable changes to this project are documented here. The format follows
 - A prompt whose submission could not be confirmed offers Retry and Discard right under it in the transcript.
   Retry sends the same text again; Discard forgets it. It used to sit there for ten minutes with no way
   forward but retyping.
+- On a phone, tapping the transcript or terminal while the sidebar is open folds the sidebar away. A pinned
+  sidebar stays.
 
 ### Changed
 
@@ -54,6 +56,20 @@ All notable changes to this project are documented here. The format follows
   an error and no reply, which the transcript ignored, so a session on a model the account cannot use, or
   past its usage limit, answered every prompt with nothing; only the terminal view carried the reason. The
   error now appears as an open "Codex error" (or "Usage limit reached") event with Codex's message.
+- A prompt sent to an agent that is still on its previous turn shows as "Queued" until that turn ends, instead
+  of aging to "Submission not confirmed" while it sat in the agent's own queue. That warning read as a failed
+  send, and sending again made Claude deliver both copies as one message. The transcript also recognises a
+  prompt inside the merged message Claude hands over, and one whose attached image it shows as "[Image #N]".
+- A shell no longer receives "12;2$y" and the like when a phone reconnects. A replayed recording can carry a
+  program's terminal-mode query; xterm answered it again on every reconnect and the answer was typed into
+  whatever sat at the prompt. Mode, status and keyboard-flag reports now stay out of the input the way
+  cursor-position and device-attribute answers already did.
+- On a phone, "Reconnecting…" no longer stays up forever once the TermDeck Remote session has run out: the
+  deck goes to the login page with its address as the way back. While the relay is waking the computer the
+  message says so, and asking the relay is what wakes it.
+- Through TermDeck Remote, a script fetch or websocket that arrives before the computer has dialed in waits
+  up to fifteen seconds for it instead of failing at once, so a phone coming back to the deck reconnects on
+  the first try. The web-app manifest is requested with credentials, so it no longer fails with 401 there.
 - Diagnostics recordings, imported shell replays, and session archive contents stay within their configured size
   and structure limits; malformed ZIP compression is reported as an invalid archive.
 - Support bundles redact complete authorization and cookie values, including values in JSON diagnostics.

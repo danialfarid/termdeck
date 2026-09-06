@@ -461,11 +461,16 @@ const RECENT_FILES_MIN_REFRESH_MS = 5000;
 const RECENT_FILES_EVENT_DEBOUNCE_MS = 2000;
 const FILE_TREE_WS_ROUTE = "/ws/files";
 const FILE_TREE_CHANGED = "file_tree_changed";
-const QUERY_RESPONSE_RE = /^\x1b\[[?>]?[\d;]*[Rc]$/;
+// Answers xterm gives to queries it meets in a REPLAYED recording. The program that asked is long
+// gone, so an answer sent now lands in whatever is at the prompt: a shell typed "12;2$y" eight times
+// over, once per reconnect, from a cursor-blink mode query (DECRQM) that only the cursor-position and
+// device-attribute forms below used to cover. Mode reports ($y), status reports (n) and keyboard-flag
+// reports (u) are answers too, as are DCS and OSC replies.
+const QUERY_RESPONSE_RE = /^(?:\x1b\[[?>=]?[\d;]*[Rcnu]|\x1b\[\?[\d;]*\$y|\x1bP[\s\S]*?\x1b\\|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))$/;
 // The terminal's OWN replies -- focus in/out, device-attribute and cursor-position answers, mouse
 // reports, DCS/OSC responses. Everything else on the input channel is a person: letters and Enter, but
 // also the arrow keys used to navigate a prompt. Mirrors the server's _TERMINAL_REPLY_RE.
-const TERMINAL_REPLY_RE = /\x1b\[[IO]|\x1b\[[0-9;]*n|\x1b\[[?>][0-9;]*c|\x1b\[[0-9;]*R|\x1b\[M[\s\S]{3}|\x1b\[<[0-9;]*[Mm]|\x1bP[\s\S]*?\x1b\\|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const TERMINAL_REPLY_RE = /\x1b\[[IO]|\x1b\[[0-9;]*n|\x1b\[[?>][0-9;]*c|\x1b\[[0-9;]*R|\x1b\[\?[0-9;]*\$y|\x1b\[\?[0-9;]*u|\x1b\[M[\s\S]{3}|\x1b\[<[0-9;]*[Mm]|\x1bP[\s\S]*?\x1b\\|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const PATH_LINK_RE = /(?:~\/|\.{1,2}\/|\/)?[\w@%+=.-]+(?:\/[\w@%+=.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+){0,2}/g;
 const KNOWN_EXTS = new Set(["py", "md", "json", "js", "ts", "tsx", "css", "html", "sh", "zsh", "txt", "yaml", "yml",
   "toml", "csv", "log", "plist", "sql", "xml", "ini", "cfg", "lock", "ipynb", "rs", "go", "c", "h", "cpp", "hpp", "java"]);
@@ -1108,6 +1113,12 @@ class TermdeckApp {
       this.syncMobileSidebarControls();
       if (pinned) this.setMobileSidebarCollapsed(false);
     };
+    // A tap on the transcript or terminal while the sidebar is open means the choosing is over: the
+    // sidebar folds away like a drawer touched behind, unless it is pinned open on purpose.
+    this.$("main")?.addEventListener("click", () => {
+      if (document.body.classList.contains("mobile-sidebar-collapsed") || this.mobileSidebarPinned()) return;
+      this.setMobileSidebarCollapsed(true);
+    }, { capture: true });
   }
 
   syncMobileVisualViewport() {
@@ -4646,12 +4657,15 @@ class TermdeckApp {
     this.mobileConnectionWarningTimer = window.setTimeout(() => {
       this.mobileConnectionWarningTimer = 0;
       const connected = this.mobileConnectionAvailable();
-      this.setMobileConnectionWarning(!connected, navigator.onLine ? "reconnecting" : "offline");
+      this.setMobileConnectionWarning(!connected, this.mobileConnectionWarningState());
       if (connected) return;
       // Offline or in the background, waiting costs nothing and reconnecting cannot work: the
       // online and visibility handlers bring it back the moment either changes.
       if (document.hidden || !navigator.onLine) this.scheduleMobileConnectionWarning(MOBILE_CONNECTION_RETRY_MS);
-      else this.reconnectFocusedConnections(MOBILE_CONNECTION_RETRY_MS);
+      else {
+        void this.probeRemoteRelay();
+        this.reconnectFocusedConnections(MOBILE_CONNECTION_RETRY_MS);
+      }
     }, delay);
   }
 
@@ -4668,7 +4682,35 @@ class TermdeckApp {
     if (message && disconnected) {
       message.textContent = state === "offline"
         ? "Connection lost. Reconnecting when this device is online; your Transcript draft is saved."
-        : "Reconnecting… Your Transcript draft is saved on this device.";
+        : state === "waking"
+          ? "Reconnecting… waking your computer. Your Transcript draft is saved on this device."
+          : "Reconnecting… Your Transcript draft is saved on this device.";
+  mobileConnectionWarningState() {
+    if (!navigator.onLine) return "offline";
+    return this.remoteConnectorAwake === false ? "waking" : "reconnecting";
+  }
+
+  // Through the relay, a refused websocket looks the same to the browser whatever the reason -- the
+  // relay closes before the handshake, so the deck sees a bare failure. Two of those reasons need
+  // different handling from "try again in a moment": the computer's connector is not attached, which
+  // this call also asks the relay to fix, and the browser's session has run out, where retrying
+  // forever showed "Reconnecting…" until someone reloaded by hand and finally reached the login page.
+  async probeRemoteRelay() {
+    if (!this.remoteBrowserEmail || this.remoteRelayProbeInFlight) return;
+    this.remoteRelayProbeInFlight = true;
+    try {
+      const response = await fetch("/_remote/status", { headers: { Accept: "application/json" }, cache: "no-store" });
+      if (this.remoteLoginRequired(response)) return;
+      if (!response.ok) return;
+      const payload = await response.json();
+      this.remoteConnectorAwake = payload?.connected !== false;
+    } catch (_error) {
+      // the relay itself is unreachable; the ordinary retry loop covers that
+    } finally {
+      this.remoteRelayProbeInFlight = false;
+    }
+  }
+
     }
     warning.classList.toggle("hidden", !disconnected || !this.touchMobileLayoutEnabled());
   }
@@ -4684,6 +4726,7 @@ class TermdeckApp {
     const loginUrl = new URL("/_remote/login", location.origin);
     loginUrl.searchParams.set("return_to", `${location.pathname}${location.search}${location.hash}`);
     location.replace(loginUrl.href);
+    if (!disconnected) this.remoteConnectorAwake = null;
     return true;
   }
 
