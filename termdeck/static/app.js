@@ -176,7 +176,7 @@ const PENDING_PROMPT_DISCARD_MS = 600000;
 const DEFER_INACTIVE_TERMINAL_OUTPUT = false;
 const MOBILE_DISPLAY_SCALE_KEY = "termdeck.mobile_display_scale";
 const SERVER_LOCAL_SETTING_KEYS = new Set(["tall_webgl", "notebook_open"]);
-const MOBILE_DISPLAY_SCALE_MIN = 0.8;
+const MOBILE_DISPLAY_SCALE_MIN = 0.5;
 const MOBILE_DISPLAY_SCALE_MAX = 1.6;
 const MOBILE_DISPLAY_SCALE_STEP = 0.1;
 // Tall-terminal row budget. WebGL backs the terminal with one drawing buffer sized to the FULL terminal

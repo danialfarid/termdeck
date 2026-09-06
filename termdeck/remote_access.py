@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from typing import Literal, TypedDict
@@ -8,6 +9,8 @@ import httpx
 from termdeck.remote_connector import RemoteConnector
 from termdeck.remote_credentials import RemoteCredentials, RemoteCredentialStore
 
+LOGGER = logging.getLogger("termdeck.remote")
+
 
 class RemoteAccessStatus(TypedDict):
     state: Literal["disconnected", "pairing", "ready", "connected", "error"]
@@ -16,6 +19,9 @@ class RemoteAccessStatus(TypedDict):
     email: str
     login_url: str
     error: str
+    # Why the relay last let this computer go while it is otherwise "ready": another computer on the
+    # same account holds the slot, or access was revoked. Cleared when the relay accepts it again.
+    notice: str
 
 
 class RemotePairingStartPayload(TypedDict):
@@ -102,7 +108,9 @@ class RemoteAccessManager:
         return self.status()
 
     def status(self) -> RemoteAccessStatus:
+        self._revive_stopped_connector()
         connector_error = self.connector.last_error if self.connector is not None else ""
+        connector_notice = self.connector.relay_notice if self.connector is not None else ""
         if self.pairing_state is not None:
             state: Literal["disconnected", "pairing", "ready", "connected", "error"] = "pairing"
         elif self.credentials is None:
@@ -118,7 +126,27 @@ class RemoteAccessManager:
             "email": self.credentials.email if self.credentials is not None else "",
             "login_url": self.pairing_state.login_url if self.pairing_state is not None else "",
             "error": self.last_error or connector_error,
+            "notice": connector_notice,
         }
+
+    def _revive_stopped_connector(self) -> None:
+        task = self.connector_task
+        stale = self.connector
+        if task is None or not task.done() or stale is None or self.credentials is None:
+            return
+        # The connector loop is written to outlive any single failure, so a finished task means run()
+        # escaped anyway. Before this check the deck kept reporting "ready" while nothing polled the
+        # relay, and a phone sat on "Connecting to TermDeck" until the server was restarted by hand.
+        failure = None if task.cancelled() else task.exception()
+        LOGGER.error("remote connector task ended unexpectedly (%r); starting a new one", failure)
+        self.connector_task = None
+        self._start_connector(self.credentials)
+        if failure is not None:
+            self.connector.last_error = f"remote connector restarted after: {failure!r}"
+        try:
+            asyncio.get_running_loop().create_task(stale.stop())
+        except RuntimeError:
+            pass
 
     async def _poll_pairing(self) -> None:
         pairing_state = self.pairing_state

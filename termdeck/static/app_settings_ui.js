@@ -2186,12 +2186,12 @@ Object.assign(TermdeckApp.prototype, {
       const labels = {
         disconnected: "off",
         pairing: "finish Google sign-in",
-        ready: remote.email ? `${remote.email} · ready` : "ready",
+        ready: (remote.email ? `${remote.email} · ready` : "ready") + (remote.notice ? ` · ${remote.notice}` : ""),
         connected: remote.email ? `${remote.email} · connected` : "connected",
         error: remote.error || "connection failed",
       };
       status.textContent = labels[remote.state] || remote.state;
-      status.title = remote.error || remote.relay_url || "";
+      status.title = remote.error || remote.notice || remote.relay_url || "";
       open.classList.toggle("hidden", !!this.remoteBrowserEmail || !showAccessUrl);
       action.textContent = this.remoteBrowserEmail ? "Log out" :
         ["connected", "ready"].includes(remote.state) ? "Disconnect" :

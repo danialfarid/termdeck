@@ -14,6 +14,7 @@
     .status { display: flex; align-items: center; gap: 12px; margin-top: 22px; color: #c9d5e6; }
     .spinner { width: 18px; height: 18px; border: 2px solid #334155; border-top-color: #64b5f6; border-radius: 50%; animation: spin 0.8s linear infinite; }
     .email { color: #c7d2e2; }
+    .hint { margin: 16px 0 0; padding: 12px 14px; border-radius: 10px; background: #1c1a12; color: #e3c27a; }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
@@ -22,11 +23,21 @@
     <h1>Connecting to TermDeck</h1>
     <p>Your computer is waking its secure remote connection. This normally takes a few seconds.</p>
     <p>Signed in as <span class="email" id="email"></span>.</p>
-    <div class="status"><span class="spinner"></span><span>Waiting for your computer</span></div>
+    <div class="status"><span class="spinner"></span><span id="status-text">Waiting for your computer</span></div>
+    <p class="hint" id="hint" hidden>Still waiting. Your computer may be asleep, offline, or TermDeck may not be
+      running on it. This page connects the moment your computer answers.</p>
   </main>
   <script>
     const remoteOffline = __TERMDECK_REMOTE_OFFLINE_CONFIG__;
+    const SLOW_AFTER_SECONDS = 30;
+    const startedAt = Date.now();
     document.getElementById("email").textContent = remoteOffline.email;
+    function showWaitedTime() {
+      const waited = Math.round((Date.now() - startedAt) / 1000);
+      if (waited < SLOW_AFTER_SECONDS) return;
+      document.getElementById("hint").hidden = false;
+      document.getElementById("status-text").textContent = `Waiting for your computer (${waited}s)`;
+    }
     async function waitForConnector() {
       try {
         const response = await fetch("/_remote/status", { cache: "no-store" });
@@ -37,6 +48,7 @@
       } catch (error) {
         if (!(error instanceof TypeError)) throw error;
       }
+      showWaitedTime();
       setTimeout(waitForConnector, 500);
     }
     waitForConnector();

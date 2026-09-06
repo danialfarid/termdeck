@@ -1,16 +1,27 @@
 import asyncio
+import logging
 from collections.abc import Coroutine
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import WebSocketException
+from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from termdeck.remote_protocol import RemoteMessage, RemoteMessageCodec, RemoteMessageType
 
+LOGGER = logging.getLogger("termdeck.remote")
+
 
 class RemoteConnector:
+    # Close codes the relay uses to say why it let this computer go: another computer on the same
+    # account took the one connector slot (4001), remote access was revoked (4003), or the token was
+    # refused (4401). The reason stays in `relay_notice` until the relay accepts this computer again.
+    # `last_error` cannot carry it: the next "no demand" poll clears that, and the deck would read
+    # "ready" with nothing to explain why the phone is showing another computer's projects.
+    RELAY_NOTICE_CLOSE_CODES = frozenset({4001, 4003, 4401})
+    HANDSHAKE_TIMEOUT_SECONDS = 15.0
+    TOKEN_REJECTED_MESSAGE = "the relay no longer accepts this computer's remote token; pair again from Remote access"
     REQUEST_HEADER_EXCLUSIONS = frozenset({
         "connection", "content-length", "cookie", "host", "proxy-connection", "transfer-encoding", "upgrade",
     })
@@ -33,6 +44,7 @@ class RemoteConnector:
         self.local_access_token = local_access_token.strip()
         self.connected = False
         self.last_error = ""
+        self.relay_notice = ""
         self._stop_event = asyncio.Event()
         self._connection: ClientConnection | None = None
         self._send_lock = asyncio.Lock()
@@ -52,7 +64,13 @@ class RemoteConnector:
                 await self._connect_once()
                 reconnect_delay = self.reconnect_min_seconds
             except (OSError, TimeoutError, ValueError, WebSocketException, httpx.HTTPError) as connection_error:
-                self.last_error = str(connection_error)
+                self.last_error = self._describe_connection_error(connection_error)
+                self._note_relay_close(connection_error)
+            except Exception as unexpected_error:  # noqa: BLE001 -- one bad message must not end remote access
+                # Anything escaping here used to end this task silently: the deck kept reporting "ready"
+                # while nothing polled the relay, and a phone waited on "Connecting to TermDeck" forever.
+                self.last_error = f"remote connector error: {unexpected_error!r}"
+                LOGGER.exception("remote connector recovered from an unexpected error")
             finally:
                 self.connected = False
                 self._connection = None
@@ -81,7 +99,7 @@ class RemoteConnector:
             self._connection = connection
             await self._send({"type": RemoteMessageType.HELLO, "token": self.connector_token,
                               "protocol": RemoteMessageCodec.PROTOCOL_VERSION})
-            raw_acceptance = await connection.recv()
+            raw_acceptance = await asyncio.wait_for(connection.recv(), timeout=self.HANDSHAKE_TIMEOUT_SECONDS)
             if not isinstance(raw_acceptance, bytes):
                 raise ValueError("relay returned a non-binary handshake")
             acceptance = RemoteMessageCodec.decode(raw_acceptance)
@@ -89,12 +107,15 @@ class RemoteConnector:
                 raise ValueError(acceptance.get("text", "relay rejected connector"))
             self.connected = True
             self.last_error = ""
+            self.relay_notice = ""
             await self._receive_loop(connection)
 
     async def _relay_requests_connection(self) -> bool:
         response = await self._http_client.post(
             f"{self.relay_url}/_remote/api/connectors/demand",
             headers={"Authorization": f"Bearer {self.connector_token}"})
+        if response.status_code == 401:
+            raise ValueError(self.TOKEN_REJECTED_MESSAGE)
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload.get("connect"), bool):
@@ -106,6 +127,20 @@ class RemoteConnector:
             await asyncio.wait_for(self._stop_event.wait(), timeout=self.demand_poll_seconds)
         except TimeoutError:
             return
+
+    @staticmethod
+    def _describe_connection_error(error: Exception) -> str:
+        if isinstance(error, ConnectionClosed) and error.rcvd is not None and error.rcvd.reason:
+            return f"relay closed the connection: {error.rcvd.reason}"
+        return str(error)
+
+    def _note_relay_close(self, error: Exception) -> None:
+        if not isinstance(error, ConnectionClosed) or error.rcvd is None:
+            return
+        if error.rcvd.code not in self.RELAY_NOTICE_CLOSE_CODES:
+            return
+        self.relay_notice = error.rcvd.reason or f"relay closed the connection ({error.rcvd.code})"
+        LOGGER.warning("remote relay let this computer go: %s", self.relay_notice)
 
     async def _receive_loop(self, connection: ClientConnection) -> None:
         async for payload in connection:

@@ -33,9 +33,19 @@ All notable changes to this project are documented here. The format follows
   twenty tool calls used to be twenty full outputs end to end.
 - The chevron beside the project and worktree names sits right after the name rather than at the far end of
   the row, where a short name left a panel-wide gap.
+- The − button on a phone goes further: mobile text scales down to 50% instead of stopping at 80%.
 
 ### Fixed
 
+- Remote access no longer stops quietly. An unexpected error inside the relay connector used to end its loop
+  while the deck kept reporting "ready", so a phone sat on "Connecting to TermDeck" until the server was
+  restarted; the loop now survives any single failure, and the status endpoint restarts a connector whose task
+  has ended, saying why. The relay's reason for letting this computer go — another computer on the same
+  Google account took the one connector slot, or access was revoked — stays visible beside "ready" in Remote
+  access until the relay accepts this computer again, and a rejected token says to pair again instead of a
+  bare 401. The relay handshake also has a timeout.
+- TermDeck Remote's "Connecting to TermDeck" page says after thirty seconds that the computer may be asleep,
+  offline, or not running TermDeck, and shows how long it has been waiting, instead of spinning silently.
 - Diagnostics recordings, imported shell replays, and session archive contents stay within their configured size
   and structure limits; malformed ZIP compression is reported as an invalid archive.
 - Support bundles redact complete authorization and cookie values, including values in JSON diagnostics.

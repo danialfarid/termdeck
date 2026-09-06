@@ -95,6 +95,7 @@ class RemoteAccessTest(unittest.TestCase):
 
         offline = client.get("/p/project")
         self.assertEqual(offline.status_code, 503)
+        self.assertIn("may be asleep, offline, or TermDeck may not be", offline.text)
         demand = client.post("/_remote/api/connectors/demand",
                              headers={"Authorization": f"Bearer {connector_token}"})
         self.assertEqual(demand.status_code, 200)
