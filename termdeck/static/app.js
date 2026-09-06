@@ -1054,6 +1054,12 @@ class TermdeckApp {
     this.applySettings();
   }
 
+    // Zooming reflows every transcript line while the browser keeps scrollTop in pixels, so the
+    // reader used to land somewhere else in the conversation. Anchor on the topmost visible turn
+    // and put it back where it was, with its offset scaled the way the text was.
+    const body = this.$("history-body");
+    const snapshot = body && this.historyOpen && this.historyLoaded && this.activeFileKey === null
+      ? this.captureHistoryScroll(body) : null;
   mobileSidebarPinned() {
     return localStorage.getItem(MOBILE_SIDEBAR_PINNED_KEY) === "1";
   }

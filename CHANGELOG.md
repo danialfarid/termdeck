@@ -34,6 +34,7 @@ All notable changes to this project are documented here. The format follows
 - The chevron beside the project and worktree names sits right after the name rather than at the far end of
   the row, where a short name left a panel-wide gap.
 - The − button on a phone goes further: mobile text scales down to 50% instead of stopping at 80%.
+- Changing the zoom on a phone keeps your place: the transcript stays on the turn you were reading.
 
 ### Fixed
 
