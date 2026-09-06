@@ -2402,6 +2402,28 @@ Object.assign(TermdeckApp.prototype, {
       entry.onclick = () => this.restorePromptHistoryEntry(text);
       items.appendChild(entry);
     }
+  // "Submission not confirmed" used to be a dead end: the prompt sat there for ten minutes and the only
+  // way to send it again was to retype it. Retry sends the same text through the normal path, which
+  // stages a fresh pending entry, so the stale one is dropped first rather than left as a twin.
+  retryHistoryPendingPrompt(sessionId, pendingId) {
+    const item = this.persistedHistoryPendingPrompts(sessionId).find((candidate) => candidate.pending_id === pendingId);
+    const view = this.sessionInteractionState(sessionId);
+    if (!item || !view) return;
+    this.dropHistoryPendingPrompt(sessionId, pendingId);
+    void this.submitHistoryPromptViaApi(view, item.text);
+  },
+
+
+  dropHistoryPendingPrompt(sessionId, pendingId) {
+    const pending = this.persistedHistoryPendingPrompts(sessionId).filter((candidate) => candidate.pending_id !== pendingId);
+    if (pending.length) this.historyPendingPrompts.set(sessionId, pending);
+    else this.historyPendingPrompts.delete(sessionId);
+    this.persistHistoryPendingPrompts(sessionId, pending);
+    const live = this.historyLiveTurnsBySession.get(sessionId) || this.historyTurnsBySession.get(sessionId) || [];
+    this.renderHistoryPendingPromptState(sessionId, live);
+  },
+
+
   },
 
 
@@ -3463,6 +3485,22 @@ Object.assign(TermdeckApp.prototype, {
           existing.replaceChildren(...replacement.childNodes);
           if (existing.matches("details")) existing.open = wasOpen;
         } else {
+        if (turn.pending_delivery_state === "unconfirmed") {
+          const sessionId = this.activeId;
+          const pendingId = turn.pending_id;
+          const action = (text, title, handler) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "history-pending-action";
+            button.textContent = text;
+            button.title = title;
+            button.onclick = (event) => { event.preventDefault(); event.stopPropagation(); handler(); };
+            return button;
+          };
+          delivery.append(
+            action("Retry", "Send this prompt again", () => this.retryHistoryPendingPrompt(sessionId, pendingId)),
+            action("Discard", "Forget this prompt", () => this.dropHistoryPendingPrompt(sessionId, pendingId)));
+        }
           if (replacement.matches("details")) replacement.open = wasOpen;
           existing.replaceWith(replacement);
         }

@@ -25,6 +25,9 @@ All notable changes to this project are documented here. The format follows
 - A colour for each project and worktree, chosen from a row of swatches at the bottom of its picker. The header
   label and the browser tab's favicon take the colour — a worktree's own colour when it has one, the project's
   otherwise — so several deck tabs tell apart from the tab strip.
+- A prompt whose submission could not be confirmed offers Retry and Discard right under it in the transcript.
+  Retry sends the same text again; Discard forgets it. It used to sit there for ten minutes with no way
+  forward but retyping.
 
 ### Changed
 

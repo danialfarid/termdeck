@@ -632,7 +632,10 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 .history-pending-delivery .codicon { font-size: calc(var(--ui-font-size) + 1px); }
 .history-pending-delivery.sending { color: var(--accent); }
 .history-pending-delivery.awaiting_transcript { color: var(--accent); }
-.history-pending-delivery.unconfirmed { color: var(--warning, #e0af68); }
+.history-pending-delivery.unconfirmed { color: var(--warning, #e0af68); flex-wrap: wrap; }
+.history-pending-action { margin-left: 4px; padding: 2px 10px; min-height: 22px; border: 1px solid currentColor; border-radius: 4px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.history-pending-action:first-of-type { margin-left: 8px; }
+.history-pending-action:hover { background: color-mix(in srgb, currentColor 16%, transparent); }
 .history-search-target-turn { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 5px; background: color-mix(in srgb, var(--active-bg) 76%, transparent); transition: outline-color 300ms ease, background 300ms ease; }
 .history-empty { color: var(--dim); font-size: 13px; padding: 20px; text-align: center; }
 .history-compaction { display: flex; align-items: center; gap: 10px; margin: 4px 0 14px; color: var(--dim); font: 600 calc(var(--ui-font-size) - 1px) Menlo, monospace; }
