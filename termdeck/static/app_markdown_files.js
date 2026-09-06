@@ -2120,7 +2120,7 @@ Object.assign(TermdeckApp.prototype, {
         if (optimisticIndex >= 0) merged.splice(optimisticIndex, 1);
         continue;
       }
-      if (waited > PENDING_PROMPT_UNCONFIRMED_MS) item.delivery_state = "unconfirmed";
+      if (waited > PENDING_PROMPT_UNCONFIRMED_MS && item.delivery_state !== "queued") item.delivery_state = "unconfirmed";
       const optimisticTurn = { role: "user", text: item.text, pending_id: pendingId,
         pending_delivery_state: item.delivery_state || "awaiting_transcript", timestamp: item.timestamp || Date.now() };
       if (optimisticIndex < 0) merged.push(optimisticTurn);
@@ -2150,11 +2150,11 @@ Object.assign(TermdeckApp.prototype, {
           beforeCount: Math.max(0, Number(item?.beforeCount) || 0),
           pending_id: String(item?.pending_id || `${Date.now()}-${this.historyPendingPromptSequence++}`),
           timestamp: Number(item?.timestamp) || Date.now(),
-          delivery_state: ["sending", "awaiting_transcript", "unconfirmed"].includes(item?.delivery_state)
+          delivery_state: ["sending", "awaiting_transcript", "queued", "unconfirmed"].includes(item?.delivery_state)
             ? item.delivery_state : "awaiting_transcript",
           busy_at_submit: item?.busy_at_submit === true,
           idle_since: Number(item?.idle_since) || 0,
-        })).filter((item) => item.text.trim() && !this.historySlashCommandForText(item.text, sessionId));
+        })).filter((item) => item.text.trim());
       }
     } catch (_error) {
       pending = [];
@@ -2201,6 +2201,28 @@ Object.assign(TermdeckApp.prototype, {
     if (!item) return;
     item.delivery_state = deliveryState;
     this.historyPendingPrompts.set(sessionId, pending);
+    this.persistHistoryPendingPrompts(sessionId, pending);
+    const live = this.historyLiveTurnsBySession.get(sessionId) || this.historyTurnsBySession.get(sessionId) || [];
+    this.renderHistoryPendingPromptState(sessionId, live);
+  },
+
+
+  // "Submission not confirmed" used to be a dead end: the prompt sat there for ten minutes and the only
+  // way to send it again was to retype it. Retry sends the same text through the normal path, which
+  // stages a fresh pending entry, so the stale one is dropped first rather than left as a twin.
+  retryHistoryPendingPrompt(sessionId, pendingId) {
+    const item = this.persistedHistoryPendingPrompts(sessionId).find((candidate) => candidate.pending_id === pendingId);
+    const view = this.sessionInteractionState(sessionId);
+    if (!item || !view) return;
+    this.dropHistoryPendingPrompt(sessionId, pendingId);
+    void this.submitHistoryPromptViaApi(view, item.text);
+  },
+
+
+  dropHistoryPendingPrompt(sessionId, pendingId) {
+    const pending = this.persistedHistoryPendingPrompts(sessionId).filter((candidate) => candidate.pending_id !== pendingId);
+    if (pending.length) this.historyPendingPrompts.set(sessionId, pending);
+    else this.historyPendingPrompts.delete(sessionId);
     this.persistHistoryPendingPrompts(sessionId, pending);
     const live = this.historyLiveTurnsBySession.get(sessionId) || this.historyTurnsBySession.get(sessionId) || [];
     this.renderHistoryPendingPromptState(sessionId, live);
@@ -2433,28 +2455,6 @@ Object.assign(TermdeckApp.prototype, {
       entry.onclick = () => this.restorePromptHistoryEntry(text);
       items.appendChild(entry);
     }
-  // "Submission not confirmed" used to be a dead end: the prompt sat there for ten minutes and the only
-  // way to send it again was to retype it. Retry sends the same text through the normal path, which
-  // stages a fresh pending entry, so the stale one is dropped first rather than left as a twin.
-  retryHistoryPendingPrompt(sessionId, pendingId) {
-    const item = this.persistedHistoryPendingPrompts(sessionId).find((candidate) => candidate.pending_id === pendingId);
-    const view = this.sessionInteractionState(sessionId);
-    if (!item || !view) return;
-    this.dropHistoryPendingPrompt(sessionId, pendingId);
-    void this.submitHistoryPromptViaApi(view, item.text);
-  },
-
-
-  dropHistoryPendingPrompt(sessionId, pendingId) {
-    const pending = this.persistedHistoryPendingPrompts(sessionId).filter((candidate) => candidate.pending_id !== pendingId);
-    if (pending.length) this.historyPendingPrompts.set(sessionId, pending);
-    else this.historyPendingPrompts.delete(sessionId);
-    this.persistHistoryPendingPrompts(sessionId, pending);
-    const live = this.historyLiveTurnsBySession.get(sessionId) || this.historyTurnsBySession.get(sessionId) || [];
-    this.renderHistoryPendingPromptState(sessionId, live);
-  },
-
-
   },
 
 
@@ -3293,6 +3293,7 @@ Object.assign(TermdeckApp.prototype, {
       if (turn.pending_id) {
         const delivery = document.createElement("div");
         delivery.className = `history-pending-delivery ${turn.pending_delivery_state || "awaiting_transcript"}`;
+        const deliveryState = turn.pending_delivery_state || "awaiting_transcript";
         const icon = document.createElement("span");
         icon.className = `codicon ${deliveryState === "unconfirmed" ? "codicon-warning"
           : deliveryState === "queued" ? "codicon-history" : "codicon-cloud-upload"}`;
@@ -3300,6 +3301,22 @@ Object.assign(TermdeckApp.prototype, {
         label.textContent = deliveryState === "unconfirmed" ? "Submission not confirmed · saved on this device"
           : deliveryState === "queued" ? "Queued · the agent is still on its previous turn" : "Submitting";
         delivery.append(icon, label);
+        if (turn.pending_delivery_state === "unconfirmed") {
+          const sessionId = this.activeId;
+          const pendingId = turn.pending_id;
+          const action = (text, title, handler) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "history-pending-action";
+            button.textContent = text;
+            button.title = title;
+            button.onclick = (event) => { event.preventDefault(); event.stopPropagation(); handler(); };
+            return button;
+          };
+          delivery.append(
+            action("Retry", "Send this prompt again", () => this.retryHistoryPendingPrompt(sessionId, pendingId)),
+            action("Discard", "Forget this prompt", () => this.dropHistoryPendingPrompt(sessionId, pendingId)));
+        }
         block.append(delivery);
       }
       body.appendChild(block);
@@ -3511,29 +3528,12 @@ Object.assign(TermdeckApp.prototype, {
       const scratch = document.createElement("div");
       this.renderHistoryTurns([renderedTurns[previousRenderedTurns.length - 1]], { target: scratch });
       const replacement = scratch.firstElementChild;
-        const deliveryState = turn.pending_delivery_state || "awaiting_transcript";
       if (existing && replacement) {
         const wasOpen = existing.matches("details") ? existing.open : false;
         if (existing.tagName === replacement.tagName && existing.className === replacement.className) {
           existing.replaceChildren(...replacement.childNodes);
           if (existing.matches("details")) existing.open = wasOpen;
         } else {
-        if (turn.pending_delivery_state === "unconfirmed") {
-          const sessionId = this.activeId;
-          const pendingId = turn.pending_id;
-          const action = (text, title, handler) => {
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "history-pending-action";
-            button.textContent = text;
-            button.title = title;
-            button.onclick = (event) => { event.preventDefault(); event.stopPropagation(); handler(); };
-            return button;
-          };
-          delivery.append(
-            action("Retry", "Send this prompt again", () => this.retryHistoryPendingPrompt(sessionId, pendingId)),
-            action("Discard", "Forget this prompt", () => this.dropHistoryPendingPrompt(sessionId, pendingId)));
-        }
           if (replacement.matches("details")) replacement.open = wasOpen;
           existing.replaceWith(replacement);
         }

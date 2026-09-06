@@ -603,6 +603,31 @@ class CodexTranscriptParsingTest(unittest.TestCase):
         self.assertEqual(turns[0]["phase"], "commentary")
         self.assertFalse(turns[0]["final"])
 
+    def test_codex_turn_that_fails_shows_the_error_in_the_transcript(self) -> None:
+        api_error = json.dumps({"type": "error", "status": 400, "error": {
+            "type": "invalid_request_error",
+            "message": "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."}})
+        lines = [
+            json.dumps({"type": "event_msg", "payload": {"type": "task_started", "turn_id": "t1"}}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "task_complete", "turn_id": "t1", "last_agent_message": None,
+                "error": {"message": api_error, "codex_error_info": "other"}, "duration_ms": 928}}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "error", "message": "You've hit your usage limit. Try again at 5:02 AM.",
+                "codex_error_info": "usage_limit_exceeded"}}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "task_complete", "turn_id": "t2", "last_agent_message": "done", "duration_ms": 4000}}),
+        ]
+
+        turns = agents.agent_cli("codex").parse_transcript_lines(lines)
+
+        self.assertEqual([turn["kind"] for turn in turns], ["error", "error"], "a clean task_complete adds nothing")
+        self.assertEqual([turn["title"] for turn in turns], ["Codex error", "Usage limit reached"])
+        self.assertEqual(turns[0]["text"],
+                         "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account. (HTTP 400)")
+        self.assertTrue(turns[0]["expanded"])
+        self.assertEqual(turns[1]["text"], "You've hit your usage limit. Try again at 5:02 AM.")
+
     def test_codex_mirrored_records_parsed_in_separate_batches_are_one_turn(self) -> None:
         text = "Assembly finished and validation is running."
         lines = [
@@ -642,31 +667,6 @@ class ClaudeTranscriptParsingTest(unittest.TestCase):
             json.dumps({"type": "system", "subtype": "compact_boundary", "content": "Conversation compacted",
                         "compactMetadata": {"trigger": "manual", "preTokens": 31730, "postTokens": 1583}}),
             json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "What's next?"}]}}),
-    def test_codex_turn_that_fails_shows_the_error_in_the_transcript(self) -> None:
-        api_error = json.dumps({"type": "error", "status": 400, "error": {
-            "type": "invalid_request_error",
-            "message": "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."}})
-        lines = [
-            json.dumps({"type": "event_msg", "payload": {"type": "task_started", "turn_id": "t1"}}),
-            json.dumps({"type": "event_msg", "payload": {
-                "type": "task_complete", "turn_id": "t1", "last_agent_message": None,
-                "error": {"message": api_error, "codex_error_info": "other"}, "duration_ms": 928}}),
-            json.dumps({"type": "event_msg", "payload": {
-                "type": "error", "message": "You've hit your usage limit. Try again at 5:02 AM.",
-                "codex_error_info": "usage_limit_exceeded"}}),
-            json.dumps({"type": "event_msg", "payload": {
-                "type": "task_complete", "turn_id": "t2", "last_agent_message": "done", "duration_ms": 4000}}),
-        ]
-
-        turns = agents.agent_cli("codex").parse_transcript_lines(lines)
-
-        self.assertEqual([turn["kind"] for turn in turns], ["error", "error"], "a clean task_complete adds nothing")
-        self.assertEqual([turn["title"] for turn in turns], ["Codex error", "Usage limit reached"])
-        self.assertEqual(turns[0]["text"],
-                         "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account. (HTTP 400)")
-        self.assertTrue(turns[0]["expanded"])
-        self.assertEqual(turns[1]["text"], "You've hit your usage limit. Try again at 5:02 AM.")
-
         ]
 
         turns = agents.agent_cli("claude").parse_transcript_lines(lines)
@@ -1988,6 +1988,8 @@ class TerminalInputClassificationTest(unittest.TestCase):
             self.assertTrue(self._typing(text), text)
 
     def test_terminal_replies_do_not_count_as_typing(self) -> None:
+        # The last two are a DECRPM mode report (the answer to a cursor-blink DECRQM query, which a
+        # shell on another machine received as typed "12;2$y") and a kitty keyboard-flags report.
         for text in ("\x1b[I", "\x1b[O", "\x1b[0n", "\x1b[?1;2c", "\x1b[>0;276;0c",
                      "\x1b[24;80R", "\x1b[<0;10;5M", "\x1b]11;rgb:1e/22/2e\x07", "\x1b[?12;2$y", "\x1b[?1u"):
             self.assertFalse(self._typing(text), text)
@@ -2027,8 +2029,6 @@ class ClaudeCancelClearsProcessingTest(unittest.TestCase):
     Only Ctrl-C used to count, so a prompt cancelled with Escape left the tab spinning indefinitely:
     the last transcript event is the user's prompt with nothing after it, Claude writes no interruption
     marker when it never started answering, and the activity scan reads a trailing user prompt as work
-        # The last two are a DECRPM mode report (the answer to a cursor-blink DECRQM query, which a
-        # shell on another machine received as typed "12;2$y") and a kitty keyboard-flags report.
     in progress.
     """
 

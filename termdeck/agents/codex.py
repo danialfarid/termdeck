@@ -230,14 +230,12 @@ class CodexCli(AgentCli):
                 output = body.get("output", body.get("result", ""))
                 turns.append(TurnBuilder.turn("event", TurnBuilder.format_result_value(output), "result", "Result",
                                               model=model, timestamp=timestamp))
-        return turns
-
             elif entry_type == "event_msg" and body_type in ("task_complete", "error"):
                 error_turn = self._error_turn(body, model=model, timestamp=timestamp)
                 if error_turn is not None:
                     turns.append(error_turn)
-    @staticmethod
-    def _append_message_turn(turns: list[dict[str, object]], candidate: dict[str, object]) -> None:
+        return turns
+
     # Codex records a failed turn as `task_complete` with `error` set and no agent message (0.153), and
     # older builds wrote an `error` event. Neither reached the transcript, so a session on a model the
     # account cannot use, or past its usage limit, finished every prompt within a second showing nothing
@@ -273,6 +271,8 @@ class CodexCli(AgentCli):
             return f"{nested['message']} (HTTP {status})" if status else str(nested["message"])
         return str(parsed.get("message") or message)
 
+    @staticmethod
+    def _append_message_turn(turns: list[dict[str, object]], candidate: dict[str, object]) -> None:
         if not candidate["text"]:
             return
         if turns and turns[-1].get("role") == candidate.get("role") and turns[-1].get("text") == candidate.get("text"):

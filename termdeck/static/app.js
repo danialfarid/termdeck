@@ -1053,18 +1053,23 @@ class TermdeckApp {
   }
 
   setMobileDisplayScale(scale) {
+    const previous = this.mobileDisplayScale();
     const normalized = Math.max(MOBILE_DISPLAY_SCALE_MIN, Math.min(MOBILE_DISPLAY_SCALE_MAX,
       Math.round(Number(scale) / MOBILE_DISPLAY_SCALE_STEP) * MOBILE_DISPLAY_SCALE_STEP));
-    localStorage.setItem(MOBILE_DISPLAY_SCALE_KEY, String(normalized));
-    this.applySettings();
-  }
-
     // Zooming reflows every transcript line while the browser keeps scrollTop in pixels, so the
     // reader used to land somewhere else in the conversation. Anchor on the topmost visible turn
     // and put it back where it was, with its offset scaled the way the text was.
     const body = this.$("history-body");
     const snapshot = body && this.historyOpen && this.historyLoaded && this.activeFileKey === null
       ? this.captureHistoryScroll(body) : null;
+    localStorage.setItem(MOBILE_DISPLAY_SCALE_KEY, String(normalized));
+    this.applySettings();
+    if (snapshot) {
+      snapshot.anchorOffset *= previous > 0 ? normalized / previous : 1;
+      this.restoreHistoryScroll(body, snapshot);
+    }
+  }
+
   mobileSidebarPinned() {
     return localStorage.getItem(MOBILE_SIDEBAR_PINNED_KEY) === "1";
   }
@@ -1105,6 +1110,12 @@ class TermdeckApp {
     this.syncMobileSidebarControls();
     this.$("mobile-sidebar-collapse").onclick = () => this.setMobileSidebarCollapsed(true);
     this.$("mobile-sidebar-toggle").onclick = () => this.setMobileSidebarCollapsed(false);
+    // A tap on the transcript or terminal while the sidebar is open means the choosing is over: the
+    // sidebar folds away like a drawer touched behind, unless it is pinned open on purpose.
+    this.$("main")?.addEventListener("click", () => {
+      if (document.body.classList.contains("mobile-sidebar-collapsed") || this.mobileSidebarPinned()) return;
+      this.setMobileSidebarCollapsed(true);
+    }, { capture: true });
     this.$("mobile-display-smaller").onclick = () => this.setMobileDisplayScale(this.mobileDisplayScale() - MOBILE_DISPLAY_SCALE_STEP);
     this.$("mobile-display-larger").onclick = () => this.setMobileDisplayScale(this.mobileDisplayScale() + MOBILE_DISPLAY_SCALE_STEP);
     this.$("mobile-sidebar-pin").onclick = () => {
@@ -1113,12 +1124,6 @@ class TermdeckApp {
       this.syncMobileSidebarControls();
       if (pinned) this.setMobileSidebarCollapsed(false);
     };
-    // A tap on the transcript or terminal while the sidebar is open means the choosing is over: the
-    // sidebar folds away like a drawer touched behind, unless it is pinned open on purpose.
-    this.$("main")?.addEventListener("click", () => {
-      if (document.body.classList.contains("mobile-sidebar-collapsed") || this.mobileSidebarPinned()) return;
-      this.setMobileSidebarCollapsed(true);
-    }, { capture: true });
   }
 
   syncMobileVisualViewport() {
@@ -4669,22 +4674,6 @@ class TermdeckApp {
     }, delay);
   }
 
-  mobileConnectionAvailable() {
-    if (!navigator.onLine) return false;
-    if (this.statusWs?.readyState === WebSocket.OPEN) return true;
-    return !!this.historyOpen && this.historyWs?.readyState === WebSocket.OPEN;
-  }
-
-  setMobileConnectionWarning(disconnected, state = "reconnecting") {
-    const warning = this.$("mobile-connection-warning");
-    if (!warning) return;
-    const message = this.$("mobile-connection-message");
-    if (message && disconnected) {
-      message.textContent = state === "offline"
-        ? "Connection lost. Reconnecting when this device is online; your Transcript draft is saved."
-        : state === "waking"
-          ? "Reconnecting… waking your computer. Your Transcript draft is saved on this device."
-          : "Reconnecting… Your Transcript draft is saved on this device.";
   mobileConnectionWarningState() {
     if (!navigator.onLine) return "offline";
     return this.remoteConnectorAwake === false ? "waking" : "reconnecting";
@@ -4711,7 +4700,24 @@ class TermdeckApp {
     }
   }
 
+  mobileConnectionAvailable() {
+    if (!navigator.onLine) return false;
+    if (this.statusWs?.readyState === WebSocket.OPEN) return true;
+    return !!this.historyOpen && this.historyWs?.readyState === WebSocket.OPEN;
+  }
+
+  setMobileConnectionWarning(disconnected, state = "reconnecting") {
+    const warning = this.$("mobile-connection-warning");
+    if (!warning) return;
+    const message = this.$("mobile-connection-message");
+    if (message && disconnected) {
+      message.textContent = state === "offline"
+        ? "Connection lost. Reconnecting when this device is online; your Transcript draft is saved."
+        : state === "waking"
+          ? "Reconnecting… waking your computer. Your Transcript draft is saved on this device."
+          : "Reconnecting… Your Transcript draft is saved on this device.";
     }
+    if (!disconnected) this.remoteConnectorAwake = null;
     warning.classList.toggle("hidden", !disconnected || !this.touchMobileLayoutEnabled());
   }
 
@@ -4726,7 +4732,6 @@ class TermdeckApp {
     const loginUrl = new URL("/_remote/login", location.origin);
     loginUrl.searchParams.set("return_to", `${location.pathname}${location.search}${location.hash}`);
     location.replace(loginUrl.href);
-    if (!disconnected) this.remoteConnectorAwake = null;
     return true;
   }
 
