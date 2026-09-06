@@ -47,6 +47,10 @@ All notable changes to this project are documented here. The format follows
   bare 401. The relay handshake also has a timeout.
 - TermDeck Remote's "Connecting to TermDeck" page says after thirty seconds that the computer may be asleep,
   offline, or not running TermDeck, and shows how long it has been waiting, instead of spinning silently.
+- A Codex turn that fails now says so in the transcript. Codex records a failed turn as a completion with
+  an error and no reply, which the transcript ignored, so a session on a model the account cannot use, or
+  past its usage limit, answered every prompt with nothing; only the terminal view carried the reason. The
+  error now appears as an open "Codex error" (or "Usage limit reached") event with Codex's message.
 - Diagnostics recordings, imported shell replays, and session archive contents stay within their configured size
   and structure limits; malformed ZIP compression is reported as an invalid archive.
 - Support bundles redact complete authorization and cookie values, including values in JSON diagnostics.

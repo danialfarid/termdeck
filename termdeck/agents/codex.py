@@ -232,8 +232,47 @@ class CodexCli(AgentCli):
                                               model=model, timestamp=timestamp))
         return turns
 
+            elif entry_type == "event_msg" and body_type in ("task_complete", "error"):
+                error_turn = self._error_turn(body, model=model, timestamp=timestamp)
+                if error_turn is not None:
+                    turns.append(error_turn)
     @staticmethod
     def _append_message_turn(turns: list[dict[str, object]], candidate: dict[str, object]) -> None:
+    # Codex records a failed turn as `task_complete` with `error` set and no agent message (0.153), and
+    # older builds wrote an `error` event. Neither reached the transcript, so a session on a model the
+    # account cannot use, or past its usage limit, finished every prompt within a second showing nothing
+    # at all; only the terminal view carried the reason.
+    ERROR_TITLES = {
+        "usage_limit_exceeded": "Usage limit reached",
+        "context_window_exceeded": "Context window exceeded",
+        "unauthorized": "Codex sign-in needed",
+    }
+
+    @classmethod
+    def _error_turn(cls, body: dict[str, object], *, model: str, timestamp: object) -> dict[str, object] | None:
+        error = body if body.get("type") == "error" else body.get("error")
+        if not isinstance(error, dict):
+            return None
+        message = str(error.get("message", "")).strip()
+        info = str(error.get("codex_error_info", "")).strip()
+        if not message and not info:
+            return None
+        title = cls.ERROR_TITLES.get(info, "Codex error")
+        return TurnBuilder.turn("event", cls._error_message_text(message) or info, "error", title, expanded=True,
+                                model=model, timestamp=timestamp)
+
+    @staticmethod
+    def _error_message_text(message: str) -> str:
+        # The message is often the raw API body: {"type":"error","status":400,"error":{"message":"…"}}.
+        parsed = TurnBuilder.loads(message)
+        if parsed is None:
+            return message
+        nested = parsed.get("error")
+        if isinstance(nested, dict) and nested.get("message"):
+            status = parsed.get("status")
+            return f"{nested['message']} (HTTP {status})" if status else str(nested["message"])
+        return str(parsed.get("message") or message)
+
         if not candidate["text"]:
             return
         if turns and turns[-1].get("role") == candidate.get("role") and turns[-1].get("text") == candidate.get("text"):

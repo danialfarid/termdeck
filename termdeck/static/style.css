@@ -644,6 +644,7 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 .history-event[open] > summary::before { content: "−"; color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 .history-event summary:hover { color: var(--text); }
 .history-event.edit summary { color: var(--green); }
+.history-event.error summary { color: #e5534b; }
 .history-event.plan summary { color: var(--accent); }
 .history-event.thinking summary { color: var(--dim); }
 .history-event.thinking.active .history-thinking-title { color: var(--accent); will-change: opacity, transform; animation: history-thinking-title-pulse var(--thinking-blink-interval) ease-in-out infinite; }
