@@ -21,12 +21,32 @@ class ProjectBundleServiceTest(unittest.TestCase):
         imported = service.read(archive)
 
         self.assertEqual(filename, "stock.termdeck-project")
+        self.assertEqual(service.archive_format(archive), service.FORMAT)
         self.assertEqual(imported.project_name, "stock")
         self.assertEqual(imported.project_states["root"]["color"], "#3b82f6")
         self.assertEqual(imported.worktrees[1]["branch"], "feature/x")
         self.assertEqual([(item.source_session_id, item.source_worktree_id, item.archive) for item in imported.sessions],
                          [("abc123def456", "root", b"root archive"),
-                          ("def456abc123", "wt-abcdef123456", b"worktree archive")])
+                         ("def456abc123", "wt-abcdef123456", b"worktree archive")])
+
+    def test_single_session_export_uses_collection_format_and_session_title(self) -> None:
+        service = ProjectBundleService()
+
+        filename, archive = service.build(
+            "1.2.3", "stock", [{"id": "root", "name": "stock", "branch": "main", "is_root": True}],
+            {"root": {"session_order": ["abc123def456"]}},
+            [ProjectBundleSession("abc123def456", "root", b"session archive")], "Review cache safety")
+
+        self.assertEqual(filename, "Review-cache-safety.termdeck-project")
+        self.assertEqual(service.archive_format(archive), service.FORMAT)
+        self.assertEqual(len(service.read(archive).sessions), 1)
+
+    def test_archive_format_recognizes_legacy_single_session_archive(self) -> None:
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w") as archive:
+            archive.writestr("manifest.json", '{"format":"termdeck-session","format_version":1}')
+
+        self.assertEqual(ProjectBundleService.archive_format(payload.getvalue()), "termdeck-session")
 
     def test_import_rejects_unexpected_or_duplicate_entries(self) -> None:
         payload = io.BytesIO()
@@ -75,6 +95,25 @@ class ProjectBundleServiceTest(unittest.TestCase):
 
         self.assertEqual(remapped.color, "#f97316")
         self.assertEqual(remapped.root_worktree_color, "#3b82f6")
+
+    def test_single_session_export_state_excludes_other_sessions_and_groups(self) -> None:
+        state = ProjectUiState(
+            color="#f97316", root_worktree_color="#3b82f6", session_order=["abc123def456", "def456abc123"],
+            unread_sessions=["abc123def456", "def456abc123"],
+            terminal_groups=[{"id": "review", "name": "Review", "collapsed": False},
+                             {"id": "build", "name": "Build", "collapsed": False}],
+            session_groups={"abc123def456": "review", "def456abc123": "build"},
+            terminal_layout=["group:review", "group:build"],
+            session_view_modes={"abc123def456": "markdown", "def456abc123": "terminal"})
+
+        exported = TermdeckServer._single_session_export_state(state, "abc123def456")
+
+        self.assertEqual(exported.session_order, ["abc123def456"])
+        self.assertEqual(exported.unread_sessions, ["abc123def456"])
+        self.assertEqual(exported.terminal_layout, ["group:review"])
+        self.assertEqual(exported.session_groups, {"abc123def456": "review"})
+        self.assertEqual(exported.session_view_modes, {"abc123def456": "markdown"})
+        self.assertEqual(exported.terminal_groups, [{"id": "review", "name": "Review", "collapsed": False}])
 
 
 if __name__ == "__main__":

@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Single-terminal and full-project exports now share one session-collection archive format. Import sessions accepts
+  that format and legacy single-session archives; multi-session imports can merge into the current project or create
+  a separate linked project.
 - Terminal context menus can move selected terminals to a freshly named group, and desktop drag-and-drop now
   accepts an insertion lane between top-level groups without making the terminal a member of either group.
 - Declarative agent profiles in the data directory can add a CLI's launch/model arguments, permissions,
@@ -26,8 +29,8 @@ All notable changes to this project are documented here. The format follows
   from its session database, and output-driven agents report work immediately when a prompt is submitted.
 - A colour for each project and worktree, chosen from the row of swatches at the bottom of its picker. A worktree
   color takes priority; otherwise its project color marks the worktree label and browser-tab favicon.
-- Session export is available beside Import in the header menu once a terminal is selected. Project export/import
-  migrates all dormant session archives and the saved deck layout, notes, and project/worktree colors without source files.
+- Full-project exports migrate all dormant session archives and the saved deck layout, notes, and project/worktree
+  colors without source files.
 - A prompt whose submission could not be confirmed offers Retry and Discard right under it in the transcript.
   Retry sends the same text again; Discard forgets it. It used to sit there for ten minutes with no way
   forward but retyping.

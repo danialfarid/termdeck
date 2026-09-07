@@ -28,6 +28,7 @@ class TermdeckConfig:
     PROJECTS_FILE = DATA_DIR / "projects.json"
     SCROLLBACK_DIR = DATA_DIR / "scrollback"
     IMPORTED_TRANSCRIPTS_DIR = DATA_DIR / "imported-transcripts"
+    IMPORTED_PROJECTS_DIR = DATA_DIR / "imported-projects"
     SCROLLBACK_SUFFIX = ".bin"
     # Historical name on disk; the recording is generic (any agent with records_raw_replay).
     RAW_REPLAY_SUFFIX = ".claude-replay.bin"
@@ -94,6 +95,7 @@ class TermdeckConfig:
     API_SESSION_IMPORT_ROUTE = "/api/sessions/import"
     API_PROJECT_EXPORT_ROUTE = "/api/projects/{project}/export"
     API_PROJECT_IMPORT_ROUTE = "/api/projects/import"
+    API_ARCHIVE_INSPECT_ROUTE = "/api/imports/inspect"
     SESSION_BUNDLE_MAX_BYTES = 64_000_000
     SESSION_BUNDLE_TRANSCRIPT_MAX_BYTES = 24_000_000
     SESSION_BUNDLE_REPLAY_MAX_BYTES = 24_000_000

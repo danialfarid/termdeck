@@ -4214,7 +4214,7 @@ Object.assign(TermdeckApp.prototype, {
       const response = await fetch(`/api/sessions/${encodeURIComponent(session.session_id)}/export`);
       if (!response.ok) throw new Error(`session export failed: ${response.status}`);
       const disposition = response.headers.get("Content-Disposition") || "";
-      const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "session.termdeck-session";
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "session.termdeck-project";
       const url = URL.createObjectURL(await response.blob());
       const link = document.createElement("a");
       link.href = url;

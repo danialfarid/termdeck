@@ -36,7 +36,8 @@ class ProjectBundleService:
     SESSION_ID_PATTERN = re.compile(r"[0-9a-f]{12}")
 
     def build(self, termdeck_version: str, project_name: str, worktrees: list[dict[str, object]],
-              project_states: dict[str, dict[str, object]], sessions: list[ProjectBundleSession]) -> tuple[str, bytes]:
+              project_states: dict[str, dict[str, object]], sessions: list[ProjectBundleSession],
+              archive_label: str = "") -> tuple[str, bytes]:
         if not project_name.strip():
             raise ValueError("project name is required")
         if len(sessions) > TermdeckConfig.PROJECT_BUNDLE_MAX_SESSIONS:
@@ -68,8 +69,26 @@ class ProjectBundleService:
         payload = archive_buffer.getvalue()
         if len(payload) > TermdeckConfig.PROJECT_BUNDLE_MAX_BYTES:
             raise ValueError("project archive exceeds the 512 MB limit")
-        safe_name = re.sub(r"[^0-9A-Za-z._-]+", "-", project_name).strip("-.")[:60] or "project"
+        safe_name = re.sub(r"[^0-9A-Za-z._-]+", "-", archive_label or project_name).strip("-.")[:60] or "sessions"
         return f"{safe_name}.termdeck-project", payload
+
+    @staticmethod
+    def archive_format(archive_bytes: bytes) -> str:
+        if not archive_bytes or len(archive_bytes) > TermdeckConfig.PROJECT_BUNDLE_MAX_BYTES:
+            raise ValueError("TermDeck archive is empty or exceeds the 512 MB limit")
+        try:
+            with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+                manifest_info = archive.getinfo(ProjectBundleService.MANIFEST_NAME)
+                if manifest_info.file_size > 1_000_000:
+                    raise ValueError("TermDeck archive manifest is too large")
+                manifest = json.loads(archive.read(ProjectBundleService.MANIFEST_NAME).decode())
+        except (zipfile.BadZipFile, KeyError, json.JSONDecodeError, UnicodeDecodeError,
+                NotImplementedError, RuntimeError, EOFError, zlib.error) as error:
+            raise ValueError("invalid TermDeck archive") from error
+        archive_format = manifest.get("format") if isinstance(manifest, dict) else None
+        if archive_format not in {ProjectBundleService.FORMAT, "termdeck-session"}:
+            raise ValueError("unsupported TermDeck archive format")
+        return str(archive_format)
 
     def read(self, archive_bytes: bytes) -> ImportedProjectBundle:
         if not archive_bytes or len(archive_bytes) > TermdeckConfig.PROJECT_BUNDLE_MAX_BYTES:

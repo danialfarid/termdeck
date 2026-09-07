@@ -745,6 +745,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_SESSION_IMPORT_ROUTE, response_model=None)(self._import_session)
         app.get(TermdeckConfig.API_PROJECT_EXPORT_ROUTE, response_model=None)(self._export_project)
         app.post(TermdeckConfig.API_PROJECT_IMPORT_ROUTE, response_model=None)(self._import_project)
+        app.post(TermdeckConfig.API_ARCHIVE_INSPECT_ROUTE, response_model=None)(self._inspect_import_archive)
         app.post(TermdeckConfig.API_TERMINAL_TASK_ROUTE, response_model=None)(self._run_terminal_task)
         app.post(TermdeckConfig.API_TERMINAL_TASK_PROMPT_ROUTE, response_model=None)(self._follow_up_task_prompt)
         app.post(TermdeckConfig.API_TERMINALS_BATCH_ROUTE, response_model=None)(self._launch_terminal_batch)
@@ -1889,6 +1890,33 @@ class TermdeckServer:
     async def _list_sessions(self, project: str = "", worktree_id: str = "") -> list[dict[str, object]]:
         return self.manager.list_sessions(project or None, worktree_id or None)
 
+    async def _inspect_import_archive(self, file: UploadFile) -> dict[str, object]:
+        archive_bytes = await file.read(TermdeckConfig.PROJECT_BUNDLE_MAX_BYTES + 1)
+        try:
+            archive_format = await asyncio.to_thread(self.project_bundles.archive_format, archive_bytes)
+            if archive_format == self.project_bundles.FORMAT:
+                bundle = await asyncio.to_thread(self.project_bundles.read, archive_bytes)
+                return {"archive_type": "sessions", "sessions": len(bundle.sessions),
+                        "source_project": bundle.project_name, "worktrees": len(bundle.worktrees)}
+            bundle = await asyncio.to_thread(self.session_bundles.read, archive_bytes)
+            return {"archive_type": "legacy-session", "sessions": 1,
+                    "title": str(bundle.session.get("title") or "session"), "worktrees": 1}
+        except (ValueError, OSError) as inspect_error:
+            raise HTTPException(status_code=400, detail=str(inspect_error)) from inspect_error
+
+    @staticmethod
+    def _single_session_export_state(state: ProjectUiState, session_id: str) -> ProjectUiState:
+        group_id = state.session_groups.get(session_id, "")
+        groups = [group for group in state.terminal_groups if str(group.get("id") or "") == group_id]
+        layout = [f"group:{group_id}" if group_id else f"session:{session_id}"]
+        return ProjectUiState(
+            active_session_id=session_id, color=state.color, root_worktree_color=state.root_worktree_color,
+            recently_opened_terminal_ids=[session_id], session_order=[session_id],
+            unread_sessions=[session_id] if session_id in state.unread_sessions else [], terminal_groups=groups,
+            session_groups={session_id: group_id} if group_id else {}, terminal_layout=layout,
+            session_view_modes={session_id: state.session_view_modes[session_id]}
+            if session_id in state.session_view_modes else {})
+
     async def _export_session(self, session_id: str) -> Response:
         from termdeck import __version__
 
@@ -1899,8 +1927,29 @@ class TermdeckServer:
         turns = await asyncio.to_thread(self.transcripts.transcript_for, agent_kind, cwd, agent_session_id)
         project_root = record.get("worktree_path") or self.manager.registry.root_for(str(record.get("project") or "")) \
             or record.get("cwd") or TermdeckConfig.DEFAULT_CWD
-        filename, archive = await asyncio.to_thread(
+        _session_filename, session_archive = await asyncio.to_thread(
             self.session_bundles.build, __version__, record, Path(str(project_root)), turns, replay_kind, replay)
+        project_name = str(record.get("project") or "session")
+        worktree_id = str(record.get("worktree_id") or "root")
+        root = self.manager.registry.root_for(project_name) or str(project_root)
+        try:
+            worktrees = self.worktree_registry.list_for_project(project_name, root)
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        selected_worktree = next((worktree for worktree in worktrees if worktree.worktree_id == worktree_id), None)
+        exported_worktrees = [{"id": worktree_id,
+                               "name": selected_worktree.name if selected_worktree else worktree_id,
+                               "branch": selected_worktree.branch if selected_worktree else str(record.get("worktree_branch") or ""),
+                               "base_ref": selected_worktree.base_ref if selected_worktree else "",
+                               "base_commit": selected_worktree.base_commit if selected_worktree else "",
+                               "is_root": worktree_id == "root"}]
+        settings = UiSettings(**self.settings_store.load())
+        state = settings.project_state.get(self._project_state_key(project_name, worktree_id), ProjectUiState())
+        export_state = self._single_session_export_state(state, session_id)
+        filename, archive = await asyncio.to_thread(
+            self.project_bundles.build, __version__, project_name, exported_worktrees,
+            {worktree_id: export_state.model_dump()}, [ProjectBundleSession(session_id, worktree_id, session_archive)],
+            str(record.get("title") or "session"))
         return Response(archive, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
@@ -1965,19 +2014,26 @@ class TermdeckServer:
         return Response(archive, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
-    async def _import_project(self, file: UploadFile, project: str = "", trusted: bool = False) -> dict[str, object]:
+    async def _import_project(self, file: UploadFile, project: str = "", trusted: bool = False,
+                              import_mode: str = "merge") -> dict[str, object]:
         if not trusted:
             raise HTTPException(status_code=400, detail="trusted=true is required because opening an imported session may run its saved command")
-        project_name = project.strip()
-        root = self.manager.registry.root_for(project_name)
-        if not project_name or root is None:
-            raise HTTPException(status_code=404, detail=project_name or "project")
+        if import_mode not in {"merge", "new"}:
+            raise HTTPException(status_code=422, detail="import_mode must be merge or new")
         archive_bytes = await file.read(TermdeckConfig.PROJECT_BUNDLE_MAX_BYTES + 1)
         try:
             bundle = await asyncio.to_thread(self.project_bundles.read, archive_bytes)
             parsed_sessions = [(entry, await asyncio.to_thread(self.session_bundles.read, entry.archive))
                                for entry in bundle.sessions]
             parsed_states = {worktree_id: ProjectUiState(**payload) for worktree_id, payload in bundle.project_states.items()}
+            if import_mode == "new":
+                imported_project = self._register_imported_project(bundle.project_name)
+                project_name, root = imported_project["name"], imported_project["root"]
+            else:
+                project_name = project.strip()
+                root = self.manager.registry.root_for(project_name)
+                if not project_name or root is None:
+                    raise ValueError(project_name or "select a project before merging")
             target_worktrees = self._project_bundle_worktree_map(project_name, root, bundle.worktrees)
         except (ValueError, OSError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
@@ -2007,7 +2063,23 @@ class TermdeckServer:
         unmatched_worktrees = sorted({source_id for source_id, (target_id, _record) in target_worktrees.items()
                                       if source_id != "root" and target_id == "root"})
         return {"imported": True, "starts_when_opened": True, "sessions": len(session_ids),
-                "source_project": bundle.project_name, "unmatched_worktrees": unmatched_worktrees}
+                "source_project": bundle.project_name, "target_project": project_name, "project_root": root,
+                "created_project": import_mode == "new", "unmatched_worktrees": unmatched_worktrees}
+
+    def _register_imported_project(self, source_project: str) -> dict[str, str]:
+        TermdeckConfig.IMPORTED_PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+        folder_name = re.sub(r"[^0-9A-Za-z._-]+", "-", source_project).strip("-.").lower() or "sessions"
+        candidate = TermdeckConfig.IMPORTED_PROJECTS_DIR / f"{folder_name}-import"
+        counter = 2
+        while candidate.exists():
+            candidate = TermdeckConfig.IMPORTED_PROJECTS_DIR / f"{folder_name}-import-{counter}"
+            counter += 1
+        candidate.mkdir()
+        try:
+            return self.manager.registry.add_project(candidate, source_project)
+        except (OSError, ValueError):
+            candidate.rmdir()
+            raise
 
     @staticmethod
     def _imported_bundle_working_directory(payload: dict[str, object], root: Path) -> Path:

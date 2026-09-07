@@ -2598,63 +2598,62 @@ class TermdeckApp {
   }
 
   async importSessionArchive(file) {
-    const confirmed = await uiConfirm(
-      `Import ${file.name}? Importing creates a dormant tab and runs nothing. Opening that tab may run or resume ` +
-      "the command saved in the archive, so import only a session you trust.",
-      { title: "Import session", confirmLabel: "Import", cancelLabel: "Cancel" });
-    if (!confirmed) return;
     const form = new FormData();
     form.append("file", file);
-    const params = new URLSearchParams({ project: this.projectSlug, worktree_id: this.stateWorktreeId(), trusted: "true" });
-    this.$("status-name").textContent = "importing session…";
+    this.$("status-name").textContent = "checking session archive…";
     try {
-      const response = await fetch(`/api/sessions/import?${params}`, { method: "POST", body: form });
+      const inspectionResponse = await fetch("/api/imports/inspect", { method: "POST", body: form });
+      const inspection = await inspectionResponse.json().catch(() => ({}));
+      if (!inspectionResponse.ok) throw new Error(inspection.detail || `archive inspection failed: ${inspectionResponse.status}`);
+      const sessionCount = Number(inspection.sessions || 0);
+      let importMode = "merge";
+      if (sessionCount > 1) {
+        const createNewProject = await uiConfirm(
+          `${file.name} contains ${sessionCount} sessions. Open it as a separate project, or merge the sessions into ` +
+          `${this.projectSlug}?`,
+          { title: "Choose import destination", confirmLabel: "New project", cancelLabel: "Merge current" });
+        importMode = createNewProject ? "new" : "merge";
+      }
+      const destination = importMode === "new" ? "a new project" : this.projectSlug;
+      const confirmed = await uiConfirm(
+        `Import ${sessionCount === 1 ? "1 dormant session" : `${sessionCount} dormant sessions`} into ${destination}? ` +
+        "Source files and Git worktrees are not included. Opening an imported tab may run or resume its saved command, " +
+        "so import only an archive you trust.",
+        { title: "Import sessions", confirmLabel: "Import", cancelLabel: "Cancel" });
+      if (!confirmed) {
+        this.$("status-name").textContent = "import cancelled";
+        return;
+      }
+      const upload = new FormData();
+      upload.append("file", file);
+      const legacySession = inspection.archive_type === "legacy-session";
+      const params = legacySession
+        ? new URLSearchParams({ project: this.projectSlug, worktree_id: this.stateWorktreeId(), trusted: "true" })
+        : new URLSearchParams({ project: this.projectSlug, trusted: "true", import_mode: importMode });
+      this.$("status-name").textContent = "importing sessions…";
+      const route = legacySession ? "/api/sessions/import" : "/api/projects/import";
+      const response = await fetch(`${route}?${params}`, { method: "POST", body: upload });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.detail || `session import failed: ${response.status}`);
+      if (payload.created_project) {
+        const url = new URL(`/p/${encodeURIComponent(payload.target_project)}`, location.href);
+        this.showWorktreeResult("Project imported", payload.target_project, url, payload.project_root || "");
+        this.$("status-name").textContent = `imported ${payload.sessions || sessionCount} dormant session(s)`;
+        return;
+      }
       await this.refresh();
-      const title = payload.session?.title || "session";
-      this.$("status-name").textContent = `imported ${title} · opens dormant`;
+      const importedCount = payload.sessions || (payload.session ? 1 : sessionCount);
+      const unmatched = payload.unmatched_worktrees?.length
+        ? ` · ${payload.unmatched_worktrees.length} worktree(s) placed in root` : "";
+      this.$("status-name").textContent = `imported ${importedCount} dormant session(s)${unmatched}`;
     } catch (error) {
-      this.$("status-name").textContent = `unable to import session: ${error.message}`;
-    }
-  }
-
-  chooseProjectArchive() {
-    if (!this.projectSlug) {
-      void uiAlert("Select a project before importing project sessions.");
-      return;
-    }
-    const input = this.$("project-import-input");
-    input.value = "";
-    input.click();
-  }
-
-  async importProjectArchive(file) {
-    const confirmed = await uiConfirm(
-      `Import all TermDeck sessions from ${file.name}? This restores dormant tabs, their saved layout, notes, and ` +
-      "conversation history. It does not include source files or Git worktrees. Opening a tab may run or resume its " +
-      "saved command, so import only an archive you trust.",
-      { title: "Import project sessions", confirmLabel: "Import", cancelLabel: "Cancel" });
-    if (!confirmed) return;
-    const form = new FormData();
-    form.append("file", file);
-    const params = new URLSearchParams({ project: this.projectSlug, trusted: "true" });
-    this.$("status-name").textContent = "importing project sessions…";
-    try {
-      const response = await fetch(`/api/projects/import?${params}`, { method: "POST", body: form });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.detail || `project import failed: ${response.status}`);
-      await this.refresh();
-      const unmatched = payload.unmatched_worktrees?.length ? ` · ${payload.unmatched_worktrees.length} worktree(s) placed in root` : "";
-      this.$("status-name").textContent = `imported ${payload.sessions || 0} dormant session(s)${unmatched}`;
-    } catch (error) {
-      this.$("status-name").textContent = `unable to import project: ${error.message}`;
+      this.$("status-name").textContent = `unable to import sessions: ${error.message}`;
     }
   }
 
   async exportProjectArchive() {
     if (!this.projectSlug) return;
-    this.$("status-name").textContent = "exporting project sessions…";
+    this.$("status-name").textContent = "exporting all sessions…";
     try {
       const response = await fetch(`/api/projects/${encodeURIComponent(this.projectSlug)}/export`);
       if (!response.ok) throw new Error(`project export failed: ${response.status}`);
@@ -2666,7 +2665,7 @@ class TermdeckApp {
       link.download = filename;
       link.click();
       URL.revokeObjectURL(url);
-      this.$("status-name").textContent = "exported project sessions";
+      this.$("status-name").textContent = "exported all sessions";
     } catch (error) {
       this.$("status-name").textContent = `unable to export project: ${error.message}`;
     }
@@ -2946,23 +2945,10 @@ class TermdeckApp {
       importButton.disabled = !this.projectSlug || this.vscodeMode;
       importButton.title = importButton.disabled ? "Select a project to import a session" : "Import a TermDeck session archive";
     }
-    const exportButton = this.$("header-export-session");
-    const activeSession = this.session(this.activeId);
-    if (exportButton) {
-      exportButton.disabled = !activeSession || this.vscodeMode;
-      exportButton.title = exportButton.disabled ? "Select a terminal to export it" :
-        `Export ${this.titlePresentation(activeSession).text}`;
-    }
-    const importProjectButton = this.$("header-import-project");
-    if (importProjectButton) {
-      importProjectButton.disabled = !this.projectSlug || this.vscodeMode;
-      importProjectButton.title = importProjectButton.disabled ? "Select a project to import project sessions" :
-        "Import TermDeck sessions and layout into this project";
-    }
     const exportProjectButton = this.$("header-export-project");
     if (exportProjectButton) {
       exportProjectButton.disabled = !this.projectSlug || this.vscodeMode;
-      exportProjectButton.title = exportProjectButton.disabled ? "Select a project to export project sessions" :
+      exportProjectButton.title = exportProjectButton.disabled ? "Select a project to export sessions" :
         "Export all TermDeck sessions and layout for this project";
     }
     this.updateHeaderAddShortcutLabels();
@@ -3008,11 +2994,6 @@ class TermdeckApp {
     else if (action === "worktree") this.openWorktreeModal();
     else if (action === "terminal") this.openModal();
     else if (action === "import-session") this.chooseSessionArchive();
-    else if (action === "export-session") {
-      const session = this.session(this.activeId);
-      if (session) void this.exportSessionArchive(session);
-    }
-    else if (action === "import-project") this.chooseProjectArchive();
     else if (action === "export-project") void this.exportProjectArchive();
   }
 
@@ -3690,16 +3671,10 @@ class TermdeckApp {
     this.$("header-add-worktree").onclick = () => this.runHeaderAddAction("worktree");
     this.$("header-add-terminal").onclick = () => this.runHeaderAddAction("terminal");
     this.$("header-import-session").onclick = () => this.runHeaderAddAction("import-session");
-    this.$("header-export-session").onclick = () => this.runHeaderAddAction("export-session");
-    this.$("header-import-project").onclick = () => this.runHeaderAddAction("import-project");
     this.$("header-export-project").onclick = () => this.runHeaderAddAction("export-project");
     this.$("session-import-input").onchange = (event) => {
       const file = event.target.files?.[0];
       if (file) void this.importSessionArchive(file);
-    };
-    this.$("project-import-input").onchange = (event) => {
-      const file = event.target.files?.[0];
-      if (file) void this.importProjectArchive(file);
     };
     this.updateHeaderAddMenu();
     const queryInput = this.$("search-query");
