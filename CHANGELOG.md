@@ -39,6 +39,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The project header now owns terminal search, and its + menu includes terminal groups. The TERMINALS row keeps only
+  the active filter and new-terminal control, while terminal URL confirmations use TermDeck's modal instead of the
+  browser's native prompt.
 - Inside an expanded thinking block, each operation shows its first four lines with a "N more lines" control
   under it; opening one keeps it open through re-renders while the agent is still streaming. A block of
   twenty tool calls used to be twenty full outputs end to end.

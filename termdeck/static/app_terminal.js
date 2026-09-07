@@ -4,6 +4,21 @@
 Object.assign(TermdeckApp.prototype, {
 
 
+  async openTerminalHyperlink(uri) {
+    let url;
+    try {
+      url = new URL(uri);
+    } catch (_error) {
+      return;
+    }
+    if (!["http:", "https:", "mailto:"].includes(url.protocol)) return;
+    const confirmed = await uiConfirm(`Open ${url.href}?`, {
+      title: "Open external link", confirmLabel: "Open", cancelLabel: "Cancel",
+    });
+    if (confirmed) window.open(url.href, "_blank", "noopener,noreferrer");
+  },
+
+
   ensureView(id) {
     if (this.views.has(id)) return this.views.get(id);
     const container = document.createElement("div");
@@ -200,6 +215,7 @@ Object.assign(TermdeckApp.prototype, {
       // key handler resumes following through the container instead, which is the surface that scrolls.
       scrollOnUserInput: false,
       scrollback: 20000, cursorBlink: true, macOptionIsMeta: true, allowProposedApi: true,
+      linkHandler: { activate: (_event, uri) => { void this.openTerminalHyperlink(uri); } },
     });
     const fit = new FitAddon.FitAddon();
     const terminalFindAddon = new SearchAddon.SearchAddon({ highlightLimit: TERMINAL_FIND_HIGHLIGHT_LIMIT });

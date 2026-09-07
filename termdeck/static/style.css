@@ -80,8 +80,9 @@ body:not(.vscode-mode) #sidebar { color: var(--sidebar-text-color); --text: var(
 #file-header-controls .codicon { font-size: calc(12px * var(--ui-scale)); }
 #worktree-select { color: var(--dim); font: calc(var(--sidebar-font-size) - 3px)/1.2 Menlo, Monaco, monospace; padding: 1px 0; }
 #worktree-select:hover { color: var(--accent); }
-#project-add-btn { display: grid; place-items: center; flex: none; width: 22px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--dim); cursor: pointer; }
-#project-add-btn:hover { border-color: var(--active-border); background: var(--active-bg); color: var(--accent); }
+#project-add-btn, #project-terminal-search-btn { display: grid; place-items: center; flex: none; width: 22px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--dim); cursor: pointer; }
+#project-add-btn:hover, #project-terminal-search-btn:hover, #project-terminal-search-btn.on { border-color: var(--active-border); background: var(--active-bg); color: var(--accent); }
+#project-terminal-search-btn .codicon { font-size: calc(12px * var(--ui-scale)); }
 #git-new-branch, #notebook-new { display: grid; place-items: center; }
 #project-add-btn .codicon-add, #git-new-branch .codicon-add, #notebook-new .codicon-add { display: none; }
 #project-add-btn::before, #git-new-branch::before, #notebook-new::before, #new-session-btn.terminal-new-toggle::before, .terminal-group-add::before { content: ""; display: block; background: linear-gradient(currentColor, currentColor) center / 1px 100% no-repeat, linear-gradient(currentColor, currentColor) center / 100% 1px no-repeat; }
@@ -789,7 +790,9 @@ body.vscode-native-mode #sidebar-header { justify-content: flex-start; }
 body.vscode-mode #modal-project-field,
 body.vscode-native-mode #modal-project-field { display: none !important; }
 body.vscode-mode #project-select,
-body.vscode-native-mode #project-select { display: none !important; }
+body.vscode-native-mode #project-select,
+body.vscode-mode #project-terminal-search-btn,
+body.vscode-native-mode #project-terminal-search-btn { display: none !important; }
 .footer-spacer { flex: 1; }
 .side-view { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 0 4px 4px; }
 .side-view.hidden { display: none; }

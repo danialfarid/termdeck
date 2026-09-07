@@ -2940,6 +2940,11 @@ class TermdeckApp {
     const gitAvailable = !!this.projectSlug && !this.vscodeMode && !!rootWorktree && rootWorktree.git_repository !== false;
     button.disabled = !gitAvailable;
     button.title = gitAvailable ? "Create a worktree" : "Select a Git project to create a worktree";
+    const groupButton = this.$("header-add-group");
+    if (groupButton) {
+      groupButton.disabled = !this.projectSlug || this.vscodeMode;
+      groupButton.title = groupButton.disabled ? "Select a project to create a terminal group" : "Create a terminal group";
+    }
     const importButton = this.$("header-import-session");
     if (importButton) {
       importButton.disabled = !this.projectSlug || this.vscodeMode;
@@ -2993,6 +2998,7 @@ class TermdeckApp {
     if (action === "project") void this.addProjectFromHeader();
     else if (action === "worktree") this.openWorktreeModal();
     else if (action === "terminal") this.openModal();
+    else if (action === "group") this.createTerminalGroup();
     else if (action === "import-session") this.chooseSessionArchive();
     else if (action === "export-project") void this.exportProjectArchive();
   }
@@ -3667,9 +3673,15 @@ class TermdeckApp {
       event.stopPropagation();
       this.toggleHeaderAddMenu();
     };
+    this.$("project-terminal-search-btn").onclick = (event) => {
+      event.stopPropagation();
+      if (this.sideView !== "terminals") this.setSideView("terminals", false);
+      this.toggleTerminalSearchEditor();
+    };
     this.$("header-add-project").onclick = () => this.runHeaderAddAction("project");
     this.$("header-add-worktree").onclick = () => this.runHeaderAddAction("worktree");
     this.$("header-add-terminal").onclick = () => this.runHeaderAddAction("terminal");
+    this.$("header-add-group").onclick = () => this.runHeaderAddAction("group");
     this.$("header-import-session").onclick = () => this.runHeaderAddAction("import-session");
     this.$("header-export-project").onclick = () => this.runHeaderAddAction("export-project");
     this.$("session-import-input").onchange = (event) => {
@@ -5941,29 +5953,6 @@ class TermdeckApp {
         }
         this.toggleHideInactiveTerminals();
       };
-      const group = document.createElement("button");
-      group.id = "new-group-btn";
-      group.className = "section-toggle";
-      group.innerHTML = '<span class="codicon codicon-folder-library"></span>';
-      group.title = "New terminal group";
-      group.setAttribute("aria-label", group.title);
-      group.onclick = (event) => {
-        event.stopPropagation();
-        this.createTerminalGroup();
-      };
-      const search = document.createElement("button");
-      search.id = "terminal-search-inline-toggle";
-      search.className = "section-toggle";
-      search.innerHTML = '<span class="codicon codicon-search"></span>';
-      search.title = this.shortcutTitle("Search terminal names and output", "open-terminal-search");
-      search.setAttribute("aria-label", search.title);
-      const globalTerminalSearchOpen = this.terminalSearchEditorOpen && !this.terminalSearchGroupId;
-      search.setAttribute("aria-pressed", String(globalTerminalSearchOpen));
-      search.classList.toggle("on", globalTerminalSearchOpen);
-      search.onclick = (event) => {
-        event.stopPropagation();
-        this.toggleTerminalSearchEditor();
-      };
       const add = document.createElement("button");
       add.id = "new-session-btn";
       add.className = "section-toggle terminal-new-toggle";
@@ -5974,7 +5963,7 @@ class TermdeckApp {
         event.stopPropagation();
         this.openModal();
       };
-      controls.append(sort, group, search, add);
+      controls.append(sort, add);
       label.appendChild(controls);
     }
     return label;
@@ -5988,6 +5977,10 @@ class TermdeckApp {
     if (this.terminalSearchEditorOpen && !this.terminalSearchGroupId) {
       header.after(terminalSearchEditor || this.createTerminalSearchEditor());
     }
+    const searchButton = this.$("project-terminal-search-btn");
+    const globalTerminalSearchOpen = this.terminalSearchEditorOpen && !this.terminalSearchGroupId;
+    searchButton?.classList.toggle("on", globalTerminalSearchOpen);
+    searchButton?.setAttribute("aria-pressed", String(globalTerminalSearchOpen));
   }
 
   terminalSearchGroupName() {

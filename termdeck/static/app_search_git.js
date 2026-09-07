@@ -4030,8 +4030,7 @@ Object.assign(TermdeckApp.prototype, {
       refreshButton.title = this.shortcutTitle("Refresh TermDeck", "vscode-refresh");
     }
     const sidePanelTitles = [["view-project", "Files", "open-files-panel"],
-      ["view-search", "Search & replace", "open-file-search"], ["view-git", "Git", "open-git-panel"],
-      ["terminal-search-inline-toggle", "Search terminal names and output", "open-terminal-search"]];
+      ["view-search", "Search & replace", "open-file-search"], ["view-git", "Git", "open-git-panel"]];
     for (const [id, label, actionId] of sidePanelTitles) {
       const button = this.$(id);
       if (!button) continue;
@@ -4041,6 +4040,12 @@ Object.assign(TermdeckApp.prototype, {
         const sidePanelAction = this.bindingToDisplay(this.bindingFor("cycle-side-panel"));
         button.title = `${label} (${directAction}; ${sidePanelAction} cycles tabs)`;
       }
+    }
+    const terminalSearchButton = this.$("project-terminal-search-btn");
+    if (terminalSearchButton) {
+      terminalSearchButton.title = this.touchMobileLayoutEnabled() ? "Search terminal names and output" :
+        this.shortcutTitle("Search terminal names and output", "open-terminal-search");
+      terminalSearchButton.setAttribute("aria-label", terminalSearchButton.title);
     }
     if (!this.touchMobileLayoutEnabled()) {
       for (const id of ["view-project", "view-search", "view-git"]) {
