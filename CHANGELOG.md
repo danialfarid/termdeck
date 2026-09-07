@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Terminal context menus can move selected terminals to a freshly named group, and desktop drag-and-drop now
+  accepts an insertion lane between top-level groups without making the terminal a member of either group.
 - Declarative agent profiles in the data directory can add a CLI's launch/model arguments, permissions,
   resume, fork, rename, JSONL transcript mapping, activity detector, attention markers, and brand icon without
   changing TermDeck; complex integrations continue to use Python adapters.

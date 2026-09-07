@@ -1006,6 +1006,7 @@ Object.assign(TermdeckApp.prototype, {
         if (grouped.has(sessionGroups[session.session_id])) grouped.get(sessionGroups[session.session_id]).push(session);
       }
       const layout = this.terminalLayout(allVisibleSessions);
+      let previousRenderedToken = "";
       for (const entry of layout) {
         const [kind, id] = entry.split(":", 2);
         if (kind === "group") {
@@ -1015,13 +1016,18 @@ Object.assign(TermdeckApp.prototype, {
           const scopedSearchGroup = this.terminalSearchEditorOpen && this.terminalSearchGroupId === id &&
             (this.terminalSearchWorktreeId || worktreeId) === worktreeId;
           if (!members.length && (terminalSearchQuery || this.hideInactiveTerminals) && !scopedSearchGroup) continue;
+          if (previousRenderedToken) this.appendTerminalLayoutDropZone(list, entry);
           this.renderTerminalGroup(group, members, list);
+          previousRenderedToken = entry;
           continue;
         }
         const session = sessionsById.get(id);
         if (!session || sessionGroups[id]) continue;
+        if (previousRenderedToken) this.appendTerminalLayoutDropZone(list, entry);
         this.renderTerminalItem(session, list);
+        previousRenderedToken = entry;
       }
+      if (previousRenderedToken) this.appendTerminalLayoutDropZone(list, previousRenderedToken, true);
       if ((terminalSearchQuery || this.hideInactiveTerminals) && !this.terminalSearchGroupId &&
           !visibleSessions.length && !this.terminalSearchClosedMatches.size) {
         const empty = document.createElement("div");
@@ -4147,6 +4153,11 @@ Object.assign(TermdeckApp.prototype, {
         assignedGroupId ? `group:${assignedGroupId}` : `session:${session.session_id}`),
       icon: "arrow-up",
     }];
+    moveEntries.push({
+      label: "New group…",
+      handler: () => this.createTerminalGroupFromSessions(sessionIds),
+      icon: "folder-new",
+    });
     const groups = this.terminalGroups();
     if (groups.length) {
       moveEntries.push({ kind: "label", label: "Groups" });

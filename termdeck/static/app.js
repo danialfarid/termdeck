@@ -2085,6 +2085,26 @@ class TermdeckApp {
     this.renderList();
   }
 
+  repositionSelectedSessionsAroundLayoutToken(sessionIds, targetToken, after = false) {
+    const selectedWorktreeId = this.stateWorktreeId();
+    const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id) &&
+      this.worktreeIdForSession(this.session(id)) === selectedWorktreeId);
+    if (!ids.length || !targetToken) return;
+    const state = this.getProjectState();
+    const selectedTokens = new Set(ids.map((id) => `session:${id}`));
+    const layout = this.terminalLayout().filter((entry) => !selectedTokens.has(entry));
+    const targetIndex = layout.indexOf(targetToken);
+    if (targetIndex < 0) return;
+    const sessionGroups = { ...(state.session_groups || {}) };
+    for (const id of ids) delete sessionGroups[id];
+    layout.splice(targetIndex + (after ? 1 : 0), 0, ...ids.map((id) => `session:${id}`));
+    this.applyLocalProjectStatePatch({ session_groups: sessionGroups, terminal_layout: layout });
+    this.queueSessionGroupAssignments(Object.fromEntries(ids.map((id) => [id, null])));
+    const moves = after ? [...ids].reverse() : ids;
+    for (const id of moves) this.queueTerminalLayoutMove(`session:${id}`, targetToken, after);
+    this.renderList();
+  }
+
   async groupSelectedSessionsFromDrop(sessionIds, targetId, after = false) {
     const selectedWorktreeId = this.stateWorktreeId();
     const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id) && id !== targetId &&
@@ -2423,6 +2443,41 @@ class TermdeckApp {
       this.moveSelectedSessionsIntoGroup(sessionIds, groupId);
       this.dragItem = null;
     };
+  }
+
+  appendTerminalLayoutDropZone(list, targetToken, after = false) {
+    if (this.vscodeMode || !targetToken) return;
+    const zone = document.createElement("div");
+    zone.className = "terminal-layout-drop-zone";
+    zone.dataset.worktreeId = this.stateWorktreeId();
+    zone.ondragover = (event) => {
+      this.setInteractionWorktreeFromElement(zone);
+      const source = this.dragItem;
+      if (!source || source.type !== "layout" || source.token === targetToken ||
+          (source.worktreeId && source.worktreeId !== this.stateWorktreeId())) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      this.clearDragLandingIndicator();
+      zone.classList.add("drop-target");
+    };
+    zone.ondragleave = (event) => {
+      if (!event.relatedTarget || !zone.contains(event.relatedTarget)) zone.classList.remove("drop-target");
+    };
+    zone.ondrop = (event) => {
+      this.setInteractionWorktreeFromElement(zone);
+      event.preventDefault();
+      const source = this.dragItem;
+      if (source?.type === "layout" && source.token !== targetToken &&
+          (!source.worktreeId || source.worktreeId === this.stateWorktreeId())) {
+        if (source.kind === "session") {
+          this.repositionSelectedSessionsAroundLayoutToken(this.sessionIdsFromDragItem(source), targetToken, after);
+        } else this.reorderTerminalLayout(source.token, targetToken, after);
+      }
+      zone.classList.remove("drop-target");
+      this.clearDragLandingIndicator();
+      this.dragItem = null;
+    };
+    list.appendChild(zone);
   }
 
   async loadProjects() {
@@ -5725,8 +5780,13 @@ class TermdeckApp {
       event.preventDefault();
       event.dataTransfer.dropEffect = "move";
       if (source.kind === "session" && kind === "group") {
+        const rect = item.getBoundingClientRect();
+        const edgeDrop = event.clientY <= rect.top + rect.height * 0.25 || event.clientY >= rect.bottom - rect.height * 0.25;
         this.clearDragLandingIndicator();
-        this.setDragLandingMode(item, "drop-group", "add to group");
+        if (edgeDrop) {
+          const after = event.clientY >= rect.top + rect.height / 2;
+          this.setDragLandingMode(item, after ? "drop-after" : "drop-before", `move ${after ? "after" : "before"} group`);
+        } else this.setDragLandingMode(item, "drop-group", "add to group");
         return;
       }
       const sessionGroups = this.getProjectState().session_groups || {};
@@ -5786,7 +5846,12 @@ class TermdeckApp {
         const sessionGroups = this.getProjectState().session_groups || {};
         const targetGroup = kind === "session" ? sessionGroups[targetId] : null;
         const targetRect = kind === "session" ? item.getBoundingClientRect() : null;
-        if (source.kind === "session" && kind === "group") this.moveSelectedSessionsIntoGroup(sourceSessionIds, targetId);
+        if (source.kind === "session" && kind === "group") {
+          const after = item.classList.contains("drop-after");
+          if (item.classList.contains("drop-before") || after) {
+            this.repositionSelectedSessionsAroundLayoutToken(sourceSessionIds, token, after);
+          } else this.moveSelectedSessionsIntoGroup(sourceSessionIds, targetId);
+        }
         else if (source.kind === "session" && kind === "session" && this.dragGroupTargetKey === token) {
           const rect = item.getBoundingClientRect();
           this.groupSelectedSessionsFromDrop(sourceSessionIds, targetId, event.clientY >= rect.top + rect.height / 2);
@@ -5815,7 +5880,7 @@ class TermdeckApp {
     this.clearDragGroupingTimer();
     // Scoped to the document, not the session list: group labels, the file tree and the terminal's
     // drop-to-attach overlay all raise indicators that outlive a drag ending outside their own element.
-    const landingClasses = ["drop-before", "drop-after", "drop-group", "group-drop-pending", "group-drop-target", "drag-over"];
+    const landingClasses = ["drop-before", "drop-after", "drop-group", "group-drop-pending", "group-drop-target", "drop-target", "drag-over"];
     document.querySelectorAll(landingClasses.map((name) => `.${name}`).join(", "))
       .forEach((row) => row.classList.remove(...landingClasses));
     if (clearSource) document.querySelectorAll(".dragging-tab")
