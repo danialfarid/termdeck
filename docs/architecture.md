@@ -98,6 +98,7 @@ before it binds.
 | `access_control.py` | Optional bearer-token/cookie authentication and server-wide read-only enforcement for HTTP and WebSockets. |
 | `update_check.py` | Daily-cached, on-demand GitHub release check used by the non-blocking update notice. |
 | `session_bundle.py` | Builds and validates portable session archives and their normalized transcript fallback. |
+| `project_bundle.py` | Wraps bounded session archives with project layout and worktree descriptors for source-code-free workspace migration. |
 | `util.py` | `OscTitleParser` (OSC 0/1/2 titles across chunk boundaries) and `TimeUtil` (EST-naive timestamps). |
 
 ### Packaging

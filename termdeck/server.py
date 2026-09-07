@@ -39,6 +39,7 @@ from termdeck.lsp_workspace_edit import LspWorkspaceEditService
 from termdeck.models import ApiFields, WsMessageFields
 from termdeck.notifier import AgentNotifier
 from termdeck.platform_paths import PlatformPaths
+from termdeck.project_bundle import ProjectBundleService, ProjectBundleSession
 from termdeck.remote_access import RemoteAccessManager, RemoteAccessStatus
 from termdeck.remote_credentials import RemoteCredentialStore
 from termdeck.search_service import ProjectSearchService
@@ -628,6 +629,7 @@ class TermdeckServer:
         self.stats = ResourceStatsService()
         self.transcripts = TranscriptService()
         self.session_bundles = SessionBundleService(TermdeckConfig.IMPORTED_TRANSCRIPTS_DIR)
+        self.project_bundles = ProjectBundleService()
         self.history_index = HistorySearchIndex(TermdeckConfig.HISTORY_INDEX_FILE)
         if self.manager is not None:
             self.manager.attach_transcript_service(self.transcripts)
@@ -740,6 +742,8 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._create_session)
         app.get(TermdeckConfig.API_SESSION_EXPORT_ROUTE, response_model=None)(self._export_session)
         app.post(TermdeckConfig.API_SESSION_IMPORT_ROUTE, response_model=None)(self._import_session)
+        app.get(TermdeckConfig.API_PROJECT_EXPORT_ROUTE, response_model=None)(self._export_project)
+        app.post(TermdeckConfig.API_PROJECT_IMPORT_ROUTE, response_model=None)(self._import_project)
         app.post(TermdeckConfig.API_TERMINAL_TASK_ROUTE, response_model=None)(self._run_terminal_task)
         app.post(TermdeckConfig.API_TERMINAL_TASK_PROMPT_ROUTE, response_model=None)(self._follow_up_task_prompt)
         app.post(TermdeckConfig.API_TERMINALS_BATCH_ROUTE, response_model=None)(self._launch_terminal_batch)
@@ -1924,6 +1928,196 @@ class TermdeckServer:
                 self.session_bundles.remove_imported_transcript(session_id)
             raise HTTPException(status_code=400, detail=str(import_error)) from import_error
         return {"imported": True, "starts_when_opened": True, "session": self.manager.session_summary(ms)}
+
+    async def _export_project(self, project: str) -> Response:
+        from termdeck import __version__
+
+        project_name = project.strip()
+        root = self.manager.registry.root_for(project_name)
+        if not project_name or root is None:
+            raise HTTPException(status_code=404, detail=project_name or "project")
+        try:
+            worktrees = self.worktree_registry.list_for_project(project_name, root)
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        settings = UiSettings(**self.settings_store.load())
+        states = {record.worktree_id: settings.project_state.get(
+            self._project_state_key(project_name, record.worktree_id), ProjectUiState()).model_dump() for record in worktrees}
+        exported_worktrees = [{"id": record.worktree_id, "name": record.name, "branch": record.branch,
+                               "base_ref": record.base_ref, "base_commit": record.base_commit,
+                               "is_root": record.is_root} for record in worktrees]
+        archives: list[ProjectBundleSession] = []
+        for summary in self.manager.list_sessions(project_name):
+            session_id = str(summary["session_id"])
+            record, replay_kind, replay = self.manager.session_bundle_state(session_id)
+            agent_kind, cwd, agent_session_id = self.manager.session_history_source(session_id)
+            turns = await asyncio.to_thread(self.transcripts.transcript_for, agent_kind, cwd, agent_session_id)
+            project_root = record.get("worktree_path") or root or record.get("cwd") or TermdeckConfig.DEFAULT_CWD
+            _filename, archive = await asyncio.to_thread(
+                self.session_bundles.build, __version__, record, Path(str(project_root)), turns, replay_kind, replay)
+            archives.append(ProjectBundleSession(session_id, str(record.get("worktree_id") or "root"), archive))
+        try:
+            filename, archive = await asyncio.to_thread(
+                self.project_bundles.build, __version__, project_name, exported_worktrees, states, archives)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return Response(archive, media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+    async def _import_project(self, file: UploadFile, project: str = "", trusted: bool = False) -> dict[str, object]:
+        if not trusted:
+            raise HTTPException(status_code=400, detail="trusted=true is required because opening an imported session may run its saved command")
+        project_name = project.strip()
+        root = self.manager.registry.root_for(project_name)
+        if not project_name or root is None:
+            raise HTTPException(status_code=404, detail=project_name or "project")
+        archive_bytes = await file.read(TermdeckConfig.PROJECT_BUNDLE_MAX_BYTES + 1)
+        try:
+            bundle = await asyncio.to_thread(self.project_bundles.read, archive_bytes)
+            parsed_sessions = [(entry, await asyncio.to_thread(self.session_bundles.read, entry.archive))
+                               for entry in bundle.sessions]
+            parsed_states = {worktree_id: ProjectUiState(**payload) for worktree_id, payload in bundle.project_states.items()}
+            target_worktrees = self._project_bundle_worktree_map(project_name, root, bundle.worktrees)
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        session_ids: dict[str, str] = {}
+        source_worktree_by_session: dict[str, str] = {}
+        for entry, session_bundle in parsed_sessions:
+            target_worktree_id, worktree = target_worktrees.get(entry.source_worktree_id, ("root", None))
+            destination_root = Path(worktree.path if worktree else root).resolve()
+            cwd = self._imported_bundle_working_directory(session_bundle.session, destination_root)
+            session_id = uuid.uuid4().hex[:12]
+            imported_transcript_id = await asyncio.to_thread(
+                self.session_bundles.store_imported_transcript, session_id, session_bundle.transcript)
+            try:
+                self.manager.import_session_bundle(
+                    session_id, session_bundle.session, cwd, project_name,
+                    worktree.metadata() if worktree else None, target_worktree_id, imported_transcript_id,
+                    session_bundle.replay_kind, session_bundle.replay)
+            except (OSError, ValueError):
+                self.session_bundles.remove_imported_transcript(session_id)
+                raise
+            session_ids[entry.source_session_id] = session_id
+            source_worktree_by_session[entry.source_session_id] = entry.source_worktree_id
+        settings = UiSettings(**self.settings_store.load())
+        self._merge_imported_project_layout(settings, project_name, parsed_states, session_ids,
+                                            source_worktree_by_session, target_worktrees)
+        self.settings_store.save(settings.model_dump())
+        unmatched_worktrees = sorted({source_id for source_id, (target_id, _record) in target_worktrees.items()
+                                      if source_id != "root" and target_id == "root"})
+        return {"imported": True, "starts_when_opened": True, "sessions": len(session_ids),
+                "source_project": bundle.project_name, "unmatched_worktrees": unmatched_worktrees}
+
+    @staticmethod
+    def _imported_bundle_working_directory(payload: dict[str, object], root: Path) -> Path:
+        relative_cwd = Path(str(payload.get("cwd_relative") or "."))
+        candidate = (root / relative_cwd).resolve()
+        return candidate if candidate.is_relative_to(root) and candidate.is_dir() else root
+
+    def _project_bundle_worktree_map(self, project: str, root: str,
+                                     source_worktrees: list[dict[str, object]]) -> dict[str, tuple[str, ProjectWorktree | None]]:
+        targets = self.worktree_registry.list_for_project(project, root)
+        available = [record for record in targets if record.available]
+        mapping: dict[str, tuple[str, ProjectWorktree | None]] = {"root": ("root", None)}
+        for source in source_worktrees:
+            source_id = str(source.get("id") or "")
+            if not source_id or source_id == "root":
+                continue
+            match = next((record for record in available if record.worktree_id == source_id), None)
+            branch = str(source.get("branch") or "")
+            if match is None and branch:
+                match = next((record for record in available if record.branch == branch), None)
+            name = str(source.get("name") or "")
+            if match is None and name:
+                match = next((record for record in available if record.name == name), None)
+            mapping[source_id] = (match.worktree_id, match) if match and not match.is_root else ("root", None)
+        return mapping
+
+    def _merge_imported_project_layout(self, settings: UiSettings, project: str,
+                                       source_states: dict[str, ProjectUiState], session_ids: dict[str, str],
+                                       source_worktree_by_session: dict[str, str],
+                                       worktree_map: dict[str, tuple[str, ProjectWorktree | None]]) -> None:
+        group_ids_by_target: dict[str, set[str]] = {}
+        for source_worktree_id, imported_state in source_states.items():
+            target_worktree_id = worktree_map.get(source_worktree_id, ("root", None))[0]
+            session_id_map = {source_id: target_id for source_id, target_id in session_ids.items()
+                              if source_worktree_by_session.get(source_id, "root") == source_worktree_id}
+            if not session_id_map:
+                continue
+            key = self._project_state_key(project, target_worktree_id)
+            current = settings.project_state.get(key, ProjectUiState())
+            used_group_ids = group_ids_by_target.setdefault(target_worktree_id, {
+                str(group.get("id") or "") for group in current.terminal_groups})
+            remapped = self._remap_imported_project_state(imported_state, session_id_map, used_group_ids)
+            settings.project_state[key] = self._merge_project_ui_states(current, remapped)
+
+    @staticmethod
+    def _remap_imported_project_state(state: ProjectUiState, session_ids: dict[str, str],
+                                      used_group_ids: set[str]) -> ProjectUiState:
+        group_ids: dict[str, str] = {}
+        groups: list[dict[str, str | bool]] = []
+        for group in state.terminal_groups:
+            source_id = str(group.get("id") or "")
+            if not source_id:
+                continue
+            target_id = source_id
+            while target_id in used_group_ids:
+                target_id = f"import-{uuid.uuid4().hex[:8]}-{source_id}"
+            used_group_ids.add(target_id)
+            group_ids[source_id] = target_id
+            groups.append({**group, "id": target_id})
+
+        def mapped_ids(values: list[str]) -> list[str]:
+            return [session_ids[value] for value in values if value in session_ids]
+
+        layout: list[str] = []
+        for token in state.terminal_layout:
+            kind, separator, identifier = token.partition(":")
+            if not separator:
+                continue
+            if kind == "session" and identifier in session_ids:
+                layout.append(f"session:{session_ids[identifier]}")
+            elif kind == "group" and identifier in group_ids:
+                layout.append(f"group:{group_ids[identifier]}")
+        assignments = {session_ids[session_id]: group_ids[group_id] for session_id, group_id in state.session_groups.items()
+                       if session_id in session_ids and group_id in group_ids}
+        return ProjectUiState(
+            color=state.color, open_files=state.open_files, open_files_collapsed=state.open_files_collapsed,
+            recent_files_collapsed=state.recent_files_collapsed, recent_file_exclude_glob=state.recent_file_exclude_glob,
+            recently_opened_terminal_ids=mapped_ids(state.recently_opened_terminal_ids),
+            session_order=mapped_ids(state.session_order), unread_sessions=mapped_ids(state.unread_sessions),
+            terminal_groups=groups, session_groups=assignments, terminal_layout=layout,
+            session_view_modes={session_ids[session_id]: mode for session_id, mode in state.session_view_modes.items()
+                                if session_id in session_ids}, notebook_notes=state.notebook_notes,
+            notebook_active_note_id=state.notebook_active_note_id, notebook_notes_initialized=state.notebook_notes_initialized,
+            notebook_text=state.notebook_text, selection_copy_history=state.selection_copy_history,
+            selection_copy_history_initialized=state.selection_copy_history_initialized)
+
+    @staticmethod
+    def _merge_project_ui_states(current: ProjectUiState, imported: ProjectUiState) -> ProjectUiState:
+        return current.model_copy(update={
+            "color": current.color or imported.color,
+            "open_files": current.open_files or imported.open_files,
+            "open_files_collapsed": current.open_files_collapsed if current.open_files else imported.open_files_collapsed,
+            "recent_files_collapsed": current.recent_files_collapsed if current.open_files else imported.recent_files_collapsed,
+            "recent_file_exclude_glob": current.recent_file_exclude_glob or imported.recent_file_exclude_glob,
+            "recently_opened_terminal_ids": list(dict.fromkeys([*current.recently_opened_terminal_ids,
+                                                                   *imported.recently_opened_terminal_ids]))[:100],
+            "session_order": list(dict.fromkeys([*current.session_order, *imported.session_order])),
+            "unread_sessions": list(dict.fromkeys([*current.unread_sessions, *imported.unread_sessions])),
+            "terminal_groups": [*current.terminal_groups, *imported.terminal_groups],
+            "session_groups": {**current.session_groups, **imported.session_groups},
+            "terminal_layout": list(dict.fromkeys([*current.terminal_layout, *imported.terminal_layout])),
+            "session_view_modes": {**current.session_view_modes, **imported.session_view_modes},
+            "notebook_notes": current.notebook_notes or imported.notebook_notes,
+            "notebook_active_note_id": current.notebook_active_note_id or imported.notebook_active_note_id,
+            "notebook_notes_initialized": current.notebook_notes_initialized or imported.notebook_notes_initialized,
+            "notebook_text": current.notebook_text or imported.notebook_text,
+            "selection_copy_history": list(dict.fromkeys([*current.selection_copy_history,
+                                                            *imported.selection_copy_history]))[:50],
+            "selection_copy_history_initialized": current.selection_copy_history_initialized or
+                                                  imported.selection_copy_history_initialized,
+        })
 
     @staticmethod
     def _project_state_key(project: str, worktree_id: str) -> str:

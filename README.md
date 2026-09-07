@@ -82,6 +82,8 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
   the same conversation after a machine restart.
 - **Portable sessions** — export a terminal with its resume profile, draft, transcript, and available replay;
   import it as a dormant tab in another project or TermDeck installation.
+- **Project migration** — export every TermDeck tab in a project together with its groups, notes, colors, and
+  layout; clone the source separately, then restore the workspace on another machine or for a collaborator.
 - **Never lose a half-written prompt** — what you have typed is saved as you type. Refresh the page, restart
   the server, come back tomorrow: it is still in the box, and everything you have sent is in the history.
 - **Parallel work** — group, reorder, fork, rename, close, reopen, and monitor many terminals. Background

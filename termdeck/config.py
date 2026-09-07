@@ -92,9 +92,14 @@ class TermdeckConfig:
     API_SESSIONS_ROUTE = "/api/sessions"
     API_SESSION_EXPORT_ROUTE = "/api/sessions/{session_id}/export"
     API_SESSION_IMPORT_ROUTE = "/api/sessions/import"
+    API_PROJECT_EXPORT_ROUTE = "/api/projects/{project}/export"
+    API_PROJECT_IMPORT_ROUTE = "/api/projects/import"
     SESSION_BUNDLE_MAX_BYTES = 64_000_000
     SESSION_BUNDLE_TRANSCRIPT_MAX_BYTES = 24_000_000
     SESSION_BUNDLE_REPLAY_MAX_BYTES = 24_000_000
+    PROJECT_BUNDLE_MAX_BYTES = 512_000_000
+    PROJECT_BUNDLE_MAX_SESSIONS = 100
+    PROJECT_BUNDLE_MAX_WORKTREES = 100
     API_TERMINAL_TASK_ROUTE = "/api/terminals/task"
     API_TERMINAL_TASK_PROMPT_ROUTE = "/api/terminals/task/{session_id}/prompt"
     API_TERMINALS_BATCH_ROUTE = "/api/terminals/batch"

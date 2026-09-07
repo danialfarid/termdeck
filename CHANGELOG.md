@@ -22,9 +22,10 @@ All notable changes to this project are documented here. The format follows
 - A richer adapter surface for Aider, AGY, and OpenCode: model IDs and provider routes can be chosen when a
   terminal is opened, AGY exposes its resume, effort, and permission modes, OpenCode restores working state
   from its session database, and output-driven agents report work immediately when a prompt is submitted.
-- A colour for each project and worktree, chosen from a row of swatches at the bottom of its picker. The header
-  label and the browser tab's favicon take the colour — a worktree's own colour when it has one, the project's
-  otherwise — so several deck tabs tell apart from the tab strip.
+- A colour for each project and worktree, chosen from the row of swatches at the bottom of its picker. A worktree
+  color takes priority; otherwise its project color marks the worktree label and browser-tab favicon.
+- Session export is available beside Import in the header menu once a terminal is selected. Project export/import
+  migrates all dormant session archives and the saved deck layout, notes, and project/worktree colors without source files.
 - A prompt whose submission could not be confirmed offers Retry and Discard right under it in the transcript.
   Retry sends the same text again; Discard forgets it. It used to sit there for ten minutes with no way
   forward but retyping.

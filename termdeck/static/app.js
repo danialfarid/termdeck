@@ -159,9 +159,10 @@ const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
 const TRANSCRIPT_DRAFT_LOCAL_PREFIX = "termdeck.transcript-draft.v1";
 const ADDRESS_RECOVERY_KEY = "termdeck.address-recovery";
 // Colours a project or worktree can be given. Bright enough to read as a dot and as label text on
-// every theme, distinct enough from one another to tell ten tabs apart from the tab strip.
+// every theme, distinct enough from one another to tell tabs apart from the tab strip.
 const DECK_COLOR_PALETTE = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#14b8a6", "#06b6d4", "#3b82f6",
-  "#8b5cf6", "#ec4899", "#94a3b8"];
+  "#8b5cf6", "#ec4899", "#94a3b8", "#fb7185", "#fb923c", "#facc15", "#a3e635", "#34d399", "#38bdf8",
+  "#818cf8", "#e879f9", "#c084fc", "#f0abfc", "#fda4af", "#fdba74", "#bef264"];
 const MOBILE_CONNECTION_WARNING_DELAY_MS = 1200;
 // How long to wait before trying again once a reconnect attempt has not landed.
 const MOBILE_CONNECTION_RETRY_MS = 3000;
@@ -2562,6 +2563,59 @@ class TermdeckApp {
     }
   }
 
+  chooseProjectArchive() {
+    if (!this.projectSlug) {
+      void uiAlert("Select a project before importing project sessions.");
+      return;
+    }
+    const input = this.$("project-import-input");
+    input.value = "";
+    input.click();
+  }
+
+  async importProjectArchive(file) {
+    const confirmed = await uiConfirm(
+      `Import all TermDeck sessions from ${file.name}? This restores dormant tabs, their saved layout, notes, and ` +
+      "conversation history. It does not include source files or Git worktrees. Opening a tab may run or resume its " +
+      "saved command, so import only an archive you trust.",
+      { title: "Import project sessions", confirmLabel: "Import", cancelLabel: "Cancel" });
+    if (!confirmed) return;
+    const form = new FormData();
+    form.append("file", file);
+    const params = new URLSearchParams({ project: this.projectSlug, trusted: "true" });
+    this.$("status-name").textContent = "importing project sessions…";
+    try {
+      const response = await fetch(`/api/projects/import?${params}`, { method: "POST", body: form });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || `project import failed: ${response.status}`);
+      await this.refresh();
+      const unmatched = payload.unmatched_worktrees?.length ? ` · ${payload.unmatched_worktrees.length} worktree(s) placed in root` : "";
+      this.$("status-name").textContent = `imported ${payload.sessions || 0} dormant session(s)${unmatched}`;
+    } catch (error) {
+      this.$("status-name").textContent = `unable to import project: ${error.message}`;
+    }
+  }
+
+  async exportProjectArchive() {
+    if (!this.projectSlug) return;
+    this.$("status-name").textContent = "exporting project sessions…";
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(this.projectSlug)}/export`);
+      if (!response.ok) throw new Error(`project export failed: ${response.status}`);
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "project.termdeck-project";
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      this.$("status-name").textContent = "exported project sessions";
+    } catch (error) {
+      this.$("status-name").textContent = `unable to export project: ${error.message}`;
+    }
+  }
+
   headerPickerElements(kind) {
     return {
       button: this.$(`${kind}-select`), input: this.$(`${kind}-select-input`), label: this.$(`${kind}-select-label`),
@@ -2835,6 +2889,25 @@ class TermdeckApp {
       importButton.disabled = !this.projectSlug || this.vscodeMode;
       importButton.title = importButton.disabled ? "Select a project to import a session" : "Import a TermDeck session archive";
     }
+    const exportButton = this.$("header-export-session");
+    const activeSession = this.session(this.activeId);
+    if (exportButton) {
+      exportButton.disabled = !activeSession || this.vscodeMode;
+      exportButton.title = exportButton.disabled ? "Select a terminal to export it" :
+        `Export ${this.titlePresentation(activeSession).text}`;
+    }
+    const importProjectButton = this.$("header-import-project");
+    if (importProjectButton) {
+      importProjectButton.disabled = !this.projectSlug || this.vscodeMode;
+      importProjectButton.title = importProjectButton.disabled ? "Select a project to import project sessions" :
+        "Import TermDeck sessions and layout into this project";
+    }
+    const exportProjectButton = this.$("header-export-project");
+    if (exportProjectButton) {
+      exportProjectButton.disabled = !this.projectSlug || this.vscodeMode;
+      exportProjectButton.title = exportProjectButton.disabled ? "Select a project to export project sessions" :
+        "Export all TermDeck sessions and layout for this project";
+    }
     this.updateHeaderAddShortcutLabels();
   }
 
@@ -2878,6 +2951,12 @@ class TermdeckApp {
     else if (action === "worktree") this.openWorktreeModal();
     else if (action === "terminal") this.openModal();
     else if (action === "import-session") this.chooseSessionArchive();
+    else if (action === "export-session") {
+      const session = this.session(this.activeId);
+      if (session) void this.exportSessionArchive(session);
+    }
+    else if (action === "import-project") this.chooseProjectArchive();
+    else if (action === "export-project") void this.exportProjectArchive();
   }
 
   openWorktreeModal() {
@@ -3554,9 +3633,16 @@ class TermdeckApp {
     this.$("header-add-worktree").onclick = () => this.runHeaderAddAction("worktree");
     this.$("header-add-terminal").onclick = () => this.runHeaderAddAction("terminal");
     this.$("header-import-session").onclick = () => this.runHeaderAddAction("import-session");
+    this.$("header-export-session").onclick = () => this.runHeaderAddAction("export-session");
+    this.$("header-import-project").onclick = () => this.runHeaderAddAction("import-project");
+    this.$("header-export-project").onclick = () => this.runHeaderAddAction("export-project");
     this.$("session-import-input").onchange = (event) => {
       const file = event.target.files?.[0];
       if (file) void this.importSessionArchive(file);
+    };
+    this.$("project-import-input").onchange = (event) => {
+      const file = event.target.files?.[0];
+      if (file) void this.importProjectArchive(file);
     };
     this.updateHeaderAddMenu();
     const queryInput = this.$("search-query");
