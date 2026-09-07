@@ -2042,8 +2042,6 @@ class TermdeckServer:
             target_worktree_id = worktree_map.get(source_worktree_id, ("root", None))[0]
             session_id_map = {source_id: target_id for source_id, target_id in session_ids.items()
                               if source_worktree_by_session.get(source_id, "root") == source_worktree_id}
-            if not session_id_map:
-                continue
             key = self._project_state_key(project, target_worktree_id)
             current = settings.project_state.get(key, ProjectUiState())
             used_group_ids = group_ids_by_target.setdefault(target_worktree_id, {
