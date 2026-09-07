@@ -2349,10 +2349,11 @@ class TermdeckApp {
     this.createTerminalGroupFromSessions([sessionId]);
   }
 
-  async createTerminalGroupFromSessions(sessionIds) {
+  async createTerminalGroupFromSessions(sessionIds, anchorSessionId = "") {
     const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id));
     if (!ids.length) return;
-    const firstSession = this.session(ids[0]);
+    const anchorId = ids.includes(anchorSessionId) ? anchorSessionId : ids[0];
+    const firstSession = this.session(anchorId);
     const suggestion = ids.length === 1 ? `${this.effectiveTitle(firstSession)} group`
       : `${this.effectiveTitle(firstSession)} + ${ids.length - 1} group`;
     const name = await uiPrompt("Name for the new terminal group", suggestion);
@@ -2362,22 +2363,22 @@ class TermdeckApp {
     const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
     const layout = this.terminalLayout();
     const selectedTokens = new Set(ids.map((id) => `session:${id}`));
-    const indexes = ids.map((id) => {
-      const tokenIndex = layout.indexOf(`session:${id}`);
-      if (tokenIndex >= 0) return tokenIndex;
-      return sessionGroups[id] ? layout.indexOf(`group:${sessionGroups[id]}`) : -1;
-    }).filter((index) => index >= 0);
-    const index = indexes.length ? Math.min(...indexes) : -1;
+    const anchorGroupId = sessionGroups[anchorId] || "";
+    const anchorToken = anchorGroupId ? `group:${anchorGroupId}` : `session:${anchorId}`;
+    const anchorIndex = layout.indexOf(anchorToken);
     const nextLayout = layout.filter((entry) => !selectedTokens.has(entry));
-    nextLayout.splice(index < 0 ? nextLayout.length : Math.min(index, nextLayout.length), 0, `group:${group.id}`);
+    const retainedAnchorIndex = nextLayout.indexOf(anchorToken);
+    const insertAfterAnchor = !!anchorGroupId && retainedAnchorIndex >= 0;
+    const insertIndex = insertAfterAnchor ? retainedAnchorIndex + 1
+      : anchorIndex < 0 ? nextLayout.length : Math.min(anchorIndex, nextLayout.length);
+    nextLayout.splice(insertIndex, 0, `group:${group.id}`);
     for (const id of ids) sessionGroups[id] = group.id;
-    const anchorToken = index < 0 ? "" : layout[index];
     this.applyLocalProjectStatePatch({
       terminal_groups: [...this.terminalGroups(), group],
       session_groups: sessionGroups,
       terminal_layout: nextLayout,
     });
-    this.queueTerminalGroupCreate(group, ids, anchorToken);
+    this.queueTerminalGroupCreate(group, ids, anchorIndex < 0 ? "" : anchorToken, insertAfterAnchor);
     this.renderList();
   }
 

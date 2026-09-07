@@ -4146,7 +4146,7 @@ Object.assign(TermdeckApp.prototype, {
     () => this.setSessionsUnread(sessionIds, true), "eye-closed");
     this.addContextItem(menu, multiple ? `Create group from ${selectionLabel}`
       : this.shortcutLabel("Create group", "create-terminal-group-from-active"),
-    () => this.createTerminalGroupFromSessions(sessionIds), "folder-library");
+    () => this.createTerminalGroupFromSessions(sessionIds, session.session_id), "folder-library");
     const moveEntries = multiple ? [] : [{
       label: this.shortcutLabel(assignedGroupId ? "Top of group" : "Top", "move-active-to-top"),
       handler: () => this.moveTerminalLayoutToTop(
@@ -4155,7 +4155,7 @@ Object.assign(TermdeckApp.prototype, {
     }];
     moveEntries.push({
       label: "New group…",
-      handler: () => this.createTerminalGroupFromSessions(sessionIds),
+      handler: () => this.createTerminalGroupFromSessions(sessionIds, session.session_id),
       icon: "folder-new",
     });
     const groups = this.terminalGroups();
