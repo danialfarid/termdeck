@@ -215,6 +215,7 @@ class StateRecoveryRestoreRequest(BaseModel):
 class ProjectStatePatch(BaseModel):
     active_session_id: str | None = None
     color: str | None = None
+    root_worktree_color: str | None = None
     open_files: list[dict[str, str]] | None = None
     open_files_collapsed: bool | None = None
     recent_files_collapsed: bool | None = None
@@ -481,8 +482,8 @@ class LanAccessRequest(BaseModel):
 
 class ProjectUiState(BaseModel):
     active_session_id: str = ""
-    # A colour the user gave this project or worktree; the header label and the favicon carry it.
     color: str = ""
+    root_worktree_color: str = ""
     open_files: list[dict[str, str]] = []
     open_files_collapsed: bool = False
     recent_files_collapsed: bool = True
@@ -2080,7 +2081,8 @@ class TermdeckServer:
         assignments = {session_ids[session_id]: group_ids[group_id] for session_id, group_id in state.session_groups.items()
                        if session_id in session_ids and group_id in group_ids}
         return ProjectUiState(
-            color=state.color, open_files=state.open_files, open_files_collapsed=state.open_files_collapsed,
+            color=state.color, root_worktree_color=state.root_worktree_color, open_files=state.open_files,
+            open_files_collapsed=state.open_files_collapsed,
             recent_files_collapsed=state.recent_files_collapsed, recent_file_exclude_glob=state.recent_file_exclude_glob,
             recently_opened_terminal_ids=mapped_ids(state.recently_opened_terminal_ids),
             session_order=mapped_ids(state.session_order), unread_sessions=mapped_ids(state.unread_sessions),
@@ -2095,6 +2097,7 @@ class TermdeckServer:
     def _merge_project_ui_states(current: ProjectUiState, imported: ProjectUiState) -> ProjectUiState:
         return current.model_copy(update={
             "color": current.color or imported.color,
+            "root_worktree_color": current.root_worktree_color or imported.root_worktree_color,
             "open_files": current.open_files or imported.open_files,
             "open_files_collapsed": current.open_files_collapsed if current.open_files else imported.open_files_collapsed,
             "recent_files_collapsed": current.recent_files_collapsed if current.open_files else imported.recent_files_collapsed,

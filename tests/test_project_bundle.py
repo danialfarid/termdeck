@@ -69,11 +69,12 @@ class ProjectBundleServiceTest(unittest.TestCase):
         self.assertEqual(remapped.session_view_modes, {"new123abc456": "markdown"})
 
     def test_empty_worktree_state_keeps_its_color(self) -> None:
-        imported = ProjectUiState(color="#f97316")
+        imported = ProjectUiState(color="#f97316", root_worktree_color="#3b82f6")
 
         remapped = TermdeckServer._remap_imported_project_state(imported, {}, set())
 
         self.assertEqual(remapped.color, "#f97316")
+        self.assertEqual(remapped.root_worktree_color, "#3b82f6")
 
 
 if __name__ == "__main__":

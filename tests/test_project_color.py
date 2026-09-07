@@ -25,6 +25,7 @@ class ProjectColorTest(unittest.TestCase):
 
     def test_a_project_has_no_colour_until_given_one(self) -> None:
         self.assertEqual(ProjectUiState().color, "")
+        self.assertEqual(ProjectUiState().root_worktree_color, "")
 
     def test_a_colour_is_stored_under_the_project_or_worktree_it_was_set_on(self) -> None:
         server = self.server()
@@ -45,6 +46,17 @@ class ProjectColorTest(unittest.TestCase):
         asyncio.run(server._put_project_state_field(StoredValueRequest(value=""), "color", project="stock", worktree_id="root"))
 
         self.assertEqual(server.settings_store.payload["project_state"]["stock"]["color"], "")
+
+    def test_root_worktree_colour_is_independent_from_project_colour(self) -> None:
+        server = self.server()
+        asyncio.run(server._put_project_state_field(StoredValueRequest(value="#3b82f6"), "color",
+                                                    project="stock", worktree_id="root"))
+        asyncio.run(server._put_project_state_field(StoredValueRequest(value="#ef4444"), "root_worktree_color",
+                                                    project="stock", worktree_id="root"))
+
+        state = server.settings_store.payload["project_state"]["stock"]
+        self.assertEqual(state["color"], "#3b82f6")
+        self.assertEqual(state["root_worktree_color"], "#ef4444")
 
 
 if __name__ == "__main__":

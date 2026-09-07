@@ -1363,7 +1363,7 @@ class TermdeckApp {
       recently_opened_terminal_ids: [], unread_sessions: [],
       terminal_groups: [], session_groups: {}, session_view_modes: {},
       notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, notebook_text: "",
-      selection_copy_history: [], selection_copy_history_initialized: false, color: "",
+      selection_copy_history: [], selection_copy_history_initialized: false, color: "", root_worktree_color: "",
       ...state,
       recent_files_collapsed: state.recent_files_collapsed ?? true,
     };
@@ -1528,7 +1528,7 @@ class TermdeckApp {
       "recent_file_exclude_glob", "recently_opened_terminal_ids", "session_order", "pinned_sessions", "pinned_groups",
       "unread_sessions", "terminal_groups", "session_groups", "terminal_layout", "session_view_modes", "notebook_notes",
       "notebook_active_note_id", "notebook_notes_initialized", "notebook_text", "selection_copy_history",
-      "selection_copy_history_initialized", "color"]) {
+      "selection_copy_history_initialized", "color", "root_worktree_color"]) {
       if (Object.prototype.hasOwnProperty.call(payload, field)) nextState[field] = payload[field];
     }
     const previous = this.settings.project_state?.[stateKey] || {};
@@ -2724,21 +2724,22 @@ class TermdeckApp {
   // A colour lives in the project state of the thing it names: the project's root key, or the
   // worktree's own key. The worktree's colour, when it has one, is what the deck shows.
 
-  headerPickerColorKey(kind) {
+  headerPickerColorStorage(kind) {
     if (!this.projectSlug || this.vscodeMode) return null;
-    if (kind === "project") return this.projectStateKeyFor("root");
-    if (!this.worktreeId || this.worktreeId === "root" || this.worktreeId === ALL_WORKTREES_ID) return null;
-    return this.projectStateKeyFor(this.worktreeId);
+    if (kind === "project") return { key: this.projectStateKeyFor("root"), field: "color" };
+    if (!this.worktreeId || this.worktreeId === ALL_WORKTREES_ID) return null;
+    if (this.worktreeId === "root") return { key: this.projectStateKeyFor("root"), field: "root_worktree_color" };
+    return { key: this.projectStateKeyFor(this.worktreeId), field: "color" };
   }
 
-  deckColorForKey(stateKey) {
-    const color = String(this.settings.project_state?.[stateKey]?.color || "").trim();
+  deckColorForKey(stateKey, field = "color") {
+    const color = String(this.settings.project_state?.[stateKey]?.[field] || "").trim();
     return /^#[0-9a-f]{6}$/i.test(color) ? color : "";
   }
 
   headerPickerColor(kind) {
-    const key = this.headerPickerColorKey(kind);
-    return key ? this.deckColorForKey(key) : "";
+    const storage = this.headerPickerColorStorage(kind);
+    return storage ? this.deckColorForKey(storage.key, storage.field) : "";
   }
 
   effectiveDeckColor() {
@@ -2746,10 +2747,10 @@ class TermdeckApp {
   }
 
   setHeaderPickerColor(kind, color) {
-    const key = this.headerPickerColorKey(kind);
-    if (!key) return;
-    this.applyLocalProjectStatePatch({ color }, key);
-    this.queueProjectStatePatch(key, { color });
+    const storage = this.headerPickerColorStorage(kind);
+    if (!storage) return;
+    this.applyLocalProjectStatePatch({ [storage.field]: color }, storage.key);
+    this.queueProjectStatePatch(storage.key, { [storage.field]: color });
     for (const each of ["project", "worktree"]) {
       this.applyHeaderPickerColor(each);
       this.renderHeaderPickerColors(each);
@@ -2777,11 +2778,11 @@ class TermdeckApp {
   renderHeaderPickerColors(kind) {
     const container = this.$(`${kind}-select-colors`);
     if (!container) return;
-    const key = this.headerPickerColorKey(kind);
-    container.classList.toggle("hidden", !key);
+    const storage = this.headerPickerColorStorage(kind);
+    container.classList.toggle("hidden", !storage);
     container.textContent = "";
-    if (!key) return;
-    const current = this.deckColorForKey(key);
+    if (!storage) return;
+    const current = this.deckColorForKey(storage.key, storage.field);
     const title = document.createElement("span");
     title.className = "header-picker-colors-label";
     title.textContent = kind === "project" ? "Project colour" : "Worktree colour";

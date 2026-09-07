@@ -46,6 +46,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The main checkout can have its own worktree color independently of the project color; both header rows show
+  their assigned colors, while the worktree color takes precedence for the active deck color.
 - Remote access no longer stops quietly. An unexpected error inside the relay connector used to end its loop
   while the deck kept reporting "ready", so a phone sat on "Connecting to TermDeck" until the server was
   restarted; the loop now survives any single failure, and the status endpoint restarts a connector whose task
