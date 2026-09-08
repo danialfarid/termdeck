@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from termdeck import agents
 from termdeck.access_control import DirectAccessMiddleware, DirectAccessPolicy
+from termdeck.codex_model_catalog import CodexModelCatalog
 from termdeck.config import TermdeckConfig
 from termdeck.file_history_service import FileHistoryService
 from termdeck.file_service import ProjectFileService
@@ -193,6 +194,11 @@ class MoveSessionProjectRequest(BaseModel):
 
 class RestartSessionRequest(BaseModel):
     permission: str = ""
+
+
+class SessionModelRequest(BaseModel):
+    model_id: str
+    reasoning_effort: str
 
 
 class CloseSessionRequest(BaseModel):
@@ -612,6 +618,7 @@ class TermdeckServer:
         self.access_control = DirectAccessPolicy(TermdeckConfig.ACCESS_TOKEN, TermdeckConfig.READ_ONLY)
         self.update_check = UpdateCheckService(TermdeckConfig.UPDATE_CHECK_FILE, TermdeckConfig.UPDATE_CHECK_CACHE_SECONDS,
                                                TermdeckConfig.UPDATE_CHECK_TIMEOUT_SECONDS)
+        self.codex_models = CodexModelCatalog()
         self.manager: TerminalSessionManager | None = None
         if not self.recovery_mode:
             self.manager = TerminalSessionManager(self.state_backup)
@@ -739,6 +746,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_PROJECT_FOLDER_PICKER_ROUTE, response_model=None)(self._pick_project_folder)
         app.post(TermdeckConfig.API_WORKTREE_FOLDER_PICKER_ROUTE, response_model=None)(self._pick_worktree_folder)
         app.get(TermdeckConfig.API_AGENTS_ROUTE, response_model=None)(self._list_agent_clis)
+        app.get(TermdeckConfig.API_CODEX_MODELS_ROUTE, response_model=None)(self._list_codex_models)
         app.get(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._list_sessions)
         app.post(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._create_session)
         app.get(TermdeckConfig.API_SESSION_EXPORT_ROUTE, response_model=None)(self._export_session)
@@ -752,6 +760,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_SESSION_STOP_ROUTE, response_model=None)(self._stop_session)
         app.post(TermdeckConfig.API_SESSION_ATTENTION_ROUTE, response_model=None)(self._dismiss_session_attention)
         app.post(TermdeckConfig.API_SESSION_RESTART_ROUTE, response_model=None)(self._restart_session)
+        app.post(TermdeckConfig.API_SESSION_MODEL_ROUTE, response_model=None)(self._change_session_model)
         app.post(TermdeckConfig.API_SESSION_FORK_ROUTE, response_model=None)(self._fork_session)
         app.get(TermdeckConfig.API_SESSION_WORKTREE_REVIEW_ROUTE, response_model=None)(self._review_worktree)
         app.post(TermdeckConfig.API_SESSION_WORKTREE_FINISH_ROUTE, response_model=None)(self._finish_worktree)
@@ -3136,10 +3145,40 @@ class TermdeckServer:
         return {"requested": len(results), "created": created, "prompt_submitted": submitted,
                 "failed": len(results) - submitted, "placement_failed": placement_failed, "items": results}
 
-    async def _session_usage(self, session_id: str) -> dict[str, int | None]:
+    async def _session_usage(self, session_id: str) -> dict[str, int | str | None]:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
         return await asyncio.to_thread(self.manager.session_usage, session_id)
+
+    async def _list_codex_models(self) -> dict[str, object]:
+        try:
+            return {"models": await self.codex_models.list_models()}
+        except (FileNotFoundError, OSError, RuntimeError, TimeoutError) as catalog_error:
+            raise HTTPException(status_code=503, detail=str(catalog_error)) from catalog_error
+
+    async def _change_session_model(self, session_id: str, request: SessionModelRequest) -> dict[str, object]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        try:
+            models = await self.codex_models.list_models()
+        except (FileNotFoundError, OSError, RuntimeError, TimeoutError) as catalog_error:
+            raise HTTPException(status_code=503, detail=str(catalog_error)) from catalog_error
+        model_index = next((index for index, item in enumerate(models) if item["id"] == request.model_id), -1)
+        if model_index < 0:
+            raise HTTPException(status_code=400, detail=f"unknown Codex model: {request.model_id}")
+        efforts = models[model_index]["reasoning_efforts"]
+        effort_index = next((index for index, item in enumerate(efforts)
+                             if item["value"] == request.reasoning_effort), -1)
+        if effort_index < 0:
+            raise HTTPException(status_code=400, detail=f"unsupported reasoning effort: {request.reasoning_effort}")
+        try:
+            await self.manager.change_codex_model(session_id, model_index + 1, request.reasoning_effort)
+        except RuntimeError as model_error:
+            raise HTTPException(status_code=409, detail=str(model_error)) from model_error
+        except ValueError as model_error:
+            raise HTTPException(status_code=400, detail=str(model_error)) from model_error
+        return {"model": request.model_id, "reasoning_effort": request.reasoning_effort,
+                "session": self.manager.session_summary_by_id(session_id)}
 
     async def _session_history(self, session_id: str) -> list[dict[str, object]]:
         if not self.manager.has_session(session_id):

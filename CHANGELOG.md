@@ -31,6 +31,9 @@ All notable changes to this project are documented here. The format follows
   color takes priority; otherwise its project color marks the worktree label and browser-tab favicon.
 - Full-project exports migrate all dormant session archives and the saved deck layout, notes, and project/worktree
   colors without source files.
+- Transcript slash commands now run according to their actual behavior: `/status` renders model, reasoning, fast-mode,
+  and token usage, `/ps` renders the terminal process tree, and `/model` uses Codex's live model picker without
+  restarting the session. Command results remain visible in the current browser tab while the transcript updates.
 - A prompt whose submission could not be confirmed offers Retry and Discard right under it in the transcript.
   Retry sends the same text again; Discard forgets it. It used to sit there for ten minutes with no way
   forward but retyping.
@@ -52,6 +55,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Conversation outlines distinguish agent responses from code edits with two shades of the same color, and switching
+  terminals opens the new terminal's outline at its latest prompt instead of inheriting another outline's scroll position.
 - The main checkout can have its own worktree color independently of the project color; both header rows show
   their assigned colors, while the worktree color takes precedence for the active deck color.
 - Remote access no longer stops quietly. An unexpected error inside the relay connector used to end its loop
@@ -81,13 +86,6 @@ All notable changes to this project are documented here. The format follows
 - Through TermDeck Remote, a script fetch or websocket that arrives before the computer has dialed in waits
   up to fifteen seconds for it instead of failing at once, so a phone coming back to the deck reconnects on
   the first try. The web-app manifest is requested with credentials, so it no longer fails with 401 there.
-- Diagnostics recordings, imported shell replays, and session archive contents stay within their configured size
-  and structure limits; malformed ZIP compression is reported as an invalid archive.
-- Support bundles redact complete authorization and cookie values, including values in JSON diagnostics.
-- Read-only monitoring blocks language-server saves, command execution, and workspace edits while retaining
-  read-only language-server features; the fallback agent catalog matches the richer Aider, AGY, and OpenCode UI.
-
-### Fixed
 
 - The attach button works in a phone's transcript. It looked the session up among the terminal
   renderers, and on a phone the transcript has none, so it did nothing.
@@ -100,6 +98,14 @@ All notable changes to this project are documented here. The format follows
   It now sends the browser to the login page with the deck as the way back. A session that runs out under
   an open deck is caught by the deck's own refreshes, which now get a plain 401 from the relay instead of the
   login page's HTML, and it takes itself to login the same way.
+- Terminal-only slash commands no longer appear as user prompts waiting forever for transcript confirmation.
+- Transcript slash-command suggestions open and filter while typing, rank exact command names first, and let Enter
+  run an exact typed command instead of replacing it with a fuzzy description match.
+- Diagnostics recordings, imported shell replays, and session archive contents stay within their configured size
+  and structure limits; malformed ZIP compression is reported as an invalid archive.
+- Support bundles redact complete authorization and cookie values, including values in JSON diagnostics.
+- Read-only monitoring blocks language-server saves, command execution, and workspace edits while retaining
+  read-only language-server features; the fallback agent catalog matches the richer Aider, AGY, and OpenCode UI.
 
 ## [0.10.1] — 2026-09-03
 

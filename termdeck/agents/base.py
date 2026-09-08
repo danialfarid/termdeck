@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 from termdeck.config import TermdeckConfig
+from termdeck.transcript_turns import TurnBuilder
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
@@ -234,6 +235,34 @@ class AgentCli:
             if usage is not None:
                 return usage
         return None
+
+    def latest_model(self, cwd: Path | None, agent_session_id: str | None) -> str | None:
+        if not agent_session_id:
+            return None
+        path = self.transcript_path(cwd, agent_session_id)
+        if path is None:
+            return None
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                handle.seek(max(0, handle.tell() - self.USAGE_TAIL_BYTES))
+                lines = handle.read().decode(errors="replace").splitlines()
+        except OSError:
+            return None
+        for line in reversed(lines):
+            payload = TurnBuilder.loads(line)
+            if payload is None:
+                continue
+            model = TurnBuilder.extract_turn_model(payload)
+            body = payload.get("payload")
+            if not model and isinstance(body, dict):
+                model = TurnBuilder.extract_turn_model(body)
+            if model:
+                return model
+        return None
+
+    def latest_runtime_settings(self, cwd: Path | None, agent_session_id: str | None) -> dict[str, str]:
+        return {}
 
     # -- activity / processing / attention ---------------------------------
     # These hooks receive the TerminalSessionManager ("manager") and a ManagedSession ("ms");

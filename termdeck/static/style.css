@@ -1452,13 +1452,13 @@ body.mobile-touch-layout .file-editor-tab-pin, body.mobile-touch-layout .file-ed
 .conversation-outline-item { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 5px 7px; width: 100%; min-width: 0; margin-bottom: 5px; padding: 7px 8px 7px 7px; border: 1px solid var(--border); border-left-width: 3px; border-radius: 7px; background: color-mix(in srgb, var(--panel2) 72%, transparent); color: var(--text); cursor: pointer; text-align: left; }
 .conversation-outline-item.prompt { border-left-color: var(--accent); background: rgba(92, 207, 230, .16); }
 .conversation-outline-item.question { border-left-color: #e6c36a; background: rgba(230, 195, 106, .15); }
-.conversation-outline-item.response { border-left-color: var(--green); background: rgba(159, 232, 162, .12); }
-.conversation-outline-item.edit { border-left-color: var(--term-blue); background: color-mix(in srgb, var(--term-blue) 12%, transparent); }
+.conversation-outline-item.response { border-left-color: color-mix(in srgb, var(--term-blue) 82%, var(--text)); background: color-mix(in srgb, var(--term-blue) 14%, transparent); }
+.conversation-outline-item.edit { border-left-color: var(--term-blue); background: color-mix(in srgb, var(--term-blue) 8%, transparent); }
 .conversation-outline-item:hover { border-color: var(--active-border); background: var(--active-bg); }
 .conversation-outline-role { grid-column: 1; font-size: 13px; }
 .conversation-outline-item.prompt .conversation-outline-role, .conversation-outline-item.prompt .conversation-outline-label { color: var(--accent); }
 .conversation-outline-item.question .conversation-outline-role, .conversation-outline-item.question .conversation-outline-label { color: #e6c36a; }
-.conversation-outline-item.response .conversation-outline-role, .conversation-outline-item.response .conversation-outline-label { color: var(--green); }
+.conversation-outline-item.response .conversation-outline-role, .conversation-outline-item.response .conversation-outline-label { color: color-mix(in srgb, var(--term-blue) 82%, var(--text)); }
 .conversation-outline-item.edit .conversation-outline-role, .conversation-outline-item.edit .conversation-outline-label { color: var(--term-blue); }
 .conversation-outline-label { grid-column: 2; color: var(--dim); font: 600 calc(var(--ui-font-size) - 1px)/1 Menlo, monospace; text-transform: uppercase; }
 .conversation-outline-time { grid-column: 3; color: var(--dim); font: calc(var(--ui-font-size) - 2px)/1 Menlo, monospace; white-space: nowrap; opacity: .88; }

@@ -59,6 +59,7 @@ class ManagedSession:
         self.pending_agent_rename: str | None = None
         self.pending_agent_rename_deadline = 0.0
         self.agent_rename_task: asyncio.Task | None = None
+        self.command_interaction_lock = asyncio.Lock()
         self.osc_query_carry = b""
         # Trailing bytes, so a compaction marker split across two pty reads is still matched;
         # and the conversation as it stood when a compaction started, held until that
@@ -1278,9 +1279,9 @@ class TerminalSessionManager:
         r"|\x1b\[[0-9;]*n"               # device status report
         r"|\x1b\[[?>][0-9;]*c"           # device attributes
         r"|\x1b\[[0-9;]*R"               # cursor position report
-        r"|\x1b\[M...|\x1b\[<[0-9;]*[Mm]"  # mouse reports
         r"|\x1b\[\?[0-9;]*\$y"           # DECRPM mode report (answer to a DECRQM query)
         r"|\x1b\[\?[0-9;]*u"             # kitty keyboard flags report
+        r"|\x1b\[M...|\x1b\[<[0-9;]*[Mm]"  # mouse reports
         r"|\x1bP.*?\x1b\\"               # DCS reply
         r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)",  # OSC reply
         re.DOTALL)
@@ -1553,6 +1554,38 @@ class TerminalSessionManager:
         if agent.records_raw_replay:
             self.replay.clear_for_restart(ms)
         self._spawn(ms, resume=True)
+
+    async def change_codex_model(self, session_id: str, model_index: int, reasoning_effort: str) -> None:
+        ms = self.ensure_session_running(session_id)
+        if ms.record.agent_kind != "codex":
+            raise ValueError("model selection is currently available for Codex sessions only")
+        if self._processing_state(ms):
+            raise RuntimeError("wait for the current Codex turn to finish before changing its model")
+        effort_keys = {"low": "1", "medium": "2", "high": "3", "xhigh": "4", "max": "5", "ultra": "5"}
+        effort_key = effort_keys.get(reasoning_effort)
+        if effort_key is None:
+            raise ValueError(f"unsupported Codex reasoning effort: {reasoning_effort}")
+        async with ms.command_interaction_lock:
+            self.write_input(session_id, "\x15/model")
+            await asyncio.sleep(0.05)
+            self.write_input(session_id, "\r")
+            await asyncio.sleep(0.35)
+            self._write_agent_menu_input(ms, str(model_index))
+            await asyncio.sleep(0.25)
+            self._write_agent_menu_input(ms, effort_key)
+            if reasoning_effort in {"max", "ultra"}:
+                await asyncio.sleep(0.25)
+                self._write_agent_menu_input(ms, "1" if reasoning_effort == "max" else "2")
+            self.set_draft(session_id, "")
+
+    def _write_agent_menu_input(self, ms: ManagedSession, text: str) -> None:
+        if ms.proc is None or not ms.proc.alive:
+            raise RuntimeError("terminal stopped while selecting the model")
+        ms.proc.write(text.encode())
+        ms.last_input_monotonic = time.monotonic()
+        ms.last_activity_at = time.time()
+        ms.record.last_activity_at = ms.last_activity_at
+        self._broadcast_activity_if_due(ms)
 
     def rename_session(self, session_id: str, title: str) -> None:
         ms = self._sessions[session_id]
@@ -1914,10 +1947,15 @@ class TerminalSessionManager:
                 return "termdeck-archive", "", record.imported_transcript_id
         return record.agent_kind, record.cwd, transcript_session_id
 
-    def session_usage(self, session_id: str) -> dict[str, int | None]:
+    def session_usage(self, session_id: str) -> dict[str, int | str | None]:
         record = self._sessions[session_id].record
-        usage = agents.agent_cli(record.agent_kind).latest_usage(Path(record.cwd), record.agent_session_id)
-        return usage or {}
+        agent = agents.agent_cli(record.agent_kind)
+        usage: dict[str, int | str | None] = dict(agent.latest_usage(Path(record.cwd), record.agent_session_id) or {})
+        usage.update(agent.latest_runtime_settings(Path(record.cwd), record.agent_session_id))
+        model = agent.latest_model(Path(record.cwd), record.agent_session_id)
+        if model and not usage.get("model"):
+            usage["model"] = model
+        return usage
 
     def session_draft(self, session_id: str) -> str:
         return self._sessions[session_id].record.draft

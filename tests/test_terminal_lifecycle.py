@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from fastapi import HTTPException, WebSocketDisconnect
 from watchdog.events import DirModifiedEvent, FileModifiedEvent, FileMovedEvent
@@ -16,6 +16,7 @@ from tests.environment import TEST_DATA_DIRECTORY
 from termdeck import agents
 from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.agents.claude import ClaudeCli
+from termdeck.codex_model_catalog import CodexModelCatalog
 from termdeck.file_service import ProjectFileService
 from termdeck.models import SessionRecord
 from termdeck.config import TermdeckConfig
@@ -410,6 +411,7 @@ class AgentCliRegistryTest(unittest.TestCase):
         codex_commands = agents.agent_cli("codex").client_descriptor()["transcript_commands"]
         claude_commands = agents.agent_cli("claude").client_descriptor()["transcript_commands"]
         self.assertIn({"command": "/status", "description": "Show model, context, and usage status"}, codex_commands)
+        self.assertIn({"command": "/model", "description": "Change the active model"}, codex_commands)
         self.assertIn({"command": "/context", "description": "Show current context usage"}, claude_commands)
         self.assertEqual(agents.agent_cli("none").client_descriptor()["transcript_commands"], [])
 
@@ -543,6 +545,43 @@ class NewAgentCommandModelTest(unittest.TestCase):
                          "agy --mode accept-edits --model gemini-2.5-pro --effort high")
         self.assertEqual(manager.command_for_new_session("agy", "sandbox", session_id, ""),
                          f"agy --sandbox --conversation {session_id}")
+
+
+class CodexModelSelectionTest(unittest.TestCase):
+    def test_catalog_normalizes_model_and_reasoning_choices(self) -> None:
+        model = CodexModelCatalog._normalize_model({
+            "id": "gpt-test", "displayName": "GPT Test", "description": "Test model", "isDefault": True,
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [{"reasoningEffort": "medium", "description": "Balanced"}],
+        })
+
+        self.assertEqual(model, {
+            "id": "gpt-test", "label": "GPT Test", "description": "Test model", "is_default": True,
+            "default_reasoning_effort": "medium",
+            "reasoning_efforts": [{"value": "medium", "description": "Balanced"}],
+        })
+
+    def test_live_model_selection_drives_codex_menu_without_restarting(self) -> None:
+        manager = TerminalSessionManager()
+        session_record = record("model-menu")
+        session_record.command = "codex --no-alt-screen resume resolved-child"
+        session_record.agent_kind = "codex"
+        session_record.agent_session_id = "resolved-child"
+        session = ManagedSession(session_record)
+        writes: list[str] = []
+        session.proc = SimpleNamespace(alive=True, write=lambda value: writes.append(value.decode()))
+        manager._sessions = {session_record.session_id: session}
+        manager.write_input = MagicMock()
+        manager.set_draft = MagicMock()
+        manager._processing_state = MagicMock(return_value=False)
+
+        with patch("termdeck.session_manager.asyncio.sleep", new=AsyncMock()):
+            asyncio.run(manager.change_codex_model(session_record.session_id, 3, "max"))
+
+        self.assertEqual(manager.write_input.call_args_list,
+                         [call(session_record.session_id, "\x15/model"), call(session_record.session_id, "\r")])
+        self.assertEqual(writes, ["3", "5", "1"])
+        manager.set_draft.assert_called_once_with(session_record.session_id, "")
 
 
 class CodexTranscriptParsingTest(unittest.TestCase):

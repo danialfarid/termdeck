@@ -7,6 +7,7 @@
 const uiConfirm = (...args) => window.TermdeckDialogs.confirm(...args);
 const uiAlert = (...args) => window.TermdeckDialogs.alert(...args);
 const uiPrompt = (...args) => window.TermdeckDialogs.prompt(...args);
+const uiSelect = (...args) => window.TermdeckDialogs.select(...args);
 const SESSION_LIST_REFRESH_MS = 30000;
 const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
 // Same status glyphs as TITLE_STATUS_RE, plus the leading ellipsis codex shows while working. Used only
@@ -101,6 +102,7 @@ const AGENT_SPEC_DEFAULTS = {
     transcript_commands: [{ command: "/compact", description: "Compact the conversation context" },
       { command: "/status", description: "Show model, context, and usage status" },
       { command: "/ps", description: "Show background terminals and tasks" },
+      { command: "/model", description: "Change the active model" },
       { command: "/plan", description: "Switch to plan mode" },
       { command: "/fast", description: "Toggle fast mode" }] },
   agy: { kind: "agy", label: "AGY", is_agent: true, prompt_marker: "", icon_svg: FALLBACK_ICON_SVGS.agy,
@@ -708,6 +710,7 @@ class TermdeckApp {
     this.historyTurnsBySession = new Map();
     this.historyScrollBySession = new Map();
     this.historyLiveTurnsBySession = new Map();
+    this.historyCommandResultsBySession = new Map();
     this.historyOlderTurnsBySession = new Map();
     this.historyBeforeBySession = new Map();
     this.historyHasMoreBySession = new Map();
@@ -3998,6 +4001,12 @@ class TermdeckApp {
       if (this.historySlashMenuOpen() && (e.key === "Enter" || e.key === "Tab")) {
         e.preventDefault();
         e.stopPropagation();
+        const prompt = this.$("history-prompt");
+        if (e.key === "Enter" && !e.isComposing &&
+            this.historySlashCommandForText(prompt.value, this.activeId)) {
+          this.sendHistoryPrompt();
+          return;
+        }
         this.selectHistorySlashCommand(this.historySlashMenuIndex);
         return;
       }

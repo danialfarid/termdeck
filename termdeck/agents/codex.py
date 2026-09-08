@@ -41,6 +41,7 @@ class CodexCli(AgentCli):
     transcript_commands = (("/compact", "Compact the conversation context"),
                            ("/status", "Show model, context, and usage status"),
                            ("/ps", "Show background terminals and tasks"),
+                           ("/model", "Change the active model"),
                            ("/plan", "Switch to plan mode"),
                            ("/fast", "Toggle fast mode"))
 
@@ -84,6 +85,7 @@ class CodexCli(AgentCli):
     def __init__(self) -> None:
         # A rollout path never changes once the session exists; cache the rglob hit.
         self._rollout_paths: dict[str, Path] = {}
+        self._runtime_settings_cache: dict[str, tuple[int, int, dict[str, str]]] = {}
 
     def model_arguments(self, model_name: str) -> tuple[str, ...]:
         # A trailing reasoning-effort word ("gpt-5.6-luna xhigh") becomes a -c override.
@@ -358,6 +360,51 @@ class CodexCli(AgentCli):
             "context_window": int(window) if isinstance(window, (int, float)) else None,
             "total_tokens": count(total, "total_tokens") or None,
         }
+
+    def latest_runtime_settings(self, cwd: Path | None, agent_session_id: str | None) -> dict[str, str]:
+        if not agent_session_id:
+            return {}
+        path = self.transcript_path(cwd, agent_session_id)
+        if path is None:
+            return {}
+        try:
+            stat = path.stat()
+            cached = self._runtime_settings_cache.get(agent_session_id)
+            if cached and cached[:2] == (stat.st_size, stat.st_mtime_ns):
+                return dict(cached[2])
+            settings = self._read_latest_runtime_settings(path, stat.st_size)
+        except OSError:
+            return {}
+        self._runtime_settings_cache[agent_session_id] = (stat.st_size, stat.st_mtime_ns, settings)
+        return dict(settings)
+
+    @staticmethod
+    def _read_latest_runtime_settings(path: Path, file_size: int) -> dict[str, str]:
+        marker = b'"type":"thread_settings_applied"'
+        chunk_bytes = 64 * 1024
+        remaining_bytes = min(file_size, 8 * 1024 * 1024)
+        search_end = file_size
+        later_prefix = b""
+        with path.open("rb") as handle:
+            while remaining_bytes > 0:
+                read_size = min(chunk_bytes, remaining_bytes)
+                search_start = search_end - read_size
+                handle.seek(search_start)
+                chunk = handle.read(read_size)
+                marker_index = (chunk + later_prefix).rfind(marker)
+                if marker_index >= 0 and marker_index < len(chunk):
+                    handle.seek(search_start + marker_index)
+                    snippet = handle.read(8192).decode(errors="replace")
+                    result: dict[str, str] = {}
+                    for key in ("model", "reasoning_effort", "service_tier"):
+                        match = re.search(rf'"{key}":(?:"([^"\\]*(?:\\.[^"\\]*)*)"|null)', snippet)
+                        if match:
+                            result[key] = match.group(1) or "default"
+                    return result
+                later_prefix = chunk[:len(marker) - 1]
+                search_end = search_start
+                remaining_bytes -= read_size
+        return {}
 
     # -- activity / processing ---------------------------------------------
 

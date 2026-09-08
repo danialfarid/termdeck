@@ -1753,6 +1753,206 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  historySlashCommandForText(text, sessionId = this.activeId) {
+    const session = this.session(sessionId);
+    const commands = this.agentSpec(session?.agent_kind)?.transcript_commands;
+    const normalized = String(text || "").trim();
+    if (!normalized.startsWith("/") || !Array.isArray(commands)) return null;
+    return commands.find((item) => normalized === item.command || normalized.startsWith(`${item.command} `)) || null;
+  },
+
+
+  finishHistorySlashCommand(view, text, options = {}) {
+    if (!options.fromQueue) this.recordPromptHistory(view.sessionId, text);
+    if (!options.fromQueue) this.persistMarkdownPromptDraft(view, "", { immediate: true });
+    if (this.historyOpen && this.activeId === view.sessionId) {
+      this.showPromptDraft(view);
+      if (!this.touchMobileLayoutEnabled()) this.$("history-prompt")?.focus();
+    }
+  },
+
+
+  showHistorySlashCommandResult(view, command, text) {
+    const result = { role: "event", kind: "command", title: command, text: String(text || ""), expanded: true,
+      timestamp: Date.now(), local_transcript_command: true };
+    const results = (this.historyCommandResultsBySession.get(view.sessionId) || []).concat(result).slice(-20);
+    this.historyCommandResultsBySession.set(view.sessionId, results);
+    const live = this.historyLiveTurnsBySession.get(view.sessionId) || this.historyTurnsBySession.get(view.sessionId) || [];
+    this.applyHistoryTurns(view.sessionId, this.combineHistoryWindow(view.sessionId, live),
+      { preserveScroll: true, followLatest: true, forceRender: true });
+  },
+
+
+  async historySessionUsage(sessionId) {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/usage`);
+    if (!response.ok) throw new Error(`status request failed (${response.status})`);
+    return response.json();
+  },
+
+
+  async showHistoryStatusCommand(view, text, options = {}) {
+    const session = this.session(view.sessionId);
+    let usage = {};
+    try {
+      usage = await this.historySessionUsage(view.sessionId);
+    } catch (error) {
+      this.$("status-name").textContent = error instanceof Error ? error.message : "unable to load status";
+      return false;
+    }
+    const model = String(usage.model || "").trim() ||
+      this.historyModelDisplay(session, this.historyTurnsBySession.get(view.sessionId) || []) || "unknown";
+    const contextTokens = this.formatTokenCount(Number(usage.context_tokens));
+    const contextWindow = this.formatTokenCount(Number(usage.context_window));
+    const contextPercent = Number(usage.context_tokens) > 0 && Number(usage.context_window) > 0
+      ? ` (${Math.round(Number(usage.context_tokens) * 100 / Number(usage.context_window))}% used)` : "";
+    const lines = [
+      `Model: ${model}`,
+      `State: ${session?.processing ? "working" : "idle"} · terminal ${session?.running ? "running" : "stopped"}`,
+      contextTokens ? `Context: ${contextTokens}${contextWindow ? ` / ${contextWindow}` : ""}${contextPercent}` : "Context: unavailable",
+    ];
+    if (usage.reasoning_effort) lines.splice(1, 0, `Reasoning: ${usage.reasoning_effort}`);
+    if (usage.service_tier) lines.splice(2, 0, `Fast mode: ${usage.service_tier === "priority" ? "on" : "off"}`);
+    const outputTokens = this.formatTokenCount(Number(usage.output_tokens));
+    const totalTokens = this.formatTokenCount(Number(usage.total_tokens));
+    if (outputTokens) lines.push(`Last response: ${outputTokens} tokens`);
+    if (totalTokens) lines.push(`Session total: ${totalTokens} tokens`);
+    if (session?.agent_session_id) lines.push(`Session: ${session.agent_session_id}`);
+    this.showHistorySlashCommandResult(view, "/status", lines.join("\n"));
+    this.finishHistorySlashCommand(view, text, options);
+    this.$("status-name").textContent = "status loaded";
+    return true;
+  },
+
+
+  async showHistoryProcessesCommand(view, text, options = {}) {
+    try {
+      const response = await fetch("/api/terminals/processes");
+      if (!response.ok) throw new Error(`process request failed (${response.status})`);
+      const report = await response.json();
+      const entry = (Array.isArray(report.sockets) ? report.sockets : []).find((item) => item.session_id === view.sessionId);
+      const processes = Array.isArray(entry?.processes) ? entry.processes : [];
+      const lines = [`${processes.length} live process${processes.length === 1 ? "" : "es"} in this terminal`];
+      for (const process of processes) {
+        const command = String(process.command || "").replace(/\s+/g, " ").trim();
+        lines.push(`pid ${process.pid}${process.state ? ` ${process.state}` : ""}${command ? ` · ${command}` : ""}`);
+      }
+      if (!processes.length) lines.push(entry?.live ? "No child process details available." : "The terminal is not running.");
+      lines.push("Codex's interactive /ps overlay is terminal-only; this is TermDeck's live process tree.");
+      this.showHistorySlashCommandResult(view, "/ps", lines.join("\n"));
+      this.finishHistorySlashCommand(view, text, options);
+      this.$("status-name").textContent = "process status loaded";
+      return true;
+    } catch (error) {
+      this.$("status-name").textContent = error instanceof Error ? error.message : "unable to load processes";
+      return false;
+    }
+  },
+
+
+  async changeHistoryModelCommand(view, text, options = {}) {
+    const requested = String(text || "").trim().slice("/model".length).trim();
+    const session = this.session(view.sessionId);
+    const current = this.historyModelDisplay(session, this.historyTurnsBySession.get(view.sessionId) || []);
+    try {
+      const currentUsage = await this.historySessionUsage(view.sessionId).catch(() => ({}));
+      const catalogResponse = await fetch("/api/agents/codex/models");
+      if (!catalogResponse.ok) throw new Error(`model list failed (${catalogResponse.status})`);
+      const catalog = await catalogResponse.json();
+      const models = Array.isArray(catalog.models) ? catalog.models : [];
+      if (!models.length) throw new Error("Codex returned no available models");
+      const requestedParts = requested.split(/\s+/).filter(Boolean);
+      const requestedModel = models.find((item) => item.id === requestedParts[0]);
+      const reportedModel = String(currentUsage.model || current);
+      const currentModel = requestedModel || models.find((item) => reportedModel.toLowerCase().includes(String(item.id).toLowerCase())) ||
+        models.find((item) => item.is_default) || models[0];
+      const modelId = await uiSelect("Choose from the models available to your current Codex account.",
+        models.map((item) => ({ value: item.id, label: item.label || item.id, description: item.description || "" })),
+        { title: "Change model", currentValue: currentModel.id });
+      if (!modelId) return false;
+      const selectedModel = models.find((item) => item.id === modelId);
+      const efforts = Array.isArray(selectedModel?.reasoning_efforts) ? selectedModel.reasoning_efforts : [];
+      if (!efforts.length) throw new Error(`${modelId} has no selectable reasoning levels`);
+      const requestedEffort = requestedParts[1] || "";
+      const reportedEffort = selectedModel.id === currentUsage.model ? String(currentUsage.reasoning_effort || "") : "";
+      const currentEffort = efforts.some((item) => item.value === requestedEffort) ? requestedEffort :
+        efforts.some((item) => item.value === reportedEffort) ? reportedEffort :
+        selectedModel.default_reasoning_effort || efforts[0].value;
+      const reasoningEffort = await uiSelect(`Choose the reasoning level for ${modelId}.`,
+        efforts.map((item) => ({ value: item.value, label: item.value, description: item.description || "" })),
+        { title: "Reasoning level", currentValue: currentEffort });
+      if (!reasoningEffort) return false;
+      this.$("status-name").textContent = `switching model to ${modelId} ${reasoningEffort}…`;
+      const response = await fetch(`/api/sessions/${encodeURIComponent(view.sessionId)}/model`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: modelId, reasoning_effort: reasoningEffort }),
+      });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({}));
+        throw new Error(String(failure.detail || `model change failed (${response.status})`));
+      }
+      const updated = await response.json();
+      if (updated.session) this.applySessionStatus({ ...updated.session, session_id: view.sessionId });
+      this.sessionModelById.set(view.sessionId, `${modelId} ${reasoningEffort}`);
+      this.showHistorySlashCommandResult(view, "/model", `Model changed to ${modelId} ${reasoningEffort}.`);
+      this.finishHistorySlashCommand(view, text, options);
+      this.$("status-name").textContent = `model: ${modelId} ${reasoningEffort}`;
+      return true;
+    } catch (error) {
+      this.$("status-name").textContent = error instanceof Error ? error.message : "unable to change model";
+      return false;
+    }
+  },
+
+
+  async submitHistorySlashCommand(view, text, options = {}) {
+    const item = this.historySlashCommandForText(text, view.sessionId);
+    if (!item) return false;
+    if (item.command === "/status") return this.showHistoryStatusCommand(view, text, options);
+    if (item.command === "/ps") return this.showHistoryProcessesCommand(view, text, options);
+    if (item.command === "/model") return this.changeHistoryModelCommand(view, text, options);
+    if (view.promptApiSubmitting) {
+      this.$("status-name").textContent = "command is already sending";
+      return false;
+    }
+    view.promptApiSubmitting = true;
+    this.$("status-name").textContent = `sending ${item.command}…`;
+    try {
+      const fastStatusBefore = item.command === "/fast" ? await this.historySessionUsage(view.sessionId).catch(() => ({})) : {};
+      const response = await fetch(`/api/sessions/${encodeURIComponent(view.sessionId)}/prompt`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: String(text), bracketed: false, queue: false, automatically_queue_when_busy: false }),
+      });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({}));
+        throw new Error(String(failure.detail || `command failed (${response.status})`));
+      }
+      const result = await response.json();
+      if (result.session) this.applySessionStatus({ ...result.session, session_id: view.sessionId });
+      this.finishHistorySlashCommand(view, text, options);
+      let commandResult = `${item.command} was sent to the agent terminal. It changes terminal UI state and does not create a transcript message.`;
+      if (item.command === "/fast") {
+        let fastStatusAfter = fastStatusBefore;
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          fastStatusAfter = await this.historySessionUsage(view.sessionId).catch(() => fastStatusAfter);
+          if (fastStatusAfter.service_tier && fastStatusAfter.service_tier !== fastStatusBefore.service_tier) break;
+        }
+        commandResult = fastStatusAfter.service_tier
+          ? `Fast mode is ${fastStatusAfter.service_tier === "priority" ? "on" : "off"}.`
+          : "Fast mode was toggled. Its state is not yet available in the Codex transcript.";
+      }
+      this.showHistorySlashCommandResult(view, item.command, commandResult);
+      this.$("status-name").textContent = `${item.command} sent`;
+      return true;
+    } catch (error) {
+      this.$("status-name").textContent = error instanceof Error ? error.message : "unable to send command";
+      return false;
+    } finally {
+      view.promptApiSubmitting = false;
+    }
+  },
+
+
   updateHistorySlashMenu() {
     const menu = this.$("history-slash-menu");
     const prompt = this.$("history-prompt");
@@ -1763,8 +1963,15 @@ Object.assign(TermdeckApp.prototype, {
       return;
     }
     const query = firstLine.toLowerCase();
-    const commands = this.historySlashCommands().filter((item) =>
-      item.command.toLowerCase().includes(query) || String(item.description || "").toLowerCase().includes(query.slice(1)));
+    const commands = this.historySlashCommands().map((item, index) => {
+      const command = item.command.toLowerCase();
+      const description = String(item.description || "").toLowerCase();
+      const rank = command === query ? 0 : command.startsWith(query) ? 1 : command.includes(query) ? 2 :
+        query.length > 1 && description.includes(query.slice(1)) ? 3 : -1;
+      return { item, index, rank };
+    }).filter((match) => match.rank >= 0)
+      .sort((left, right) => left.rank - right.rank || left.index - right.index)
+      .map((match) => match.item);
     if (!commands.length) {
       this.closeHistorySlashMenu();
       return;
@@ -1937,7 +2144,8 @@ Object.assign(TermdeckApp.prototype, {
 
   combineHistoryWindow(sessionId, liveTurns) {
     const older = this.historyOlderTurnsBySession.get(sessionId) || [];
-    return older.concat(liveTurns);
+    const commandResults = this.historyCommandResultsBySession.get(sessionId) || [];
+    return older.concat(liveTurns, commandResults);
   },
 
 
@@ -2142,8 +2350,9 @@ Object.assign(TermdeckApp.prototype, {
   persistedHistoryPendingPrompts(sessionId) {
     if (this.historyPendingPrompts.has(sessionId)) return this.historyPendingPrompts.get(sessionId);
     let pending = [];
+    const storageKey = this.historyPendingPromptStorageKey(sessionId);
     try {
-      const parsed = JSON.parse(localStorage.getItem(this.historyPendingPromptStorageKey(sessionId)) || "[]");
+      const parsed = JSON.parse(localStorage.getItem(storageKey) || "[]");
       if (Array.isArray(parsed)) {
         pending = parsed.slice(-25).map((item) => ({
           text: String(item?.text || "").slice(0, 20000),
@@ -2154,12 +2363,15 @@ Object.assign(TermdeckApp.prototype, {
             ? item.delivery_state : "awaiting_transcript",
           busy_at_submit: item?.busy_at_submit === true,
           idle_since: Number(item?.idle_since) || 0,
-        })).filter((item) => item.text.trim());
+        })).filter((item) => item.text.trim() && !this.historySlashCommandForText(item.text, sessionId));
       }
     } catch (_error) {
       pending = [];
     }
     if (pending.length) this.historyPendingPrompts.set(sessionId, pending);
+    else {
+      try { localStorage.removeItem(storageKey); } catch (_error) { }
+    }
     return pending;
   },
 
@@ -2260,8 +2472,8 @@ Object.assign(TermdeckApp.prototype, {
 
   historyPromptLooseMatchText(text) {
     return String(text || "")
-      .replace(/\[Image #\d+\]/g, "   ")
-      .replace(/'?\S*\/uploads\/[^\s']+\.(?:png|jpe?g|gif|webp|bmp|heic)'?/gi, "   ")
+      .replace(/\[Image #\d+\]/g, " [image] ")
+      .replace(/'?\S*\/uploads\/[^\s']+\.(?:png|jpe?g|gif|webp|bmp|heic)'?/gi, " [image] ")
       .replace(/\s+/g, " ").trim();
   },
 
@@ -2324,6 +2536,10 @@ Object.assign(TermdeckApp.prototype, {
     const view = this.sessionInteractionState(this.activeId);
     if (!view) return;
     view.promptQueueHold = false;
+    if (this.historySlashCommandForText(text, view.sessionId)) {
+      void this.submitHistorySlashCommand(view, text);
+      return;
+    }
     if (options.queue) {
       view.promptQueue.push({ text });
       this.persistMarkdownPromptQueue(view);
@@ -2343,6 +2559,7 @@ Object.assign(TermdeckApp.prototype, {
 
   async submitHistoryPromptViaApi(view, text, options = {}) {
     if (!view || view.closed || !String(text || "").trim()) return false;
+    if (this.historySlashCommandForText(text, view.sessionId)) return this.submitHistorySlashCommand(view, text, options);
     if (view.promptApiSubmitting) {
       this.$("status-name").textContent = "prompt is already sending";
       return false;
@@ -5184,8 +5401,7 @@ Object.assign(TermdeckApp.prototype, {
       turns = Array.isArray(payload.turns) ? payload.turns : [];
       this.conversationOutlineTurnsBySession.set(sessionId, turns);
     }
-    this.conversationOutlineSessionId = sessionId;
-    this.renderConversationOutline(turns, { revealLatestPrompt: true });
+    this.renderConversationOutline(turns, { revealLatestPrompt: true, sessionId });
   },
 
 
@@ -5218,6 +5434,8 @@ Object.assign(TermdeckApp.prototype, {
 
   renderConversationOutline(turns, options = {}) {
     const list = this.$("conversation-outline-list");
+    const sessionId = options.sessionId || this.activeId;
+    const sessionChanged = this.conversationOutlineSessionId !== sessionId;
     const previousScrollTop = list.scrollTop;
     list.textContent = "";
     const messages = this.filteredHistoryTurns(turns).filter((turn) =>
@@ -5261,13 +5479,16 @@ Object.assign(TermdeckApp.prototype, {
       empty.textContent = "No user prompts or assistant responses yet.";
       list.appendChild(empty);
     }
-    if (options.revealLatestPrompt && latestPromptItem) {
+    this.conversationOutlineSessionId = sessionId;
+    if ((options.revealLatestPrompt || sessionChanged) && latestPromptItem) {
       requestAnimationFrame(() => {
-        if (!this.conversationOutlineOpen || !latestPromptItem.isConnected) return;
+        if (!this.conversationOutlineOpen || this.activeId !== sessionId || !latestPromptItem.isConnected) return;
         list.scrollTop = Math.max(0, latestPromptItem.offsetTop - list.offsetTop - 6);
       });
-    } else if (options.preserveScroll) {
+    } else if (options.preserveScroll && !sessionChanged) {
       list.scrollTop = previousScrollTop;
+    } else {
+      list.scrollTop = 0;
     }
   },
 
