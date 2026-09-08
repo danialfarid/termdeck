@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280, initial-scale=1">
+<title>TermDeck social preview</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; margin: 0; overflow: hidden; }
+  body {
+    display: grid;
+    grid-template-columns: 475px 1fr;
+    align-items: center;
+    gap: 38px;
+    padding: 52px 44px 52px 58px;
+    color: #f4f7fb;
+    background:
+      radial-gradient(circle at 13% 20%, #243e5d 0, transparent 34%),
+      radial-gradient(circle at 88% 83%, #17354b 0, transparent 36%),
+      linear-gradient(135deg, #111821 0%, #172431 48%, #101820 100%);
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  .copy { align-self: stretch; display: flex; flex-direction: column; justify-content: center; }
+  .brand { display: flex; align-items: center; gap: 17px; margin-bottom: 23px; }
+  .brand img { width: 66px; height: 66px; filter: drop-shadow(0 5px 18px #0008); }
+  .brand span { font-size: 57px; line-height: 1; font-weight: 760; letter-spacing: -2.5px; }
+  h1 { margin: 0; max-width: 450px; font-size: 37px; line-height: 1.13; letter-spacing: -1.2px; }
+  p { margin: 20px 0 25px; max-width: 430px; color: #bac9d8; font-size: 20px; line-height: 1.42; }
+  .pills { display: flex; flex-wrap: wrap; gap: 9px; }
+  .pill { padding: 8px 12px; border: 1px solid #71b8e559; border-radius: 999px; background: #1d3a4d99;
+    color: #d8edfb; font-size: 14px; font-weight: 650; letter-spacing: .1px; }
+  .product {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid #7694aa80;
+    border-radius: 15px;
+    background: #0c1117;
+    box-shadow: 0 24px 70px #000a, 0 0 0 5px #d0e7f108;
+    transform: perspective(1400px) rotateY(-3deg);
+  }
+  .product::before { content: ""; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+    box-shadow: inset 0 0 45px #07101866; }
+  .chrome { height: 31px; display: flex; align-items: center; gap: 7px; padding: 0 12px; background: #202b35;
+    border-bottom: 1px solid #3b4b58; }
+  .chrome i { width: 9px; height: 9px; border-radius: 50%; background: #607383; }
+  .chrome i:first-child { background: #d66a62; }
+  .chrome i:nth-child(2) { background: #d7ad5d; }
+  .chrome i:nth-child(3) { background: #67b875; }
+  .product img { display: block; width: 100%; height: 408px; object-fit: cover; object-position: center top; }
+  .foot { position: absolute; right: 57px; bottom: 28px; color: #85a6bd; font: 600 15px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+</head>
+<body>
+  <section class="copy">
+    <div class="brand"><img src="../../termdeck/static/favicon.svg" alt=""><span>TermDeck</span></div>
+    <h1>One persistent workspace for all your coding agents.</h1>
+    <p>Run, organize, and monitor Codex, Claude Code, Aider, AGY, OpenCode, and shells across every project.</p>
+    <div class="pills">
+      <span class="pill">Persistent sessions</span>
+      <span class="pill">Live status</span>
+      <span class="pill">Transcripts</span>
+      <span class="pill">Worktrees</span>
+    </div>
+  </section>
+  <section class="product">
+    <div class="chrome"><i></i><i></i><i></i></div>
+    <img src="demo-terminals.gif" alt="TermDeck terminal workspace">
+  </section>
+  <div class="foot">local-first · open source</div>
+</body>
+</html>

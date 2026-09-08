@@ -19,6 +19,14 @@ Sessions survive browser and server restarts. Read clean transcripts, hand work 
 conversation, and use the built-in files, Git, and code-intelligence tools without losing track of the terminals
 doing the work. Remote access built in: reach the whole deck from anywhere.
 
+## Why TermDeck?
+
+VS Code and IntelliJ IDEA treat terminals as panels inside an editor; TermDeck treats long-running agents as the
+workspace itself. Its `dtach`-backed processes are independent of the browser and TermDeck server, so closing either
+does not stop active work, while projects, worktrees, activity state, transcripts, handoffs, and remote monitoring
+stay organized around the real CLI sessions. The file, Git, and LSP tools support that workflow without locking the
+agents inside an editor.
+
 ## Demos
 
 Persistent agents, worktrees, queues, notes, grouping, search, cross-agent handoff, and background activity.
@@ -84,12 +92,13 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
 
 ## Features
 
+- **Keep agents running** — sessions continue through browser closures and TermDeck server restarts. Tracked agent
+  conversations resume after a machine restart, while saved drafts and prompt history help you continue where you
+  left off.
 - **Keep track of parallel work** — group sessions by project, task, and worktree, with activity and unread
   indicators showing what needs your attention.
 - **Read conversations in Transcript mode** — switch from terminal output to formatted prompts and responses,
   with collapsible thinking blocks, a conversation outline, and a composer for follow-up questions.
-- **Return to ongoing work** — sessions keep running through browser closures and TermDeck server restarts.
-  Saved drafts and prompt history help you continue where you left off.
 - **[Let agents delegate](docs/agents-termdeck-api.md)** — use the local API to start named agents with a chosen
   model, permission level, and prompt, then monitor their responses. Each task appears as an ordinary session in
   your workspace.

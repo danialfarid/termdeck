@@ -10,6 +10,8 @@ All notable changes to this project are documented here. The format follows
 
 - The README now leads with parallel coding-agent management and Transcript mode, with worktrees matched to the
   terminal workflow demo and the main benefits ordered around the agent workflow.
+- The README now distinguishes TermDeck's independent persistent agent processes from editor-owned terminal panels,
+  and the repository social preview presents the same local-first multi-agent positioning.
 
 ## [0.11.1] — 2026-09-08
 
