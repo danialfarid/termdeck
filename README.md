@@ -11,20 +11,23 @@
 
 </div>
 
-Puppeteer all your agents from one lightweight browser tab. Never lose a session or a half-written prompt
-again — group them, give them worktrees, and let them talk to each other. Around them, a light IDE: an
-editor, search, find-usages, Git, pull requests, syntax highlighting, linters, and notes on the fly. Remote
-access built in: reach the whole deck from anywhere.
+Puppeteer all your coding agents from one local browser workspace. TermDeck keeps Codex, Claude Code, Aider,
+AGY, OpenCode, and shell sessions organized across projects and worktrees — showing what is running, finished,
+unread, or waiting for you.
+
+Sessions survive browser and server restarts. Read clean transcripts, hand work between agents, search every
+conversation, and use the built-in files, Git, and code-intelligence tools without losing track of the terminals
+doing the work. Remote access built in: reach the whole deck from anywhere.
 
 ## Demos
 
-Persistent agents, queues, notes, grouping, search, cross-agent handoff, and background activity.
+Persistent agents, worktrees, queues, notes, grouping, search, cross-agent handoff, and background activity.
 
 ![TermDeck terminal workflow](docs/media/demo-terminals.gif)
 
 *[Full-resolution terminal workflow video](docs/media/demo-terminals.webm)*
 
-File tree, usages, history, blame, pending diffs, worktrees, remotes, and stashes.
+File tree, usages, history, blame, pending diffs, remotes, and stashes.
 
 ![TermDeck Files and Git workflow](docs/media/demo-files-git.gif)
 
@@ -81,28 +84,29 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
 
 ## Features
 
+- **Keep track of parallel work** — group sessions by project, task, and worktree, with activity and unread
+  indicators showing what needs your attention.
+- **Read conversations in Transcript mode** — switch from terminal output to formatted prompts and responses,
+  with collapsible thinking blocks, a conversation outline, and a composer for follow-up questions.
+- **Return to ongoing work** — sessions keep running through browser closures and TermDeck server restarts.
+  Saved drafts and prompt history help you continue where you left off.
+- **[Let agents delegate](docs/agents-termdeck-api.md)** — use the local API to start named agents with a chosen
+  model, permission level, and prompt, then monitor their responses. Each task appears as an ordinary session in
+  your workspace.
+- **Review and edit alongside your agents** — open referenced files, search code, inspect changes, and use Git
+  and language-server tools without leaving the workspace.
 - **Any agent CLI** — Codex, Claude Code, AGY, Aider, OpenCode, and plain shells, side by side. Teaching it a
   new CLI is one [declarative profile](docs/agent-profiles.md), with Python adapters reserved for unusual formats.
-- **Persistent sessions** — terminals and agent sessions survive browser and server restarts, and reopen into
-  the same conversation after a machine restart.
 - **Portable sessions** — export a terminal with its resume profile, draft, transcript, and available replay;
   import it as a dormant tab in another project or TermDeck installation.
 - **Project migration** — export every TermDeck tab in a project together with its groups, notes, colors, and
   layout; clone the source separately, then restore the workspace on another machine or for a collaborator.
 - **Never lose a half-written prompt** — what you have typed is saved as you type. Refresh the page, restart
   the server, come back tomorrow: it is still in the box, and everything you have sent is in the history.
-- **Parallel work** — group, reorder, fork, rename, close, reopen, and monitor many terminals. Background
-  commands, monitors, and subagents show as live dots under the session that started them: nine agents, one deck,
-  and a dot that tells you which one is actually waiting on you.
 - **Agent handoff** — send selected context from a terminal, transcript, file, or note straight to another
   agent, without rebuilding the prompt.
-- **[Agents talking to agents](docs/agents-termdeck-api.md)** — Codex hands Claude a task, watches its answer
-  come back, and asks a follow-up, all through one local API. Every agent it starts is an ordinary terminal in
-  your deck, so you can read the whole exchange as it happens.
 - **Notifications** — attention and finished runs reach you while the tab is in the background, and a quiet
   release badge appears when a newer TermDeck version is available. Nothing updates automatically.
-- **Transcript mode** — read clean conversations, queue follow-ups, run an agent's slash commands, inspect
-  models, and open a conversation outline.
 - **Search** — find sessions, prompts, responses, file names, and code across a project.
 - **Files, Markdown, and media** — edit in Monaco, read Markdown as a rendered document, and open images, video,
   audio, and PDFs in place.
