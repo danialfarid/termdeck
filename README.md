@@ -305,14 +305,11 @@ TermDeck Remote are both disabled by default and create no external access until
 When enabled, TermDeck Remote keeps the local listener private: the browser signs in with Google, the computer
 is explicitly paired, and traffic to and from the hosted relay is encrypted with HTTPS/WSS.
 
-If enabled, Local Wi-Fi uses a separate port, `8532`, and plain HTTP. Anyone on the same LAN who can reach its
-displayed URL can control terminals and read exposed files unless `TERMDECK_ACCESS_TOKEN` is configured, so enable
-it only on a trusted home or office network and never on public Wi-Fi. For any other direct network access, require
-the bearer token and carry the connection through SSH, a trusted VPN, or HTTPS; the token authenticates requests
-but does not encrypt plain HTTP. Read-only mode prevents mutations but still exposes files and session content.
+If enabled, Local Wi-Fi uses a separate port, `8532`. Enable it only on a trusted home or office network and never
+on public Wi-Fi.
 
-See [Remote access and encryption](docs/remote-access.md) for setup options and [the security policy](SECURITY.md)
-for the full threat model and reporting process.
+See [Remote access and encryption](docs/remote-access.md) for authentication, encryption, SSH/VPN, and read-only
+setup options, and see [the security policy](SECURITY.md) for the full threat model and reporting process.
 
 ## License
 
