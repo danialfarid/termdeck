@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-09-08
+
+### Fixed
+
+- Opening or dismissing an external-link confirmation no longer moves a scrolled terminal to the bottom when
+  focus returns to its prompt.
+
 ## [0.11.0] — 2026-09-08
 
 ### Added
@@ -653,7 +660,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/danialfarid/termdeck/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/danialfarid/termdeck/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/danialfarid/termdeck/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/danialfarid/termdeck/compare/v0.9.0...v0.10.0

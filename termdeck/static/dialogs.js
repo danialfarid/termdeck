@@ -131,7 +131,7 @@
       backdrop.remove();
       // Terminals and editors lose focus to the dialog; hand it back so typing resumes where it was.
       if (previouslyFocused && typeof previouslyFocused.focus === "function") {
-        requestAnimationFrame(() => { try { previouslyFocused.focus(); } catch { /* gone */ } });
+        requestAnimationFrame(() => { try { previouslyFocused.focus({ preventScroll: true }); } catch { /* gone */ } });
       }
       resolve(value);
     };
