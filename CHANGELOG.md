@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-09-08
+
 ### Added
 
 - Single-terminal and full-project exports now share one session-collection archive format. Import sessions accepts
@@ -42,6 +44,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The README header again shows the current release, supported Python version, license, and CI status.
 - The project header now owns terminal search, and its + menu includes terminal groups. The TERMINALS row keeps only
   the active filter and new-terminal control, while terminal URL confirmations use TermDeck's modal instead of the
   browser's native prompt.
@@ -646,7 +649,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/danialfarid/termdeck/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/danialfarid/termdeck/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/danialfarid/termdeck/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/danialfarid/termdeck/compare/v0.8.1...v0.9.0

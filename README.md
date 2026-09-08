@@ -4,6 +4,11 @@
 
 **A persistent workspace for coding agents.**
 
+[![Release](https://img.shields.io/github/v/release/danialfarid/termdeck?sort=semver)](https://github.com/danialfarid/termdeck/releases)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![CI](https://github.com/danialfarid/termdeck/actions/workflows/ci.yml/badge.svg)](https://github.com/danialfarid/termdeck/actions/workflows/ci.yml)
+
 </div>
 
 Puppeteer all your agents from one lightweight browser tab. Never lose a session or a half-written prompt
