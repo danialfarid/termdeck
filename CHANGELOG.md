@@ -45,6 +45,8 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - The README header again shows the current release, supported Python version, license, and CI status.
+- The README security overview now names the default local and Wi-Fi ports, explains the hosted relay's encrypted
+  Google-authenticated path, and links to the detailed remote-access and security guides.
 - The project header now owns terminal search, and its + menu includes terminal groups. The TERMINALS row keeps only
   the active filter and new-terminal control, while terminal URL confirmations use TermDeck's modal instead of the
   browser's native prompt.
@@ -58,6 +60,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Opening a terminal now puts its dialog into a visible progress state until creation finishes instead of leaving
+  an apparently stuck popup during slower agent startup.
 - Conversation outlines distinguish agent responses from code edits with two shades of the same color, and switching
   terminals opens the new terminal's outline at its latest prompt instead of inheriting another outline's scroll position.
 - The main checkout can have its own worktree color independently of the project color; both header rows show

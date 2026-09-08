@@ -3086,6 +3086,15 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  setModalCreating(creating) {
+    const modal = this.$("modal");
+    this.$("modal-progress").classList.toggle("hidden", !creating);
+    modal.classList.toggle("creating", creating);
+    for (const control of modal.querySelectorAll("input, select, button")) control.disabled = creating;
+    this.$("modal-create").textContent = creating ? "Opening…" : "Open";
+  },
+
+
   showModalDependencyError(detail) {
     const error = this.$("modal-error");
     const message = this.$("modal-error-message");
@@ -3175,6 +3184,7 @@ Object.assign(TermdeckApp.prototype, {
     this.$("modal-session-title").value = "";
     this.$("modal-cwd").value = this.resolveVscodeDefaultCwd();
     this.$("modal-cwd").dataset.projectSeeded = "0";
+    this.setModalCreating(false);
     this.clearModalError();
     this.$("modal-backdrop").classList.remove("hidden");
     this.$("modal-session-title").focus();
@@ -3224,11 +3234,11 @@ Object.assign(TermdeckApp.prototype, {
     if (this.$("modal-backdrop").classList.contains("hidden")) return;
     const createButton = this.$("modal-create");
     if (createButton.disabled) return;
-    createButton.disabled = true;
+    this.setModalCreating(true);
     try {
       await this.createSessionFromModal();
     } finally {
-      createButton.disabled = false;
+      this.setModalCreating(false);
     }
   },
 

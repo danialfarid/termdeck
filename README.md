@@ -300,9 +300,19 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Security
 
-TermDeck runs commands on your machine and binds to localhost by default. For direct network access, configure
-`TERMDECK_ACCESS_TOKEN` and use an encrypted SSH/VPN/HTTPS path; read-only mode limits mutation but still exposes
-files and session content.
+TermDeck listens only on <http://127.0.0.1:8530> by default, so other machines cannot connect. Local Wi-Fi and
+TermDeck Remote are both disabled by default and create no external access until you explicitly enable them.
+When enabled, TermDeck Remote keeps the local listener private: the browser signs in with Google, the computer
+is explicitly paired, and traffic to and from the hosted relay is encrypted with HTTPS/WSS.
+
+If enabled, Local Wi-Fi uses a separate port, `8532`, and plain HTTP. Anyone on the same LAN who can reach its
+displayed URL can control terminals and read exposed files unless `TERMDECK_ACCESS_TOKEN` is configured, so enable
+it only on a trusted home or office network and never on public Wi-Fi. For any other direct network access, require
+the bearer token and carry the connection through SSH, a trusted VPN, or HTTPS; the token authenticates requests
+but does not encrypt plain HTTP. Read-only mode prevents mutations but still exposes files and session content.
+
+See [Remote access and encryption](docs/remote-access.md) for setup options and [the security policy](SECURITY.md)
+for the full threat model and reporting process.
 
 ## License
 

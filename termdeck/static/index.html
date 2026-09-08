@@ -511,6 +511,7 @@
     <label>Session name / Resume existing session<input id="modal-session-title" list="modal-session-refs" placeholder="optional: name this terminal or saved ID/name to resume" spellcheck="false"></label>
     <datalist id="modal-session-refs"></datalist>
     <label>Directory<div id="modal-project-picker"><input id="modal-cwd" placeholder="~/projects/my-app" spellcheck="false"><button id="modal-project-add-btn" type="button" title="Add project folder" aria-label="Add project folder"><span class="codicon codicon-new-folder"></span></button></div></label>
+    <div id="modal-progress" class="hidden" role="status" aria-live="polite"><span class="worktree-spinner" aria-hidden="true"></span><span>Opening terminal…</span></div>
     <div id="modal-error" class="hidden" role="alert" aria-live="assertive">
       <div id="modal-error-message"></div>
       <button id="modal-error-install" class="hidden" type="button">Install with Homebrew</button>
