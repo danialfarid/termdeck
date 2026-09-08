@@ -21,11 +21,15 @@ doing the work. Remote access built in: reach the whole deck from anywhere.
 
 ## Why TermDeck?
 
-VS Code and IntelliJ IDEA treat terminals as panels inside an editor; TermDeck treats long-running agents as the
-workspace itself. Its `dtach`-backed processes are independent of the browser and TermDeck server, so closing either
-does not stop active work, while projects, worktrees, activity state, transcripts, handoffs, and remote monitoring
-stay organized around the real CLI sessions. The file, Git, and LSP tools support that workflow without locking the
-agents inside an editor.
+VS Code and IntelliJ IDEA treat terminals as panels inside an editor; TermDeck treats long-running coding agents as
+the workspace itself. Codex, Claude Code, and their apps are powerful on their own but remain separate experiences;
+TermDeck brings their CLIs and other agents under one umbrella for shared visibility, search, handoff, and delegation.
+Run different agent CLIs side by side, organize them by project and worktree, and see who is working, finished, or
+waiting for their human. Sessions keep running when you close the browser or restart TermDeck. Switch between the live
+terminal and readable Transcript mode, search past conversations, preserve unfinished prompts, queue follow-ups, and
+hand context or tasks between agents. Built-in file editing, Git, and code intelligence keep review and development
+close to the work, while optional remote access lets you continue from another computer or your phone. Your existing
+CLIs, running on your machine, with fewer tabs to babysit.
 
 ## Demos
 
@@ -106,17 +110,16 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
   and language-server tools without leaving the workspace.
 - **Any agent CLI** — Codex, Claude Code, AGY, Aider, OpenCode, and plain shells, side by side. Teaching it a
   new CLI is one [declarative profile](docs/agent-profiles.md), with Python adapters reserved for unusual formats.
-- **Portable sessions** — export a terminal with its resume profile, draft, transcript, and available replay;
-  import it as a dormant tab in another project or TermDeck installation.
-- **Project migration** — export every TermDeck tab in a project together with its groups, notes, colors, and
-  layout; clone the source separately, then restore the workspace on another machine or for a collaborator.
+- **Portable workspaces** — export one terminal with its resume profile, draft, transcript, and available replay,
+  or export a whole project with its tabs, groups, notes, colors, and layout; restore it elsewhere after cloning
+  the source.
 - **Never lose a half-written prompt** — what you have typed is saved as you type. Refresh the page, restart
   the server, come back tomorrow: it is still in the box, and everything you have sent is in the history.
-- **Agent handoff** — send selected context from a terminal, transcript, file, or note straight to another
-  agent, without rebuilding the prompt.
 - **Notifications** — attention and finished runs reach you while the tab is in the background, and a quiet
   release badge appears when a newer TermDeck version is available. Nothing updates automatically.
-- **Search** — find sessions, prompts, responses, file names, and code across a project.
+- **Search and hand off across sessions** — find sessions, prompts, responses, file names, and code across a
+  project, then send selected or copied context from a terminal, transcript, file, or note straight to another
+  agent without rebuilding the prompt.
 - **Files, Markdown, and media** — edit in Monaco, read Markdown as a rendered document, and open images, video,
   audio, and PDFs in place.
 - **Git** — history, blame, diffs, staging, and GitHub pull requests, with a separate worktree when a task
@@ -124,9 +127,6 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
 - **Code intelligence** — language servers for definitions, usages, diagnostics, hover, and code actions.
 - **Notes, clipboard history, and attachments** — keep decisions and reusable context beside the agents, and
   drop a file or an image straight into a prompt.
-- **Yours to rebind** — every keyboard shortcut, from the sidebar footer.
-- **Issue-ready diagnostics** — one click downloads a bounded, sanitized support bundle; opt-in recording adds
-  browser geometry and interaction timing without terminal output, prompts, source files, or credentials.
 - **Phone and remote** — touch layouts, local Wi-Fi, Google-authenticated hosted access, or your own bearer-token
   tunnel with an optional monitoring-only mode.
 
@@ -309,6 +309,8 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 - `termdeck` runs in the foreground; `termdeck service` installs, starts, stops, restarts, and tails a launchd
   or systemd user service.
 - `termdeck doctor` names any missing program with its install command.
+- One-click diagnostics downloads a bounded, sanitized support bundle; opt-in recording captures browser geometry
+  and interaction timing without terminal output, prompts, source files, or credentials.
 - Every flag is a `TERMDECK_*` variable, so a shell profile and a service unit are configured the same way.
 
 ## Security
