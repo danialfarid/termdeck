@@ -105,6 +105,17 @@ jobs:
           "${RUNNER_TEMP}/termdeck-wheel/bin/pip" install dist/*.whl
           "${RUNNER_TEMP}/termdeck-wheel/bin/termdeck" --version
           "${RUNNER_TEMP}/termdeck-wheel/bin/termdeck" --help >/dev/null
+      - name: Uninstall, reinstall, and boot packaged wheel on Linux
+        run: |
+          test -f /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- update
+          sudo apt-get install -y dtach ripgrep
+          "${RUNNER_TEMP}/termdeck-wheel/bin/pip" uninstall -y termdeck-agents
+          test ! -f "${RUNNER_TEMP}/termdeck-wheel/bin/termdeck"
+          "${RUNNER_TEMP}/termdeck-wheel/bin/pip" install dist/*.whl
+          "${RUNNER_TEMP}/termdeck-wheel/bin/termdeck" doctor
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/termdeck-wheel/bin/python" "$GITHUB_WORKSPACE/packaging/homebrew/smoke_installed.py" "$RUNNER_TEMP/termdeck-wheel/bin/termdeck"
       - uses: actions/upload-artifact@v7
         with:
           name: dist

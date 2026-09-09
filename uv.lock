@@ -399,7 +399,7 @@ wheels = [
 ]
 
 [[package]]
-name = "termdeck"
+name = "termdeck-agents"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },

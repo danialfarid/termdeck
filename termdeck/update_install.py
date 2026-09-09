@@ -14,6 +14,7 @@ from termdeck.service_installer import ServiceInstaller
 
 
 class UpdateInstallService:
+    DISTRIBUTION_NAME = "termdeck-agents"
     REPOSITORY_URL = "https://github.com/danialfarid/termdeck.git"
     BREW_FORMULA = "danialfarid/tap/termdeck"
 
@@ -92,6 +93,11 @@ class UpdateInstallService:
     def installation_plan(cls) -> dict[str, str]:
         package_root = Path(__file__).resolve().parent.parent
         python_path = Path(sys.executable).resolve()
+        try:
+            distribution = importlib.metadata.distribution(cls.DISTRIBUTION_NAME)
+        except importlib.metadata.PackageNotFoundError:
+            distribution = None
+        package_spec = cls.DISTRIBUTION_NAME if distribution is not None and not distribution.read_text("direct_url.json") else "git+" + cls.REPOSITORY_URL
         if platform.system() not in {"Darwin", "Linux"}:
             return {"command": "", "method": "", "reason": "Automatic installation supports macOS and Linux."}
         if "Cellar/termdeck/" in str(package_root) or "Cellar/termdeck/" in str(python_path):
@@ -112,21 +118,18 @@ class UpdateInstallService:
             uv = cls.installer_executable("uv")
             if not uv:
                 return {"command": "", "method": "uv", "reason": "uv is not available in the server PATH."}
-            command = f"{shlex.quote(uv)} tool install --force {shlex.quote('git+' + cls.REPOSITORY_URL)}"
+            command = f"{shlex.quote(uv)} tool install --upgrade --force {shlex.quote(package_spec)}"
             method = "uv"
         elif "/pipx/venvs/" in str(python_path) or "/pipx/venvs/" in str(package_root):
             pipx = cls.installer_executable("pipx")
             if not pipx:
                 return {"command": "", "method": "pipx", "reason": "pipx is not available in the server PATH."}
-            command = f"{shlex.quote(pipx)} upgrade termdeck"
+            command = f"{shlex.quote(pipx)} upgrade {cls.DISTRIBUTION_NAME}"
             method = "pipx"
         else:
-            try:
-                installer = importlib.metadata.distribution("termdeck").read_text("INSTALLER")
-            except importlib.metadata.PackageNotFoundError:
-                installer = None
+            installer = distribution.read_text("INSTALLER") if distribution is not None else None
             if (installer or "").strip() != "pip":
                 return {"command": "", "method": "", "reason": "Installation method was not recognized; see the release installation instructions."}
-            command = f"{shlex.quote(sys.executable)} -m pip install --upgrade {shlex.quote('git+' + cls.REPOSITORY_URL)}"
+            command = f"{shlex.quote(sys.executable)} -m pip install --upgrade {shlex.quote(package_spec)}"
             method = "pip"
         return {"command": command, "method": method, "reason": ""}

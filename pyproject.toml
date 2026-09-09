@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "termdeck"
+name = "termdeck-agents"
 dynamic = ["version"]
 description = "Browser terminal deck: persistent named terminals, a Monaco file viewer, and automatic claude/codex session resume across restarts."
 readme = "README.md"

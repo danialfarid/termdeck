@@ -2,7 +2,8 @@
 
 The steps to cut a TermDeck release. Only the maintainer needs this.
 
-TermDeck is distributed two ways, both from GitHub — there is no PyPI package (yet):
+TermDeck's Python distribution is `termdeck-agents`; its command and Homebrew formula remain `termdeck`.
+GitHub artifacts use the normalized prefix `termdeck_agents` starting with 0.12.2.
 
 - **Homebrew** (macOS): the [`danialfarid/homebrew-tap`](https://github.com/danialfarid/homebrew-tap) formula.
 - **uv / pipx** (everywhere): installed straight from the GitHub release tag.
@@ -15,7 +16,7 @@ The Homebrew tap repository:
 gh repo create danialfarid/homebrew-tap --public --description "Homebrew tap for termdeck"
 ```
 
-That's it — no PyPI account or token is needed for the current flow.
+Homebrew does not require PyPI publication. Set up trusted publishing below to enable PyPI releases.
 
 ---
 
@@ -38,7 +39,7 @@ ruff check .
 python -m build && python -m twine check dist/*
 
 python3 -m venv /tmp/termdeck-verify
-/tmp/termdeck-verify/bin/pip install dist/termdeck-0.2.0-py3-none-any.whl
+/tmp/termdeck-verify/bin/pip install dist/*.whl
 /tmp/termdeck-verify/bin/termdeck --version
 /tmp/termdeck-verify/bin/termdeck doctor
 ```
@@ -67,7 +68,7 @@ termdeck --version
 
 ### 5. Update the Homebrew tap
 
-Only after the release source archive is uploaded — the formula hashes the uploaded `termdeck-X.Y.Z.tar.gz`
+Only after the release source archive is uploaded — the formula hashes the uploaded `termdeck_agents-X.Y.Z.tar.gz`
 asset. The asset URL lets GitHub report aggregate download events without application telemetry.
 
 ```sh
@@ -108,8 +109,22 @@ gh release delete v0.2.0 --yes
 git push --delete origin v0.2.0
 ```
 
-## Adding PyPI later
+## PyPI trusted publishing
 
-If TermDeck is later published to PyPI, re-add a `publish-pypi` job to `release.yml` (create a `release`
-environment and a `PYPI_API_TOKEN` secret), point the Homebrew formula's `url` at the PyPI sdist, and switch
-the install docs to `pip install termdeck`.
+Register a pending publisher at https://pypi.org/manage/account/publishing/ with:
+
+- Project: `termdeck-agents`
+- Owner/repository: `danialfarid` / `termdeck`
+- Workflow: `publish-pypi.yml`
+- Environment: `pypi`
+
+Create the `pypi` GitHub environment with release-only protections and set the repository variable
+`PYPI_PUBLISH_ENABLED=true` after registration. Tagged releases then publish the same tested wheel and
+source archive uploaded to GitHub using short-lived OIDC credentials, without a stored PyPI token.
+To publish an existing release, run `gh workflow run publish-pypi.yml -f release_tag=vX.Y.Z`.
+Never publish under `termdeck`: that name belongs to another project.
+
+Until publication is verified, the user-facing install commands remain GitHub-based. After verification,
+switch the recommended Python install to `uv tool install termdeck-agents`. Homebrew continues using
+GitHub release assets and its existing install command. PyPI download events and GitHub asset counts are
+aggregate distribution statistics, not unique installations or active-user telemetry.

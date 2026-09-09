@@ -66,6 +66,10 @@ xdg-open http://127.0.0.1:8530
 
 That takes the current release from the default branch; append `@<tag>` to pin an older one.
 
+The Python package is named **`termdeck-agents`**; the command remains `termdeck`.
+See [installation and migration](docs/installation.md#pypi-and-migration-from-older-installations)
+for PyPI availability and upgrading older uv/pipx installations. `termdeck` on PyPI is a different project.
+
 `termdeck service install` runs TermDeck in the background and starts it at login.
 
 To update — sessions and settings stay in `~/.termdeck`, and live terminals keep running:
