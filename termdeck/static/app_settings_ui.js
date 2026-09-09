@@ -849,10 +849,38 @@ Object.assign(TermdeckApp.prototype, {
       () => { this.setBrowserBooleanSetting(BROWSER_TALL_WEBGL_KEY, !this.standardTallWebglEnabled()); }, null, false));
     pop.appendChild(this.buildActionRow("Export settings", "download",
       () => { pop.classList.add("hidden"); this.exportSettings(); }));
-    const version = document.createElement("div");
+    const versionRow = document.createElement("div");
+    versionRow.id = "settings-version-row";
+    versionRow.className = "settings-row";
+    const version = document.createElement("span");
     version.id = "settings-version";
     version.textContent = this.runningVersion ? `TermDeck ${this.runningVersion}` : "TermDeck · checking version…";
-    pop.appendChild(version);
+    const checkUpdates = document.createElement("button");
+    checkUpdates.id = "settings-check-updates";
+    checkUpdates.type = "button";
+    checkUpdates.title = "Check for updates";
+    checkUpdates.setAttribute("aria-label", "Check for updates");
+    const updateIcon = document.createElement("span");
+    updateIcon.className = "codicon codicon-refresh";
+    updateIcon.setAttribute("aria-hidden", "true");
+    checkUpdates.appendChild(updateIcon);
+    checkUpdates.onclick = async (event) => {
+      event.stopPropagation();
+      checkUpdates.disabled = true;
+      checkUpdates.title = "Checking…";
+      updateIcon.className = "codicon codicon-loading codicon-modifier-spin";
+      try {
+        const result = await this.checkForUpdates(true);
+        updateIcon.className = result.error ? "codicon codicon-warning"
+          : result.update_available ? "codicon codicon-arrow-up" : "codicon codicon-check";
+        checkUpdates.title = result.error ? `Retry update check: ${result.error}`
+          : result.update_available ? "Update available · Check again" : "Up to date · Check again";
+      } finally {
+        checkUpdates.disabled = false;
+      }
+    };
+    versionRow.append(version, checkUpdates);
+    pop.appendChild(versionRow);
     if (!this.runningVersion) void this.checkForUpdates();
     this.positionPopover(pop, anchor);
     this.updateEventlyDemoFeatureBanner();
@@ -2109,7 +2137,6 @@ Object.assign(TermdeckApp.prototype, {
   closeUnavailableFile() {
     const key = this.$("file-unavailable")?.dataset.fileKey || "";
     if (!key) return;
-    this.hideFileUnavailable();
     void this.closeFile(key);
   },
 
@@ -2697,6 +2724,8 @@ Object.assign(TermdeckApp.prototype, {
       closableKeys.push(key);
     }
     if (!closableKeys.length) return;
+    const unavailableKey = this.$("file-unavailable")?.dataset.fileKey;
+    if (unavailableKey && closableKeys.includes(unavailableKey)) this.hideFileUnavailable();
     const activeClosed = closableKeys.includes(this.activeFileKey);
     if (activeClosed) this.clearActiveFileGitHunks();
     if (this.fileHistoryTabKey !== null && closableKeys.includes(this.fileHistoryTabKey)) this.closeFileHistory(false);

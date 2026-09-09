@@ -6,9 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-09-09
+
+### Changed
+
+- Remove the project-title hover underline; the dropdown arrow indicates the project selector.
+- Give the project and group-header Search and + buttons roomier hover highlights.
+- Alternate the current terminal's browser-tab attention dot between top and bottom every two seconds.
+- Check for updates hourly while TermDeck is open, with a one-hour shared server cache and a manual
+  compact Check for updates icon button beside the version in Settings.
+
 ## [0.12.0] — 2026-09-08
 
 ### Fixed
+
+- Closing an unavailable or unsupported file clears its error panel through the shared tab-close path,
+  including the tab ×, context menu, and keyboard shortcut.
 
 - Terminal search preserves hyphenated identifiers and only highlights sessions with matching conversation text,
   instead of treating separate words scattered through a history chunk as a match.
@@ -692,7 +705,9 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/danialfarid/termdeck/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/danialfarid/termdeck/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/danialfarid/termdeck/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/danialfarid/termdeck/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/danialfarid/termdeck/compare/v0.10.0...v0.10.1
