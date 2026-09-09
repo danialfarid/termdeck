@@ -46,6 +46,13 @@ WantedBy=default.target
 
     @staticmethod
     def launch_argv() -> list[str]:
+        installed_module_path = str(Path(__file__).resolve())
+        cellar_marker = "/Cellar/termdeck/"
+        if cellar_marker in installed_module_path:
+            stable_console_script = Path(installed_module_path.split(cellar_marker, 1)[0]) / "opt" / "termdeck" / "bin" / ServiceInstaller.CONSOLE_SCRIPT_NAME
+            if not stable_console_script.is_file():
+                raise FileNotFoundError(stable_console_script)
+            return [str(stable_console_script)]
         console_script = Path(sys.executable).parent / ServiceInstaller.CONSOLE_SCRIPT_NAME
         if console_script.exists():
             return [str(console_script)]
