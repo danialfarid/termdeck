@@ -16,7 +16,8 @@ its job — `dtach` above all, because that is what keeps terminals alive when t
 `lsof` and `ps` are also used, and are present by default on both macOS and every mainstream Linux distro.
 
 > The Python distribution is **`termdeck-agents`**, while the command is still `termdeck`.
-> `termdeck` on PyPI is a different project. Until the first PyPI publication, use the GitHub commands below.
+> Install [termdeck-agents from PyPI](https://pypi.org/project/termdeck-agents/).
+> `termdeck` on PyPI is a different project.
 
 ---
 
@@ -45,19 +46,16 @@ termdeck service restart
 `uv` brings its own Python, so the system Python version doesn't matter.
 
 ```sh
-uv tool install "git+https://github.com/danialfarid/termdeck.git"
+uv tool install termdeck-agents
 ```
 
-Without a `@ref` that installs the default branch, which is where releases are cut from. Re-run the same
-command with `--force` to upgrade.
+This installs the latest published release. Upgrade with `uv tool upgrade termdeck-agents`;
+pin a release with `uv tool install termdeck-agents==0.12.3`.
 
-To install the newest tagged release instead, resolve the tag first — `git ls-remote` sorts tags by version
-and needs no GitHub account:
+For development builds or a specific Git reference, install directly from GitHub instead:
 
 ```sh
-TERMDECK_REPO=https://github.com/danialfarid/termdeck.git
-TERMDECK_TAG=$(git ls-remote --tags --refs --sort=-v:refname $TERMDECK_REPO | head -1 | sed 's#.*/##')
-uv tool install "git+$TERMDECK_REPO@$TERMDECK_TAG"
+uv tool install "git+https://github.com/danialfarid/termdeck.git@main"
 ```
 
 Append `@<tag>` yourself to pin an older release.
@@ -65,7 +63,7 @@ Append `@<tag>` yourself to pin an older release.
 ## pipx
 
 ```sh
-pipx install "git+https://github.com/danialfarid/termdeck.git"
+pipx install termdeck-agents
 ```
 
 ## pip
@@ -73,12 +71,12 @@ pipx install "git+https://github.com/danialfarid/termdeck.git"
 Only if you want it inside a specific environment rather than as a standalone tool:
 
 ```sh
-python3 -m pip install "git+https://github.com/danialfarid/termdeck.git"
+python3 -m pip install termdeck-agents
 ```
 
 ### PyPI and migration from older installations
 
-After the first PyPI publication, install with `uv tool install termdeck-agents`,
+Install with `uv tool install termdeck-agents`,
 `pipx install termdeck-agents`, or `python3 -m pip install termdeck-agents`.
 Upgrade with `uv tool upgrade termdeck-agents` or `pipx upgrade termdeck-agents`.
 
@@ -88,11 +86,11 @@ new package, and regenerate the service path. Do not delete `~/.termdeck`:
 ```sh
 termdeck service stop
 uv tool uninstall termdeck
-uv tool install "git+https://github.com/danialfarid/termdeck.git"
+uv tool install termdeck-agents
 termdeck service install
 ```
 
-For pipx, use `pipx uninstall termdeck` and `pipx install` with the same GitHub URL instead.
+For pipx, use `pipx uninstall termdeck` and `pipx install termdeck-agents` instead.
 Homebrew users do not need this migration. Terminal data, settings, and the command name are unchanged.
 
 ### Installing the external tools

@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Install published releases from PyPI with `uv tool install termdeck-agents`; Homebrew installation stays unchanged.
+
 ## [0.12.3] — 2026-09-09
 
 ### Fixed
