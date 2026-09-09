@@ -6,7 +6,7 @@ TermDeck's Python distribution is `termdeck-agents`; its command and Homebrew fo
 GitHub artifacts use the normalized prefix `termdeck_agents` starting with 0.12.2.
 
 - **Homebrew** (macOS): the [`danialfarid/homebrew-tap`](https://github.com/danialfarid/homebrew-tap) formula.
-- **uv / pipx** (everywhere): installed straight from the GitHub release tag.
+- **uv / pipx** (everywhere): `termdeck-agents` from PyPI, with GitHub reference installs available for development.
 
 ## One-time setup
 
@@ -121,10 +121,9 @@ Register a pending publisher at https://pypi.org/manage/account/publishing/ with
 Create the `pypi` GitHub environment with release-only protections and set the repository variable
 `PYPI_PUBLISH_ENABLED=true` after registration. Tagged releases then publish the same tested wheel and
 source archive uploaded to GitHub using short-lived OIDC credentials, without a stored PyPI token.
-To publish an existing release, run `gh workflow run publish-pypi.yml -f release_tag=vX.Y.Z`.
+To publish an existing release, run `gh workflow run publish-pypi.yml --ref vX.Y.Z -f release_tag=vX.Y.Z`.
 Never publish under `termdeck`: that name belongs to another project.
 
-Until publication is verified, the user-facing install commands remain GitHub-based. After verification,
-switch the recommended Python install to `uv tool install termdeck-agents`. Homebrew continues using
+The first PyPI release is 0.12.3; the recommended Python install is `uv tool install termdeck-agents`. Homebrew continues using
 GitHub release assets and its existing install command. PyPI download events and GitHub asset counts are
 aggregate distribution statistics, not unique installations or active-user telemetry.
