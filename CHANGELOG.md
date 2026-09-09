@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.3] — 2026-09-09
+
+### Fixed
+
+- Homebrew-installed background services use the stable executable path so upgrades do not leave the service pointing at a removed version.
+
 ## [0.12.2] — 2026-09-09
 
 ### Changed
@@ -714,7 +720,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.12.2...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.12.3...HEAD
+[0.12.3]: https://github.com/danialfarid/termdeck/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/danialfarid/termdeck/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/danialfarid/termdeck/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/danialfarid/termdeck/compare/v0.11.1...v0.12.0
