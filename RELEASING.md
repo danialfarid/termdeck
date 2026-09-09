@@ -67,7 +67,8 @@ termdeck --version
 
 ### 5. Update the Homebrew tap
 
-Only after the tag exists — the formula hashes the release tarball.
+Only after the release source archive is uploaded — the formula hashes the uploaded `termdeck-X.Y.Z.tar.gz`
+asset. The asset URL lets GitHub report aggregate download events without application telemetry.
 
 ```sh
 python packaging/homebrew/generate_formula.py

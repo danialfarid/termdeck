@@ -30,7 +30,7 @@ class HomebrewFormulaGenerator:
     """
 
     OWNER_REPO = "danialfarid/termdeck"
-    GITHUB_TARBALL_URL = "https://github.com/{owner_repo}/archive/refs/tags/v{version}.tar.gz"
+    GITHUB_TARBALL_URL = "https://github.com/{owner_repo}/releases/download/v{version}/termdeck-{version}.tar.gz"
     PYPI_JSON_URL = "https://pypi.org/pypi/{package}/json"
     PACKAGE_NAME = "termdeck"
     BUILD_BACKEND = "hatchling"

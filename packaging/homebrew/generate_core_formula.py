@@ -10,7 +10,7 @@ from pathlib import Path
 
 class CoreFormulaGenerator:
     PYTHON_VERSION = (3, 14)
-    RELEASE_URL = "https://github.com/danialfarid/termdeck/archive/refs/tags/v{version}.tar.gz"
+    RELEASE_URL = "https://github.com/danialfarid/termdeck/releases/download/v{version}/termdeck-{version}.tar.gz"
     PYPI_URL = "https://pypi.org/pypi/{name}/{version}/json"
     PROVIDED_PACKAGES = frozenset({"termdeck", "certifi", "pydantic", "pydantic-core", "annotated-types",
                                   "typing-extensions", "typing-inspection"})

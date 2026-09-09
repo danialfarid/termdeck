@@ -26,12 +26,17 @@ downloaded wheel instead of relying on a hard-coded package list. The rest are u
 This makes the formula **macOS-only** (Apple Silicon + Intel); Linux users install with `uv`/`pipx` from the
 GitHub release.
 
-TermDeck itself is still built from the GitHub release tarball (it is pure Python, so `hatchling` — installed
+TermDeck itself is built from the uploaded GitHub release source archive, not the automatic Git tag archive
+(it is pure Python, so `hatchling` — installed
 from its own wheel first — is all that is needed).
+
+The install and upgrade commands are unchanged. Downloads of this source archive appear in GitHub's release-asset
+counters. Those are download events, not unique installs or active users: CI and upgrades add events, while caches
+can avoid a download. No usage reporting is added to the application.
 
 ## Generating the formula
 
-Run **after** the `vX.Y.Z` tag exists on GitHub (the generator hashes the release tarball and resolves the
+Run **after** the `vX.Y.Z` release source archive is uploaded (the generator hashes the archive and resolves the
 exact dependency set):
 
 ```sh
