@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Homebrew downloads the published release source asset, allowing aggregate GitHub download counts without
+  changing install commands or adding application telemetry.
+
 ## [0.12.1] — 2026-09-09
 
 ### Changed
