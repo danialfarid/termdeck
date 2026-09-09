@@ -91,6 +91,12 @@ class HistorySearchIndex:
         chunk_cache: dict[tuple[str, int, int], list[dict[str, object]]] = {}
         for source_path, agent_kind, session_id, cwd, title, line_no, _line_end, byte_start, byte_end, mtime_ns in rows:
             source = Path(source_path)
+            cache_key = (source_path, int(byte_start), int(byte_end))
+            if cache_key not in chunk_cache:
+                chunk_cache[cache_key] = self._matching_document_lines(
+                    source, int(byte_start), int(byte_end), int(line_no), query, include_operations)
+            if not chunk_cache[cache_key]:
+                continue
             parent_session_id = self._parent_session_id_for_source(source)
             parent_source = self._parent_source_path(source)
             parent_title, parent_cwd = parent_metadata.get(str(parent_source), (None, None)) if parent_source else (None, None)
@@ -102,10 +108,6 @@ class HistorySearchIndex:
             result["count"] = int(result["count"]) + 1
             result_matches = result["matches"]
             if isinstance(result_matches, list) and len(result_matches) < 6:
-                cache_key = (source_path, int(byte_start), int(byte_end))
-                if cache_key not in chunk_cache:
-                    chunk_cache[cache_key] = self._matching_document_lines(
-                        source, int(byte_start), int(byte_end), int(line_no), query, include_operations)
                 for match in chunk_cache[cache_key]:
                     if len(result_matches) >= 6:
                         break
@@ -135,7 +137,7 @@ class HistorySearchIndex:
     @classmethod
     def _matching_document_lines(cls, path: Path, byte_start: int, byte_end: int,
                                  line_start: int, query: str, include_operations: bool) -> list[dict[str, object]]:
-        terms = [term.casefold() for term in re.findall(r"[\w]+", query, re.UNICODE)]
+        terms = [term.casefold() for term in query.split()]
         if not terms:
             return []
         try:
@@ -153,9 +155,6 @@ class HistorySearchIndex:
                 decoded.append((line_start + offset, text, cls._line_timestamp(raw_line)))
         matching = [(line_no, text, timestamp) for line_no, text, timestamp in decoded
                     if all(term in text.casefold() for term in terms)]
-        if not matching:
-            matching = [(line_no, text, timestamp) for line_no, text, timestamp in decoded
-                        if any(term in text.casefold() for term in terms)]
         return [{"line_no": line_no, "line_end": line_no, "text": cls._matching_text_excerpt(text, terms),
                  "timestamp": timestamp}
                 for line_no, text, timestamp in matching[:6]]
@@ -210,7 +209,7 @@ class HistorySearchIndex:
                           self._line_text(path, raw.decode(errors="replace"), conversation_only=not include_operations),
                           self._line_timestamp(raw.decode(errors="replace")))
                          for index, raw in enumerate(raw_lines)]
-        terms = [term.lower() for term in re.findall(r"[\w]+", query, re.UNICODE)]
+        terms = [term.lower() for term in query.split()]
         target_index = next((index for index, (line, text, _) in enumerate(decoded_lines)
                              if line == int(line_no) and text), -1)
         if target_index < 0:

@@ -10,6 +10,9 @@ Object.assign(TermdeckApp.prototype, {
       const response = await fetch(`/api/update/status${force ? "?force=true" : ""}`);
       if (!response.ok) return;
       const update = await response.json();
+      this.runningVersion = String(update.current_version || "");
+      const versionLabel = this.$("settings-version");
+      if (versionLabel) versionLabel.textContent = `TermDeck ${this.runningVersion}`;
       const latestVersion = String(update.latest_version || "");
       const dismissed = localStorage.getItem("termdeck.dismissed-update-version");
       if (!update.update_available || (!force && dismissed === latestVersion)) {
@@ -19,7 +22,24 @@ Object.assign(TermdeckApp.prototype, {
       const link = this.$("update-notice-link");
       link.href = String(update.release_url || "https://github.com/danialfarid/termdeck/releases");
       link.textContent = `TermDeck ${latestVersion} is available`;
-      link.title = `Installed ${update.current_version} · Open release notes`;
+      const installation = update.installation;
+      const canInstall = !!installation?.command && !this.readOnlyMode;
+      this.updateInstallSupported = canInstall;
+      this.updateInstallTargetVersion = latestVersion;
+      this.updateInstallStartingVersion = this.runningVersion;
+      link.title = canInstall ? `Installed ${update.current_version} · Click to update with ${installation.method}`
+        : `Installed ${update.current_version} · ${installation?.reason || "Open release notes"}`;
+      link.onclick = (event) => {
+        event.preventDefault();
+        const panel = this.$("update-install-panel");
+        panel.classList.toggle("hidden");
+        if (panel.classList.contains("hidden")) return;
+        this.$("update-install-method").textContent = `Installed ${update.current_version} · ${installation?.method || "Manual update"} · Runs on the TermDeck server`;
+        this.$("update-install-command").textContent = installation?.command || installation?.reason || "See the release installation instructions.";
+        this.$("update-install-run").disabled = !canInstall;
+        this.$("update-install-run").onclick = () => this.installAvailableUpdate();
+        void this.monitorUpdateInstall();
+      };
       this.$("update-notice-close").onclick = () => {
         localStorage.setItem("termdeck.dismissed-update-version", latestVersion);
         notice.classList.add("hidden");
@@ -28,6 +48,93 @@ Object.assign(TermdeckApp.prototype, {
     } catch (error) {
       notice.classList.add("hidden");
     }
+  },
+
+
+  async installAvailableUpdate() {
+    if (this.updateInstallPending || this.readOnlyMode) return;
+    this.updateInstallPending = true;
+    this.$("update-install-run").disabled = true;
+    this.$("update-install-state").textContent = "Starting…";
+    try {
+      const response = await fetch("/api/update/install", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (!response.ok) {
+        throw new Error(`Update request failed (${response.status}): ${await response.text()}`);
+      }
+      const started = await response.json();
+      this.updateInstallRestartSeen = false;
+      this.updateInstallInstanceId = started.instance_id;
+      this.updateInstallReconnectUntil = Date.now() + 120000;
+      await this.monitorUpdateInstall();
+    } catch (error) {
+      this.$("update-install-state").textContent = "Could not start update";
+      this.$("update-install-output").textContent = error.message;
+      this.$("update-install-run").disabled = !this.updateInstallSupported;
+    } finally {
+      this.updateInstallPending = false;
+    }
+  },
+
+  async monitorUpdateInstall() {
+    clearTimeout(this.updateInstallTimer);
+    try {
+      const response = await fetch("/api/update/install", { signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error(`Could not read update progress (${response.status}): ${await response.text()}`);
+      const result = await response.json();
+      if (this.updateInstallInstanceId && result.instance_id !== this.updateInstallInstanceId) {
+        this.finishUpdateReconnection();
+        return;
+      }
+      const running = result.state === "running" || result.state === "restarting";
+      if (running && !this.updateInstallInstanceId) this.updateInstallInstanceId = result.instance_id;
+      if (result.state === "restarting" && !this.updateInstallRestartSeen) {
+        this.updateInstallRestartSeen = true;
+        this.updateInstallReconnectUntil = Date.now() + 120000;
+      }
+      this.$("update-install-state").textContent = { idle: "Ready", running: "Updating…", restarting: "Restarting service…", restart_failed: "Installed · restart failed", succeeded: "Installed · manual server restart needed", failed: "Update failed" }[result.state] || result.state;
+      const output = this.$("update-install-output");
+      const atBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 30;
+      output.textContent = result.output;
+      if (atBottom) output.scrollTop = output.scrollHeight;
+      this.$("update-install-run").disabled = running || !this.updateInstallSupported || result.state === "succeeded";
+      if (running && !this.$("update-install-panel").classList.contains("hidden") && !this.$("update-notice").classList.contains("hidden")) {
+        this.updateInstallTimer = setTimeout(() => this.monitorUpdateInstall(), 1000);
+      }
+    } catch (error) {
+      if (this.updateInstallInstanceId && await this.updatedServerVersionIsRunning()) {
+        this.finishUpdateReconnection();
+        return;
+      }
+      if (this.updateInstallInstanceId && Date.now() < this.updateInstallReconnectUntil) {
+        this.$("update-install-state").textContent = "Waiting for server to reconnect…";
+        this.updateInstallTimer = setTimeout(() => this.monitorUpdateInstall(), 1500);
+        return;
+      }
+      this.$("update-install-state").textContent = "Progress unavailable · reopen to retry";
+      this.$("update-install-output").textContent += `\n${error.message}`;
+    }
+  },
+
+  async updatedServerVersionIsRunning() {
+    try {
+      const response = await fetch("/api/update/status", { signal: AbortSignal.timeout(5000) });
+      if (!response.ok) return false;
+      const status = await response.json();
+      return !!this.updateInstallTargetVersion && status.current_version === this.updateInstallTargetVersion
+        && status.current_version !== this.updateInstallStartingVersion;
+    } catch (error) {
+      return false;
+    }
+  },
+
+  finishUpdateReconnection() {
+    clearTimeout(this.updateInstallTimer);
+    this.updateInstallInstanceId = null;
+    this.$("update-install-state").textContent = "Update complete · server is back online";
+    this.$("update-install-output").textContent += "\nTermDeck is back online. Reload this page to load the updated UI.\n";
+    this.$("update-install-run").textContent = "Reload page";
+    this.$("update-install-run").disabled = false;
+    this.$("update-install-run").onclick = () => location.reload();
   },
 
 
@@ -1657,6 +1764,10 @@ Object.assign(TermdeckApp.prototype, {
     const summary = document.createElement("div");
     summary.className = "search-summary";
     summary.textContent = "searching…";
+    const spinner = document.createElement("span");
+    spinner.className = "terminal-search-spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    summary.prepend(spinner);
     resultsEl.appendChild(summary);
     const root = this.searchRoot();
     const globParts = this.splitFileGlobTokens(this.fileGlobForMode("search"));

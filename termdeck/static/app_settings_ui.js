@@ -849,6 +849,11 @@ Object.assign(TermdeckApp.prototype, {
       () => { this.setBrowserBooleanSetting(BROWSER_TALL_WEBGL_KEY, !this.standardTallWebglEnabled()); }, null, false));
     pop.appendChild(this.buildActionRow("Export settings", "download",
       () => { pop.classList.add("hidden"); this.exportSettings(); }));
+    const version = document.createElement("div");
+    version.id = "settings-version";
+    version.textContent = this.runningVersion ? `TermDeck ${this.runningVersion}` : "TermDeck · checking version…";
+    pop.appendChild(version);
+    if (!this.runningVersion) void this.checkForUpdates();
     this.positionPopover(pop, anchor);
     this.updateEventlyDemoFeatureBanner();
   },

@@ -42,6 +42,7 @@ class ReplayRecorder:
         self.full_replay_enabled = True
         self._total_bytes = 0
         self._debounce_task: asyncio.Task[None] | None = None
+        self._checkpoint_lock = asyncio.Lock()
 
     def stop(self) -> None:
         if self._debounce_task is not None:
@@ -186,8 +187,13 @@ class ReplayRecorder:
         for ms, replay_kind, compaction_generation, target, payload, pending_payload, replace in \
                 self._pending_snapshots(True):
             try:
-                writer = self._write_checkpoint_atomically if replace else self._append_checkpoint_bytes
-                await asyncio.to_thread(writer, target, payload)
+                async with self._checkpoint_lock:
+                    if self._manager._sessions.get(ms.record.session_id) is not ms:
+                        continue
+                    if replay_kind == self.RAW_KIND and not ms.raw_replay_buffer:
+                        continue
+                    writer = self._write_checkpoint_atomically if replace else self._append_checkpoint_bytes
+                    await asyncio.to_thread(writer, target, payload)
             except OSError as checkpoint_error:
                 print(f"termdeck replay checkpoint failed for {ms.record.session_id}: {checkpoint_error}", flush=True)
                 continue
@@ -387,13 +393,31 @@ class ReplayRecorder:
         self._total_bytes += len(replay)
         ms.raw_replay_compaction_generation += 1
 
-    def discard(self, ms) -> None:
-        self._total_bytes = max(0, self._total_bytes - len(ms.raw_replay_buffer))
-        ms.raw_replay_buffer.clear()
-        ms.raw_replay_title_carry = b""
-        ms.raw_replay_last_title = b""
-        ms.raw_replay_checkpoint_pending.clear()
-        ms.raw_replay_compaction_generation += 1
+    async def discard(self, ms) -> None:
+        async with self._checkpoint_lock:
+            if ms.record.agent_kind == agents.ClaudeCli.kind:
+                self.raw_path(ms.record.session_id).unlink(missing_ok=True)
+            self._total_bytes = max(0, self._total_bytes - len(ms.raw_replay_buffer))
+            ms.raw_replay_buffer.clear()
+            ms.raw_replay_title_carry = b""
+            ms.raw_replay_last_title = b""
+            ms.raw_replay_checkpoint_pending.clear()
+            ms.raw_replay_compaction_generation += 1
+
+    def remove_closed_claude_replays(self) -> tuple[int, int]:
+        removed_files = removed_bytes = 0
+        for record in self._manager._closed_store.load_all():
+            session_id = str(record["session_id"])
+            if record["agent_kind"] != agents.ClaudeCli.kind or session_id in self._manager._sessions:
+                continue
+            if not re.fullmatch(r"[a-zA-Z0-9_-]+", session_id):
+                raise ValueError("invalid closed session ID for replay cleanup")
+            target = self.raw_path(session_id)
+            if target.is_file():
+                removed_bytes += target.stat().st_size
+                target.unlink()
+                removed_files += 1
+        return removed_files, removed_bytes
 
     # -- replay serving ----------------------------------------------------
 

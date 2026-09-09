@@ -236,6 +236,8 @@ Object.assign(TermdeckApp.prototype, {
     this.historySearchResults = [];
     this.terminalSearchMatches.clear();
     this.terminalSearchClosedMatches.clear();
+    const summary = this.$("terminal-search-summary");
+    if (summary) summary.textContent = this.terminalSearchGroupName();
     this.renderList();
     if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
   },
@@ -318,7 +320,13 @@ Object.assign(TermdeckApp.prototype, {
     this.expandGlobalTerminalSearchClosedSections();
     this.renderList();
     const searchingSummary = this.$("terminal-search-summary");
-    if (searchingSummary) searchingSummary.textContent = "searching…";
+    if (searchingSummary) {
+      searchingSummary.textContent = "searching…";
+      const spinner = document.createElement("span");
+      spinner.className = "terminal-search-spinner";
+      spinner.setAttribute("aria-hidden", "true");
+      searchingSummary.prepend(spinner);
+    }
     if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
     try {
       const historyParams = new URLSearchParams({ q: query, include_operations: String(this.historySearchOperations) });

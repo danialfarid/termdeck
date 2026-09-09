@@ -247,6 +247,9 @@ class TerminalSessionManager:
             ms.lazy_start_pending = True
             self.replay.restore_saved_buffers(ms)
         self.replay.enforce_total_limit()
+        removed_files, removed_bytes = self.replay.remove_closed_claude_replays()
+        if removed_files:
+            print(f"termdeck removed {removed_files} closed Claude replay files ({removed_bytes} bytes)", flush=True)
         # Do not launch old terminals merely because the web server came up.
         # Reconcile their dtach sockets instead: live sockets remain running
         # and are attached lazily when opened; dead sockets are safe to clear.
@@ -1627,7 +1630,7 @@ class TerminalSessionManager:
             ms.detect_task.cancel()
         if not await self._terminate_proc(ms):
             return False
-        self.replay.discard(ms)
+        await self.replay.discard(ms)
         self._sessions.pop(session_id)
         self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DELETED})
         if not ms.record.title_user_set and ms.cli_title:
@@ -1674,7 +1677,7 @@ class TerminalSessionManager:
             ms.detect_task.cancel()
         if not await self._terminate_proc(ms):
             return False
-        self.replay.discard(ms)
+        await self.replay.discard(ms)
         self._sessions.pop(session_id)
         self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DELETED})
         self._persist()

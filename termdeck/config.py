@@ -40,7 +40,7 @@ class TermdeckConfig:
     # per window however much it writes, and each append carries only the bytes since the last one.
     REPLAY_CHECKPOINT_DEBOUNCE_SECONDS = 1.0
     RAW_REPLAY_SESSION_BYTES = 24_000_000
-    RAW_REPLAY_TOTAL_BYTES = 100_000_000
+    RAW_REPLAY_TOTAL_BYTES = 5_000_000_000
     # OFF (0). Scrolling the screen into scrollback ahead of a redraw's erase does keep a compaction
     # from taking the conversation with it, but a cursor jump does not say which redraw is a
     # compaction: a real session makes ~1,137 jumps past 20 rows per 24MB, nearly all ordinary

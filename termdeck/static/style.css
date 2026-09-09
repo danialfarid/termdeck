@@ -112,6 +112,8 @@ body:not(.vscode-mode) #sidebar { color: var(--sidebar-text-color); --text: var(
 #terminal-search-inline-close { flex: none; color: var(--dim); }
 #terminal-search-inline-close:hover { color: var(--text); border-color: var(--active-border); background: var(--active-bg); }
 #terminal-search-summary { grid-column: 1 / -1; min-width: 0; padding: 0 2px 1px; color: var(--dim); font: calc(var(--tree-font-size) - 2px)/1.2 Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.terminal-search-spinner { display: inline-block; box-sizing: border-box; width: 14px; height: 14px; margin-right: 6px; border: 2px solid var(--dim); border-top-color: var(--accent); border-right-color: var(--accent); border-radius: 50%; vertical-align: -2px; animation: termdeck-report-spin 0.8s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .terminal-search-spinner { animation: none; } }
 .terminal-history-title-matches { display: flex; flex-direction: column; gap: 2px; padding: 3px 4px 6px; border-bottom: 1px solid var(--border); }
 .terminal-history-title-match { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 5px 6px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text); cursor: pointer; text-align: left; font: var(--tree-font-size)/1.2 Menlo, monospace; }
 .terminal-history-title-match:hover, .terminal-history-title-match:focus { border-color: var(--active-border); background: var(--active-bg); outline: none; }
@@ -496,6 +498,15 @@ body.termdeck-read-only #history-prompt { color: var(--dim); cursor: not-allowed
 #update-notice a:hover { color: var(--accent); text-decoration: underline; }
 #update-notice button { flex: none; width: 22px; height: 22px; padding: 0; border: 0; background: transparent; color: var(--dim); cursor: pointer; }
 #update-notice button:hover { color: var(--text); }
+#update-notice { flex-wrap: wrap; }
+#update-install-panel { flex: 0 0 100%; min-width: 0; color: var(--text); }
+#update-install-panel.hidden { display: none; }
+#update-install-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; padding: 10px; background: var(--panel); border: 1px solid var(--active-border); border-radius: 5px; font: inherit; line-height: 1.4; user-select: text; }
+#update-install-output { max-height: min(320px, 40vh); }
+#update-install-output:empty { display: none; }
+#update-install-panel button { width: auto; height: auto; padding: 6px 10px; background: var(--panel); border: 1px solid var(--active-border); color: var(--text); border-radius: 5px; }
+#update-install-panel button:disabled { opacity: .6; cursor: default; }
+#update-install-state { margin-left: 8px; }
 #lsp-status { flex: none; max-width: 180px; overflow: hidden; color: var(--green); font-family: Menlo, monospace; font-size: var(--ui-font-size); text-overflow: ellipsis; white-space: nowrap; opacity: 0.82; }
 #lsp-status.unavailable { color: #e8a15b; font-weight: 600; }
 #lsp-status.installable { cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); text-underline-offset: 2px; }
@@ -1679,6 +1690,7 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
 #settings-popover.lsp-settings-expanded { width: min(620px, calc(100vw - 24px)); }
 #settings-popover.lsp-install-options-popover { width: min(500px, calc(100vw - 24px)); }
 #settings-popover.hidden { display: none; }
+#settings-version { margin-top: 10px; padding-top: 7px; border-top: 1px solid var(--border); font-size: max(10px, calc(var(--ui-font-size) - 2px)); color: var(--dim); opacity: .7; }
 .lsp-install-options-heading { margin-bottom: 8px; color: var(--text); font: 600 calc(var(--ui-font-size) + 1px)/1.2 -apple-system, sans-serif; }
 .lsp-install-option { display: flex; align-items: center; gap: 10px; padding: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
 .lsp-install-option + .lsp-install-option { margin-top: 7px; }

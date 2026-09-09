@@ -116,7 +116,8 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
 - **Never lose a half-written prompt** — what you have typed is saved as you type. Refresh the page, restart
   the server, come back tomorrow: it is still in the box, and everything you have sent is in the history.
 - **Notifications** — attention and finished runs reach you while the tab is in the background, and a quiet
-  release badge appears when a newer TermDeck version is available. Nothing updates automatically.
+  release badge appears when a newer TermDeck version is available. Expand it to preview the upgrade command,
+  then click Run update to install on the machine hosting TermDeck, with progress and errors shown in place.
 - **Search and hand off across sessions** — find sessions, prompts, responses, file names, and code across a
   project, then send selected or copied context from a terminal, transcript, file, or note straight to another
   agent without rebuilding the prompt.

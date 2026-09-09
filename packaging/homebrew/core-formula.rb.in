@@ -1,0 +1,62 @@
+class Termdeck < Formula
+  include Language::Python::Virtualenv
+
+  desc "Manage persistent coding-agent and shell sessions in a browser"
+  homepage "https://github.com/danialfarid/termdeck"
+  url "@RELEASE_URL@"
+  sha256 "@RELEASE_SHA256@"
+  license "Apache-2.0"
+
+  depends_on "rust" => :build
+  depends_on "certifi" => :no_linkage
+  depends_on "dtach"
+  depends_on "pydantic" => :no_linkage
+  depends_on "python@3.14"
+  depends_on "ripgrep"
+
+  on_linux do
+    on_arm do
+      depends_on "gcc" => :build
+
+      fails_with :gcc do
+        version "14"
+        cause "GCC PR119372 miscompiles pointer-authenticated returns in native Python extensions"
+      end
+    end
+  end
+
+@RESOURCES@
+  def install
+    virtualenv_install_with_resources system_site_packages: false
+  end
+
+  service do
+    run [opt_bin/"termdeck"]
+    keep_alive true
+    log_path var/"log/termdeck.log"
+    error_log_path var/"log/termdeck.log"
+  end
+
+  test do
+    assert_match "termdeck #{version}", shell_output("#{bin}/termdeck --version")
+    ENV["TERMDECK_DATA_DIR"] = (testpath/"state").to_s
+    ENV["TERMDECK_DEFAULT_CWD"] = testpath.to_s
+    ENV["TERMDECK_FILE_ROOT"] = testpath.to_s
+    ENV["TERMDECK_HOST"] = "127.0.0.1"
+    ENV["TERMDECK_LAN_PORT"] = free_port.to_s
+    port = free_port
+    ENV["TERMDECK_PORT"] = port.to_s
+    pid = spawn bin/"termdeck", [:out, :err] => (testpath/"server.log").to_s
+    begin
+      sessions = shell_output("curl --fail --silent --retry 10 --retry-connrefused --retry-delay 1 " \
+                              "--max-time 5 http://127.0.0.1:#{port}/api/sessions")
+      assert_equal [], JSON.parse(sessions)
+      page = shell_output("curl --fail --silent http://127.0.0.1:#{port}/static/app.js")
+      assert_match "class TermdeckApp", page
+      system "python3.14", "-m", "pip", "--python", libexec/"bin/python", "check"
+    ensure
+      Process.kill("TERM", pid)
+      Process.wait(pid)
+    end
+  end
+end

@@ -52,6 +52,7 @@ from termdeck.state_backup import StateBackupManager
 from termdeck.stats_service import ResourceStatsService
 from termdeck.support_bundle import SupportBundleBuilder
 from termdeck.update_check import UpdateCheckService
+from termdeck.update_install import UpdateInstallService
 from termdeck.transcript_service import TranscriptService
 from termdeck.util import TimeUtil
 from termdeck.worktree_service import GitWorktreeService, WorktreeFolderExists, WorktreeMetadata
@@ -619,6 +620,7 @@ class TermdeckServer:
         self.update_check = UpdateCheckService(TermdeckConfig.UPDATE_CHECK_FILE, TermdeckConfig.UPDATE_CHECK_CACHE_SECONDS,
                                                TermdeckConfig.UPDATE_CHECK_TIMEOUT_SECONDS)
         self.codex_models = CodexModelCatalog()
+        self.update_install = UpdateInstallService()
         self.manager: TerminalSessionManager | None = None
         if not self.recovery_mode:
             self.manager = TerminalSessionManager(self.state_backup)
@@ -728,6 +730,8 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_ACCESS_LOGIN_ROUTE, response_model=None)(self._access_login)
         app.post(TermdeckConfig.API_ACCESS_LOGOUT_ROUTE, response_model=None)(self._access_logout)
         app.get(TermdeckConfig.API_UPDATE_STATUS_ROUTE, response_model=None)(self._update_status)
+        app.get("/api/update/install", response_model=None)(self._update_install_status)
+        app.post("/api/update/install", response_model=None)(self._start_update_install)
         app.get(TermdeckConfig.LLMS_ROUTE, response_model=None)(self._llms_document)
         app.get(TermdeckConfig.PROJECT_PAGE_ROUTE, response_model=None)(self._project_page)
         app.get(TermdeckConfig.PROJECT_NAVIGATION_PAGE_ROUTE, response_model=None)(self._project_navigation_page)
@@ -1712,7 +1716,22 @@ class TermdeckServer:
     async def _update_status(self, force: bool = False) -> dict[str, object]:
         from termdeck import __version__
 
-        return await self.update_check.status(__version__, force)
+        status = await self.update_check.status(__version__, force)
+        status["installation"] = UpdateInstallService.installation_plan()
+        return status
+
+    async def _update_install_status(self) -> dict[str, str | int | None]:
+        return self.update_install.status()
+
+    async def _start_update_install(self, request: Request) -> dict[str, str | int | None]:
+        if self.access_control.read_only:
+            raise HTTPException(status_code=403, detail="TermDeck is running in read-only mode")
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+            raise HTTPException(status_code=415, detail="Update requests require application/json")
+        try:
+            return self.update_install.start()
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
     async def _index(self) -> FileResponse:
         index_file = "recovery.html" if self.recovery_mode else TermdeckConfig.INDEX_FILE

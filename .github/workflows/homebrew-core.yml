@@ -1,0 +1,48 @@
+name: Homebrew core candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing stable release version (without v)
+        required: true
+        default: "0.11.1"
+
+permissions:
+  contents: read
+
+jobs:
+  source-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Homebrew/actions/setup-homebrew@master
+      - name: Install resolver Python
+        run: brew install python@3.14
+      - name: Generate checksummed source formula
+        run: |
+          brew tap-new termdeck/core-check
+          candidate="$(brew --repository termdeck/core-check)/Formula/termdeck.rb"
+          "$(brew --prefix python@3.14)/bin/python3.14" packaging/homebrew/generate_core_formula.py "$RELEASE_VERSION" > "$candidate"
+          cp "$candidate" "${RUNNER_TEMP}/termdeck.rb"
+          ruby -c "$candidate"
+      - name: Build from source and exercise isolated HTTP server
+        run: |
+          brew install --build-from-source termdeck/core-check/termdeck
+          brew test termdeck/core-check/termdeck
+          "$(brew --prefix termdeck)/libexec/bin/python" packaging/homebrew/smoke_installed.py "$(brew --prefix)/bin/termdeck"
+          brew audit --strict --online termdeck/core-check/termdeck
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: core-formula-${{ matrix.os }}
+          path: ${{ runner.temp }}/termdeck.rb

@@ -6,8 +6,33 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-09-08
+
+### Fixed
+
+- Terminal search preserves hyphenated identifiers and only highlights sessions with matching conversation text,
+  instead of treating separate words scattered through a history chunk as a match.
+- Update progress recognizes a restarted release even when that release lacks the new progress endpoint,
+  instead of remaining on “Waiting for server to reconnect”.
+
+### Added
+
+- A small version readout at the bottom of Settings shows the running TermDeck version.
+
+- Show a visible progress spinner beside terminal and file-content search messages while results are loading.
+- A separate Homebrew core source-build candidate, source-archive checksum generator, and manually triggered
+  macOS/Linux packaging validation workflow prepare official packaging without changing the existing tap.
+  Installed-package smoke checks exercise isolated server startup and real shell input/output through dtach.
+
+- Expand the update notification to preview the detected Homebrew, uv, pipx, pip, or Git command. Run it explicitly
+  and follow progress, output, and errors in place. Successful updates automatically restart an installed
+  TermDeck service; the panel reconnects and offers to reload the updated UI.
+
 ### Changed
 
+- Closing Claude sessions deletes their raw replay files; startup also removes replay files for already-closed
+  Claude sessions. Recently closed entries and agent transcripts are retained.
+- Increase the shared terminal replay budget from 100 MB to 5 GB while retaining the 24 MB per-terminal limit.
 - The README now leads with parallel coding-agent management and Transcript mode, with worktrees matched to the
   terminal workflow demo and the main benefits ordered around the agent workflow.
 - The README now distinguishes TermDeck's independent persistent agent processes from editor-owned terminal panels,
