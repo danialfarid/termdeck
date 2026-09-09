@@ -12,7 +12,7 @@ from pathlib import Path
 class HomebrewFormulaGenerator:
     """Emits the Homebrew formula for termdeck, built entirely from prebuilt CPython 3.13 wheels.
 
-    termdeck itself is NOT on PyPI — the formula builds it from the GitHub release tarball (pure Python, so
+    The formula builds TermDeck from the GitHub release tarball (pure Python, so
     hatchling is enough). Its dependencies ARE on PyPI, and the important design choice is to install them
     from WHEELS rather than sdists: a source build would drag in a Rust toolchain (pydantic-core builds via
     maturin/setuptools-rust) plus a C compiler, and Homebrew's install sandbox has no network, so every build
@@ -30,9 +30,9 @@ class HomebrewFormulaGenerator:
     """
 
     OWNER_REPO = "danialfarid/termdeck"
-    GITHUB_TARBALL_URL = "https://github.com/{owner_repo}/releases/download/v{version}/termdeck-{version}.tar.gz"
+    GITHUB_TARBALL_URL = "https://github.com/{owner_repo}/releases/download/v{version}/termdeck_agents-{version}.tar.gz"
     PYPI_JSON_URL = "https://pypi.org/pypi/{package}/json"
-    PACKAGE_NAME = "termdeck"
+    PACKAGE_NAME = "termdeck-agents"
     BUILD_BACKEND = "hatchling"
     PYTHON_TAG = "3.13"
     PYTHON_FORMULA = "python@3.13"
