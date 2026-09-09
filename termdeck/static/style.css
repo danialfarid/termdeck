@@ -80,7 +80,7 @@ body:not(.vscode-mode) #sidebar { color: var(--sidebar-text-color); --text: var(
 #file-header-controls .codicon { font-size: calc(12px * var(--ui-scale)); }
 #worktree-select { color: var(--dim); font: calc(var(--sidebar-font-size) - 3px)/1.2 Menlo, Monaco, monospace; padding: 1px 0; }
 #worktree-select:hover { color: var(--accent); }
-#project-add-btn, #project-terminal-search-btn { display: grid; place-items: center; flex: none; width: 22px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--dim); cursor: pointer; }
+#project-add-btn, #project-terminal-search-btn { display: grid; place-items: center; flex: none; width: calc(26px * var(--ui-scale)); height: calc(26px * var(--ui-scale)); padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--dim); cursor: pointer; }
 #project-add-btn:hover, #project-terminal-search-btn:hover, #project-terminal-search-btn.on { border-color: var(--active-border); background: var(--active-bg); color: var(--accent); }
 #project-terminal-search-btn .codicon { font-size: calc(12px * var(--ui-scale)); }
 #git-new-branch, #notebook-new { display: grid; place-items: center; }
@@ -101,7 +101,6 @@ body:not(.vscode-mode) #sidebar { color: var(--sidebar-text-color); --text: var(
 #worktree-header-row .codicon { font-size: 12px; }
 #app-title { font-weight: 700; letter-spacing: 0.1em; font-size: calc(var(--ui-font-size) + 1px); color: var(--accent); text-transform: uppercase; }
 #project-select { color: var(--accent); font-family: inherit; font-size: var(--project-font-size); font-weight: 400; letter-spacing: 0.02em; line-height: 1.2; padding: 1px 0 1px 4px; text-decoration: none; }
-#project-select:hover { text-decoration: underline; text-underline-offset: 3px; }
 #new-session-btn { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; width: 26px; height: 26px; font-size: 16px; line-height: 1; cursor: pointer; }
 #new-session-btn:hover { border-color: var(--accent); color: var(--accent); }
 #terminal-search-inline { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 5px; margin: 0 4px 5px; padding: 4px 5px; border: 1px solid var(--active-border); border-radius: 6px; background: color-mix(in srgb, var(--panel2) 88%, var(--accent) 12%); }
@@ -1690,7 +1689,10 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
 #settings-popover.lsp-settings-expanded { width: min(620px, calc(100vw - 24px)); }
 #settings-popover.lsp-install-options-popover { width: min(500px, calc(100vw - 24px)); }
 #settings-popover.hidden { display: none; }
-#settings-version { margin-top: 10px; padding-top: 7px; border-top: 1px solid var(--border); font-size: max(10px, calc(var(--ui-font-size) - 2px)); color: var(--dim); opacity: .7; }
+#settings-version-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding-top: 7px; border-top: 1px solid var(--border); font-size: max(10px, calc(var(--ui-font-size) - 2px)); }
+#settings-version { color: var(--dim); }
+#settings-popover #settings-check-updates { display: inline-flex; align-items: center; justify-content: center; width: calc(20px * var(--ui-scale)); height: calc(20px * var(--ui-scale)); padding: 0; }
+#settings-check-updates .codicon { font-size: calc(12px * var(--ui-scale)); }
 .lsp-install-options-heading { margin-bottom: 8px; color: var(--text); font: 600 calc(var(--ui-font-size) + 1px)/1.2 -apple-system, sans-serif; }
 .lsp-install-option { display: flex; align-items: center; gap: 10px; padding: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
 .lsp-install-option + .lsp-install-option { margin-top: 7px; }
@@ -2052,8 +2054,8 @@ body:not(.vscode-mode) .terminal-type-icon { margin: 0; }
 .terminal-group { margin: calc(5px * var(--ui-scale)) calc(4px * var(--ui-scale)) calc(8px * var(--ui-scale)); border-radius: calc(8px * var(--ui-scale)); }
 .terminal-group-members-inner { padding-bottom: calc(4px * var(--ui-scale)); }
 .terminal-group-label { gap: calc(5px * var(--ui-scale)); padding: calc(8px * var(--ui-scale)) calc(9px * var(--ui-scale)) calc(7px * var(--ui-scale)); }
-.terminal-group-add { width: calc(19px * var(--ui-scale)); height: calc(19px * var(--ui-scale)); font-size: 0; line-height: 1; }
-.terminal-group-search { width: calc(18px * var(--ui-scale)); height: calc(18px * var(--ui-scale)); }
+.terminal-group-add { width: calc(26px * var(--ui-scale)); height: calc(26px * var(--ui-scale)); font-size: 0; line-height: 1; }
+.terminal-group-search { display: grid; place-items: center; width: calc(26px * var(--ui-scale)); height: calc(26px * var(--ui-scale)); }
 .terminal-group-search .codicon { font-size: calc(10px * var(--ui-scale)); }
 .terminal-group-members .session-item { padding-left: calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); }
 .terminal-group-members .session-item > .status-dot { left: calc(6px * var(--ui-scale)); }

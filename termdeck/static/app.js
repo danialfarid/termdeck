@@ -9,6 +9,7 @@ const uiAlert = (...args) => window.TermdeckDialogs.alert(...args);
 const uiPrompt = (...args) => window.TermdeckDialogs.prompt(...args);
 const uiSelect = (...args) => window.TermdeckDialogs.select(...args);
 const SESSION_LIST_REFRESH_MS = 30000;
+const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const TITLE_STATUS_RE = /^[\u2800-\u28ff○-◗⏳⚡✳](\s+)/;
 // Same status glyphs as TITLE_STATUS_RE, plus the leading ellipsis codex shows while working. Used only
 // when GENERATING a new fork's name, never for display: a fork is seeded from the parent's live title,
@@ -4282,6 +4283,7 @@ class TermdeckApp {
     this.initializeMobileConnectionWarning();
     void this.initializeRemoteIdleMode();
     setTimeout(() => void this.checkForUpdates(), 1200);
+    setInterval(() => void this.checkForUpdates(), UPDATE_CHECK_INTERVAL_MS);
     this.refresh().finally(() => this.connectStatusStream());
     setInterval(() => this.refresh(), SESSION_LIST_REFRESH_MS);
   }

@@ -19,6 +19,7 @@ Object.assign(TermdeckApp.prototype, {
 
   showPageTitleFaviconState(faviconState) {
     if (!this.pageFavicon) return;
+    if (faviconState === "attention") faviconState = this.pageAttentionDotLower ? "unread" : "processing";
     const color = this.effectiveDeckColor?.() || "";
     if (color) {
       this.pageFavicon.type = "image/svg+xml";
@@ -59,8 +60,17 @@ Object.assign(TermdeckApp.prototype, {
   updateDocumentTitle(pageTitle, faviconState) {
     document.title = pageTitle;
     if (this.pageTitleFaviconState === faviconState) return;
+    clearInterval(this.pageAttentionFaviconTimer);
+    this.pageAttentionFaviconTimer = null;
+    this.pageAttentionDotLower = false;
     this.pageTitleFaviconState = faviconState;
     this.showPageTitleFaviconState(faviconState);
+    if (faviconState === "attention") {
+      this.pageAttentionFaviconTimer = setInterval(() => {
+        this.pageAttentionDotLower = !this.pageAttentionDotLower;
+        this.showPageTitleFaviconState("attention");
+      }, 2000);
+    }
   },
 
 
@@ -89,7 +99,8 @@ Object.assign(TermdeckApp.prototype, {
     const terminalPage = !entry && this.sideView === "terminals";
     const processing = terminalPage && !!s && this.titlePresentation(s).spinning;
     const unread = terminalPage && !!s && !processing && this.unreadSessions.has(s.session_id);
-    this.updateDocumentTitle(pageTitle, processing ? "processing" : unread ? "unread" : "plain");
+    const attention = terminalPage && !!s && (s.needs_attention || this.attentionSessions.has(s.session_id));
+    this.updateDocumentTitle(pageTitle, attention ? "attention" : processing ? "processing" : unread ? "unread" : "plain");
     const statusEl = this.$("status-name");
     if (entry) {
       statusEl.textContent = this.vscodeMode ? entry.name : "";

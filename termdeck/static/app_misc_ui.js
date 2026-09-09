@@ -8,7 +8,7 @@ Object.assign(TermdeckApp.prototype, {
     const notice = this.$("update-notice");
     try {
       const response = await fetch(`/api/update/status${force ? "?force=true" : ""}`);
-      if (!response.ok) return;
+      if (!response.ok) throw new Error(`Update check failed (${response.status})`);
       const update = await response.json();
       this.runningVersion = String(update.current_version || "");
       const versionLabel = this.$("settings-version");
@@ -17,7 +17,7 @@ Object.assign(TermdeckApp.prototype, {
       const dismissed = localStorage.getItem("termdeck.dismissed-update-version");
       if (!update.update_available || (!force && dismissed === latestVersion)) {
         notice.classList.add("hidden");
-        return;
+        return update;
       }
       const link = this.$("update-notice-link");
       link.href = String(update.release_url || "https://github.com/danialfarid/termdeck/releases");
@@ -45,8 +45,10 @@ Object.assign(TermdeckApp.prototype, {
         notice.classList.add("hidden");
       };
       notice.classList.remove("hidden");
+      return update;
     } catch (error) {
       notice.classList.add("hidden");
+      return { error: error.message || "Update check failed" };
     }
   },
 
