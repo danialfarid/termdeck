@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" href="/static/termdeck-192.png">
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <link rel="stylesheet" href="/static/vendor/codicons/codicon.css">
-<link rel="stylesheet" href="/static/style.css?v=20260909-compact-update">
+<link rel="stylesheet" href="/static/style.css?v=20260909-transcript-filters">
 <link rel="stylesheet" href="/filebrowser/static/file_browser_shared.css">
 </head>
 <body>
@@ -320,8 +320,10 @@
     </div>
     <div id="history-filter-menu" class="hidden" role="menu" aria-label="Transcript filters">
       <label><input id="history-filter-hide-prompts" type="checkbox"><span>Hide prompts</span></label>
+      <label><input id="history-filter-prompts-only" type="checkbox"><span>Show only prompts</span></label>
+      <label><input id="history-filter-responses-only" type="checkbox"><span>Show only responses</span></label>
       <label><input id="history-filter-hide-thinking" type="checkbox"><span>Hide thinking</span></label>
-      <label><input id="history-filter-code-only" type="checkbox"><span>Only code edits</span></label>
+      <label><input id="history-filter-code-only" type="checkbox"><span>Show only code</span></label>
       <label><input id="history-filter-fold-repetitive" type="checkbox"><span>Fold repetitive responses</span></label>
       <label><input id="history-filter-collapse-edits" type="checkbox"><span>Collapse code edits</span></label>
     </div>
@@ -399,6 +401,11 @@
   </div>
   <aside id="conversation-outline" class="hidden">
     <div id="conversation-outline-head"><span>Conversation outline</span><button id="conversation-outline-refresh" title="Refresh outline"><span class="codicon codicon-refresh"></span></button><button id="conversation-outline-close" title="Close outline"><span class="codicon codicon-close"></span></button></div>
+    <div id="conversation-outline-filters" role="group" aria-label="Conversation filters">
+      <label><input id="outline-filter-prompts-only" type="checkbox">Only prompts</label>
+      <label><input id="outline-filter-responses-only" type="checkbox">Only responses</label>
+      <label><input id="outline-filter-code-only" type="checkbox">Only code</label>
+    </div>
     <div id="conversation-outline-list"></div>
   </aside>
   <div id="bottombar">
@@ -588,9 +595,9 @@
 <script src="/static/lsp_client.js"></script>
 <!-- One class, split across files: app.js declares TermdeckApp (constants, constructor, core);
      the app_*.js files attach method groups to its prototype; app_boot.js instantiates. Order matters. -->
-<script src="/static/app.js?v=20260909-hourly-updates"></script>
+<script src="/static/app.js?v=20260909-temporary-filters"></script>
 <script src="/static/app_search_git.js?v=20260909-search-progress"></script>
-<script src="/static/app_markdown_files.js?v=20260906-queued-state"></script>
+<script src="/static/app_markdown_files.js?v=20260909-temporary-filters"></script>
 <script src="/static/app_terminal.js?v=20260903-claude-renderer-resume"></script>
 <script src="/static/app_settings_ui.js?v=20260909-compact-update"></script>
 <script src="/static/app_misc_ui.js?v=20260909-hourly-updates"></script>

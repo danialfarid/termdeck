@@ -92,7 +92,8 @@ const AGENT_SPEC_DEFAULTS = {
       { value: "auto", label: "Auto" }, { value: "full-access", label: "Full access" }],
     supports_resume: true, supports_fork: true, accepts_session_ref: true,
     records_raw_replay: true, has_prompt_queue: false,
-    transcript_commands: [{ command: "/compact", description: "Compact the conversation context" },
+    transcript_commands: [{ command: "/model", description: "Change the active model" },
+      { command: "/compact", description: "Compact the conversation context" },
       { command: "/context", description: "Show current context usage" },
       { command: "/usage", description: "Show plan usage and session cost" }] },
   codex: { kind: "codex", label: "Codex", is_agent: true, prompt_marker: "›", icon_svg: FALLBACK_ICON_SVGS.codex,
@@ -729,8 +730,7 @@ class TermdeckApp {
     this.historyRenderedTurns = [];
     this.historyLoaded = false;
     this.historyEditsCollapsed = false;
-    this.historyFilters = { hidePrompts: false, hideThinking: false, codeOnly: false, foldRepetitive: false };
-    this.historyFilterProjectKey = "";
+    this.historyFilters = { hidePrompts: false, promptsOnly: false, responsesOnly: false, hideThinking: false, codeOnly: false, foldRepetitive: false };
     this.headerPickerActiveIndices = { project: 0, worktree: 0 };
     this.closedExpanded = false;
     this.restoreLastClosedTerminalBusy = false;
