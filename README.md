@@ -11,6 +11,8 @@
 
 </div>
 
+Found a bug or have a feature request? [Open an issue](https://github.com/danialfarid/termdeck/issues) — feedback is welcome!
+
 Puppeteer all your coding agents from one local browser workspace. TermDeck keeps Codex, Claude Code, Aider,
 AGY, OpenCode, and shell sessions organized across projects and worktrees — showing what is running, finished,
 unread, or waiting for you.
