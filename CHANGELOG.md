@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-09-10
+
+### Fixed
+
+- Claude transcript `/model` accepts Claude aliases or model IDs instead of opening the Codex picker, and the composer shows Claude's reported model rather than GPT names mentioned in conversation text.
+
+### Added
+
+- Prompt-only, response-only, and code-only filters shared between the transcript and conversation outline;
+  code filtering includes edits and messages with fenced code blocks. Filter selections last only in the
+  current browser tab and reset on refresh.
+
 ### Changed
 
 - Install published releases from PyPI with `uv tool install termdeck-agents`; Homebrew installation stays unchanged.
@@ -724,7 +736,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.12.3...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/danialfarid/termdeck/compare/v0.12.3...v0.13.0
 [0.12.3]: https://github.com/danialfarid/termdeck/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/danialfarid/termdeck/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/danialfarid/termdeck/compare/v0.12.0...v0.12.1

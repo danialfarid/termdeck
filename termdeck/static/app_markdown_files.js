@@ -1054,9 +1054,23 @@ Object.assign(TermdeckApp.prototype, {
 
 
   historyModelDisplay(session, turns = []) {
+    if (session?.agent_kind === "claude") return this.claudeHistoryModelDisplay(session, turns);
     const fromTranscript = this.historyModelDisplayFromTranscript(turns);
     if (fromTranscript) return fromTranscript;
     return this.historyModelLabel(session, turns);
+  },
+
+  claudeHistoryModelDisplay(session, turns = []) {
+    for (let index = turns.length - 1; index >= 0; index--) {
+      const turn = turns[index];
+      if (turn?.role !== "assistant") continue;
+      for (const value of [turn.model, turn.model_name, turn.model_slug, turn.assistant_model]) {
+        const model = this.normalizeModelText(value);
+        if (model && model !== "<synthetic>") return model;
+      }
+    }
+    const match = String(session?.command || "").match(/(?:^|\s)--model(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))/);
+    return match ? (match[1] || match[2] || match[3]) : "Claude";
   },
 
 
@@ -1110,7 +1124,7 @@ Object.assign(TermdeckApp.prototype, {
       modelEl.classList.add("hidden");
       return;
     }
-    const model = this.terminalStatusModel(this.views.get(session?.session_id || this.activeId)) ||
+    const model = (session?.agent_kind === "claude" ? "" : this.terminalStatusModel(this.views.get(session?.session_id || this.activeId))) ||
       this.historyModelDisplay(session, turns);
     if (!model) {
       modelEl.textContent = "";
@@ -1150,7 +1164,7 @@ Object.assign(TermdeckApp.prototype, {
 
 
   applyMainLayout() {
-    this.ensureHistoryFiltersForProject();
+    this.updateHistoryFilterControls();
     const fileMode = this.activeFileKey !== null;
     if (!fileMode && this.fileHistoryOpen) {
       this.fileHistoryOpen = false;
@@ -1920,7 +1934,18 @@ Object.assign(TermdeckApp.prototype, {
     if (!item) return false;
     if (item.command === "/status") return this.showHistoryStatusCommand(view, text, options);
     if (item.command === "/ps") return this.showHistoryProcessesCommand(view, text, options);
-    if (item.command === "/model") return this.changeHistoryModelCommand(view, text, options);
+    if (item.command === "/model" && this.session(view.sessionId)?.agent_kind === "codex") {
+      return this.changeHistoryModelCommand(view, text, options);
+    }
+    if (item.command === "/model" && this.session(view.sessionId)?.agent_kind === "claude" && String(text).trim() === "/model") {
+      const model = await uiPrompt("Claude model alias or full model ID (for example: sonnet, opus, haiku)", "");
+      if (model === null || !String(model).trim()) return false;
+      if (/\s/.test(String(model).trim())) {
+        this.$("status-name").textContent = "Enter one Claude model alias or ID, without spaces.";
+        return false;
+      }
+      text = `/model ${String(model).trim()}`;
+    }
     if (view.promptApiSubmitting) {
       this.$("status-name").textContent = "command is already sending";
       return false;
@@ -3113,44 +3138,11 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  historyFilterStorageKey() {
-    return `termdeck.history-filters.v1.${encodeURIComponent(this.projectSlug || "__all__")}`;
-  },
-
-
-  ensureHistoryFiltersForProject() {
-    const storageKey = this.historyFilterStorageKey();
-    if (storageKey === this.historyFilterProjectKey) return;
-    this.historyFilterProjectKey = storageKey;
-    let stored = {};
-    try {
-      stored = JSON.parse(window.localStorage.getItem(storageKey) || "{}");
-    } catch (_error) {
-      stored = {};
-    }
-    this.historyFilters = {
-      hidePrompts: stored.hidePrompts === true,
-      hideThinking: stored.hideThinking === true,
-      codeOnly: stored.codeOnly === true,
-      foldRepetitive: stored.foldRepetitive === true,
-    };
-    this.updateHistoryFilterControls();
-  },
-
-
-  saveHistoryFilters() {
-    try {
-      window.localStorage.setItem(this.historyFilterStorageKey(), JSON.stringify(this.historyFilters));
-    } catch (_error) {
-    }
-  },
-
-
   initHistoryFilters() {
     const toggles = [this.$("history-filter-toggle"), this.$("mobile-history-filter-toggle")].filter(Boolean);
     const menu = this.$("history-filter-menu");
     if (!toggles.length || !menu) return;
-    this.ensureHistoryFiltersForProject();
+    this.updateHistoryFilterControls();
     for (const toggle of toggles) {
       toggle.onclick = (event) => {
         event.preventDefault();
@@ -3162,14 +3154,23 @@ Object.assign(TermdeckApp.prototype, {
     }
     const bindings = [
       ["history-filter-hide-prompts", "hidePrompts"],
+      ["history-filter-prompts-only", "promptsOnly"],
+      ["history-filter-responses-only", "responsesOnly"],
+      ["outline-filter-prompts-only", "promptsOnly"],
+      ["outline-filter-responses-only", "responsesOnly"],
+      ["outline-filter-code-only", "codeOnly"],
       ["history-filter-hide-thinking", "hideThinking"],
       ["history-filter-code-only", "codeOnly"],
       ["history-filter-fold-repetitive", "foldRepetitive"],
     ];
     for (const [id, key] of bindings) {
       this.$(id).onchange = (event) => {
-        this.historyFilters = { ...this.historyFilters, [key]: event.currentTarget.checked };
-        this.saveHistoryFilters();
+        const checked = event.currentTarget.checked;
+        if (checked && ["promptsOnly", "responsesOnly", "codeOnly"].includes(key)) {
+          this.historyFilters = { ...this.historyFilters, promptsOnly: false, responsesOnly: false, codeOnly: false, hidePrompts: false };
+        }
+        if (checked && key === "hidePrompts") this.historyFilters.promptsOnly = false;
+        this.historyFilters = { ...this.historyFilters, [key]: checked };
         this.updateHistoryFilterControls();
         this.refreshFilteredHistoryView();
       };
@@ -3200,6 +3201,11 @@ Object.assign(TermdeckApp.prototype, {
   updateHistoryFilterControls() {
     const mapping = {
       "history-filter-hide-prompts": this.historyFilters.hidePrompts,
+      "history-filter-prompts-only": this.historyFilters.promptsOnly,
+      "history-filter-responses-only": this.historyFilters.responsesOnly,
+      "outline-filter-prompts-only": this.historyFilters.promptsOnly,
+      "outline-filter-responses-only": this.historyFilters.responsesOnly,
+      "outline-filter-code-only": this.historyFilters.codeOnly,
       "history-filter-hide-thinking": this.historyFilters.hideThinking,
       "history-filter-code-only": this.historyFilters.codeOnly,
       "history-filter-fold-repetitive": this.historyFilters.foldRepetitive,
@@ -3218,7 +3224,7 @@ Object.assign(TermdeckApp.prototype, {
 
   refreshFilteredHistoryView() {
     const sessionId = this.activeId;
-    const turns = this.historyTurnsBySession.get(sessionId) || this.historyTurns;
+    const turns = this.historyTurnsBySession.get(sessionId) || this.conversationOutlineTurnsBySession.get(sessionId) || this.historyTurns;
     if (this.historyOpen && sessionId) {
       this.historyFingerprint = "";
       this.applyHistoryTurns(sessionId, turns, { preserveScroll: true, forceRender: true });
@@ -3268,9 +3274,10 @@ Object.assign(TermdeckApp.prototype, {
 
 
   filteredHistoryTurns(turns) {
-    this.ensureHistoryFiltersForProject();
     let filtered = Array.isArray(turns) ? turns : [];
-    if (this.historyFilters.codeOnly) filtered = filtered.filter((turn) => turn.kind === "edit");
+    if (this.historyFilters.codeOnly) filtered = filtered.filter((turn) => turn.kind === "edit" || /(?:^|\n)\s*(?:`{3,}|~{3,})/.test(String(turn.text || "")));
+    if (this.historyFilters.promptsOnly) filtered = filtered.filter((turn) => turn.role === "user");
+    if (this.historyFilters.responsesOnly) filtered = filtered.filter((turn) => turn.role === "assistant" && turn.kind !== "thinking");
     if (this.historyFilters.hidePrompts) filtered = filtered.filter((turn) => turn.role !== "user");
     if (this.historyFilters.hideThinking) filtered = filtered.filter((turn) => turn.kind !== "thinking");
     return this.historyFilters.foldRepetitive ? this.foldRepetitiveHistoryResponses(filtered) : filtered;
@@ -5487,7 +5494,7 @@ Object.assign(TermdeckApp.prototype, {
     if (!messages.length) {
       const empty = document.createElement("div");
       empty.className = "file-inspector-empty";
-      empty.textContent = "No user prompts or assistant responses yet.";
+      empty.textContent = this.historyFiltersActive() ? "No loaded turns match these filters." : "No user prompts or assistant responses yet.";
       list.appendChild(empty);
     }
     this.conversationOutlineSessionId = sessionId;

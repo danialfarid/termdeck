@@ -230,6 +230,7 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 - The agent's slash commands from a palette.
 - Filters: hide prompts or thinking, show only code edits, fold near-duplicate responses.
 - Conversation outline with timestamps for jumping between turns.
+- Show only prompts, responses, or code in the transcript and outline; filter selections reset on refresh.
 - Live context usage (`ctx 118k/258k`) and persisted prompt history.
 - A submitted prompt stays visibly pending until the transcript confirms it — through reloads and restarts.
 
