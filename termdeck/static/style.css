@@ -2292,24 +2292,30 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
 }
 
 @media (max-width: 900px) and (orientation: portrait), (hover: none) and (pointer: coarse) and (orientation: portrait) {
-  body.mobile-sidebar-collapsed { overflow-x: hidden; }
-  body.mobile-sidebar-collapsed #main {
+  /* A full viewport wide whether the sidebar is open or not, so opening it PUSHES this aside rather
+     than squeezing it. Letting the sidebar take its 250px out of the width reflowed every wrapped
+     line in the transcript, and a reflow throws away where you were reading: closing the sidebar
+     came back to a different place in the conversation. The page is wider than the screen while the
+     sidebar is open, which is what leaves the strip of transcript beside it -- tapping that strip
+     closes the sidebar. */
+  body.mobile-touch-layout { overflow-x: hidden; }
+  body.mobile-touch-layout #main {
     flex: 0 0 100dvw;
     flex-basis: 100dvw;
     width: 100dvw;
     min-width: 100dvw;
     max-width: 100dvw;
   }
-  body.mobile-sidebar-collapsed.mobile-history-surface #history-area {
+  body.mobile-touch-layout.mobile-history-surface #history-area {
     width: 100dvw;
     min-width: 0;
     max-width: 100dvw;
   }
-  body.mobile-sidebar-collapsed.mobile-history-surface #history-body { overflow-x: hidden; }
-  body.mobile-sidebar-collapsed.mobile-history-surface #history-body .turn-text,
-  body.mobile-sidebar-collapsed.mobile-history-surface #history-body .markdown { min-width: 0; max-width: 100%; }
-  body.mobile-sidebar-collapsed.mobile-history-surface #history-body .markdown pre,
-  body.mobile-sidebar-collapsed.mobile-history-surface #history-body .markdown pre code {
+  body.mobile-touch-layout.mobile-history-surface #history-body { overflow-x: hidden; }
+  body.mobile-touch-layout.mobile-history-surface #history-body .turn-text,
+  body.mobile-touch-layout.mobile-history-surface #history-body .markdown { min-width: 0; max-width: 100%; }
+  body.mobile-touch-layout.mobile-history-surface #history-body .markdown pre,
+  body.mobile-touch-layout.mobile-history-surface #history-body .markdown pre code {
     max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
   }
 }

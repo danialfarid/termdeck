@@ -28,6 +28,9 @@ All notable changes to this project are documented here. The format follows
   releases the remote connection only while its page is hidden, so reading a transcript without touching
   the screen no longer replaces it with "Remote connection paused", and the page it parks on reconnects as
   soon as it is on screen again, including when a phone restores it from the back/forward cache.
+- Opening the sidebar on a phone pushes the transcript aside instead of squeezing it, so closing the
+  sidebar comes back to the line you were reading. The sidebar used to take its width out of the panel,
+  which rewrapped every line and threw the scroll position away.
 - Tapping anything inside the transcript on a phone keeps the keyboard open. Opening a thinking block or
   expanding one of its operations took focus off the composer and shut the keyboard mid-prompt; the
   transcript's own controls now decline focus the way the toolbar buttons always have. Nothing reopens the
