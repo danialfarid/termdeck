@@ -4852,11 +4852,12 @@ class TermdeckApp {
     if (!warning) return;
     const message = this.$("mobile-connection-message");
     if (message && disconnected) {
+      // No promise about what is kept. "Your Transcript draft is saved on this device" was read as a
+      // claim that the conversation lives on the phone, which it does not -- it meant only the prompt
+      // you had half typed, and you find that still sitting there the moment the deck is back.
       message.textContent = state === "offline"
-        ? "Connection lost. Reconnecting when this device is online; your Transcript draft is saved."
-        : state === "waking"
-          ? "Reconnecting… waking your computer. Your Transcript draft is saved on this device."
-          : "Reconnecting… Your Transcript draft is saved on this device.";
+        ? "Connection lost. Reconnecting when this device is online."
+        : state === "waking" ? "Reconnecting… waking your computer." : "Reconnecting…";
     }
     if (!disconnected) this.remoteConnectorAwake = null;
     warning.classList.toggle("hidden", !disconnected || !this.touchMobileLayoutEnabled());

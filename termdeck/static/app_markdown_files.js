@@ -1566,7 +1566,10 @@ Object.assign(TermdeckApp.prototype, {
     if (this.historyOpen) {
       if (this.nativeVscodeMode) this.postVscodeNativeSession(this.session(this.activeId), false);
       this.showPromptDraft(view);
-      this.$("history-prompt").focus();
+      // Never on a phone: focusing the composer throws the keyboard over half the screen, and this
+      // runs from things that are not a request to type -- closing a panel, a tool finishing, a view
+      // being restored. Every other mobile path here already declines to focus for the same reason.
+      if (!this.touchMobileLayoutEnabled()) this.$("history-prompt").focus();
     } else {
       if (this.nativeVscodeMode) {
         this.postVscodeNativeSession(this.session(this.activeId), true);
@@ -3385,6 +3388,17 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // A control inside the transcript must not take focus off the composer. On a phone that closes the
+  // keyboard, so opening a thinking block or expanding one of its operations while half way through
+  // a prompt shut the keyboard every time. The toolbar buttons have always guarded this; the
+  // transcript's own controls did not. Preventing the default on mousedown stops the focus without
+  // stopping the click, so a summary still toggles and a button still fires.
+  keepTranscriptFocus(element) {
+    element.addEventListener("mousedown", (event) => event.preventDefault());
+    return element;
+  },
+
+
   renderHistoryTurns(turns, options = {}) {
     const body = options.target || this.$("history-body");
     const append = options.append === true;
@@ -3394,7 +3408,7 @@ Object.assign(TermdeckApp.prototype, {
         const group = document.createElement("details");
         group.className = "history-repetition-group";
         group.dataset.outlineKey = this.conversationOutlineTurnKey(turn);
-        const summary = document.createElement("summary");
+        const summary = this.keepTranscriptFocus(document.createElement("summary"));
         const count = document.createElement("span");
         count.className = "history-repetition-count";
         count.textContent = `${turn.folded_responses.length} similar responses`;
@@ -3426,7 +3440,7 @@ Object.assign(TermdeckApp.prototype, {
         event.className = "history-event " + turn.kind;
         event.dataset.outlineKey = this.conversationOutlineTurnKey(turn);
         event.open = turn.kind === "edit" ? !this.historyEditsCollapsed : turn.kind === "plan" ? true : turn.expanded === true;
-        const summary = document.createElement("summary");
+        const summary = this.keepTranscriptFocus(document.createElement("summary"));
         if (turn.kind === "thinking" && Array.isArray(turn.items)) {
           const thinkingTitle = document.createElement("span");
           thinkingTitle.className = "history-thinking-title";
@@ -3449,7 +3463,7 @@ Object.assign(TermdeckApp.prototype, {
           turn.items.forEach((item, index) => this.appendHistoryThinkingItem(results, item, `${turnKey}:${index}`));
           const footer = document.createElement("div");
           footer.className = "history-thinking-footer";
-          const collapse = document.createElement("button");
+          const collapse = this.keepTranscriptFocus(document.createElement("button"));
           collapse.type = "button";
           collapse.className = "history-thinking-collapse";
           collapse.title = "Collapse this thinking block";
@@ -3548,7 +3562,7 @@ Object.assign(TermdeckApp.prototype, {
           const sessionId = this.activeId;
           const pendingId = turn.pending_id;
           const action = (text, title, handler) => {
-            const button = document.createElement("button");
+            const button = this.keepTranscriptFocus(document.createElement("button"));
             button.type = "button";
             button.className = "history-pending-action";
             button.textContent = text;
@@ -3587,7 +3601,7 @@ Object.assign(TermdeckApp.prototype, {
     // Long single lines wrap into many rows too; the character count stands in for that.
     const clampable = lines > this.HISTORY_THINKING_PREVIEW_LINES || text.length > this.HISTORY_THINKING_PREVIEW_CHARS;
     if (!clampable) return;
-    const toggle = document.createElement("button");
+    const toggle = this.keepTranscriptFocus(document.createElement("button"));
     toggle.type = "button";
     toggle.className = "history-thinking-more";
     const hidden = Math.max(1, lines - this.HISTORY_THINKING_PREVIEW_LINES);

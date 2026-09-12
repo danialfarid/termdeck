@@ -28,6 +28,12 @@ All notable changes to this project are documented here. The format follows
   releases the remote connection only while its page is hidden, so reading a transcript without touching
   the screen no longer replaces it with "Remote connection paused", and the page it parks on reconnects as
   soon as it is on screen again, including when a phone restores it from the back/forward cache.
+- Tapping anything inside the transcript on a phone keeps the keyboard open. Opening a thinking block or
+  expanding one of its operations took focus off the composer and shut the keyboard mid-prompt; the
+  transcript's own controls now decline focus the way the toolbar buttons always have. Nothing reopens the
+  keyboard on its own either: the composer is no longer focused programmatically on a phone.
+- The reconnecting notice no longer says your transcript is saved on this device. It only ever meant the
+  prompt you had half typed, which is still there when the deck comes back.
 
 ## [0.13.0] — 2026-09-10
 
