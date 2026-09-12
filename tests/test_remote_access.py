@@ -92,6 +92,11 @@ class RemoteAccessTest(unittest.TestCase):
         idle_page = client.get("/_remote/idle?return_to=/p/project%3Ft%3Dterminal")
         self.assertEqual(idle_page.status_code, 200)
         self.assertIn('"returnTo": "/p/project?t=terminal"', idle_page.text)
+        # Reconnects on its own once the page is on screen. The deck only parks here while hidden, so a
+        # visible idle page means someone came back, and waiting to be tapped was the whole complaint.
+        for trigger in ("visibilitychange", "pageshow", "focus"):
+            self.assertIn(f'addEventListener("{trigger}", resumeWhenVisible)', idle_page.text)
+        self.assertIn("\n    resumeWhenVisible();", idle_page.text)
 
         offline = client.get("/p/project")
         self.assertEqual(offline.status_code, 503)

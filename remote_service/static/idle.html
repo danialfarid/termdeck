@@ -18,9 +18,10 @@
 </head>
 <body>
   <main>
-    <h1><span class="mark">◉</span> Remote connection paused</h1>
-    <p>TermDeck disconnected after a period without interaction. Your terminals kept running on your computer.</p>
-    <button id="resume" type="button">Reconnect</button>
+    <h1><span class="mark">◉</span> Reconnecting</h1>
+    <p>TermDeck released the remote connection while this page was in the background. Your terminals kept
+      running on your computer, and this page reconnects on its own.</p>
+    <button id="resume" type="button">Reconnect now</button>
   </main>
   <script>
     const remoteIdle = __TERMDECK_REMOTE_IDLE_CONFIG__;
@@ -30,14 +31,23 @@
       resuming = true;
       location.replace(remoteIdle.returnTo);
     }
+    // The deck only parks here while its page is hidden, so an idle page that is on screen means
+    // someone has come back to it: reconnect without waiting to be tapped. A phone returning through
+    // the app switcher or the back gesture restores this page from the back/forward cache with no
+    // visibility change, which is why pageshow and focus carry it too, and why the first check runs
+    // on load. The button stays for the case where none of that fires.
+    function resumeWhenVisible() {
+      if (!document.hidden) resumeTermDeck();
+    }
     document.getElementById("resume").addEventListener("click", resumeTermDeck);
     window.addEventListener("keydown", resumeTermDeck, { capture: true });
     window.addEventListener("pointerdown", resumeTermDeck, { capture: true });
     window.addEventListener("touchstart", resumeTermDeck, { capture: true, passive: true });
     window.addEventListener("wheel", resumeTermDeck, { capture: true, passive: true });
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) resumeTermDeck();
-    });
+    document.addEventListener("visibilitychange", resumeWhenVisible);
+    window.addEventListener("pageshow", resumeWhenVisible);
+    window.addEventListener("focus", resumeWhenVisible);
+    resumeWhenVisible();
   </script>
 </body>
 </html>

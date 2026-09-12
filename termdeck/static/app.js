@@ -4930,10 +4930,8 @@ class TermdeckApp {
       this.scheduleRemoteBrowserIdleTransition();
       return;
     }
-    if (Date.now() - this.remoteIdleLastInteractionAt >= this.remoteIdleTimeoutMs) {
-      this.transitionRemoteBrowserToIdle();
-      return;
-    }
+    // Coming back counts as being here. Parking a deck the moment it was looked at again is what
+    // made returning to a phone show "Remote connection paused" instead of the terminals.
     this.recordRemoteBrowserActivity();
   }
 
@@ -4947,6 +4945,16 @@ class TermdeckApp {
 
   transitionRemoteBrowserToIdle() {
     if (!this.remoteIdleTimeoutMs || this.remoteIdleTransitioning) return;
+    // Only park a deck nobody is looking at. Reading a transcript produces no keys, pointers or
+    // wheels, so ten quiet minutes arrived easily on a phone and put "Remote connection paused" in
+    // front of someone who was mid-sentence, to be dismissed by hand. A hidden page still parks,
+    // which is what releases the relay connection while nobody is there, and the idle page brings
+    // the deck back by itself once the page is visible again.
+    if (!document.hidden) {
+      this.remoteIdleLastInteractionAt = Date.now();
+      this.scheduleRemoteBrowserIdleTransition();
+      return;
+    }
     this.remoteIdleTransitioning = true;
     clearTimeout(this.remoteIdleTimer);
     this.remoteIdleTimer = 0;

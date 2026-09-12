@@ -24,6 +24,10 @@ All notable changes to this project are documented here. The format follows
 
 - Selecting a prompt on a phone no longer takes the delivery status line with it. Pasting that back sent
   the deck's own wording to the agent as though it had been typed.
+- TermDeck Remote reconnects by itself instead of parking on a page with a Reconnect button. The deck now
+  releases the remote connection only while its page is hidden, so reading a transcript without touching
+  the screen no longer replaces it with "Remote connection paused", and the page it parks on reconnects as
+  soon as it is on screen again, including when a phone restores it from the back/forward cache.
 
 ## [0.13.0] — 2026-09-10
 
