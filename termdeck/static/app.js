@@ -162,6 +162,10 @@ const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
 const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
 const TRANSCRIPT_DRAFT_LOCAL_PREFIX = "termdeck.transcript-draft.v1";
 const ADDRESS_RECOVERY_KEY = "termdeck.address-recovery";
+// Where an installed app reopens. Its launch address is fixed by the manifest, so the deck records
+// its own as it moves and the boot script in index.html sends a cold launch back to it. Keep the
+// name in step with that script, which cannot import this one.
+const LAST_ADDRESS_KEY = "termdeck.last-address.v1";
 // Colours a project or worktree can be given. Bright enough to read as a dot and as label text on
 // every theme, distinct enough from one another to tell tabs apart from the tab strip.
 const DECK_COLOR_PALETTE = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#14b8a6", "#06b6d4", "#3b82f6",
@@ -4383,6 +4387,16 @@ class TermdeckApp {
     this.lastNavUrl = this.navUrl(state);
     this.lastValidNavState = state;
     history.pushState(state, "", this.lastNavUrl);
+    this.rememberDeckAddress(this.lastNavUrl);
+  }
+
+  rememberDeckAddress(url) {
+    if (typeof url !== "string" || !url.startsWith("/") || url.startsWith("//")) return;
+    try {
+      localStorage.setItem(LAST_ADDRESS_KEY, url);
+    } catch (_error) {
+      // a private window or blocked storage just loses the memory, not the deck
+    }
   }
 
   replaceNav(state) {
@@ -4397,6 +4411,7 @@ class TermdeckApp {
     this.lastNavUrl = url;
     this.lastValidNavState = state;
     history.replaceState(state, "", url);
+    this.rememberDeckAddress(url);
   }
 
   parseNavState(rawState) {

@@ -11,6 +11,32 @@
 <link rel="stylesheet" href="/static/vendor/codicons/codicon.css">
 <link rel="stylesheet" href="/static/style.css?v=20260912-sidebar-push">
 <link rel="stylesheet" href="/filebrowser/static/file_browser_shared.css">
+<script>
+// An installed app always launches at the manifest's start_url, which is the all-projects page, so
+// closing and reopening it lost the project you were in. Send a cold launch back to the address the
+// deck last recorded (app.js, LAST_ADDRESS_KEY). Here in the head rather than in the app so the
+// all-projects view is never built or fetched on the way past.
+//
+// Only a launch. Walking to all-projects inside the app leaves a same-origin referrer, a reload
+// reports itself as one, and either would otherwise be dragged back to the last project.
+(function () {
+  try {
+    var standalone = window.navigator.standalone === true ||
+      ["standalone", "fullscreen", "minimal-ui"].some(function (mode) {
+        return window.matchMedia("(display-mode: " + mode + ")").matches;
+      });
+    if (!standalone || location.pathname !== "/" || location.search || location.hash) return;
+    var entry = performance.getEntriesByType("navigation")[0];
+    if (entry && entry.type !== "navigate") return;
+    if (document.referrer && new URL(document.referrer).origin === location.origin) return;
+    var last = localStorage.getItem("termdeck.last-address.v1");
+    if (!last || last === "/" || last.charAt(0) !== "/" || last.charAt(1) === "/") return;
+    location.replace(last);
+  } catch (error) {
+    // a browser that will not answer any of this simply opens where it landed
+  }
+})();
+</script>
 </head>
 <body>
 <div id="update-notice" class="hidden" role="status">
@@ -595,7 +621,7 @@
 <script src="/static/lsp_client.js"></script>
 <!-- One class, split across files: app.js declares TermdeckApp (constants, constructor, core);
      the app_*.js files attach method groups to its prototype; app_boot.js instantiates. Order matters. -->
-<script src="/static/app.js?v=20260912-keyboard-focus"></script>
+<script src="/static/app.js?v=20260912-remember-address"></script>
 <script src="/static/app_search_git.js?v=20260909-search-progress"></script>
 <script src="/static/app_markdown_files.js?v=20260912-keyboard-focus"></script>
 <script src="/static/app_terminal.js?v=20260903-claude-renderer-resume"></script>

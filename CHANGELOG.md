@@ -28,6 +28,10 @@ All notable changes to this project are documented here. The format follows
   releases the remote connection only while its page is hidden, so reading a transcript without touching
   the screen no longer replaces it with "Remote connection paused", and the page it parks on reconnects as
   soon as it is on screen again, including when a phone restores it from the back/forward cache.
+- TermDeck installed as an app on a phone reopens where you left it. A launch always went to the
+  all-projects page, because that is the address an installed app starts from; the deck now records its
+  own address and a cold launch returns to it. Reloading, or walking to all-projects inside the app,
+  stays where you put it.
 - Opening the sidebar on a phone pushes the transcript aside instead of squeezing it, so closing the
   sidebar comes back to the line you were reading. The sidebar used to take its width out of the panel,
   which rewrapped every line and threw the scroll position away.
