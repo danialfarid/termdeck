@@ -2502,7 +2502,7 @@ Object.assign(TermdeckApp.prototype, {
     // both prompts stayed "not confirmed" for ten minutes after they had plainly arrived. A prompt of
     // any length found inside the turn, with images reduced to a common token, is that prompt.
     const loose = this.historyPromptLooseMatchText(pending);
-    return loose.length >= 24 && this.historyPromptLooseMatchText(authoritative).includes(loose);
+    return loose.length >= 16 && this.historyPromptLooseMatchText(authoritative).includes(loose);
   },
 
 
@@ -3533,8 +3533,16 @@ Object.assign(TermdeckApp.prototype, {
         icon.className = `codicon ${deliveryState === "unconfirmed" ? "codicon-warning"
           : deliveryState === "queued" ? "codicon-history" : "codicon-cloud-upload"}`;
         const label = document.createElement("span");
-        label.textContent = deliveryState === "unconfirmed" ? "Submission not confirmed · saved on this device"
-          : deliveryState === "queued" ? "Queued · the agent is still on its previous turn" : "Submitting";
+        // One word, because this sits in the transcript's own column: on a phone the sentence these
+        // used to carry wrapped to five lines above the prompt it belonged to. The sentence moves to
+        // the tooltip, where it costs nothing.
+        label.textContent = deliveryState === "unconfirmed" ? "Not confirmed"
+          : deliveryState === "queued" ? "Pending" : "Sending";
+        delivery.title = deliveryState === "unconfirmed"
+          ? "The deck could not confirm this prompt reached the agent. It is saved on this device."
+          : deliveryState === "queued"
+            ? "Delivered to the agent, which is still finishing its previous turn."
+            : "Sending this prompt to the agent.";
         delivery.append(icon, label);
         if (turn.pending_delivery_state === "unconfirmed") {
           const sessionId = this.activeId;

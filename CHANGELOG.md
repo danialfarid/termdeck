@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The transcript shows what changed in the working tree while a Bash command ran, as a collapsed
+  "Changed on disk" entry with the diff. The agent CLI reports these and draws them in its terminal, so
+  the transcript and the terminal used to tell different stories about the same session. The entry does
+  not say the agent made the change: another agent working in the same checkout at that moment is
+  reported here too.
+
+### Changed
+
+- A pending prompt's status reads "Pending", "Sending" or "Not confirmed" rather than a sentence, which
+  wrapped to five lines in a phone's column above the prompt it belonged to. The sentence moved to the
+  tooltip.
+
+### Fixed
+
+- Selecting a prompt on a phone no longer takes the delivery status line with it. Pasting that back sent
+  the deck's own wording to the agent as though it had been typed.
+
 ## [0.13.0] — 2026-09-10
 
 ### Fixed

@@ -144,7 +144,45 @@ class ClaudeCli(AgentCli):
                         result = block.get("content", block.get("output", ""))
                         turns.append(TurnBuilder.turn("event", TurnBuilder.format_result_value(result), "result", "Result",
                                                       model=model, timestamp=timestamp))
+            disk_change = self._disk_change_turn(payload, model, timestamp)
+            if disk_change is not None:
+                turns.append(disk_change)
         return turns
+
+    @staticmethod
+    def _disk_change_turn(payload: dict[str, object], model: str | None, timestamp: object) -> dict[str, object] | None:
+        """What changed in the working tree while a Bash command ran.
+
+        Claude Code diffs the tree around every Bash call and reports the result as `bashEditDiff`,
+        which its terminal draws under that call. The transcript dropped it, so the two views told
+        different stories about the same session.
+
+        The change is not necessarily this agent's work, and the title deliberately does not claim it
+        is: anything else touching the same checkout while the command ran is caught here too. That is
+        how a session that had made no edits at all appeared to have edited another session's files.
+        """
+        result = payload.get("toolUseResult")
+        if not isinstance(result, dict):
+            return None
+        bash_edit_diff = result.get("bashEditDiff")
+        files = bash_edit_diff.get("files") if isinstance(bash_edit_diff, dict) else None
+        if not isinstance(files, list):
+            return None
+        diff_files: list[dict[str, object]] = []
+        for entry in files:
+            if not isinstance(entry, dict):
+                continue
+            rows = TurnBuilder.unified_hunk_rows(entry.get("hunks"))
+            if rows:
+                diff_files.append({"path": str(entry.get("filePath") or "changed file"), "diff": rows})
+        if not diff_files:
+            return None
+        title = f"Changed on disk: {Path(str(diff_files[0]['path'])).name}" if len(diff_files) == 1 \
+            else f"Changed on disk: {len(diff_files)} files"
+        turn = TurnBuilder.turn("event", "", kind="disk-change", title=title, model=model, timestamp=timestamp)
+        turn["diff"] = [row for entry in diff_files for row in entry["diff"]]
+        turn["diff_files"] = diff_files
+        return turn
 
     @staticmethod
     def _compact_boundary_turn(payload: dict[str, object]) -> dict[str, object]:

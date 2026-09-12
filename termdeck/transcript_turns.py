@@ -272,6 +272,28 @@ class TurnBuilder:
         return rows
 
     @staticmethod
+    def unified_hunk_rows(hunks: object) -> list[dict[str, str]]:
+        """Diff rows for hunks whose lines already carry their own +/-/space prefix."""
+        rows: list[dict[str, str]] = []
+        if not isinstance(hunks, list):
+            return rows
+        for hunk in hunks:
+            lines = hunk.get("lines") if isinstance(hunk, dict) else None
+            if not isinstance(lines, list):
+                continue
+            for line in lines:
+                if not isinstance(line, str):
+                    continue
+                marker, text = line[:1], line[1:]
+                if marker == "+":
+                    rows.append({"kind": "add", "prefix": "+", "text": text})
+                elif marker == "-":
+                    rows.append({"kind": "remove", "prefix": "−", "text": text})
+                else:
+                    rows.append({"kind": "context", "prefix": " ", "text": text})
+        return rows
+
+    @staticmethod
     def extract_plan(value: object, text: str) -> list[dict[str, str]]:
         candidates: object = value.get("plan") if isinstance(value, dict) else None
         if isinstance(candidates, list):

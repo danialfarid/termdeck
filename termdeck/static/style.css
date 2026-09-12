@@ -641,7 +641,9 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 .turn-text { word-break: break-word; font-size: var(--terminal-font-size); line-height: 1.55; color: var(--text); font-family: "SF Mono", Menlo, monospace; letter-spacing: -0.15px; }
 .turn.user .turn-text { background: var(--active-bg); border: 1px solid var(--active-border); border-left: 3px solid var(--accent); padding: 8px 12px; border-radius: 5px; }
 .turn.user.pending-delivery .turn-text { opacity: 1; background: color-mix(in srgb, var(--accent) 15%, var(--panel2)); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); border-left-color: var(--accent); }
-.history-pending-delivery { display: flex; align-items: center; justify-content: flex-start; gap: 5px; margin: 6px 0 0 4px; color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.25 Menlo, monospace; }
+/* Never part of the prompt's own text: selecting a prompt on a phone used to drag this status line
+   into the copy, and pasting it back sent the deck's own wording to the agent as if it were typed. */
+.history-pending-delivery { display: flex; align-items: center; justify-content: flex-start; gap: 5px; margin: 6px 0 0 4px; color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.25 Menlo, monospace; -webkit-user-select: none; user-select: none; }
 .history-pending-delivery .codicon { font-size: calc(var(--ui-font-size) + 1px); }
 .history-pending-delivery.sending { color: var(--accent); }
 .history-pending-delivery.awaiting_transcript { color: var(--accent); }
@@ -662,6 +664,8 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 .history-event summary:hover { color: var(--text); }
 .history-event.edit summary { color: var(--green); }
 .history-event.error summary { color: #e5534b; }
+/* Not the agent's own edit: something changed in the tree while its command ran. */
+.history-event.disk-change summary { color: var(--warn, #d8ae00); }
 .history-event.plan summary { color: var(--accent); }
 .history-event.thinking summary { color: var(--dim); }
 .history-event.thinking.active .history-thinking-title { color: var(--accent); will-change: opacity, transform; animation: history-thinking-title-pulse var(--thinking-blink-interval) ease-in-out infinite; }

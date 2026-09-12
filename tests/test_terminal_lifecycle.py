@@ -689,6 +689,41 @@ class CodexTranscriptParsingTest(unittest.TestCase):
 
 
 class ClaudeTranscriptParsingTest(unittest.TestCase):
+    def test_files_changed_while_a_bash_command_ran_are_shown_without_claiming_the_agent_edited_them(self) -> None:
+        # Measured on 2026-09-12: one session ran a Bash command while a second agent edited the same
+        # checkout, and Claude Code attributed that edit to the first session's command. Its terminal
+        # drew the diff and its transcript showed nothing, so the two views disagreed.
+        lines = [json.dumps({
+            "type": "user", "timestamp": "2026-09-12T16:37:11.407Z",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "copied 15 week dirs"}]},
+            "toolUseResult": {"stdout": "copied 15 week dirs", "bashEditDiff": {"files": [{
+                "filePath": "/Users/dan/workspace/stock/miner/derived/corporate_action_codex_resolver.py",
+                "hunks": [{"oldStart": 318, "lines": ["        return None", "-    @classmethod", "+    # replaced"]}],
+            }]}},
+        })]
+
+        turns = agents.agent_cli("claude").parse_transcript_lines(lines)
+
+        change = turns[-1]
+        self.assertEqual(change["kind"], "disk-change")
+        self.assertEqual(change["title"], "Changed on disk: corporate_action_codex_resolver.py")
+        self.assertEqual([row["kind"] for row in change["diff"]], ["context", "remove", "add"])
+        self.assertEqual(change["diff"][1]["text"], "    @classmethod")
+        self.assertEqual(change["diff_files"][0]["path"],
+                         "/Users/dan/workspace/stock/miner/derived/corporate_action_codex_resolver.py")
+        self.assertEqual(change["timestamp"], "2026-09-12T16:37:11.407Z")
+
+    def test_a_bash_result_that_changed_nothing_adds_no_disk_change_turn(self) -> None:
+        lines = [json.dumps({
+            "type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+            "toolUseResult": {"stdout": "ok", "bashEditDiff": {"files": []}},
+        })]
+
+        self.assertEqual([turn.get("kind") for turn in agents.agent_cli("claude").parse_transcript_lines(lines)],
+                         ["result"])
+
     def test_terminal_clear_line_prefix_is_removed_from_user_prompt(self) -> None:
         lines = [json.dumps({"type": "user", "message": {"content": "\x15Should we increase max workers?"}})]
 
