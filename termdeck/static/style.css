@@ -500,6 +500,7 @@ body.termdeck-read-only #history-prompt { color: var(--dim); cursor: not-allowed
 #update-notice { flex-wrap: wrap; }
 #update-install-panel { flex: 0 0 100%; min-width: 0; color: var(--text); }
 #update-install-panel.hidden { display: none; }
+#update-install-safety { margin: 6px 0; color: var(--dim); }
 #update-install-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; padding: 10px; background: var(--panel); border: 1px solid var(--active-border); border-radius: 5px; font: inherit; line-height: 1.4; user-select: text; }
 #update-install-output { max-height: min(320px, 40vh); }
 #update-install-output:empty { display: none; }

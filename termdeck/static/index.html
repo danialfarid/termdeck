@@ -45,6 +45,7 @@
   <button id="update-notice-close" title="Dismiss this version" aria-label="Dismiss update notification"><span class="codicon codicon-close"></span></button>
   <section id="update-install-panel" class="hidden" aria-label="Install TermDeck update">
     <div id="update-install-method"></div>
+    <div id="update-install-safety">Running agents stay alive; only the TermDeck server briefly restarts.</div>
     <pre id="update-install-command"></pre>
     <button id="update-install-run" type="button">Run update</button>
     <span id="update-install-state" role="status"></span>
@@ -408,11 +409,11 @@
     <div id="initial-loading-line" role="status" aria-live="polite"><span id="initial-loading-spinner" aria-hidden="true"></span><span id="initial-loading-message">loading TermDeck&hellip;</span></div>
     <section id="initial-loading-recovery" class="hidden" aria-label="TermDeck loading recovery">
       <div id="initial-loading-recovery-title">Taking longer than expected</div>
-      <div id="initial-loading-recovery-description">Restarting TermDeck leaves terminal processes running.</div>
+      <div id="initial-loading-recovery-description">Force restart kills only the TermDeck server; its service or launch command brings it back while running terminal processes stay alive.</div>
       <div id="initial-loading-recovery-actions">
         <button id="initial-loading-markdown" type="button"><span class="codicon codicon-comment-discussion"></span> Switch to Transcript</button>
         <button id="initial-loading-refresh" type="button"><span class="codicon codicon-refresh"></span> Refresh page</button>
-        <button id="initial-loading-restart" type="button"><span class="codicon codicon-debug-restart"></span> Restart TermDeck server</button>
+        <button id="initial-loading-restart" type="button"><span class="codicon codicon-debug-restart"></span> Force restart TermDeck server</button>
         <button id="initial-loading-stop-terminals" type="button"><span class="codicon codicon-debug-stop"></span> Stop running terminals</button>
       </div>
       <div id="initial-loading-stop-warning">Stopping terminals interrupts work currently in progress. Tabs, transcripts, and history remain available and can be restarted later.</div>
@@ -608,7 +609,7 @@
   </div>
 </div>
 <script src="/static/dialogs.js?v=20260904-model-picker"></script>
-<script src="/static/loading_recovery.js?v=20260831-mobile-transcript-offline"></script>
+<script src="/static/loading_recovery.js?v=20260911-force-server-restart"></script>
 <script src="/static/vendor/xterm.js"></script>
 <script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/vendor/addon-webgl.js"></script>
@@ -626,7 +627,7 @@
 <script src="/static/app_markdown_files.js?v=20260912-keyboard-focus"></script>
 <script src="/static/app_terminal.js?v=20260903-claude-renderer-resume"></script>
 <script src="/static/app_settings_ui.js?v=20260909-compact-update"></script>
-<script src="/static/app_misc_ui.js?v=20260909-hourly-updates"></script>
+<script src="/static/app_misc_ui.js?v=20260911-update-safety"></script>
 <script src="/static/app_boot.js"></script>
 </body>
 </html>

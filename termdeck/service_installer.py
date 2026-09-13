@@ -24,6 +24,7 @@ class ServiceInstaller:
     LOG_FILE_NAME = "termdeck.log"
     CONSOLE_SCRIPT_NAME = "termdeck"
     MODULE_ARGS = ("-m", "termdeck")
+    SERVICE_NOT_FOUND_MARKERS = ("could not find service", "could not be found", "not found", "not loaded")
     FORWARDED_ENV_KEYS = (PlatformPaths.ENV_HOST, PlatformPaths.ENV_PORT, PlatformPaths.ENV_LAN_PORT,
                           PlatformPaths.ENV_DATA_DIR,
                           PlatformPaths.ENV_DEFAULT_CWD, PlatformPaths.ENV_FILE_ROOT, PlatformPaths.ENV_SHELL,
@@ -117,6 +118,42 @@ WantedBy=default.target
                                               f"{ServiceInstaller._launchd_domain()}/{ServiceInstaller.LABEL}")
         return ServiceInstaller._succeeds(ServiceInstaller.SYSTEMCTL_BIN, "--user", "cat",
                                           ServiceInstaller.SYSTEMD_UNIT_NAME)
+
+    @staticmethod
+    def is_current_process_owned_by_service_manager(process_id: int) -> bool | None:
+        if PlatformPaths.IS_MACOS:
+            result = ServiceInstaller._probe(ServiceInstaller.LAUNCHCTL_BIN, "print",
+                                             f"{ServiceInstaller._launchd_domain()}/{ServiceInstaller.LABEL}")
+            if result is None:
+                return None
+            if result.returncode != 0:
+                return False if ServiceInstaller._reports_missing_service(result) else None
+            for line in result.stdout.splitlines():
+                if line.strip().startswith("pid = "):
+                    return line.split("=", 1)[1].strip() == str(process_id)
+            return None
+        if os.name == "nt":
+            return None
+        result = ServiceInstaller._probe(ServiceInstaller.SYSTEMCTL_BIN, "--user", "show",
+                                         ServiceInstaller.SYSTEMD_UNIT_NAME, "--property=MainPID", "--value")
+        if result is None:
+            return None
+        if result.returncode != 0:
+            return False if ServiceInstaller._reports_missing_service(result) else None
+        value = result.stdout.strip()
+        if "=" in value:
+            value = value.rsplit("=", 1)[1].strip()
+        try:
+            return int(value) == process_id
+        except ValueError:
+            return None
+
+    @staticmethod
+    def launch_replacement_after_process_exit(process_id: int) -> None:
+        from termdeck.restart_helper import ServerRestartHelper
+
+        launch_argv = [*ServiceInstaller.launch_argv(), *sys.argv[1:]]
+        ServerRestartHelper.launch(process_id, launch_argv, Path.cwd(), os.environ.copy())
 
     @staticmethod
     def start() -> str:
@@ -222,6 +259,18 @@ WantedBy=default.target
     @staticmethod
     def _succeeds(*argv: str) -> bool:
         return subprocess.run(argv, capture_output=True, text=True).returncode == 0
+
+    @staticmethod
+    def _probe(*argv: str) -> subprocess.CompletedProcess[str] | None:
+        try:
+            return subprocess.run(argv, capture_output=True, text=True, timeout=2, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    @staticmethod
+    def _reports_missing_service(result: subprocess.CompletedProcess[str]) -> bool:
+        output = f"{result.stdout}\n{result.stderr}".casefold()
+        return any(marker in output for marker in ServiceInstaller.SERVICE_NOT_FOUND_MARKERS)
 
     @staticmethod
     def _run(*argv: str, check: bool = True) -> None:

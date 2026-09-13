@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The loading recovery action force-restarts the TermDeck server when it is stuck, allowing the service manager
+  to relaunch it without stopping detached agent terminals.
+- Loading recovery detects service ownership before restarting; a confirmed manually launched server is relaunched
+  with its current command, while unknown ownership safely follows the service-managed path.
+- The update panel explains that running agents stay alive while the TermDeck server briefly restarts.
 - The transcript shows what changed in the working tree while a Bash command ran, as a collapsed
   "Changed on disk" entry with the diff. The agent CLI reports these and draws them in its terminal, so
   the transcript and the terminal used to tell different stories about the same session. The entry does

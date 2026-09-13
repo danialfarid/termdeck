@@ -63,7 +63,7 @@
 
   restartButton.addEventListener("click", async () => {
     setActionsDisabled(true);
-    status.textContent = "Restarting TermDeck; terminals will keep running…";
+    status.textContent = "Force restarting TermDeck; terminals will keep running…";
     try {
       const response = await fetch("/api/server/restart", { method: "POST" });
       if (!response.ok) throw new Error(`restart request failed (${response.status})`);

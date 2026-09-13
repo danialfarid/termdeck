@@ -3411,8 +3411,37 @@ class TermdeckServer:
         return await self.manager.kill_stale_running_sessions(TermdeckConfig.STALE_TERMINAL_AGE_SECONDS)
 
     async def _restart_server(self) -> dict[str, bool]:
-        asyncio.create_task(self._restart_after_state_recovery())
+        asyncio.create_task(self._restart_server_with_ownership_fallback())
         return {"restart_scheduled": True}
+
+    async def _restart_server_with_ownership_fallback(self) -> None:
+        service_manager_owns_process = await asyncio.to_thread(self._assume_service_manager_when_ownership_unknown)
+        if service_manager_owns_process:
+            await self._force_restart_server()
+            return
+        try:
+            from termdeck.service_installer import ServiceInstaller
+
+            ServiceInstaller.launch_replacement_after_process_exit(os.getpid())
+        except (ImportError, OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            await self._force_restart_server()
+            return
+        await self._force_restart_server()
+
+    @staticmethod
+    def _assume_service_manager_when_ownership_unknown() -> bool:
+        try:
+            from termdeck.service_installer import ServiceInstaller
+
+            ownership = ServiceInstaller.is_current_process_owned_by_service_manager(os.getpid())
+        except (ImportError, OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            return True
+        return ownership is not False
+
+    @staticmethod
+    async def _force_restart_server() -> None:
+        await asyncio.sleep(0.25)
+        os.kill(os.getpid(), signal.SIGKILL)
 
     async def _terminal_process_report(self) -> dict[str, object]:
         return await self.manager.terminal_process_report()
