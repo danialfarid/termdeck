@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-09-12
+
 ### Added
 
 - The loading recovery action force-restarts the TermDeck server when it is stuck, allowing the service manager
@@ -780,7 +782,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/danialfarid/termdeck/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/danialfarid/termdeck/compare/v0.12.3...v0.13.0
 [0.12.3]: https://github.com/danialfarid/termdeck/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/danialfarid/termdeck/compare/v0.12.1...v0.12.2
