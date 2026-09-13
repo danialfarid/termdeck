@@ -121,6 +121,10 @@ Register a pending publisher at https://pypi.org/manage/account/publishing/ with
 Create the `pypi` GitHub environment with release-only protections and set the repository variable
 `PYPI_PUBLISH_ENABLED=true` after registration. Tagged releases then publish the same tested wheel and
 source archive uploaded to GitHub using short-lived OIDC credentials, without a stored PyPI token.
+The release workflow dispatches `publish-pypi.yml` as a separate run on the release tag. Do not call it
+as a reusable workflow: that gives attestations the caller's `release.yml` identity, which does not
+match the registered publisher. Keep attestations enabled. A successful dispatch is not proof of
+publication; verify the separate **Publish PyPI** run succeeds and the version is available on PyPI.
 To publish an existing release, run `gh workflow run publish-pypi.yml --ref vX.Y.Z -f release_tag=vX.Y.Z`.
 Never publish under `termdeck`: that name belongs to another project.
 
