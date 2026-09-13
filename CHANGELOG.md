@@ -28,6 +28,9 @@ All notable changes to this project are documented here. The format follows
   releases the remote connection only while its page is hidden, so reading a transcript without touching
   the screen no longer replaces it with "Remote connection paused", and the page it parks on reconnects as
   soon as it is on screen again, including when a phone restores it from the back/forward cache.
+- The + on a terminal group's header lines up with the group name and the search glass beside it. It sat
+  three pixels high: the button centres its contents with a grid, and an invisible "+" text node counted
+  as a second grid item, so the drawn cross was centred in the first of two rows rather than the button.
 - TermDeck installed as an app on a phone reopens where you left it. A launch always went to the
   all-projects page, because that is the address an installed app starts from; the deck now records its
   own address and a cold launch returns to it. Reloading, or walking to all-projects inside the app,

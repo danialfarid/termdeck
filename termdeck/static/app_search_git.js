@@ -777,7 +777,11 @@ Object.assign(TermdeckApp.prototype, {
       const add = document.createElement("button");
       add.className = "terminal-group-add";
       add.type = "button";
-      add.textContent = "+";
+      // No text child. The cross is drawn by the button's ::before, and the button centres its
+      // contents with a grid; a "+" text node -- invisible at font-size 0 -- still counted as a
+      // second grid item, so the grid became two rows and the cross was centred in the FIRST of
+      // them, riding 3px above the group name and the search glass beside it. The label is on
+      // aria-label and title, where a screen reader reads it either way.
       add.title = `New terminal in ${group.name}`;
       add.setAttribute("aria-label", add.title);
       add.addEventListener("pointerdown", (event) => event.stopPropagation());
