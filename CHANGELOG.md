@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Automatic PyPI publication uses the registered publishing workflow directly, avoiding the signing-identity mismatch that required a manual retry.
+
 ## [0.14.0] — 2026-09-12
 
 ### Added
