@@ -3949,6 +3949,25 @@ Object.assign(TermdeckApp.prototype, {
     }
     wrapper.appendChild(submenu);
     menu.appendChild(wrapper);
+    wrapper.addEventListener("mouseenter", () => this.positionContextSubmenu(wrapper));
+    wrapper.addEventListener("focusin", () => this.positionContextSubmenu(wrapper));
+  },
+
+
+  positionContextSubmenu(wrapper) {
+    const submenu = wrapper.querySelector(":scope > .context-submenu-menu");
+    if (!submenu || !submenu.offsetHeight) return;
+    const anchor = wrapper.getBoundingClientRect();
+    submenu.style.maxHeight = Math.max(0, Math.min(420, window.innerHeight - 16)) + "px";
+    submenu.style.maxWidth = Math.max(0, window.innerWidth - 16) + "px";
+    submenu.style.minWidth = Math.min(190, window.innerWidth - 16) + "px";
+    const height = submenu.offsetHeight;
+    const width = submenu.offsetWidth;
+    const top = Math.max(8, Math.min(anchor.top - 4, window.innerHeight - height - 8));
+    const preferredLeft = anchor.right + width <= window.innerWidth - 8 ? anchor.right - 1 : anchor.left - width + 1;
+    const left = Math.max(8, Math.min(preferredLeft, window.innerWidth - width - 8));
+    submenu.style.top = top - anchor.top + "px";
+    submenu.style.left = left - anchor.left + "px";
   },
 
 
@@ -3961,6 +3980,7 @@ Object.assign(TermdeckApp.prototype, {
     const top = y + height > window.innerHeight - 10 && above >= 8 ? above : y;
     menu.style.left = Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 10)) + "px";
     menu.style.top = Math.max(8, Math.min(top, window.innerHeight - height - 10)) + "px";
+    for (const wrapper of menu.querySelectorAll(".context-submenu")) this.positionContextSubmenu(wrapper);
   },
 
 

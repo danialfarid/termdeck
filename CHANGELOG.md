@@ -6,7 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-09-14
+
 ### Fixed
+
+- Agent and other context submenus expand upward near the bottom edge instead of clipping the available list.
+
+- “Ask an agent” pastes into the receiving tab's current composer or terminal, including running agents that are still producing output.
 
 - Automatic PyPI publication uses the registered publishing workflow directly, avoiding the signing-identity mismatch that required a manual retry.
 
@@ -786,7 +792,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/danialfarid/termdeck/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/danialfarid/termdeck/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/danialfarid/termdeck/compare/v0.12.3...v0.13.0
 [0.12.3]: https://github.com/danialfarid/termdeck/compare/v0.12.2...v0.12.3

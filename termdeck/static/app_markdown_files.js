@@ -2879,6 +2879,7 @@ Object.assign(TermdeckApp.prototype, {
 
   schedulePendingAgentPaste(view, delay = 0) {
     if (!view || view.closed || !view.pendingAgentPaste) return;
+    if (view.pendingAgentPasteTimer && !view.pendingAgentPasteRequireComposer) return;
     if (!view.pendingAgentPasteStartedAt) view.pendingAgentPasteStartedAt = Date.now();
     clearTimeout(view.pendingAgentPasteTimer);
     const readyDelay = Math.max(0, (view.pendingAgentPasteReadyAt || 0) - Date.now());
@@ -6243,17 +6244,15 @@ Object.assign(TermdeckApp.prototype, {
     const session = this.session(sessionId);
     if (!value || !session || !session.agent_kind || session.agent_kind === "none" ||
         (!session.running && !session.dormant)) return false;
-    const useHistoryComposer = this.historyOpen;
     this.hideSelectionActions(true);
     this.activate(sessionId, { reveal: true });
-    const view = this.views.get(sessionId) || this.ensureView(sessionId);
-    if (useHistoryComposer && this.sessionSupportsTranscript(session)) {
-      if (!this.historyOpen) this.setHistoryMode(true);
+    if (this.historyOpen && this.sessionSupportsTranscript(session)) {
       this.appendTextToHistoryPrompt(value);
       this.$("status-name").textContent = "selected text added to transcript composer for " + this.agentSessionContextLabel(session);
       return true;
     }
-    if (!this.queuePendingAgentPaste(view, value)) return false;
+    const view = this.views.get(sessionId) || this.ensureView(sessionId);
+    if (!this.queuePendingAgentPaste(view, value, { requireComposer: !!session.dormant })) return false;
     if (!view.ws) this.connect(sessionId, view);
     this.$("status-name").textContent = "selected text queued for " + this.agentSessionContextLabel(session);
     return true;
