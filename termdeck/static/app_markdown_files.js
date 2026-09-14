@@ -3231,7 +3231,7 @@ Object.assign(TermdeckApp.prototype, {
     const turns = this.historyTurnsBySession.get(sessionId) || this.conversationOutlineTurnsBySession.get(sessionId) || this.historyTurns;
     if (this.historyOpen && sessionId) {
       this.historyFingerprint = "";
-      this.applyHistoryTurns(sessionId, turns, { preserveScroll: true, forceRender: true });
+      this.applyHistoryTurns(sessionId, turns, { preserveScroll: true, forceRender: true, preserveFilterAnchor: true });
       requestAnimationFrame(() => this.scheduleFilteredHistoryContinuation(sessionId));
     }
     if (this.conversationOutlineOpen && sessionId) this.renderConversationOutline(turns, { preserveScroll: true });
@@ -3624,7 +3624,12 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  captureHistoryScroll(body, turns = this.historyTurns) {
+  historyScrollElementKey(element) {
+    return element.dataset?.outlineKey || this.historyElementPreserveKey(element);
+  },
+
+
+  captureHistoryScroll(body, turns = this.historyTurns, preferredKey = "") {
     const snapshot = {
       top: body.scrollTop,
       atBottom: body.scrollHeight - body.clientHeight - body.scrollTop < 80,
@@ -3635,7 +3640,10 @@ Object.assign(TermdeckApp.prototype, {
     };
     const bodyTop = body.getBoundingClientRect().top;
     const children = [...body.children];
+    const preferredIndex = preferredKey ? children.findIndex((child) => child.dataset.outlineKey === preferredKey &&
+      child.getBoundingClientRect().bottom > bodyTop && child.getBoundingClientRect().top < bodyTop + body.clientHeight) : -1;
     for (let index = 0; index < children.length; index += 1) {
+      if (preferredIndex >= 0 && index !== preferredIndex) continue;
       if (children[index].getBoundingClientRect().bottom > bodyTop + 1) {
         snapshot.anchorIndex = index;
         snapshot.anchorOffset = children[index].getBoundingClientRect().top - bodyTop;
@@ -3649,9 +3657,9 @@ Object.assign(TermdeckApp.prototype, {
     if (snapshot.anchorIndex >= 0 && children[snapshot.anchorIndex]) {
       // Keyed off the DOM, not the turns array: after paged loads the two segment
       // differently mid-array, and a turns-index anchor lands on the wrong element.
-      snapshot.anchorKey = this.historyElementPreserveKey(children[snapshot.anchorIndex]);
+      snapshot.anchorKey = this.historyScrollElementKey(children[snapshot.anchorIndex]);
       snapshot.anchorOccurrence = children.slice(0, snapshot.anchorIndex + 1)
-        .filter((child) => this.historyElementPreserveKey(child) === snapshot.anchorKey).length - 1;
+        .filter((child) => this.historyScrollElementKey(child) === snapshot.anchorKey).length - 1;
     }
     return snapshot;
   },
@@ -3677,7 +3685,7 @@ Object.assign(TermdeckApp.prototype, {
     if (snapshot.anchorKey) {
       let occurrence = 0;
       for (const child of body.children) {
-        if (this.historyElementPreserveKey(child) !== snapshot.anchorKey) continue;
+        if (this.historyScrollElementKey(child) !== snapshot.anchorKey) continue;
         if (occurrence++ === snapshot.anchorOccurrence) { anchor = child; break; }
       }
     }
@@ -3751,8 +3759,10 @@ Object.assign(TermdeckApp.prototype, {
     const scrollSnapshot = followLatest
       ? null
       : preserveScroll
-        ? this.captureHistoryScroll(body, this.historyTurns)
+        ? this.captureHistoryScroll(body, this.historyTurns, options.preserveFilterAnchor && this.conversationOutlineSessionId === sessionId
+          ? this.conversationOutlineSelectedTurnKey : "")
         : (this.historyScrollBySession.get(sessionId) || null);
+    if (options.preserveFilterAnchor && scrollSnapshot) scrollSnapshot.atBottom = false;
     const fingerprint = `${renderedTurns.length}|${JSON.stringify(renderedTurns.slice(-3).map((turn) =>
       [turn.role, turn.kind, turn.text, turn.timestamp, turn.diff?.length, turn.diff_files, turn.plan, turn.items,
         turn.folded_responses?.length, turn.pending_id, turn.pending_delivery_state]))}`;
@@ -5477,7 +5487,10 @@ Object.assign(TermdeckApp.prototype, {
     const list = this.$("conversation-outline-list");
     const sessionId = options.sessionId || this.activeId;
     const sessionChanged = this.conversationOutlineSessionId !== sessionId;
-    const previousScrollTop = list.scrollTop;
+    if (sessionChanged) this.conversationOutlineSelectedTurnKey = "";
+    const scrollSnapshot = options.preserveScroll && !sessionChanged
+      ? this.captureHistoryScroll(list, turns, this.conversationOutlineSelectedTurnKey) : null;
+    if (scrollSnapshot) scrollSnapshot.atBottom = false;
     list.textContent = "";
     const messages = this.filteredHistoryTurns(turns).filter((turn) =>
       (["user", "assistant"].includes(turn.role) && String(turn.text || "").trim()) || turn.kind === "edit");
@@ -5491,6 +5504,7 @@ Object.assign(TermdeckApp.prototype, {
       const question = !prompt && !edit && /[?？]\s*$/.test(String(turn.text || "").trim());
       const messageType = prompt ? "prompt" : edit ? "edit" : question ? "question" : "response";
       item.className = `conversation-outline-item ${messageType}`;
+      item.dataset.outlineKey = this.conversationOutlineTurnKey(turn);
       const role = document.createElement("span");
       role.className = `conversation-outline-role codicon codicon-${prompt ? "arrow-right" : edit ? "diff" : question ? "question" : "sparkle"}`;
       const label = document.createElement("span");
@@ -5527,7 +5541,7 @@ Object.assign(TermdeckApp.prototype, {
         list.scrollTop = Math.max(0, latestPromptItem.offsetTop - list.offsetTop - 6);
       });
     } else if (options.preserveScroll && !sessionChanged) {
-      list.scrollTop = previousScrollTop;
+      this.restoreHistoryScroll(list, scrollSnapshot, turns, true);
     } else {
       list.scrollTop = 0;
     }
@@ -5536,6 +5550,7 @@ Object.assign(TermdeckApp.prototype, {
 
   openConversationOutlineTurn(turn) {
     const key = this.conversationOutlineTurnKey(turn);
+    this.conversationOutlineSelectedTurnKey = key;
     if (!this.historyOpen) this.setHistoryMode(true);
     const reveal = (attempt = 0) => {
       if (!this.historyOpen || attempt > 12) return;
