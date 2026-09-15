@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.16.1] — 2026-09-15
+
+### Fixed
+
+- Terminal history search no longer returns an internal server error for underscore-containing queries such as `task_runs_store.py`.
+
 ## [0.16.0] — 2026-09-15
 
 ### Changed

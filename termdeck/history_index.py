@@ -419,7 +419,7 @@ class HistorySearchIndex:
 
     @staticmethod
     def _fts_expression(query: str) -> str:
-        terms = re.findall(r"[\w]+", query, re.UNICODE)
+        terms = re.findall(r"[^\W_]+", query, re.UNICODE)
         return " AND ".join(terms)
 
     @classmethod
