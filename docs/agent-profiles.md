@@ -16,6 +16,7 @@ session, and title values remain single escaped arguments.
       "aliases": ["review"],
       "base_arguments": ["--tui"],
       "model_arguments": ["--model", "{model}"],
+      "instruction_arguments": ["--instructions-file", "{instructions_file}"],
       "permissions": [
         {"value": "default", "label": "Default", "arguments": []},
         {"value": "auto", "label": "Auto approve", "arguments": ["--permission", "auto"]}
@@ -100,6 +101,11 @@ identity, resume arguments, or fork arguments. Other optional booleans are `reco
 Profiles are intentionally bounded to data mapping and command templates. A CLI with SQLite state, a
 whole-document transcript, subagents, or protocol-specific attention handling should use a Python
 `AgentCli` subclass described in [Agent CLI API](agent-cli-api.md).
+
+`instruction_arguments` is optional. When the TermDeck API guidance setting is enabled, its arguments receive
+the path to a TermDeck-owned instruction file through `{instructions_file}`. Use this only when the CLI accepts
+an instruction file as part of its launch command; the saved session command remains free of this launch-time
+augmentation.
 
 The SVG is trusted local configuration but is still restricted to one 8 KB SVG; scripts, event handlers,
 foreign objects, links, and JavaScript URLs are rejected. Profile kinds and executables cannot shadow a

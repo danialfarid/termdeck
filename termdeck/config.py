@@ -21,6 +21,7 @@ class TermdeckConfig:
     SESSIONS_FILE = DATA_DIR / "sessions.json"
     SETTINGS_FILE = DATA_DIR / "settings.json"
     AGENT_PROFILES_FILE = DATA_DIR / "agent-profiles.json"
+    AGENT_INSTRUCTIONS_FILE = DATA_DIR / "agent-api-instructions.md"
     REMOTE_CREDENTIALS_FILE = DATA_DIR / "remote-credentials.json"
     UPDATE_CHECK_FILE = DATA_DIR / "update-check.json"
     CLOSED_SESSIONS_FILE = DATA_DIR / "closed_sessions.json"

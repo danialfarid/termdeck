@@ -1,42 +1,11 @@
 # TermDeck API for agents
 
-How one agent puts another agent to work. Every terminal TermDeck opens carries its own session id in
-`$TERMDECK_SESSION_ID`, so an agent running inside the deck can start a second agent, send it prompts, read
-what it answered, and close it — all over `http://127.0.0.1:8530`, and all of it visible to you as ordinary
-terminals in the deck.
+Start, prompt, monitor, and close local agent sessions. The default server is `http://127.0.0.1:8530`.
+TermDeck-launched processes receive `TERMDECK_SESSION_ID`, `TERMDECK_SESSION_NAME`, `TERMDECK_PROJECT`,
+`TERMDECK_CWD`, and `TERMDECK_SESSION_URL`. Always keep `$TERMDECK_SESSION_ID` and pass it unchanged as
+`origin_session` for every delegated child task; this is how TermDeck knows where to add the child.
 
-## Link a trainer study to its agent tab
-
-Every agent terminal also receives these environment variables:
-
-| Variable | Meaning |
-|---|---|
-| `TERMDECK_SESSION_ID` | The TermDeck terminal id. Use this value in a trainer experiment's `agent_ids` list. |
-| `TERMDECK_SESSION_NAME` | The TermDeck terminal title. |
-| `TERMDECK_SESSION_URL` | A direct local URL that opens this terminal. |
-
-`Experiment` automatically includes `TERMDECK_SESSION_ID` when it is created inside TermDeck. Explicitly
-pass `agent_ids=[...]` when an orchestrator wants to attach more than one agent to the same experiment:
-
-```python
-import os
-
-experiment = Experiment(name="feature_study", version="1", agent_ids=[os.environ["TERMDECK_SESSION_ID"]])
-```
-
-Add the studies launched by the agent to the tab description. The trainer dashboard uses the persisted
-`agent_ids` to show direct links back to the matching TermDeck tabs.
-
-```sh
-curl -sS -X POST "http://127.0.0.1:8530/api/sessions/$TERMDECK_SESSION_ID/description" \
-  -H 'Content-Type: application/json' \
-  -d '{"description":"feature_study / 2026-09-14 baseline","append":true}'
-```
-
-`GET /api/sessions` and `GET /api/sessions/{session_id}` return `title`, `description`, `termdeck_url`,
-and `termdeck_url_path` for dashboard and automation integrations.
-
-## Start an agent
+## Start and prompt an agent
 
 `POST /api/terminals/task`
 
@@ -49,40 +18,45 @@ curl -sS -X POST http://127.0.0.1:8530/api/terminals/task \
 | Parameter | Description |
 |---|---|
 | `model` | `codex`, `claude`, `agy`, or `none`. |
-| `model_name` | Model name; Codex may include reasoning effort after a space, for example `gpt-5.6-luna xhigh`; Claude/AGY examples: `opus`, `gemini-2.5-pro`. |
+| `model_name` | Agent model identifier, optionally including reasoning effort. |
 | `permission` | Agent permission mode, such as `default`, `workspace-write`, or `full-access`. |
-| `title` | Child terminal title. |
-| `prompt` | Prompt sent to the child agent. |
-| `origin_session` | Your own session id — pass `$TERMDECK_SESSION_ID` unchanged. It files the child under the session that started it. |
-| `fork` | `false` starts a new agent; `true` forks from your session/memory. |
-| `worktree_id` | Starts the child in an existing project worktree returned by `GET /api/worktrees`. Omit it for the project root. |
-| `worktree` | `true` starts the child in a separate Git worktree and branch. The response includes its path and branch. |
+| `additional_args` | Optional shell-style launch parameters; matching or conflicting generated options are replaced and other arguments are appended. |
+| `title`, `prompt` | Child title and initial prompt. |
+| `description` | Optional short, user-visible task description, saved during creation. |
+| `origin_session` | Required for delegated child tasks: pass `$TERMDECK_SESSION_ID` unchanged so TermDeck links the child to this agent. |
+| `session_ref` | Existing agent session ID or name to resume. |
+| `cwd`, `project`, `after` | Directory, project, and optional placement anchor. |
+| `worktree`, `worktree_id` | Start in a new isolated worktree or an existing project worktree. |
+| `fork` | Fork the `origin_session` instead of starting a fresh agent. |
+| `output_path`, `write_back`, `queue`, `bracketed` | Optional output file, parent result delivery, prompt queueing, and bracketed prompt input. |
 
-Response: `session_id`
+The response contains `session_id`. `POST /api/sessions` creates the same kind of session without an initial
+prompt; it also accepts `description`. Then use `POST /api/sessions/{session_id}/prompt` with `{"text":"..."}`.
 
-For isolated work, poll `GET /api/sessions/{session_id}/worktree/review` to inspect the branch and diff. Use
-`POST /api/sessions/{session_id}/worktree/finish` with `{"action":"keep"}`, `{"action":"merge"}`, or
-`{"action":"discard"}` when the review is complete. `merge` requires committed worktree changes and a clean base
-checkout; `discard` is destructive to uncommitted work.
+For example, include `"title":"review-parser","description":"Review parser edge cases"` in the creation
+JSON alongside the model, prompt, and origin session. No separate description request is needed.
+Creation returns before the agent finishes. Poll `/task` for `processing` and `latest_turn`; confirm the
+answer belongs to your submitted prompt. `running` means the terminal process is alive, not that an answer
+is still being generated. `/task-result.status` currently also describes process lifetime, not turn completion.
 
-## Send a follow-up message to them
+## Batch work
 
-`POST /api/terminals/task/{session_id}/prompt`
+`POST /api/terminals/batch` accepts a `terminals` list with per-agent `name` and `prompt`; shared launch fields
+above can be overridden per item. It returns one result per requested agent.
+Each item also accepts its own optional `description`.
 
-```sh
-curl -sS -X POST http://127.0.0.1:8530/api/terminals/task/CHILD_SESSION_ID/prompt \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt":"Now summarize your findings."}'
-```
+## Monitor and follow up
 
-## Get their latest turn text
+- `GET /api/sessions/{session_id}/task` returns running state, transcript tail, and the latest turn.
+- `GET /api/sessions/{session_id}/task-result` returns `status` and `last_turn`; `/last_turn` is an alias.
+- `POST /api/sessions/{session_id}/prompt` sends a prompt with `{"text":"..."}`; the task alias
+  `POST /api/terminals/task/{session_id}/prompt` accepts `{"prompt":"..."}`.
+- `GET /api/sessions` lists sessions and `GET /api/sessions/{session_id}` returns one session.
 
-`GET /api/sessions/{session_id_or_name}/last_turn`
+For isolated work, `GET /api/sessions/{session_id}/worktree/review` shows the branch and diff. Finish it with
+`POST /api/sessions/{session_id}/worktree/finish` and `{"action":"keep"}`, `{"action":"merge"}`, or
+`{"action":"discard"}`.
 
-Names must be unique; duplicate names return an error.
-
-## Close an agent
-
-`DELETE /api/sessions/{session_id}`
-
-Stops the terminal and moves it to closed sessions without erasing its history.
+Use `POST /api/sessions/{session_id}/description` with `{"description":"...","append":true}` to set the
+user-visible session description. `DELETE /api/sessions/{session_id}`
+stops it without erasing its history.

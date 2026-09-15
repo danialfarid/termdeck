@@ -42,6 +42,9 @@ class AgyCli(AgentCli):
     model_placeholder = "model, optionally followed by low, medium, or high"
     model_help = "A trailing low, medium, or high value sets AGY reasoning effort."
 
+    def termdeck_global_instruction_files(self) -> tuple[Path, ...]:
+        return (Path.home() / ".gemini" / "GEMINI.md",)
+
     permission_flags = {
         "default": (),
         "accept-edits": ("--mode", "accept-edits"),

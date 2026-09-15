@@ -46,6 +46,7 @@ class AgentProfile:
     aliases: tuple[str, ...]
     base_arguments: tuple[str, ...]
     model_arguments: tuple[str, ...]
+    instruction_arguments: tuple[str, ...]
     permissions: tuple[PermissionProfile, ...]
     resume_arguments: tuple[str, ...]
     fork_arguments: tuple[str, ...]
@@ -73,7 +74,7 @@ class AgentProfileLoader:
     KIND_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
     EXECUTABLE_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
     PLACEHOLDER_RE = re.compile(r"{([^{}]+)}")
-    ALLOWED_ARGUMENT_PLACEHOLDERS = frozenset({"model", "session_id", "title"})
+    ALLOWED_ARGUMENT_PLACEHOLDERS = frozenset({"model", "session_id", "title", "instructions_file"})
     ALLOWED_ACTIVITY_STRATEGIES = frozenset({"terminal-title", "terminal-output", "jsonl-event"})
     UNSAFE_SVG_RE = re.compile(r"<(?:script|foreignObject)|\son[a-z]+\s*=|javascript:|(?:xlink:)?href\s*=", re.I)
 
@@ -113,10 +114,14 @@ class AgentProfileLoader:
         model_arguments = cls._tokens(raw.get("model_arguments", ["--model", "{model}"]),
                                       f"{prefix}.model_arguments")
         base_arguments = cls._tokens(raw.get("base_arguments", []), f"{prefix}.base_arguments")
+        instruction_arguments = cls._tokens(raw.get("instruction_arguments", []),
+                                             f"{prefix}.instruction_arguments")
         resume_arguments = cls._tokens(raw.get("resume_arguments", []), f"{prefix}.resume_arguments")
         fork_arguments = cls._tokens(raw.get("fork_arguments", []), f"{prefix}.fork_arguments")
         cls._validate_placeholders(base_arguments, set(), f"{prefix}.base_arguments")
         cls._validate_placeholders(model_arguments, {"model"}, f"{prefix}.model_arguments")
+        cls._validate_placeholders(instruction_arguments, {"instructions_file"},
+                                   f"{prefix}.instruction_arguments")
         cls._validate_placeholders(resume_arguments, {"session_id"}, f"{prefix}.resume_arguments")
         cls._validate_placeholders(fork_arguments, {"session_id", "title"}, f"{prefix}.fork_arguments")
         rename_input = cls._text(raw.get("rename_input", ""), f"{prefix}.rename_input")
@@ -130,7 +135,8 @@ class AgentProfileLoader:
             kind=kind, label=cls._required_text(raw, "label", prefix), executable=executable,
             aliases=tuple(alias.lower() for alias in cls._texts(raw.get("aliases", []), f"{prefix}.aliases")),
             base_arguments=base_arguments,
-            model_arguments=model_arguments, permissions=permissions, resume_arguments=resume_arguments,
+            model_arguments=model_arguments, instruction_arguments=instruction_arguments, permissions=permissions,
+            resume_arguments=resume_arguments,
             fork_arguments=fork_arguments,
             session_value_flags=cls._texts(raw.get("session_value_flags", []), f"{prefix}.session_value_flags"),
             session_switch_flags=cls._texts(raw.get("session_switch_flags", []), f"{prefix}.session_switch_flags"),

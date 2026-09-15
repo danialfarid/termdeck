@@ -72,6 +72,9 @@ class DeclarativeAgentCli(AgentCli):
             raise ValueError(f"{self.kind} profile does not accept a model name")
         return self._render_arguments(self.profile.model_arguments, model=model_name)
 
+    def termdeck_instruction_arguments(self, instruction_file: Path) -> tuple[str, ...]:
+        return self._render_arguments(self.profile.instruction_arguments, instructions_file=str(instruction_file))
+
     def set_model(self, command: str, model_name: str) -> str:
         clean_model_name = model_name.strip()
         if not clean_model_name:

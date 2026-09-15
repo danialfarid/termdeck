@@ -27,6 +27,9 @@ class GeminiCli(AgentCli):
     # Whole-document JSON does not fit the jsonl history indexer.
     history_indexed = False
 
+    def termdeck_global_instruction_files(self) -> tuple[Path, ...]:
+        return (Path.home() / ".gemini" / "GEMINI.md",)
+
     permission_flags = {
         "default": (),
         "auto-edit": ("--approval-mode", "auto_edit"),

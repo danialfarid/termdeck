@@ -78,11 +78,15 @@ class PtyEnvironmentTest(unittest.TestCase):
             TermdeckConfig.SESSION_ID_ENV_KEY: "abc123",
             TermdeckConfig.SESSION_NAME_ENV_KEY: "termde",
             TermdeckConfig.SESSION_PROJECT_ENV_KEY: "stock",
+            TermdeckConfig.SESSION_CWD_ENV_KEY: "/work/stock",
+            TermdeckConfig.SESSION_URL_ENV_KEY: "http://127.0.0.1:8530/p/stock?t=abc123",
         })
 
         self.assertEqual(environment[TermdeckConfig.SESSION_ID_ENV_KEY], "abc123")
         self.assertEqual(environment[TermdeckConfig.SESSION_NAME_ENV_KEY], "termde")
         self.assertEqual(environment[TermdeckConfig.SESSION_PROJECT_ENV_KEY], "stock")
+        self.assertEqual(environment[TermdeckConfig.SESSION_CWD_ENV_KEY], "/work/stock")
+        self.assertEqual(environment[TermdeckConfig.SESSION_URL_ENV_KEY], "http://127.0.0.1:8530/p/stock?t=abc123")
 
 
 class PlacementNameTest(unittest.TestCase):
@@ -265,6 +269,10 @@ class UiSettingsTest(unittest.TestCase):
         self.assertEqual(payload["ui_font_size"], 15)
         self.assertEqual(payload["vscode_keybindings"], {"toggle-notebook": "Ctrl+Alt+n"})
 
+    def test_agent_api_instructions_are_enabled_by_default_and_toggleable(self) -> None:
+        self.assertTrue(UiSettings().agent_api_instructions_enabled)
+        self.assertFalse(UiSettings(agent_api_instructions_enabled=False).agent_api_instructions_enabled)
+
 
 class NotebookNoteApiTest(unittest.TestCase):
     def server(self, notes: list[NotebookNote]) -> TermdeckServer:
@@ -436,6 +444,25 @@ class AgentCliRegistryTest(unittest.TestCase):
             agents.agent_cli("claude").fork_command("claude --resume aa11", "bb22", "my fork"),
             "claude --resume bb22 --fork-session --name 'my fork'")
 
+    def test_native_termdeck_instruction_arguments_are_adapter_specific(self) -> None:
+        instruction_file = Path("/tmp/termdeck-agent-api.md")
+        self.assertEqual(
+            agents.agent_cli("codex").command_with_termdeck_instructions("codex --no-alt-screen --model opus",
+                                                                          instruction_file),
+            "codex -c 'model_instructions_file=\"/tmp/termdeck-agent-api.md\"' --no-alt-screen --model opus")
+        self.assertEqual(
+            agents.agent_cli("claude").command_with_termdeck_instructions("claude --model opus", instruction_file),
+            "claude --append-system-prompt-file /tmp/termdeck-agent-api.md --model opus")
+        self.assertEqual(
+            agents.agent_cli("aider").command_with_termdeck_instructions("aider --restore-chat-history",
+                                                                          instruction_file),
+            "aider --read /tmp/termdeck-agent-api.md --restore-chat-history")
+        self.assertEqual(
+            agents.agent_cli("agy").command_with_termdeck_instructions("agy --model gemini", instruction_file),
+            "agy --model gemini")
+        self.assertEqual(len(agents.agent_cli("agy").termdeck_global_instruction_files()), 1)
+        self.assertEqual(len(agents.agent_cli("opencode").termdeck_global_instruction_files()), 1)
+
 
 class AgentCliResumeCommandTest(unittest.TestCase):
     def test_build_codex_resume_command_keeps_existing_flags(self) -> None:
@@ -545,6 +572,23 @@ class NewAgentCommandModelTest(unittest.TestCase):
                          "agy --mode accept-edits --model gemini-2.5-pro --effort high")
         self.assertEqual(manager.command_for_new_session("agy", "sandbox", session_id, ""),
                          f"agy --sandbox --conversation {session_id}")
+
+    def test_additional_start_arguments_are_appended_after_generated_arguments(self) -> None:
+        manager = TerminalSessionManager()
+        command = manager.command_for_new_session("codex", "default", "", "gpt-5.6-luna xhigh",
+                                                  '--model override --config "custom value"')
+        self.assertEqual(command, "codex --no-alt-screen -c 'model_reasoning_effort=\"xhigh\"' "
+                                  "--model override --config 'custom value'")
+
+    def test_additional_start_arguments_reject_unmatched_quotes(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid additional start parameters"):
+            TerminalSessionManager().command_for_new_session("codex", "default", "", "", "--config 'broken")
+
+    def test_additional_start_arguments_replace_generated_option_values(self) -> None:
+        manager = TerminalSessionManager()
+        command = manager.command_for_new_session("codex", "full-access", "", "",
+                                                  "--sandbox read-only")
+        self.assertEqual(command, "codex --no-alt-screen --sandbox read-only")
 
 
 class CodexModelSelectionTest(unittest.TestCase):
@@ -1458,13 +1502,15 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         ]
         server.manager.ensure_session_running.return_value = None
         server.manager.submit_prompt = AsyncMock()
-        request = RunTerminalTaskRequest(command="run checks", model_name="gpt-5.6-luna xhigh")
+        request = RunTerminalTaskRequest(command="run checks", model_name="gpt-5.6-luna xhigh",
+                                         additional_args="--config custom")
         await server._run_terminal_task(request)
         server.manager.command_for_new_session.assert_called_once_with(
             "codex",
             "default",
             "",
             "gpt-5.6-luna xhigh",
+            "--config custom",
         )
 
     async def test_run_terminal_task_forks_origin_and_places_child_after_it(self) -> None:
@@ -1514,16 +1560,17 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.ensure_session_running.return_value = None
         server.manager.submit_prompt = AsyncMock()
 
-        request = RunTerminalTaskRequest(command="run checks", cwd="/tmp", project="stock", output_path="/tmp/task-out.txt")
+        request = RunTerminalTaskRequest(command="run checks", cwd="/tmp", project="stock", output_path="/tmp/task-out.txt", description="Run checks")
         response = await server._run_terminal_task(request)
 
-        server.manager.command_for_new_session.assert_called_once_with("codex", "default", "", "")
+        server.manager.command_for_new_session.assert_called_once_with("codex", "default", "", "", "")
         server.manager.create_session.assert_called_once_with(
             "codex",
             "/tmp",
             "",
             "stock",
             output_path="/tmp/task-out.txt",
+            description="Run checks",
             agent_rename=None,
             worktree=None,
             worktree_id="root",
@@ -1573,6 +1620,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             "",
             "stock",
             output_path="",
+            description="",
             agent_rename=None,
             worktree=None,
             worktree_id="root",
@@ -1748,7 +1796,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
                 prompt="hi", title="child", origin_session="termde", write_back=True))
 
         server.manager.create_session.assert_called_once_with(
-            "codex", "/origin", "child", "stock", output_path="", agent_rename="child",
+            "codex", "/origin", "child", "stock", output_path="", description="", agent_rename="child",
             worktree=None, worktree_id="root")
         server._schedule_task_result_delivery.assert_called_once_with("child-01", "origin-01")
 

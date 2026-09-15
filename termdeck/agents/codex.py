@@ -1,3 +1,4 @@
+import json
 import re
 import shlex
 import time
@@ -97,6 +98,9 @@ class CodexCli(AgentCli):
             model_name = " ".join(parts[:-1])
         arguments.extend(("--model", model_name))
         return tuple(arguments)
+
+    def termdeck_instruction_arguments(self, instruction_file: Path) -> tuple[str, ...]:
+        return ("-c", f"model_instructions_file={json.dumps(str(instruction_file))}")
 
     def new_session_resume_arguments(self, session_ref: str, tracker) -> tuple[str, ...]:
         resolved = tracker.codex_session_id_for_reference(session_ref)

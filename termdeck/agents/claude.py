@@ -78,6 +78,9 @@ class ClaudeCli(AgentCli):
 
     subagent_file_marker = b'"isSidechain":true'
 
+    def termdeck_instruction_arguments(self, instruction_file: Path) -> tuple[str, ...]:
+        return ("--append-system-prompt-file", str(instruction_file))
+
     def new_session_resume_arguments(self, session_ref: str, tracker) -> tuple[str, ...]:
         return (self.RESUME_FLAG, session_ref)
 

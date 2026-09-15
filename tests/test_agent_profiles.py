@@ -55,7 +55,7 @@ class DeclarativeAgentProfileTest(unittest.TestCase):
 
     def test_profile_builds_launch_resume_fork_permission_and_descriptor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            agent = self._load(Path(directory))
+            agent = self._load(Path(directory), {"instruction_arguments": ["--instructions", "{instructions_file}"]})
         self.assertEqual(agent.build_command("auto", "openrouter/acme/model", "abc", None),
                          "reviewer-cli --tui --permission auto --engine openrouter/acme/model --session abc")
         self.assertEqual(agent.resume_command(
@@ -65,6 +65,9 @@ class DeclarativeAgentProfileTest(unittest.TestCase):
                          "reviewer-cli --tui --session next --fork --name 'new review'")
         self.assertEqual(agent.set_model("reviewer-cli --engine old --tui", "new/model"),
                          "reviewer-cli --engine new/model --tui")
+        self.assertEqual(agent.command_with_termdeck_instructions(
+            "reviewer-cli --tui", Path(directory) / "agent-api-instructions.md"),
+            f"reviewer-cli --instructions {directory}/agent-api-instructions.md --tui")
         descriptor = agent.client_descriptor()
         self.assertTrue(descriptor["declarative"])
         self.assertEqual(descriptor["activity_source"], "jsonl-event")

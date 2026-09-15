@@ -129,6 +129,23 @@ class AgentCli:
     def fork_command(self, original_command: str, agent_session_id: str, session_name: str = "") -> str:
         return original_command
 
+    def termdeck_instruction_arguments(self, instruction_file: Path) -> tuple[str, ...]:
+        return ()
+
+    def termdeck_global_instruction_files(self) -> tuple[Path, ...]:
+        return ()
+
+    def command_with_termdeck_instructions(self, command: str, instruction_file: Path) -> str:
+        arguments = self.termdeck_instruction_arguments(instruction_file)
+        if not arguments:
+            return command
+        parts = self.command_parts(command)
+        command_index = next((index for index, token in enumerate(parts)
+                              if Path(token).name == self.executable), None)
+        if command_index is None:
+            return command
+        return shlex.join([*parts[:command_index + 1], *arguments, *parts[command_index + 1:]])
+
     def set_permission(self, command: str, permission: str) -> str:
         """Swap the permission flags on a saved command, keeping everything else in place."""
         flags = self.normalized_permission_flags(permission)

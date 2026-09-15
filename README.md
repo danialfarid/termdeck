@@ -139,18 +139,12 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
 
 ## Cross-agent communication
 
-TermDeck gives agents a shared local control plane for starting, prompting, monitoring, and handing work to other
-agents. Each TermDeck terminal receives its own session ID and direct URL, so an agent can launch a review or subtask,
-place it beside the originating session, poll its latest turn, and link the result back to the parent conversation.
-Read the [TermDeck agent API](docs/agents-termdeck-api.md) for the request examples and result-polling contract.
-
-Add this instruction to the project guidance file that your agents read, such as `AGENTS.md`, `CLAUDE.md`, or
-`agents/claude.md`:
-
-```text
-For cross-agent communication through TermDeck, read https://github.com/danialfarid/termdeck/blob/main/docs/agents-termdeck-api.md.
-If TERMDECK_SESSION_ID is set, pass it as origin_session when starting a child task so the result is linked back here.
-```
+Agents can use the [TermDeck API](docs/agents-termdeck-api.md) to communicate, delegate reviews or subtasks,
+monitor progress, and bring results back to the parent conversation. TermDeck adds a
+[compact guide](termdeck/agent-api-instructions.md) to their
+system/instruction context through native instruction-file support or the agent's global instructions,
+so they know how to use it. This is enabled by default and can be turned on or off with
+**TermDeck API guidance for spawned agents** in Settings.
 
 ```
 ┌──────────────────────────┬────────────────────────────────────────────────────┐

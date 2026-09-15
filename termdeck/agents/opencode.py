@@ -54,6 +54,9 @@ class OpencodeCli(AgentCli):
     ui_permission_options = (("default", "Default (confirm actions)"), ("auto", "Auto-approve"))
     permission_switch_flags = ("--auto",)
 
+    def termdeck_global_instruction_files(self) -> tuple[Path, ...]:
+        return (Path.home() / ".config" / "opencode" / "AGENTS.md",)
+
     prompt_marker = "┃"
     # Terminal frame with opencode's block cursor.
     icon_svg = ('<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" '

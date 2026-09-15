@@ -69,12 +69,14 @@ class AgentHookRequest(BaseModel):
 
 
 class CreateSessionRequest(BaseModel):
+    description: str = ""
     command: str = ""
     cwd: str = ""
     title: str = ""
     project: str = ""
     model: str = ""
     model_name: str = ""
+    additional_args: str = ""
     permission: str = ""
     session_ref: str = ""
     after: str | None = None
@@ -85,9 +87,11 @@ class CreateSessionRequest(BaseModel):
 
 
 class RunTerminalTaskRequest(BaseModel):
+    description: str = ""
     model: str = "codex"
     permission: str = "default"
     model_name: str = ""
+    additional_args: str = ""
     title: str = ""
     cwd: str = ""
     project: str = ""
@@ -138,12 +142,14 @@ class FollowUpTaskPromptRequest(BaseModel):
 
 
 class BatchTerminalSpec(BaseModel):
+    description: str = ""
     name: str
     prompt: str | None = None
     cwd: str | None = None
     project: str | None = None
     model: str | None = None
     model_name: str | None = None
+    additional_args: str | None = None
     permission: str | None = None
     session_ref: str | None = None
     bracketed: bool | None = None
@@ -162,6 +168,7 @@ class BatchTerminalsRequest(BaseModel):
     project: str = ""
     model: str = "codex"
     model_name: str = ""
+    additional_args: str = ""
     permission: str = "default"
     bracketed: bool = True
     queue: bool = False
@@ -570,6 +577,7 @@ class UiSettings(BaseModel):
     # macOS user notifications on agent transitions (see notifier.AgentNotifier).
     notify_attention: bool = True
     notify_agent_idle: bool = True
+    agent_api_instructions_enabled: bool = True
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
     md_prompt_drafts: dict[str, str] = {}
@@ -928,6 +936,10 @@ class TermdeckServer:
         except ValidationError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
+    def _synchronize_agent_api_instruction_setting(self, payload: dict[str, object]) -> None:
+        if self.manager is not None:
+            self.manager.synchronize_agent_api_instructions(bool(payload["agent_api_instructions_enabled"]))
+
     async def _get_setting(self, setting_name: str) -> dict[str, object]:
         if setting_name not in UiSettings.model_fields or setting_name == "project_state":
             raise HTTPException(status_code=404, detail=f"unknown setting: {setting_name}")
@@ -935,16 +947,22 @@ class TermdeckServer:
         return {"name": setting_name, "value": getattr(settings, setting_name)}
 
     async def _put_setting(self, request: StoredValueRequest, setting_name: str) -> dict[str, object]:
+        previous_enabled = UiSettings(**self.settings_store.load()).agent_api_instructions_enabled
         payload = self._validated_setting_payload(setting_name, request.value)
         self.settings_store.save(payload)
+        if setting_name == "agent_api_instructions_enabled" and payload["agent_api_instructions_enabled"] != previous_enabled:
+            self._synchronize_agent_api_instruction_setting(payload)
         return {"name": setting_name, "value": payload[setting_name]}
 
     async def _delete_setting(self, setting_name: str) -> dict[str, object]:
+        previous_enabled = UiSettings(**self.settings_store.load()).agent_api_instructions_enabled
         defaults = UiSettings().model_dump()
         if setting_name not in defaults or setting_name == "project_state":
             raise HTTPException(status_code=404, detail=f"unknown setting: {setting_name}")
         payload = self._validated_setting_payload(setting_name, defaults[setting_name])
         self.settings_store.save(payload)
+        if setting_name == "agent_api_instructions_enabled" and payload["agent_api_instructions_enabled"] != previous_enabled:
+            self._synchronize_agent_api_instruction_setting(payload)
         return {"name": setting_name, "value": payload[setting_name]}
 
     async def _get_setting_entry(self, setting_name: str, entry_key: str) -> dict[str, object]:
@@ -1045,8 +1063,11 @@ class TermdeckServer:
             pass
 
     async def _put_settings(self, settings: UiSettings) -> dict[str, object]:
+        previous_enabled = UiSettings(**self.settings_store.load()).agent_api_instructions_enabled
         payload = self._preserve_active_layout_entries(settings.model_dump())
         self.settings_store.save(payload)
+        if payload["agent_api_instructions_enabled"] != previous_enabled:
+            self._synchronize_agent_api_instruction_setting(payload)
         return payload
 
     async def _replace_settings(self, settings: UiSettings, replace: bool = False) -> dict[str, object]:
@@ -1060,9 +1081,14 @@ class TermdeckServer:
             raise HTTPException(status_code=422, detail=f"unknown settings: {', '.join(sorted(unknown_fields))}")
         if "project_state" in incoming_settings:
             raise HTTPException(status_code=409, detail="project state must use /api/terminal-layout")
-        merged_settings = {**self.settings_store.load(), **incoming_settings}
+        current_settings = self.settings_store.load()
+        previous_enabled = UiSettings(**current_settings).agent_api_instructions_enabled
+        merged_settings = {**current_settings, **incoming_settings}
         payload = self._preserve_active_layout_entries(UiSettings(**merged_settings).model_dump())
         self.settings_store.save(payload)
+        if "agent_api_instructions_enabled" in incoming_settings and \
+                payload["agent_api_instructions_enabled"] != previous_enabled:
+            self._synchronize_agent_api_instruction_setting(payload)
         return payload
 
     def _preserve_active_layout_entries(self, incoming_payload: dict[str, object]) -> dict[str, object]:
@@ -2798,8 +2824,11 @@ class TermdeckServer:
         try:
             command = request.command
             if request.model.strip():
-                command = self.manager.command_for_new_session(request.model, request.permission, request.session_ref, request.model_name)
+                command = self.manager.command_for_new_session(
+                    request.model, request.permission, request.session_ref, request.model_name, request.additional_args)
                 self._raise_if_model_dependency_missing(request.model)
+            elif request.additional_args.strip():
+                command = self.manager.append_additional_start_arguments(command, request.additional_args)
             if request.worktree and request.session_ref.strip():
                 raise ValueError("an existing agent session cannot be resumed in a new worktree")
             project = self._resolve_project_from_after_anchor(request.after, request.project)
@@ -2814,6 +2843,7 @@ class TermdeckServer:
                 worktree = selected.metadata() if selected else None
             ms = self.manager.create_session(
                 command, cwd, request.title, project,
+                description=request.description,
                 agent_rename=request.title if not request.session_ref.strip() else None,
                 worktree=worktree,
                 worktree_id=worktree_id,
@@ -2857,9 +2887,12 @@ class TermdeckServer:
                         raise ValueError(f"unknown project: {project}")
                     worktree = self.worktree_registry.get(project, root, request.worktree_id).metadata()
                 ms = self.manager.fork_session(origin_session_id, request.title, worktree)
+                if request.description.strip():
+                    self.manager.set_session_description(ms.record.session_id, request.description)
             else:
                 self._raise_if_model_dependency_missing(request.model)
-                base_command = self.manager.command_for_new_session(request.model, request.permission, request.session_ref, request.model_name)
+                base_command = self.manager.command_for_new_session(
+                    request.model, request.permission, request.session_ref, request.model_name, request.additional_args)
                 cwd = request.cwd or str(origin_summary.get("cwd", ""))
                 project = self._resolve_project_from_after_anchor(placement_after, request.project or str(origin_summary.get("project", "")))
                 if request.worktree:
@@ -2879,6 +2912,7 @@ class TermdeckServer:
                     request.title,
                     project,
                     output_path=request.output_path,
+                    description=request.description,
                     agent_rename=request.title if request.title.strip() and not request.session_ref.strip() else None,
                     worktree=worktree,
                     worktree_id=worktree_id,
@@ -3111,6 +3145,7 @@ class TermdeckServer:
                     raise ValueError(f"prompt is empty for terminal {name}")
                 model = request.model if item.model is None else item.model
                 model_name = request.model_name if item.model_name is None else item.model_name
+                additional_args = request.additional_args if item.additional_args is None else item.additional_args
                 permission = request.permission if item.permission is None else item.permission
                 cwd = request.cwd if item.cwd is None else item.cwd
                 project = request.project if item.project is None else item.project
@@ -3125,7 +3160,8 @@ class TermdeckServer:
                 if worktree_enabled and session_ref.strip():
                     raise ValueError("an existing agent session cannot be resumed in a new worktree")
                 project = self._resolve_project_from_after_anchor(placement_after, project)
-                command = self.manager.command_for_new_session(model, permission, session_ref, model_name or "")
+                command = self.manager.command_for_new_session(
+                    model, permission, session_ref, model_name or "", additional_args or "")
                 worktree_id = requested_worktree_id.strip() or "root"
                 if worktree_enabled:
                     worktree = self._create_worktree(cwd, project, name, worktree_branch, worktree_base)
@@ -3138,6 +3174,7 @@ class TermdeckServer:
                     worktree = selected.metadata() if selected else None
                 ms = self.manager.create_session(
                     command, worktree.path if worktree else cwd, name, project,
+                    description=item.description,
                     agent_rename=name if not session_ref.strip() else None,
                     worktree=worktree,
                     worktree_id=worktree_id,

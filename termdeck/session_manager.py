@@ -3,6 +3,7 @@ import bisect
 import functools
 import os
 import re
+import shlex
 import signal
 import subprocess
 import time
@@ -11,6 +12,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from termdeck import agents
+from termdeck.agent_instructions import AgentInstructionService
 from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.claude_activity_watcher import ClaudeActivityWatcher
 from termdeck.compaction_rescue import build_rescue_payload, extract_recent_bytes
@@ -173,6 +175,7 @@ class TerminalSessionManager:
         self._history_index = None
         self.notifier = None
         self.replay = ReplayRecorder(self)
+        self.agent_instructions = AgentInstructionService(TermdeckConfig.AGENT_INSTRUCTIONS_FILE)
         self._claude_activity_watcher = ClaudeActivityWatcher(
             agents.agent_cli("claude").sessions_root, self._on_claude_file_change_from_thread)
 
@@ -190,6 +193,9 @@ class TerminalSessionManager:
         switch. Read lazily on each use rather than cached: a setting changed in the browser has to take
         effect without restarting the server."""
         self._settings_reader = reader
+
+    def synchronize_agent_api_instructions(self, enabled: bool) -> None:
+        self.agent_instructions.synchronize_global_instruction_files(enabled)
 
     def _ui_setting(self, name: str, default=False):
         reader = getattr(self, "_settings_reader", None)
@@ -270,7 +276,7 @@ class TerminalSessionManager:
 
     def create_session(self, command: str, cwd: str, title: str, project: str = "", output_path: str = "",
                        agent_rename: str | None = None, worktree: WorktreeMetadata | None = None,
-                       worktree_id: str = "root") -> ManagedSession:
+                       worktree_id: str = "root", description: str = "") -> ManagedSession:
         clean_command = command.strip()
         cwd_path = Path(cwd).expanduser() if cwd.strip() else TermdeckConfig.DEFAULT_CWD
         if not cwd_path.is_dir():
@@ -283,9 +289,10 @@ class TerminalSessionManager:
             cleaned_output_path = str(expanded_output_path.resolve())
         return self._create(clean_command, cwd_path, title, initial_command=None, agent_rename=agent_rename,
                             project=project, output_path=cleaned_output_path, worktree=worktree,
-                            worktree_id=worktree_id)
+                            worktree_id=worktree_id, description=description)
 
-    def command_for_new_session(self, model: str, permission: str, session_ref: str, model_name: str = "") -> str:
+    def command_for_new_session(self, model: str, permission: str, session_ref: str, model_name: str = "",
+                                additional_args: str = "") -> str:
         raw_model = model.strip().strip("\"'").lower()
         kind = agents.resolve_model_alias(raw_model) or agents.CodexCli.kind
         try:
@@ -294,7 +301,54 @@ class TerminalSessionManager:
             raise ValueError(f"unknown model: {model}") from None
         if not agent.launchable:
             raise ValueError(f"agent cannot be launched: {model}")
-        return agent.build_command(permission, model_name.strip(), session_ref.strip(), self._tracker)
+        command = agent.build_command(permission, model_name.strip(), session_ref.strip(), self._tracker)
+        permission_options = frozenset((*agent.permission_switch_flags, *agent.permission_value_flags))
+        return self.append_additional_start_arguments(command, additional_args, permission_options)
+
+    @staticmethod
+    def append_additional_start_arguments(command: str, additional_args: str,
+                                          conflicting_options: frozenset[str] = frozenset()) -> str:
+        if not additional_args.strip():
+            return command
+        try:
+            arguments = shlex.split(additional_args)
+        except ValueError as error:
+            raise ValueError(f"invalid additional start parameters: {error}") from error
+        command_parts = shlex.split(command)
+        overridden_options = TerminalSessionManager._additional_argument_option_names(arguments)
+        if overridden_options.intersection(conflicting_options):
+            overridden_options.update(conflicting_options)
+        if overridden_options:
+            command_parts = TerminalSessionManager._remove_overridden_arguments(command_parts, overridden_options)
+        return shlex.join([*command_parts, *arguments])
+
+    @staticmethod
+    def _additional_argument_option_names(arguments: list[str]) -> set[str]:
+        option_names: set[str] = set()
+        options_enabled = True
+        for argument in arguments:
+            if argument == "--":
+                options_enabled = False
+            elif options_enabled and (argument.startswith("--") or
+                                      (argument.startswith("-") and len(argument) > 1 and argument[1].isalpha())):
+                option_names.add(argument.split("=", 1)[0])
+        return option_names
+
+    @staticmethod
+    def _remove_overridden_arguments(command_parts: list[str], overridden_options: set[str]) -> list[str]:
+        filtered_parts: list[str] = []
+        index = 0
+        while index < len(command_parts):
+            argument = command_parts[index]
+            option_name = argument.split("=", 1)[0]
+            if option_name in overridden_options:
+                index += 1
+                if "=" not in argument and index < len(command_parts) and not command_parts[index].startswith("-"):
+                    index += 1
+                continue
+            filtered_parts.append(argument)
+            index += 1
+        return filtered_parts
 
     def session_bundle_state(self, session_id: str) -> tuple[dict[str, object], str, bytes]:
         ms = self._sessions[session_id]
@@ -374,13 +428,13 @@ class TerminalSessionManager:
     def _create(self, clean_command: str, cwd_path: Path, title: str, initial_command: str | None,
                 agent_rename: str | None = None, project: str | None = None,
                 output_path: str = "", worktree: WorktreeMetadata | None = None,
-                worktree_id: str = "root", fork_parent_agent_session_id: str | None = None) -> ManagedSession:
+                worktree_id: str = "root", fork_parent_agent_session_id: str | None = None, description: str = "") -> ManagedSession:
         agent = agents.detect_agent_cli(clean_command)
         project_name = project.strip() if project and project.strip() else self.registry.ensure_project_for_cwd(cwd_path)
         record = SessionRecord(session_id=uuid.uuid4().hex[:12], title=title.strip() or self._auto_title(clean_command, cwd_path),
                                title_user_set=bool(title.strip()), command=clean_command, cwd=str(cwd_path),
                                agent_kind=agent.kind, agent_session_id=None, created_at_est=TimeUtil.now_est_naive_iso(),
-                               draft="", project=project_name, output_path=output_path.strip() or None,
+                               draft="", project=project_name, output_path=output_path.strip() or None, description=description.strip(),
                                worktree_path=worktree.path if worktree else None,
                                worktree_repository=worktree.repository if worktree else None,
                                worktree_branch=worktree.branch if worktree else None,
@@ -460,8 +514,19 @@ class TerminalSessionManager:
                                 mark_activity=False)
         ms.terminal_history_cleared_for_spawn = False
         ms.exit_code = None
+        process_command = command
+        if agent.is_agent and not reattach and self._ui_setting("agent_api_instructions_enabled", True):
+            instruction_file = TermdeckConfig.AGENT_INSTRUCTIONS_FILE
+            global_instruction_files = agent.termdeck_global_instruction_files()
+            if global_instruction_files:
+                self.agent_instructions.synchronize_global_instruction_files(True, global_instruction_files)
+            elif agent.termdeck_instruction_arguments(instruction_file):
+                process_command = agent.command_with_termdeck_instructions(
+                    command, self.agent_instructions.ensure_instruction_file())
+        elif agent.is_agent and not reattach:
+            self.agent_instructions.synchronize_global_instruction_files(False)
         try:
-            ms.proc = PtyProcess(command, Path(ms.record.cwd), ms.cols, ms.rows,
+            ms.proc = PtyProcess(process_command, Path(ms.record.cwd), ms.cols, ms.rows,
                                  functools.partial(self._handle_output, ms), functools.partial(self._handle_exit, ms),
                                  dtach_socket=socket,
                                  child_environment={

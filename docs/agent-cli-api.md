@@ -45,6 +45,18 @@ OpenRouter is a provider rather than a terminal agent. It therefore uses the Cod
 adapter that launches it; the model field carries the provider-specific model ID while lifecycle, activity,
 permissions, transcript handling, and the brand icon continue to come from the underlying CLI adapter.
 
+## Spawn-time TermDeck guidance
+
+The `agent_api_instructions_enabled` setting is on by default. For a newly spawned agent process with instruction
+file support, TermDeck creates `agent-api-instructions.md` in its data directory and passes that file through the
+adapter's native instruction-file mechanism without modifying the project checkout or the saved session command.
+Built-in support covers Codex (`model_instructions_file`), Claude (`--append-system-prompt-file`), and Aider
+(`--read`) through launch-time arguments. AGY and Gemini use a marked block in the global `~/.gemini/GEMINI.md`,
+and OpenCode uses a marked block in the global `~/.config/opencode/AGENTS.md`; TermDeck removes only its own block
+when the setting is disabled. Declarative profiles can opt in with `instruction_arguments` and the
+`{instructions_file}` placeholder. An adapter without a verified native or documented global instruction
+mechanism leaves its launch command unchanged.
+
 ## Design
 
 ### Python: `termdeck/agents/` package
@@ -93,6 +105,9 @@ class AgentCli:
     permission_flags: dict[str, tuple[str, ...]] # permission name (+aliases) -> CLI flags
     ui_permissions: tuple[str, ...]              # subset offered by the client UI
     def model_arguments(self, model_name) -> tuple[str, ...]
+    def termdeck_instruction_arguments(self, instruction_file: Path) -> tuple[str, ...]
+    def termdeck_global_instruction_files(self) -> tuple[Path, ...]
+    def command_with_termdeck_instructions(self, command, instruction_file) -> str
     def resolve_session_reference(self, reference) -> str      # codex: name -> id via index
     def build_command(self, permission, model_name, session_ref) -> str
     def resume_command(self, original_command, agent_session_id) -> str

@@ -6,14 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-09-15
+
+### Changed
+
+- The built-in delegation instructions focus on starting, monitoring, and following up with an agent; creation APIs accept a short description alongside the session name and prompt.
+
 ### Fixed
 
 - Codex submitted-input activity expires when no new task appears in its transcript, preventing a completed session from remaining marked as processing indefinitely.
 
 ### Added
 
-- Agent terminals expose their session id, name, and direct URL to child processes, and session descriptions can be stored through the API for study and handoff context.
-- The README documents cross-agent communication through the TermDeck API and includes copyable project-agent guidance.
+- Agent terminals expose their session id, name, and direct URL to child processes, and user-visible session descriptions can be stored through the API for workspace organization.
+- The README documents cross-agent communication through the TermDeck API and automatic guidance for spawned agents.
+- New agent sessions can receive the TermDeck API guidance automatically, with a setting to disable it.
+- Agent spawning accepts optional additional launch parameters, appended after generated parameters for overrides, in the UI and automation APIs.
 
 ## [0.15.1] — 2026-09-14
 

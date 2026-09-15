@@ -47,6 +47,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_fo
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   notify_attention: true, notify_agent_idle: true,
+  agent_api_instructions_enabled: true,
   search_scope: "project", recent_closed_files: [], worktree_ui_state: {}, selected_worktrees: {}, worktree_roots: {},
   files_side_panel_last_tab: "project", file_search_history: [],
   file_tab_max_visible: 20, file_tab_order: "opened", lsp_enabled: true, lsp_command_overrides: {},

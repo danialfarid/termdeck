@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from termdeck.agents.base import AgentCli, OutputActivityState
 
 
@@ -39,6 +41,9 @@ class AiderCli(AgentCli):
     }
     ui_permission_options = (("default", "Default (confirm actions)"), ("auto", "Auto-approve (--yes-always)"))
     permission_switch_flags = ("--yes-always",)
+
+    def termdeck_instruction_arguments(self, instruction_file: Path) -> tuple[str, ...]:
+        return ("--read", str(instruction_file))
 
     def new_session_state(self) -> OutputActivityState:
         return OutputActivityState()

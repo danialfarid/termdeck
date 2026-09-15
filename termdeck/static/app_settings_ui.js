@@ -841,6 +841,9 @@ Object.assign(TermdeckApp.prototype, {
         this.settings.notify_agent_idle = next;
         if (next) this.maybeRequestNotificationPermission();
       }));
+    pop.appendChild(this.buildToggleRow("TermDeck API guidance for spawned agents",
+      () => (this.settings.agent_api_instructions_enabled !== false ? "on" : "off"),
+      () => { this.settings.agent_api_instructions_enabled = this.settings.agent_api_instructions_enabled === false; }));
     if (this.touchMobileLayoutEnabled()) pop.appendChild(this.buildMobileDisplayScaleRow());
     // Experiment switch: see tallRowPlan(). GPU rendering, at the cost of a much shorter scrollable
     // canvas -- the whole trade is explained there.
@@ -3211,6 +3214,7 @@ Object.assign(TermdeckApp.prototype, {
     this.$("modal-model").value = this.agentSpecs[model] ? model : DEFAULT_COMMAND;
     this.modalModelDrafts = { ...(this.settings.last_model_names || {}) };
     this.$("modal-model-name").dataset.agentKind = "";
+    this.$("modal-additional-args").value = "";
     this.updateModalModelField();
     this.updateModalPermissions();
     this.updateModalSessionSuggestions();
@@ -3257,6 +3261,7 @@ Object.assign(TermdeckApp.prototype, {
     if (previous) this.modalModelDrafts[previous] = input.value;
     const spec = this.agentSpec(model);
     this.$("modal-model-name-field").classList.toggle("hidden", !spec?.is_agent);
+    this.$("modal-additional-args-field").classList.toggle("hidden", !spec?.is_agent);
     input.dataset.agentKind = model;
     input.value = this.modalModelDrafts[model] || "";
     input.placeholder = spec?.model_placeholder || "agent default";
@@ -3284,6 +3289,7 @@ Object.assign(TermdeckApp.prototype, {
     const requestedAfterSessionId = this.modalAfterSessionId;
     const model = this.$("modal-model").value;
     const modelName = this.$("modal-model-name").value.trim();
+    const additionalArgs = this.$("modal-additional-args").value.trim();
     const permission = this.$("modal-permission").value;
     const resolved = this.resolveSessionNameAndReference(model, this.$("modal-session-title").value);
     const { title, session_ref: sessionRef } = resolved;
@@ -3300,7 +3306,7 @@ Object.assign(TermdeckApp.prototype, {
     const res = await fetch("/api/sessions", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, model_name: modelName, permission, session_ref: sessionRef, cwd, title,
-        project, worktree_id: this.stateWorktreeId() }),
+        project, additional_args: additionalArgs, worktree_id: this.stateWorktreeId() }),
     });
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
