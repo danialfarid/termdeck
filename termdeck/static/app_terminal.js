@@ -419,11 +419,34 @@ Object.assign(TermdeckApp.prototype, {
       this.scrollTallContainerToCursor(view);
       this.sendTrackedInput(view, this.terminalPastePayload(view, text));
     }, true);
-    container.addEventListener("dragover", (e) => { e.preventDefault(); container.classList.add("drag-over"); });
-    container.addEventListener("dragleave", (e) => { if (e.target === container) container.classList.remove("drag-over"); });
+    container.addEventListener("dragover", (e) => {
+      const sessionId = this.sessionIdFromDragDataTransfer(e.dataTransfer);
+      e.preventDefault();
+      container.classList.toggle("session-drop-target", !!sessionId);
+      container.classList.toggle("drag-over", !sessionId);
+    });
+    container.addEventListener("dragleave", (e) => {
+      if (e.target === container) container.classList.remove("drag-over", "session-drop-target");
+    });
     container.addEventListener("drop", (e) => {
       e.preventDefault();
-      container.classList.remove("drag-over");
+      e.stopPropagation();
+      container.classList.remove("drag-over", "session-drop-target");
+      const sessionId = this.sessionIdFromDragDataTransfer(e.dataTransfer);
+      if (sessionId) {
+        if (this.readOnlyMode) {
+          this.$("status-name").textContent = "read-only mode · terminal input is disabled";
+          return;
+        }
+        if (!view.ws || view.ws.readyState !== WebSocket.OPEN) {
+          this.$("status-name").textContent = "terminal is still connecting";
+          return;
+        }
+        view.term.focus();
+        this.sendTrackedInput(view, this.terminalPastePayload(view, sessionId));
+        this.$("status-name").textContent = "session id inserted into terminal";
+        return;
+      }
       const files = e.dataTransfer && e.dataTransfer.files ? [...e.dataTransfer.files] : [];
       if (files.length) this.uploadAndInsert(view, files);
     });

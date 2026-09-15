@@ -378,8 +378,10 @@ body:not(.vscode-mode) .session-item:has(.status-dot.attention) .terminal-type-i
   0%, 16% { transform: translate3d(25%, 0, 0); }
   84%, 100% { transform: translate3d(-100%, 0, 0); }
 }
+.session-title-stack { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 1px; overflow: hidden; }
 .session-title { position: relative; min-width: 0; font-size: var(--sidebar-font-size); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .session-title-base { display: block; overflow: hidden; text-overflow: ellipsis; }
+.session-description { min-width: 0; overflow: hidden; color: var(--dim); font: calc(var(--sidebar-font-size) - 4px)/1.1 Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; opacity: .82; }
 .session-title-wave-window { display: none; position: absolute; inset: 0 auto 0 0; width: 25%; overflow: hidden; pointer-events: none; opacity: 0; transform: translate3d(-100%, 0, 0); }
 .session-title-wave-text { display: block; width: 400%; color: var(--working-blue); white-space: nowrap; }
 .session-title-wave-text::before { content: attr(data-wave-text); }
@@ -518,18 +520,18 @@ body.termdeck-read-only #history-prompt { color: var(--dim); cursor: not-allowed
 #status-usage.hidden { display: none; }
 #history-meta { max-width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font: var(--ui-font-size) Menlo, monospace; opacity: 0.9; }
 #history-meta.hidden { display: none; }
-#history-btn, #attach-btn, #terminal-resync-btn, #scroll-bottom-btn, #reveal-session-btn, #file-history-toggle, #editor-wrap-toggle, #file-split-toggle, #notebook-toggle, #problems-toggle, #conversation-outline-toggle { background: none; border: 1px solid transparent; color: var(--dim); border-radius: 5px; height: 23px; min-width: 26px; cursor: pointer; }
+#history-btn, #attach-btn, #terminal-resync-btn, #scroll-bottom-btn, #reveal-session-btn, #file-history-toggle, #editor-wrap-toggle, #file-split-toggle, #session-description-toggle, #notebook-toggle, #problems-toggle, #conversation-outline-toggle { background: none; border: 1px solid transparent; color: var(--dim); border-radius: 5px; height: 23px; min-width: 26px; cursor: pointer; }
 #attach-btn.hidden, #history-btn.hidden, #terminal-resync-btn.hidden, #scroll-bottom-btn.hidden,
 #history-edits-toggle.hidden, #history-scroll-bottom.hidden, #reveal-session-btn.hidden, #file-history-toggle.hidden,
-#editor-wrap-toggle.hidden, #file-split-toggle.hidden, #notebook-toggle.hidden, #problems-toggle.hidden { display: none; }
+#editor-wrap-toggle.hidden, #file-split-toggle.hidden, #session-description-toggle.hidden, #notebook-toggle.hidden, #problems-toggle.hidden { display: none; }
 #history-btn.transcript-unavailable, #vscode-history-btn.transcript-unavailable,
 #conversation-outline-toggle.transcript-unavailable { display: none; }
-#history-btn:hover, #attach-btn:hover, #terminal-resync-btn:hover, #scroll-bottom-btn:hover, #editor-wrap-toggle:hover,
+#history-btn:hover, #attach-btn:hover, #terminal-resync-btn:hover, #scroll-bottom-btn:hover, #editor-wrap-toggle:hover, #session-description-toggle:hover,
 #history-edits-toggle:hover, #history-scroll-bottom:hover, #reveal-session-btn:hover, #file-history-toggle:hover,
 #file-split-toggle:hover, #notebook-toggle:hover, #problems-toggle:hover, #conversation-outline-toggle:hover { color: var(--text); border-color: var(--border); }
 #file-history-toggle.on, #file-split-toggle.on, #notebook-toggle.on, #problems-toggle.on, #conversation-outline-toggle.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 #history-btn.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
-#history-btn .codicon, #attach-btn .codicon, #terminal-resync-btn .codicon, #scroll-bottom-btn .codicon, #file-history-toggle .codicon,
+#history-btn .codicon, #attach-btn .codicon, #terminal-resync-btn .codicon, #scroll-bottom-btn .codicon, #file-history-toggle .codicon, #session-description-toggle .codicon,
 #editor-wrap-toggle .codicon, #file-split-toggle .codicon, #notebook-toggle .codicon, #history-edits-toggle .codicon, #history-scroll-bottom .codicon,
 #reveal-session-btn .codicon, #conversation-outline-toggle .codicon, #problems-toggle .codicon { font-size: var(--bottom-font-size); }
 #bottombar button { min-width: max(26px, calc(var(--bottom-font-size) + 12px)); height: max(23px, calc(var(--bottom-font-size) + 9px)); font-size: var(--bottom-font-size); }
@@ -543,6 +545,23 @@ body.vscode-mode #bottombar #scroll-bottom-btn,
 body.vscode-mode #bottombar #reveal-session-btn,
 body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 .term-container.drag-over::after { content: "drop to attach → inserts file path"; position: absolute; inset: 6px; border: 2px dashed var(--accent); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--accent); font-size: 13px; background: rgba(92, 207, 230, 0.08); pointer-events: none; z-index: 10; }
+.term-container.session-drop-target::after { content: "drop terminal tab → inserts session id"; position: absolute; inset: 6px; border: 2px dashed var(--accent); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--accent); font-size: 13px; background: rgba(92, 207, 230, 0.08); pointer-events: none; z-index: 10; }
+#session-description-drawer { position: absolute; z-index: 25; right: 0; bottom: max(29px, calc(var(--bottom-font-size) + 15px)); left: 0; display: flex; flex-direction: column; gap: 9px; height: min(48vh, 460px); min-height: 220px; padding: 12px 14px 11px; border: 1px solid var(--active-border); border-bottom: 0; border-radius: 10px 10px 0 0; background: color-mix(in srgb, var(--panel) 96%, var(--accent) 4%); box-shadow: 0 -12px 30px rgba(0, 0, 0, .38); }
+#session-description-drawer.hidden { display: none; }
+#session-description-resizer { position: absolute; z-index: 1; top: -5px; right: 0; left: 0; height: 10px; cursor: ns-resize; touch-action: none; }
+#session-description-resizer::after { content: ""; position: absolute; top: 4px; left: 50%; width: 44px; height: 3px; border-radius: 3px; background: var(--border); transform: translateX(-50%); }
+#session-description-resizer:hover::after, body.resizing-session-description #session-description-resizer::after { background: var(--accent); }
+#session-description-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex: none; }
+#session-description-title { color: var(--text); font: 650 calc(var(--system-font-size) + 1px)/1.2 Menlo, monospace; }
+#session-description-session { margin-top: 3px; overflow: hidden; color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+#session-description-close { width: 26px; height: 24px; flex: none; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--dim); cursor: pointer; }
+#session-description-close:hover { border-color: var(--border); background: var(--panel2); color: var(--text); }
+#session-description-input { width: 100%; min-height: 0; flex: 1; resize: vertical; padding: 10px 11px; border: 1px solid var(--border); border-radius: 6px; outline: none; background: var(--bg); color: var(--text); font: var(--code-font-size)/1.35 Menlo, monospace; }
+#session-description-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--active-border); }
+#session-description-input:read-only { opacity: .7; }
+#session-description-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex: none; }
+#session-description-status { min-width: 0; flex: 1; overflow: hidden; color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+#history-area.session-drop-target::after { content: "drop terminal tab → inserts session id"; position: absolute; z-index: 10; inset: 8px; display: flex; align-items: center; justify-content: center; border: 2px dashed var(--accent); border-radius: 10px; background: rgba(92, 207, 230, 0.08); color: var(--accent); font-size: 13px; pointer-events: none; }
 #history-area { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; background: var(--bg); }
 #history-area.hidden { display: none; }
 #history-head { position: absolute; top: 10px; left: 14px; right: 14px; z-index: 5; display: flex; align-items: center; justify-content: flex-start; padding: 0; gap: 6px; }
@@ -599,6 +618,7 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 #history-prompt { box-sizing: border-box; flex: 1; width: 100%; min-width: 0; min-height: calc(var(--code-font-size) * 1.45 + 28px); height: auto; max-height: min(320px, 36dvh); resize: none; overflow-y: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 13px 10px; outline: none; font: var(--code-font-size)/1.45 Menlo, monospace; }
 #history-prompt:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--active-border); }
 #history-prompt.image-drop-target { border-color: var(--accent); background: var(--active-bg); box-shadow: 0 0 0 2px var(--active-border); }
+#history-prompt.session-drop-target { border-color: var(--accent); background: var(--active-bg); box-shadow: 0 0 0 2px var(--active-border); }
 #history-model { flex: none; max-width: 48%; margin-left: auto; }
 #history-prompt-footer { display: flex; align-items: center; gap: 7px; min-width: 0; padding-top: 4px; }
 #history-prompt-help { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; }

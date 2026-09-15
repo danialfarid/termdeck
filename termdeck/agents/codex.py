@@ -14,6 +14,7 @@ class CodexSessionState(AgentSessionState):
     def __init__(self) -> None:
         self.transcript_active = False
         self.activity_checked_monotonic = 0.0
+        self.submission_activity_deadline = 0.0
         self.activity_signature: tuple[int | None, int, int] | None = None
         self.pending_rename: str | None = None
         self.pending_rename_deadline = 0.0
@@ -409,6 +410,7 @@ class CodexCli(AgentCli):
     # -- activity / processing ---------------------------------------------
 
     ACTIVITY_FALLBACK_CHECK_SECONDS = 1.0
+    SUBMISSION_ACTIVITY_GRACE_SECONDS = 30.0
 
     def new_session_state(self) -> CodexSessionState:
         return CodexSessionState()
@@ -442,8 +444,10 @@ class CodexCli(AgentCli):
             return
         ms.agent_state.activity_checked_monotonic = now
         signature = self.activity_signature(manager, ms)
-        if signature is None or signature == ms.agent_state.activity_signature:
+        submission_expired = bool(ms.agent_state.submission_activity_deadline and now >= ms.agent_state.submission_activity_deadline)
+        if signature is None or (signature == ms.agent_state.activity_signature and not submission_expired):
             return
+        ms.agent_state.submission_activity_deadline = 0.0
         ms.agent_state.activity_signature = signature
         ms.agent_state.transcript_active = manager._tracker.codex_session_is_active(ms.record.agent_session_id)
         manager._sync_processing_started(ms)
@@ -474,6 +478,7 @@ class CodexCli(AgentCli):
         submitted = text in {"\r", "\n"} and bool(command) and not command.startswith("/")
         if submitted and not ms.agent_state.transcript_active:
             ms.agent_state.transcript_active = True
+            ms.agent_state.submission_activity_deadline = time.monotonic() + self.SUBMISSION_ACTIVITY_GRACE_SECONDS
             ms.agent_state.activity_signature = self.activity_signature(manager, ms)
             ms.agent_state.activity_checked_monotonic = time.monotonic()
             manager._broadcast_status(ms)
@@ -481,6 +486,7 @@ class CodexCli(AgentCli):
     def on_api_prompt_submitted(self, manager, ms, queue: bool) -> None:
         if not queue:
             ms.agent_state.transcript_active = True
+            ms.agent_state.submission_activity_deadline = time.monotonic() + self.SUBMISSION_ACTIVITY_GRACE_SECONDS
             ms.agent_state.activity_signature = self.activity_signature(manager, ms)
             ms.agent_state.activity_checked_monotonic = time.monotonic()
             manager._broadcast_status(ms)

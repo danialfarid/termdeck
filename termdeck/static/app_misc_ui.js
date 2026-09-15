@@ -987,6 +987,122 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  editSessionDescription(session) {
+    this.openSessionDescriptionEditor(session);
+  },
+
+
+  toggleSessionDescriptionEditor() {
+    const session = this.session(this.activeId);
+    const drawer = this.$("session-description-drawer");
+    if (!session || !drawer) return;
+    if (!drawer.classList.contains("hidden") && this.sessionDescriptionEditingId === session.session_id) {
+      this.closeSessionDescriptionEditor();
+      return;
+    }
+    this.openSessionDescriptionEditor(session);
+  },
+
+
+  startSessionDescriptionResize(event) {
+    if (event.button !== 0) return;
+    const drawer = this.$("session-description-drawer");
+    const main = this.$("main");
+    if (!drawer || !main) return;
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = drawer.getBoundingClientRect().height;
+    const minimumHeight = 220;
+    const maximumHeight = Math.max(minimumHeight, main.getBoundingClientRect().height - 48);
+    const resize = (moveEvent) => {
+      const height = Math.max(minimumHeight, Math.min(maximumHeight, startHeight + startY - moveEvent.clientY));
+      drawer.style.height = `${height}px`;
+    };
+    const finish = () => {
+      window.removeEventListener("pointermove", resize);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      document.body.classList.remove("resizing-session-description");
+    };
+    document.body.classList.add("resizing-session-description");
+    window.addEventListener("pointermove", resize);
+    window.addEventListener("pointerup", finish, { once: true });
+    window.addEventListener("pointercancel", finish, { once: true });
+  },
+
+
+  openSessionDescriptionEditor(session = this.session(this.activeId)) {
+    if (!session) return;
+    const drawer = this.$("session-description-drawer");
+    const input = this.$("session-description-input");
+    const sessionLabel = this.$("session-description-session");
+    if (!drawer || !input || !sessionLabel) return;
+    this.sessionDescriptionEditingId = session.session_id;
+    input.value = String(session.description || "");
+    input.readOnly = !!this.readOnlyMode;
+    sessionLabel.textContent = `${this.titlePresentation(session).text} · ${session.session_id}`;
+    sessionLabel.title = sessionLabel.textContent;
+    this.$("session-description-status").textContent = this.readOnlyMode ? "read-only mode" : "Autosaves while you type";
+    drawer.classList.remove("hidden");
+    requestAnimationFrame(() => {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  },
+
+
+  closeSessionDescriptionEditor() {
+    clearTimeout(this.sessionDescriptionSaveTimer);
+    this.sessionDescriptionSaveTimer = 0;
+    const sessionId = this.sessionDescriptionEditingId;
+    const session = this.session(sessionId);
+    const input = this.$("session-description-input");
+    if (!this.readOnlyMode && session && input && String(input.value || "").trim() !== String(session.description || "")) {
+      void this.saveSessionDescriptionEditor(sessionId, input.value);
+    }
+    const drawer = this.$("session-description-drawer");
+    if (drawer) drawer.classList.add("hidden");
+    this.sessionDescriptionEditingId = "";
+    if (!this.touchMobileLayoutEnabled()) this.refocusActiveInputAfterToolbarAction();
+  },
+
+
+  scheduleSessionDescriptionSave() {
+    if (this.readOnlyMode || !this.sessionDescriptionEditingId) return;
+    clearTimeout(this.sessionDescriptionSaveTimer);
+    const sessionId = this.sessionDescriptionEditingId;
+    const input = this.$("session-description-input");
+    if (!input) return;
+    this.$("session-description-status").textContent = "Saving automatically…";
+    const value = input.value;
+    this.sessionDescriptionSaveTimer = setTimeout(() => {
+      this.sessionDescriptionSaveTimer = 0;
+      void this.saveSessionDescriptionEditor(sessionId, value);
+    }, 450);
+  },
+
+
+  async saveSessionDescriptionEditor(sessionId = this.sessionDescriptionEditingId, value = null) {
+    if (this.readOnlyMode) return;
+    const session = this.session(sessionId);
+    const input = this.$("session-description-input");
+    if (!session || !input) return;
+    const description = value === null ? input.value : value;
+    const response = await fetch(`/api/sessions/${encodeURIComponent(session.session_id)}/description`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description, append: false }),
+    });
+    if (!response.ok) {
+      if (this.sessionDescriptionEditingId === sessionId) this.$("session-description-status").textContent = `Autosave failed (${response.status})`;
+      return;
+    }
+    const updated = await response.json();
+    session.description = String(updated.description || "");
+    this.updateSessionRows(session.session_id);
+    if (this.sessionDescriptionEditingId === sessionId) this.$("session-description-status").textContent = "Saved automatically";
+  },
+
+
   async moveSessionToProject(session, project) {
     if (!session || !project || project === session.project) return;
     const response = await fetch(`/api/sessions/${session.session_id}/project`, {

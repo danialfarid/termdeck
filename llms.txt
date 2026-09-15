@@ -11,6 +11,7 @@ Aider, or OpenCode adapter that runs them.
 
 - [README](https://github.com/danialfarid/termdeck/blob/main/README.md): installation, workflow, and features
 - [Agent task API](https://github.com/danialfarid/termdeck/blob/main/docs/agents-termdeck-api.md): spawn an agent, send prompts, monitor completion, and read results
+- [Trainer study links](https://github.com/danialfarid/termdeck/blob/main/docs/agents-termdeck-api.md#link-a-trainer-study-to-its-agent-tab): attach `TERMDECK_SESSION_ID` to persisted experiments and link dashboard studies back to their tabs
 - [Agent adapter API](https://github.com/danialfarid/termdeck/blob/main/docs/agent-cli-api.md): add or extend an agent CLI integration
 - [Declarative agent profiles](https://github.com/danialfarid/termdeck/blob/main/docs/agent-profiles.md): add launch, resume, fork, rename, transcript, activity, permission, and icon support without Python
 - [Session export and import](https://github.com/danialfarid/termdeck/blob/main/docs/session-export-import.md): portable archive format, trust boundary, and API
@@ -28,6 +29,8 @@ Aider, or OpenCode adapter that runs them.
 - `GET /api/sessions/{session_id}/task-result` returns the extracted final response when available.
 - `POST /api/terminals/task/{session_id}/prompt` sends a follow-up to an existing task.
 - `GET /api/sessions/{session_id}/history` returns normalized transcript turns.
+- `GET /api/sessions` and `GET /api/sessions/{session_id}` expose session title, description, and direct TermDeck URL metadata.
+- `POST /api/sessions/{session_id}/description` stores a description visible on the terminal tab.
 - `GET /api/sessions/{session_id}/export` downloads a portable session; `POST /api/sessions/import` restores it as a dormant tab.
 - `GET /api/terminal-search` searches terminal titles, prompts, and responses.
 - `GET /api/files`, `GET /api/search`, and `GET /api/filename-search` expose project-confined file browsing and search.

@@ -872,7 +872,8 @@ Object.assign(TermdeckApp.prototype, {
     item.dataset.sessionId = s.session_id;
     item.dataset.worktreeId = this.worktreeIdForSession(s);
     item.classList.toggle("sidebar-selected", this.sidebarSelectedSessionIds.has(s.session_id));
-    item.title = `${s.command || "zsh"}\n${s.cwd}` + (s.agent_session_id ? `\n${s.agent_kind}: ${s.agent_session_id}` : "") + "\nright-click for actions";
+    item.title = `${s.command || "zsh"}\n${s.cwd}` + (s.agent_session_id ? `\n${s.agent_kind}: ${s.agent_session_id}` : "") +
+      (s.description ? `\n${s.description}` : "") + "\nright-click for actions";
     if (searchMatch) {
       item.title += `\n${searchMatch.count} terminal match${searchMatch.count === 1 ? "" : "es"}`;
     }
@@ -897,6 +898,15 @@ Object.assign(TermdeckApp.prototype, {
     this.setSessionTitleText(title, presentation.text, useTextStatusIndicator && presentation.spinning);
     if (!this.vscodeMode && !presentation.spinning) title.style.color = this.terminalAgeColor(s);
     this.sessionTitleEls.set(s.session_id, title);
+    const titleStack = document.createElement("span");
+    titleStack.className = "session-title-stack";
+    const description = document.createElement("span");
+    description.className = "session-description";
+    description.textContent = String(s.description || "");
+    description.title = description.textContent;
+    description.classList.toggle("hidden", !description.textContent);
+    this.sessionDescriptionEls.set(s.session_id, description);
+    titleStack.append(title, description);
     const typeIcon = this.terminalTypeIcon(s);
     const iconStatusActive = showDesktopBrandIndicator &&
       (presentation.spinning || this.unreadSessions.has(s.session_id));
@@ -922,9 +932,9 @@ Object.assign(TermdeckApp.prototype, {
     groupIndicator.className = "group-drop-indicator";
     groupIndicator.innerHTML = '<span class="codicon codicon-folder-library"></span><span>group</span>';
     groupIndicator.title = "Release to group with this terminal";
-    if (showDesktopBrandIndicator) item.append(dot, typeIcon, title, groupIndicator, close, mobileActions);
-    else if (useTextStatusIndicator) item.append(dot, typeIcon, title, groupIndicator, close, mobileActions);
-    else item.append(dot, typeIcon, title, groupIndicator, close, mobileActions);
+    if (showDesktopBrandIndicator) item.append(dot, typeIcon, titleStack, groupIndicator, close, mobileActions);
+    else if (useTextStatusIndicator) item.append(dot, typeIcon, titleStack, groupIndicator, close, mobileActions);
+    else item.append(dot, typeIcon, titleStack, groupIndicator, close, mobileActions);
     const activityDots = document.createElement("span");
     activityDots.className = "session-activity-dots";
     item.append(activityDots);
@@ -1133,6 +1143,7 @@ Object.assign(TermdeckApp.prototype, {
       this.sidebarSelectionAnchorId = [...this.sidebarSelectedSessionIds][0] || null;
     }
     this.sessionTitleEls.clear();
+    this.sessionDescriptionEls.clear();
     this.sessionSpinnerEls.clear();
     this.sessionActivityEls.clear();
     this.sessionStatusEls.clear();
@@ -4168,6 +4179,7 @@ Object.assign(TermdeckApp.prototype, {
       this.addContextItem(menu, "Stop", session.running ? () => this.stopSession(session.session_id) : null, "debug-stop");
       this.addContextItem(menu, this.shortcutLabel("Rename", "rename-terminal"),
         () => this.renameSession(session), "edit");
+      this.addContextItem(menu, "Edit description…", () => this.editSessionDescription(session), "edit");
       this.addContextItem(menu, "Copy session name",
         () => this.copyTextToClipboard(this.titlePresentation(session).text, "session name copied"), "copy");
       this.addContextItem(menu, this.shortcutLabel("Copy session id", "copy-session-id"),

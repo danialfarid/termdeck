@@ -1209,6 +1209,12 @@ Object.assign(TermdeckApp.prototype, {
     this.updateProblemsAvailability();
     this.updateShortcutTitles();
     this.$("attach-btn").classList.toggle("hidden", fileMode || gitReviewMode);
+    const descriptionButton = this.$("session-description-toggle");
+    const descriptionHidden = fileMode || gitReviewMode || !this.activeId || !this.session(this.activeId);
+    descriptionButton.classList.toggle("hidden", descriptionHidden);
+    const descriptionDrawer = this.$("session-description-drawer");
+    if ((descriptionHidden || (this.sessionDescriptionEditingId && this.sessionDescriptionEditingId !== this.activeId)) &&
+      descriptionDrawer && !descriptionDrawer.classList.contains("hidden")) this.closeSessionDescriptionEditor();
     const revealButton = this.$("reveal-session-btn");
     revealButton.classList.toggle("hidden", gitReviewMode);
     const revealLabel = fileMode ? "Reveal active file in tree" : "Select current terminal in terminal list";
@@ -6306,6 +6312,30 @@ Object.assign(TermdeckApp.prototype, {
     this.showPromptDraft(view);
     prompt.focus();
     prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+  },
+
+
+  insertSessionIdIntoHistoryPrompt(sessionId) {
+    if (!this.historyOpen || this.activeFileKey !== null || !sessionId) return false;
+    const view = this.sessionInteractionState(this.activeId);
+    const prompt = this.$("history-prompt");
+    if (!view || !prompt) return false;
+    const value = String(prompt.value || "");
+    const start = Math.max(0, Math.min(value.length, Number(prompt.selectionStart ?? value.length)));
+    const end = Math.max(start, Math.min(value.length, Number(prompt.selectionEnd ?? start)));
+    const before = value.slice(0, start);
+    const after = value.slice(end);
+    const prefix = before && !/\s$/.test(before) ? " " : "";
+    const suffix = after && !/^\s/.test(after) ? " " : "";
+    const nextValue = `${before}${prefix}${sessionId}${suffix}${after}`;
+    this.persistMarkdownPromptDraft(view, nextValue);
+    this.showPromptDraft(view);
+    this.resizeHistoryPrompt();
+    prompt.focus();
+    const cursor = before.length + prefix.length + sessionId.length;
+    prompt.setSelectionRange(cursor, cursor);
+    this.$("status-name").textContent = "session id inserted into transcript composer";
+    return true;
   },
 
 

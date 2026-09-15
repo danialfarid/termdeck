@@ -176,6 +176,11 @@ class RenameSessionRequest(BaseModel):
     title: str
 
 
+class SessionDescriptionRequest(BaseModel):
+    description: str
+    append: bool = False
+
+
 class ForkSessionRequest(BaseModel):
     title: str
     worktree: bool = False
@@ -769,6 +774,7 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_SESSION_WORKTREE_REVIEW_ROUTE, response_model=None)(self._review_worktree)
         app.post(TermdeckConfig.API_SESSION_WORKTREE_FINISH_ROUTE, response_model=None)(self._finish_worktree)
         app.post(TermdeckConfig.API_SESSION_RENAME_ROUTE, response_model=None)(self._rename_session)
+        app.post(TermdeckConfig.API_SESSION_DESCRIPTION_ROUTE, response_model=None)(self._set_session_description)
         app.post(TermdeckConfig.API_SESSION_PROJECT_ROUTE, response_model=None)(self._move_session_to_project)
         app.get(TermdeckConfig.API_SESSION_TASK_STATUS_ROUTE, response_model=None)(self._task_status)
         app.get(TermdeckConfig.API_SESSION_TASK_RESULT_ROUTE, response_model=None)(self._task_result)
@@ -802,6 +808,7 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_TERMINAL_SEARCH_ROUTE, response_model=None)(self._search_terminal_buffers)
         app.get(TermdeckConfig.API_HISTORY_SEARCH_ROUTE, response_model=None)(self._search_history)
         app.get(TermdeckConfig.API_HISTORY_CONTEXT_ROUTE, response_model=None)(self._history_context)
+        app.get(TermdeckConfig.API_SESSION_ROUTE, response_model=None)(self._get_session)
         app.delete(TermdeckConfig.API_SESSION_ROUTE, response_model=None)(self._delete_session)
         app.get(TermdeckConfig.API_CLOSED_ROUTE, response_model=None)(self._list_closed)
         app.post(TermdeckConfig.API_CLOSED_REOPEN_ROUTE, response_model=None)(self._reopen_closed)
@@ -1917,6 +1924,11 @@ class TermdeckServer:
 
     async def _list_sessions(self, project: str = "", worktree_id: str = "") -> list[dict[str, object]]:
         return self.manager.list_sessions(project or None, worktree_id or None)
+
+    async def _get_session(self, session_id: str) -> dict[str, object]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        return self.manager.session_summary_by_id(session_id)
 
     async def _inspect_import_archive(self, file: UploadFile) -> dict[str, object]:
         archive_bytes = await file.read(TermdeckConfig.PROJECT_BUNDLE_MAX_BYTES + 1)
@@ -3356,6 +3368,12 @@ class TermdeckServer:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
         self.manager.rename_session(session_id, request.title)
+        return self.manager.session_summary_by_id(session_id)
+
+    async def _set_session_description(self, session_id: str, request: SessionDescriptionRequest) -> dict[str, object]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        self.manager.set_session_description(session_id, request.description, request.append)
         return self.manager.session_summary_by_id(session_id)
 
     async def _move_session_to_project(self, session_id: str, request: MoveSessionProjectRequest) -> dict[str, object]:

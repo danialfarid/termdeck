@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex submitted-input activity expires when no new task appears in its transcript, preventing a completed session from remaining marked as processing indefinitely.
+
+### Added
+
+- Agent terminals expose their session id, name, and direct URL to child processes, and session descriptions can be stored through the API for study and handoff context.
+- The README documents cross-agent communication through the TermDeck API and includes copyable project-agent guidance.
+
 ## [0.15.1] — 2026-09-14
 
 ### Fixed

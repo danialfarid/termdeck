@@ -120,6 +120,7 @@ class TermdeckConfig:
     API_SESSION_WORKTREE_REVIEW_ROUTE = "/api/sessions/{session_id}/worktree/review"
     API_SESSION_WORKTREE_FINISH_ROUTE = "/api/sessions/{session_id}/worktree/finish"
     API_SESSION_RENAME_ROUTE = "/api/sessions/{session_id}/rename"
+    API_SESSION_DESCRIPTION_ROUTE = "/api/sessions/{session_id}/description"
     API_SESSION_PROJECT_ROUTE = "/api/sessions/{session_id}/project"
     API_SESSION_USAGE_ROUTE = "/api/sessions/{session_id}/usage"
     API_SESSION_HISTORY_ROUTE = "/api/sessions/{session_id}/history"
@@ -372,6 +373,7 @@ class TermdeckConfig:
     SESSION_NAME_ENV_KEY = "TERMDECK_SESSION_NAME"
     SESSION_PROJECT_ENV_KEY = "TERMDECK_PROJECT"
     SESSION_CWD_ENV_KEY = "TERMDECK_CWD"
+    SESSION_URL_ENV_KEY = "TERMDECK_SESSION_URL"
     SCRUBBED_ENV_PREFIX = "CLAUDE"
     INITIAL_COLS = 120
     # Tall-terminal-probe worktree only: real TermDeck uses 32. Every new claude/codex/zsh session in

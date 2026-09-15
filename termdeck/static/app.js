@@ -497,6 +497,7 @@ const HOST_HINT = String(location.host || "").toLowerCase();
 const PATH_HINT = String(location.pathname || "").toLowerCase();
 const LOCATION_HINT = String(location.href || "").toLowerCase();
 const LOCATION_PARAMS = new URLSearchParams(location.search);
+const SESSION_METADATA_FIELDS = Object.freeze({ description: "description", termdeckUrl: "termdeck_url", termdeckUrlPath: "termdeck_url_path" });
 const WORKSPACE_ROOT_QUERY = LOCATION_PARAMS.get("workspace_root") || "";
 const IS_PROJECT_NAVIGATION_PATH = /^\/[pfg]\/[^/]+\/[^/]+\/.+/.test(location.pathname);
 if (location.hash && !IS_PROJECT_NAVIGATION_PATH) {
@@ -747,6 +748,8 @@ class TermdeckApp {
     this.settings = { ...SETTINGS_DEFAULTS };
     this.persistedSettings = { ...SETTINGS_DEFAULTS };
     this.readOnlyMode = false;
+    this.sessionDescriptionEditingId = "";
+    this.sessionDescriptionSaveTimer = 0;
     this.fontSampleSelectionIndex = 0;
     this.fontSampleReturnFocus = null;
     this.saveTimer = null;
@@ -858,6 +861,7 @@ class TermdeckApp {
     this.hideInactiveTerminals = false;
     this.sessionActivityAt = new Map();
     this.sessionTitleEls = new Map();
+    this.sessionDescriptionEls = new Map();
     this.sessionSpinnerEls = new Map();
     this.sessionActivityEls = new Map();
     // Activity detail arrives only over the status websocket; /api/sessions doesn't carry it,
@@ -4061,6 +4065,14 @@ class TermdeckApp {
       void this.insertHistoryAttachmentFiles(this.sessionInteractionState(this.activeId), files);
     });
     historyPrompt.addEventListener("dragover", (event) => {
+      const sessionId = this.sessionIdFromDragDataTransfer(event.dataTransfer);
+      if (sessionId) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = "copy";
+        historyPrompt.classList.add("session-drop-target");
+        return;
+      }
       const files = this.historyImageFilesFromDataTransfer(event.dataTransfer);
       if (!files.length) return;
       event.preventDefault();
@@ -4068,10 +4080,18 @@ class TermdeckApp {
       event.dataTransfer.dropEffect = "copy";
       historyPrompt.classList.add("image-drop-target");
     });
-    historyPrompt.addEventListener("dragleave", () => historyPrompt.classList.remove("image-drop-target"));
+    historyPrompt.addEventListener("dragleave", () => historyPrompt.classList.remove("image-drop-target", "session-drop-target"));
     historyPrompt.addEventListener("drop", (event) => {
+      const sessionId = this.sessionIdFromDragDataTransfer(event.dataTransfer);
+      if (sessionId) {
+        event.preventDefault();
+        event.stopPropagation();
+        historyPrompt.classList.remove("image-drop-target", "session-drop-target");
+        this.insertSessionIdIntoHistoryPrompt(sessionId);
+        return;
+      }
       const files = this.historyImageFilesFromDataTransfer(event.dataTransfer);
-      historyPrompt.classList.remove("image-drop-target");
+      historyPrompt.classList.remove("image-drop-target", "session-drop-target");
       if (!files.length) return;
       event.preventDefault();
       event.stopPropagation();
@@ -4085,7 +4105,37 @@ class TermdeckApp {
       this.updateHistorySendMenu();
       this.updateHistorySlashMenu();
     });
+    const historyArea = this.$("history-area");
+    historyArea.addEventListener("dragover", (event) => {
+      const sessionId = this.sessionIdFromDragDataTransfer(event.dataTransfer);
+      if (!sessionId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "copy";
+      historyArea.classList.add("session-drop-target");
+    });
+    historyArea.addEventListener("dragleave", (event) => {
+      if (event.target === historyArea) historyArea.classList.remove("session-drop-target");
+    });
+    historyArea.addEventListener("drop", (event) => {
+      const sessionId = this.sessionIdFromDragDataTransfer(event.dataTransfer);
+      if (!sessionId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      historyArea.classList.remove("session-drop-target");
+      this.insertSessionIdIntoHistoryPrompt(sessionId);
+    });
     this.$("attach-btn").onclick = () => this.historyOpen ? this.attachToHistory() : this.attachToActive();
+    this.$("session-description-toggle").onclick = () => this.toggleSessionDescriptionEditor();
+    this.$("session-description-close").onclick = () => this.closeSessionDescriptionEditor();
+    this.$("session-description-input").addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeSessionDescriptionEditor();
+    });
+    this.$("session-description-input").addEventListener("input", () => this.scheduleSessionDescriptionSave());
+    this.$("session-description-resizer").onpointerdown = (event) => this.startSessionDescriptionResize(event);
     this.$("reveal-session-btn").onclick = () => {
       if (this.activeFileKey !== null) void this.revealActiveFile();
       else this.revealAndFocusActiveTerminalInSidebar();
@@ -5087,6 +5137,7 @@ class TermdeckApp {
     const previousPresentation = this.titlePresentation(session);
     const previousAgentSessionId = session.agent_session_id;
     const previousAgentKind = session.agent_kind;
+    const previousDescription = String(session.description || "");
     const previousExitCode = session.exit_code;
     const previousRunning = !!session.running;
     const previousDormant = !!session.dormant;
@@ -5094,6 +5145,9 @@ class TermdeckApp {
     const previousNeedsAttention = this.attentionServerStates.has(session.session_id)
       ? this.attentionServerStates.get(session.session_id) === true : session.needs_attention === true;
     if (Object.prototype.hasOwnProperty.call(message, "title") && message.title) session.title = message.title;
+    if (Object.prototype.hasOwnProperty.call(message, SESSION_METADATA_FIELDS.description)) {
+      session.description = String(message[SESSION_METADATA_FIELDS.description] || "");
+    }
     if (Object.prototype.hasOwnProperty.call(message, "title_user_set")) session.title_user_set = !!message.title_user_set;
     if (Object.prototype.hasOwnProperty.call(message, "cli_title") && message.cli_title) session.cli_title = message.cli_title;
     if (Object.prototype.hasOwnProperty.call(message, "agent_session_id")) session.agent_session_id = message.agent_session_id;
@@ -5142,7 +5196,7 @@ class TermdeckApp {
     const modelChanged = previousModel !== (this.sessionModelById.get(session.session_id) || "");
     const rowStateChanged = displayedTitleChanged || processingChanged || previousAgentKind !== session.agent_kind ||
       previousExitCode !== session.exit_code || previousRunning !== !!session.running || previousDormant !== !!session.dormant ||
-      previousNeedsAttention !== !!session.needs_attention;
+      previousNeedsAttention !== !!session.needs_attention || previousDescription !== String(session.description || "");
     if (displayedTitleChanged) {
       this.postVscodeNativeSession(session, session.session_id === this.activeId ? !this.historyOpen : undefined);
     }
@@ -5648,8 +5702,14 @@ class TermdeckApp {
     for (const s of targets) {
       const presentation = this.titlePresentation(s);
       const title = this.sessionTitleEls.get(s.session_id);
+      const description = this.sessionDescriptionEls.get(s.session_id);
       if (title) this.setSessionTitleText(title, presentation.text,
         this.usesTextTerminalStatus(s.agent_kind) && presentation.spinning);
+      if (description) {
+        description.textContent = String(s.description || "");
+        description.title = description.textContent;
+        description.classList.toggle("hidden", !description.textContent);
+      }
       const dot = this.sessionStatusEls.get(s.session_id);
       if (dot) {
         dot.className = "status-dot" +
@@ -5764,6 +5824,16 @@ class TermdeckApp {
     };
   }
 
+  sessionIdFromDragDataTransfer(dataTransfer) {
+    if (!dataTransfer) return "";
+    const explicitId = String(dataTransfer.getData("application/x-termdeck-session-id") || "").trim();
+    if (explicitId && this.session(explicitId)) return explicitId;
+    const plainText = String(dataTransfer.getData("text/plain") || "").trim();
+    if (!/^session:[^\s\n]+$/.test(plainText)) return "";
+    const sessionId = plainText.slice("session:".length);
+    return this.session(sessionId) ? sessionId : "";
+  }
+
   setDragLandingMode(item, mode, label) {
     item.classList.remove("drop-before", "drop-after", "drop-group", "group-drop-pending", "group-drop-target");
     if (mode) item.classList.add(mode);
@@ -5792,6 +5862,9 @@ class TermdeckApp {
       this.clearDragGroupingTimer();
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("text/plain", tokens.join("\n"));
+      if (sessionId && tokens.length === 1) {
+        event.dataTransfer.setData("application/x-termdeck-session-id", sessionId);
+      }
     };
     item.ondragover = (event) => {
       this.setInteractionWorktreeFromElement(item);

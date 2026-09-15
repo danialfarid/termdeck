@@ -447,6 +447,7 @@
     <button id="file-history-toggle" class="hidden" title="File history" aria-label="File history" aria-pressed="false"><span class="codicon codicon-history"></span></button>
     <button id="editor-wrap-toggle" title="Editor no wrap: off" aria-label="Toggle editor no wrap" aria-pressed="false"><span class="codicon codicon-word-wrap"></span></button>
     <button id="file-split-toggle" class="hidden" title="Compare / split editor" aria-label="Compare / split editor"><span class="codicon codicon-split-horizontal"></span></button>
+    <button id="session-description-toggle" title="Edit session description · click again to close" aria-label="Edit session description"><span class="codicon codicon-note"></span></button>
     <button id="attach-btn" title="Attach file/image → inserts its path (also paste or drag-drop onto the terminal)"><span class="codicon codicon-cloud-upload"></span></button>
     <button id="conversation-outline-toggle" class="transcript-unavailable" title="Conversation outline" aria-label="Conversation outline"><span class="codicon codicon-list-tree"></span></button>
     <button id="problems-toggle" title="Problems" aria-label="Problems"><span class="codicon codicon-warning"></span></button>
@@ -463,6 +464,20 @@
       <canvas id="stat-spark" width="36" height="20"></canvas>
     </div>
   </div>
+  <section id="session-description-drawer" class="hidden" role="dialog" aria-modal="false" aria-labelledby="session-description-title">
+    <div id="session-description-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize session description"></div>
+    <div id="session-description-head">
+      <div>
+        <div id="session-description-title">Session description</div>
+        <div id="session-description-session"></div>
+      </div>
+      <button id="session-description-close" type="button" title="Close description editor" aria-label="Close description editor"><span class="codicon codicon-close"></span></button>
+    </div>
+    <textarea id="session-description-input" spellcheck="false" placeholder="Add context, studies, or links for this session…"></textarea>
+    <div id="session-description-actions">
+      <span id="session-description-status"></span>
+    </div>
+  </section>
 </div>
 <div id="notebook-panel" class="hidden">
   <div id="notebook-resizer" role="separator" aria-orientation="vertical" aria-label="Resize notebook"></div>

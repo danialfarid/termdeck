@@ -8,6 +8,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 from termdeck import agents
 from termdeck.agent_session_tracker import AgentSessionTracker
@@ -338,6 +339,7 @@ class TerminalSessionManager:
             worktree_id=worktree_id or (worktree.worktree_id if worktree else "root"),
             fork_parent_agent_session_id=str(fork_parent_id) if fork_parent_id else None,
             imported_transcript_id=imported_transcript_id,
+            description=str(payload.get("description") or ""),
         )
         self._canonicalize_agent_resume_command(record)
         ms = ManagedSession(record)
@@ -467,6 +469,7 @@ class TerminalSessionManager:
                                      TermdeckConfig.SESSION_NAME_ENV_KEY: ms.record.title,
                                      TermdeckConfig.SESSION_PROJECT_ENV_KEY: ms.record.project,
                                      TermdeckConfig.SESSION_CWD_ENV_KEY: ms.record.cwd,
+                                     TermdeckConfig.SESSION_URL_ENV_KEY: self._termdeck_session_url(ms.record),
                                  })
         except (FileNotFoundError, NotADirectoryError, PermissionError) as spawn_error:
             ms.detached_live = False
@@ -820,6 +823,7 @@ class TerminalSessionManager:
             WsMessageFields.TITLE_USER_SET: ms.record.title_user_set,
             WsMessageFields.CLI_TITLE: ms.cli_title,
             WsMessageFields.AGENT_SESSION_ID: ms.record.agent_session_id,
+            ApiFields.DESCRIPTION: ms.record.description,
             WsMessageFields.RUNNING: ms.running,
             WsMessageFields.EXIT_CODE: ms.exit_code,
             ApiFields.DORMANT: ms.dormant,
@@ -1611,6 +1615,26 @@ class TerminalSessionManager:
         self._persist()
         self._broadcast_status(ms)
 
+    def set_session_description(self, session_id: str, description: str, append: bool = False) -> None:
+        ms = self._sessions[session_id]
+        clean_description = str(description or "").strip()
+        if append and clean_description and clean_description not in ms.record.description.splitlines():
+            ms.record.description = "\n".join(part for part in (ms.record.description.strip(), clean_description) if part)
+        elif not append:
+            ms.record.description = clean_description
+        self._persist()
+        self._broadcast_status(ms)
+
+    @staticmethod
+    def _termdeck_session_url_path(record: SessionRecord) -> str:
+        project = quote(record.project, safe="")
+        session_id = quote(record.session_id, safe="")
+        return f"/p/{project}?t={session_id}"
+
+    @classmethod
+    def _termdeck_session_url(cls, record: SessionRecord) -> str:
+        return f"http://127.0.0.1:{TermdeckConfig.PORT}{cls._termdeck_session_url_path(record)}"
+
     def move_session_to_project(self, session_id: str, project: str) -> None:
         project_name = project.strip()
         if not project_name:
@@ -1930,6 +1954,8 @@ class TerminalSessionManager:
         summary[ApiFields.DORMANT] = ms.dormant
         summary[ApiFields.DETACHED] = ms.detached_live and not ms.attached
         summary[ApiFields.CLI_TITLE] = ms.cli_title
+        summary[ApiFields.TERMDECK_URL] = self._termdeck_session_url(ms.record)
+        summary[ApiFields.TERMDECK_URL_PATH] = self._termdeck_session_url_path(ms.record)
         summary["processing"] = processing
         summary[ApiFields.NEEDS_ATTENTION] = ms.attention_required
         summary["processing_since"] = ms.processing_started_at

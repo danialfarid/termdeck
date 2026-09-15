@@ -44,6 +44,7 @@ class SessionRecord:
     claude_interrupted: bool = False
     fork_parent_agent_session_id: str | None = None
     imported_transcript_id: str | None = None
+    description: str = ""
 
     def to_dict(self) -> dict[str, str | bool | int | float | None]:
         return asdict(self)
@@ -73,7 +74,8 @@ class SessionRecord:
                              fork_parent_agent_session_id=str(payload["fork_parent_agent_session_id"])
                              if payload.get("fork_parent_agent_session_id") else None,
                              imported_transcript_id=str(payload["imported_transcript_id"])
-                             if payload.get("imported_transcript_id") else None)
+                             if payload.get("imported_transcript_id") else None,
+                             description=str(payload.get("description") or ""))
 
 
 class WsMessageFields:
@@ -144,4 +146,7 @@ class ApiFields:
     CLI_TITLE = "cli_title"
     NEEDS_ATTENTION = "needs_attention"
     ACTIVITY = "activity"
+    DESCRIPTION = "description"
+    TERMDECK_URL = "termdeck_url"
+    TERMDECK_URL_PATH = "termdeck_url_path"
     DELETED = "deleted"

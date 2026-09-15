@@ -5,6 +5,37 @@ How one agent puts another agent to work. Every terminal TermDeck opens carries 
 what it answered, and close it — all over `http://127.0.0.1:8530`, and all of it visible to you as ordinary
 terminals in the deck.
 
+## Link a trainer study to its agent tab
+
+Every agent terminal also receives these environment variables:
+
+| Variable | Meaning |
+|---|---|
+| `TERMDECK_SESSION_ID` | The TermDeck terminal id. Use this value in a trainer experiment's `agent_ids` list. |
+| `TERMDECK_SESSION_NAME` | The TermDeck terminal title. |
+| `TERMDECK_SESSION_URL` | A direct local URL that opens this terminal. |
+
+`Experiment` automatically includes `TERMDECK_SESSION_ID` when it is created inside TermDeck. Explicitly
+pass `agent_ids=[...]` when an orchestrator wants to attach more than one agent to the same experiment:
+
+```python
+import os
+
+experiment = Experiment(name="feature_study", version="1", agent_ids=[os.environ["TERMDECK_SESSION_ID"]])
+```
+
+Add the studies launched by the agent to the tab description. The trainer dashboard uses the persisted
+`agent_ids` to show direct links back to the matching TermDeck tabs.
+
+```sh
+curl -sS -X POST "http://127.0.0.1:8530/api/sessions/$TERMDECK_SESSION_ID/description" \
+  -H 'Content-Type: application/json' \
+  -d '{"description":"feature_study / 2026-09-14 baseline","append":true}'
+```
+
+`GET /api/sessions` and `GET /api/sessions/{session_id}` return `title`, `description`, `termdeck_url`,
+and `termdeck_url_path` for dashboard and automation integrations.
+
 ## Start an agent
 
 `POST /api/terminals/task`
