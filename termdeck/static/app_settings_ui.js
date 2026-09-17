@@ -3064,6 +3064,9 @@ Object.assign(TermdeckApp.prototype, {
       if (session.title) addEntry(session.title, `title: ${session.title}`);
       if (session.cli_title) addEntry(session.cli_title, `agent title: ${session.cli_title}`);
     }
+    for (const session of this.modalAgentSessions || []) {
+      if (session?.title) addEntry(session.title, `resume: ${session.title}`);
+    }
     return entries;
   },
 
@@ -3106,6 +3109,13 @@ Object.assign(TermdeckApp.prototype, {
     const unique = [...new Set(matches)];
     if (unique.length === 1 && unique[0]) {
       return { title: "", session_ref: unique[0] };
+    }
+    // Then the agent's own saved sessions in this directory, newest first. This is the one that
+    // covers a session started outside TermDeck: it has no terminal row here to match against.
+    const saved = (this.modalAgentSessions || []).find((session) =>
+      String(session?.title || "").trim().toLowerCase() === needle);
+    if (saved?.session_id) {
+      return { title: "", session_ref: String(saved.session_id) };
     }
     // A session TermDeck has never owned -- one started in a plain terminal, say -- has no row to
     // match against here, so its own id was being read as a name and a new empty session opened
@@ -3233,6 +3243,34 @@ Object.assign(TermdeckApp.prototype, {
     this.clearModalError();
     this.$("modal-backdrop").classList.remove("hidden");
     this.$("modal-session-title").focus();
+    void this.refreshModalAgentSessions();
+  },
+
+
+  // Sessions the chosen agent could resume in the chosen directory, which TermDeck may never have
+  // owned. Without these the one field could only resume a terminal already on the deck, so the name
+  // of a session started in a plain terminal was read as a name for a new one.
+  async refreshModalAgentSessions() {
+    const model = this.$("modal-model")?.value || "";
+    const cwd = this.$("modal-cwd")?.value || "";
+    const token = `${model} ${cwd}`;
+    this.modalAgentSessionsToken = token;
+    if (!model || !cwd.trim() || !this.agentSpecs[model]?.accepts_session_ref) {
+      this.modalAgentSessions = [];
+      this.updateModalSessionSuggestions();
+      return;
+    }
+    try {
+      const response = await fetch(`/api/agent-sessions?model=${encodeURIComponent(model)}&cwd=${encodeURIComponent(cwd)}`);
+      if (!response.ok) throw new Error(String(response.status));
+      const sessions = await response.json();
+      if (this.modalAgentSessionsToken !== token) return;
+      this.modalAgentSessions = Array.isArray(sessions) ? sessions : [];
+    } catch (_error) {
+      if (this.modalAgentSessionsToken !== token) return;
+      this.modalAgentSessions = [];
+    }
+    this.updateModalSessionSuggestions();
   },
 
 

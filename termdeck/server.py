@@ -763,6 +763,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_PROJECT_FOLDER_PICKER_ROUTE, response_model=None)(self._pick_project_folder)
         app.post(TermdeckConfig.API_WORKTREE_FOLDER_PICKER_ROUTE, response_model=None)(self._pick_worktree_folder)
         app.get(TermdeckConfig.API_AGENTS_ROUTE, response_model=None)(self._list_agent_clis)
+        app.get(TermdeckConfig.API_AGENT_SESSIONS_ROUTE, response_model=None)(self._list_agent_sessions)
         app.get(TermdeckConfig.API_CODEX_MODELS_ROUTE, response_model=None)(self._list_codex_models)
         app.get(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._list_sessions)
         app.post(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._create_session)
@@ -1947,6 +1948,18 @@ class TermdeckServer:
     @staticmethod
     async def _list_agent_clis() -> dict[str, dict[str, object]]:
         return {kind: agent.client_descriptor() for kind, agent in agents.AGENT_CLIS.items() if agent.launcher_visible}
+
+    async def _list_agent_sessions(self, model: str = "", cwd: str = "") -> list[dict[str, str]]:
+        """Named sessions the given agent could resume in this directory.
+
+        Feeds the create dialog, which offers these beside TermDeck's own terminals and resolves a
+        typed name against them. Only Claude answers here: Codex resolves a name to its saved thread
+        itself when the command is built, and the other agents take an id only.
+        """
+        directory = cwd.strip()
+        if not directory or agents.resolve_model_alias(model.strip().strip("\"'").lower()) != agents.ClaudeCli.kind:
+            return []
+        return await asyncio.to_thread(self.manager._tracker.claude_resumable_sessions, Path(directory).expanduser())
 
     async def _list_sessions(self, project: str = "", worktree_id: str = "") -> list[dict[str, object]]:
         return self.manager.list_sessions(project or None, worktree_id or None)

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -490,6 +491,27 @@ class AgentCliResumeCommandTest(unittest.TestCase):
             )))
             with patch.object(tracker, "claude_project_dir", return_value=Path(temp_dir)):
                 self.assertEqual(tracker.claude_session_permission_mode(Path("/tmp"), "resolved-child"), "auto")
+
+    def test_named_claude_sessions_are_offered_for_resume_newest_first(self) -> None:
+        # The create dialog's one field resolves a typed name against these. Without them it could
+        # only resume a terminal TermDeck already owned, so the name of a session started in a plain
+        # terminal was read as a name for a new session and an empty one opened under it.
+        tracker = AgentSessionTracker()
+        named = {"11111111-1111-4111-8111-111111111111": "older-name",
+                 "22222222-2222-4222-8222-222222222222": "termdeck-fix"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for index, (session_id, title) in enumerate(named.items()):
+                path = Path(temp_dir) / f"{session_id}.jsonl"
+                path.write_text(json.dumps({"type": "custom-title", "customTitle": title}) + "\n")
+                os.utime(path, (1_700_000_000 + index, 1_700_000_000 + index))
+            (Path(temp_dir) / "33333333-3333-4333-8333-333333333333.jsonl").write_text(
+                json.dumps({"type": "user", "message": {"content": "unnamed"}}) + "\n")
+            (Path(temp_dir) / "not-a-session-id.jsonl").write_text("{}\n")
+            with patch.object(tracker, "claude_project_dir", return_value=Path(temp_dir)):
+                sessions = tracker.claude_resumable_sessions(Path("/tmp"))
+
+        self.assertEqual([entry["title"] for entry in sessions], ["termdeck-fix", "older-name"])
+        self.assertEqual(sessions[0]["session_id"], "22222222-2222-4222-8222-222222222222")
 
 
 class TerminalRestartIdentityTest(unittest.TestCase):

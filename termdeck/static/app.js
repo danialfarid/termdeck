@@ -3876,7 +3876,11 @@ class TermdeckApp {
       this.clearModalError();
       this.updateModalModelField();
       this.updateModalPermissions();
+      void this.refreshModalAgentSessions();
     };
+    // Which sessions can be resumed depends on the directory as much as the agent: an agent keeps a
+    // conversation under the folder it ran in.
+    this.$("modal-cwd").addEventListener("change", () => void this.refreshModalAgentSessions());
     this.$("worktree-modal-cancel").onclick = () => this.closeWorktreeModal();
     this.$("worktree-modal-create").onclick = () => void this.createProjectWorktree();
     this.$("worktree-location-browse").onclick = () => void this.browseWorktreeLocation();

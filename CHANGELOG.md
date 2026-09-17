@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The terminal dialog resumes an agent session by the name it shows, not only by terminals TermDeck
+  already has. A session started in a plain terminal has no row here to match, so its name was read as a
+  name for a NEW session and an empty one opened under it. Claude's named sessions for the chosen
+  directory are now offered in the field's suggestions and resolved when typed, and an agent session id
+  pasted in is accepted as well.
 - A dialog on a phone stays inside the part of the screen the keyboard has left, and scrolls, so the field
   being typed into cannot end up underneath the keyboard. A dialog is positioned against the whole screen,
   which the keyboard does not shrink.

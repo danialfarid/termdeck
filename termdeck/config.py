@@ -67,6 +67,7 @@ class TermdeckConfig:
     UPLOAD_FALLBACK_NAME = "pasted"
     PROJECT_FALLBACK_SLUG = "project"
     API_PROJECTS_ROUTE = "/api/projects"
+    API_AGENT_SESSIONS_ROUTE = "/api/agent-sessions"
     API_WORKTREES_ROUTE = "/api/worktrees"
     API_WORKTREE_BRANCHES_ROUTE = "/api/worktrees/branches"
     API_WORKTREE_ROUTE = "/api/worktrees/{worktree_id}"

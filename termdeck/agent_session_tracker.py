@@ -214,6 +214,28 @@ class AgentSessionTracker:
             return None
         return self._claude_explicit_session_title(self.claude_project_dir(cwd) / f"{session_id}.jsonl")
 
+    def claude_resumable_sessions(self, cwd: Path, limit: int = 60) -> list[dict[str, str]]:
+        """Sessions Claude could resume in this directory, newest first, under the name it shows.
+
+        The create dialog's one field means either "name this terminal" or "resume that session", and
+        it could only resolve the second against terminals TermDeck already owned. A session started
+        in a plain terminal has no row to match, so its name was read as a name for a NEW session and
+        an empty one opened under it. Only the name the user set is offered -- Claude's own summary of
+        a conversation is not something anyone types from memory.
+        """
+        try:
+            paths = sorted((path for path in self.claude_project_dir(cwd).glob("*.jsonl")
+                            if self._UUID_RE.fullmatch(path.stem)),
+                           key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
+        except OSError:
+            return []
+        sessions: list[dict[str, str]] = []
+        for path in paths:
+            title = self._claude_explicit_session_title(path)
+            if title:
+                sessions.append({"session_id": path.stem, "title": title})
+        return sessions
+
     def claude_ai_title(self, cwd: Path, session_id: str | None) -> str | None:
         if not session_id:
             return None
