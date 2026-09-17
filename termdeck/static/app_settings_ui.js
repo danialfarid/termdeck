@@ -3096,18 +3096,22 @@ Object.assign(TermdeckApp.prototype, {
       return { title: value, session_ref: "" };
     }
     const needle = value.toLowerCase();
+    // TermDeck's own terminals first. What goes back is the AGENT's session id, never the deck's own:
+    // the deck's id means nothing to the agent, and sending it produced `--resume <deck id>` and a
+    // resume picker answering "No sessions match".
     const matches = [];
+    let matchedWithNothingToResume = false;
     for (const session of [...this.sessions, ...this.closedSessions]) {
       if (!session) continue;
-      const sessionId = String(session.session_id || "").trim();
-      const title = String(session.title || "").trim();
-      const cliTitle = String(session.cli_title || "").trim();
-      if (sessionId && sessionId.toLowerCase() === needle) matches.push(sessionId);
-      if (title && title.toLowerCase() === needle) matches.push(sessionId);
-      if (cliTitle && cliTitle.toLowerCase() === needle) matches.push(sessionId);
+      const agentSessionId = String(session.agent_session_id || "").trim();
+      const fields = [session.session_id, agentSessionId, session.title, session.cli_title]
+        .map((field) => String(field || "").trim().toLowerCase());
+      if (!fields.some((field) => field && field === needle)) continue;
+      if (agentSessionId) matches.push(agentSessionId);
+      else matchedWithNothingToResume = true;
     }
     const unique = [...new Set(matches)];
-    if (unique.length === 1 && unique[0]) {
+    if (unique.length === 1) {
       return { title: "", session_ref: unique[0] };
     }
     // Then the agent's own saved sessions in this directory, newest first. This is the one that
@@ -3123,6 +3127,13 @@ Object.assign(TermdeckApp.prototype, {
     // like an agent session id goes through as one.
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
       return { title: "", session_ref: value };
+    }
+    // A terminal of that name exists but its agent has never started a session, so there is nothing
+    // to resume. Opening a second terminal under the same name is how one empty tab became several.
+    if (matchedWithNothingToResume) {
+      return { title: "", session_ref: "",
+               error: `"${value}" is a terminal here whose agent has not started a session yet, so there is ` +
+                      "nothing to resume. Send it a prompt first, or use a different name for a new terminal." };
     }
     return { title: value, session_ref: "" };
   },
@@ -3337,6 +3348,10 @@ Object.assign(TermdeckApp.prototype, {
     const additionalArgs = this.$("modal-additional-args").value.trim();
     const permission = this.$("modal-permission").value;
     const resolved = this.resolveSessionNameAndReference(model, this.$("modal-session-title").value);
+    if (resolved.error) {
+      this.showModalDependencyError({ message: resolved.error });
+      return;
+    }
     const { title, session_ref: sessionRef } = resolved;
     const project = this.projectSlug || "";
     const cwd = this.worktreeRoot() || this.resolveVscodeDefaultCwd();

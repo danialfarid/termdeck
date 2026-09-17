@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Resuming a terminal the deck already has sends the agent's session id rather than TermDeck's own, which
+  meant nothing to the agent: the command came out as `--resume <deck id>` and the resume picker answered
+  "No sessions match". A name that belongs to a terminal whose agent has never started a session now says
+  there is nothing to resume, instead of quietly opening another terminal under the same name.
 - The terminal dialog resumes an agent session by the name it shows, not only by terminals TermDeck
   already has. A session started in a plain terminal has no row here to match, so its name was read as a
   name for a NEW session and an empty one opened under it. Claude's named sessions for the chosen
