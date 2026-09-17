@@ -3709,7 +3709,12 @@ class TermdeckServer:
             for status in self.manager.status_snapshot():
                 await websocket.send_text(json.dumps(status))
             while True:
-                await websocket.send_text(json.dumps(await queue.get()))
+                try:
+                    status = await asyncio.wait_for(queue.get(), timeout=TermdeckConfig.STATUS_WS_HEARTBEAT_SECONDS)
+                except TimeoutError:
+                    await websocket.send_text(json.dumps({WsMessageFields.TYPE: "status_heartbeat"}))
+                else:
+                    await websocket.send_text(json.dumps(status))
         except WebSocketDisconnect:
             return
         finally:
@@ -3782,9 +3787,14 @@ class TermdeckServer:
                                                           before=page.get("before"), has_more=bool(page.get("has_more")),
                                                           latest_first=latest_first)
             while True:
-                update = await queue.get()
-                update[WsMessageFields.SESSION_ID] = session_id
-                await websocket.send_text(json.dumps(update))
+                try:
+                    update = await asyncio.wait_for(queue.get(), timeout=TermdeckConfig.TRANSCRIPT_WS_HEARTBEAT_SECONDS)
+                except TimeoutError:
+                    await websocket.send_text(json.dumps({WsMessageFields.TYPE: "transcript_heartbeat",
+                                                           WsMessageFields.SESSION_ID: session_id}))
+                else:
+                    update[WsMessageFields.SESSION_ID] = session_id
+                    await websocket.send_text(json.dumps(update))
         except WebSocketDisconnect:
             return
         finally:

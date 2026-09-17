@@ -872,12 +872,6 @@ Object.assign(TermdeckApp.prototype, {
     item.dataset.sessionId = s.session_id;
     item.dataset.worktreeId = this.worktreeIdForSession(s);
     item.classList.toggle("sidebar-selected", this.sidebarSelectedSessionIds.has(s.session_id));
-    item.title = `${s.command || "zsh"}\n${s.cwd}` + (s.agent_session_id ? `\n${s.agent_kind}: ${s.agent_session_id}` : "") +
-      (s.description ? `\n${s.description}` : "") + "\nright-click for actions";
-    if (searchMatch) {
-      item.title += `\n${searchMatch.count} terminal match${searchMatch.count === 1 ? "" : "es"}`;
-    }
-    item.dataset.baseTitle = item.title;
     item.style.setProperty("--session-age-color", this.terminalAgeColor(s));
     this.sessionRowEls.set(s.session_id, item);
     const presentation = this.titlePresentation(s);
@@ -941,7 +935,6 @@ Object.assign(TermdeckApp.prototype, {
     this.sessionActivityEls.set(s.session_id, activityDots);
     this.updateSessionActivityDots(s.session_id);
     this.bindTerminalSearchHoverPopup(item, searchMatch);
-    item.title = `${item.dataset.baseTitle}\nlast activity ${this.terminalAgeAgoLabel(s)}\n${this.terminalAgeExactTimestamp(s)}`;
     item.onclick = (event) => {
       this.setInteractionWorktreeFromElement(item, s);
       this.handleSessionRowSelection(event, s.session_id);
@@ -3997,9 +3990,16 @@ Object.assign(TermdeckApp.prototype, {
 
   async copyTextToClipboard(text, label = "copied") {
     try {
+      let copied = false;
       if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
+        try {
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+      }
+      if (!copied) {
         const textarea = document.createElement("textarea");
         textarea.value = text;
         textarea.setAttribute("readonly", "");
@@ -4007,9 +4007,10 @@ Object.assign(TermdeckApp.prototype, {
         textarea.style.left = "-9999px";
         document.body.appendChild(textarea);
         textarea.select();
-        document.execCommand("copy");
+        copied = document.execCommand("copy");
         textarea.remove();
       }
+      if (!copied) throw new Error("clipboard write failed");
       this.$("status-name").textContent = label;
     } catch (error) {
       this.$("status-name").textContent = "clipboard blocked";
@@ -4251,8 +4252,27 @@ Object.assign(TermdeckApp.prototype, {
     if (!multiple) {
       this.addContextItem(menu, this.shortcutLabel("Open in a new browser tab", "open-terminal-new-tab"),
         () => this.openTerminalInNewTab(session), "new-window");
+      this.addContextItem(menu, this.shortcutLabel("Info", "session-info"), () => this.showSessionInfo(session), "info");
     }
     this.positionContextMenu(menu, event.clientX, event.clientY);
+  },
+
+
+  showSessionInfo(session) {
+    const lines = [
+      `Name: ${this.titlePresentation(session).text}`,
+      `Status: ${session.running ? "running" : "closed"}`,
+      `Model: ${session.agent_kind || "shell"}`,
+      session.agent_session_id ? `Agent session: ${session.agent_session_id}` : "",
+      `Session id: ${session.session_id}`,
+      `Project: ${session.project || ""}`,
+      `Directory: ${session.cwd || ""}`,
+      session.command ? `Command: ${session.command}` : "",
+      session.worktree_branch ? `Worktree: ${session.worktree_branch}` : "",
+      session.description ? `Description: ${session.description}` : "",
+      session.termdeck_url ? `URL: ${session.termdeck_url}` : "",
+    ].filter(Boolean);
+    void uiAlert(lines.join("\n"), { title: "Terminal info" });
   },
 
 
@@ -4845,10 +4865,6 @@ Object.assign(TermdeckApp.prototype, {
       item.dataset.worktreeId = worktreeId;
       if (searchMatch) item.tabIndex = 0;
       const groupName = c.group_name || this.terminalGroupNameForSession(c.session_id, worktreeId);
-      item.title = `${c.title}\n${c.command || "zsh"}\n${c.cwd}\nclosed ${c.closed_at_est}` +
-        (groupName ? `\ngroup ${groupName}` : "") +
-        (c.worktree_branch ? `\nworktree ${c.worktree_branch}` : "") +
-        (c.agent_session_id ? `\nreopens ${c.agent_kind} session ${c.agent_session_id}` : "") + "\nclick to reopen";
       const icon = document.createElement("span");
       icon.className = "codicon codicon-history";
       const name = document.createElement("span");

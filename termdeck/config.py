@@ -352,9 +352,11 @@ class TermdeckConfig:
     RECENT_FILES_IGNORED_NAMES = frozenset({".DS_Store"})
     WS_ROUTE = "/ws/{session_id}"
     STATUS_WS_ROUTE = "/ws/status"
+    STATUS_WS_HEARTBEAT_SECONDS = 20.0
     FILE_TREE_WS_ROUTE = "/ws/files"
     FILE_TREE_WS_HEARTBEAT_SECONDS = 15.0
     TRANSCRIPT_WS_ROUTE = "/ws/transcript/{session_id}"
+    TRANSCRIPT_WS_HEARTBEAT_SECONDS = 20.0
     WS_CODE_UNKNOWN_SESSION = 4404
     DEFAULT_CWD = PlatformPaths.env_directory(PlatformPaths.ENV_DEFAULT_CWD, Path.home())
     SHELL = PlatformPaths.login_shell()

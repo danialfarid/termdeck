@@ -376,6 +376,7 @@ const DESKTOP_KEYBINDINGS = [
   { id: "resync-terminal", label: "Resync active terminal content", def: "Alt+Shift+r", section: "Terminal" },
   { id: "rename-terminal", label: "Rename active terminal", def: "Alt+r", section: "Terminal" },
   { id: "copy-session-id", label: "Copy active session id", def: "Alt+i", section: "Terminal" },
+  { id: "session-info", label: "Show active terminal info", def: "Alt+Shift+i", section: "Terminal" },
   { id: "mark-terminal-unread", label: "Mark active terminal as unread", def: "Alt+u", section: "Terminal" },
   { id: "create-terminal-group-from-active", label: "Create group from active terminal", def: "Alt+Shift+g", section: "Terminal" },
   { id: "move-active-to-top", label: "Move active terminal / group to top", def: "Alt+t", section: "Terminal" },
@@ -426,6 +427,7 @@ const VSCODE_KEYBINDINGS = [
   { id: "resync-terminal", label: "Resync active terminal content", def: "Ctrl+Alt+r", section: "Terminal" },
   { id: "prev-terminal", label: "Previous terminal", def: "Ctrl+Alt+ArrowUp", section: "Terminal" },
   { id: "next-terminal", label: "Next terminal", def: "Ctrl+Alt+ArrowDown", section: "Terminal" },
+  { id: "session-info", label: "Show active terminal info", def: "Ctrl+Alt+i", section: "Terminal" },
   { id: "open-terminal-new-tab", label: "Open active terminal in a new browser tab", def: "Ctrl+Alt+o", section: "Terminal" },
   { id: "toggle-diagnostics-recording", label: "Record diagnostics for a bug report", def: "Ctrl+Alt+Shift+k", section: "Terminal" },
   { id: "toggle-notebook", label: "Quick notebook", def: "Ctrl+Alt+n", section: "General" },
@@ -1555,7 +1557,7 @@ class TermdeckApp {
     this.reconcileActiveSessionViewMode();
   }
 
-  queueProjectResourceRequest(stateKey, path, method, body = null) {
+  queueProjectResourceRequest(stateKey, path, method, body = null, options = {}) {
     // Every local change to project state goes through here, so this counter is how a refresh
     // in flight can tell that what it fetched is already out of date.
     this.projectStateLocalRevision = (this.projectStateLocalRevision || 0) + 1;
@@ -1580,6 +1582,7 @@ class TermdeckApp {
       if (!response?.ok) throw new Error(`project resource save failed (${response?.status || "network"})`);
     }).catch((error) => {
       console.error("TermDeck project resource save failed", error);
+      if (options.silent) return;
       const status = this.$("stat-text");
       if (status) status.textContent = error.message;
       void this.refreshCurrentProjectState();
@@ -4780,7 +4783,7 @@ class TermdeckApp {
           const serverRestarted = !!this.serverInstanceId && this.serverInstanceId !== instanceId;
           this.serverInstanceId = instanceId;
           if (serverRestarted) {
-            this.setMobileConnectionWarning(true, "reconnecting");
+            this.scheduleMobileConnectionWarning();
             // Every terminal's buffer was built from the old server's recording; rebuild rather
             // than let the new one repaint into it. See connect().
             for (const view of this.views.values()) view.replayFromScratchOnNextConnect = true;
@@ -4855,9 +4858,12 @@ class TermdeckApp {
         } else if (view.ws.readyState === WebSocket.CONNECTING) reconnecting = true;
       }
     }
-    if (reconnecting) this.setMobileConnectionWarning(true, "reconnecting");
-    else this.setMobileConnectionWarning(!this.mobileConnectionAvailable(), "reconnecting");
-    this.scheduleMobileConnectionWarning(retryDelay);
+    if (reconnecting) this.scheduleMobileConnectionWarning(retryDelay);
+    else {
+      const connected = this.mobileConnectionAvailable();
+      this.setMobileConnectionWarning(!connected, "reconnecting");
+      if (!connected) this.scheduleMobileConnectionWarning(retryDelay);
+    }
   }
 
   // Keeps checking until the deck is genuinely connected, and tries again itself between checks. A
@@ -6349,8 +6355,6 @@ class TermdeckApp {
         if (title.classList.contains("session-title-working")) title.style.removeProperty("color");
         else title.style.color = this.terminalAgeColor(session);
       }
-      const baseTitle = row.dataset.baseTitle || row.title;
-      row.title = `${baseTitle}\nlast activity ${this.terminalAgeAgoLabel(session)}\n${this.terminalAgeExactTimestamp(session)}`;
     }
     this.updateTerminalGroupAgeStyles();
   }

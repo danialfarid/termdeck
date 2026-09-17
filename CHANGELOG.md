@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.16.2] — 2026-09-17
+
+### Changed
+
+- Terminal rows no longer show session details in a hover tooltip; use the terminal context menu's Info action to open those details in a modal.
+- The active terminal Info action is available from the context menu and its keyboard shortcut.
+- Native Cmd+C copying is no longer intercepted by the generic app shortcut dispatcher, preserving reliable selection copying.
+- Pending transcript prompts marked Not confirmed have one compact retry action beside the status; it restores the prompt in the terminal and sends Enter again.
+- Mobile connections receive a lightweight keepalive, avoiding idle relay timeouts that unnecessarily show Reconnecting.
+- Installed TermDeck opens the last project, worktree, and terminal route instead of always starting at the all-projects screen.
+
+### Fixed
+
+- Clipboard-history persistence failures no longer replace the status bar with a raw `Failed to fetch` message; copying remains local and immediate.
+
 ## [0.16.1] — 2026-09-15
 
 ### Fixed

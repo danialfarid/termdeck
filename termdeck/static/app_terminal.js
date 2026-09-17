@@ -326,6 +326,8 @@ Object.assign(TermdeckApp.prototype, {
                    pendingDraftSync: null, pendingTerminalDraft: null, pendingAgentPaste: "", pendingAgentPasteTimer: 0,
                    pendingAgentPasteStartedAt: 0, pendingAgentPasteReadyAt: 0, pendingAgentPasteExpectedTitle: "",
                    pendingAgentPasteRequireComposer: false, lastTerminalOutputAt: 0,
+                   retryTerminalEnterPending: false, retryTerminalEnterExpiresAt: 0, retryTerminalEnterText: "",
+                   retryTerminalEnterPendingId: "", retryTerminalEnterTimer: 0,
                    promptEditVersion: 0, promptSubmitVersion: -1,
                    mobileImeTextareaBaseline: null, mobileImeTextareaDeadline: 0, mobileTextareaCleanupTimer: 0,
                    disposeMobileTextareaStabilizer: null };
@@ -795,6 +797,7 @@ Object.assign(TermdeckApp.prototype, {
           view.claudeWebglColdPrimePending && view.fullClaudeRawReplayConnection);
       }
       this.flushPromptSync(view);
+      this.maybeSendRetryTerminalEnter(view);
       this.dispatchNextMarkdownPrompt(view);
       if (view.pendingAgentPaste) this.schedulePendingAgentPaste(view, AGENT_PASTE_RETRY_DELAY_MS);
     };
@@ -835,6 +838,7 @@ Object.assign(TermdeckApp.prototype, {
         this.queueTerminalWrite(view, new Uint8Array(e.data), () => {
           this.refreshTerminal(view);
           view.replaying = false;
+          this.maybeSendRetryTerminalEnter(view);
           // The replayed recording can carry paints from earlier pty sizes; a fullscreen_tui app
           // will never touch the rows below its current screen again, so blank them now.
           this.clearFullscreenTuiCanvasBelow(view);
@@ -3518,6 +3522,7 @@ Object.assign(TermdeckApp.prototype, {
     clearTimeout(view.initialCodexRepaintTimer);
     clearTimeout(view.initialCodexRepaintWatchdogTimer);
     clearTimeout(view.attachSettleTimer);
+    clearTimeout(view.retryTerminalEnterTimer);
     clearTimeout(view.claudeStatusRowRefreshTimer);
     clearTimeout(view.historyModelRefreshTimer);
     clearTimeout(view.promptSubmissionReflowGuardTimer);

@@ -504,6 +504,9 @@ Object.assign(TermdeckApp.prototype, {
     const binding = this.eventToBinding(e);
     const actionId = binding ? this.bindingMap()[binding] : "";
     if (actionId) {
+      // Cmd+C is the browser/xterm copy gesture. Let its native copy event record the selection so
+      // the app shortcut cannot race it or replace the clipboard operation with another action.
+      if (actionId === "selection-copy") return false;
       if (FILE_HISTORY_SHORTCUT_ACTIONS.has(actionId) && !this.fileHistoryActiveComparison?.isDiff) return false;
       if (["selection-copy", "selection-note-new", "selection-note-append"].includes(actionId) &&
           !this.readSelectionActionState()) return false;
@@ -559,6 +562,13 @@ Object.assign(TermdeckApp.prototype, {
       void this.closeSelectedSessions(sessionIds);
       return true;
     }
+    if (this.contextMenuTarget.type === "session" && actionId === "session-info") {
+      const session = this.session(this.contextMenuTarget.id);
+      if (!session) return false;
+      this.closeContextMenu();
+      this.showSessionInfo(session);
+      return true;
+    }
     if (this.contextMenuTarget.type === "group") {
       const groupId = this.contextMenuTarget.id;
       if (!this.terminalGroups().some((group) => group.id === groupId)) return false;
@@ -609,6 +619,10 @@ Object.assign(TermdeckApp.prototype, {
     else if (actionId === "rename-terminal") { const s = this.session(this.activeId); if (s) this.renameSession(s); }
     else if (actionId === "copy-session-id") {
       if (this.activeId) this.copyTextToClipboard(this.activeId, "session id copied");
+    }
+    else if (actionId === "session-info") {
+      const session = this.session(this.activeId);
+      if (session) this.showSessionInfo(session);
     }
     else if (actionId === "mark-terminal-unread") {
       if (this.activeId) this.setSessionUnread(this.activeId, true);

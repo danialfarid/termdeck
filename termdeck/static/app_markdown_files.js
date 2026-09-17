@@ -1313,6 +1313,79 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  retryHistoryPromptInTerminal(sessionId = this.activeId, pendingId = "") {
+    if (!this.historyOpen || this.activeFileKey !== null || !sessionId || sessionId !== this.activeId) return;
+    const view = this.views.get(sessionId) || this.ensureView(sessionId);
+    if (!view || view.closed || this.session(this.activeId)?.dormant) return;
+    const pending = this.persistedHistoryPendingPrompts(sessionId);
+    const item = pending.find((candidate) => candidate.pending_id === pendingId) ||
+      pending.find((candidate) => candidate.delivery_state === "unconfirmed") || pending.at(-1);
+    const text = String(item?.text || this.$("history-prompt")?.value || "");
+    if (!text.trim()) return;
+    view.promptDraft = text;
+    view.retryTerminalEnterText = text;
+    view.retryTerminalEnterPendingId = item?.pending_id || pendingId || "";
+    view.retryTerminalEnterPending = true;
+    view.retryTerminalEnterExpiresAt = Date.now() + 15000;
+    if (!view.ws || view.ws.readyState === WebSocket.CLOSED) {
+      view.ws = null;
+      view.suppressReconnect = false;
+      this.$("status-name").textContent = "reconnecting terminal to retry…";
+      this.connect(view.sessionId, view);
+      return;
+    }
+    if (view.ws.readyState === WebSocket.CLOSING) {
+      view.reconnectAfterClose = true;
+      view.suppressReconnect = false;
+      this.$("status-name").textContent = "reconnecting terminal to retry…";
+      return;
+    }
+    this.maybeSendRetryTerminalEnter(view);
+  },
+
+
+  maybeSendRetryTerminalEnter(view) {
+    if (!view?.retryTerminalEnterPending) return;
+    if (Date.now() > Number(view.retryTerminalEnterExpiresAt || 0) ||
+        view.closed || this.activeId !== view.sessionId || !this.historyOpen || this.activeFileKey !== null) {
+      clearTimeout(view.retryTerminalEnterTimer);
+      view.retryTerminalEnterTimer = 0;
+      view.retryTerminalEnterPending = false;
+      view.retryTerminalEnterExpiresAt = 0;
+      view.retryTerminalEnterText = "";
+      view.retryTerminalEnterPendingId = "";
+      return;
+    }
+    if (!view.ws || view.ws.readyState !== WebSocket.OPEN || view.awaitingSnapshot || view.replaying) {
+      if (!view.retryTerminalEnterTimer) {
+        view.retryTerminalEnterTimer = window.setTimeout(() => {
+          view.retryTerminalEnterTimer = 0;
+          this.maybeSendRetryTerminalEnter(view);
+        }, 150);
+      }
+      return;
+    }
+    clearTimeout(view.retryTerminalEnterTimer);
+    view.retryTerminalEnterTimer = 0;
+    const text = String(view.retryTerminalEnterText || "");
+    if (text) this.writePromptDraftToTerminal(view, text);
+    const prompt = this.$("history-prompt");
+    const matchingDraft = prompt && prompt.value === text;
+    view.retryTerminalEnterPending = false;
+    view.retryTerminalEnterExpiresAt = 0;
+    this.sendTrackedInput(view, "\r");
+    const pendingId = view.retryTerminalEnterPendingId;
+    view.retryTerminalEnterText = "";
+    view.retryTerminalEnterPendingId = "";
+    if (pendingId) this.setHistoryPendingPromptDeliveryState(view.sessionId, pendingId, "awaiting_transcript");
+    if (matchingDraft) {
+      this.persistMarkdownPromptDraft(view, "", { immediate: true });
+      this.showPromptDraft(view);
+    }
+    this.$("status-name").textContent = "retry Enter sent to terminal";
+  },
+
+
   toggleHistorySendMenu() {
     const menu = this.$("history-send-menu");
     const toggle = this.$("history-send-menu-toggle");
@@ -2464,28 +2537,6 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  // "Submission not confirmed" used to be a dead end: the prompt sat there for ten minutes and the only
-  // way to send it again was to retype it. Retry sends the same text through the normal path, which
-  // stages a fresh pending entry, so the stale one is dropped first rather than left as a twin.
-  retryHistoryPendingPrompt(sessionId, pendingId) {
-    const item = this.persistedHistoryPendingPrompts(sessionId).find((candidate) => candidate.pending_id === pendingId);
-    const view = this.sessionInteractionState(sessionId);
-    if (!item || !view) return;
-    this.dropHistoryPendingPrompt(sessionId, pendingId);
-    void this.submitHistoryPromptViaApi(view, item.text);
-  },
-
-
-  dropHistoryPendingPrompt(sessionId, pendingId) {
-    const pending = this.persistedHistoryPendingPrompts(sessionId).filter((candidate) => candidate.pending_id !== pendingId);
-    if (pending.length) this.historyPendingPrompts.set(sessionId, pending);
-    else this.historyPendingPrompts.delete(sessionId);
-    this.persistHistoryPendingPrompts(sessionId, pending);
-    const live = this.historyLiveTurnsBySession.get(sessionId) || this.historyTurnsBySession.get(sessionId) || [];
-    this.renderHistoryPendingPromptState(sessionId, live);
-  },
-
-
   renderHistoryPendingPromptState(sessionId, live) {
     if (!this.historyOpen || this.activeId !== sessionId) return;
     const optimisticLive = this.mergePendingHistoryPrompts(sessionId, live);
@@ -3565,21 +3616,19 @@ Object.assign(TermdeckApp.prototype, {
             ? "Delivered to the agent, which is still finishing its previous turn."
             : "Sending this prompt to the agent.";
         delivery.append(icon, label);
-        if (turn.pending_delivery_state === "unconfirmed") {
-          const sessionId = this.activeId;
-          const pendingId = turn.pending_id;
-          const action = (text, title, handler) => {
-            const button = this.keepTranscriptFocus(document.createElement("button"));
-            button.type = "button";
-            button.className = "history-pending-action";
-            button.textContent = text;
-            button.title = title;
-            button.onclick = (event) => { event.preventDefault(); event.stopPropagation(); handler(); };
-            return button;
+        if (deliveryState === "unconfirmed") {
+          const retryTerminal = this.keepTranscriptFocus(document.createElement("button"));
+          retryTerminal.type = "button";
+          retryTerminal.className = "history-pending-action history-pending-terminal-action";
+          retryTerminal.title = "Retry by pressing Enter in the terminal";
+          retryTerminal.setAttribute("aria-label", "Retry by pressing Enter in the terminal");
+          retryTerminal.innerHTML = '<span class="codicon codicon-refresh"></span>';
+          retryTerminal.onclick = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.retryHistoryPromptInTerminal(this.activeId, turn.pending_id);
           };
-          delivery.append(
-            action("Retry", "Send this prompt again", () => this.retryHistoryPendingPrompt(sessionId, pendingId)),
-            action("Discard", "Forget this prompt", () => this.dropHistoryPendingPrompt(sessionId, pendingId)));
+          delivery.append(retryTerminal);
         }
         block.append(delivery);
       }
@@ -4042,6 +4091,16 @@ Object.assign(TermdeckApp.prototype, {
     this.$("selection-copy-history-panel").addEventListener("pointermove", (event) => {
       if (event.target.closest?.(".selection-copy-history-item")) actions.classList.remove("keyboard-nav");
     });
+    window.addEventListener("keydown", (event) => {
+      if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey ||
+          String(event.key || "").toLowerCase() !== "c") return;
+      const state = this.readSelectionActionState(event.target);
+      if (!state) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      this.selectionActionState = state;
+      this.copySelectionToClipboard(true);
+    }, true);
     actions.addEventListener("pointerdown", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -6038,6 +6097,8 @@ Object.assign(TermdeckApp.prototype, {
   recordSelectionCopyHistory(text) {
     const copied = this.normalizeSelectionText(text);
     if (!copied) return;
+    const statText = this.$("stat-text");
+    if (statText?.textContent === "Failed to fetch") statText.textContent = "";
     const notebookState = this.notebookProjectState();
     const previous = this.projectSelectionCopyHistory();
     notebookState.selection_copy_history = [copied, ...previous.filter((item) => item !== copied)].slice(0, 50);
@@ -6544,7 +6605,7 @@ Object.assign(TermdeckApp.prototype, {
     };
     notebookState.selection_copy_history_initialized = true;
     this.applyLocalProjectStatePatch(patch, stateKey);
-    this.queueProjectResourceRequest(stateKey, "/api/terminal-layout", "PATCH", patch);
+    this.queueProjectResourceRequest(stateKey, "/api/terminal-layout", "PATCH", patch, { silent: true });
   },
 
 
