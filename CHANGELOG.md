@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The unconfirmed-prompt row in the transcript keeps to one line on a phone, and carries an × on the
+  right that takes the prompt off the transcript for good. Its label could break across two lines in a
+  narrow column, and there was no way to dismiss an entry the agent had plainly received.
+- A prompt whose send could not be confirmed no longer stays in the composer as well as the transcript.
+  Holding both copies is what turned one prompt into two: the next thing typed landed on the end of the
+  old text and went out as a single message, leaving the original behind as a second pending entry.
+- A prompt is called unconfirmed after 25 seconds rather than 60.
+
 ## [0.16.2] — 2026-09-17
 
 ### Changed

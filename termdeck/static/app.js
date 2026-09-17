@@ -179,7 +179,7 @@ const MOBILE_CONNECTION_RETRY_MS = 3000;
 // submissions never come back as a user turn -- a slash command is handled by the CLI rather than
 // recorded as a message -- so the wait is bounded: first the message says it could not be confirmed,
 // and eventually it stops claiming to be in flight at all.
-const PENDING_PROMPT_UNCONFIRMED_MS = 60000;
+const PENDING_PROMPT_UNCONFIRMED_MS = 25000;
 const PENDING_PROMPT_DISCARD_MS = 600000;
 // Unfinished experiment: hold back writes to hidden terminals and catch them up on activation.
 // No setting and no toggle — flip this constant to work on it. See drainTerminalWrites().

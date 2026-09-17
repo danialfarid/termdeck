@@ -2525,6 +2525,19 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // Take a prompt off the transcript for good. An unconfirmed entry that the agent plainly did
+  // receive otherwise sits there until it ages out, and there was no way to say so.
+  dismissHistoryPendingPrompt(sessionId, pendingId) {
+    const pending = this.persistedHistoryPendingPrompts(sessionId)
+      .filter((candidate) => candidate.pending_id !== pendingId);
+    if (pending.length) this.historyPendingPrompts.set(sessionId, pending);
+    else this.historyPendingPrompts.delete(sessionId);
+    this.persistHistoryPendingPrompts(sessionId, pending);
+    const live = this.historyLiveTurnsBySession.get(sessionId) || this.historyTurnsBySession.get(sessionId) || [];
+    this.renderHistoryPendingPromptState(sessionId, live);
+  },
+
+
   setHistoryPendingPromptDeliveryState(sessionId, pendingId, deliveryState) {
     const pending = this.persistedHistoryPendingPrompts(sessionId);
     const item = pending.find((candidate) => candidate.pending_id === pendingId);
@@ -2661,6 +2674,14 @@ Object.assign(TermdeckApp.prototype, {
       return false;
     }
     const pendingId = this.stageHistoryPendingPrompt(view, text);
+    // Staging puts the prompt in the transcript and on this device, so the composer must let go of it
+    // now rather than only once the send is confirmed. Keeping a copy there through an unconfirmed
+    // send is what turned one prompt into two: the next thing typed landed on the end of the old text
+    // and went out as a single message, leaving the original behind as a second pending entry.
+    if (!options.fromQueue) {
+      this.persistMarkdownPromptDraft(view, "", { immediate: true });
+      this.showPromptDraft(view);
+    }
     view.promptApiSubmitting = true;
     this.$("status-name").textContent = "sending prompt…";
     const controller = new AbortController();
@@ -3605,6 +3626,7 @@ Object.assign(TermdeckApp.prototype, {
         icon.className = `codicon ${deliveryState === "unconfirmed" ? "codicon-warning"
           : deliveryState === "queued" ? "codicon-history" : "codicon-cloud-upload"}`;
         const label = document.createElement("span");
+        label.className = "history-pending-label";
         // One word, because this sits in the transcript's own column: on a phone the sentence these
         // used to carry wrapped to five lines above the prompt it belonged to. The sentence moves to
         // the tooltip, where it costs nothing.
@@ -3628,7 +3650,18 @@ Object.assign(TermdeckApp.prototype, {
             event.stopPropagation();
             this.retryHistoryPromptInTerminal(this.activeId, turn.pending_id);
           };
-          delivery.append(retryTerminal);
+          const dismiss = this.keepTranscriptFocus(document.createElement("button"));
+          dismiss.type = "button";
+          dismiss.className = "history-pending-action history-pending-dismiss";
+          dismiss.title = "Remove this prompt from the transcript";
+          dismiss.setAttribute("aria-label", "Remove this prompt from the transcript");
+          dismiss.textContent = "×";
+          dismiss.onclick = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.dismissHistoryPendingPrompt(this.activeId, turn.pending_id);
+          };
+          delivery.append(retryTerminal, dismiss);
         }
         block.append(delivery);
       }

@@ -670,6 +670,11 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 .history-pending-delivery.awaiting_transcript { color: var(--accent); }
 .history-pending-delivery.queued { color: var(--accent); }
 .history-pending-delivery.unconfirmed { color: var(--warning, #e0af68); flex-wrap: nowrap; }
+/* One line, always. The row is narrow on a phone and the label was free to wrap inside itself, which
+   put "Not confirmed" and its buttons on two lines above the prompt they belong to. */
+.history-pending-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-pending-delivery .codicon, .history-pending-action { flex: none; }
+.history-pending-dismiss { margin-left: auto; padding: 2px 9px; font-size: calc(var(--ui-font-size) + 2px); line-height: 1; }
 .history-pending-action { margin-left: 4px; padding: 2px 10px; min-height: 22px; border: 1px solid currentColor; border-radius: 4px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .history-pending-action:first-of-type { margin-left: 8px; }
 .history-pending-action:hover { background: color-mix(in srgb, currentColor 16%, transparent); }
