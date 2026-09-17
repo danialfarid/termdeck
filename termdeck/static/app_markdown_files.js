@@ -3655,7 +3655,7 @@ Object.assign(TermdeckApp.prototype, {
           dismiss.className = "history-pending-action history-pending-dismiss";
           dismiss.title = "Remove this prompt from the transcript";
           dismiss.setAttribute("aria-label", "Remove this prompt from the transcript");
-          dismiss.textContent = "×";
+          dismiss.innerHTML = '<span class="codicon codicon-close"></span>';
           dismiss.onclick = (event) => {
             event.preventDefault();
             event.stopPropagation();

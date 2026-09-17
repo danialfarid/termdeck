@@ -3107,6 +3107,13 @@ Object.assign(TermdeckApp.prototype, {
     if (unique.length === 1 && unique[0]) {
       return { title: "", session_ref: unique[0] };
     }
+    // A session TermDeck has never owned -- one started in a plain terminal, say -- has no row to
+    // match against here, so its own id was being read as a name and a new empty session opened
+    // under it. The agent CLIs pass this value straight to their resume flag, so anything shaped
+    // like an agent session id goes through as one.
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+      return { title: "", session_ref: value };
+    }
     return { title: value, session_ref: "" };
   },
 

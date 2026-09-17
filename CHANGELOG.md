@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A dialog on a phone stays inside the part of the screen the keyboard has left, and scrolls, so the field
+  being typed into cannot end up underneath the keyboard. A dialog is positioned against the whole screen,
+  which the keyboard does not shrink.
+- The terminal dialog's name field accepts an agent's own session id, so a session TermDeck has never owned
+  can be resumed by pasting its id. Anything it could not match was read as a name, which opened a new empty
+  session under that name instead.
+- Retry and dismiss on an unconfirmed prompt are the same size, and the "Not confirmed" label no longer
+  collapses to nothing beside them.
 - The unconfirmed-prompt row in the transcript keeps to one line on a phone, and carries an × on the
   right that takes the prompt off the transcript for good. Its label could break across two lines in a
   narrow column, and there was no way to dismiss an entry the agent had plainly received.
