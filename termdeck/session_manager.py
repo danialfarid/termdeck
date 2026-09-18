@@ -103,6 +103,10 @@ class ManagedSession:
         self.output_activity_expiry_task: asyncio.Task | None = None
         self.last_activity_at = record.last_activity_at
         self.last_activity_broadcast_monotonic = 0.0
+        # When this terminal last produced output. Unlike last_activity_at it is not suppressed around
+        # repaints and is monotonic, because what reads it wants "is the TUI still talking", not "has
+        # anything interesting happened".
+        self.last_output_monotonic = 0.0
         # Per-agent runtime state (activity flags, signatures, pending renames); shape is owned
         # by the AgentCli, None for plain shells.
         self.agent_state = agents.agent_cli(record.agent_kind).new_session_state()
@@ -1098,6 +1102,7 @@ class TerminalSessionManager:
         data = self._answer_and_strip_color_queries(ms, data)
         if not data:
             return
+        ms.last_output_monotonic = time.monotonic()
         # Ahead of the recorder and the live queues alike, so every consumer sees the rescued screen.
         data = self._carry_screen_before_compaction_redraw(ms, data)
         # Same reasoning: rewritten before anything records or forwards it, so a status repaint cannot
@@ -1486,8 +1491,10 @@ class TerminalSessionManager:
             else:
                 payload += normalized
         self.write_input(session_id, payload)
-        await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
+        await self._wait_for_paste_to_settle(ms)
         self.write_input(session_id, "\t" if queue else "\r")
+        if not queue:
+            await self._press_enter_until_prompt_lands(ms, normalized)
         if queue:
             ms.record.draft = ""
             ms.draft_tracker = DraftInputTracker("")
@@ -1498,6 +1505,61 @@ class TerminalSessionManager:
         # if the browser is refreshed immediately afterward.
         self._persist()
         self._broadcast_control(self._sessions[session_id], {WsMessageFields.TYPE: WsMessageFields.PROMPT_SUBMITTED})
+
+    async def _wait_for_paste_to_settle(self, ms: ManagedSession) -> None:
+        """Wait until the terminal has stopped producing output, so Enter lands after the paste.
+
+        The paste echoes: a TUI that has taken it says so by drawing it. Waiting for that to go quiet
+        follows however far behind the TUI actually is, where a fixed delay only guesses. Capped, so a
+        terminal that never stops talking -- an agent streaming a long answer -- still gets its Enter.
+        """
+        deadline = time.monotonic() + TermdeckConfig.PROMPT_SUBMIT_SETTLE_MAX_SECONDS
+        await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
+        while time.monotonic() < deadline:
+            quiet_for = time.monotonic() - ms.last_output_monotonic
+            if quiet_for >= TermdeckConfig.PROMPT_SUBMIT_SETTLE_QUIET_SECONDS:
+                return
+            await asyncio.sleep(min(TermdeckConfig.PROMPT_SUBMIT_SETTLE_QUIET_SECONDS - quiet_for, 0.1))
+
+    async def _press_enter_until_prompt_lands(self, ms: ManagedSession, text: str) -> None:
+        """Keep pressing Enter until the prompt shows up in the agent's transcript, or time runs out.
+
+        An absorbed Enter leaves the prompt sitting in the composer looking sent, and nothing notices.
+        The transcript is the authority on whether the agent has it -- the same signal the transcript
+        view waits for before it stops calling a prompt unconfirmed.
+        """
+        if not text.strip() or self._transcript_service is None:
+            return
+        agent = agents.agent_cli(ms.record.agent_kind)
+        if not agent.is_agent:
+            return
+        deadline = time.monotonic() + TermdeckConfig.PROMPT_SUBMIT_CONFIRM_SECONDS
+        presses = 0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_CONFIRM_POLL_SECONDS)
+            if not ms.running:
+                return
+            if await asyncio.to_thread(self._transcript_has_prompt, ms, text):
+                return
+            self.write_input(ms.record.session_id, "\r")
+            presses += 1
+        print(f"termdeck prompt for {ms.record.session_id} was not confirmed in the transcript after "
+              f"{int(TermdeckConfig.PROMPT_SUBMIT_CONFIRM_SECONDS)}s and {presses} further Enter(s)", flush=True)
+
+    def _transcript_has_prompt(self, ms: ManagedSession, text: str) -> bool:
+        """Whether the tail of the agent's transcript already carries this prompt as a user turn."""
+        # The first line is enough to match on, and is what survives an agent's own reformatting of a
+        # long pasted prompt. Transcripts run to tens of megabytes, so only the tail is read.
+        needle = next((line.strip() for line in text.splitlines() if line.strip()), "")[:120]
+        if not needle:
+            return False
+        try:
+            agent_kind, cwd, agent_session_id = self.session_history_source(ms.record.session_id)
+            page = self._transcript_service.history_page(agent_kind, cwd, agent_session_id)
+        except (KeyError, OSError, ValueError):
+            return False
+        return any(str(turn.get("role")) == "user" and needle in str(turn.get("text") or "")
+                   for turn in (page.get("turns") or []))
 
     async def _wait_for_prompt_ready(self, ms: ManagedSession) -> None:
         """Avoid losing the first API/Markdown prompt while a new agent TUI boots.

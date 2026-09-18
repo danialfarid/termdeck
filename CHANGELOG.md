@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A prompt sent through the API is checked for having arrived, and Enter pressed again for up to 15
+  seconds if it has not. The Enter that submits a pasted prompt only lands once the agent's TUI has
+  taken the paste, and the wait for that was a flat 80ms — fine for an idle terminal, not for one
+  streaming tens of thousands of tokens, where the Enter was absorbed and the prompt sat in the
+  composer looking sent. TermDeck now waits for the terminal's own output to go quiet before pressing
+  Enter, and treats the prompt as delivered only once it appears as a user turn in the agent's
+  transcript.
 - A codex terminal stops showing progress once its turn has plainly stopped. A turn ends with
   `task_complete` or `turn_aborted`, but a codex killed mid-turn — a restart, a crash — writes neither,
   so the last thing in its transcript stayed `task_started` and the terminal spun for good, its dtach

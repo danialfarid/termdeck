@@ -472,6 +472,19 @@ class TermdeckConfig:
     DRAFT_REPLAY_DELAY_AGENT_SECONDS = 4.0
     DRAFT_REPLAY_DELAY_SHELL_SECONDS = 1.5
     PROMPT_SUBMIT_KEY_DELAY_SECONDS = 0.08
+    # The Enter that submits a pasted prompt is written after the paste, and the agent TUI has to have
+    # consumed the paste for it to land. A flat delay is a guess about how far behind that TUI is: a
+    # quiet one keeps up in well under 80ms, while one streaming tens of thousands of tokens can be much
+    # further behind, and the Enter is absorbed -- the prompt then sits in the composer, never sent.
+    # So wait for the terminal's own output to go quiet before pressing Enter, up to a cap.
+    PROMPT_SUBMIT_SETTLE_QUIET_SECONDS = 0.12
+    PROMPT_SUBMIT_SETTLE_MAX_SECONDS = 2.0
+    # Having pressed Enter, confirm the prompt actually arrived: it is confirmed when it shows up as a
+    # user turn in the agent's own transcript, which is the same thing the transcript view waits for.
+    # Until then, press Enter again. Stops at the first confirmation, and gives up at the deadline
+    # rather than pressing forever at a terminal that is never going to take it.
+    PROMPT_SUBMIT_CONFIRM_SECONDS = 15.0
+    PROMPT_SUBMIT_CONFIRM_POLL_SECONDS = 1.5
     PROMPT_AGENT_STARTUP_DELAY_SECONDS = 2.0
     PROMPT_AGENT_READY_TIMEOUT_SECONDS = 12.0
     FORK_RENAME_READY_DELAY_SECONDS = 1.5
