@@ -1013,41 +1013,64 @@ Object.assign(TermdeckApp.prototype, {
     stack.className = "agent-stack" + (expanded ? " expanded" : " collapsed");
     stack.dataset.parentId = parent.session_id;
 
-    const body = document.createElement("div");
-    body.className = "agent-stack-children";
     if (expanded) {
+      const body = document.createElement("div");
+      body.className = "agent-stack-children";
       for (const child of children) this.renderTerminalItem(child, body);
       stack.appendChild(body);
       list.appendChild(stack);
       return;
     }
-    // Collapsed, the children are the picture: the real rows, each showing less of itself than the one
-    // above and drawn a little smaller, so they read as terminals tucked under this one. No summary
-    // line -- the rows themselves say whose they are, and a count beside them would only repeat what
-    // the deck already looks like.
-    body.setAttribute("aria-hidden", "true");
-    const peeked = children.slice(0, AGENT_STACK_PEEK_CARDS);
-    peeked.forEach((child, depth) => {
-      const peek = document.createElement("div");
-      peek.className = "agent-stack-peek";
-      peek.style.setProperty("--stack-depth", String(depth));
-      this.renderTerminalItem(child, peek);
-      body.appendChild(peek);
+    // Collapsed, the children are book pages, the way the planner stacks a goal's subtasks: thin strips
+    // butted under the parent with no gap, each folding in from the left, a step smaller and fainter
+    // than the one above. A page names its terminal and opens it; the tail says how many more there are.
+    const pages = document.createElement("div");
+    pages.className = "agent-stack-pages";
+    const visible = children.slice(0, AGENT_STACK_PAGE_LIMIT);
+    visible.forEach((child, index) => {
+      pages.appendChild(this.agentStackPage(child, index, visible.length));
     });
-    // One click target over the whole deck. The rows inside are a picture, not controls: letting a
-    // half-clipped row take the click would open a terminal the reader cannot see.
-    body.style.pointerEvents = "none";
-    stack.appendChild(body);
-    stack.setAttribute("role", "button");
-    stack.tabIndex = 0;
-    stack.title = `Show ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
-    stack.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
-    stack.onkeydown = (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      this.toggleAgentStack(parent.session_id);
-    };
+    if (children.length > visible.length) {
+      const more = document.createElement("div");
+      more.className = "agent-stack-page agent-stack-more";
+      more.textContent = `+${children.length - visible.length} more`;
+      this.styleAgentStackPage(more, visible.length, visible.length);
+      more.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
+      pages.appendChild(more);
+    }
+    stack.appendChild(pages);
     list.appendChild(stack);
+  },
+
+
+  styleAgentStackPage(page, index, total) {
+    // Shrinking, folding in, fading: the three together are what make a column of strips read as a
+    // stack seen edge-on. Floors on each, so a long stack does not fade to nothing or shrink to dust.
+    page.style.fontSize = `${Math.max(9, 12 - index * 0.9)}px`;
+    page.style.marginLeft = `${index * 14}px`;
+    page.style.opacity = String(Math.max(0.45, 1 - index * 0.12));
+    page.style.zIndex = String(total - index);
+  },
+
+
+  agentStackPage(child, index, total) {
+    const page = document.createElement("div");
+    page.className = "agent-stack-page";
+    this.styleAgentStackPage(page, index, total);
+    const presentation = this.titlePresentation(child);
+    const dot = document.createElement("span");
+    dot.className = "agent-stack-page-dot" +
+      (presentation.spinning ? " processing" : this.attentionSessions.has(child.session_id) ? " attention" :
+        this.unreadSessions.has(child.session_id) ? " unread" : "");
+    const title = document.createElement("span");
+    title.className = "agent-stack-page-title";
+    title.textContent = presentation.title || child.title || child.session_id;
+    page.append(dot, title);
+    page.title = title.textContent;
+    // A page opens its own terminal. Reaching a spawned agent should not cost expanding the stack
+    // first, which is the whole reason its name is on the page.
+    page.onclick = (event) => { event.stopPropagation(); this.activate(child.session_id); };
+    return page;
   },
 
 

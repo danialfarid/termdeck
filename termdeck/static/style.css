@@ -859,27 +859,31 @@ body.vscode-native-mode #project-terminal-search-btn { display: none !important;
 .terminal-group-members.collapsed { grid-template-rows: 0fr; opacity: 0.35; }
 .terminal-group-members-inner { min-height: 0; overflow: hidden; padding-bottom: 4px; }
 
-/* Agents an agent spawned, filed under it. Collapsed, the real child rows are the picture: each shows
-   less of itself than the one above and is drawn slightly smaller, so they read as terminals tucked
-   under this one. Expanded, they are ordinary rows. */
-.agent-stack { margin: 0 0 2px; padding-left: 6px; }
-.agent-stack.collapsed { cursor: pointer; }
-/* The first child is shown whole, so the deck names a terminal rather than only counting them. The rest
-   are slivers of their own rows behind it, each thinner and narrower than the last. Clipping a row
-   halfway would cut through its title, which reads as a rendering fault rather than as a stack. */
-.agent-stack-peek { transform-origin: top center; }
-.agent-stack-peek .session-item {
-  margin-bottom: 0; border: 1px solid var(--border); background: var(--panel2);
-  border-radius: 7px;
+/* Agents an agent spawned, filed under it. Collapsed they are book pages, the same shape the planner
+   uses for a goal's subtasks: thin strips butted under the parent with no gap between them, folding in
+   from the left and shrinking, so the column reads as a stack seen edge-on rather than as a list. */
+.agent-stack { margin: -1px 0 3px; }
+.agent-stack-pages { display: flex; flex-direction: column; align-items: stretch; }
+.agent-stack-page {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--panel2); border: 1px solid var(--border); border-top: none;
+  border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
+  padding: 1px 10px; margin-top: -1px; cursor: pointer;
+  color: var(--dim); line-height: 1.55; min-width: 0;
+  transition: background 0.12s, color 0.12s;
+  animation: agentStackPageDrop 0.16s ease-out;
 }
-.agent-stack-peek:not(:first-child) {
-  height: calc(9px - var(--stack-depth) * 2px); overflow: hidden;
-  transform: scale(calc(1 - var(--stack-depth) * 0.045));
-  opacity: calc(1 - var(--stack-depth) * 0.22);
-  margin-top: -2px;
+.agent-stack-page:hover { background: var(--active-bg); color: var(--text); }
+.agent-stack-page-dot {
+  flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--dim); opacity: 0.55;
 }
-.agent-stack-peek:not(:first-child) .session-item { border-radius: 0 0 7px 7px; border-top: 0; }
-.agent-stack-peek:first-child .session-item { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.agent-stack-page-dot.processing { background: var(--accent); opacity: 1; }
+.agent-stack-page-dot.attention { background: var(--warn, #e0a33e); opacity: 1; }
+.agent-stack-page-dot.unread { background: var(--accent); opacity: 0.75; }
+.agent-stack-page-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-stack-more { justify-content: flex-start; font-style: italic; opacity: 0.7; }
+.agent-stack-more:hover { color: var(--accent); }
+@keyframes agentStackPageDrop { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; } }
 .agent-stack.collapsed:hover .agent-stack-peek { opacity: calc(1 - var(--stack-depth) * 0.15); }
 .agent-stack.collapsed:hover .agent-stack-peek:first-child .session-item { border-color: var(--accent); }
 /* Expanded: a hairline instead of an indent, so a deep row still has its full width for its title. */
