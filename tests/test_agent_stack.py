@@ -1,8 +1,9 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from termdeck.models import SessionRecord
+from termdeck.server import RunTerminalTaskRequest, TermdeckServer
 from termdeck.session_manager import TerminalSessionManager
 
 
@@ -69,6 +70,52 @@ class SetSpawnedByTest(unittest.TestCase):
         self.manager.set_spawned_by("child", "closed-long-ago")
 
         self.assertIsNone(self.manager._sessions["child"].record.spawned_by_session_id)
+
+
+class TaskApiRecordsOriginTest(unittest.IsolatedAsyncioTestCase):
+    """An agent delegating work passes origin_session=$TERMDECK_SESSION_ID, which the docs make required
+    for a child task. TermDeck used it only to place the row and to write the result back; nothing kept
+    it, so the parentage was gone the moment the request returned."""
+
+    def _server(self) -> TermdeckServer:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.command_for_new_session.return_value = "codex"
+        child = MagicMock()
+        child.record.session_id = "child-01"
+        child.record.project = "stock"
+        child.record.worktree_id = "root"
+        server.manager.create_session.return_value = child
+        server.manager.registry.root_for.return_value = "/tmp"
+        server.manager.session_summary.return_value = {"session_id": "child-01", "project": "stock"}
+        server.manager.session_summary_by_id.return_value = {"cwd": "/tmp", "project": "stock",
+                                                             "worktree_id": "root"}
+        server.manager.submit_prompt = AsyncMock()
+        for method in ("_broadcast_project_state_snapshot", "_place_session_after",
+                       "_raise_if_model_dependency_missing"):
+            patcher = patch.object(TermdeckServer, method, lambda *a, **k: None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return server
+
+    async def test_a_delegated_child_is_recorded_against_the_agent_that_asked(self) -> None:
+        server = self._server()
+        with patch.object(TermdeckServer, "_resolve_origin_session", lambda self, ref: "parent-01"):
+            await server._run_terminal_task(
+                RunTerminalTaskRequest(prompt="review this", cwd="/tmp", project="stock",
+                                       origin_session="parent-01"))
+
+        server.manager.set_spawned_by.assert_called_once_with("child-01", "parent-01")
+
+    async def test_a_task_with_no_origin_records_no_parent(self) -> None:
+        # A terminal started from the UI has no parent, and inventing one would file it under an
+        # unrelated agent.
+        server = self._server()
+
+        await server._run_terminal_task(
+            RunTerminalTaskRequest(prompt="run checks", cwd="/tmp", project="stock"))
+
+        server.manager.set_spawned_by.assert_not_called()
 
 
 if __name__ == "__main__":
