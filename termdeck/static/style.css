@@ -864,30 +864,28 @@ body.vscode-native-mode #project-terminal-search-btn { display: none !important;
    from the left and shrinking, so the column reads as a stack seen edge-on rather than as a list. */
 /* The rule is in both states, so it sits in the same place whether the stack is open or shut. */
 .agent-stack { position: relative; margin: -1px 0 3px; padding-left: 7px; }
-.agent-stack-pages { display: flex; flex-direction: column; align-items: stretch; cursor: pointer; }
-.agent-stack-page {
-  display: flex; align-items: center; gap: 5px;
-  background: var(--panel2); border: 1px solid var(--border); border-top: none;
-  border-bottom-left-radius: 7px; border-bottom-right-radius: 7px;
-  padding: 0 8px; margin-top: -1px; cursor: pointer;
-  color: var(--dim); line-height: 1.5; min-width: 0;
-  transition: background 0.12s, color 0.12s;
-  animation: agentStackPageDrop 0.16s ease-out;
+/* One line for the whole group, whatever it holds: a dot for their combined state, the count, then the
+   first couple by name trailing off. */
+.agent-stack-summary {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  padding: 1px 8px 1px 4px; cursor: pointer; color: var(--dim);
+  border-radius: 6px; line-height: 1.5;
+  animation: agentStackSummaryDrop 0.16s ease-out;
 }
-.agent-stack-pages:hover .agent-stack-page { background: var(--active-bg); color: var(--text); }
-/* The agent's own icon, scaled to the page. In a terminal row it is absolutely placed in the gutter;
-   on a page it is one of two items in a flex line, so the positioning has to be undone or it sits on
-   top of the title. Shown whatever the row's icon setting is: on a page this thin it is the only thing
-   that says WHICH agent without reading. */
-.agent-stack-page .terminal-type-icon {
-  position: static; transform: none; display: inline-flex; flex: none;
-  width: 11px; height: 11px; margin: 0; opacity: 0.85;
+.agent-stack-summary:hover { background: var(--panel2); color: var(--text); }
+/* The row's status dot is absolutely placed in its gutter; here it is the first item of a flex line. */
+.agent-stack-dot {
+  position: static; flex: none; margin: 0;
+  width: var(--terminal-status-dot-size, 6px); height: var(--terminal-status-dot-size, 6px);
 }
-.agent-stack-page .terminal-type-icon svg { width: 11px; height: 11px; }
-.agent-stack-page .terminal-type-icon .codicon { font-size: 10px; }
-.agent-stack-page-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.agent-stack-more { justify-content: flex-start; font-style: italic; opacity: 0.7; }
-@keyframes agentStackPageDrop { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; } }
+/* Idle still occupies its place: the line must not shift sideways when a child starts or finishes. */
+.agent-stack-dot.idle { visibility: visible; background: var(--border); }
+.agent-stack-count { flex: none; font-size: 10.5px; font-weight: 650; color: var(--text); opacity: 0.75; }
+.agent-stack-names {
+  flex: 1; min-width: 0; font-size: 10px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+@keyframes agentStackSummaryDrop { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; } }
 
 /* A rule down the left instead of an indent. It says this group belongs to the terminal above while
    leaving the rows their full width, and it is the control: click to open, click again to fold up. */

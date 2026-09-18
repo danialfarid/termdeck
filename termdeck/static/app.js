@@ -161,9 +161,9 @@ const MOBILE_TERMINAL_SELECTION_BACKGROUND = "#287fd1";
 const MOBILE_TERMINAL_SELECTION_FOREGROUND = "#ffffff";
 const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
 const EXPANDED_AGENT_STACKS_KEY = "termdeck.expanded_agent_stacks";
-// Spawned agents named on a collapsed stack before the rest become a "+N more" tail. Past a handful a
-// stack stops reading as one thing and starts reading as the list it is standing in for.
-const AGENT_STACK_PAGE_LIMIT = 4;
+// Spawned agents named on the collapsed summary line before it trails off. Two fit beside the count in
+// a sidebar's width; the point of the line is that there are children and roughly who, not a roster.
+const AGENT_STACK_SUMMARY_NAMES = 2;
 const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
 const TRANSCRIPT_DRAFT_LOCAL_PREFIX = "termdeck.transcript-draft.v1";
 const ADDRESS_RECOVERY_KEY = "termdeck.address-recovery";

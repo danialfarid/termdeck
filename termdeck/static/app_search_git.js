@@ -1019,54 +1019,36 @@ Object.assign(TermdeckApp.prototype, {
       list.appendChild(stack);
       return;
     }
-    // Collapsed, the children are book pages, the way the planner stacks a goal's subtasks: thin strips
-    // butted under the parent with no gap, each folding in from the left, a step smaller and fainter
-    // than the one above. A page names its terminal and opens it; the tail says how many more there are.
-    const pages = document.createElement("div");
-    pages.className = "agent-stack-pages";
-    pages.title = `Open ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
-    const visible = children.slice(0, AGENT_STACK_PAGE_LIMIT);
-    visible.forEach((child, index) => {
-      pages.appendChild(this.agentStackPage(child, index, visible.length));
-    });
-    if (children.length > visible.length) {
-      const more = document.createElement("div");
-      more.className = "agent-stack-page agent-stack-more";
-      more.textContent = `+${children.length - visible.length} more`;
-      this.styleAgentStackPage(more, visible.length, visible.length);
-      pages.appendChild(more);
-    }
-    // The whole stack opens it, not only the tail: a stack is one thing to click, and its pages are
-    // too thin to ask anyone to aim at a particular one.
-    pages.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
-    stack.appendChild(pages);
+    // Collapsed, the whole group is one line under the parent: a dot carrying the children's combined
+    // state, how many there are, and the first couple by name. One line however many agents are down
+    // there, so a parent that spawned ten costs the sidebar the same as one that spawned two.
+    const summary = document.createElement("div");
+    summary.className = "agent-stack-summary";
+    summary.title = `Open ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
+    const dot = document.createElement("span");
+    dot.className = `agent-stack-dot status-dot ${this.spawnedChildrenState(children)}`;
+    const count = document.createElement("span");
+    count.className = "agent-stack-count";
+    count.textContent = String(children.length);
+    const names = document.createElement("span");
+    names.className = "agent-stack-names";
+    names.textContent = children.slice(0, AGENT_STACK_SUMMARY_NAMES)
+      .map((child) => this.titlePresentation(child).title || child.title || child.session_id)
+      .join("  ") + (children.length > AGENT_STACK_SUMMARY_NAMES ? "  …" : "");
+    summary.append(dot, count, names);
+    summary.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
+    stack.appendChild(summary);
     list.appendChild(stack);
   },
 
 
-  styleAgentStackPage(page, index, total) {
-    // Shrinking, folding in, fading: the three together are what make a column of strips read as a
-    // stack seen edge-on. Floors on each, so a long stack does not fade to nothing or shrink to dust.
-    page.style.fontSize = `${Math.max(8.5, 10.5 - index * 0.5)}px`;
-    // One pixel. Enough that the edges step, not enough to walk the stack across the sidebar; the
-    // shrinking and the fading are what carry the depth.
-    page.style.marginLeft = `${index}px`;
-    page.style.opacity = String(Math.max(0.5, 1 - index * 0.13));
-    page.style.zIndex = String(total - index);
-  },
-
-
-  agentStackPage(child, index, total) {
-    const page = document.createElement("div");
-    page.className = "agent-stack-page";
-    this.styleAgentStackPage(page, index, total);
-    const title = document.createElement("span");
-    title.className = "agent-stack-page-title";
-    title.textContent = this.titlePresentation(child).title || child.title || child.session_id;
-    // The agent's own icon, the one its row carries, rather than a status dot: on a page this thin the
-    // icon is the only thing that says WHICH agent without reading, and a dot says none of that.
-    page.append(this.terminalTypeIcon(child), title);
-    return page;
+  spawnedChildrenState(children) {
+    // What the one dot has to stand for, worst news first: an agent waiting on an answer is the reason
+    // to look, then one still working, then one that finished while nobody was watching.
+    if (children.some((child) => this.attentionSessions.has(child.session_id))) return "attention";
+    if (children.some((child) => this.titlePresentation(child).spinning)) return "processing";
+    if (children.some((child) => this.unreadSessions.has(child.session_id))) return "unread";
+    return "idle";
   },
 
 
