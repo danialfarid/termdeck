@@ -169,6 +169,7 @@ class TerminalSessionManager:
         self._status_queues: set[asyncio.Queue] = set()
         self._draft_persist_task: asyncio.Task | None = None
         self._background_loop: asyncio.AbstractEventLoop | None = None
+        self._replay_sweep_task: asyncio.Task[None] | None = None
         self._agent_activity_refresh_handles: dict[Path, asyncio.TimerHandle] = {}
         self._claude_activity_confirmation_handles: dict[Path, asyncio.TimerHandle] = {}
         self._transcript_service = None
@@ -209,9 +210,36 @@ class TerminalSessionManager:
     def start_background_tasks(self) -> None:
         self._background_loop = asyncio.get_running_loop()
         self._claude_activity_watcher.start()
+        self._replay_sweep_task = asyncio.create_task(self._sweep_replays_periodically())
+
+    async def _sweep_replays_periodically(self) -> None:
+        """Collect recordings whose session is gone, for as long as the deck is up.
+
+        The single owner of deleting recordings from disk. Not at close, which a kill can skip, and not
+        at startup, which would delay the boot of the deck it is tidying up after; reconciling on a
+        timer needs to have witnessed neither.
+        """
+        while True:
+            await asyncio.sleep(TermdeckConfig.REPLAY_SWEEP_INTERVAL_SECONDS)
+            try:
+                removed_files, removed_bytes = await self.replay.sweep_orphaned_replays()
+            except asyncio.CancelledError:
+                raise
+            except Exception as sweep_error:  # noqa: BLE001 - the loop must outlive one bad sweep
+                # This task is the only thing that deletes recordings. An exception escaping the loop
+                # retires it for the life of the process, and on a deck that is never restarted that
+                # means never again -- so a failed sweep waits for the next interval instead.
+                print(f"termdeck replay sweep failed: {sweep_error!r}", flush=True)
+                continue
+            if removed_files:
+                print(f"termdeck swept {removed_files} orphaned replay files "
+                      f"({removed_bytes // 1_000_000}MB)", flush=True)
 
     def stop_background_tasks(self) -> None:
         self._claude_activity_watcher.stop()
+        if self._replay_sweep_task is not None:
+            self._replay_sweep_task.cancel()
+            self._replay_sweep_task = None
         self.replay.stop()
         for handle in self._agent_activity_refresh_handles.values():
             handle.cancel()
@@ -254,9 +282,6 @@ class TerminalSessionManager:
             ms.lazy_start_pending = True
             self.replay.restore_saved_buffers(ms)
         self.replay.enforce_total_limit()
-        removed_files, removed_bytes = self.replay.remove_closed_claude_replays()
-        if removed_files:
-            print(f"termdeck removed {removed_files} closed Claude replay files ({removed_bytes} bytes)", flush=True)
         # Do not launch old terminals merely because the web server came up.
         # Reconcile their dtach sockets instead: live sockets remain running
         # and are attached lazily when opened; dead sockets are safe to clear.

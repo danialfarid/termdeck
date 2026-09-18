@@ -17,6 +17,10 @@ All notable changes to this project are documented here. The format follows
   name for a NEW session and an empty one opened under it. Claude's named sessions for the chosen
   directory are now offered in the field's suggestions and resolved when typed, and an agent session id
   pasted in is accepted as well.
+- Opening the keyboard on a phone keeps the end of the transcript in view above the composer. The pane
+  shrank to the space the keyboard left but held its scroll position, so the newest lines — the ones
+  being replied to — slid behind the keyboard. Someone who had scrolled up to read something is left
+  where they were.
 - A dialog on a phone stays inside the part of the screen the keyboard has left, and scrolls, so the field
   being typed into cannot end up underneath the keyboard. A dialog is positioned against the whole screen,
   which the keyboard does not shrink.
@@ -32,11 +36,46 @@ All notable changes to this project are documented here. The format follows
   Holding both copies is what turned one prompt into two: the next thing typed landed on the end of the
   old text and went out as a single message, leaving the original behind as a second pending entry.
 - A prompt is called unconfirmed after 25 seconds rather than 60.
+- Terminal recordings whose session is gone are collected every 15 minutes. Recordings were only ever
+  deleted for Claude, so every Codex, Opencode and plain shell session left one behind: 1,143 of 1,227
+  files in one deck's scrollback directory belonged to no session. Cleanup now reconciles the whole
+  directory against the sessions the deck still has, so it does not depend on having witnessed the
+  close, and it costs the startup path nothing.
+- Terminal recordings are stored as `<session>.replay.bin`. The old `.claude-replay.bin` name described
+  only the first agent to use them and made a Claude-only cleanup look correct; recordings already
+  written under it are still read and appended to, so upgrading keeps every open terminal's scrollback.
+- The transcript search index no longer grows without limit. It indexes every agent transcript on the
+  machine, a corpus that only grows and that TermDeck does not own, and it had no ceiling of any kind:
+  on one deck it reached 3.5GB, filled the disk and wedged the server. It now keeps to roughly 3GB by default,
+  evicting the oldest transcripts when it passes that, and drops transcripts that have been deleted
+  from disk instead of keeping their search hits forever. Evicted transcripts stay evicted rather than
+  being indexed straight back in by the next startup scan, and come back if something appends to them
+  or the ceiling is raised.
+- Transcript changes are indexed in batches of a few seconds rather than one at a time, so a streaming
+  agent no longer has the indexer re-reading its transcript on every append.
+- The indexer survives a full or failing disk instead of stopping for the life of the server. It reports
+  itself degraded, keeps retrying every few minutes without waiting for another transcript to change,
+  and resumes on its own once storage recovers — which matters most because the size cleanup that would
+  relieve the disk pressure is part of what used to be lost.
+
+### Added
+
+- A freeze watchdog is installed and scheduled alongside the service, so a deck that stops answering
+  while still running is restarted on its own instead of waiting to be noticed. A wedged server keeps
+  its port open and its process alive, so launchd KeepAlive and systemd Restart=always consider it
+  healthy; the watchdog asks it a question over HTTP every couple of minutes and restarts it after
+  three unanswered asks in a row. Restarts that do not produce a healthy deck back off — 5, 10, 20, 40
+  minutes, up to an hour — so an install that cannot start is not held in a crash loop. A deck stopped
+  with `termdeck service stop` is left stopped.
+- `termdeck service watchdog` reports whether the watchdog is scheduled, when it last probed, and
+  whether it has had to restart anything.
+- `GET /api/health` reports that the server is alive.
+- A `history_index_max_mb` setting caps the transcript search index. Unset or 0 uses the 3GB default;
+  a negative value turns the ceiling off.
 
 ## [0.16.2] — 2026-09-17
 
 ### Changed
-
 - Terminal rows no longer show session details in a hover tooltip; use the terminal context menu's Info action to open those details in a modal.
 - The active terminal Info action is available from the context menu and its keyboard shortcut.
 - Native Cmd+C copying is no longer intercepted by the generic app shortcut dispatcher, preserving reliable selection copying.

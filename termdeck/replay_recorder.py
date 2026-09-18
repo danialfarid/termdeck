@@ -53,7 +53,19 @@ class ReplayRecorder:
 
     @staticmethod
     def raw_path(session_id: str) -> Path:
-        return TermdeckConfig.SCROLLBACK_DIR / f"{session_id}{TermdeckConfig.RAW_REPLAY_SUFFIX}"
+        """Where this session's raw recording lives.
+
+        A recording written under the old .claude-replay.bin name keeps it: renaming files out from
+        under a running deck buys nothing, and an upgrade must not look like every open terminal lost
+        its scrollback. New recordings get the current name, and both are deleted alike.
+        """
+        current = TermdeckConfig.SCROLLBACK_DIR / f"{session_id}{TermdeckConfig.RAW_REPLAY_SUFFIX}"
+        legacy = TermdeckConfig.SCROLLBACK_DIR / f"{session_id}{TermdeckConfig.LEGACY_RAW_REPLAY_SUFFIX}"
+        # Should both somehow exist, the newer one is the recording; letting the legacy name win by
+        # virtue of being legacy would quietly serve the staler of the two.
+        if legacy.exists() and not current.exists():
+            return legacy
+        return current
 
     @staticmethod
     def scrollback_path(session_id: str) -> Path:
@@ -394,9 +406,10 @@ class ReplayRecorder:
         ms.raw_replay_compaction_generation += 1
 
     async def discard(self, ms) -> None:
+        # In-memory only. The file is left for the periodic sweep, which owns disk deletion outright:
+        # a close that races a kill would skip an unlink here and strand the recording for good, and
+        # the sweep has to be able to find it anyway.
         async with self._checkpoint_lock:
-            if ms.record.agent_kind == agents.ClaudeCli.kind:
-                self.raw_path(ms.record.session_id).unlink(missing_ok=True)
             self._total_bytes = max(0, self._total_bytes - len(ms.raw_replay_buffer))
             ms.raw_replay_buffer.clear()
             ms.raw_replay_title_carry = b""
@@ -404,19 +417,63 @@ class ReplayRecorder:
             ms.raw_replay_checkpoint_pending.clear()
             ms.raw_replay_compaction_generation += 1
 
-    def remove_closed_claude_replays(self) -> tuple[int, int]:
+    RECORDING_SUFFIXES = (TermdeckConfig.RAW_REPLAY_SUFFIX, TermdeckConfig.LEGACY_RAW_REPLAY_SUFFIX,
+                          TermdeckConfig.SCROLLBACK_SUFFIX)
+
+    @classmethod
+    def _owning_session_id(cls, name: str) -> str:
+        """The session a file in the scrollback directory belongs to, or "" if it is not a recording.
+
+        Matched against the suffixes termdeck actually writes rather than anything ending in .bin, so
+        the sweep cannot delete a file it does not recognise -- it runs unattended against a directory
+        the user can put things in.
+        """
+        for suffix in cls.RECORDING_SUFFIXES:
+            if name.endswith(suffix):
+                session_id = name[:-len(suffix)]
+                return session_id if re.fullmatch(r"[a-zA-Z0-9_-]+", session_id) else ""
+        return ""
+
+    async def sweep_orphaned_replays(self) -> tuple[int, int]:
+        """Delete recordings belonging to no session the deck still has.
+
+        Holds the checkpoint lock for the duration: the sweep and the checkpoint writer both touch the
+        same files, and a sweep that unlinks a recording between a writer's open and its rename would
+        lose the write silently.
+        """
+        async with self._checkpoint_lock:
+            return await asyncio.to_thread(self._remove_orphaned_replays)
+
+    def _remove_orphaned_replays(self) -> tuple[int, int]:
+        """Reconcile the directory against every session termdeck still holds, dormant ones included.
+
+        Reconciling is what makes this a reliable owner: it does not need to have witnessed the close.
+        It replaces walking the closed-session list, which CLOSED_HISTORY_MAX caps at 100 rows, so a
+        session that scrolled off could never be matched to its file again -- which is how 1,143 of
+        1,227 files here came to have no owner.
+        """
         removed_files = removed_bytes = 0
-        for record in self._manager._closed_store.load_all():
-            session_id = str(record["session_id"])
-            if record["agent_kind"] != agents.ClaudeCli.kind or session_id in self._manager._sessions:
+        if not TermdeckConfig.SCROLLBACK_DIR.is_dir():
+            return 0, 0
+        for target in TermdeckConfig.SCROLLBACK_DIR.iterdir():
+            if not target.is_file():
                 continue
-            if not re.fullmatch(r"[a-zA-Z0-9_-]+", session_id):
-                raise ValueError("invalid closed session ID for replay cleanup")
-            target = self.raw_path(session_id)
-            if target.is_file():
-                removed_bytes += target.stat().st_size
+            session_id = self._owning_session_id(target.name)
+            if not session_id or session_id in self._manager._sessions:
+                continue
+            # Per file, because one unreadable entry must not cost the rest of the sweep. A recording
+            # can also vanish between the listing and the unlink -- a checkpoint replacing it, a second
+            # look at the same directory -- and that is the outcome this wants anyway.
+            try:
+                size = target.stat().st_size
                 target.unlink()
-                removed_files += 1
+            except FileNotFoundError:
+                continue
+            except OSError as sweep_error:
+                print(f"termdeck could not remove {target.name}: {sweep_error}", flush=True)
+                continue
+            removed_bytes += size
+            removed_files += 1
         return removed_files, removed_bytes
 
     # -- replay serving ----------------------------------------------------

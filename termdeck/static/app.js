@@ -189,6 +189,8 @@ const SERVER_LOCAL_SETTING_KEYS = new Set(["tall_webgl", "notebook_open"]);
 const MOBILE_DISPLAY_SCALE_MIN = 0.5;
 const MOBILE_DISPLAY_SCALE_MAX = 1.6;
 const MOBILE_DISPLAY_SCALE_STEP = 0.1;
+// How near the end of the transcript still counts as reading the end, matching captureHistoryScroll.
+const HISTORY_BOTTOM_SLACK_PX = 80;
 // Tall-terminal row budget. WebGL backs the terminal with one drawing buffer sized to the FULL terminal
 // in DEVICE pixels, so the real ceiling is MAX_TEXTURE_SIZE / (cellHeight * devicePixelRatio). That dpr
 // term is why a row count measured safe on one machine is wrong on another: a retina display needs twice
@@ -969,6 +971,8 @@ class TermdeckApp {
     this.focusedConnectionRecoveryHandler = () => this.reconnectFocusedConnections();
     this.layoutFitSettleTimer = 0;
     this.mobileOrientationChangeTimer = 0;
+    // True until a scroll says otherwise: an opened transcript sits at its end.
+    this.historyReaderAtBottom = true;
     this.mobileViewportResizeHandler = this.syncMobileVisualViewport.bind(this);
     this.mobileOrientationChangeHandler = this.scheduleMobileOrientationChange.bind(this);
     this.mobileOrientationFinishHandler = this.finishMobileOrientationChange.bind(this);
@@ -1144,11 +1148,48 @@ class TermdeckApp {
 
   syncMobileVisualViewport() {
     const viewport = window.visualViewport;
+    // Measured before the height changes: once the variable below shrinks the body, the transcript has
+    // already been pushed and there is no telling where it had been sitting.
+    const wasAtBottom = this.historyBodyAtBottom();
     if (!this.touchMobileLayoutEnabled() || !viewport || !Number.isFinite(viewport.height) || viewport.height <= 0) {
       document.documentElement.style.removeProperty("--mobile-visual-height");
+      this.keepHistoryPinnedToBottom(wasAtBottom);
       return;
     }
     document.documentElement.style.setProperty("--mobile-visual-height", `${Math.round(viewport.height)}px`);
+    this.keepHistoryPinnedToBottom(wasAtBottom);
+  }
+
+  historyBodyAtBottom() {
+    const body = this.$("history-body");
+    if (!body) return false;
+    return body.scrollHeight - body.scrollTop - body.clientHeight < HISTORY_BOTTOM_SLACK_PX;
+  }
+
+  rememberHistoryReaderPosition() {
+    // Recorded as the reader moves, because the events that need it -- a layout viewport shrinking
+    // under a keyboard -- arrive too late to ask. Starts true: a freshly opened transcript is at its
+    // end, and nothing has scrolled yet to say otherwise.
+    this.historyReaderAtBottom = this.historyBodyAtBottom();
+  }
+
+  keepHistoryPinnedToBottom(wasAtBottom) {
+    // The keyboard takes half the screen, the transcript keeps its scrollTop, and the newest lines --
+    // the ones being replied to -- end up below the fold behind the keyboard. #history-body sets
+    // overflow-anchor: none, so the browser will not hold the bottom for us either.
+    //
+    // Only when the reader was already at the bottom: someone who had scrolled up to read something
+    // is not asking to be thrown back to the end because a keyboard appeared.
+    if (!wasAtBottom) return;
+    const body = this.$("history-body");
+    if (!body) return;
+    // After the reflow the variable triggers, and again on the frame after that, because the keyboard
+    // animates in and the composer's textarea can grow as it does.
+    const pin = () => { body.scrollTop = body.scrollHeight; };
+    requestAnimationFrame(() => {
+      pin();
+      requestAnimationFrame(pin);
+    });
   }
 
   scheduleMobileOrientationChange() {
@@ -3934,7 +3975,10 @@ class TermdeckApp {
       this.scrollHistoryToBottom();
       this.refocusActiveInputAfterToolbarAction();
     };
-    this.$("history-body").addEventListener("scroll", () => this.loadOlderHistoryWhenNearTop(), { passive: true });
+    this.$("history-body").addEventListener("scroll", () => {
+      this.rememberHistoryReaderPosition();
+      this.loadOlderHistoryWhenNearTop();
+    }, { passive: true });
     this.$("history-body").addEventListener("touchend", () => this.loadOlderHistoryWhenNearTop(), { passive: true });
     this.$("history-body").addEventListener("click", (event) => this.handleHistoryFileLink(event));
     for (const id of ["terminal-resync-btn", "vscode-terminal-resync-btn"]) {
@@ -4334,7 +4378,17 @@ class TermdeckApp {
     };
     new ResizeObserver(scheduleLayoutFit).observe(this.$("terminal-area"));
     new ResizeObserver(scheduleLayoutFit).observe(this.$("main"));
-    window.addEventListener("resize", scheduleLayoutFit);
+    // Both, because which one the keyboard fires depends on the browser: iOS shrinks only the visual
+    // viewport, while Android honours interactive-widget=resizes-content and shrinks the layout
+    // viewport, firing window resize. Whichever arrives, the transcript keeps its end in view.
+    window.addEventListener("resize", () => {
+      // historyReaderAtBottom, not a fresh measurement: this event arrives after the layout viewport
+      // has already shrunk, so measuring here would read the transcript as scrolled away from the end
+      // and never pin it -- the very state being corrected.
+      const wasAtBottom = this.historyReaderAtBottom;
+      scheduleLayoutFit();
+      if (this.touchMobileLayoutEnabled()) this.keepHistoryPinnedToBottom(wasAtBottom);
+    });
     this.syncMobileVisualViewport();
     window.visualViewport?.addEventListener("resize", this.mobileViewportResizeHandler);
     window.addEventListener("orientationchange", this.mobileOrientationChangeHandler);

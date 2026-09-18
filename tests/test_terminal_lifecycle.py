@@ -1205,7 +1205,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
                 patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)):
             await manager.replay._checkpoint_active()
             self.assertEqual((Path(directory) / "checkpoint-shell.bin").read_bytes(), b"checkpoint-shell\n")
-            self.assertTrue((Path(directory) / "checkpoint-claude.claude-replay.bin").exists())
+            self.assertTrue((Path(directory) / "checkpoint-claude.replay.bin").exists())
             self.assertFalse((Path(directory) / "checkpoint-claude.bin").exists())
             self.assertFalse((Path(directory) / "checkpoint-codex.bin").exists())
             self.assertFalse((Path(directory) / "checkpoint-agy.bin").exists())
@@ -1262,7 +1262,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
                 patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)):
             manager.replay.record_output(claude, b"first frame\n")
             await manager.replay._checkpoint_active()
-            checkpoint = Path(directory) / "append-claude.claude-replay.bin"
+            checkpoint = Path(directory) / "append-claude.replay.bin"
             self.assertEqual(checkpoint.read_bytes(), b"first frame\n")
 
             with patch.object(manager.replay, "_write_checkpoint_atomically",

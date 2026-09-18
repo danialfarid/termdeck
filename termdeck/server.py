@@ -553,6 +553,8 @@ class UiSettings(BaseModel):
     show_mtime: bool = True
     show_git_status: bool = True
     editor_no_wrap: bool = False
+    # Ceiling for the transcript search index, in MB; 0 uses the built-in default. 0 or less disables it.
+    history_index_max_mb: int = 0
     search_glob: str = "!*.json, !*.csv, !*.log"
     tree_file_glob: str = ""
     search_file_glob: str = ""
@@ -653,7 +655,10 @@ class TermdeckServer:
         self.transcripts = TranscriptService()
         self.session_bundles = SessionBundleService(TermdeckConfig.IMPORTED_TRANSCRIPTS_DIR)
         self.project_bundles = ProjectBundleService()
-        self.history_index = HistorySearchIndex(TermdeckConfig.HISTORY_INDEX_FILE)
+        # Read lazily: the settings store is built further down, and the index only asks for its ceiling
+        # once it is running, which also means a changed setting applies without a restart.
+        self.history_index = HistorySearchIndex(TermdeckConfig.HISTORY_INDEX_FILE,
+                                                settings_reader=lambda: self.settings_store.load())
         if self.manager is not None:
             self.manager.attach_transcript_service(self.transcripts)
             self.manager.attach_history_index(self.history_index)
@@ -738,6 +743,7 @@ class TermdeckServer:
         app.mount(TermdeckConfig.FILEBROWSER_STATIC_ROUTE, StaticFiles(directory=TermdeckConfig.FILEBROWSER_STATIC_DIR),
                   name=TermdeckConfig.FILEBROWSER_STATIC_NAME)
         app.get("/", response_model=None)(self._index)
+        app.get(TermdeckConfig.API_HEALTH_ROUTE, response_model=None)(self._health)
         app.get(TermdeckConfig.ACCESS_PAGE_ROUTE, response_model=None)(self._access_page)
         app.get(TermdeckConfig.API_ACCESS_STATUS_ROUTE, response_model=None)(self._access_status)
         app.post(TermdeckConfig.API_ACCESS_LOGIN_ROUTE, response_model=None)(self._access_login)
@@ -1713,6 +1719,17 @@ class TermdeckServer:
         if not self.access_control.authentication_enabled or self.access_control.scope_is_authenticated(request.scope):
             return RedirectResponse(return_path, status_code=303)
         return self.access_control.login_page(return_path)
+
+    async def _health(self) -> dict[str, str]:
+        """Liveness for the freeze watchdog: cheap, and only meaningful if the event loop still turns.
+
+        It deliberately touches nothing that can block -- no disk, no subprocess, no session lock. A
+        wedged deck fails this by never answering at all, which is the whole signal; a handler that could
+        itself hang on the thing that wedged the server would report the freeze as a healthy 200 or hang
+        alongside it. The body is a constant for the same reason it is exempt from access control: the
+        answer is that a reply arrived, so there is nothing here worth telling an unauthenticated caller.
+        """
+        return {"status": "ok"}
 
     async def _access_status(self, request: Request) -> dict[str, bool]:
         return {"authentication_enabled": self.access_control.authentication_enabled,
@@ -3286,7 +3303,8 @@ class TermdeckServer:
 
     async def _search_history(self, q: str, include_operations: bool = False) -> dict[str, object]:
         if not q.strip():
-            return {"indexing": self.history_index.indexing, "results": []}
+            return {"indexing": self.history_index.indexing, "degraded": self.history_index.degraded,
+                    "results": []}
         results = await asyncio.to_thread(self.history_index.search, q, include_operations)
         open_sessions = {(item.get("agent_kind"), item.get("agent_session_id")): item
                          for item in self.manager.list_sessions(None) if item.get("agent_session_id")}
@@ -3321,7 +3339,8 @@ class TermdeckServer:
             if str(result.get("title", "")).startswith(("<user_instructions>", "<INSTRUCTIONS>", "# AGENTS.md")):
                 result["title"] = f"{result.get('agent_kind', 'agent')} · {Path(str(result.get('cwd', ''))).name or 'session'}"
             enriched.append(result)
-        return {"indexing": self.history_index.indexing, "results": enriched}
+        return {"indexing": self.history_index.indexing, "degraded": self.history_index.degraded,
+                "results": enriched}
 
     async def _history_context(self, source: str, line: int, radius: int = 4, q: str = "",
                                include_operations: bool = False) -> dict[str, object]:

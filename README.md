@@ -91,9 +91,16 @@ termdeck service stop        # stop it until the next start or login
 termdeck service restart     # restart it; installs it too if it never was
 termdeck service status      # is it running?
 termdeck service logs        # tail the log
+termdeck service watchdog    # is the freeze watchdog scheduled, and has it had to step in?
 termdeck service uninstall   # stop it and remove the service
 termdeck doctor              # report which external programs it found
 ```
+
+A freeze watchdog is installed with the service and needs no setup. A server that wedges keeps its port
+open and its process alive, so the operating system's own restart-on-crash sees nothing wrong; the
+watchdog asks the server a question every couple of minutes and restarts it after three unanswered asks.
+When restarting does not bring the deck back it waits longer before each further attempt rather than
+looping. A deck you stopped yourself stays stopped. Its log is `~/.termdeck/watchdog.log`.
 
 Stopping TermDeck does not stop your terminals. They stay attached to `dtach` and are still there when it
 comes back.
@@ -325,6 +332,12 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 
 - `termdeck` runs in the foreground; `termdeck service` installs, starts, stops, restarts, and tails a launchd
   or systemd user service.
+- A freeze watchdog installed beside that service restarts a deck that is still running but no longer
+  answering — the failure an ordinary restart-on-crash cannot see — and backs off instead of looping when
+  restarting does not help.
+- The transcript search index keeps to a size ceiling, 3GB by default and settable with
+  `history_index_max_mb`, evicting the oldest transcripts first. Terminal recordings whose terminal is
+  gone are collected periodically.
 - `termdeck doctor` names any missing program with its install command.
 - One-click diagnostics downloads a bounded, sanitized support bundle; opt-in recording captures browser geometry
   and interaction timing without terminal output, prompts, source files, or credentials.
