@@ -970,6 +970,18 @@ Object.assign(TermdeckApp.prototype, {
       this.openSessionContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: x, clientY: y }, s);
     });
     this.makeLayoutDraggable(item, `session:${s.session_id}`, "session");
+    // A parent that is open needs a way to close again. It lives on the parent's own row rather than in
+    // a strip of its own: collapsed, the deck itself is the control, so this is the only extra chrome.
+    if (this.agentStackExpanded(s.session_id) && this.spawnedChildrenOf(s.session_id).length) {
+      const fold = document.createElement("button");
+      fold.type = "button";
+      fold.className = "agent-stack-fold";
+      fold.title = "Collapse spawned agents";
+      fold.setAttribute("aria-expanded", "true");
+      fold.innerHTML = '<span class="codicon codicon-chevron-down"></span>';
+      fold.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(s.session_id); };
+      item.appendChild(fold);
+    }
     list.appendChild(item);
     this.renderSpawnedStack(s, list);
   },
@@ -1001,76 +1013,41 @@ Object.assign(TermdeckApp.prototype, {
     stack.className = "agent-stack" + (expanded ? " expanded" : " collapsed");
     stack.dataset.parentId = parent.session_id;
 
+    const body = document.createElement("div");
+    body.className = "agent-stack-children";
     if (expanded) {
-      const body = document.createElement("div");
-      body.className = "agent-stack-children";
       for (const child of children) this.renderTerminalItem(child, body);
-      stack.append(this.agentStackHandle(parent, children, true), body);
+      stack.appendChild(body);
       list.appendChild(stack);
       return;
     }
-    // Collapsed, the stack IS the control: the top card shows a real terminal and the ones behind it
-    // are the rest of the deck, offset and dimmed. A separate toggle strip alongside would be a second
-    // thing to look at for the same fact.
-    const deck = document.createElement("button");
-    deck.type = "button";
-    deck.className = "agent-stack-deck";
-    deck.setAttribute("aria-expanded", "false");
-    deck.title = `Show ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
-    const behind = Math.min(children.length - 1, AGENT_STACK_PEEK_CARDS);
-    // The deck reserves room for exactly the cards it drew, so two children do not leave the gap that
-    // three would, and one child draws no deck at all.
-    deck.style.setProperty("--agent-stack-visible", String(behind));
-    for (let depth = behind; depth >= 1; depth -= 1) {
-      const card = document.createElement("span");
-      card.className = "agent-stack-card";
-      card.style.setProperty("--stack-depth", String(depth));
-      deck.appendChild(card);
-    }
-    deck.appendChild(this.agentStackFaceCard(children));
-    deck.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
-    stack.appendChild(deck);
+    // Collapsed, the children are the picture: the real rows, each showing less of itself than the one
+    // above and drawn a little smaller, so they read as terminals tucked under this one. No summary
+    // line -- the rows themselves say whose they are, and a count beside them would only repeat what
+    // the deck already looks like.
+    body.setAttribute("aria-hidden", "true");
+    const peeked = children.slice(0, AGENT_STACK_PEEK_CARDS);
+    peeked.forEach((child, depth) => {
+      const peek = document.createElement("div");
+      peek.className = "agent-stack-peek";
+      peek.style.setProperty("--stack-depth", String(depth));
+      this.renderTerminalItem(child, peek);
+      body.appendChild(peek);
+    });
+    // One click target over the whole deck. The rows inside are a picture, not controls: letting a
+    // half-clipped row take the click would open a terminal the reader cannot see.
+    body.style.pointerEvents = "none";
+    stack.appendChild(body);
+    stack.setAttribute("role", "button");
+    stack.tabIndex = 0;
+    stack.title = `Show ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
+    stack.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
+    stack.onkeydown = (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      this.toggleAgentStack(parent.session_id);
+    };
     list.appendChild(stack);
-  },
-
-
-  agentStackFaceCard(children) {
-    // The front card is the deck's own row: how many, and whether any of them needs you. Collapsed, it
-    // is the only place that can say so -- the rows that would are hidden behind it.
-    const face = document.createElement("span");
-    face.className = "agent-stack-card agent-stack-face";
-    face.style.setProperty("--stack-depth", "0");
-    const busy = children.filter((child) => this.titlePresentation(child).spinning).length;
-    const attention = children.filter((child) => this.attentionSessions.has(child.session_id)).length;
-    // Only when there is something to say. A dot that is always present, just colourless when idle,
-    // leaves a gap that reads as a missing status rather than a settled one.
-    const dot = attention || busy ? document.createElement("span") : null;
-    if (dot) dot.className = "status-dot" + (attention ? " attention" : " processing");
-    const count = document.createElement("span");
-    count.className = "agent-stack-count";
-    count.textContent = String(children.length);
-    const label = document.createElement("span");
-    label.className = "agent-stack-label";
-    label.textContent = attention ? "waiting on you" : busy ? `${busy} working` : "spawned";
-    face.append(...[dot, count, label].filter(Boolean));
-    return face;
-  },
-
-
-  agentStackHandle(parent, children, expanded) {
-    const handle = document.createElement("button");
-    handle.type = "button";
-    handle.className = "agent-stack-handle";
-    handle.setAttribute("aria-expanded", expanded ? "true" : "false");
-    handle.title = "Collapse spawned agents";
-    const chevron = document.createElement("span");
-    chevron.className = "codicon codicon-chevron-down";
-    const label = document.createElement("span");
-    label.className = "agent-stack-label";
-    label.textContent = `${children.length} spawned`;
-    handle.append(chevron, label);
-    handle.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
-    return handle;
   },
 
 

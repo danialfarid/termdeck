@@ -66,10 +66,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- Agents an agent spawns are filed under it in the sidebar as a deck of cards, rather than scattered
-  through the list as unrelated terminals. The deck itself is the control: its front card carries the
-  number of spawned agents, and says so when one of them is working or waiting on an answer. Clicking
-  it deals the deck out into ordinary rows.
+- Agents an agent spawns are tucked under it in the sidebar, rather than scattered through the list as
+  unrelated terminals. Collapsed, the topmost one is shown whole with the rest as slivers of their own
+  rows behind it, each thinner and narrower than the last; clicking anywhere on them opens the lot, and
+  a chevron on the parent closes it again.
 - A terminal can be filed under another by hand, through
   `POST /api/sessions/{session_id}/spawned-by`, so a deck whose agents were spawned before TermDeck
   recorded that link can still be grouped. An empty parent clears it, and a parent that would close a
