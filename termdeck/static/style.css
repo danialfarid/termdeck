@@ -863,7 +863,7 @@ body.vscode-native-mode #project-terminal-search-btn { display: none !important;
    uses for a goal's subtasks: thin strips butted under the parent with no gap between them, folding in
    from the left and shrinking, so the column reads as a stack seen edge-on rather than as a list. */
 .agent-stack { margin: -1px 0 3px; }
-.agent-stack-pages { display: flex; flex-direction: column; align-items: stretch; }
+.agent-stack-pages { display: flex; flex-direction: column; align-items: stretch; cursor: pointer; }
 .agent-stack-page {
   display: flex; align-items: center; gap: 6px;
   background: var(--panel2); border: 1px solid var(--border); border-top: none;
@@ -873,30 +873,36 @@ body.vscode-native-mode #project-terminal-search-btn { display: none !important;
   transition: background 0.12s, color 0.12s;
   animation: agentStackPageDrop 0.16s ease-out;
 }
-.agent-stack-page:hover { background: var(--active-bg); color: var(--text); }
-.agent-stack-page-dot {
-  flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--dim); opacity: 0.55;
+.agent-stack-pages:hover .agent-stack-page { background: var(--active-bg); color: var(--text); }
+/* The agent's own icon, scaled to the page. In a terminal row it is absolutely placed in the gutter;
+   on a page it is one of two items in a flex line, so the positioning has to be undone or it sits on
+   top of the title. Shown whatever the row's icon setting is: on a page this thin it is the only thing
+   that says WHICH agent without reading. */
+.agent-stack-page .terminal-type-icon {
+  position: static; transform: none; display: inline-flex; flex: none;
+  width: 12px; height: 12px; margin: 0; opacity: 0.85;
 }
-.agent-stack-page-dot.processing { background: var(--accent); opacity: 1; }
-.agent-stack-page-dot.attention { background: var(--warn, #e0a33e); opacity: 1; }
-.agent-stack-page-dot.unread { background: var(--accent); opacity: 0.75; }
+.agent-stack-page .terminal-type-icon svg { width: 12px; height: 12px; }
+.agent-stack-page .terminal-type-icon .codicon { font-size: 11px; }
 .agent-stack-page-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-stack-more { justify-content: flex-start; font-style: italic; opacity: 0.7; }
-.agent-stack-more:hover { color: var(--accent); }
 @keyframes agentStackPageDrop { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; } }
-.agent-stack.collapsed:hover .agent-stack-peek { opacity: calc(1 - var(--stack-depth) * 0.15); }
-.agent-stack.collapsed:hover .agent-stack-peek:first-child .session-item { border-color: var(--accent); }
-/* Expanded: a hairline instead of an indent, so a deep row still has its full width for its title. */
-.agent-stack.expanded > .agent-stack-children {
-  border-left: 1px solid var(--border); margin-left: 3px; padding-left: 2px;
+
+/* Expanded: a rule down the left instead of an indent. It says the rows below belong to the terminal
+   above while leaving them their full width, and clicking it folds them back up. */
+.agent-stack.expanded { position: relative; padding-left: 7px; }
+.agent-stack-rule {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 7px; padding: 0;
+  border: 0; background: none; cursor: pointer; z-index: 1;
 }
-.agent-stack-fold {
-  flex: none; width: 18px; height: 18px; margin-left: 2px; padding: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-  border: 0; border-radius: 4px; background: transparent; color: var(--dim); cursor: pointer;
+.agent-stack-rule::before {
+  content: ""; position: absolute; left: 3px; top: 1px; bottom: 3px; width: 2px;
+  border-radius: 1px; background: var(--border);
 }
-.agent-stack-fold:hover { background: var(--panel2); color: var(--text); }
-.agent-stack-fold .codicon { font-size: 12px; }
+.agent-stack-rule:hover::before { background: var(--accent); }
+/* No indent: the rule beside them is what marks them as this terminal's, and every pixel taken off a
+   row's left is a pixel off the title it has to fit. */
+.agent-stack.expanded > .agent-stack-children { margin-left: 0; }
 .terminal-group-label { display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; border: 0; border-bottom: 1px solid var(--border); background: var(--panel2); color: var(--text); padding: 8px 9px 7px; font-weight: 650; letter-spacing: 0.04em; text-transform: none; }
 .group-unread-dot { display: none; position: relative; width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--accent); }
 .group-unread-dot.on { display: inline-block; }

@@ -161,9 +161,9 @@ const MOBILE_TERMINAL_SELECTION_BACKGROUND = "#287fd1";
 const MOBILE_TERMINAL_SELECTION_FOREGROUND = "#ffffff";
 const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
 const EXPANDED_AGENT_STACKS_KEY = "termdeck.expanded_agent_stacks";
-// Spawned agents named on a collapsed stack before the rest become a "+N more" tail. Matches the
-// planner's book pages, where the same number of subtasks reads as a stack without becoming a list.
-const AGENT_STACK_PAGE_LIMIT = 6;
+// Spawned agents named on a collapsed stack before the rest become a "+N more" tail. Past a handful a
+// stack stops reading as one thing and starts reading as the list it is standing in for.
+const AGENT_STACK_PAGE_LIMIT = 5;
 const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
 const TRANSCRIPT_DRAFT_LOCAL_PREFIX = "termdeck.transcript-draft.v1";
 const ADDRESS_RECOVERY_KEY = "termdeck.address-recovery";

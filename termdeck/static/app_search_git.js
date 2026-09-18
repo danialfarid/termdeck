@@ -970,18 +970,6 @@ Object.assign(TermdeckApp.prototype, {
       this.openSessionContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: x, clientY: y }, s);
     });
     this.makeLayoutDraggable(item, `session:${s.session_id}`, "session");
-    // A parent that is open needs a way to close again. It lives on the parent's own row rather than in
-    // a strip of its own: collapsed, the deck itself is the control, so this is the only extra chrome.
-    if (this.agentStackExpanded(s.session_id) && this.spawnedChildrenOf(s.session_id).length) {
-      const fold = document.createElement("button");
-      fold.type = "button";
-      fold.className = "agent-stack-fold";
-      fold.title = "Collapse spawned agents";
-      fold.setAttribute("aria-expanded", "true");
-      fold.innerHTML = '<span class="codicon codicon-chevron-down"></span>';
-      fold.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(s.session_id); };
-      item.appendChild(fold);
-    }
     list.appendChild(item);
     this.renderSpawnedStack(s, list);
   },
@@ -1017,7 +1005,15 @@ Object.assign(TermdeckApp.prototype, {
       const body = document.createElement("div");
       body.className = "agent-stack-children";
       for (const child of children) this.renderTerminalItem(child, body);
-      stack.appendChild(body);
+      // The rule down the left is what says these belong to the terminal above, so the rows keep their
+      // full width rather than being pushed in. It is also the way back: clicking it folds them up.
+      const rule = document.createElement("button");
+      rule.type = "button";
+      rule.className = "agent-stack-rule";
+      rule.setAttribute("aria-expanded", "true");
+      rule.title = `Collapse ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
+      rule.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
+      stack.append(rule, body);
       list.appendChild(stack);
       return;
     }
@@ -1026,6 +1022,7 @@ Object.assign(TermdeckApp.prototype, {
     // than the one above. A page names its terminal and opens it; the tail says how many more there are.
     const pages = document.createElement("div");
     pages.className = "agent-stack-pages";
+    pages.title = `Open ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
     const visible = children.slice(0, AGENT_STACK_PAGE_LIMIT);
     visible.forEach((child, index) => {
       pages.appendChild(this.agentStackPage(child, index, visible.length));
@@ -1035,9 +1032,11 @@ Object.assign(TermdeckApp.prototype, {
       more.className = "agent-stack-page agent-stack-more";
       more.textContent = `+${children.length - visible.length} more`;
       this.styleAgentStackPage(more, visible.length, visible.length);
-      more.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
       pages.appendChild(more);
     }
+    // The whole stack opens it, not only the tail: a stack is one thing to click, and its pages are
+    // too thin to ask anyone to aim at a particular one.
+    pages.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
     stack.appendChild(pages);
     list.appendChild(stack);
   },
@@ -1046,9 +1045,9 @@ Object.assign(TermdeckApp.prototype, {
   styleAgentStackPage(page, index, total) {
     // Shrinking, folding in, fading: the three together are what make a column of strips read as a
     // stack seen edge-on. Floors on each, so a long stack does not fade to nothing or shrink to dust.
-    page.style.fontSize = `${Math.max(9, 12 - index * 0.9)}px`;
-    page.style.marginLeft = `${index * 14}px`;
-    page.style.opacity = String(Math.max(0.45, 1 - index * 0.12));
+    page.style.fontSize = `${Math.max(9.5, 12 - index * 0.7)}px`;
+    page.style.marginLeft = `${index * 6}px`;
+    page.style.opacity = String(Math.max(0.5, 1 - index * 0.11));
     page.style.zIndex = String(total - index);
   },
 
@@ -1057,19 +1056,12 @@ Object.assign(TermdeckApp.prototype, {
     const page = document.createElement("div");
     page.className = "agent-stack-page";
     this.styleAgentStackPage(page, index, total);
-    const presentation = this.titlePresentation(child);
-    const dot = document.createElement("span");
-    dot.className = "agent-stack-page-dot" +
-      (presentation.spinning ? " processing" : this.attentionSessions.has(child.session_id) ? " attention" :
-        this.unreadSessions.has(child.session_id) ? " unread" : "");
     const title = document.createElement("span");
     title.className = "agent-stack-page-title";
-    title.textContent = presentation.title || child.title || child.session_id;
-    page.append(dot, title);
-    page.title = title.textContent;
-    // A page opens its own terminal. Reaching a spawned agent should not cost expanding the stack
-    // first, which is the whole reason its name is on the page.
-    page.onclick = (event) => { event.stopPropagation(); this.activate(child.session_id); };
+    title.textContent = this.titlePresentation(child).title || child.title || child.session_id;
+    // The agent's own icon, the one its row carries, rather than a status dot: on a page this thin the
+    // icon is the only thing that says WHICH agent without reading, and a dot says none of that.
+    page.append(this.terminalTypeIcon(child), title);
     return page;
   },
 
