@@ -135,7 +135,9 @@ body:not(.vscode-mode) #sidebar { color: var(--sidebar-text-color); --text: var(
 .terminal-history-similar-terminal:hover { background: var(--panel2); color: var(--text); }
 .terminal-history-similar-terminal-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.session-item { position: relative; padding: 5px 16px 5px var(--terminal-row-left-padding, 20px); border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 0; border: 1px solid transparent; margin-bottom: 1px; min-width: 0; }
+/* The close button used to sit 22px in from the row's edge, which is dead space on the one side of the
+   row that holds its controls. Pulled in so the controls can have room between them instead. */
+.session-item { position: relative; padding: 5px 8px 5px var(--terminal-row-left-padding, 20px); border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 0; border: 1px solid transparent; margin-bottom: 1px; min-width: 0; }
 .session-item.terminal-icons-hidden { padding-left: var(--terminal-row-left-padding, 20px); }
 .session-item.dragging-tab, .file-item.dragging-tab { opacity: 0.45; }
 .session-item.drop-before, .file-item.drop-before, .terminal-group-label.drop-before { box-shadow: inset 0 3px var(--accent); }
@@ -463,7 +465,7 @@ body:not(.vscode-mode) .file-item.active .file-item-name { color: var(--sidebar-
 /* Revealed on hover like the close button. It keeps its place while expanded, so a chevron pointing
    down does not vanish the moment the pointer leaves the row that opened the group. */
 .item-stack-toggle {
-  display: none; flex: none; width: 16px; height: 16px; padding: 0; margin-right: 1px;
+  display: none; flex: none; width: 18px; height: 18px; padding: 0; margin-right: 7px;
   align-items: center; justify-content: center;
   border: 0; border-radius: 4px; background: none; color: var(--dim); cursor: pointer;
 }
@@ -2131,7 +2133,7 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
 .terminal-search-inline-icon { font-size: calc(12px * var(--ui-scale)); }
 .panel-actions { gap: calc(6px * var(--ui-scale)); }
 .panel-actions button { min-width: calc(26px * var(--ui-scale)); height: calc(26px * var(--ui-scale)); }
-.session-item { padding: calc(5px * var(--ui-scale)) calc(16px * var(--ui-scale)) calc(5px * var(--ui-scale)) calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); }
+.session-item { padding: calc(5px * var(--ui-scale)) calc(8px * var(--ui-scale)) calc(5px * var(--ui-scale)) calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); }
 .session-item.terminal-icons-hidden { padding-left: calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); }
 .status-dot { left: calc(var(--terminal-status-dot-left, 6px) * var(--ui-scale)); width: calc(var(--terminal-status-dot-size, 6px) * var(--ui-scale)); height: calc(var(--terminal-status-dot-size, 6px) * var(--ui-scale)); margin-top: calc(var(--terminal-status-dot-size, 6px) * var(--ui-scale) * -0.5); }
 .group-unread-dot { width: calc(6px * var(--ui-scale)); height: calc(6px * var(--ui-scale)); }
