@@ -188,6 +188,13 @@ class SessionDescriptionRequest(BaseModel):
     append: bool = False
 
 
+class SessionSpawnedByRequest(BaseModel):
+    """Which terminal a terminal belongs under. Empty clears it, putting the terminal back in the list
+    on its own -- also the way out of a parent chosen by mistake."""
+
+    parent_session_id: str = ""
+
+
 class ForkSessionRequest(BaseModel):
     title: str
     worktree: bool = False
@@ -790,6 +797,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_SESSION_WORKTREE_FINISH_ROUTE, response_model=None)(self._finish_worktree)
         app.post(TermdeckConfig.API_SESSION_RENAME_ROUTE, response_model=None)(self._rename_session)
         app.post(TermdeckConfig.API_SESSION_DESCRIPTION_ROUTE, response_model=None)(self._set_session_description)
+        app.post(TermdeckConfig.API_SESSION_SPAWNED_BY_ROUTE, response_model=None)(self._set_session_spawned_by)
         app.post(TermdeckConfig.API_SESSION_PROJECT_ROUTE, response_model=None)(self._move_session_to_project)
         app.get(TermdeckConfig.API_SESSION_TASK_STATUS_ROUTE, response_model=None)(self._task_status)
         app.get(TermdeckConfig.API_SESSION_TASK_RESULT_ROUTE, response_model=None)(self._task_result)
@@ -3481,6 +3489,28 @@ class TermdeckServer:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
         self.manager.set_session_description(session_id, request.description, request.append)
+        return self.manager.session_summary_by_id(session_id)
+
+    async def _set_session_spawned_by(self, session_id: str, request: SessionSpawnedByRequest) -> dict[str, object]:
+        """File a terminal under another one by hand.
+
+        The task API records this for agents it spawns, but only from the moment it started doing so,
+        and a terminal started from the UI has no origin to record. This is how an existing deck gets
+        its stacks, and how a wrong parent is undone.
+        """
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        parent_session_id = request.parent_session_id.strip()
+        if not parent_session_id:
+            self.manager.clear_spawned_by(session_id)
+            return self.manager.session_summary_by_id(session_id)
+        if parent_session_id == session_id:
+            raise HTTPException(status_code=400, detail="a terminal cannot be filed under itself")
+        if not self.manager.has_session(parent_session_id):
+            raise HTTPException(status_code=404, detail=parent_session_id)
+        if self.manager.would_cycle_spawned_by(session_id, parent_session_id):
+            raise HTTPException(status_code=400, detail="that parent is already filed under this terminal")
+        self.manager.set_spawned_by(session_id, parent_session_id)
         return self.manager.session_summary_by_id(session_id)
 
     async def _move_session_to_project(self, session_id: str, request: MoveSessionProjectRequest) -> dict[str, object]:

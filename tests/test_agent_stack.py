@@ -72,6 +72,51 @@ class SetSpawnedByTest(unittest.TestCase):
         self.assertIsNone(self.manager._sessions["child"].record.spawned_by_session_id)
 
 
+class CycleGuardTest(unittest.TestCase):
+    """Filing by hand can close a loop the task API never could -- a spawned child is always newer than
+    its origin. A cycle is a stack that contains itself, and the sidebar would recurse into it."""
+
+    def setUp(self) -> None:
+        self.manager = TerminalSessionManager.__new__(TerminalSessionManager)
+        self.manager._sessions = {name: SimpleNamespace(record=record(name)) for name in ("a", "b", "c")}
+        for method in ("_persist", "_broadcast_status"):
+            patcher = patch.object(TerminalSessionManager, method, lambda *a, **k: None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _file_under(self, child: str, parent: str) -> None:
+        self.manager._sessions[child].record.spawned_by_session_id = parent
+
+    def test_a_direct_swap_is_a_cycle(self) -> None:
+        self._file_under("b", "a")
+
+        self.assertTrue(self.manager.would_cycle_spawned_by("a", "b"))
+
+    def test_a_longer_chain_is_a_cycle(self) -> None:
+        self._file_under("b", "a")
+        self._file_under("c", "b")
+
+        self.assertTrue(self.manager.would_cycle_spawned_by("a", "c"))
+
+    def test_an_ordinary_parent_is_not_a_cycle(self) -> None:
+        self.assertFalse(self.manager.would_cycle_spawned_by("b", "a"))
+
+    def test_an_already_broken_chain_does_not_hang_the_walk(self) -> None:
+        # Records are edited by hand and reloaded from JSON, so a loop can already be on disk. The walk
+        # has to terminate on it rather than spin.
+        self._file_under("a", "b")
+        self._file_under("b", "a")
+
+        self.assertTrue(self.manager.would_cycle_spawned_by("c", "a") is False)
+
+    def test_clearing_puts_a_terminal_back_on_its_own(self) -> None:
+        self._file_under("b", "a")
+
+        self.manager.clear_spawned_by("b")
+
+        self.assertIsNone(self.manager._sessions["b"].record.spawned_by_session_id)
+
+
 class TaskApiRecordsOriginTest(unittest.IsolatedAsyncioTestCase):
     """An agent delegating work passes origin_session=$TERMDECK_SESSION_ID, which the docs make required
     for a child task. TermDeck used it only to place the row and to write the result back; nothing kept

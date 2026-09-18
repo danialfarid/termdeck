@@ -6,12 +6,6 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Added
-
-- Agents an agent spawns are filed under it in the sidebar as a stack of cards, rather than scattered
-  through the list as unrelated terminals. Clicking the stack expands it into ordinary rows; collapsed,
-  it carries the number of spawned agents and a dot when one of them is working or wants an answer.
-
 ### Fixed
 
 - Terminal layout changes made in one browser or mobile device now arrive in other connected TermDeck views without requiring a refresh.
@@ -67,6 +61,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Agents an agent spawns are filed under it in the sidebar as a stack of cards, rather than scattered
+  through the list as unrelated terminals. Clicking the stack expands it into ordinary rows; collapsed,
+  it carries the number of spawned agents and a dot when one of them is working or wants an answer.
+- A terminal can be filed under another by hand, through
+  `POST /api/sessions/{session_id}/spawned-by`, so a deck whose agents were spawned before TermDeck
+  recorded that link can still be grouped. An empty parent clears it, and a parent that would close a
+  loop is refused.
 - A freeze watchdog is installed and scheduled alongside the service, so a deck that stops answering
   while still running is restarted on its own instead of waiting to be noticed. A wedged server keeps
   its port open and its process alive, so launchd KeepAlive and systemd Restart=always consider it

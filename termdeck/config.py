@@ -163,6 +163,7 @@ class TermdeckConfig:
     API_SESSION_WORKTREE_FINISH_ROUTE = "/api/sessions/{session_id}/worktree/finish"
     API_SESSION_RENAME_ROUTE = "/api/sessions/{session_id}/rename"
     API_SESSION_DESCRIPTION_ROUTE = "/api/sessions/{session_id}/description"
+    API_SESSION_SPAWNED_BY_ROUTE = "/api/sessions/{session_id}/spawned-by"
     API_SESSION_PROJECT_ROUTE = "/api/sessions/{session_id}/project"
     API_SESSION_USAGE_ROUTE = "/api/sessions/{session_id}/usage"
     API_SESSION_HISTORY_ROUTE = "/api/sessions/{session_id}/history"

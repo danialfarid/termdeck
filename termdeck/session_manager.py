@@ -1731,6 +1731,29 @@ class TerminalSessionManager:
         self._persist()
         self._broadcast_status(ms)
 
+    def clear_spawned_by(self, session_id: str) -> None:
+        ms = self._sessions[session_id]
+        ms.record.spawned_by_session_id = None
+        self._persist()
+        self._broadcast_status(ms)
+
+    def would_cycle_spawned_by(self, session_id: str, parent_session_id: str) -> bool:
+        """Whether filing session_id under parent_session_id closes a loop.
+
+        The task API cannot produce one -- a child is always newer than its origin -- but filing by hand
+        can, and a cycle is a stack that contains itself: the sidebar would recurse until the page died.
+        Walks up from the proposed parent looking for the terminal being filed.
+        """
+        seen: set[str] = set()
+        ancestor: str | None = parent_session_id
+        while ancestor and ancestor not in seen:
+            if ancestor == session_id:
+                return True
+            seen.add(ancestor)
+            found = self._sessions.get(ancestor)
+            ancestor = found.record.spawned_by_session_id if found else None
+        return False
+
     @staticmethod
     def _termdeck_session_url_path(record: SessionRecord) -> str:
         project = quote(record.project, safe="")
