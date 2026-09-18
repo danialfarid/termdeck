@@ -3,6 +3,7 @@ import collections
 import json
 import re
 import shlex
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +26,13 @@ class AgentSessionTracker:
     _SUBAGENT_TAIL_BYTES = 256 * 1024
     _AGY_ACTIVITY_TAIL_BYTES = 256 * 1024
     _CODEX_ACTIVITY_TAIL_BYTES = 8 * 1024 * 1024
+    # How long a transcript may go unwritten before an unfinished turn in it is read as abandoned rather
+    # than running. A turn ends with task_complete or turn_aborted, but a codex killed mid-turn -- a
+    # server restart, a crash, a closed laptop -- writes neither, and the last thing in the file stays
+    # task_started for good. The terminal then spins forever, with its dtach session alive so nothing
+    # else clears it. The cost of being wrong is a turn waiting on a tool call quieter than this being
+    # called finished; the spinner comes back on its next write.
+    _CODEX_ACTIVITY_STALE_SECONDS = 5 * 60
     _CLAUDE_PERMISSION_TAIL_BYTES = 256 * 1024
     _CLAUDE_PERMISSION_MODES = {"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
     _CLAUDE_INTERRUPT_TEXT_PREFIX = "[Request interrupted by user"
@@ -133,6 +141,7 @@ class AgentSessionTracker:
                 handle.seek(0, 2)
                 handle.seek(max(0, handle.tell() - self._CODEX_ACTIVITY_TAIL_BYTES))
                 lines = handle.read().decode(errors="replace").splitlines()
+            idle_seconds = time.time() - path.stat().st_mtime
         except OSError:
             return False
         state: bool | None = None
@@ -148,6 +157,10 @@ class AgentSessionTracker:
                 state = True
             elif event_type in {"task_complete", "turn_aborted"}:
                 state = False
+        # A turn that has not written anything in half an hour is not running, whatever the last event
+        # says. Only applied to an unfinished turn: a finished one is already False.
+        if state and idle_seconds > self._CODEX_ACTIVITY_STALE_SECONDS:
+            return False
         return bool(state)
 
     def codex_session_path(self, session_id: str | None) -> Path | None:

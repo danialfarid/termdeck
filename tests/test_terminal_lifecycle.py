@@ -984,6 +984,34 @@ class CodexSessionActivityTest(unittest.TestCase):
                 ]))
                 self.assertFalse(AgentSessionTracker().codex_session_is_active("019f9a3e-1915-7bd3-8183-cce1db8a1e20"))
 
+    def test_an_unfinished_turn_in_a_long_idle_transcript_is_not_running(self) -> None:
+        # A turn ends with task_complete or turn_aborted. A codex killed mid-turn -- a server restart,
+        # a crash -- writes neither, so task_started stays the last event forever and the terminal spins
+        # for good, its dtach session alive so nothing else clears it. Seen on a real deck: an
+        # unterminated task_started in a transcript untouched for 204 minutes.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "rollout-2026-08-02T00-00-00-019f9a3e-1915-7bd3-8183-cce1db8a1e20.jsonl"
+            path.write_text(json.dumps({"type": "event_msg", "payload": {"type": "task_started"}}))
+            stale = time.time() - AgentSessionTracker._CODEX_ACTIVITY_STALE_SECONDS - 60
+            os.utime(path, (stale, stale))
+
+            with patch.object(agents.CodexCli, "sessions_root", root):
+                self.assertFalse(AgentSessionTracker().codex_session_is_active("019f9a3e-1915-7bd3-8183-cce1db8a1e20"))
+
+    def test_an_unfinished_turn_still_being_written_is_running(self) -> None:
+        # The guard must not call a live turn finished: a turn waiting on a long tool call writes
+        # nothing meanwhile, and a false completion fires a notification that is not true.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "rollout-2026-08-02T00-00-00-019f9a3e-1915-7bd3-8183-cce1db8a1e20.jsonl"
+            path.write_text(json.dumps({"type": "event_msg", "payload": {"type": "task_started"}}))
+            recent = time.time() - AgentSessionTracker._CODEX_ACTIVITY_STALE_SECONDS + 120
+            os.utime(path, (recent, recent))
+
+            with patch.object(agents.CodexCli, "sessions_root", root):
+                self.assertTrue(AgentSessionTracker().codex_session_is_active("019f9a3e-1915-7bd3-8183-cce1db8a1e20"))
+
 
 class ClaudeSessionActivityTest(unittest.TestCase):
     def _transcript(self, directory: str, *events: dict) -> Path:

@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A codex terminal stops showing progress once its turn has plainly stopped. A turn ends with
+  `task_complete` or `turn_aborted`, but a codex killed mid-turn — a restart, a crash — writes neither,
+  so the last thing in its transcript stayed `task_started` and the terminal spun for good, its dtach
+  session alive so nothing else cleared it. An unfinished turn whose transcript has not been written to
+  for five minutes now reads as stopped.
 - Terminal layout changes made in one browser or mobile device now arrive in other connected TermDeck views without requiring a refresh.
 - Resuming a terminal the deck already has sends the agent's session id rather than TermDeck's own, which
   meant nothing to the agent: the command came out as `--resume <deck id>` and the resume picker answered
@@ -61,9 +66,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- Agents an agent spawns are filed under it in the sidebar as a stack of cards, rather than scattered
-  through the list as unrelated terminals. Clicking the stack expands it into ordinary rows; collapsed,
-  it carries the number of spawned agents and a dot when one of them is working or wants an answer.
+- Agents an agent spawns are filed under it in the sidebar as a deck of cards, rather than scattered
+  through the list as unrelated terminals. The deck itself is the control: its front card carries the
+  number of spawned agents, and says so when one of them is working or waiting on an answer. Clicking
+  it deals the deck out into ordinary rows.
 - A terminal can be filed under another by hand, through
   `POST /api/sessions/{session_id}/spawned-by`, so a deck whose agents were spawned before TermDeck
   recorded that link can still be grouped. An empty parent clears it, and a parent that would close a

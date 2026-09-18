@@ -1001,54 +1001,76 @@ Object.assign(TermdeckApp.prototype, {
     stack.className = "agent-stack" + (expanded ? " expanded" : " collapsed");
     stack.dataset.parentId = parent.session_id;
 
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "agent-stack-toggle";
-    toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
-    toggle.title = expanded ? "Collapse spawned agents" : `Show ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
-    const chevron = document.createElement("span");
-    chevron.className = "codicon " + (expanded ? "codicon-chevron-down" : "codicon-chevron-right");
+    if (expanded) {
+      const body = document.createElement("div");
+      body.className = "agent-stack-children";
+      for (const child of children) this.renderTerminalItem(child, body);
+      stack.append(this.agentStackHandle(parent, children, true), body);
+      list.appendChild(stack);
+      return;
+    }
+    // Collapsed, the stack IS the control: the top card shows a real terminal and the ones behind it
+    // are the rest of the deck, offset and dimmed. A separate toggle strip alongside would be a second
+    // thing to look at for the same fact.
+    const deck = document.createElement("button");
+    deck.type = "button";
+    deck.className = "agent-stack-deck";
+    deck.setAttribute("aria-expanded", "false");
+    deck.title = `Show ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
+    const behind = Math.min(children.length - 1, AGENT_STACK_PEEK_CARDS);
+    // The deck reserves room for exactly the cards it drew, so two children do not leave the gap that
+    // three would, and one child draws no deck at all.
+    deck.style.setProperty("--agent-stack-visible", String(behind));
+    for (let depth = behind; depth >= 1; depth -= 1) {
+      const card = document.createElement("span");
+      card.className = "agent-stack-card";
+      card.style.setProperty("--stack-depth", String(depth));
+      deck.appendChild(card);
+    }
+    deck.appendChild(this.agentStackFaceCard(children));
+    deck.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
+    stack.appendChild(deck);
+    list.appendChild(stack);
+  },
+
+
+  agentStackFaceCard(children) {
+    // The front card is the deck's own row: how many, and whether any of them needs you. Collapsed, it
+    // is the only place that can say so -- the rows that would are hidden behind it.
+    const face = document.createElement("span");
+    face.className = "agent-stack-card agent-stack-face";
+    face.style.setProperty("--stack-depth", "0");
+    const busy = children.filter((child) => this.titlePresentation(child).spinning).length;
+    const attention = children.filter((child) => this.attentionSessions.has(child.session_id)).length;
+    // Only when there is something to say. A dot that is always present, just colourless when idle,
+    // leaves a gap that reads as a missing status rather than a settled one.
+    const dot = attention || busy ? document.createElement("span") : null;
+    if (dot) dot.className = "status-dot" + (attention ? " attention" : " processing");
     const count = document.createElement("span");
     count.className = "agent-stack-count";
     count.textContent = String(children.length);
     const label = document.createElement("span");
     label.className = "agent-stack-label";
-    label.textContent = expanded ? "spawned" : `spawned agent${children.length === 1 ? "" : "s"}`;
-    toggle.append(chevron, count, label);
-    // Collapsed, the toggle carries a dot for any child wanting attention: the stack hides the rows
-    // that would otherwise show it, and a spawned agent waiting on an answer is the reason to look.
-    if (!expanded) {
-      const busy = children.filter((child) => this.titlePresentation(child).spinning).length;
-      const attention = children.filter((child) => this.attentionSessions.has(child.session_id)).length;
-      if (busy || attention) {
-        const dot = document.createElement("span");
-        dot.className = "status-dot" + (attention ? " attention" : " processing");
-        toggle.appendChild(dot);
-      }
-    }
-    toggle.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
-    stack.appendChild(toggle);
+    label.textContent = attention ? "waiting on you" : busy ? `${busy} working` : "spawned";
+    face.append(...[dot, count, label].filter(Boolean));
+    return face;
+  },
 
-    const body = document.createElement("div");
-    body.className = "agent-stack-children";
-    if (expanded) {
-      for (const child of children) this.renderTerminalItem(child, body);
-    } else {
-      // Collapsed: the cards behind the toggle are decoration, not rows. They are aria-hidden so the
-      // list does not read out terminals a reader cannot reach without expanding first.
-      const deck = document.createElement("div");
-      deck.className = "agent-stack-deck";
-      deck.setAttribute("aria-hidden", "true");
-      for (const child of children.slice(0, AGENT_STACK_PEEK_CARDS)) {
-        const card = document.createElement("div");
-        card.className = "agent-stack-card";
-        card.style.setProperty("--session-age-color", this.terminalAgeColor(child));
-        deck.appendChild(card);
-      }
-      body.appendChild(deck);
-    }
-    stack.appendChild(body);
-    list.appendChild(stack);
+
+  agentStackHandle(parent, children, expanded) {
+    const handle = document.createElement("button");
+    handle.type = "button";
+    handle.className = "agent-stack-handle";
+    handle.setAttribute("aria-expanded", expanded ? "true" : "false");
+    handle.title = "Collapse spawned agents";
+    const chevron = document.createElement("span");
+    chevron.className = "codicon codicon-chevron-down";
+    const label = document.createElement("span");
+    label.className = "agent-stack-label";
+    label.textContent = `${children.length} spawned`;
+    handle.append(chevron, label);
+    handle.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
+    return handle;
   },
 
 
