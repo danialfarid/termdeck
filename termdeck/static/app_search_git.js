@@ -905,6 +905,20 @@ Object.assign(TermdeckApp.prototype, {
     const iconStatusActive = showDesktopBrandIndicator &&
       (presentation.spinning || this.unreadSessions.has(s.session_id));
     typeIcon.classList.toggle("terminal-status-active", iconStatusActive);
+    // A terminal that spawned agents carries the control for them, revealed on hover like the close
+    // button beside it. The summary line and the rule both toggle the same thing, but only this one is
+    // on the parent itself, which is where someone looks first for what a row can do.
+    const spawnedChildren = this.spawnedChildrenOf(s.session_id);
+    const stackToggle = document.createElement("button");
+    if (spawnedChildren.length) {
+      const open = this.agentStackExpanded(s.session_id);
+      stackToggle.className = "item-stack-toggle";
+      stackToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      stackToggle.title = `${open ? "Collapse" : "Expand"} ${spawnedChildren.length} spawned ` +
+        `agent${spawnedChildren.length === 1 ? "" : "s"}`;
+      stackToggle.innerHTML = `<span class="codicon codicon-chevron-${open ? "down" : "right"}"></span>`;
+      stackToggle.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(s.session_id); };
+    }
     const close = document.createElement("button");
     close.className = "item-close";
     close.textContent = "✕";
@@ -926,9 +940,10 @@ Object.assign(TermdeckApp.prototype, {
     groupIndicator.className = "group-drop-indicator";
     groupIndicator.innerHTML = '<span class="codicon codicon-folder-library"></span><span>group</span>';
     groupIndicator.title = "Release to group with this terminal";
-    if (showDesktopBrandIndicator) item.append(dot, typeIcon, titleStack, groupIndicator, close, mobileActions);
-    else if (useTextStatusIndicator) item.append(dot, typeIcon, titleStack, groupIndicator, close, mobileActions);
-    else item.append(dot, typeIcon, titleStack, groupIndicator, close, mobileActions);
+    const rowTail = spawnedChildren.length
+      ? [dot, typeIcon, titleStack, groupIndicator, stackToggle, close, mobileActions]
+      : [dot, typeIcon, titleStack, groupIndicator, close, mobileActions];
+    item.append(...rowTail);
     const activityDots = document.createElement("span");
     activityDots.className = "session-activity-dots";
     item.append(activityDots);

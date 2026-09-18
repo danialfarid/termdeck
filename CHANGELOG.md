@@ -78,7 +78,8 @@ All notable changes to this project are documented here. The format follows
   while any is working, lit when one has finished unread, ringed when one is waiting on an answer —
   then how many there are and the first couple by name. Clicking the line opens them at full size,
   marked as the parent's by a rule down the left rather than by an indent, and clicking that rule folds
-  them away again.
+  them away again. The parent's own row carries a chevron for the same thing, shown on hover beside its
+  close button and kept visible while the group is open.
 - A terminal can be filed under another by hand, through
   `POST /api/sessions/{session_id}/spawned-by`, so a deck whose agents were spawned before TermDeck
   recorded that link can still be grouped. An empty parent clears it, and a parent that would close a

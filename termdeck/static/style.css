@@ -460,6 +460,17 @@ body:not(.vscode-mode) .file-item.active .file-item-name { color: var(--sidebar-
 .item-close { display: none; border: none; background: none; color: var(--dim); cursor: pointer; font-size: 12px; padding: 0 2px; flex: none; }
 .file-item:hover .item-close, .closed-item:hover .item-close, .session-item:hover .item-close { display: inline-block; }
 .item-close:hover { color: var(--red); }
+/* Revealed on hover like the close button. It keeps its place while expanded, so a chevron pointing
+   down does not vanish the moment the pointer leaves the row that opened the group. */
+.item-stack-toggle {
+  display: none; flex: none; width: 16px; height: 16px; padding: 0; margin-right: 1px;
+  align-items: center; justify-content: center;
+  border: 0; border-radius: 4px; background: none; color: var(--dim); cursor: pointer;
+}
+.session-item:hover .item-stack-toggle,
+.item-stack-toggle[aria-expanded="true"] { display: inline-flex; }
+.item-stack-toggle:hover { background: var(--panel2); color: var(--text); }
+.item-stack-toggle .codicon { font-size: 12px; }
 .item-mobile-actions { display: none; }
 #closed-section { border-top: 1px solid var(--border); max-height: 30%; overflow-y: auto; flex: none; padding: 0 6px 8px; }
 .file-type-icon { width: calc(var(--sidebar-font-size) + 2px); height: calc(var(--sidebar-font-size) + 2px); flex: none; }
