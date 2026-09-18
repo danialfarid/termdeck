@@ -929,6 +929,9 @@ class TerminalSessionManager:
     def _broadcast_status(self, ms: ManagedSession) -> None:
         ms.last_activity_broadcast_monotonic = time.monotonic()
         payload = self._status_payload(ms)
+        self.broadcast_status_event(payload)
+
+    def broadcast_status_event(self, payload: dict[str, object]) -> None:
         for queue in list(self._status_queues):
             queue.put_nowait(payload)
 

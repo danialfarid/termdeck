@@ -924,10 +924,16 @@ class TermdeckServer:
             ms = self.manager.reopen_closed_session(session_id)
         except KeyError as missing:
             raise HTTPException(status_code=404, detail=session_id) from missing
+        self._broadcast_project_state_snapshot(ms.record.project, ms.record.worktree_id)
         return self.manager.session_summary(ms)
 
     async def _purge_closed(self, session_id: str) -> dict[str, object]:
+        closed = next((item for item in self.manager.list_closed_sessions(None)
+                       if str(item.get("session_id", "")) == session_id), None)
         self.manager.purge_closed_session(session_id)
+        if closed is not None:
+            self._broadcast_project_state_snapshot(str(closed.get("project", "")),
+                                                    str(closed.get("worktree_id") or "root"))
         return {ApiFields.DELETED: session_id}
 
     async def _get_settings(self) -> dict[str, object]:
@@ -2156,6 +2162,8 @@ class TermdeckServer:
         self._merge_imported_project_layout(settings, project_name, parsed_states, session_ids,
                                             source_worktree_by_session, target_worktrees)
         self.settings_store.save(settings.model_dump())
+        for target_worktree_id in {target_id for target_id, _ in target_worktrees.values()}:
+            self._broadcast_project_state_snapshot(project_name, target_worktree_id)
         unmatched_worktrees = sorted({source_id for source_id, (target_id, _record) in target_worktrees.items()
                                       if source_id != "root" and target_id == "root"})
         return {"imported": True, "starts_when_opened": True, "sessions": len(session_ids),
@@ -2314,7 +2322,27 @@ class TermdeckServer:
         settings.project_state[key] = state
         payload = settings.model_dump()
         self.settings_store.save(payload)
-        return self._terminal_layout_payload(project, UiSettings(**payload), worktree_id)
+        layout_payload = self._terminal_layout_payload(project, UiSettings(**payload), worktree_id)
+        self._broadcast_project_state(layout_payload)
+        return layout_payload
+
+    def _broadcast_project_state(self, payload: dict[str, object]) -> None:
+        if self.manager is None:
+            return
+        state = {field: payload[field] for field in ProjectUiState.model_fields}
+        project = str(payload[WsMessageFields.PROJECT])
+        worktree_id = str(payload[WsMessageFields.WORKTREE_ID])
+        self.manager.broadcast_status_event({WsMessageFields.TYPE: WsMessageFields.PROJECT_STATE,
+                                              WsMessageFields.PROJECT: project,
+                                              WsMessageFields.WORKTREE_ID: worktree_id,
+                                              WsMessageFields.STATE: state,
+                                              WsMessageFields.SESSIONS: payload[WsMessageFields.SESSIONS],
+                                              WsMessageFields.CLOSED_SESSIONS:
+                                                  self.manager.list_closed_sessions(project or None, worktree_id)})
+
+    def _broadcast_project_state_snapshot(self, project: str, worktree_id: str) -> None:
+        settings = UiSettings(**self.settings_store.load())
+        self._broadcast_project_state(self._terminal_layout_payload(project, settings, worktree_id))
 
     def _current_project_session_ids(self, project: str, worktree_id: str) -> list[str]:
         selected_worktree_id = worktree_id or ("root" if project else None)
@@ -2614,7 +2642,9 @@ class TermdeckServer:
         settings.project_state[key] = ProjectUiState(**current)
         payload = settings.model_dump()
         self.settings_store.save(payload)
-        return self._terminal_layout_payload(project, UiSettings(**payload), worktree_id)
+        layout_payload = self._terminal_layout_payload(project, UiSettings(**payload), worktree_id)
+        self._broadcast_project_state(layout_payload)
+        return layout_payload
 
     async def _save_notebook_note(self, request: NotebookNoteSaveRequest, note_id: str, project: str = "",
                                   worktree_id: str = "") -> dict[str, object]:
@@ -2720,6 +2750,7 @@ class TermdeckServer:
             state.session_order = order
             settings.project_state[key] = state
             self.settings_store.save(settings.model_dump())
+            self._broadcast_project_state_snapshot(project, selected_worktree_id)
             return {"after": requested, "anchor": anchor_token, "token": f"session:{session_id}",
                     "group": f"group:{group_id}", "position": "after"}
 
@@ -2737,6 +2768,7 @@ class TermdeckServer:
         state.session_groups = session_groups
         settings.project_state[key] = state
         self.settings_store.save(settings.model_dump())
+        self._broadcast_project_state_snapshot(project, selected_worktree_id)
         return {"after": requested, "anchor": anchor_token, "token": new_token, "position": "after"}
 
     @staticmethod
@@ -2889,6 +2921,7 @@ class TermdeckServer:
                     ms.record.project, ms.record.session_id, request.after, worktree_id=ms.record.worktree_id)
             except (ValueError, OSError) as placement_error:
                 result["placement_error"] = str(placement_error)
+        self._broadcast_project_state_snapshot(ms.record.project, ms.record.worktree_id)
         return result
 
     async def _run_terminal_task(self, request: RunTerminalTaskRequest) -> dict[str, object]:
@@ -2960,6 +2993,7 @@ class TermdeckServer:
                     )
                 except (ValueError, OSError) as placement_error:
                     summary["placement_error"] = str(placement_error)
+            self._broadcast_project_state_snapshot(ms.record.project, ms.record.worktree_id)
             await self.manager.submit_prompt(ms.record.session_id, prompt, request.bracketed, request.queue)
             latest = self.manager.session_summary(ms)
             latest["placement"] = summary.get("placement")
@@ -3227,6 +3261,7 @@ class TermdeckServer:
                     except (ValueError, OSError) as placement_error:
                         result["placement_error"] = str(placement_error)
 
+                self._broadcast_project_state_snapshot(ms.record.project, ms.record.worktree_id)
                 self.manager.ensure_session_running(ms.record.session_id)
                 await self.manager.submit_prompt(ms.record.session_id, prompt, bracketed, queue)
                 result["prompt_submitted"] = True
@@ -3401,6 +3436,7 @@ class TermdeckServer:
         result["placement"] = self._place_session_after(
             forked.record.project, forked.record.session_id, f"session:{session_id}",
             worktree_id=forked.record.worktree_id)
+        self._broadcast_project_state_snapshot(forked.record.project, forked.record.worktree_id)
         return result
 
     async def _review_worktree(self, session_id: str) -> dict[str, object]:
@@ -3448,15 +3484,22 @@ class TermdeckServer:
     async def _move_session_to_project(self, session_id: str, request: MoveSessionProjectRequest) -> dict[str, object]:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
+        previous = self.manager.session_summary_by_id(session_id)
         try:
             self.manager.move_session_to_project(session_id, request.project)
         except ValueError as project_error:
             raise HTTPException(status_code=400, detail=str(project_error)) from project_error
-        return self.manager.session_summary_by_id(session_id)
+        self._broadcast_project_state_snapshot(str(previous.get("project", "")),
+                                                str(previous.get("worktree_id") or "root"))
+        current = self.manager.session_summary_by_id(session_id)
+        self._broadcast_project_state_snapshot(str(current.get("project", "")),
+                                                str(current.get("worktree_id") or "root"))
+        return current
 
     async def _delete_session(self, session_id: str, request: CloseSessionRequest | None = None) -> dict[str, object]:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
+        previous = self.manager.session_summary_by_id(session_id)
         group_name = request.group_name if request else ""
         # The browser sends the group with the request; a script calling the API has no reason to
         # know it, and without it the closed entry recorded no group at all. The server knows, so
@@ -3467,6 +3510,8 @@ class TermdeckServer:
         socket_removed = await self.manager.delete_session(session_id, group_name)
         if not socket_removed:
             raise HTTPException(status_code=409, detail="could not terminate the detached terminal process tree")
+        self._broadcast_project_state_snapshot(str(previous.get("project", "")),
+                                                str(previous.get("worktree_id") or "root"))
         return {ApiFields.DELETED: session_id, "socket_removed": True, "group_name": group_name}
 
     def _release_session_group(self, session_id: str) -> str:

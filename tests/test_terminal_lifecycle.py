@@ -123,6 +123,16 @@ class PlacementNameTest(unittest.TestCase):
                     {"session_id": "other-id", "title": "other", "cli_title": "other"},
                 ]
 
+            # Placement now tells connected clients what moved, so the double has to be able to receive
+            # that. It is the notification, not the placement, so recording it is enough.
+            @staticmethod
+            def list_closed_sessions(project: str | None = None, worktree_id: str | None = None) -> list[dict[str, object]]:
+                return []
+
+            @staticmethod
+            def broadcast_status_event(payload: dict[str, object]) -> None:
+                return None
+
         server = TermdeckServer.__new__(TermdeckServer)
         server.settings_store = Store()
         server.manager = Manager()
@@ -134,6 +144,8 @@ class PlacementNameTest(unittest.TestCase):
 
     def test_fork_endpoint_persists_placement_after_source_session(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)
+        # __new__ skips __init__, so the settings store the state broadcast reads is not there.
+        server.settings_store = MagicMock(load=lambda: {})
         server.manager = MagicMock()
         server.manager.has_session.return_value = True
         forked = MagicMock()
@@ -1456,6 +1468,12 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
                         return_value=None)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # These build the server with __new__, so it has no settings store for the project-state
+        # broadcast to read. The broadcast is a notification to connected clients and has its own
+        # tests; what is under test here is the task API, so it is stubbed out rather than fed.
+        broadcast = patch.object(TermdeckServer, "_broadcast_project_state_snapshot", lambda *a, **k: None)
+        broadcast.start()
+        self.addCleanup(broadcast.stop)
 
     async def test_terminal_websocket_repaint_requests_server_pty_redraw(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)

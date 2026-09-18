@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Terminal layout changes made in one browser or mobile device now arrive in other connected TermDeck views without requiring a refresh.
 - Resuming a terminal the deck already has sends the agent's session id rather than TermDeck's own, which
   meant nothing to the agent: the command came out as `--resume <deck id>` and the resume picker answered
   "No sessions match". A name that belongs to a terminal whose agent has never started a session now says

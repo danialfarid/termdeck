@@ -954,6 +954,7 @@ class TermdeckApp {
     this.iconMap = null;
     this.lastValidNavState = null;
     this.statusWs = null;
+    this.statusWsHasConnected = false;
     this.statusWsReconnectTimer = 0;
     this.mobileConnectionWarningTimer = 0;
     this.serverInstanceId = "";
@@ -1628,6 +1629,56 @@ class TermdeckApp {
       if (status) status.textContent = error.message;
       void this.refreshCurrentProjectState();
     });
+  }
+
+  applyProjectStateEvent(message) {
+    const project = String(message.project || "");
+    const worktreeId = String(message.worktree_id || "root");
+    const state = message.state;
+    const stateKey = this.projectStateKeyFor(worktreeId);
+    if (project !== String(this.projectSlug || "") || stateKey !== this.projectStateKey() ||
+        !state || typeof state !== "object") return;
+    const previousState = this.settings.project_state?.[stateKey] || {};
+    const stateChanged = JSON.stringify(previousState) !== JSON.stringify(state);
+    const allWorktrees = this.worktreeId === ALL_WORKTREES_ID;
+    if (stateChanged) {
+      this.applyLocalProjectStatePatch(state, stateKey);
+      this.projectStateLocalRevision = (this.projectStateLocalRevision || 0) + 1;
+    }
+    if (allWorktrees) {
+      if (stateChanged) {
+        this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
+        this.renderList();
+      }
+      void this.refresh();
+      return;
+    }
+    let sessionsChanged = false;
+    if (Array.isArray(message.sessions)) {
+      const nextSessions = this.applySessionOrder(message.sessions);
+      sessionsChanged = this.sessionListSignatureFor(nextSessions) !== this.sessionListSignatureFor(this.sessions);
+      const nextIds = new Set(nextSessions.map((session) => session.session_id));
+      if (sessionsChanged) {
+        for (const [sessionId, view] of [...this.views]) {
+          if (!nextIds.has(sessionId)) {
+            this.postVscodeNativeClose(sessionId);
+            this.destroyView(sessionId, view);
+          }
+        }
+        for (const sessionId of [...this.transcriptSessionStates.keys()]) {
+          if (!nextIds.has(sessionId)) this.transcriptSessionStates.delete(sessionId);
+        }
+        this.sessions = nextSessions;
+        if (this.activeId && !nextIds.has(this.activeId)) this.activeId = null;
+      }
+    }
+    const closedSessionsChanged = Array.isArray(message.closed_sessions) &&
+      JSON.stringify(this.closedSessions) !== JSON.stringify(message.closed_sessions);
+    if (closedSessionsChanged) this.closedSessions = message.closed_sessions;
+    if (!stateChanged && !sessionsChanged && !closedSessionsChanged) return;
+    this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
+    this.renderList();
+    this.renderTopbar();
   }
 
   queueProjectStatePatch(stateKey, patch) {
@@ -4827,9 +4878,15 @@ class TermdeckApp {
     const ws = new WebSocket(`${proto}://${location.host}/ws/status`);
     this.statusWs = ws;
     ws.onopen = () => {
+      const reconnect = this.statusWsHasConnected;
+      this.statusWsHasConnected = true;
       clearTimeout(this.mobileConnectionWarningTimer);
       this.mobileConnectionWarningTimer = 0;
       this.setMobileConnectionWarning(false);
+      if (reconnect) {
+        void this.refresh();
+        void this.refreshCurrentProjectState();
+      }
     };
     ws.onmessage = (event) => {
       if (typeof event.data !== "string") return;
@@ -4851,6 +4908,7 @@ class TermdeckApp {
           return;
         }
         if (message.type === "session_status") this.applySessionStatus(message);
+        if (message.type === "project_state") this.applyProjectStateEvent(message);
       } catch (error) {
         console.warn("invalid session status event", error);
       }
