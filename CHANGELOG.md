@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Terminal find closes when you switch terminals, and its box is emptied. It stayed open on the next
+  terminal, so Cmd+F there started searching the previous terminal's query against a buffer it was
+  never typed for. Escape still closes it on the terminal being searched without losing what was typed.
 - A prompt sent through the API is checked for having arrived, and Enter pressed again for up to 15
   seconds if it has not. The Enter that submits a pasted prompt only lands once the agent's TUI has
   taken the paste, and the wait for that was a flat 80ms — fine for an idle terminal, not for one

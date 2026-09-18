@@ -36,6 +36,22 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  discardTerminalFind() {
+    // Closing alone keeps the typed query in the box, which is what should happen when Escape closes
+    // find on the terminal it was searching. Leaving a terminal is different: the query went with that
+    // terminal, so the box is emptied too and the next Cmd+F starts clean.
+    //
+    // Does nothing when find was not open: closeTerminalFind focuses the terminal, and a switch must
+    // not hand focus back to the terminal being left.
+    const panel = this.$("terminal-find");
+    if (!panel || panel.classList.contains("hidden")) return false;
+    this.closeTerminalFind();
+    const input = this.$("terminal-find-input");
+    if (input) input.value = "";
+    return true;
+  },
+
+
   terminalFindOptions(incremental = false) {
     return { caseSensitive: false, incremental, decorations: TERMINAL_FIND_DECORATIONS };
   },

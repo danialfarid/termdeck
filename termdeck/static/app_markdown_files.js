@@ -7228,6 +7228,10 @@ Object.assign(TermdeckApp.prototype, {
     this.closeHistorySendMenu();
     this.hideSelectionActions(true);
     const previousId = this.activeId;
+    // Find belongs to the terminal it was opened on. Left open across a switch, the next Cmd+F starts
+    // searching the previous terminal's query in this one, and the count beside it is about a buffer
+    // that is no longer on screen.
+    if (previousId && previousId !== id) this.discardTerminalFind();
     const selected = this.session(id);
     if (this.worktreeId === ALL_WORKTREES_ID && selected) {
       this.interactionWorktreeId = this.worktreeIdForSession(selected);
