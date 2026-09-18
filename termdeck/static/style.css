@@ -862,14 +862,15 @@ body.vscode-native-mode #project-terminal-search-btn { display: none !important;
 /* Agents an agent spawned, filed under it. Collapsed they are book pages, the same shape the planner
    uses for a goal's subtasks: thin strips butted under the parent with no gap between them, folding in
    from the left and shrinking, so the column reads as a stack seen edge-on rather than as a list. */
-.agent-stack { margin: -1px 0 3px; }
+/* The rule is in both states, so it sits in the same place whether the stack is open or shut. */
+.agent-stack { position: relative; margin: -1px 0 3px; padding-left: 7px; }
 .agent-stack-pages { display: flex; flex-direction: column; align-items: stretch; cursor: pointer; }
 .agent-stack-page {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; align-items: center; gap: 5px;
   background: var(--panel2); border: 1px solid var(--border); border-top: none;
-  border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
-  padding: 1px 10px; margin-top: -1px; cursor: pointer;
-  color: var(--dim); line-height: 1.55; min-width: 0;
+  border-bottom-left-radius: 7px; border-bottom-right-radius: 7px;
+  padding: 0 8px; margin-top: -1px; cursor: pointer;
+  color: var(--dim); line-height: 1.5; min-width: 0;
   transition: background 0.12s, color 0.12s;
   animation: agentStackPageDrop 0.16s ease-out;
 }
@@ -880,17 +881,16 @@ body.vscode-native-mode #project-terminal-search-btn { display: none !important;
    that says WHICH agent without reading. */
 .agent-stack-page .terminal-type-icon {
   position: static; transform: none; display: inline-flex; flex: none;
-  width: 12px; height: 12px; margin: 0; opacity: 0.85;
+  width: 11px; height: 11px; margin: 0; opacity: 0.85;
 }
-.agent-stack-page .terminal-type-icon svg { width: 12px; height: 12px; }
-.agent-stack-page .terminal-type-icon .codicon { font-size: 11px; }
+.agent-stack-page .terminal-type-icon svg { width: 11px; height: 11px; }
+.agent-stack-page .terminal-type-icon .codicon { font-size: 10px; }
 .agent-stack-page-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-stack-more { justify-content: flex-start; font-style: italic; opacity: 0.7; }
 @keyframes agentStackPageDrop { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; } }
 
-/* Expanded: a rule down the left instead of an indent. It says the rows below belong to the terminal
-   above while leaving them their full width, and clicking it folds them back up. */
-.agent-stack.expanded { position: relative; padding-left: 7px; }
+/* A rule down the left instead of an indent. It says this group belongs to the terminal above while
+   leaving the rows their full width, and it is the control: click to open, click again to fold up. */
 .agent-stack-rule {
   position: absolute; left: 0; top: 0; bottom: 0; width: 7px; padding: 0;
   border: 0; background: none; cursor: pointer; z-index: 1;

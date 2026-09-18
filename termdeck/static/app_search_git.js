@@ -1001,19 +1001,21 @@ Object.assign(TermdeckApp.prototype, {
     stack.className = "agent-stack" + (expanded ? " expanded" : " collapsed");
     stack.dataset.parentId = parent.session_id;
 
+    // The rule belongs to both states: it is what says this group is the parent's, and it is the one
+    // control that is in the same place whether the stack is open or shut.
+    const rule = document.createElement("button");
+    rule.type = "button";
+    rule.className = "agent-stack-rule";
+    rule.setAttribute("aria-expanded", expanded ? "true" : "false");
+    rule.title = `${expanded ? "Collapse" : "Open"} ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
+    rule.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
+    stack.appendChild(rule);
+
     if (expanded) {
       const body = document.createElement("div");
       body.className = "agent-stack-children";
       for (const child of children) this.renderTerminalItem(child, body);
-      // The rule down the left is what says these belong to the terminal above, so the rows keep their
-      // full width rather than being pushed in. It is also the way back: clicking it folds them up.
-      const rule = document.createElement("button");
-      rule.type = "button";
-      rule.className = "agent-stack-rule";
-      rule.setAttribute("aria-expanded", "true");
-      rule.title = `Collapse ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
-      rule.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
-      stack.append(rule, body);
+      stack.appendChild(body);
       list.appendChild(stack);
       return;
     }
@@ -1045,9 +1047,11 @@ Object.assign(TermdeckApp.prototype, {
   styleAgentStackPage(page, index, total) {
     // Shrinking, folding in, fading: the three together are what make a column of strips read as a
     // stack seen edge-on. Floors on each, so a long stack does not fade to nothing or shrink to dust.
-    page.style.fontSize = `${Math.max(9.5, 12 - index * 0.7)}px`;
-    page.style.marginLeft = `${index * 6}px`;
-    page.style.opacity = String(Math.max(0.5, 1 - index * 0.11));
+    page.style.fontSize = `${Math.max(8.5, 10.5 - index * 0.5)}px`;
+    // One pixel. Enough that the edges step, not enough to walk the stack across the sidebar; the
+    // shrinking and the fading are what carry the depth.
+    page.style.marginLeft = `${index}px`;
+    page.style.opacity = String(Math.max(0.5, 1 - index * 0.13));
     page.style.zIndex = String(total - index);
   },
 

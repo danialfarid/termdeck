@@ -68,9 +68,9 @@ All notable changes to this project are documented here. The format follows
 
 - Agents an agent spawns are stacked under it in the sidebar, rather than scattered through the list as
   unrelated terminals. Each is a thin page carrying that agent's own icon and name, folding in from the
-  left a step smaller than the one above, with a "+N more" tail past the fifth. Clicking the stack opens
-  them at full size, marked as the parent's by a rule down the left rather than by an indent, and
-  clicking that rule folds them away again.
+  left a step smaller and fainter than the one above, with a "+N more" tail past the fourth. A rule down
+  the left marks the group as the parent's, open or shut, and clicking it opens the agents at full size
+  or folds them away again.
 - A terminal can be filed under another by hand, through
   `POST /api/sessions/{session_id}/spawned-by`, so a deck whose agents were spawned before TermDeck
   recorded that link can still be grouped. An empty parent clears it, and a parent that would close a
