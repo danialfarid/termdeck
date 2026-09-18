@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Agents an agent spawns are filed under it in the sidebar as a stack of cards, rather than scattered
+  through the list as unrelated terminals. Clicking the stack expands it into ordinary rows; collapsed,
+  it carries the number of spawned agents and a dot when one of them is working or wants an answer.
+
 ### Fixed
 
 - Terminal layout changes made in one browser or mobile device now arrive in other connected TermDeck views without requiring a refresh.

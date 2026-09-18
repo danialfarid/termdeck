@@ -858,6 +858,36 @@ body.vscode-native-mode #project-terminal-search-btn { display: none !important;
 .terminal-group-members { display: grid; grid-template-rows: 1fr; opacity: 1; transition: grid-template-rows 180ms ease, opacity 140ms ease; }
 .terminal-group-members.collapsed { grid-template-rows: 0fr; opacity: 0.35; }
 .terminal-group-members-inner { min-height: 0; overflow: hidden; padding-bottom: 4px; }
+
+/* Agents an agent spawned, filed under it. Collapsed they read as a short stack of cards tucked below
+   the parent row; expanded they are ordinary terminal rows, indented so the parentage stays visible. */
+.agent-stack { margin: 0 0 2px calc(var(--terminal-row-left-padding, 20px) + 4px); }
+.agent-stack-toggle {
+  display: flex; align-items: center; gap: 6px; width: calc(100% - 16px); padding: 2px 6px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--dim);
+  font: inherit; font-size: 11px; cursor: pointer; text-align: left;
+}
+.agent-stack-toggle:hover { background: var(--panel2); color: var(--text); }
+.agent-stack-toggle .codicon { font-size: 12px; }
+.agent-stack-count {
+  min-width: 16px; padding: 0 4px; border-radius: 999px; background: var(--panel2);
+  color: var(--text); font-size: 10px; font-weight: 650; text-align: center;
+}
+.agent-stack-toggle:hover .agent-stack-count { background: var(--active-bg); }
+.agent-stack-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-stack-toggle .status-dot { margin-left: auto; flex: none; }
+/* The cards are stacked by negative margin rather than absolute positioning, so the deck keeps a real
+   height and the rows below it are not overlapped. */
+.agent-stack-deck { display: flex; flex-direction: column; padding: 1px 0 0 10px; }
+.agent-stack-card {
+  height: 4px; margin-top: -1px; border-radius: 3px;
+  border: 1px solid var(--border); border-bottom: 0;
+  background: linear-gradient(var(--panel2), var(--panel));
+  border-left: 2px solid var(--session-age-color, var(--border));
+}
+.agent-stack-card:nth-child(2) { margin-left: 5px; opacity: 0.8; }
+.agent-stack-card:nth-child(3) { margin-left: 10px; opacity: 0.6; }
+.agent-stack.expanded > .agent-stack-children { border-left: 1px solid var(--border); margin-left: 8px; }
 .terminal-group-label { display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; border: 0; border-bottom: 1px solid var(--border); background: var(--panel2); color: var(--text); padding: 8px 9px 7px; font-weight: 650; letter-spacing: 0.04em; text-transform: none; }
 .group-unread-dot { display: none; position: relative; width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--accent); }
 .group-unread-dot.on { display: inline-block; }

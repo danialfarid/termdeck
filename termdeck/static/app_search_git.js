@@ -971,6 +971,84 @@ Object.assign(TermdeckApp.prototype, {
     });
     this.makeLayoutDraggable(item, `session:${s.session_id}`, "session");
     list.appendChild(item);
+    this.renderSpawnedStack(s, list);
+  },
+
+
+  spawnedChildrenOf(sessionId) {
+    return (this.spawnedChildrenByParent || new Map()).get(sessionId) || [];
+  },
+
+  agentStackExpanded(parentId) {
+    return this.expandedAgentStacks.has(parentId);
+  },
+
+  toggleAgentStack(parentId) {
+    if (!this.expandedAgentStacks.delete(parentId)) this.expandedAgentStacks.add(parentId);
+    try {
+      localStorage.setItem(EXPANDED_AGENT_STACKS_KEY, JSON.stringify([...this.expandedAgentStacks]));
+    } catch { /* a private window refuses storage; the stack still opens for this visit */ }
+    this.renderList();
+  },
+
+  renderSpawnedStack(parent, list) {
+    // Children are drawn here rather than at their own place in the layout, so an agent's spawned
+    // agents stay with it however the list is ordered. The layout walk skips them for the same reason.
+    const children = this.spawnedChildrenOf(parent.session_id);
+    if (!children.length) return;
+    const expanded = this.agentStackExpanded(parent.session_id);
+    const stack = document.createElement("div");
+    stack.className = "agent-stack" + (expanded ? " expanded" : " collapsed");
+    stack.dataset.parentId = parent.session_id;
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "agent-stack-toggle";
+    toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+    toggle.title = expanded ? "Collapse spawned agents" : `Show ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
+    const chevron = document.createElement("span");
+    chevron.className = "codicon " + (expanded ? "codicon-chevron-down" : "codicon-chevron-right");
+    const count = document.createElement("span");
+    count.className = "agent-stack-count";
+    count.textContent = String(children.length);
+    const label = document.createElement("span");
+    label.className = "agent-stack-label";
+    label.textContent = expanded ? "spawned" : `spawned agent${children.length === 1 ? "" : "s"}`;
+    toggle.append(chevron, count, label);
+    // Collapsed, the toggle carries a dot for any child wanting attention: the stack hides the rows
+    // that would otherwise show it, and a spawned agent waiting on an answer is the reason to look.
+    if (!expanded) {
+      const busy = children.filter((child) => this.titlePresentation(child).spinning).length;
+      const attention = children.filter((child) => this.attentionSessions.has(child.session_id)).length;
+      if (busy || attention) {
+        const dot = document.createElement("span");
+        dot.className = "status-dot" + (attention ? " attention" : " processing");
+        toggle.appendChild(dot);
+      }
+    }
+    toggle.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
+    stack.appendChild(toggle);
+
+    const body = document.createElement("div");
+    body.className = "agent-stack-children";
+    if (expanded) {
+      for (const child of children) this.renderTerminalItem(child, body);
+    } else {
+      // Collapsed: the cards behind the toggle are decoration, not rows. They are aria-hidden so the
+      // list does not read out terminals a reader cannot reach without expanding first.
+      const deck = document.createElement("div");
+      deck.className = "agent-stack-deck";
+      deck.setAttribute("aria-hidden", "true");
+      for (const child of children.slice(0, AGENT_STACK_PEEK_CARDS)) {
+        const card = document.createElement("div");
+        card.className = "agent-stack-card";
+        card.style.setProperty("--session-age-color", this.terminalAgeColor(child));
+        deck.appendChild(card);
+      }
+      body.appendChild(deck);
+    }
+    stack.appendChild(body);
+    list.appendChild(stack);
   },
 
 
@@ -1016,8 +1094,20 @@ Object.assign(TermdeckApp.prototype, {
         ? allVisibleSessions.filter((session) => this.terminalSearchMatches.has(session.session_id))
         : allVisibleSessions;
       const sessionsById = new Map(visibleSessions.map((session) => [session.session_id, session]));
+      // A spawned agent is drawn under the agent that spawned it, so it is taken out of the ordinary
+      // walk. Only when the parent is visible here: with the parent filtered out by a search, or
+      // closed, the child has nothing to sit under and belongs back in the list on its own.
+      this.spawnedChildrenByParent = new Map();
+      for (const session of visibleSessions) {
+        const parentId = session.spawned_by_session_id;
+        if (!parentId || !sessionsById.has(parentId) || parentId === session.session_id) continue;
+        if (!this.spawnedChildrenByParent.has(parentId)) this.spawnedChildrenByParent.set(parentId, []);
+        this.spawnedChildrenByParent.get(parentId).push(session);
+      }
+      const stacked = new Set([...this.spawnedChildrenByParent.values()].flat().map((s) => s.session_id));
       const grouped = new Map(groups.map((group) => [group.id, []]));
       for (const session of visibleSessions) {
+        if (stacked.has(session.session_id)) continue;
         if (grouped.has(sessionGroups[session.session_id])) grouped.get(sessionGroups[session.session_id]).push(session);
       }
       const layout = this.terminalLayout(allVisibleSessions);
@@ -1037,7 +1127,7 @@ Object.assign(TermdeckApp.prototype, {
           continue;
         }
         const session = sessionsById.get(id);
-        if (!session || sessionGroups[id]) continue;
+        if (!session || sessionGroups[id] || stacked.has(id)) continue;
         if (previousRenderedToken) this.appendTerminalLayoutDropZone(list, entry);
         this.renderTerminalItem(session, list);
         previousRenderedToken = entry;

@@ -2981,6 +2981,8 @@ class TermdeckServer:
                     worktree_id=worktree_id,
                 )
             created_session_id = ms.record.session_id
+            if origin_session_id:
+                self.manager.set_spawned_by(ms.record.session_id, origin_session_id)
             summary = self.manager.session_summary(ms)
             self.manager.ensure_session_running(ms.record.session_id)
             if placement_after and placement_after.strip():

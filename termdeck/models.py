@@ -45,6 +45,11 @@ class SessionRecord:
     fork_parent_agent_session_id: str | None = None
     imported_transcript_id: str | None = None
     description: str = ""
+    # The terminal that asked for this one, when an agent spawned it through the task API. Distinct from
+    # fork_parent_agent_session_id, which is the AGENT's own session that a fork continues: this is
+    # TermDeck's session that issued the request, and it is what lets the sidebar file a spawned agent
+    # under the agent that spawned it.
+    spawned_by_session_id: str | None = None
 
     def to_dict(self) -> dict[str, str | bool | int | float | None]:
         return asdict(self)
@@ -75,7 +80,9 @@ class SessionRecord:
                              if payload.get("fork_parent_agent_session_id") else None,
                              imported_transcript_id=str(payload["imported_transcript_id"])
                              if payload.get("imported_transcript_id") else None,
-                             description=str(payload.get("description") or ""))
+                             description=str(payload.get("description") or ""),
+                             spawned_by_session_id=str(payload["spawned_by_session_id"])
+                             if payload.get("spawned_by_session_id") else None)
 
 
 class WsMessageFields:

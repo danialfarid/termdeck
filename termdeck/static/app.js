@@ -160,6 +160,10 @@ const MOBILE_SIDEBAR_CONTEXT_MOVE_TOLERANCE = 12;
 const MOBILE_TERMINAL_SELECTION_BACKGROUND = "#287fd1";
 const MOBILE_TERMINAL_SELECTION_FOREGROUND = "#ffffff";
 const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
+const EXPANDED_AGENT_STACKS_KEY = "termdeck.expanded_agent_stacks";
+// Cards drawn behind a collapsed stack. Enough to read as a stack; more only adds pixels, since the
+// count beside it is what says how many there are.
+const AGENT_STACK_PEEK_CARDS = 3;
 const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
 const TRANSCRIPT_DRAFT_LOCAL_PREFIX = "termdeck.transcript-draft.v1";
 const ADDRESS_RECOVERY_KEY = "termdeck.address-recovery";
@@ -875,6 +879,8 @@ class TermdeckApp {
     this.sessionActivityById = new Map();
     this.sessionStatusEls = new Map();
     this.sessionRowEls = new Map();
+    this.spawnedChildrenByParent = new Map();
+    this.expandedAgentStacks = new Set(this.storedExpandedAgentStacks());
     this.terminalAgeRefreshTimer = 0;
     this.sessionListSignature = "";
     this.dragGroupTimer = 0;
@@ -1040,6 +1046,17 @@ class TermdeckApp {
 
   touchMobileLayoutEnabled() {
     return window.matchMedia("(max-width: 900px), (hover: none) and (pointer: coarse)").matches;
+  }
+
+  storedExpandedAgentStacks() {
+    // Which stacks are open is a per-browser convenience, so it lives in localStorage and a refusal to
+    // read it costs a closed stack, not an error.
+    try {
+      const stored = JSON.parse(localStorage.getItem(EXPANDED_AGENT_STACKS_KEY) || "[]");
+      return Array.isArray(stored) ? stored.filter((id) => typeof id === "string") : [];
+    } catch {
+      return [];
+    }
   }
 
   browserBooleanSetting(storageKey, fallback) {

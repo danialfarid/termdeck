@@ -1718,6 +1718,19 @@ class TerminalSessionManager:
         self._persist()
         self._broadcast_status(ms)
 
+    def set_spawned_by(self, session_id: str, parent_session_id: str) -> None:
+        """Record which terminal asked for this one, so the sidebar can file it under that terminal.
+
+        Ignores a parent that is not a session the deck still has, and refuses to make a terminal its
+        own parent -- either would leave the sidebar building a stack that cannot be drawn.
+        """
+        if session_id == parent_session_id or parent_session_id not in self._sessions:
+            return
+        ms = self._sessions[session_id]
+        ms.record.spawned_by_session_id = parent_session_id
+        self._persist()
+        self._broadcast_status(ms)
+
     @staticmethod
     def _termdeck_session_url_path(record: SessionRecord) -> str:
         project = quote(record.project, safe="")
