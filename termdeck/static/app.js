@@ -1661,6 +1661,12 @@ class TermdeckApp {
     if (stateChanged) {
       this.applyLocalProjectStatePatch(state, stateKey);
       this.projectStateLocalRevision = (this.projectStateLocalRevision || 0) + 1;
+      // The surface a terminal opens on is project state like any other, so it can change under an open
+      // window: another client, another device, or the session-view-mode API. Only refreshCurrentProject-
+      // State reconciled it, and that runs when the tab is brought back to the front -- so a window left
+      // open kept showing the transcript for a terminal that is on the terminal surface everywhere else,
+      // with its own toggle appearing to do nothing.
+      this.reconcileActiveSessionViewMode();
     }
     if (allWorktrees) {
       if (stateChanged) {
