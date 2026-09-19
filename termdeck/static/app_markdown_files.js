@@ -7223,6 +7223,23 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  clearUnreadForSelection(previousId, id) {
+    let unreadChanged = false;
+    if (previousId && previousId !== id) {
+      unreadChanged = this.unreadSessions.delete(previousId) || unreadChanged;
+      this.updateUnreadIndicator(previousId);
+    }
+    // The selected terminal is cleared whether or not the selection changed. A terminal can pick up an
+    // unread badge while it is already the active one -- a turn that finished while the window was in
+    // the background marks it, and so does another window or a phone. Clicking the row it is on was
+    // then the obvious thing to do and did nothing at all: this is what clears a badge, and with no
+    // switch to trigger it the badge stayed on the terminal the user was looking at.
+    unreadChanged = this.unreadSessions.delete(id) || unreadChanged;
+    this.updateUnreadIndicator(id);
+    if (unreadChanged) this.persistUnreadSessionDelta([...new Set([previousId, id].filter(Boolean))], false);
+  },
+
+
   activate(id, options = {}) {
     this.closePromptHistory();
     this.closeHistorySendMenu();
@@ -7237,18 +7254,7 @@ Object.assign(TermdeckApp.prototype, {
       this.interactionWorktreeId = this.worktreeIdForSession(selected);
     }
     if (!selected?.needs_attention) this.clearSessionAttention(id);
-    let unreadChanged = false;
-    if (previousId && previousId !== id) {
-      unreadChanged = this.unreadSessions.delete(previousId) || unreadChanged;
-      this.updateUnreadIndicator(previousId);
-    }
-    if (previousId !== id) {
-      unreadChanged = this.unreadSessions.delete(id) || unreadChanged;
-      this.updateUnreadIndicator(id);
-    }
-    if (unreadChanged) {
-      this.persistUnreadSessionDelta([previousId, id].filter(Boolean), false);
-    }
+    this.clearUnreadForSelection(previousId, id);
     this.rememberRecentlyOpenedTerminal(id);
     void this.refreshSessionUsage(id);
     if (selected && !this.titlePresentation(selected).spinning) this.viewedCompletedSessions.add(id);

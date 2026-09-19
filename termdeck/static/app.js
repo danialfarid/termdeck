@@ -1535,6 +1535,15 @@ class TermdeckApp {
     return sections;
   }
 
+  // Unread is project state, so it arrives from elsewhere: another window, a phone, or this window's own
+  // marking from while it was not being read. The terminal it names can be the one already on screen --
+  // and nothing cleared that, because activating it is what clears a badge and it is already active. The
+  // badge then sat on the terminal the user was looking at until they switched away and back.
+  refreshUnreadSessionsFromState() {
+    this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
+    this.markActiveSessionRead();
+  }
+
   unreadSessionIdsForCurrentWorktreeView() {
     if (this.worktreeId !== ALL_WORKTREES_ID) return new Set(this.getProjectState().unread_sessions || []);
     const project = this.projectSlug || "__all__";
@@ -1611,7 +1620,7 @@ class TermdeckApp {
       return;
     }
     this.applyLocalProjectStatePatch(nextState, stateKey);
-    this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
+    this.refreshUnreadSessionsFromState();
     this.renderList();
     this.reconcileActiveSessionViewMode();
   }
@@ -1670,7 +1679,7 @@ class TermdeckApp {
     }
     if (allWorktrees) {
       if (stateChanged) {
-        this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
+        this.refreshUnreadSessionsFromState();
         this.renderList();
       }
       void this.refresh();
@@ -1699,7 +1708,7 @@ class TermdeckApp {
       JSON.stringify(this.closedSessions) !== JSON.stringify(message.closed_sessions);
     if (closedSessionsChanged) this.closedSessions = message.closed_sessions;
     if (!stateChanged && !sessionsChanged && !closedSessionsChanged) return;
-    this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
+    this.refreshUnreadSessionsFromState();
     this.renderList();
     this.renderTopbar();
   }
@@ -5574,7 +5583,10 @@ class TermdeckApp {
 
   markActiveSessionRead() {
     const id = this.activeId;
-    if (document.hidden || !id || !this.session(id)) return;
+    // hasFocus as well as visible, and the same pair noteCompletionStamp uses to decide that a finished
+    // turn was watched. A window sitting behind another app is visible but nobody is reading it, and
+    // clearing the badge there would take it away before it had been seen.
+    if (document.hidden || !document.hasFocus() || !id || !this.session(id)) return;
     if (!this.processingStates.get(id)) this.viewedCompletedSessions.add(id);
     if (!this.unreadSessions.delete(id)) return;
     this.updateUnreadIndicator(id);

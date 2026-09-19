@@ -54,6 +54,7 @@ const app = {
   applySessionOrder(sessions) { return sessions; },
   sessionListSignatureFor(sessions = this.sessions) { return sessions.map((s) => s.session_id).join("|"); },
   unreadSessionIdsForCurrentWorktreeView() { return new Set(); },
+  refreshUnreadSessionsFromState() { this.unreadSessions = new Set(); },
   renderList() {},
   renderTopbar() {},
   refresh() {},
