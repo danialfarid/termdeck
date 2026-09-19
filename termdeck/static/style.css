@@ -704,6 +704,14 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 .history-empty { color: var(--dim); font-size: 13px; padding: 20px; text-align: center; }
 .history-compaction { display: flex; align-items: center; gap: 10px; margin: 4px 0 14px; color: var(--dim); font: 600 calc(var(--ui-font-size) - 1px) Menlo, monospace; }
 .history-compaction::before, .history-compaction::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+/* The transcript has no find bar of its own, so Cmd+F there is the browser's find-in-page -- and that
+   searches inside a closed <details> and forces it open on a match. Folded code edits, thinking blocks
+   and folded repetitions all sprang open on a search, which is the opposite of what folding them said.
+   Hiding the closed content outright puts it out of find's reach: display:none is never searched, so
+   nothing matches in there and nothing gets expanded. It looks identical -- a closed <details> does not
+   render its content either way -- and opening one still reveals everything. What a filter has removed
+   from the transcript is already absent from the page and was never searched. */
+#history-body details:not([open]) > *:not(summary) { display: none; }
 .history-event { width: 100%; margin: 0 0 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); }
 .history-event summary { display: flex; align-items: center; gap: 7px; list-style: none; padding: 6px 10px; cursor: pointer; color: var(--dim); font: 600 var(--ui-font-size) Menlo, monospace; }
 .history-event summary::-webkit-details-marker { display: none; }
