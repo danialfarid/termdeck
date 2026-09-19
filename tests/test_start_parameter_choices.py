@@ -7,6 +7,7 @@ lands, so the two are tested together.
 """
 
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -175,3 +176,93 @@ class RestartWithModelTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodexIdentityFromThreadLockTest(unittest.TestCase):
+    """Codex 0.155 moved thread storage into sqlite, so a running codex no longer holds a file named
+    after its own session -- except the writer lock it takes for the thread it is writing.
+
+    Detection reads the open files of the process tree and asks the agent which of them names a session.
+    With the rollout files gone, nothing answered, so a terminal started under the new codex never bound
+    to a session at all -- and a restart refused, permanently, because the identity "is still resolving".
+    """
+
+    def setUp(self) -> None:
+        self.codex = agents.agent_cli("codex")
+        self.thread = "01a0ba4a-8705-74e3-a91e-5b0a74d3bcfd"
+
+    def test_the_writer_lock_names_the_thread(self) -> None:
+        lock = self.codex.THREAD_LOCK_DIR / f"{self.thread}.lock"
+
+        self.assertEqual(self.codex.session_id_from_path(lock), self.thread)
+
+    def test_a_rollout_file_still_names_its_session(self) -> None:
+        # The older codex is still out there, and its own sessions are still on disk.
+        rollout = self.codex.sessions_root / "2026" / "09" / "19" / f"rollout-2026-09-19T04-28-56-{self.thread}.jsonl"
+
+        self.assertEqual(self.codex.session_id_from_path(rollout), self.thread)
+
+    def test_a_lock_somewhere_else_is_not_a_session(self) -> None:
+        # Every long-running process holds locks; only the ones in codex's own directory are threads.
+        self.assertIsNone(self.codex.session_id_from_path(Path(f"/tmp/somewhere/{self.thread}.lock")))
+
+    def test_a_lock_not_named_for_a_thread_is_ignored(self) -> None:
+        self.assertIsNone(self.codex.session_id_from_path(self.codex.THREAD_LOCK_DIR / "index.lock"))
+
+    def test_another_agent_s_file_is_still_not_codex_s(self) -> None:
+        self.assertIsNone(self.codex.session_id_from_path(
+            Path.home() / ".claude" / "projects" / "p" / f"{self.thread}.jsonl"))
+
+
+class RestartLooksAgainBeforeRefusingTest(unittest.IsolatedAsyncioTestCase):
+    """The refusal is only fair while it is temporary.
+
+    Detection runs on a startup deadline and on input, so a terminal that was never typed into -- or
+    whose detection ran before the agent opened anything -- stayed unbound for good, and "wait before
+    restarting" was advice that never came true.
+    """
+
+    def setUp(self) -> None:
+        self.manager = TerminalSessionManager.__new__(TerminalSessionManager)
+        self.session = SimpleNamespace(record=record("s1", agent_session_id=None), detect_task=None,
+                                       exit_code=None, dormant=False)
+        self.manager._sessions = {"s1": self.session}
+        for method in ("_persist", "_spawn", "_canonicalize_agent_resume_command"):
+            patcher = patch.object(TerminalSessionManager, method, lambda *a, **k: None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.terminate = AsyncMock(return_value=True)
+        terminate = patch.object(TerminalSessionManager, "_terminate_proc", self.terminate)
+        terminate.start()
+        self.addCleanup(terminate.stop)
+        self.manager._tracker = SimpleNamespace(codex_session_permission_mode=lambda *a, **k: "")
+        clear = patch.object(TerminalSessionManager, "replay", SimpleNamespace(clear_for_restart=lambda ms: None),
+                             create=True)
+        clear.start()
+        self.addCleanup(clear.stop)
+
+    def _detection(self, binds: str | None):
+        async def detect(manager_self, ms, delay):
+            if binds:
+                ms.record.agent_session_id = binds
+        return patch.object(TerminalSessionManager, "_detect_after", detect)
+
+    async def test_a_detection_that_finds_the_session_lets_the_restart_through(self) -> None:
+        with self._detection("01a0ba4a-8705-74e3-a91e-5b0a74d3bcfd"):
+            await self.manager.restart_session("s1")
+
+        self.terminate.assert_awaited()
+
+    async def test_it_still_refuses_when_there_is_nothing_to_find(self) -> None:
+        with self._detection(None), self.assertRaises(RuntimeError):
+            await self.manager.restart_session("s1")
+
+        self.terminate.assert_not_awaited()
+
+    async def test_a_terminal_that_already_knows_its_session_is_not_delayed_by_a_lookup(self) -> None:
+        self.session.record.agent_session_id = "already-bound"
+        detect = AsyncMock()
+        with patch.object(TerminalSessionManager, "_detect_after", detect):
+            await self.manager.restart_session("s1")
+
+        detect.assert_not_awaited()

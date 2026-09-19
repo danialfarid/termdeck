@@ -3256,7 +3256,13 @@ Object.assign(TermdeckApp.prototype, {
       if (!response.ok) throw new Error(String(response.status));
       const catalog = await response.json();
       const models = (Array.isArray(catalog.models) ? catalog.models : [])
-        .map((model) => String(model.id || "")).filter(Boolean);
+        .map((model) => ({
+          id: String(model.id || ""),
+          efforts: (Array.isArray(model.reasoning_efforts) ? model.reasoning_efforts : [])
+            .map((effort) => String(effort.value || "")).filter(Boolean),
+          defaultEffort: String(model.default_reasoning_effort || ""),
+        }))
+        .filter((model) => model.id);
       if (!this.agentModelSuggestionCache) this.agentModelSuggestionCache = new Map();
       this.agentModelSuggestionCache.set(kind, models);
       return models;
@@ -3268,7 +3274,12 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  async fillModelSuggestionList(listId, kind) {
+  // The list behind the model field, and the levels beside it. They are filled together because both
+  // come from the one catalog, and the levels belong to whichever model is in the field: picking a model
+  // is only half the choice the transcript's own picker asks for, and the other half is the reasoning
+  // level. An agent with no catalog, or a model typed that the catalog has not heard of, simply has no
+  // levels to offer and the field beside it goes away.
+  async fillModelSuggestionList(listId, kind, effortSelectId = "", modelField = null) {
     const list = this.$(listId);
     if (!list) return;
     const token = `${listId}:${kind}`;
@@ -3278,9 +3289,55 @@ Object.assign(TermdeckApp.prototype, {
     list.textContent = "";
     for (const model of models) {
       const option = document.createElement("option");
-      option.value = model;
+      option.value = model.id;
       list.appendChild(option);
     }
+    if (!effortSelectId) return;
+    this.modelEffortCatalogs = { ...(this.modelEffortCatalogs || {}), [effortSelectId]: models };
+    if (modelField) {
+      const field = this.$(modelField);
+      if (field && !field.dataset.effortBound) {
+        field.dataset.effortBound = "1";
+        field.addEventListener("input", () => this.updateModelEffortOptions(effortSelectId, field.value));
+      }
+      this.updateModelEffortOptions(effortSelectId, this.$(modelField)?.value || "");
+    }
+  },
+
+
+  updateModelEffortOptions(effortSelectId, modelValue) {
+    const select = this.$(effortSelectId);
+    const field = this.$(`${effortSelectId}-field`);
+    if (!select || !field) return;
+    const models = (this.modelEffortCatalogs || {})[effortSelectId] || [];
+    // The model field may already carry a level ("gpt-6-astra max"), which is how the whole choice is
+    // passed on: match on the first word so re-opening a dialog shows the level it is holding.
+    const [typedModel, typedEffort] = String(modelValue || "").trim().split(/\s+/);
+    const model = models.find((entry) => entry.id === typedModel);
+    field.classList.toggle("hidden", !model?.efforts.length);
+    if (!model?.efforts.length) {
+      select.textContent = "";
+      return;
+    }
+    const previous = typedEffort || select.value;
+    select.textContent = "";
+    for (const value of ["", ...model.efforts]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value || `model default${model.defaultEffort ? ` (${model.defaultEffort})` : ""}`;
+      select.appendChild(option);
+    }
+    select.value = model.efforts.includes(previous) ? previous : "";
+  },
+
+
+  // What the dialogs hand over as the model: "<model> <level>", the shape the agent turns into start
+  // parameters, and the same shape the transcript's picker names a choice with.
+  modelNameWithEffort(modelValue, effortSelectId) {
+    const model = String(modelValue || "").trim().split(/\s+/)[0] || "";
+    const field = this.$(`${effortSelectId}-field`);
+    const effort = field && !field.classList.contains("hidden") ? this.$(effortSelectId).value : "";
+    return [model, effort].filter(Boolean).join(" ");
   },
 
   openModal(groupId = null, afterSessionId = null, initialAgentText = "", options = {}) {
@@ -3374,7 +3431,7 @@ Object.assign(TermdeckApp.prototype, {
     input.value = this.modalModelDrafts[model] || "";
     input.placeholder = spec?.model_placeholder || "agent default";
     this.$("modal-model-help").textContent = spec?.model_help || "Leave blank to use the agent's configured default.";
-    void this.fillModelSuggestionList("modal-model-ids", model);
+    void this.fillModelSuggestionList("modal-model-ids", model, "modal-model-effort", "modal-model-name");
     const animations = this.$("modal-disable-animations-field");
     animations.classList.toggle("hidden", !spec?.supports_disable_animations);
     this.$("modal-disable-animations").checked = spec?.supports_disable_animations
@@ -3401,7 +3458,7 @@ Object.assign(TermdeckApp.prototype, {
     const targetGroupId = this.modalGroupId;
     const requestedAfterSessionId = this.modalAfterSessionId;
     const model = this.$("modal-model").value;
-    const modelName = this.$("modal-model-name").value.trim();
+    const modelName = this.modelNameWithEffort(this.$("modal-model-name").value, "modal-model-effort");
     const additionalArgs = this.$("modal-additional-args").value.trim();
     const disableAnimations = this.$("modal-disable-animations").checked &&
       !this.$("modal-disable-animations-field").classList.contains("hidden");

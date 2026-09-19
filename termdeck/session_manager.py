@@ -1726,7 +1726,18 @@ class TerminalSessionManager:
             ms.detect_task.cancel()
         if agent.is_agent and not agent.sessionless and not ms.record.agent_session_id and \
                 ms.exit_code is None and not ms.dormant:
-            raise RuntimeError(f"agent session identity is still resolving; wait before restarting: {session_id}")
+            # Look once more before refusing. Detection runs on a startup deadline and on input, so a
+            # terminal that was never typed into, or whose detection ran while the agent had not opened
+            # its files yet, sat unbound for good -- and the refusal below is permanent for it, which is
+            # the one case where "wait and try again" is advice that never comes true.
+            #
+            # detect_kind is set when a terminal is spawned, and a terminal the deck re-attached to after
+            # a restart of its own never went through that: it is the agent the record names, and the
+            # lookup reads nothing without it.
+            ms.detect_kind = agent.kind
+            await self._detect_after(ms, 0)
+            if not ms.record.agent_session_id:
+                raise RuntimeError(f"agent session identity is still resolving; wait before restarting: {session_id}")
         self._canonicalize_agent_resume_command(ms.record)
         if not permission:
             permission = agent.restart_permission(self, ms)

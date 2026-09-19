@@ -28,6 +28,10 @@ class CodexCli(AgentCli):
 
     sessions_root = Path.home() / ".codex" / "sessions"
     SESSION_INDEX_FILE = Path.home() / ".codex" / "session_index.jsonl"
+    # One file per thread that a running codex holds open, named for the thread it writes.
+    THREAD_LOCK_DIR = Path.home() / ".codex" / "thread-writer-locks"
+    THREAD_LOCK_SUFFIX = ".lock"
+    UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
     NO_ALT_SCREEN_FLAG = "--no-alt-screen"
     DAY_DIR_LOOKAROUND_DAYS = (-1, 0, 1)
     history_indexed = True
@@ -183,10 +187,18 @@ class CodexCli(AgentCli):
         return path.is_relative_to(root) or path.is_relative_to(root.resolve())
 
     def session_id_from_path(self, path: Path) -> str | None:
-        if not self.owns_transcript_path(path):
-            return None
-        match = self.ROLLOUT_UUID_RE.search(path.name)
-        return match.group(1) if match else None
+        if self.owns_transcript_path(path):
+            match = self.ROLLOUT_UUID_RE.search(path.name)
+            return match.group(1) if match else None
+        # codex 0.155 moved thread storage out of per-session rollout files and into a shared sqlite
+        # database, so a running codex no longer holds a file named after its own thread -- except this
+        # one, the writer lock it takes for the thread it is writing. It is what identity detection has
+        # left to recognise: without it a terminal started under the new codex never binds to a session,
+        # which shows up as a restart refusing because the identity "is still resolving".
+        if path.suffix == self.THREAD_LOCK_SUFFIX and path.parent.name == self.THREAD_LOCK_DIR.name and \
+                self.UUID_RE.fullmatch(path.stem):
+            return path.stem
+        return None
 
     def parse_transcript_lines(self, lines: Iterable[str]) -> list[dict[str, object]]:
         turns: list[dict[str, object]] = []

@@ -937,7 +937,8 @@ Object.assign(TermdeckApp.prototype, {
     this.$("restart-modal-model").placeholder = "unchanged";
     this.$("restart-modal-model-help").textContent = spec?.model_help ||
       "Leave blank to restart on the model the command already names.";
-    void this.fillModelSuggestionList("restart-modal-model-ids", session.agent_kind);
+    void this.fillModelSuggestionList("restart-modal-model-ids", session.agent_kind,
+      "restart-modal-model-effort", "restart-modal-model");
     const animations = this.$("restart-modal-disable-animations-field");
     animations.classList.toggle("hidden", !spec?.supports_disable_animations);
     this.$("restart-modal-disable-animations").checked = spec?.supports_disable_animations
@@ -962,7 +963,8 @@ Object.assign(TermdeckApp.prototype, {
     const permission = this.$("restart-modal-permission").value;
     const additionalArgs = this.$("restart-modal-additional-args").value;
     const modelField = this.$("restart-modal-model-field");
-    const modelName = modelField.classList.contains("hidden") ? "" : this.$("restart-modal-model").value.trim();
+    const modelName = modelField.classList.contains("hidden") ? ""
+      : this.modelNameWithEffort(this.$("restart-modal-model").value, "restart-modal-model-effort");
     const animationsField = this.$("restart-modal-disable-animations-field");
     const disableAnimations = !animationsField.classList.contains("hidden") &&
       this.$("restart-modal-disable-animations").checked;
