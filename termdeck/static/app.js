@@ -5836,7 +5836,11 @@ class TermdeckApp {
   }
 
   sessionListSignatureFor(sessions = this.sessions) {
-    return sessions.map((s) => s.session_id).join("|");
+    // Parentage is part of the shape of the list, not just of a row: filing a terminal under another
+    // moves it out of the list and into that terminal's group. Keyed on ids alone, the signature did
+    // not change when a terminal was filed, the list was not redrawn, and the move only appeared after
+    // something else forced a full render.
+    return sessions.map((s) => `${s.session_id}:${s.spawned_by_session_id || ""}`).join("|");
   }
 
   // onlySessionId scopes the DOM writes below to a single row. A status-websocket message already knows
@@ -6126,7 +6130,15 @@ class TermdeckApp {
         // Dragged out of the group it was filed under. Dropping a spawned agent back into the list is
         // how that relationship is undone, mirroring the drop onto a stack that made it. The move
         // happens after, because un-filing puts the terminal back in the layout it is being moved in.
-        const escaping = sourceSessionIds.filter((id) => this.session(id)?.spawned_by_session_id);
+        //
+        // Landing on something in its own group is not leaving it: that is rearranging the group, and
+        // treating it as an exit threw the agent out of the group it was being moved within.
+        const targetParentId = kind === "session"
+          ? (this.session(targetId)?.spawned_by_session_id || targetId) : "";
+        const escaping = sourceSessionIds.filter((id) => {
+          const parentId = this.session(id)?.spawned_by_session_id;
+          return parentId && parentId !== targetParentId;
+        });
         if (escaping.length) {
           const rect = item.getBoundingClientRect();
           const dropAfter = item.classList.contains("drop-after") ||
