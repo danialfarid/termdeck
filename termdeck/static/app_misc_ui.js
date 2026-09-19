@@ -770,13 +770,39 @@ Object.assign(TermdeckApp.prototype, {
 
   cycleTerminal(delta) {
     if (!this.sessions.length) return;
-    const ids = this.sessions.map((s) => s.session_id);
-    const current = ids.indexOf(this.activeId);
+    const ids = this.cycleTerminalOrder();
+    if (!ids.length) return;
+    const current = ids.indexOf(this.cycleTerminalAnchorId(ids));
     const next = current === -1 ? 0 : (current + delta + ids.length) % ids.length;
     // Keyboard cycling may move past the visible portion of the sidebar.
     // Reveal only this newly selected row; ordinary clicks and browser
     // history navigation should not continually reposition the sidebar.
     this.activate(ids[next], { history: false, reveal: true });
+  },
+
+
+  cycleTerminalOrder() {
+    // The order on screen, not the order of the session list. A spawned agent is drawn under the agent
+    // that spawned it rather than at its own place in the list, so the two disagree the moment anything
+    // is filed under anything: cycling by the session list walked past a parent's children to wherever
+    // they happened to sit in the list, which reads as the children being skipped. Taking the order off
+    // the rendered rows also means a collapsed stack is stepped over, because it draws no child rows.
+    const rows = this.$("session-list")?.querySelectorAll(".session-item[data-session-id]") || [];
+    const known = new Set(this.sessions.map((s) => s.session_id));
+    const ids = [...rows].map((row) => row.dataset.sessionId).filter((id) => known.has(id));
+    // Nothing rendered: the sidebar is hidden, or this ran before the first render. The session list is
+    // then the only order there is.
+    return ids.length ? ids : this.sessions.map((s) => s.session_id);
+  },
+
+
+  cycleTerminalAnchorId(ids) {
+    // The active terminal can be a child inside a collapsed stack, which has no row of its own. What is
+    // on screen in its place is the parent, so that is where the step starts from -- otherwise the first
+    // press jumps to the top of the list instead of to the neighbour of what is showing.
+    if (ids.includes(this.activeId)) return this.activeId;
+    const parentId = this.session(this.activeId)?.spawned_by_session_id || "";
+    return ids.includes(parentId) ? parentId : "";
   },
 
 

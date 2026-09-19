@@ -910,10 +910,16 @@ body.vscode-native-mode #project-terminal-search-btn { display: none !important;
   border: 0; background: none; cursor: pointer; z-index: 1;
 }
 .agent-stack-rule::before {
-  content: ""; position: absolute; left: 3px; top: 1px; bottom: 3px; width: 2px;
-  /* Tinted toward the accent rather than left at the border colour: this line is the only thing saying
-     these terminals belong to the one above, and at plain border grey it read as a divider. */
-  border-radius: 1px; background: color-mix(in srgb, var(--accent) 55%, var(--border));
+  /* It begins inside the parent row rather than at the top of the group, about half a row up, so it
+     reads as coming out of that terminal. Started at the group's own top edge it met the boundary
+     between two rows, and against a parent that is itself in someone's stack the two lines touched and
+     looked like one line running through both. Half a plain row: the padding plus half the title's
+     line box. A row carrying a description is taller, so this stays inside it either way. */
+  content: ""; position: absolute; left: 3px; width: 2px;
+  top: calc(-6px - 0.6 * var(--sidebar-font-size)); bottom: 3px;
+  /* Tinted toward the accent rather than left at the border colour, but only faintly: it is a hint that
+     these terminals belong to the one above, not something to read. */
+  border-radius: 1px; background: color-mix(in srgb, var(--accent) 30%, var(--border));
 }
 .agent-stack-rule:hover::before { background: var(--accent); }
 /* No indent: the rule beside them is what marks them as this terminal's, and every pixel taken off a
