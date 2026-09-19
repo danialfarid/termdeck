@@ -399,14 +399,13 @@ class HistorySearchIndex:
 
     @staticmethod
     def _reclaim_free_pages(database: sqlite3.Connection) -> None:
-        """Hand the pages freed by a delete back to the filesystem.
-
-        The fetchall is load-bearing, not tidiness. `PRAGMA incremental_vacuum` does its work one page
-        per step of the statement, and sqlite3 only steps a statement as its rows are consumed -- so
-        `execute()` alone returns exactly one page to the disk and leaves the rest on the freelist
-        (measured: freelist 25 -> 24). Draining the cursor runs it to completion.
-        """
-        database.execute("PRAGMA incremental_vacuum").fetchall()
+        remaining_pages = int(database.execute("PRAGMA freelist_count").fetchone()[0])
+        while remaining_pages:
+            database.execute("PRAGMA incremental_vacuum").fetchall()
+            next_remaining_pages = int(database.execute("PRAGMA freelist_count").fetchone()[0])
+            if next_remaining_pages >= remaining_pages:
+                return
+            remaining_pages = next_remaining_pages
 
     @staticmethod
     def _delete_sources(database: sqlite3.Connection, paths: list[str]) -> None:

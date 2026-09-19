@@ -10,6 +10,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Transcript-index cleanup reclaims all available free pages on Python 3.11 as well as newer Python versions.
+
 - Terminal find closes when you switch terminals, and its box is emptied. It stayed open on the next
   terminal, so Cmd+F there started searching the previous terminal's query against a buffer it was
   never typed for. Escape still closes it on the terminal being searched without losing what was typed.
