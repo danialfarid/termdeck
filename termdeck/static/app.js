@@ -286,6 +286,10 @@ const SEARCH_HISTORY_RECORD_DELAY_MS = 3000;
 const PROMPT_DRAFT_SYNC_PASTE_DELAY_MS = 250;
 const FILE_AUTOSAVE_DELAY_MS = 500;
 const SESSION_GROUP_HOVER_DELAY_MS = 700;
+// Holding on past the group offer files the terminal under the one being hovered instead. Two stages on
+// one spot rather than two places to aim at: the label changes as it passes, so the second is found by
+// anyone who holds a moment too long on the first.
+const SESSION_PARENT_HOVER_DELAY_MS = 1500;
 const CLOSED_SESSIONS_INITIAL_DISPLAY = 50;
 const CLOSED_SESSIONS_MAX_DISPLAY = 100;
 const TERMINAL_AGE_REFRESH_MS = 30000;
@@ -6087,33 +6091,14 @@ class TermdeckApp {
       const sourceGroupIds = [...new Set(sourceSessionIds.map((id) => sessionGroups[id]).filter(Boolean))];
       const targetGroup = targetId ? sessionGroups[targetId] : null;
       const rect = item.getBoundingClientRect();
+      const holdToFile = source.kind === "session" && kind === "session" && !!targetId &&
+        this.canFileUnderSession(targetId, sourceSessionIds);
       const holdToCreate = source.kind === "session" && kind === "session" &&
         !sourceGroupIds.length && !targetGroup;
-      const centerDrop = holdToCreate && event.clientY >= rect.top + rect.height * 0.25 &&
+      const centerDrop = (holdToCreate || holdToFile) && event.clientY >= rect.top + rect.height * 0.25 &&
         event.clientY <= rect.top + rect.height * 0.75;
-      if (holdToCreate && !centerDrop) {
-        this.clearDragLandingIndicator();
-        const after = event.clientY >= rect.top + rect.height / 2;
-        const moveLabel = source.kind === "group" ? "move group" : "move";
-        this.setDragLandingMode(item, after ? "drop-after" : "drop-before", `${moveLabel} ${after ? "after" : "before"}`);
-        return;
-      }
-      if (holdToCreate) {
-        if (this.dragGroupTargetKey === token) {
-          this.setDragLandingMode(item, "group-drop-target", "create group");
-          return;
-        }
-        if (this.dragGroupHoverKey !== token) {
-          this.clearDragLandingIndicator();
-          this.setDragLandingMode(item, "group-drop-pending", "hold to create group");
-          this.dragGroupHoverKey = token;
-          const sourceToken = source.token;
-          this.dragGroupTimer = window.setTimeout(() => {
-            if (this.dragItem?.type !== "layout" || this.dragItem.token !== sourceToken) return;
-            this.dragGroupTargetKey = token;
-            this.setDragLandingMode(item, "group-drop-target", "create group");
-          }, SESSION_GROUP_HOVER_DELAY_MS);
-        }
+      if (centerDrop) {
+        this.holdOverSessionRow(item, token, targetId, source.token, holdToCreate);
         return;
       }
       this.clearDragLandingIndicator();
@@ -6133,6 +6118,16 @@ class TermdeckApp {
         const sourceSessionIds = this.sessionIdsFromDragItem(source);
         const targetId = token.slice(token.indexOf(":") + 1);
         if (kind === "session" && sourceSessionIds.includes(targetId)) {
+          this.clearDragLandingIndicator();
+          this.dragItem = null;
+          return;
+        }
+        // Held in the middle of this row long enough to ask for it: file these under it. Ahead of the
+        // escape check below, which would otherwise read a child being moved from one parent to another
+        // as leaving its stack.
+        if (kind === "session" && this.dragParentTargetKey === token) {
+          event.stopPropagation();
+          void this.setSpawnedParent(sourceSessionIds, targetId);
           this.clearDragLandingIndicator();
           this.dragItem = null;
           return;
@@ -6214,9 +6209,67 @@ class TermdeckApp {
 
   clearDragGroupingTimer() {
     if (this.dragGroupTimer) window.clearTimeout(this.dragGroupTimer);
+    if (this.dragParentTimer) window.clearTimeout(this.dragParentTimer);
     this.dragGroupTimer = 0;
+    this.dragParentTimer = 0;
     this.dragGroupTargetKey = null;
+    this.dragParentTargetKey = null;
     this.dragGroupHoverKey = null;
+  }
+
+  // Whether these terminals can be filed under that one. A terminal cannot be its own parent, cannot be
+  // filed where it already is, and cannot be filed under one of its own children -- that last is a loop,
+  // and the sidebar would draw a stack that contains itself.
+  canFileUnderSession(targetId, sourceSessionIds) {
+    if (!this.session(targetId)) return false;
+    const descendsFromSource = (id) => {
+      const seen = new Set();
+      for (let at = id; at && !seen.has(at); at = this.session(at)?.spawned_by_session_id) {
+        if (sourceSessionIds.includes(at)) return true;
+        seen.add(at);
+      }
+      return false;
+    };
+    if (descendsFromSource(targetId)) return false;
+    return sourceSessionIds.some((id) => (this.session(id)?.spawned_by_session_id || "") !== targetId);
+  }
+
+  // The middle of a row, held. The first stage offers the group the middle has always made; holding on
+  // past it files the terminal under the row instead. Where grouping does not apply -- either side
+  // already in one -- filing is all the middle offers, and it is offered on the first stage.
+  holdOverSessionRow(item, token, targetId, sourceToken, groupStageApplies) {
+    if (this.dragParentTargetKey === token) {
+      this.setDragLandingMode(item, "group-drop-target", this.fileUnderLabel(targetId));
+      return;
+    }
+    if (groupStageApplies && this.dragGroupTargetKey === token) {
+      this.setDragLandingMode(item, "group-drop-target", "create group");
+      return;
+    }
+    if (this.dragGroupHoverKey === token) return;
+    this.clearDragLandingIndicator();
+    this.setDragLandingMode(item, "group-drop-pending",
+      groupStageApplies ? "hold to create group" : `hold to ${this.fileUnderLabel(targetId)}`);
+    this.dragGroupHoverKey = token;
+    const stillDragging = () => this.dragItem?.type === "layout" && this.dragItem.token === sourceToken;
+    if (groupStageApplies) {
+      this.dragGroupTimer = window.setTimeout(() => {
+        if (!stillDragging()) return;
+        this.dragGroupTargetKey = token;
+        this.setDragLandingMode(item, "group-drop-target", "create group");
+      }, SESSION_GROUP_HOVER_DELAY_MS);
+    }
+    this.dragParentTimer = window.setTimeout(() => {
+      if (!stillDragging()) return;
+      this.dragGroupTargetKey = null;
+      this.dragParentTargetKey = token;
+      this.setDragLandingMode(item, "group-drop-target", this.fileUnderLabel(targetId));
+    }, groupStageApplies ? SESSION_PARENT_HOVER_DELAY_MS : SESSION_GROUP_HOVER_DELAY_MS);
+  }
+
+  fileUnderLabel(targetId) {
+    const target = this.session(targetId);
+    return `file under ${target ? this.titlePresentation(target).text || targetId : targetId}`;
   }
 
   reorderSessions(draggedId, targetId, after = false) {
