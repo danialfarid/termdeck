@@ -5982,6 +5982,17 @@ class TermdeckApp {
     return this.session(sessionId) ? sessionId : "";
   }
 
+  spawnDropParentFor(targetId, sourceSessionIds) {
+    // The parent a drop onto this row would file the dragged terminals under, or "" when the drop is
+    // an ordinary reorder. Only rows that are themselves spawned agents: everything else in the list
+    // is positioned by the layout, and this must not take over dropping onto a plain terminal.
+    const parentId = targetId ? (this.session(targetId)?.spawned_by_session_id || "") : "";
+    if (!parentId || sourceSessionIds.includes(parentId)) return "";
+    // Already in this group: leave it as the reorder it looks like rather than re-filing it where it is.
+    if (sourceSessionIds.every((id) => (this.session(id)?.spawned_by_session_id || "") === parentId)) return "";
+    return parentId;
+  }
+
   setDragLandingMode(item, mode, label) {
     item.classList.remove("drop-before", "drop-after", "drop-group", "group-drop-pending", "group-drop-target");
     if (mode) item.classList.add(mode);
@@ -6034,6 +6045,22 @@ class TermdeckApp {
         } else this.setDragLandingMode(item, "drop-group", "add to group");
         return;
       }
+      // A row inside a parent's spawned agents is part of that group, so dropping onto it means the
+      // same as dropping onto the group: file this terminal under the same parent. Reordering against
+      // it is what used to happen, and it moved the layout under a row that is not drawn from the
+      // layout -- the order changed and nothing on screen did.
+      const spawnParentId = this.spawnDropParentFor(targetId, sourceSessionIds);
+      if (spawnParentId) {
+        // The group around this row is a drop target too, and it is this row's ancestor. Without this
+        // the event bubbles into it, it clears the indicator raised here and raises its own, so the
+        // highlight lands on the whole group rather than the row the pointer is actually over.
+        event.stopPropagation();
+        this.clearDragLandingIndicator();
+        const parent = this.session(spawnParentId);
+        this.setDragLandingMode(item, "drop-group",
+          `file under ${this.titlePresentation(parent).text || spawnParentId}`);
+        return;
+      }
       const sessionGroups = this.getProjectState().session_groups || {};
       const sourceGroupIds = [...new Set(sourceSessionIds.map((id) => sessionGroups[id]).filter(Boolean))];
       const targetGroup = targetId ? sessionGroups[targetId] : null;
@@ -6084,6 +6111,14 @@ class TermdeckApp {
         const sourceSessionIds = this.sessionIdsFromDragItem(source);
         const targetId = token.slice(token.indexOf(":") + 1);
         if (kind === "session" && sourceSessionIds.includes(targetId)) {
+          this.clearDragLandingIndicator();
+          this.dragItem = null;
+          return;
+        }
+        const spawnParentId = kind === "session" ? this.spawnDropParentFor(targetId, sourceSessionIds) : "";
+        if (spawnParentId) {
+          event.stopPropagation();
+          void this.setSpawnedParent(sourceSessionIds, spawnParentId);
           this.clearDragLandingIndicator();
           this.dragItem = null;
           return;

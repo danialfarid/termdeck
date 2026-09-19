@@ -150,7 +150,7 @@ body:not(.vscode-mode) #sidebar { color: var(--sidebar-text-color); --text: var(
 .group-drop-indicator { display: none; align-items: center; gap: 3px; flex: none; color: var(--accent); font-size: calc(var(--sidebar-font-size) - 2px); }
 .group-drop-indicator .codicon { font-size: 11px; }
 .session-item.drop-before .group-drop-indicator, .session-item.drop-after .group-drop-indicator,
-.agent-stack.drop-group .group-drop-indicator,
+.agent-stack.drop-group > .group-drop-indicator,
 .session-item.drop-group .group-drop-indicator, .session-item.group-drop-pending .group-drop-indicator,
 .session-item.group-drop-target .group-drop-indicator, .terminal-group-label.drop-before .group-drop-indicator,
 .terminal-group-label.drop-after .group-drop-indicator, .terminal-group-label.drop-group .group-drop-indicator,

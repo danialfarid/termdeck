@@ -87,8 +87,9 @@ All notable changes to this project are documented here. The format follows
   marked as the parent's by a rule down the left rather than by an indent, and clicking that rule folds
   them away again. The parent's own row carries a chevron for the same thing, shown on hover beside its
   close button and kept visible while the group is open.
-- A terminal can be dragged onto another's spawned-agent group to be filed under it, and dragged back
-  into the list to be un-filed. A drop that would close a loop is refused and says so.
+- A terminal can be dragged onto another's spawned agents — the summary line or any of the agents
+  themselves — to be filed under that same parent, and dragged back into the list to be un-filed. A drop
+  that would close a loop is refused and says so.
 - A terminal can be filed under another by hand, through
   `POST /api/sessions/{session_id}/spawned-by`, so a deck whose agents were spawned before TermDeck
   recorded that link can still be grouped. An empty parent clears it, and a parent that would close a
