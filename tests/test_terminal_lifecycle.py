@@ -2310,6 +2310,125 @@ class ClaudeCompactionCompletionTest(unittest.TestCase):
             self.assertFalse(AgentSessionTracker._claude_subagent_is_active(path))
 
 
+class ClaudeAbandonedTranscriptTest(unittest.TestCase):
+    """A transcript Claude has stopped writing to is not a turn in progress.
+
+    Claude moves a conversation into a new transcript file (a resume, a fork). The file it left keeps
+    whatever its last turn was -- typically an unfinished tool call -- for good, so a tab still bound to
+    it spins forever with nothing that can ever clear it. Codex has had this rule since a codex killed
+    mid-turn did the same; Claude had none.
+    """
+
+    def _transcript(self, directory: str, age_seconds: float) -> Path:
+        path = Path(directory) / "session.jsonl"
+        # An unfinished turn: the last thing in the file is a tool call with no result after it.
+        path.write_text(json.dumps({"type": "assistant", "message": {
+            "type": "message", "role": "assistant",
+            "content": [{"type": "tool_use", "name": "Bash"}]}}) + "\n")
+        stamp = time.time() - age_seconds
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def test_an_unfinished_turn_written_just_now_still_reads_active(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertTrue(AgentSessionTracker._claude_subagent_is_active(self._transcript(directory, 5)))
+
+    def test_a_long_quiet_tool_call_is_still_running(self) -> None:
+        # A single long tool call -- a test run, a build -- writes nothing until it returns, so the
+        # window has to be wide enough to sit through one.
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertTrue(AgentSessionTracker._claude_subagent_is_active(self._transcript(directory, 20 * 60)))
+
+    def test_an_unfinished_turn_nothing_has_touched_for_hours_reads_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertFalse(AgentSessionTracker._claude_subagent_is_active(self._transcript(directory, 10 * 3600)))
+
+
+class ClaudeRenamedInsideTheCliTest(unittest.TestCase):
+    """/rename typed inside Claude has to reach the tab.
+
+    Claude may already have moved the conversation to a new transcript by then, so the rename lands in a
+    file TermDeck is not bound to: the tab kept the old name, and read its activity off a transcript
+    that had stopped being written -- a spinner with nothing left to stop it. Rebinding was reserved for
+    the opposite case (the tab renamed, the bound transcript carrying a different name), so this one
+    never qualified.
+    """
+
+    def _session(self, directory: str, record_title: str, live_title: str):
+        manager = TerminalSessionManager()
+        saved = record("claude-cli-rename")
+        saved.agent_kind = "claude"
+        saved.agent_session_id = "old-session"
+        saved.command = "claude --resume old-session"
+        saved.title = record_title
+        saved.title_user_set = True
+        session = ManagedSession(saved)
+        session.cli_title = f"✳ {live_title}"
+        manager._sessions[saved.session_id] = session
+        # Written after the terminal was created, so the "bound file predates us" path cannot be what
+        # carries this: the rebind has to come from the names disagreeing.
+        (Path(directory) / "old-session.jsonl").write_text("{}\n")
+        manager._tracker.claude_project_dir = MagicMock(return_value=Path(directory))
+        manager._persist = MagicMock()
+        return manager, session, saved
+
+    def test_the_tab_follows_the_rename_onto_the_new_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager, session, saved = self._session(directory, "audit-wrapper", "etf-leverage")
+            manager._tracker.claude_explicit_session_title = MagicMock(
+                side_effect=lambda cwd, session_id: "audit-wrapper" if session_id == "old-session" else "etf-leverage")
+            manager._tracker.claude_session_id_for_explicit_title = MagicMock(return_value="new-session")
+
+            claude = agents.agent_cli("claude")
+            with patch.object(claude, "initialize_subagent_state"):
+                self.assertTrue(claude.reconcile_stale_binding(manager, session))
+
+            self.assertEqual(saved.agent_session_id, "new-session")
+
+    def test_it_takes_the_new_name_without_waiting_for_the_next_write(self) -> None:
+        # Otherwise a session renamed and then left alone keeps the old name on the tab until it says
+        # something, which is the report this came from.
+        with tempfile.TemporaryDirectory() as directory:
+            manager, session, saved = self._session(directory, "audit-wrapper", "etf-leverage")
+            manager._tracker.claude_explicit_session_title = MagicMock(
+                side_effect=lambda cwd, session_id: "audit-wrapper" if session_id == "old-session" else "etf-leverage")
+            manager._tracker.claude_session_id_for_explicit_title = MagicMock(return_value="new-session")
+            manager._remember_cli_title = MagicMock()
+
+            claude = agents.agent_cli("claude")
+            with patch.object(claude, "initialize_subagent_state"):
+                claude.reconcile_stale_binding(manager, session)
+
+            self.assertEqual(saved.title, "etf-leverage")
+
+    def test_a_title_that_is_not_an_explicit_name_does_not_move_the_binding(self) -> None:
+        # Claude's own summary of a conversation rides in the same OSC title but is never written as a
+        # custom title. Acting on one would rebind a terminal every time the summary drifted.
+        with tempfile.TemporaryDirectory() as directory:
+            manager, session, saved = self._session(directory, "audit-wrapper", "reviewing the etf wrappers")
+            manager._tracker.claude_explicit_session_title = MagicMock(return_value=None)
+            manager._tracker.claude_session_id_for_explicit_title = MagicMock(return_value=None)
+
+            claude = agents.agent_cli("claude")
+            with patch.object(claude, "initialize_subagent_state"):
+                self.assertFalse(claude.reconcile_stale_binding(manager, session))
+
+            self.assertEqual(saved.agent_session_id, "old-session")
+
+    def test_a_name_no_other_transcript_carries_leaves_the_binding_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager, session, saved = self._session(directory, "audit-wrapper", "etf-leverage")
+            manager._tracker.claude_explicit_session_title = MagicMock(
+                side_effect=lambda cwd, session_id: "audit-wrapper" if session_id == "old-session" else None)
+            manager._tracker.claude_session_id_for_explicit_title = MagicMock(return_value=None)
+
+            claude = agents.agent_cli("claude")
+            with patch.object(claude, "initialize_subagent_state"):
+                self.assertFalse(claude.reconcile_stale_binding(manager, session))
+
+            self.assertEqual(saved.agent_session_id, "old-session")
+
+
 class ReplayTrailingWipeTest(unittest.TestCase):
     """A recording that ends with a TUI's clear must not be replayed as a blank screen."""
 

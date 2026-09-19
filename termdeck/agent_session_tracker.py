@@ -33,6 +33,13 @@ class AgentSessionTracker:
     # else clears it. The cost of being wrong is a turn waiting on a tool call quieter than this being
     # called finished; the spinner comes back on its next write.
     _CODEX_ACTIVITY_STALE_SECONDS = 5 * 60
+    # The same rule for Claude, which had none: a transcript nothing has written to for this long is not
+    # mid-turn, whatever its last event says. It gets a far longer window than codex because a single
+    # long tool call (a test run, a build) writes nothing until it returns, and the freshness backstop --
+    # a spinner in the OSC title, refreshed within the last few seconds -- does not cover a quiet one.
+    # Reached by a transcript Claude has moved on from: the conversation continues in a new file and the
+    # old one keeps its unfinished last turn for good, so the tab it is still bound to spins forever.
+    _CLAUDE_ACTIVITY_STALE_SECONDS = 30 * 60
     _CLAUDE_PERMISSION_TAIL_BYTES = 256 * 1024
     _CLAUDE_PERMISSION_MODES = {"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
     _CLAUDE_INTERRUPT_TEXT_PREFIX = "[Request interrupted by user"
@@ -444,7 +451,12 @@ class AgentSessionTracker:
                 handle.seek(max(0, size - AgentSessionTracker._SUBAGENT_TAIL_BYTES))
                 raw = handle.read()
             lines = raw.decode(errors="replace").splitlines()
+            idle_seconds = time.time() - path.stat().st_mtime
         except OSError:
+            return False
+        # Before reading the events at all: every verdict below rests on the last event being unfinished,
+        # and nothing has been appended in long enough that no turn is still running.
+        if idle_seconds > AgentSessionTracker._CLAUDE_ACTIVITY_STALE_SECONDS:
             return False
         # Set while walking back past a local command's own result. /compact is the one local command
         # that then works for minutes with no other trace (measured: no OSC title updates and no
