@@ -214,7 +214,7 @@ Object.assign(TermdeckApp.prototype, {
       // frames painted, a visible jitter on every key press whenever any scrollback existed. The typing
       // key handler resumes following through the container instead, which is the surface that scrolls.
       scrollOnUserInput: false,
-      scrollback: 20000, cursorBlink: true, macOptionIsMeta: true, allowProposedApi: true,
+      scrollback: 20000, cursorBlink: this.terminalCursorBlinkEnabled(), macOptionIsMeta: true, allowProposedApi: true,
       linkHandler: { activate: (_event, uri) => { void this.openTerminalHyperlink(uri); } },
     });
     const fit = new FitAddon.FitAddon();

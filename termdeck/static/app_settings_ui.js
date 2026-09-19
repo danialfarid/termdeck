@@ -69,8 +69,10 @@ Object.assign(TermdeckApp.prototype, {
     document.documentElement.style.setProperty("--tree-scale",
       String(this.normalizeUiScale(treeFontSize / SETTINGS_DEFAULTS.tree_font_size)));
     this.applyThemeVariables();
+    const cursorBlink = this.terminalCursorBlinkEnabled();
     for (const view of this.views.values()) {
       if (view.term.options.fontSize !== terminalFontSize) view.term.options.fontSize = terminalFontSize;
+      if (view.term.options.cursorBlink !== cursorBlink) view.term.options.cursorBlink = cursorBlink;
       this.refreshTerminalAppearance(view);
     }
     if (this.editor) {
@@ -841,6 +843,11 @@ Object.assign(TermdeckApp.prototype, {
         this.settings.notify_agent_idle = next;
         if (next) this.maybeRequestNotificationPermission();
       }));
+    // Off is worth having for an agent whose composer redraws itself while it works: each redraw walks
+    // the cursor across the line and back, and the blink on top of that is what reads as flickering.
+    pop.appendChild(this.buildToggleRow("Terminal cursor blink",
+      () => (this.terminalCursorBlinkEnabled() ? "on" : "off"),
+      () => { this.settings.terminal_cursor_blink = !this.terminalCursorBlinkEnabled(); }));
     pop.appendChild(this.buildToggleRow("TermDeck API guidance for spawned agents",
       () => (this.settings.agent_api_instructions_enabled !== false ? "on" : "off"),
       () => { this.settings.agent_api_instructions_enabled = this.settings.agent_api_instructions_enabled === false; }));
@@ -887,6 +894,11 @@ Object.assign(TermdeckApp.prototype, {
     if (!this.runningVersion) void this.checkForUpdates();
     this.positionPopover(pop, anchor);
     this.updateEventlyDemoFeatureBanner();
+  },
+
+
+  terminalCursorBlinkEnabled() {
+    return this.settings.terminal_cursor_blink !== false;
   },
 
 

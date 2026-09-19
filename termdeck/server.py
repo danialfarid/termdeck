@@ -563,6 +563,9 @@ class UiSettings(BaseModel):
     show_mtime: bool = True
     show_git_status: bool = True
     editor_no_wrap: bool = False
+    # The block cursor in a terminal. Off is for agents whose composer redraws itself constantly: every
+    # redraw walks the cursor across the line and back, and a blinking cursor makes that flicker.
+    terminal_cursor_blink: bool = True
     # Ceiling for the transcript search index, in MB; 0 uses the built-in default. 0 or less disables it.
     history_index_max_mb: int = 0
     search_glob: str = "!*.json, !*.csv, !*.log"
