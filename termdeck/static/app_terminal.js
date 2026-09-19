@@ -221,6 +221,7 @@ Object.assign(TermdeckApp.prototype, {
     const terminalFindAddon = new SearchAddon.SearchAddon({ highlightLimit: TERMINAL_FIND_HIGHLIGHT_LIMIT });
     term.loadAddon(fit);
     if (terminalFindAddon) term.loadAddon(terminalFindAddon);
+    this.holdCursorBlinkOff(term);
     // The other half of taking xterm out of the scroll chain (style.css's overflow-y:hidden on
     // .xterm-viewport is the first half, and on its own does nothing here). xterm does not rely on that
     // element's CSS overflow to scroll -- it registers its own non-passive "wheel" listener and drives the

@@ -902,6 +902,22 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // The setting alone is not enough: a TUI asks for its own cursor with DECSCUSR (CSI Ps SP q), and
+  // xterm obeys by writing cursorStyle AND cursorBlink out of that parameter -- so codex, which asks for
+  // a blinking one, turned the blink straight back on and the switch looked broken. Taking the sequence
+  // here keeps the SHAPE it asked for (block, underline, bar) and drops only the blink, which is the
+  // part the setting is about. With blinking on, the sequence is left to xterm untouched.
+  holdCursorBlinkOff(term) {
+    const shapes = { 0: "block", 1: "block", 2: "block", 3: "underline", 4: "underline", 5: "bar", 6: "bar" };
+    term.parser.registerCsiHandler({ intermediates: " ", final: "q" }, (params) => {
+      if (this.terminalCursorBlinkEnabled()) return false;
+      term.options.cursorStyle = shapes[Number(params[0]) || 1] || "block";
+      term.options.cursorBlink = false;
+      return true;
+    });
+  },
+
+
   buildActionRow(labelText, buttonText, run) {
     const row = document.createElement("div");
     row.className = "settings-row";

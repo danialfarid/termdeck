@@ -79,5 +79,75 @@ class TerminalCursorBlinkSettingTest(unittest.TestCase):
         self.assertIn("terminal_cursor_blink: true", self.app_js)
 
 
+HANDLER_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_DECSCUSR_SCENARIO);
+const term = {
+  options: { cursorBlink: scenario.startBlink, cursorStyle: "block" },
+  parser: { registerCsiHandler(id, handler) { term.__id = id; term.__handler = handler; } },
+};
+const app = {
+  settings: scenario.settings,
+  terminalCursorBlinkEnabled() { return this.settings.terminal_cursor_blink !== false; },
+  __METHODS__
+};
+app.holdCursorBlinkOff(term);
+const handled = term.__handler([scenario.decscusr]);
+process.stdout.write(JSON.stringify({ id: term.__id, handled, options: term.options }));
+"""
+
+
+class CursorBlinkSurvivesTheAppsOwnRequestTest(unittest.TestCase):
+    """A TUI asks for its own cursor with DECSCUSR (CSI Ps SP q), and xterm obeys by writing both the
+    shape and the blink out of that one parameter. Codex asks for a blinking one on every repaint, which
+    turned the blink straight back on however the setting was left: the switch looked broken.
+
+    Taking that sequence keeps the shape it asked for and drops only the blink.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_settings_ui.js").read_text()
+        cls.harness = HANDLER_HARNESS.replace("__METHODS__", "\n  ".join(
+            method_source(source, name) for name in ("terminalCursorBlinkEnabled()", "holdCursorBlinkOff(term)")))
+
+    def decscusr(self, parameter: int, blink_setting: bool, start_blink: bool = False):
+        scenario = {"decscusr": parameter, "settings": {"terminal_cursor_blink": blink_setting},
+                    "startBlink": start_blink}
+        done = subprocess.run([self.node, "-e", self.harness], capture_output=True, text=True, check=False,
+                              env={**os.environ, "TERMDECK_DECSCUSR_SCENARIO": json.dumps(scenario)})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_it_listens_for_the_cursor_style_sequence(self) -> None:
+        # CSI Ps SP q: the space is what separates it from every other CSI ending in q.
+        self.assertEqual(self.decscusr(5, False)["id"], {"intermediates": " ", "final": "q"})
+
+    def test_a_blinking_cursor_asked_for_with_the_switch_off_is_refused(self) -> None:
+        result = self.decscusr(5, False)
+
+        self.assertIs(result["options"]["cursorBlink"], False)
+        self.assertIs(result["handled"], True)
+
+    def test_the_shape_it_asked_for_is_still_honored(self) -> None:
+        # Blinking bar: the blink goes, the bar stays. Dropping the sequence whole would leave codex's
+        # composer drawing a block where it asked for a bar.
+        self.assertEqual(self.decscusr(5, False)["options"]["cursorStyle"], "bar")
+        self.assertEqual(self.decscusr(3, False)["options"]["cursorStyle"], "underline")
+        self.assertEqual(self.decscusr(1, False)["options"]["cursorStyle"], "block")
+
+    def test_a_missing_parameter_is_a_block(self) -> None:
+        self.assertEqual(self.decscusr(0, False)["options"]["cursorStyle"], "block")
+
+    def test_with_the_switch_on_the_sequence_is_left_alone(self) -> None:
+        # Blinking is what the setting allows, so the app decides -- and xterm's own handler is what
+        # applies it, which only happens if this one passes it on.
+        result = self.decscusr(5, True, start_blink=True)
+
+        self.assertIs(result["handled"], False)
+
+
 if __name__ == "__main__":
     unittest.main()
