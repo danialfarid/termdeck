@@ -36,6 +36,22 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  discardTerminalFind() {
+    // Closing alone keeps the typed query in the box, which is what should happen when Escape closes
+    // find on the terminal it was searching. Leaving a terminal is different: the query went with that
+    // terminal, so the box is emptied too and the next Cmd+F starts clean.
+    //
+    // Does nothing when find was not open: closeTerminalFind focuses the terminal, and a switch must
+    // not hand focus back to the terminal being left.
+    const panel = this.$("terminal-find");
+    if (!panel || panel.classList.contains("hidden")) return false;
+    this.closeTerminalFind();
+    const input = this.$("terminal-find-input");
+    if (input) input.value = "";
+    return true;
+  },
+
+
   terminalFindOptions(incremental = false) {
     return { caseSensitive: false, incremental, decorations: TERMINAL_FIND_DECORATIONS };
   },
@@ -905,6 +921,20 @@ Object.assign(TermdeckApp.prototype, {
     const iconStatusActive = showDesktopBrandIndicator &&
       (presentation.spinning || this.unreadSessions.has(s.session_id));
     typeIcon.classList.toggle("terminal-status-active", iconStatusActive);
+    // A terminal that spawned agents carries the control for them, revealed on hover like the close
+    // button beside it. The summary line and the rule both toggle the same thing, but only this one is
+    // on the parent itself, which is where someone looks first for what a row can do.
+    const spawnedChildren = this.spawnedChildrenOf(s.session_id);
+    const stackToggle = document.createElement("button");
+    if (spawnedChildren.length) {
+      const open = this.agentStackExpanded(s.session_id);
+      stackToggle.className = "item-stack-toggle";
+      stackToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      stackToggle.title = `${open ? "Collapse" : "Expand"} ${spawnedChildren.length} spawned ` +
+        `agent${spawnedChildren.length === 1 ? "" : "s"}`;
+      stackToggle.innerHTML = `<span class="codicon codicon-chevron-${open ? "down" : "right"}"></span>`;
+      stackToggle.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(s.session_id); };
+    }
     const close = document.createElement("button");
     close.className = "item-close";
     close.textContent = "✕";
@@ -926,9 +956,10 @@ Object.assign(TermdeckApp.prototype, {
     groupIndicator.className = "group-drop-indicator";
     groupIndicator.innerHTML = '<span class="codicon codicon-folder-library"></span><span>group</span>';
     groupIndicator.title = "Release to group with this terminal";
-    if (showDesktopBrandIndicator) item.append(dot, typeIcon, titleStack, groupIndicator, close, mobileActions);
-    else if (useTextStatusIndicator) item.append(dot, typeIcon, titleStack, groupIndicator, close, mobileActions);
-    else item.append(dot, typeIcon, titleStack, groupIndicator, close, mobileActions);
+    const rowTail = spawnedChildren.length
+      ? [dot, typeIcon, titleStack, groupIndicator, stackToggle, close, mobileActions]
+      : [dot, typeIcon, titleStack, groupIndicator, close, mobileActions];
+    item.append(...rowTail);
     const activityDots = document.createElement("span");
     activityDots.className = "session-activity-dots";
     item.append(activityDots);
@@ -971,6 +1002,150 @@ Object.assign(TermdeckApp.prototype, {
     });
     this.makeLayoutDraggable(item, `session:${s.session_id}`, "session");
     list.appendChild(item);
+    this.renderSpawnedStack(s, list);
+  },
+
+
+  droppableUnderAgentStack(parentSessionId) {
+    // The sessions a drop would file here, or [] when the drop means nothing: the parent itself, or
+    // terminals already filed under it.
+    const source = this.dragItem;
+    if (!source || source.type !== "layout" || source.kind !== "session") return [];
+    if (source.worktreeId && source.worktreeId !== this.stateWorktreeId()) return [];
+    return this.sessionIdsFromDragItem(source).filter((id) =>
+      id !== parentSessionId && (this.session(id)?.spawned_by_session_id || "") !== parentSessionId);
+  },
+
+
+  makeAgentStackDropTarget(stack, parent) {
+    // setDragLandingMode writes its label into this element, so a stack without one shows the highlight
+    // and says nothing about what the drop would do.
+    const indicator = document.createElement("span");
+    indicator.className = "group-drop-indicator";
+    indicator.innerHTML = '<span class="codicon codicon-type-hierarchy-sub"></span><span>file under</span>';
+    stack.appendChild(indicator);
+    stack.ondragover = (event) => {
+      if (!this.droppableUnderAgentStack(parent.session_id).length) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      this.clearDragLandingIndicator();
+      this.setDragLandingMode(stack, "drop-group",
+        `file under ${this.titlePresentation(parent).text || parent.session_id}`);
+    };
+    stack.ondragleave = (event) => {
+      if (!event.relatedTarget || !stack.contains(event.relatedTarget)) this.clearDragLandingIndicator();
+    };
+    stack.ondrop = (event) => {
+      const sessionIds = this.droppableUnderAgentStack(parent.session_id);
+      event.preventDefault();
+      event.stopPropagation();
+      this.clearDragLandingIndicator();
+      this.dragItem = null;
+      if (sessionIds.length) void this.setSpawnedParent(sessionIds, parent.session_id);
+    };
+  },
+
+
+  async setSpawnedParent(sessionIds, parentSessionId) {
+    // Empty parent clears it, which is what dropping a child back into the list means.
+    const changed = [];
+    for (const sessionId of sessionIds) {
+      const session = this.session(sessionId);
+      if (!session || (session.spawned_by_session_id || "") === (parentSessionId || "")) continue;
+      const response = await fetch(`/api/sessions/${sessionId}/spawned-by`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parent_session_id: parentSessionId }),
+      });
+      if (response.ok) {
+        changed.push(sessionId);
+        continue;
+      }
+      // The server refuses a parent that would close a loop. Say so rather than leaving a drag that
+      // visibly did nothing.
+      const detail = await response.json().catch(() => ({}));
+      this.$("status-name").textContent = detail?.detail || "could not file that terminal";
+    }
+    if (changed.length) await this.refresh();
+    return changed.length;
+  },
+
+
+  spawnedChildrenOf(sessionId) {
+    return (this.spawnedChildrenByParent || new Map()).get(sessionId) || [];
+  },
+
+  agentStackExpanded(parentId) {
+    return this.expandedAgentStacks.has(parentId);
+  },
+
+  toggleAgentStack(parentId) {
+    if (!this.expandedAgentStacks.delete(parentId)) this.expandedAgentStacks.add(parentId);
+    try {
+      localStorage.setItem(EXPANDED_AGENT_STACKS_KEY, JSON.stringify([...this.expandedAgentStacks]));
+    } catch { /* a private window refuses storage; the stack still opens for this visit */ }
+    this.renderList();
+  },
+
+  renderSpawnedStack(parent, list) {
+    // Children are drawn here rather than at their own place in the layout, so an agent's spawned
+    // agents stay with it however the list is ordered. The layout walk skips them for the same reason.
+    const children = this.spawnedChildrenOf(parent.session_id);
+    if (!children.length) return;
+    const expanded = this.agentStackExpanded(parent.session_id);
+    const stack = document.createElement("div");
+    stack.className = "agent-stack" + (expanded ? " expanded" : " collapsed");
+    stack.dataset.parentId = parent.session_id;
+    this.makeAgentStackDropTarget(stack, parent);
+
+    // The rule belongs to both states: it is what says this group is the parent's, and it is the one
+    // control that is in the same place whether the stack is open or shut.
+    const rule = document.createElement("button");
+    rule.type = "button";
+    rule.className = "agent-stack-rule";
+    rule.setAttribute("aria-expanded", expanded ? "true" : "false");
+    rule.title = `${expanded ? "Collapse" : "Open"} ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
+    rule.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
+    stack.appendChild(rule);
+
+    if (expanded) {
+      const body = document.createElement("div");
+      body.className = "agent-stack-children";
+      for (const child of children) this.renderTerminalItem(child, body);
+      stack.appendChild(body);
+      list.appendChild(stack);
+      return;
+    }
+    // Collapsed, the whole group is one line under the parent: a dot carrying the children's combined
+    // state, how many there are, and the first couple by name. One line however many agents are down
+    // there, so a parent that spawned ten costs the sidebar the same as one that spawned two.
+    const summary = document.createElement("div");
+    summary.className = "agent-stack-summary";
+    summary.title = `Open ${children.length} spawned agent${children.length === 1 ? "" : "s"}`;
+    const dot = document.createElement("span");
+    dot.className = `agent-stack-dot status-dot ${this.spawnedChildrenState(children)}`;
+    const count = document.createElement("span");
+    count.className = "agent-stack-count";
+    count.textContent = String(children.length);
+    const names = document.createElement("span");
+    names.className = "agent-stack-names";
+    names.textContent = children.slice(0, AGENT_STACK_SUMMARY_NAMES)
+      .map((child) => this.titlePresentation(child).title || child.title || child.session_id)
+      .join("  ") + (children.length > AGENT_STACK_SUMMARY_NAMES ? "  …" : "");
+    summary.append(dot, count, names);
+    summary.onclick = (event) => { event.stopPropagation(); this.toggleAgentStack(parent.session_id); };
+    stack.appendChild(summary);
+    list.appendChild(stack);
+  },
+
+
+  spawnedChildrenState(children) {
+    // What the one dot has to stand for, worst news first: an agent waiting on an answer is the reason
+    // to look, then one still working, then one that finished while nobody was watching.
+    if (children.some((child) => this.attentionSessions.has(child.session_id))) return "attention";
+    if (children.some((child) => this.titlePresentation(child).spinning)) return "processing";
+    if (children.some((child) => this.unreadSessions.has(child.session_id))) return "unread";
+    return "idle";
   },
 
 
@@ -1016,8 +1191,20 @@ Object.assign(TermdeckApp.prototype, {
         ? allVisibleSessions.filter((session) => this.terminalSearchMatches.has(session.session_id))
         : allVisibleSessions;
       const sessionsById = new Map(visibleSessions.map((session) => [session.session_id, session]));
+      // A spawned agent is drawn under the agent that spawned it, so it is taken out of the ordinary
+      // walk. Only when the parent is visible here: with the parent filtered out by a search, or
+      // closed, the child has nothing to sit under and belongs back in the list on its own.
+      this.spawnedChildrenByParent = new Map();
+      for (const session of visibleSessions) {
+        const parentId = session.spawned_by_session_id;
+        if (!parentId || !sessionsById.has(parentId) || parentId === session.session_id) continue;
+        if (!this.spawnedChildrenByParent.has(parentId)) this.spawnedChildrenByParent.set(parentId, []);
+        this.spawnedChildrenByParent.get(parentId).push(session);
+      }
+      const stacked = new Set([...this.spawnedChildrenByParent.values()].flat().map((s) => s.session_id));
       const grouped = new Map(groups.map((group) => [group.id, []]));
       for (const session of visibleSessions) {
+        if (stacked.has(session.session_id)) continue;
         if (grouped.has(sessionGroups[session.session_id])) grouped.get(sessionGroups[session.session_id]).push(session);
       }
       const layout = this.terminalLayout(allVisibleSessions);
@@ -1037,7 +1224,7 @@ Object.assign(TermdeckApp.prototype, {
           continue;
         }
         const session = sessionsById.get(id);
-        if (!session || sessionGroups[id]) continue;
+        if (!session || sessionGroups[id] || stacked.has(id)) continue;
         if (previousRenderedToken) this.appendTerminalLayoutDropZone(list, entry);
         this.renderTerminalItem(session, list);
         previousRenderedToken = entry;
@@ -4169,13 +4356,8 @@ Object.assign(TermdeckApp.prototype, {
         () => this.openModal(null, session.session_id), "add");
       this.addContextItem(menu, this.shortcutLabel("Restart", "restart-terminal"),
         () => this.restartSession(session.session_id), "refresh");
-      const permissions = this.agentPermissions(session.agent_kind);
-      if (permissions.length > 1) {
-        this.addContextSubmenu(menu, "Restart with permission", permissions.map((entry) => ({
-          label: entry.label,
-          handler: () => this.restartSession(session.session_id, entry.value),
-          icon: "refresh",
-        })), "refresh");
+      if (this.agentSpec(session.agent_kind)?.is_agent) {
+        this.addContextItem(menu, "Restart with…", () => this.openRestartDialog(session), "refresh");
       }
       this.addContextItem(menu, "Stop", session.running ? () => this.stopSession(session.session_id) : null, "debug-stop");
       this.addContextItem(menu, this.shortcutLabel("Rename", "rename-terminal"),

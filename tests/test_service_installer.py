@@ -19,9 +19,13 @@ class ServiceInstallerRecoveryTest(unittest.TestCase):
         self.loaded = False
         self.directory = tempfile.TemporaryDirectory()
         self.unit_file = Path(self.directory.name) / "com.termdeck.plist"
+        # Kept inside the temporary directory: stop() and uninstall() delete the watchdog's unit file,
+        # and an unpatched path here would have the suite deleting the real ~/Library/LaunchAgents plist.
+        self.watchdog_unit = Path(self.directory.name) / "com.termdeck.watchdog.plist"
         patches = [
             patch.object(PlatformPaths, "IS_MACOS", True),
             patch.object(ServiceInstaller, "unit_file", staticmethod(lambda: self.unit_file)),
+            patch.object(ServiceInstaller, "watchdog_unit_files", staticmethod(lambda: [self.watchdog_unit])),
             patch.object(ServiceInstaller, "_run", staticmethod(self._record)),
             patch.object(ServiceInstaller, "_succeeds", staticmethod(lambda *argv: self.loaded)),
             patch.object(ServiceInstaller, "install", staticmethod(self._fake_install)),
@@ -33,6 +37,11 @@ class ServiceInstallerRecoveryTest(unittest.TestCase):
 
     def _record(self, *argv: str, check: bool = True) -> None:
         self.commands.append(argv)
+
+    def _server_commands(self) -> list[tuple[str, ...]]:
+        """What was issued against the server's own job, with the watchdog's scheduling filtered out."""
+        return [command for command in self.commands
+                if not any(ServiceInstaller.WATCHDOG_LABEL in argument for argument in command)]
 
     def _fake_install(self) -> Path:
         self.commands.append(("install",))
@@ -49,7 +58,8 @@ class ServiceInstallerRecoveryTest(unittest.TestCase):
 
         self.assertEqual(ServiceInstaller.restart(), "loaded and started")
 
-        self.assertEqual(self.commands, [("launchctl", "bootstrap", ServiceInstaller._launchd_domain(), str(self.unit_file))])
+        self.assertEqual(self._server_commands(),
+                         [("launchctl", "bootstrap", ServiceInstaller._launchd_domain(), str(self.unit_file))])
 
     def test_restart_on_a_loaded_service_kickstarts_it(self) -> None:
         self.loaded = True
@@ -63,7 +73,8 @@ class ServiceInstallerRecoveryTest(unittest.TestCase):
 
         self.assertEqual(ServiceInstaller.start(), "started")
 
-        self.assertEqual(self.commands, [("launchctl", "kickstart", f"{ServiceInstaller._launchd_domain()}/com.termdeck")])
+        self.assertEqual(self._server_commands(),
+                         [("launchctl", "kickstart", f"{ServiceInstaller._launchd_domain()}/com.termdeck")])
 
     def test_stop_unloads_the_job_and_keeps_the_unit_file(self) -> None:
         self.unit_file.write_text("plist")
@@ -71,7 +82,8 @@ class ServiceInstallerRecoveryTest(unittest.TestCase):
 
         self.assertEqual(ServiceInstaller.stop(), "stopped")
 
-        self.assertEqual(self.commands, [("launchctl", "bootout", f"{ServiceInstaller._launchd_domain()}/com.termdeck")])
+        self.assertEqual(self._server_commands(),
+                         [("launchctl", "bootout", f"{ServiceInstaller._launchd_domain()}/com.termdeck")])
         self.assertTrue(self.unit_file.exists())
 
     def test_stop_on_a_stopped_service_says_so_and_touches_nothing(self) -> None:

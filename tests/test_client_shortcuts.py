@@ -68,3 +68,36 @@ class MarkdownFileViewWiringTest(unittest.TestCase):
         button = re.search(r'<button id="file-tabs-more".*?</button>', self.index_html, re.S)
         self.assertIsNotNone(button, "#file-tabs-more not found")
         self.assertIn("codicon-chevron-down", button.group(0))
+
+
+class TranscriptFoldsAreOutOfFindsReachTest(unittest.TestCase):
+    """The transcript has no find bar, so Cmd+F there is the browser's find-in-page -- which searches
+    inside a closed <details> and forces it open on a match. Folded code edits, folded repetitions and
+    thinking blocks all sprang open on a search. The stylesheet takes their content out of find's reach
+    by hiding it outright, which only works while the transcript keeps folding with <details>.
+
+    tools/scroll-tests/transcript_find_respects_folds.cjs checks the behaviour in a real browser,
+    including a control fold that proves the rule is what makes the difference. This is the cheap guard
+    that the two halves are still there.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        static = Path(__file__).resolve().parent.parent / "termdeck" / "static"
+        cls.app_js = "\n".join(path.read_text() for path in sorted(static.glob("app*.js")))
+        cls.style_css = (static / "style.css").read_text()
+
+    def test_the_transcript_folds_with_details(self) -> None:
+        self.assertIn('document.createElement("details")', self.app_js)
+
+    def test_a_closed_fold_in_the_transcript_hides_its_content(self) -> None:
+        rule = re.search(r"#history-body details:not\(\[open\]\)[^{]*\{([^}]*)\}", self.style_css)
+        self.assertIsNotNone(rule, "nothing hides the content of a closed transcript fold")
+        # content-visibility or visibility would not do: find-in-page reaches into both, and reveals
+        # them. Only display:none is skipped outright.
+        self.assertIn("display: none", rule.group(1))
+
+    def test_the_summary_is_not_hidden_with_it(self) -> None:
+        # The summary is the fold's only handle; hiding it would leave nothing to click.
+        rule = re.search(r"#history-body details:not\(\[open\]\)([^{]*)\{", self.style_css)
+        self.assertIn(":not(summary)", rule.group(1))

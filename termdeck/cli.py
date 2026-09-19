@@ -14,7 +14,7 @@ class TermdeckCli:
     what lets `termdeck --port 9000 service install` bake the same port into the generated service unit.
 
     Subcommands: (none) runs the server, `doctor` reports external dependencies, `service` manages the
-    always-on launchd/systemd unit."""
+    always-on launchd/systemd unit and the freeze watchdog installed beside it."""
 
     PROGRAM_NAME = "termdeck"
     DESCRIPTION = "Browser terminal deck with persistent sessions and claude/codex resume."
@@ -28,6 +28,9 @@ class TermdeckCli:
     SERVICE_RESTART = "restart"
     SERVICE_STATUS = "status"
     SERVICE_LOGS = "logs"
+    SERVICE_WATCHDOG = "watchdog"
+    # What the scheduled watchdog job itself runs: one probe, then exit.
+    SERVICE_WATCHDOG_TICK = "watchdog-tick"
     COMMAND_DEST = "command"
     BROWSER_OPEN_DELAY_SECONDS = 1.5
     EXIT_OK = 0
@@ -68,7 +71,8 @@ class TermdeckCli:
                                     choices=(TermdeckCli.SERVICE_INSTALL, TermdeckCli.SERVICE_UNINSTALL,
                                              TermdeckCli.SERVICE_START, TermdeckCli.SERVICE_STOP,
                                              TermdeckCli.SERVICE_RESTART, TermdeckCli.SERVICE_STATUS,
-                                             TermdeckCli.SERVICE_LOGS))
+                                             TermdeckCli.SERVICE_LOGS, TermdeckCli.SERVICE_WATCHDOG,
+                                             TermdeckCli.SERVICE_WATCHDOG_TICK))
         return parser
 
     @staticmethod
@@ -154,6 +158,16 @@ class TermdeckCli:
             return TermdeckCli.EXIT_OK
         if action == TermdeckCli.SERVICE_RESTART:
             print(f"{installer.restart()} · {url}")
+            return TermdeckCli.EXIT_OK
+        if action in (TermdeckCli.SERVICE_WATCHDOG, TermdeckCli.SERVICE_WATCHDOG_TICK):
+            from termdeck.service_watchdog import ServiceWatchdog
+
+            watchdog = ServiceWatchdog(installer)
+            if action == TermdeckCli.SERVICE_WATCHDOG_TICK:
+                print(watchdog.tick())
+                return TermdeckCli.EXIT_OK
+            print(watchdog.describe())
+            print(f"scheduled: {'yes' if installer.is_watchdog_loaded() else 'no'}")
             return TermdeckCli.EXIT_OK
         argv = installer.status_argv() if action == TermdeckCli.SERVICE_STATUS else installer.logs_argv()
         return subprocess.run(argv).returncode

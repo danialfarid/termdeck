@@ -6,8 +6,28 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-09-19
+
 ### Fixed
 
+- Transcript-index cleanup reclaims all available free pages on Python 3.11 as well as newer Python versions.
+
+- Terminal find closes when you switch terminals, and its box is emptied. It stayed open on the next
+  terminal, so Cmd+F there started searching the previous terminal's query against a buffer it was
+  never typed for. Escape still closes it on the terminal being searched without losing what was typed.
+- A prompt sent through the API is checked for having arrived, and Enter pressed again for up to 15
+  seconds if it has not. The Enter that submits a pasted prompt only lands once the agent's TUI has
+  taken the paste, and the wait for that was a flat 80ms — fine for an idle terminal, not for one
+  streaming tens of thousands of tokens, where the Enter was absorbed and the prompt sat in the
+  composer looking sent. TermDeck now waits for the terminal's own output to go quiet before pressing
+  Enter, and treats the prompt as delivered only once it appears as a user turn in the agent's
+  transcript.
+- A codex terminal stops showing progress once its turn has plainly stopped. A turn ends with
+  `task_complete` or `turn_aborted`, but a codex killed mid-turn — a restart, a crash — writes neither,
+  so the last thing in its transcript stayed `task_started` and the terminal spun for good, its dtach
+  session alive so nothing else cleared it. An unfinished turn whose transcript has not been written to
+  for five minutes now reads as stopped.
+- Terminal layout changes made in one browser or mobile device now arrive in other connected TermDeck views without requiring a refresh.
 - Resuming a terminal the deck already has sends the agent's session id rather than TermDeck's own, which
   meant nothing to the agent: the command came out as `--resume <deck id>` and the resume picker answered
   "No sessions match". A name that belongs to a terminal whose agent has never started a session now says
@@ -17,6 +37,10 @@ All notable changes to this project are documented here. The format follows
   name for a NEW session and an empty one opened under it. Claude's named sessions for the chosen
   directory are now offered in the field's suggestions and resolved when typed, and an agent session id
   pasted in is accepted as well.
+- Opening the keyboard on a phone keeps the end of the transcript in view above the composer. The pane
+  shrank to the space the keyboard left but held its scroll position, so the newest lines — the ones
+  being replied to — slid behind the keyboard. Someone who had scrolled up to read something is left
+  where they were.
 - A dialog on a phone stays inside the part of the screen the keyboard has left, and scrolls, so the field
   being typed into cannot end up underneath the keyboard. A dialog is positioned against the whole screen,
   which the keyboard does not shrink.
@@ -32,11 +56,64 @@ All notable changes to this project are documented here. The format follows
   Holding both copies is what turned one prompt into two: the next thing typed landed on the end of the
   old text and went out as a single message, leaving the original behind as a second pending entry.
 - A prompt is called unconfirmed after 25 seconds rather than 60.
+- Terminal recordings whose session is gone are collected every 15 minutes. Recordings were only ever
+  deleted for Claude, so every Codex, Opencode and plain shell session left one behind: 1,143 of 1,227
+  files in one deck's scrollback directory belonged to no session. Cleanup now reconciles the whole
+  directory against the sessions the deck still has, so it does not depend on having witnessed the
+  close, and it costs the startup path nothing.
+- Terminal recordings are stored as `<session>.replay.bin`. The old `.claude-replay.bin` name described
+  only the first agent to use them and made a Claude-only cleanup look correct; recordings already
+  written under it are still read and appended to, so upgrading keeps every open terminal's scrollback.
+- The transcript search index no longer grows without limit. It indexes every agent transcript on the
+  machine, a corpus that only grows and that TermDeck does not own, and it had no ceiling of any kind:
+  on one deck it reached 3.5GB, filled the disk and wedged the server. It now keeps to roughly 3GB by default,
+  evicting the oldest transcripts when it passes that, and drops transcripts that have been deleted
+  from disk instead of keeping their search hits forever. Evicted transcripts stay evicted rather than
+  being indexed straight back in by the next startup scan, and come back if something appends to them
+  or the index is rebuilt.
+- Transcript changes are indexed in batches of a few seconds rather than one at a time, so a streaming
+  agent no longer has the indexer re-reading its transcript on every append.
+- The indexer survives a full or failing disk instead of stopping for the life of the server. It reports
+  itself degraded, keeps retrying every few minutes without waiting for another transcript to change,
+  and resumes on its own once storage recovers — which matters most because the size cleanup that would
+  relieve the disk pressure is part of what used to be lost.
+
+### Added
+
+- The terminal context menu's "Restart with permission" submenu is now "Restart with…", a dialog that
+  takes a permission and additional start parameters together and shows the command it is about to run.
+  A parameter typed here replaces the matching option already on that command rather than being added
+  beside it, and unparseable parameters are refused while the terminal is still running.
+- Agents an agent spawns are grouped under it in the sidebar, rather than scattered through the list as
+  unrelated terminals. Collapsed they are one line: a dot carrying their combined state — throbbing
+  while any is working, lit when one has finished unread, ringed when one is waiting on an answer —
+  then how many there are and the first couple by name. Clicking the line opens them at full size,
+  marked as the parent's by a rule down the left rather than by an indent, and clicking that rule folds
+  them away again. The parent's own row carries a chevron for the same thing, shown on hover beside its
+  close button and kept visible while the group is open.
+- A terminal can be dragged onto another's spawned agents — the summary line or any of the agents
+  themselves — to be filed under that same parent, and dragged back into the list to be un-filed. A drop
+  that would close a loop is refused and says so.
+- A terminal can be filed under another by hand, through
+  `POST /api/sessions/{session_id}/spawned-by`, so a deck whose agents were spawned before TermDeck
+  recorded that link can still be grouped. An empty parent clears it, and a parent that would close a
+  loop is refused.
+- A freeze watchdog is installed and scheduled alongside the service, so a deck that stops answering
+  while still running is restarted on its own instead of waiting to be noticed. A wedged server keeps
+  its port open and its process alive, so launchd KeepAlive and systemd Restart=always consider it
+  healthy; the watchdog asks it a question over HTTP every couple of minutes and restarts it after
+  three unanswered asks in a row. Restarts that do not produce a healthy deck back off — 5, 10, 20, 40
+  minutes, up to an hour — so an install that cannot start is not held in a crash loop. A deck stopped
+  with `termdeck service stop` is left stopped.
+- `termdeck service watchdog` reports whether the watchdog is scheduled, when it last probed, and
+  whether it has had to restart anything.
+- `GET /api/health` reports that the server is alive.
+- A `history_index_max_mb` setting caps the transcript search index. Unset or 0 uses the 3GB default;
+  a negative value turns the ceiling off.
 
 ## [0.16.2] — 2026-09-17
 
 ### Changed
-
 - Terminal rows no longer show session details in a hover tooltip; use the terminal context menu's Info action to open those details in a modal.
 - The active terminal Info action is available from the context menu and its keyboard shortcut.
 - Native Cmd+C copying is no longer intercepted by the generic app shortcut dispatcher, preserving reliable selection copying.
@@ -863,7 +940,11 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/danialfarid/termdeck/compare/v0.16.2...v0.17.0
+[0.16.2]: https://github.com/danialfarid/termdeck/compare/v0.16.1...v0.16.2
+[0.16.1]: https://github.com/danialfarid/termdeck/compare/v0.16.0...v0.16.1
+[0.16.0]: https://github.com/danialfarid/termdeck/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/danialfarid/termdeck/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/danialfarid/termdeck/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/danialfarid/termdeck/compare/v0.13.0...v0.14.0

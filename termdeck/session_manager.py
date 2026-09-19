@@ -103,6 +103,10 @@ class ManagedSession:
         self.output_activity_expiry_task: asyncio.Task | None = None
         self.last_activity_at = record.last_activity_at
         self.last_activity_broadcast_monotonic = 0.0
+        # When this terminal last produced output. Unlike last_activity_at it is not suppressed around
+        # repaints and is monotonic, because what reads it wants "is the TUI still talking", not "has
+        # anything interesting happened".
+        self.last_output_monotonic = 0.0
         # Per-agent runtime state (activity flags, signatures, pending renames); shape is owned
         # by the AgentCli, None for plain shells.
         self.agent_state = agents.agent_cli(record.agent_kind).new_session_state()
@@ -169,6 +173,7 @@ class TerminalSessionManager:
         self._status_queues: set[asyncio.Queue] = set()
         self._draft_persist_task: asyncio.Task | None = None
         self._background_loop: asyncio.AbstractEventLoop | None = None
+        self._replay_sweep_task: asyncio.Task[None] | None = None
         self._agent_activity_refresh_handles: dict[Path, asyncio.TimerHandle] = {}
         self._claude_activity_confirmation_handles: dict[Path, asyncio.TimerHandle] = {}
         self._transcript_service = None
@@ -209,9 +214,36 @@ class TerminalSessionManager:
     def start_background_tasks(self) -> None:
         self._background_loop = asyncio.get_running_loop()
         self._claude_activity_watcher.start()
+        self._replay_sweep_task = asyncio.create_task(self._sweep_replays_periodically())
+
+    async def _sweep_replays_periodically(self) -> None:
+        """Collect recordings whose session is gone, for as long as the deck is up.
+
+        The single owner of deleting recordings from disk. Not at close, which a kill can skip, and not
+        at startup, which would delay the boot of the deck it is tidying up after; reconciling on a
+        timer needs to have witnessed neither.
+        """
+        while True:
+            await asyncio.sleep(TermdeckConfig.REPLAY_SWEEP_INTERVAL_SECONDS)
+            try:
+                removed_files, removed_bytes = await self.replay.sweep_orphaned_replays()
+            except asyncio.CancelledError:
+                raise
+            except Exception as sweep_error:  # noqa: BLE001 - the loop must outlive one bad sweep
+                # This task is the only thing that deletes recordings. An exception escaping the loop
+                # retires it for the life of the process, and on a deck that is never restarted that
+                # means never again -- so a failed sweep waits for the next interval instead.
+                print(f"termdeck replay sweep failed: {sweep_error!r}", flush=True)
+                continue
+            if removed_files:
+                print(f"termdeck swept {removed_files} orphaned replay files "
+                      f"({removed_bytes // 1_000_000}MB)", flush=True)
 
     def stop_background_tasks(self) -> None:
         self._claude_activity_watcher.stop()
+        if self._replay_sweep_task is not None:
+            self._replay_sweep_task.cancel()
+            self._replay_sweep_task = None
         self.replay.stop()
         for handle in self._agent_activity_refresh_handles.values():
             handle.cancel()
@@ -254,9 +286,6 @@ class TerminalSessionManager:
             ms.lazy_start_pending = True
             self.replay.restore_saved_buffers(ms)
         self.replay.enforce_total_limit()
-        removed_files, removed_bytes = self.replay.remove_closed_claude_replays()
-        if removed_files:
-            print(f"termdeck removed {removed_files} closed Claude replay files ({removed_bytes} bytes)", flush=True)
         # Do not launch old terminals merely because the web server came up.
         # Reconcile their dtach sockets instead: live sockets remain running
         # and are attached lazily when opened; dead sockets are safe to clear.
@@ -904,6 +933,9 @@ class TerminalSessionManager:
     def _broadcast_status(self, ms: ManagedSession) -> None:
         ms.last_activity_broadcast_monotonic = time.monotonic()
         payload = self._status_payload(ms)
+        self.broadcast_status_event(payload)
+
+    def broadcast_status_event(self, payload: dict[str, object]) -> None:
         for queue in list(self._status_queues):
             queue.put_nowait(payload)
 
@@ -1070,6 +1102,7 @@ class TerminalSessionManager:
         data = self._answer_and_strip_color_queries(ms, data)
         if not data:
             return
+        ms.last_output_monotonic = time.monotonic()
         # Ahead of the recorder and the live queues alike, so every consumer sees the rescued screen.
         data = self._carry_screen_before_compaction_redraw(ms, data)
         # Same reasoning: rewritten before anything records or forwards it, so a status repaint cannot
@@ -1458,8 +1491,10 @@ class TerminalSessionManager:
             else:
                 payload += normalized
         self.write_input(session_id, payload)
-        await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
+        await self._wait_for_paste_to_settle(ms)
         self.write_input(session_id, "\t" if queue else "\r")
+        if not queue:
+            await self._press_enter_until_prompt_lands(ms, normalized)
         if queue:
             ms.record.draft = ""
             ms.draft_tracker = DraftInputTracker("")
@@ -1470,6 +1505,61 @@ class TerminalSessionManager:
         # if the browser is refreshed immediately afterward.
         self._persist()
         self._broadcast_control(self._sessions[session_id], {WsMessageFields.TYPE: WsMessageFields.PROMPT_SUBMITTED})
+
+    async def _wait_for_paste_to_settle(self, ms: ManagedSession) -> None:
+        """Wait until the terminal has stopped producing output, so Enter lands after the paste.
+
+        The paste echoes: a TUI that has taken it says so by drawing it. Waiting for that to go quiet
+        follows however far behind the TUI actually is, where a fixed delay only guesses. Capped, so a
+        terminal that never stops talking -- an agent streaming a long answer -- still gets its Enter.
+        """
+        deadline = time.monotonic() + TermdeckConfig.PROMPT_SUBMIT_SETTLE_MAX_SECONDS
+        await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
+        while time.monotonic() < deadline:
+            quiet_for = time.monotonic() - ms.last_output_monotonic
+            if quiet_for >= TermdeckConfig.PROMPT_SUBMIT_SETTLE_QUIET_SECONDS:
+                return
+            await asyncio.sleep(min(TermdeckConfig.PROMPT_SUBMIT_SETTLE_QUIET_SECONDS - quiet_for, 0.1))
+
+    async def _press_enter_until_prompt_lands(self, ms: ManagedSession, text: str) -> None:
+        """Keep pressing Enter until the prompt shows up in the agent's transcript, or time runs out.
+
+        An absorbed Enter leaves the prompt sitting in the composer looking sent, and nothing notices.
+        The transcript is the authority on whether the agent has it -- the same signal the transcript
+        view waits for before it stops calling a prompt unconfirmed.
+        """
+        if not text.strip() or self._transcript_service is None:
+            return
+        agent = agents.agent_cli(ms.record.agent_kind)
+        if not agent.is_agent:
+            return
+        deadline = time.monotonic() + TermdeckConfig.PROMPT_SUBMIT_CONFIRM_SECONDS
+        presses = 0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_CONFIRM_POLL_SECONDS)
+            if not ms.running:
+                return
+            if await asyncio.to_thread(self._transcript_has_prompt, ms, text):
+                return
+            self.write_input(ms.record.session_id, "\r")
+            presses += 1
+        print(f"termdeck prompt for {ms.record.session_id} was not confirmed in the transcript after "
+              f"{int(TermdeckConfig.PROMPT_SUBMIT_CONFIRM_SECONDS)}s and {presses} further Enter(s)", flush=True)
+
+    def _transcript_has_prompt(self, ms: ManagedSession, text: str) -> bool:
+        """Whether the tail of the agent's transcript already carries this prompt as a user turn."""
+        # The first line is enough to match on, and is what survives an agent's own reformatting of a
+        # long pasted prompt. Transcripts run to tens of megabytes, so only the tail is read.
+        needle = next((line.strip() for line in text.splitlines() if line.strip()), "")[:120]
+        if not needle:
+            return False
+        try:
+            agent_kind, cwd, agent_session_id = self.session_history_source(ms.record.session_id)
+            page = self._transcript_service.history_page(agent_kind, cwd, agent_session_id)
+        except (KeyError, OSError, ValueError):
+            return False
+        return any(str(turn.get("role")) == "user" and needle in str(turn.get("text") or "")
+                   for turn in (page.get("turns") or []))
 
     async def _wait_for_prompt_ready(self, ms: ManagedSession) -> None:
         """Avoid losing the first API/Markdown prompt while a new agent TUI boots.
@@ -1607,7 +1697,7 @@ class TerminalSessionManager:
         self._schedule_screen_repaint(ms, 0)
         return ms.screen_repaint_task is not None
 
-    async def restart_session(self, session_id: str, permission: str = "") -> None:
+    async def restart_session(self, session_id: str, permission: str = "", additional_args: str = "") -> None:
         ms = self._sessions[session_id]
         agent = agents.agent_cli(ms.record.agent_kind)
         if ms.detect_task is not None:
@@ -1620,6 +1710,10 @@ class TerminalSessionManager:
             permission = agent.restart_permission(self, ms)
         if permission:
             self._set_restart_permission(ms.record, permission)
+        if additional_args.strip():
+            # After the permission, so a flag typed here wins over the one the menu picked: someone
+            # writing it out by hand is being more specific than someone choosing from a list.
+            ms.record.command = self.append_additional_start_arguments(ms.record.command, additional_args)
         self._persist()
         if not await self._terminate_proc(ms):
             raise RuntimeError(f"could not stop dtach session before restart: {session_id}")
@@ -1689,6 +1783,42 @@ class TerminalSessionManager:
             ms.record.description = clean_description
         self._persist()
         self._broadcast_status(ms)
+
+    def set_spawned_by(self, session_id: str, parent_session_id: str) -> None:
+        """Record which terminal asked for this one, so the sidebar can file it under that terminal.
+
+        Ignores a parent that is not a session the deck still has, and refuses to make a terminal its
+        own parent -- either would leave the sidebar building a stack that cannot be drawn.
+        """
+        if session_id == parent_session_id or parent_session_id not in self._sessions:
+            return
+        ms = self._sessions[session_id]
+        ms.record.spawned_by_session_id = parent_session_id
+        self._persist()
+        self._broadcast_status(ms)
+
+    def clear_spawned_by(self, session_id: str) -> None:
+        ms = self._sessions[session_id]
+        ms.record.spawned_by_session_id = None
+        self._persist()
+        self._broadcast_status(ms)
+
+    def would_cycle_spawned_by(self, session_id: str, parent_session_id: str) -> bool:
+        """Whether filing session_id under parent_session_id closes a loop.
+
+        The task API cannot produce one -- a child is always newer than its origin -- but filing by hand
+        can, and a cycle is a stack that contains itself: the sidebar would recurse until the page died.
+        Walks up from the proposed parent looking for the terminal being filed.
+        """
+        seen: set[str] = set()
+        ancestor: str | None = parent_session_id
+        while ancestor and ancestor not in seen:
+            if ancestor == session_id:
+                return True
+            seen.add(ancestor)
+            found = self._sessions.get(ancestor)
+            ancestor = found.record.spawned_by_session_id if found else None
+        return False
 
     @staticmethod
     def _termdeck_session_url_path(record: SessionRecord) -> str:

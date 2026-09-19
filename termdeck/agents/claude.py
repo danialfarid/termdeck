@@ -597,7 +597,16 @@ class ClaudeCli(AgentCli):
         normalized_current_title = tracker._normalized_claude_title(current_explicit_title)
         renamed_title_points_to_another_transcript = ms.record.title_user_set and normalized_live_title and \
             normalized_record_title == normalized_live_title and normalized_current_title != normalized_live_title
-        if current_mtime >= created_at and not renamed_title_points_to_another_transcript:
+        # The other way round: /rename typed INSIDE Claude, after Claude had already moved the
+        # conversation to a new transcript file. The name it now shows is on that new file, while the
+        # one we are bound to still carries the old name -- so the tab kept the old name, and read its
+        # activity off a transcript that stopped being written, which is a spinner that never stops.
+        # Both names being explicit is what makes this safe to act on: Claude's own summary of a
+        # conversation is not written as a custom title, so this cannot fire on a summary drifting.
+        renamed_inside_the_cli = bool(normalized_current_title) and bool(normalized_live_title) and \
+            normalized_current_title != normalized_live_title
+        if current_mtime >= created_at and not renamed_title_points_to_another_transcript and \
+                not renamed_inside_the_cli:
             return False
         replacement = tracker.claude_session_id_for_explicit_title(
             cwd, live_title, created_at, manager._claimed_agent_ids(ms))
@@ -605,6 +614,10 @@ class ClaudeCli(AgentCli):
             return False
         manager._set_agent_session_binding(ms, replacement)
         self.initialize_subagent_state(manager, ms)
+        # The name that led us here is on the transcript we just bound, so take it now rather than
+        # waiting for the next write to that file: a renamed session that then sits idle would keep the
+        # old name on the tab until it said something.
+        self.sync_explicit_title(manager, ms)
         manager._persist()
         return True
 

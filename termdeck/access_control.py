@@ -12,7 +12,11 @@ class DirectAccessPolicy:
     COOKIE_NAME = "termdeck_access"
     COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
     COOKIE_CONTEXT = b"termdeck-browser-access-v1"
-    EXEMPT_PATHS = frozenset({"/access", "/api/access/status", "/api/access/login", "/api/access/logout"})
+    # /api/health is exempt so the freeze watchdog can tell "wedged" from "asking without a token". Its
+    # body is the constant {"status": "ok"}, so an unauthenticated caller learns nothing they could not
+    # learn by watching the port accept connections.
+    EXEMPT_PATHS = frozenset({"/access", "/api/access/status", "/api/access/login", "/api/access/logout",
+                              "/api/health"})
     READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
     def __init__(self, bearer_token: str, read_only: bool) -> None:

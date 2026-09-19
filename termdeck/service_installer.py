@@ -15,6 +15,13 @@ class ServiceInstaller:
 
     LABEL = "com.termdeck"
     SYSTEMD_UNIT_NAME = "termdeck.service"
+    # The freeze watchdog ships as a second, short-lived job on a timer rather than as a thread inside
+    # the server: the failure it watches for is the server's own event loop stopping, and nothing running
+    # on that loop can report that it has stopped.
+    WATCHDOG_LABEL = "com.termdeck.watchdog"
+    WATCHDOG_SYSTEMD_UNIT_NAME = "termdeck-watchdog.service"
+    WATCHDOG_SYSTEMD_TIMER_NAME = "termdeck-watchdog.timer"
+    WATCHDOG_ARGS = ("service", "watchdog-tick")
     LAUNCHD_PLIST_DIR = Path.home() / "Library" / "LaunchAgents"
     SYSTEMD_UNIT_DIR = Path.home() / ".config" / "systemd" / "user"
     LAUNCHCTL_BIN = "launchctl"
@@ -44,6 +51,26 @@ RestartSec=2
 [Install]
 WantedBy=default.target
 """
+    WATCHDOG_SYSTEMD_UNIT_TEMPLATE = """[Unit]
+Description=TermDeck freeze watchdog - restarts the deck when it stops answering
+
+[Service]
+Type=oneshot
+ExecStart={exec_start}
+WorkingDirectory={working_directory}
+{environment_lines}"""
+    WATCHDOG_SYSTEMD_TIMER_TEMPLATE = """[Unit]
+Description=TermDeck freeze watchdog timer
+
+[Timer]
+OnBootSec={interval}s
+OnUnitActiveSec={interval}s
+AccuracySec=5s
+Unit={unit}
+
+[Install]
+WantedBy=timers.target
+"""
 
     @staticmethod
     def launch_argv() -> list[str]:
@@ -70,10 +97,70 @@ WantedBy=default.target
         return TermdeckConfig.DATA_DIR / ServiceInstaller.LOG_FILE_NAME
 
     @staticmethod
+    def watchdog_log_file() -> Path:
+        from termdeck.config import TermdeckConfig
+
+        return TermdeckConfig.WATCHDOG_LOG_FILE
+
+    @staticmethod
     def unit_file() -> Path:
         if PlatformPaths.IS_MACOS:
             return ServiceInstaller.LAUNCHD_PLIST_DIR / f"{ServiceInstaller.LABEL}.plist"
         return ServiceInstaller.SYSTEMD_UNIT_DIR / ServiceInstaller.SYSTEMD_UNIT_NAME
+
+    @staticmethod
+    def watchdog_unit_files() -> list[Path]:
+        """The watchdog's own unit file(s): one plist on macOS, a service plus its timer on Linux."""
+        if PlatformPaths.IS_MACOS:
+            return [ServiceInstaller.LAUNCHD_PLIST_DIR / f"{ServiceInstaller.WATCHDOG_LABEL}.plist"]
+        return [ServiceInstaller.SYSTEMD_UNIT_DIR / ServiceInstaller.WATCHDOG_SYSTEMD_UNIT_NAME,
+                ServiceInstaller.SYSTEMD_UNIT_DIR / ServiceInstaller.WATCHDOG_SYSTEMD_TIMER_NAME]
+
+    @staticmethod
+    def install_watchdog() -> None:
+        """Install and load the freeze watchdog beside the server.
+
+        Failures here are reported but never raised: a deck that is running is worth more than a deck
+        that refused to install because its watchdog could not be scheduled.
+        """
+        from termdeck.config import TermdeckConfig
+
+        try:
+            unit_files = ServiceInstaller.watchdog_unit_files()
+            unit_files[0].parent.mkdir(parents=True, exist_ok=True)
+            if PlatformPaths.IS_MACOS:
+                ServiceInstaller._write_watchdog_launchd_plist(unit_files[0])
+                unit_files[0].chmod(0o600)
+                ServiceInstaller._bootout_launchd_quietly(ServiceInstaller.WATCHDOG_LABEL)
+                ServiceInstaller._run(ServiceInstaller.LAUNCHCTL_BIN, "bootstrap",
+                                      ServiceInstaller._launchd_domain(), str(unit_files[0]))
+                return
+            service_file, timer_file = unit_files
+            service_file.write_text(ServiceInstaller.WATCHDOG_SYSTEMD_UNIT_TEMPLATE.format(
+                exec_start=" ".join([*ServiceInstaller.launch_argv(), *ServiceInstaller.WATCHDOG_ARGS]),
+                working_directory=str(Path.home()),
+                environment_lines=ServiceInstaller._environment_lines()))
+            timer_file.write_text(ServiceInstaller.WATCHDOG_SYSTEMD_TIMER_TEMPLATE.format(
+                interval=TermdeckConfig.WATCHDOG_INTERVAL_SECONDS,
+                unit=ServiceInstaller.WATCHDOG_SYSTEMD_UNIT_NAME))
+            for unit in unit_files:
+                unit.chmod(0o600)
+            ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "daemon-reload")
+            ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "enable", "--now",
+                                  ServiceInstaller.WATCHDOG_SYSTEMD_TIMER_NAME)
+        except (RuntimeError, OSError) as watchdog_error:
+            print(f"termdeck: freeze watchdog not scheduled ({watchdog_error})", file=sys.stderr)
+
+    @staticmethod
+    def uninstall_watchdog() -> None:
+        if PlatformPaths.IS_MACOS:
+            ServiceInstaller._bootout_launchd_quietly(ServiceInstaller.WATCHDOG_LABEL)
+        else:
+            ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "disable", "--now",
+                                  ServiceInstaller.WATCHDOG_SYSTEMD_TIMER_NAME, check=False)
+        for unit in ServiceInstaller.watchdog_unit_files():
+            if unit.exists():
+                unit.unlink()
 
     @staticmethod
     def install() -> Path:
@@ -94,11 +181,13 @@ WantedBy=default.target
             ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "daemon-reload")
             ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "enable", "--now",
                                   ServiceInstaller.SYSTEMD_UNIT_NAME)
+        ServiceInstaller.install_watchdog()
         return unit_file
 
     @staticmethod
     def uninstall() -> Path:
         unit_file = ServiceInstaller.unit_file()
+        ServiceInstaller.uninstall_watchdog()
         if PlatformPaths.IS_MACOS:
             ServiceInstaller._bootout_launchd_quietly()
         else:
@@ -116,8 +205,11 @@ WantedBy=default.target
         if PlatformPaths.IS_MACOS:
             return ServiceInstaller._succeeds(ServiceInstaller.LAUNCHCTL_BIN, "print",
                                               f"{ServiceInstaller._launchd_domain()}/{ServiceInstaller.LABEL}")
-        return ServiceInstaller._succeeds(ServiceInstaller.SYSTEMCTL_BIN, "--user", "cat",
-                                          ServiceInstaller.SYSTEMD_UNIT_NAME)
+        # is-active, not cat. `cat` only proves a unit file exists, so a deck the user stopped with
+        # `termdeck service stop` still read as loaded -- and the watchdog's guard against reviving a
+        # deliberately stopped deck rests on this answer.
+        return ServiceInstaller._succeeds(ServiceInstaller.SYSTEMCTL_BIN, "--user", "is-active",
+                                          "--quiet", ServiceInstaller.SYSTEMD_UNIT_NAME)
 
     @staticmethod
     def is_current_process_owned_by_service_manager(process_id: int) -> bool | None:
@@ -170,6 +262,7 @@ WantedBy=default.target
             else:
                 ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "start",
                                       ServiceInstaller.SYSTEMD_UNIT_NAME)
+            ServiceInstaller.install_watchdog()
             return "started"
         if not ServiceInstaller.unit_file().exists():
             ServiceInstaller.install()
@@ -181,6 +274,7 @@ WantedBy=default.target
             ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "daemon-reload")
             ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "start",
                                   ServiceInstaller.SYSTEMD_UNIT_NAME)
+        ServiceInstaller.install_watchdog()
         return "loaded and started"
 
     @staticmethod
@@ -189,6 +283,10 @@ WantedBy=default.target
         counterpart of `start`, not of `install`: `uninstall` is what removes it for good."""
         if not ServiceInstaller.is_loaded():
             return "not running"
+        # The watchdog goes first. It would not revive a deliberately stopped deck either way -- a tick
+        # checks that the server's unit is still loaded before it probes -- but leaving a timer firing
+        # every minute against something the user turned off is noise for no purpose.
+        ServiceInstaller.uninstall_watchdog()
         if PlatformPaths.IS_MACOS:
             # KeepAlive would revive a merely killed process; unloading the job is what stops it.
             ServiceInstaller._bootout_launchd_quietly()
@@ -199,6 +297,13 @@ WantedBy=default.target
 
     @staticmethod
     def restart() -> str:
+        """Restart the server only.
+
+        The watchdog is deliberately left alone: this is the method a watchdog tick calls when it decides
+        the deck is wedged, and restarting the watchdog job from inside one of its own ticks would kill
+        the tick partway through -- before it recorded the restart it just performed, so the next tick
+        would see the old failure count and bounce the recovering server again.
+        """
         if not ServiceInstaller.is_loaded():
             return ServiceInstaller.start()
         if PlatformPaths.IS_MACOS:
@@ -208,6 +313,14 @@ WantedBy=default.target
             ServiceInstaller._run(ServiceInstaller.SYSTEMCTL_BIN, "--user", "restart",
                                   ServiceInstaller.SYSTEMD_UNIT_NAME)
         return "restarted"
+
+    @staticmethod
+    def is_watchdog_loaded() -> bool:
+        if PlatformPaths.IS_MACOS:
+            return ServiceInstaller._succeeds(ServiceInstaller.LAUNCHCTL_BIN, "print",
+                                              f"{ServiceInstaller._launchd_domain()}/{ServiceInstaller.WATCHDOG_LABEL}")
+        return ServiceInstaller._succeeds(ServiceInstaller.SYSTEMCTL_BIN, "--user", "is-active",
+                                          ServiceInstaller.WATCHDOG_SYSTEMD_TIMER_NAME)
 
     @staticmethod
     def status_argv() -> list[str]:
@@ -244,21 +357,56 @@ WantedBy=default.target
         unit_file.write_bytes(plistlib.dumps(payload))
 
     @staticmethod
-    def _render_systemd_unit() -> str:
+    def _write_watchdog_launchd_plist(unit_file: Path) -> None:
+        from termdeck.config import TermdeckConfig
+
+        log_file = str(ServiceInstaller.watchdog_log_file())
+        payload: dict[str, object] = {
+            "Label": ServiceInstaller.WATCHDOG_LABEL,
+            "ProgramArguments": [*ServiceInstaller.launch_argv(), *ServiceInstaller.WATCHDOG_ARGS],
+            "WorkingDirectory": str(Path.home()),
+            # StartInterval, and pointedly NOT KeepAlive: each tick is meant to run, probe once and exit.
+            # KeepAlive would respawn it the instant it finished, turning a once-a-minute check into a
+            # hot loop. RunAtLoad is off for the same reason a boot is not a good time to probe -- the
+            # server it watches is still coming up.
+            "StartInterval": TermdeckConfig.WATCHDOG_INTERVAL_SECONDS,
+            "RunAtLoad": False,
+            "StandardOutPath": log_file,
+            "StandardErrorPath": log_file,
+        }
         environment = ServiceInstaller.forwarded_environment()
-        environment_lines = "".join(f'Environment="{key}={value}"\n' for key, value in environment.items())
-        return ServiceInstaller.SYSTEMD_UNIT_TEMPLATE.format(
-            exec_start=" ".join(ServiceInstaller.launch_argv()), working_directory=str(Path.home()),
-            environment_lines=environment_lines)
+        if environment:
+            payload["EnvironmentVariables"] = environment
+        unit_file.write_bytes(plistlib.dumps(payload))
 
     @staticmethod
-    def _bootout_launchd_quietly() -> None:
+    def _environment_lines() -> str:
+        return "".join(f'Environment="{key}={value}"\n'
+                       for key, value in ServiceInstaller.forwarded_environment().items())
+
+    @staticmethod
+    def _render_systemd_unit() -> str:
+        return ServiceInstaller.SYSTEMD_UNIT_TEMPLATE.format(
+            exec_start=" ".join(ServiceInstaller.launch_argv()), working_directory=str(Path.home()),
+            environment_lines=ServiceInstaller._environment_lines())
+
+    @staticmethod
+    def _bootout_launchd_quietly(label: str | None = None) -> None:
         ServiceInstaller._run(ServiceInstaller.LAUNCHCTL_BIN, "bootout",
-                              f"{ServiceInstaller._launchd_domain()}/{ServiceInstaller.LABEL}", check=False)
+                              f"{ServiceInstaller._launchd_domain()}/{label or ServiceInstaller.LABEL}", check=False)
+
+    # Every call into the service manager is bounded. The watchdog runs these on a timer and its whole
+    # design rests on a tick being short-lived; launchctl or systemctl blocking forever would leave a
+    # tick hung with nothing watching the watcher.
+    SERVICE_COMMAND_TIMEOUT_SECONDS = 30
 
     @staticmethod
     def _succeeds(*argv: str) -> bool:
-        return subprocess.run(argv, capture_output=True, text=True).returncode == 0
+        try:
+            return subprocess.run(argv, capture_output=True, text=True,
+                                  timeout=ServiceInstaller.SERVICE_COMMAND_TIMEOUT_SECONDS).returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
 
     @staticmethod
     def _probe(*argv: str) -> subprocess.CompletedProcess[str] | None:
@@ -274,6 +422,11 @@ WantedBy=default.target
 
     @staticmethod
     def _run(*argv: str, check: bool = True) -> None:
-        result = subprocess.run(argv, capture_output=True, text=True)
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True,
+                                    timeout=ServiceInstaller.SERVICE_COMMAND_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as timed_out:
+            raise RuntimeError(f"{' '.join(argv)} did not finish within "
+                               f"{ServiceInstaller.SERVICE_COMMAND_TIMEOUT_SECONDS}s") from timed_out
         if check and result.returncode != 0:
             raise RuntimeError(f"{' '.join(argv)} failed ({result.returncode}): {result.stderr.strip()}")

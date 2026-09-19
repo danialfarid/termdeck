@@ -2,12 +2,15 @@ import json
 import hashlib
 import queue
 import re
+import shutil
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 from termdeck import agents
 from termdeck.agents.base import AgentCli
+from termdeck.config import TermdeckConfig
 
 
 class HistorySearchIndex:
@@ -16,13 +19,51 @@ class HistorySearchIndex:
     _MAX_CONTEXT_LINES = 15
     _INDEX_VERSION = 7
     _CHUNK_LINES = 32
+    # Sources evicted between size checks. Small enough that a run stops close to the keep threshold
+    # rather than far below it, large enough not to re-measure after every single transcript.
+    _EVICTION_BATCH = 25
+    # Files scanned between size checks during the startup scan.
+    _SCAN_ENFORCE_EVERY = 200
 
-    def __init__(self, database_path: Path) -> None:
+    def __init__(self, database_path: Path, settings_reader=None) -> None:
         self._database_path = database_path
+        self._settings_reader = settings_reader
         self._pending_paths: queue.Queue[Path | None] = queue.Queue()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._ready = False
+        self._full_pass_done = False
+        self._degraded_reason = ""
+
+    @property
+    def degraded(self) -> str:
+        """Why the index is not keeping up, or "" when it is.
+
+        Search results are incomplete while this is set, and saying nothing leaves someone reading a
+        half-indexed corpus with no hint that it is half-indexed.
+        """
+        return self._degraded_reason
+
+    def size_limits(self) -> tuple[int, int]:
+        """The cap and the level an eviction run stops at, in bytes.
+
+        The cap is settable per machine (history_index_max_mb) because how much of the disk a search
+        index deserves is a local judgement: a laptop and a workstation with a 24GB transcript corpus
+        want different answers. Unset or 0 means the built-in default; a negative value means no
+        ceiling at all, and is the only way to turn retention off.
+        """
+        limit = TermdeckConfig.HISTORY_INDEX_MAX_BYTES
+        if self._settings_reader is not None:
+            try:
+                configured = int((self._settings_reader() or {}).get("history_index_max_mb", 0))
+            except (TypeError, ValueError, AttributeError, OSError):
+                configured = 0
+            if configured:
+                limit = configured * 1_000_000
+        if limit <= 0:
+            return 0, 0
+        keep = max(limit - TermdeckConfig.HISTORY_INDEX_KEEP_MARGIN_BYTES, limit // 2)
+        return limit, keep
 
     @property
     def indexing(self) -> bool:
@@ -224,27 +265,235 @@ class HistorySearchIndex:
                 "cwd": metadata[2], "title": metadata[3], "line_no": target_line, "lines": records}
 
     def _run(self) -> None:
-        self._sync_all()
+        # All of this is on the index thread rather than in start(): converting an existing database to
+        # incremental auto-vacuum costs one full VACUUM, and an index over its cap has an eviction to do.
+        # Neither is something to make the server wait on before it binds its port.
+        self._enable_incremental_vacuum()
+        self._full_pass_done = self._attempt_full_pass()
         self._ready = True
+        retry_after = time.monotonic() + TermdeckConfig.HISTORY_INDEX_RETRY_SECONDS
         while not self._stop_event.is_set():
+            batch = self._drain_batch()
+            if batch is None:
+                return
+            if batch:
+                try:
+                    # The watermark applies here too, not only to the full pass. A notification queued
+                    # for a transcript eviction has just removed would otherwise index it straight back
+                    # in -- the same churn the watermark exists to stop, arriving by the other door.
+                    watermark = self.eviction_watermark()
+                    for path in batch:
+                        if self._stop_event.is_set():
+                            return
+                        self._sync_path(path, watermark)
+                    self._enforce_size_limit()
+                except (sqlite3.Error, OSError) as index_error:
+                    # A failure here used to end the thread, so the first transcript to change after a
+                    # full disk stopped all indexing AND all retention for the life of the process --
+                    # with the deck still reporting itself ready. Retention is the thing that would have
+                    # relieved the disk pressure, so it is exactly what must not be lost.
+                    #
+                    # Clearing _full_pass_done is what arms the retry. A deck whose startup pass had
+                    # succeeded would otherwise never satisfy the retry condition below: it would record
+                    # itself degraded, skip the transcript, and sit there degraded for the life of the
+                    # process with retention never running again. The failure means the index is no
+                    # longer known to be complete or under its cap, whatever was true at startup.
+                    self._full_pass_done = False
+                    self._record_degraded(index_error)
+                    retry_after = min(retry_after,
+                                      time.monotonic() + TermdeckConfig.HISTORY_INDEX_RETRY_SECONDS)
+            # Retried on a clock rather than on the next file change: an idle deck would otherwise never
+            # recover, and would never run retention again either.
+            if not self._full_pass_done and time.monotonic() >= retry_after:
+                self._full_pass_done = self._attempt_full_pass()
+                retry_after = time.monotonic() + TermdeckConfig.HISTORY_INDEX_RETRY_SECONDS
+
+    def _attempt_full_pass(self) -> bool:
+        """Scan every transcript, drop the vanished ones, and bring the index back under its cap.
+
+        Returns whether it got all the way through. A partial pass leaves the index usable but its size
+        unbounded, so the caller retries rather than assuming this ran.
+        """
+        try:
+            self._sync_all()
+            self._prune_vanished_sources()
+            self._enforce_size_limit()
+        except (sqlite3.Error, OSError) as pass_error:
+            self._record_degraded(pass_error)
+            return False
+        if self._degraded_reason:
+            print("termdeck history index recovered", flush=True)
+            self._degraded_reason = ""
+        return True
+
+    def _record_degraded(self, error: Exception) -> None:
+        reason = str(error)
+        if reason != self._degraded_reason:
+            print(f"termdeck history index degraded: {reason} (retrying every "
+                  f"{int(TermdeckConfig.HISTORY_INDEX_RETRY_SECONDS)}s)", flush=True)
+        self._degraded_reason = reason
+
+    def _drain_batch(self) -> set[Path] | None:
+        """Collect the paths that changed over one debounce window.
+
+        A streaming agent appends to its transcript continuously, and the observer reports every append.
+        Indexing each one separately re-reads and rewrites the same file's tail dozens of times a minute.
+        Collapsing a window into a set means one pass per file however many times it was touched. Returns
+        None when the thread has been told to stop.
+        """
+        batch: set[Path] = set()
+        deadline = time.monotonic() + TermdeckConfig.HISTORY_INDEX_DEBOUNCE_SECONDS
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return batch
             try:
-                path = self._pending_paths.get(timeout=0.5)
+                path = self._pending_paths.get(timeout=min(remaining, 0.5))
             except queue.Empty:
+                if self._stop_event.is_set():
+                    return None
                 continue
             if path is None:
-                continue
-            self._sync_path(path)
+                return None
+            batch.add(path)
 
     def _sync_all(self) -> None:
+        # The scan exists for transcripts that changed while the server was down: the filesystem observer
+        # only reports what happens while it is running. An unchanged file costs a stat and one indexed
+        # lookup, so the scan is cheap; what it must not do is re-index what retention just evicted.
+        watermark = self.eviction_watermark()
+        scanned = 0
         for root in self._indexed_roots():
             if not root.is_dir():
                 continue
             for path in root.rglob("*.jsonl"):
                 if self._stop_event.is_set():
                     return
-                self._sync_path(path)
+                self._sync_path(path, watermark)
+                scanned += 1
+                # Checked during the scan, not only after it, so a first index of a large corpus does
+                # not run to the end before anything reclaims. The cap stays a soft one either way:
+                # a batch can overshoot between checks, and the WAL is not counted.
+                if scanned % self._SCAN_ENFORCE_EVERY == 0 and self._enforce_size_limit():
+                    watermark = self.eviction_watermark()
 
-    def _sync_path(self, path: Path) -> None:
+    # -- retention ---------------------------------------------------------
+
+    @staticmethod
+    def _indexed_bytes(database: sqlite3.Connection) -> int:
+        """Pages the index is actually using, which is what the cap is compared against.
+
+        Pages in use, not file size: the file carries the WAL, so it is not the index's own footprint,
+        and it does not shrink on delete anyway.
+
+        Free pages are subtracted rather than counted. When the auto-vacuum conversion has been deferred
+        -- a nearly-full disk, which is the case this must survive -- freed pages stay on the freelist
+        and page_count alone never falls. Eviction would then delete every transcript in the index
+        without the number it is watching ever moving. Subtracting the freelist makes deletion show up
+        immediately, so eviction stops where it should and the disk catches up at the conversion.
+        """
+        page_count = int(database.execute("PRAGMA page_count").fetchone()[0])
+        free_pages = int(database.execute("PRAGMA freelist_count").fetchone()[0])
+        page_size = int(database.execute("PRAGMA page_size").fetchone()[0])
+        return max(0, page_count - free_pages) * page_size
+
+    @staticmethod
+    def _reclaim_free_pages(database: sqlite3.Connection) -> None:
+        remaining_pages = int(database.execute("PRAGMA freelist_count").fetchone()[0])
+        while remaining_pages:
+            database.execute("PRAGMA incremental_vacuum").fetchall()
+            next_remaining_pages = int(database.execute("PRAGMA freelist_count").fetchone()[0])
+            if next_remaining_pages >= remaining_pages:
+                return
+            remaining_pages = next_remaining_pages
+
+    @staticmethod
+    def _delete_sources(database: sqlite3.Connection, paths: list[str]) -> None:
+        for path in paths:
+            rows = database.execute("SELECT rowid FROM history_documents WHERE source_path = ?", (path,)).fetchall()
+            database.executemany("DELETE FROM history_fts WHERE rowid = ?", rows)
+            database.executemany("DELETE FROM history_fts_conversation WHERE rowid = ?", rows)
+            database.executemany("DELETE FROM history_documents WHERE rowid = ?", rows)
+            database.execute("DELETE FROM history_sources WHERE source_path = ?", (path,))
+
+    def _meta(self, database: sqlite3.Connection, key: str) -> int:
+        row = database.execute("SELECT value FROM history_meta WHERE key = ?", (key,)).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    @staticmethod
+    def _set_meta(database: sqlite3.Connection, key: str, value: int) -> None:
+        database.execute("INSERT INTO history_meta(key, value) VALUES(?, ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, str(value)))
+
+    def eviction_watermark(self) -> int:
+        """The mtime a transcript has to beat to be indexed.
+
+        Without this, retention and the startup scan undo each other: eviction removes the oldest
+        transcripts, the files themselves stay on disk (they are the agents' data, not ours), and the
+        next scan indexes them straight back in -- over the cap again, evicting again, on every restart
+        forever. The watermark records where the last eviction cut, so those files are passed over
+        until something appends to them, which is exactly when they are worth indexing again.
+
+        It is a retention boundary, not a per-file tombstone: any transcript older than the cut is
+        passed over, including one that has never been indexed. That is the policy -- the index holds
+        recent history. Raising the cap lets new history accumulate; it does not reach back and index
+        what was already dropped, which would need a rebuild.
+        """
+        with self._connect() as database:
+            return self._meta(database, "eviction_watermark_ns")
+
+    def _prune_vanished_sources(self) -> int:
+        """Drop transcripts that are no longer on disk.
+
+        Nothing else removes them: a source's rows are only ever deleted to be rewritten by its own
+        re-index, so a transcript the user deleted keeps its rows and its search hits forever.
+        """
+        with self._connect() as database:
+            paths = [row[0] for row in database.execute("SELECT source_path FROM history_sources").fetchall()]
+            missing = [path for path in paths if not Path(path).exists()]
+            if not missing:
+                return 0
+            self._delete_sources(database, missing)
+            database.commit()
+            self._reclaim_free_pages(database)
+        return len(missing)
+
+    def _enforce_size_limit(self) -> int:
+        """Evict the oldest transcripts until the index is back under the keep threshold.
+
+        Oldest by the transcript's own mtime, so a long-idle session is given up before a live one. The
+        eviction is the expensive half (measured ~125s to clear a third of a 3.5GB index) and the vacuum
+        the cheap one, which is why this runs on the index thread and only after the cap is passed.
+        """
+        limit, keep = self.size_limits()
+        if limit <= 0:
+            return 0
+        with self._connect() as database:
+            if self._indexed_bytes(database) <= limit:
+                return 0
+            candidates = database.execute(
+                "SELECT source_path, mtime_ns FROM history_sources ORDER BY mtime_ns ASC").fetchall()
+            evicted = 0
+            watermark = 0
+            for batch_start in range(0, len(candidates), self._EVICTION_BATCH):
+                window = candidates[batch_start:batch_start + self._EVICTION_BATCH]
+                self._delete_sources(database, [row[0] for row in window])
+                database.commit()
+                evicted += len(window)
+                watermark = max(watermark, max(int(row[1]) for row in window))
+                # Freed pages only count toward the size once the vacuum hands them back.
+                self._reclaim_free_pages(database)
+                if self._indexed_bytes(database) <= keep or self._stop_event.is_set():
+                    break
+            if evicted:
+                # Where this eviction cut, so the next scan does not index it all back in.
+                self._set_meta(database, "eviction_watermark_ns", watermark)
+                database.commit()
+        print(f"termdeck history index over {limit // 1_000_000}MB: "
+              f"evicted {evicted} of the oldest transcripts", flush=True)
+        return evicted
+
+    def _sync_path(self, path: Path, watermark: int = 0) -> None:
         path = path.resolve()
         try:
             self._validate_source_path(path)
@@ -258,6 +507,10 @@ class HistorySearchIndex:
                 (str(path),),
             ).fetchone()
             if known is not None and int(known[0]) == stat.st_size and int(known[1]) == stat.st_mtime_ns:
+                return
+            # Evicted by retention and untouched since. Indexing it back in is what the watermark exists
+            # to prevent; an append lifts its mtime past the mark and it is picked up again here.
+            if known is None and watermark and stat.st_mtime_ns <= watermark:
                 return
 
             # Session JSONL files are append-only. Re-reading a whole active
@@ -399,6 +652,7 @@ class HistorySearchIndex:
                 database.execute(f"PRAGMA user_version = {self._INDEX_VERSION}")
                 database.commit()
                 database.execute("VACUUM")
+            database.execute("CREATE TABLE IF NOT EXISTS history_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             database.execute("CREATE TABLE IF NOT EXISTS history_sources (source_path TEXT PRIMARY KEY, agent_kind TEXT NOT NULL, agent_session_id TEXT NOT NULL, cwd TEXT NOT NULL, title TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL)")
             database.execute("CREATE TABLE IF NOT EXISTS history_documents (rowid INTEGER PRIMARY KEY, source_path TEXT NOT NULL, agent_kind TEXT NOT NULL, agent_session_id TEXT NOT NULL, cwd TEXT NOT NULL, title TEXT NOT NULL, scope TEXT NOT NULL, line_no INTEGER NOT NULL, line_end INTEGER NOT NULL, byte_start INTEGER NOT NULL, byte_end INTEGER NOT NULL)")
             database.execute("CREATE INDEX IF NOT EXISTS history_documents_source ON history_documents(source_path)")
@@ -411,6 +665,41 @@ class HistorySearchIndex:
         database.execute("PRAGMA journal_mode=WAL")
         database.execute("PRAGMA synchronous=NORMAL")
         return database
+
+    def _enable_incremental_vacuum(self) -> bool:
+        """Put the database in INCREMENTAL auto-vacuum mode, converting it once if it is not already.
+
+        In the default NONE mode, deleted pages go to the freelist and the file never shrinks; the only
+        way to hand them back is a full VACUUM. INCREMENTAL returns them in bounded steps instead.
+
+        Converting an existing database costs one full VACUUM, which rewrites it and therefore needs
+        room for a second copy. That is a bad thing to require on a nearly-full disk -- which is the
+        exact situation this whole feature exists for, so the upgrade path has to survive it. The
+        conversion is skipped when the space is not there and retried on a later start; a failure is
+        reported and never propagates, because dying here would take retention and the indexer with it
+        and leave the deck worse off than before the upgrade. Retention still works unconverted: it
+        measures pages in use rather than file size, so eviction terminates and growth stops, and the
+        space comes back when the conversion eventually succeeds.
+        """
+        try:
+            with self._connect() as database:
+                if int(database.execute("PRAGMA auto_vacuum").fetchone()[0]) == 2:
+                    return True
+                needed = self._database_path.stat().st_size * 2 if self._database_path.exists() else 0
+                free = shutil.disk_usage(self._database_path.parent).free
+                if needed and free < needed:
+                    print(f"termdeck history index: deferring auto-vacuum conversion, it needs "
+                          f"{needed // 1_000_000}MB free and there is {free // 1_000_000}MB. Retention "
+                          f"still applies; space is reclaimed once this succeeds.", flush=True)
+                    return False
+                database.execute("PRAGMA auto_vacuum = INCREMENTAL")
+                database.commit()
+                database.execute("VACUUM")
+                return True
+        except (sqlite3.Error, OSError) as conversion_error:
+            print(f"termdeck history index: auto-vacuum conversion failed ({conversion_error}); "
+                  f"retention still applies and the conversion is retried on the next start", flush=True)
+            return False
 
     @staticmethod
     def _document_id(path: Path, line_no: int, scope: str) -> int:

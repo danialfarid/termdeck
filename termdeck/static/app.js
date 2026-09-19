@@ -160,6 +160,10 @@ const MOBILE_SIDEBAR_CONTEXT_MOVE_TOLERANCE = 12;
 const MOBILE_TERMINAL_SELECTION_BACKGROUND = "#287fd1";
 const MOBILE_TERMINAL_SELECTION_FOREGROUND = "#ffffff";
 const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
+const EXPANDED_AGENT_STACKS_KEY = "termdeck.expanded_agent_stacks";
+// Spawned agents named on the collapsed summary line before it trails off. Two fit beside the count in
+// a sidebar's width; the point of the line is that there are children and roughly who, not a roster.
+const AGENT_STACK_SUMMARY_NAMES = 2;
 const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
 const TRANSCRIPT_DRAFT_LOCAL_PREFIX = "termdeck.transcript-draft.v1";
 const ADDRESS_RECOVERY_KEY = "termdeck.address-recovery";
@@ -189,6 +193,8 @@ const SERVER_LOCAL_SETTING_KEYS = new Set(["tall_webgl", "notebook_open"]);
 const MOBILE_DISPLAY_SCALE_MIN = 0.5;
 const MOBILE_DISPLAY_SCALE_MAX = 1.6;
 const MOBILE_DISPLAY_SCALE_STEP = 0.1;
+// How near the end of the transcript still counts as reading the end, matching captureHistoryScroll.
+const HISTORY_BOTTOM_SLACK_PX = 80;
 // Tall-terminal row budget. WebGL backs the terminal with one drawing buffer sized to the FULL terminal
 // in DEVICE pixels, so the real ceiling is MAX_TEXTURE_SIZE / (cellHeight * devicePixelRatio). That dpr
 // term is why a row count measured safe on one machine is wrong on another: a retina display needs twice
@@ -873,6 +879,8 @@ class TermdeckApp {
     this.sessionActivityById = new Map();
     this.sessionStatusEls = new Map();
     this.sessionRowEls = new Map();
+    this.spawnedChildrenByParent = new Map();
+    this.expandedAgentStacks = new Set(this.storedExpandedAgentStacks());
     this.terminalAgeRefreshTimer = 0;
     this.sessionListSignature = "";
     this.dragGroupTimer = 0;
@@ -952,6 +960,7 @@ class TermdeckApp {
     this.iconMap = null;
     this.lastValidNavState = null;
     this.statusWs = null;
+    this.statusWsHasConnected = false;
     this.statusWsReconnectTimer = 0;
     this.mobileConnectionWarningTimer = 0;
     this.serverInstanceId = "";
@@ -969,6 +978,8 @@ class TermdeckApp {
     this.focusedConnectionRecoveryHandler = () => this.reconnectFocusedConnections();
     this.layoutFitSettleTimer = 0;
     this.mobileOrientationChangeTimer = 0;
+    // True until a scroll says otherwise: an opened transcript sits at its end.
+    this.historyReaderAtBottom = true;
     this.mobileViewportResizeHandler = this.syncMobileVisualViewport.bind(this);
     this.mobileOrientationChangeHandler = this.scheduleMobileOrientationChange.bind(this);
     this.mobileOrientationFinishHandler = this.finishMobileOrientationChange.bind(this);
@@ -1035,6 +1046,17 @@ class TermdeckApp {
 
   touchMobileLayoutEnabled() {
     return window.matchMedia("(max-width: 900px), (hover: none) and (pointer: coarse)").matches;
+  }
+
+  storedExpandedAgentStacks() {
+    // Which stacks are open is a per-browser convenience, so it lives in localStorage and a refusal to
+    // read it costs a closed stack, not an error.
+    try {
+      const stored = JSON.parse(localStorage.getItem(EXPANDED_AGENT_STACKS_KEY) || "[]");
+      return Array.isArray(stored) ? stored.filter((id) => typeof id === "string") : [];
+    } catch {
+      return [];
+    }
   }
 
   browserBooleanSetting(storageKey, fallback) {
@@ -1144,11 +1166,48 @@ class TermdeckApp {
 
   syncMobileVisualViewport() {
     const viewport = window.visualViewport;
+    // Measured before the height changes: once the variable below shrinks the body, the transcript has
+    // already been pushed and there is no telling where it had been sitting.
+    const wasAtBottom = this.historyBodyAtBottom();
     if (!this.touchMobileLayoutEnabled() || !viewport || !Number.isFinite(viewport.height) || viewport.height <= 0) {
       document.documentElement.style.removeProperty("--mobile-visual-height");
+      this.keepHistoryPinnedToBottom(wasAtBottom);
       return;
     }
     document.documentElement.style.setProperty("--mobile-visual-height", `${Math.round(viewport.height)}px`);
+    this.keepHistoryPinnedToBottom(wasAtBottom);
+  }
+
+  historyBodyAtBottom() {
+    const body = this.$("history-body");
+    if (!body) return false;
+    return body.scrollHeight - body.scrollTop - body.clientHeight < HISTORY_BOTTOM_SLACK_PX;
+  }
+
+  rememberHistoryReaderPosition() {
+    // Recorded as the reader moves, because the events that need it -- a layout viewport shrinking
+    // under a keyboard -- arrive too late to ask. Starts true: a freshly opened transcript is at its
+    // end, and nothing has scrolled yet to say otherwise.
+    this.historyReaderAtBottom = this.historyBodyAtBottom();
+  }
+
+  keepHistoryPinnedToBottom(wasAtBottom) {
+    // The keyboard takes half the screen, the transcript keeps its scrollTop, and the newest lines --
+    // the ones being replied to -- end up below the fold behind the keyboard. #history-body sets
+    // overflow-anchor: none, so the browser will not hold the bottom for us either.
+    //
+    // Only when the reader was already at the bottom: someone who had scrolled up to read something
+    // is not asking to be thrown back to the end because a keyboard appeared.
+    if (!wasAtBottom) return;
+    const body = this.$("history-body");
+    if (!body) return;
+    // After the reflow the variable triggers, and again on the frame after that, because the keyboard
+    // animates in and the composer's textarea can grow as it does.
+    const pin = () => { body.scrollTop = body.scrollHeight; };
+    requestAnimationFrame(() => {
+      pin();
+      requestAnimationFrame(pin);
+    });
   }
 
   scheduleMobileOrientationChange() {
@@ -1476,6 +1535,15 @@ class TermdeckApp {
     return sections;
   }
 
+  // Unread is project state, so it arrives from elsewhere: another window, a phone, or this window's own
+  // marking from while it was not being read. The terminal it names can be the one already on screen --
+  // and nothing cleared that, because activating it is what clears a badge and it is already active. The
+  // badge then sat on the terminal the user was looking at until they switched away and back.
+  refreshUnreadSessionsFromState() {
+    this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
+    this.markActiveSessionRead();
+  }
+
   unreadSessionIdsForCurrentWorktreeView() {
     if (this.worktreeId !== ALL_WORKTREES_ID) return new Set(this.getProjectState().unread_sessions || []);
     const project = this.projectSlug || "__all__";
@@ -1552,7 +1620,7 @@ class TermdeckApp {
       return;
     }
     this.applyLocalProjectStatePatch(nextState, stateKey);
-    this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
+    this.refreshUnreadSessionsFromState();
     this.renderList();
     this.reconcileActiveSessionViewMode();
   }
@@ -1587,6 +1655,62 @@ class TermdeckApp {
       if (status) status.textContent = error.message;
       void this.refreshCurrentProjectState();
     });
+  }
+
+  applyProjectStateEvent(message) {
+    const project = String(message.project || "");
+    const worktreeId = String(message.worktree_id || "root");
+    const state = message.state;
+    const stateKey = this.projectStateKeyFor(worktreeId);
+    if (project !== String(this.projectSlug || "") || stateKey !== this.projectStateKey() ||
+        !state || typeof state !== "object") return;
+    const previousState = this.settings.project_state?.[stateKey] || {};
+    const stateChanged = JSON.stringify(previousState) !== JSON.stringify(state);
+    const allWorktrees = this.worktreeId === ALL_WORKTREES_ID;
+    if (stateChanged) {
+      this.applyLocalProjectStatePatch(state, stateKey);
+      this.projectStateLocalRevision = (this.projectStateLocalRevision || 0) + 1;
+      // The surface a terminal opens on is project state like any other, so it can change under an open
+      // window: another client, another device, or the session-view-mode API. Only refreshCurrentProject-
+      // State reconciled it, and that runs when the tab is brought back to the front -- so a window left
+      // open kept showing the transcript for a terminal that is on the terminal surface everywhere else,
+      // with its own toggle appearing to do nothing.
+      this.reconcileActiveSessionViewMode();
+    }
+    if (allWorktrees) {
+      if (stateChanged) {
+        this.refreshUnreadSessionsFromState();
+        this.renderList();
+      }
+      void this.refresh();
+      return;
+    }
+    let sessionsChanged = false;
+    if (Array.isArray(message.sessions)) {
+      const nextSessions = this.applySessionOrder(message.sessions);
+      sessionsChanged = this.sessionListSignatureFor(nextSessions) !== this.sessionListSignatureFor(this.sessions);
+      const nextIds = new Set(nextSessions.map((session) => session.session_id));
+      if (sessionsChanged) {
+        for (const [sessionId, view] of [...this.views]) {
+          if (!nextIds.has(sessionId)) {
+            this.postVscodeNativeClose(sessionId);
+            this.destroyView(sessionId, view);
+          }
+        }
+        for (const sessionId of [...this.transcriptSessionStates.keys()]) {
+          if (!nextIds.has(sessionId)) this.transcriptSessionStates.delete(sessionId);
+        }
+        this.sessions = nextSessions;
+        if (this.activeId && !nextIds.has(this.activeId)) this.activeId = null;
+      }
+    }
+    const closedSessionsChanged = Array.isArray(message.closed_sessions) &&
+      JSON.stringify(this.closedSessions) !== JSON.stringify(message.closed_sessions);
+    if (closedSessionsChanged) this.closedSessions = message.closed_sessions;
+    if (!stateChanged && !sessionsChanged && !closedSessionsChanged) return;
+    this.refreshUnreadSessionsFromState();
+    this.renderList();
+    this.renderTopbar();
   }
 
   queueProjectStatePatch(stateKey, patch) {
@@ -3872,6 +3996,14 @@ class TermdeckApp {
       event.preventDefault();
       void this.createSession();
     });
+    this.$("restart-modal-cancel").onclick = () => this.closeRestartDialog();
+    this.$("restart-modal").addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.confirmRestartDialog();
+    });
+    this.$("restart-modal-backdrop").onclick = (event) => {
+      if (event.target === this.$("restart-modal-backdrop")) this.closeRestartDialog();
+    };
     this.$("modal-model").onchange = () => {
       this.clearModalError();
       this.updateModalModelField();
@@ -3934,7 +4066,10 @@ class TermdeckApp {
       this.scrollHistoryToBottom();
       this.refocusActiveInputAfterToolbarAction();
     };
-    this.$("history-body").addEventListener("scroll", () => this.loadOlderHistoryWhenNearTop(), { passive: true });
+    this.$("history-body").addEventListener("scroll", () => {
+      this.rememberHistoryReaderPosition();
+      this.loadOlderHistoryWhenNearTop();
+    }, { passive: true });
     this.$("history-body").addEventListener("touchend", () => this.loadOlderHistoryWhenNearTop(), { passive: true });
     this.$("history-body").addEventListener("click", (event) => this.handleHistoryFileLink(event));
     for (const id of ["terminal-resync-btn", "vscode-terminal-resync-btn"]) {
@@ -4334,7 +4469,17 @@ class TermdeckApp {
     };
     new ResizeObserver(scheduleLayoutFit).observe(this.$("terminal-area"));
     new ResizeObserver(scheduleLayoutFit).observe(this.$("main"));
-    window.addEventListener("resize", scheduleLayoutFit);
+    // Both, because which one the keyboard fires depends on the browser: iOS shrinks only the visual
+    // viewport, while Android honours interactive-widget=resizes-content and shrinks the layout
+    // viewport, firing window resize. Whichever arrives, the transcript keeps its end in view.
+    window.addEventListener("resize", () => {
+      // historyReaderAtBottom, not a fresh measurement: this event arrives after the layout viewport
+      // has already shrunk, so measuring here would read the transcript as scrolled away from the end
+      // and never pin it -- the very state being corrected.
+      const wasAtBottom = this.historyReaderAtBottom;
+      scheduleLayoutFit();
+      if (this.touchMobileLayoutEnabled()) this.keepHistoryPinnedToBottom(wasAtBottom);
+    });
     this.syncMobileVisualViewport();
     window.visualViewport?.addEventListener("resize", this.mobileViewportResizeHandler);
     window.addEventListener("orientationchange", this.mobileOrientationChangeHandler);
@@ -4773,9 +4918,15 @@ class TermdeckApp {
     const ws = new WebSocket(`${proto}://${location.host}/ws/status`);
     this.statusWs = ws;
     ws.onopen = () => {
+      const reconnect = this.statusWsHasConnected;
+      this.statusWsHasConnected = true;
       clearTimeout(this.mobileConnectionWarningTimer);
       this.mobileConnectionWarningTimer = 0;
       this.setMobileConnectionWarning(false);
+      if (reconnect) {
+        void this.refresh();
+        void this.refreshCurrentProjectState();
+      }
     };
     ws.onmessage = (event) => {
       if (typeof event.data !== "string") return;
@@ -4797,6 +4948,7 @@ class TermdeckApp {
           return;
         }
         if (message.type === "session_status") this.applySessionStatus(message);
+        if (message.type === "project_state") this.applyProjectStateEvent(message);
       } catch (error) {
         console.warn("invalid session status event", error);
       }
@@ -5431,7 +5583,10 @@ class TermdeckApp {
 
   markActiveSessionRead() {
     const id = this.activeId;
-    if (document.hidden || !id || !this.session(id)) return;
+    // hasFocus as well as visible, and the same pair noteCompletionStamp uses to decide that a finished
+    // turn was watched. A window sitting behind another app is visible but nobody is reading it, and
+    // clearing the badge there would take it away before it had been seen.
+    if (document.hidden || !document.hasFocus() || !id || !this.session(id)) return;
     if (!this.processingStates.get(id)) this.viewedCompletedSessions.add(id);
     if (!this.unreadSessions.delete(id)) return;
     this.updateUnreadIndicator(id);
@@ -5699,7 +5854,11 @@ class TermdeckApp {
   }
 
   sessionListSignatureFor(sessions = this.sessions) {
-    return sessions.map((s) => s.session_id).join("|");
+    // Parentage is part of the shape of the list, not just of a row: filing a terminal under another
+    // moves it out of the list and into that terminal's group. Keyed on ids alone, the signature did
+    // not change when a terminal was filed, the list was not redrawn, and the move only appeared after
+    // something else forced a full render.
+    return sessions.map((s) => `${s.session_id}:${s.spawned_by_session_id || ""}`).join("|");
   }
 
   // onlySessionId scopes the DOM writes below to a single row. A status-websocket message already knows
@@ -5845,6 +6004,17 @@ class TermdeckApp {
     return this.session(sessionId) ? sessionId : "";
   }
 
+  spawnDropParentFor(targetId, sourceSessionIds) {
+    // The parent a drop onto this row would file the dragged terminals under, or "" when the drop is
+    // an ordinary reorder. Only rows that are themselves spawned agents: everything else in the list
+    // is positioned by the layout, and this must not take over dropping onto a plain terminal.
+    const parentId = targetId ? (this.session(targetId)?.spawned_by_session_id || "") : "";
+    if (!parentId || sourceSessionIds.includes(parentId)) return "";
+    // Already in this group: leave it as the reorder it looks like rather than re-filing it where it is.
+    if (sourceSessionIds.every((id) => (this.session(id)?.spawned_by_session_id || "") === parentId)) return "";
+    return parentId;
+  }
+
   setDragLandingMode(item, mode, label) {
     item.classList.remove("drop-before", "drop-after", "drop-group", "group-drop-pending", "group-drop-target");
     if (mode) item.classList.add(mode);
@@ -5897,6 +6067,22 @@ class TermdeckApp {
         } else this.setDragLandingMode(item, "drop-group", "add to group");
         return;
       }
+      // A row inside a parent's spawned agents is part of that group, so dropping onto it means the
+      // same as dropping onto the group: file this terminal under the same parent. Reordering against
+      // it is what used to happen, and it moved the layout under a row that is not drawn from the
+      // layout -- the order changed and nothing on screen did.
+      const spawnParentId = this.spawnDropParentFor(targetId, sourceSessionIds);
+      if (spawnParentId) {
+        // The group around this row is a drop target too, and it is this row's ancestor. Without this
+        // the event bubbles into it, it clears the indicator raised here and raises its own, so the
+        // highlight lands on the whole group rather than the row the pointer is actually over.
+        event.stopPropagation();
+        this.clearDragLandingIndicator();
+        const parent = this.session(spawnParentId);
+        this.setDragLandingMode(item, "drop-group",
+          `file under ${this.titlePresentation(parent).text || spawnParentId}`);
+        return;
+      }
       const sessionGroups = this.getProjectState().session_groups || {};
       const sourceGroupIds = [...new Set(sourceSessionIds.map((id) => sessionGroups[id]).filter(Boolean))];
       const targetGroup = targetId ? sessionGroups[targetId] : null;
@@ -5947,6 +6133,37 @@ class TermdeckApp {
         const sourceSessionIds = this.sessionIdsFromDragItem(source);
         const targetId = token.slice(token.indexOf(":") + 1);
         if (kind === "session" && sourceSessionIds.includes(targetId)) {
+          this.clearDragLandingIndicator();
+          this.dragItem = null;
+          return;
+        }
+        const spawnParentId = kind === "session" ? this.spawnDropParentFor(targetId, sourceSessionIds) : "";
+        if (spawnParentId) {
+          event.stopPropagation();
+          void this.setSpawnedParent(sourceSessionIds, spawnParentId);
+          this.clearDragLandingIndicator();
+          this.dragItem = null;
+          return;
+        }
+        // Dragged out of the group it was filed under. Dropping a spawned agent back into the list is
+        // how that relationship is undone, mirroring the drop onto a stack that made it. The move
+        // happens after, because un-filing puts the terminal back in the layout it is being moved in.
+        //
+        // Landing on something in its own group is not leaving it: that is rearranging the group, and
+        // treating it as an exit threw the agent out of the group it was being moved within.
+        const targetParentId = kind === "session"
+          ? (this.session(targetId)?.spawned_by_session_id || targetId) : "";
+        const escaping = sourceSessionIds.filter((id) => {
+          const parentId = this.session(id)?.spawned_by_session_id;
+          return parentId && parentId !== targetParentId;
+        });
+        if (escaping.length) {
+          const rect = item.getBoundingClientRect();
+          const dropAfter = item.classList.contains("drop-after") ||
+            (kind === "session" && event.clientY >= rect.top + rect.height / 2);
+          void this.setSpawnedParent(escaping, "").then(() => {
+            if (kind === "session") this.repositionSelectedSessions(sourceSessionIds, targetId, dropAfter);
+          });
           this.clearDragLandingIndicator();
           this.dragItem = null;
           return;

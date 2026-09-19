@@ -770,13 +770,39 @@ Object.assign(TermdeckApp.prototype, {
 
   cycleTerminal(delta) {
     if (!this.sessions.length) return;
-    const ids = this.sessions.map((s) => s.session_id);
-    const current = ids.indexOf(this.activeId);
+    const ids = this.cycleTerminalOrder();
+    if (!ids.length) return;
+    const current = ids.indexOf(this.cycleTerminalAnchorId(ids));
     const next = current === -1 ? 0 : (current + delta + ids.length) % ids.length;
     // Keyboard cycling may move past the visible portion of the sidebar.
     // Reveal only this newly selected row; ordinary clicks and browser
     // history navigation should not continually reposition the sidebar.
     this.activate(ids[next], { history: false, reveal: true });
+  },
+
+
+  cycleTerminalOrder() {
+    // The order on screen, not the order of the session list. A spawned agent is drawn under the agent
+    // that spawned it rather than at its own place in the list, so the two disagree the moment anything
+    // is filed under anything: cycling by the session list walked past a parent's children to wherever
+    // they happened to sit in the list, which reads as the children being skipped. Taking the order off
+    // the rendered rows also means a collapsed stack is stepped over, because it draws no child rows.
+    const rows = this.$("session-list")?.querySelectorAll(".session-item[data-session-id]") || [];
+    const known = new Set(this.sessions.map((s) => s.session_id));
+    const ids = [...rows].map((row) => row.dataset.sessionId).filter((id) => known.has(id));
+    // Nothing rendered: the sidebar is hidden, or this ran before the first render. The session list is
+    // then the only order there is.
+    return ids.length ? ids : this.sessions.map((s) => s.session_id);
+  },
+
+
+  cycleTerminalAnchorId(ids) {
+    // The active terminal can be a child inside a collapsed stack, which has no row of its own. What is
+    // on screen in its place is the parent, so that is where the step starts from -- otherwise the first
+    // press jumps to the top of the list instead of to the neighbour of what is showing.
+    if (ids.includes(this.activeId)) return this.activeId;
+    const parentId = this.session(this.activeId)?.spawned_by_session_id || "";
+    return ids.includes(parentId) ? parentId : "";
   },
 
 
@@ -876,7 +902,65 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  async restartSession(sessionId, permission = "") {
+  openRestartDialog(session) {
+    // One dialog rather than a submenu of permissions, because the two things someone changes on a
+    // restart -- which permission, and what flags -- are chosen together, and a submenu can only offer
+    // the first. It shows the command it is about to run, since extra parameters replace options
+    // already on it and that is easier to see than to reason about.
+    const backdrop = this.$("restart-modal-backdrop");
+    if (!backdrop) return;
+    this.restartDialogSessionId = session.session_id;
+    this.$("restart-modal-session").textContent = this.titlePresentation(session).text || session.session_id;
+    const permissions = this.agentPermissions(session.agent_kind);
+    const select = this.$("restart-modal-permission");
+    select.textContent = "";
+    for (const entry of permissions) {
+      const option = document.createElement("option");
+      option.value = entry.value;
+      option.textContent = entry.label;
+      select.appendChild(option);
+    }
+    // Blank first: restarting without choosing keeps whatever the terminal already runs under, which
+    // is what the plain Restart does.
+    const unchanged = document.createElement("option");
+    unchanged.value = "";
+    unchanged.textContent = "Unchanged";
+    select.prepend(unchanged);
+    select.value = "";
+    this.$("restart-modal-permission-field").classList.toggle("hidden", permissions.length < 2);
+    this.$("restart-modal-additional-args").value = "";
+    this.$("restart-modal-error").classList.add("hidden");
+    this.$("restart-modal-command").textContent = session.command || "";
+    backdrop.classList.remove("hidden");
+    this.$("restart-modal-additional-args").focus();
+  },
+
+
+  closeRestartDialog() {
+    this.$("restart-modal-backdrop")?.classList.add("hidden");
+    this.restartDialogSessionId = "";
+  },
+
+
+  async confirmRestartDialog() {
+    const sessionId = this.restartDialogSessionId;
+    if (!sessionId) return;
+    const permission = this.$("restart-modal-permission").value;
+    const additionalArgs = this.$("restart-modal-additional-args").value;
+    const error = this.$("restart-modal-error");
+    error.classList.add("hidden");
+    const failure = await this.restartSession(sessionId, permission, additionalArgs);
+    if (!failure) {
+      this.closeRestartDialog();
+      return;
+    }
+    // Kept open on a bad flag so the text can be corrected rather than retyped from the context menu.
+    error.textContent = failure;
+    error.classList.remove("hidden");
+  },
+
+
+  async restartSession(sessionId, permission = "", additionalArgs = "") {
     const wasDormant = !!this.session(sessionId)?.dormant;
     this.activate(sessionId, { startDormant: false });
     this.$("status-name").textContent = "restarting…";
@@ -885,12 +969,15 @@ Object.assign(TermdeckApp.prototype, {
     const response = await fetch(`/api/sessions/${sessionId}/restart`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ permission }),
+      body: JSON.stringify({ permission, additional_args: additionalArgs }),
     });
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));
-      this.$("status-name").textContent = detail?.detail || "restart failed";
-      return;
+      const message = detail?.detail || "restart failed";
+      this.$("status-name").textContent = message;
+      // Returned as well as shown: a caller with a dialog open needs to keep it open and say why,
+      // where the status bar alone would be behind it.
+      return message;
     }
     await this.refresh();
     if (wasDormant && this.activeId === sessionId) {

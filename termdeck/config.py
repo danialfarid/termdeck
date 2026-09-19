@@ -31,8 +31,19 @@ class TermdeckConfig:
     IMPORTED_TRANSCRIPTS_DIR = DATA_DIR / "imported-transcripts"
     IMPORTED_PROJECTS_DIR = DATA_DIR / "imported-projects"
     SCROLLBACK_SUFFIX = ".bin"
-    # Historical name on disk; the recording is generic (any agent with records_raw_replay).
-    RAW_REPLAY_SUFFIX = ".claude-replay.bin"
+    # The recording is generic: any agent whose AgentCli sets records_raw_replay gets one, which today
+    # is Claude, Codex and Opencode. The old name said "claude" for all three and read as a statement
+    # about the agent, which is how a Claude-only cleanup once came to look correct.
+    RAW_REPLAY_SUFFIX = ".replay.bin"
+    # Recordings written before the rename. Still read and still appended to where they exist, so an
+    # upgrade does not throw away the scrollback of every open terminal.
+    LEGACY_RAW_REPLAY_SUFFIX = ".claude-replay.bin"
+    # Recordings on disk are reclaimed by one owner: a periodic sweep that reconciles the directory
+    # against the sessions the deck still has. Deleting at close and sweeping at startup were the
+    # obvious places, but both can be skipped -- a close races a kill, and a startup sweep delays the
+    # boot of the thing it is tidying up after -- so neither is a reliable owner, and having three
+    # made none of them accountable. A closed recording therefore survives until the next sweep.
+    REPLAY_SWEEP_INTERVAL_SECONDS = 900.0
     # How long after input or output a replay is written to disk. This is the ONLY thing that makes a
     # replay durable -- there is no periodic sweep and no shutdown hook behind it, because a server dies
     # by SIGKILL, crash-loop or power loss far more often than it is stopped politely, and a second
@@ -60,6 +71,35 @@ class TermdeckConfig:
     SERVICE_LOG_MAX_BYTES = 5_000_000
     SERVICE_LOG_KEEP_BYTES = 2_000_000
     SERVICE_LOG_TRIM_INTERVAL_SECONDS = 900.0
+    # The freeze watchdog. A wedged server still owns its port and its process, so launchd KeepAlive and
+    # systemd Restart=always see a healthy job and do nothing -- the deck can sit there accepting
+    # connections and answering none for hours. The watchdog is a separate short-lived job the service
+    # manager runs on a timer: it asks the server a question over HTTP and restarts it once enough
+    # consecutive asks go unanswered. Each tick is its own process, so a watchdog that wedges is replaced
+    # by the next tick rather than becoming a second thing nobody is watching.
+    API_HEALTH_ROUTE = "/api/health"
+    WATCHDOG_STATE_FILE = DATA_DIR / "watchdog-state.json"
+    WATCHDOG_LOG_FILE = DATA_DIR / "watchdog.log"
+    WATCHDOG_LOG_MAX_BYTES = 1_000_000
+    WATCHDOG_INTERVAL_SECONDS = 120
+    # Generous against a healthy server (it answers /api/health in single-digit milliseconds), so a
+    # merely slow deck is never mistaken for a wedged one.
+    WATCHDOG_PROBE_TIMEOUT_SECONDS = 10.0
+    # Consecutive unanswered probes before a restart. THRESHOLD * INTERVAL is how long the server may be
+    # unreachable before it is bounced, and it has to comfortably exceed a cold start: a deck with a few
+    # hundred sessions restores their scrollback before it binds, and killing it mid-boot would loop.
+    WATCHDOG_FAILURE_THRESHOLD = 3
+    # How long a freshly restarted deck is given to come up before probes count against it again. This is
+    # the FIRST cooldown only -- see the backoff below.
+    WATCHDOG_RESTART_COOLDOWN_SECONDS = 300.0
+    # A restart that does not fix anything must not be retried at the same rate forever. Not every reason
+    # a deck stops answering is one a restart can cure -- a bad build, a corrupt state file, a full disk --
+    # and against those a fixed cooldown is just a slow crash loop that keeps killing the process while
+    # someone is trying to debug it. Each restart that fails to produce a healthy deck doubles the wait,
+    # up to the cap, so a genuinely broken install is bounced a handful of times in the first hour and
+    # then roughly hourly, while a deck that comes back and stays up resets to the base cooldown.
+    WATCHDOG_RESTART_BACKOFF_MULTIPLIER = 2.0
+    WATCHDOG_RESTART_COOLDOWN_MAX_SECONDS = 3600.0
     UPLOADS_DIR = DATA_DIR / "uploads"
     API_UPLOAD_ROUTE = "/api/upload"
     UPLOAD_MAX_BYTES = 30_000_000
@@ -123,6 +163,7 @@ class TermdeckConfig:
     API_SESSION_WORKTREE_FINISH_ROUTE = "/api/sessions/{session_id}/worktree/finish"
     API_SESSION_RENAME_ROUTE = "/api/sessions/{session_id}/rename"
     API_SESSION_DESCRIPTION_ROUTE = "/api/sessions/{session_id}/description"
+    API_SESSION_SPAWNED_BY_ROUTE = "/api/sessions/{session_id}/spawned-by"
     API_SESSION_PROJECT_ROUTE = "/api/sessions/{session_id}/project"
     API_SESSION_USAGE_ROUTE = "/api/sessions/{session_id}/usage"
     API_SESSION_HISTORY_ROUTE = "/api/sessions/{session_id}/history"
@@ -334,6 +375,25 @@ class TermdeckConfig:
     TERMINAL_SEARCH_MAX_SNIPPETS = 6
     TERMINAL_SEARCH_SNIPPET_CHARS = 180
     HISTORY_INDEX_FILE = DATA_DIR / "history-index.sqlite3"
+    # The index is a full-text layer over every agent transcript on the machine, and that corpus only
+    # grows -- it is the agents' own data, which termdeck does not get to delete. Without a ceiling the
+    # index tracks it forever: it reached 3.5GB here and filled the disk, which wedged the server.
+    # On passing MAX, the oldest transcripts are evicted down to KEEP; the gap between the two is what
+    # stops an index sitting exactly on the limit from evicting on every single write.
+    # A soft cap, checked periodically rather than enforced on every write: the index can overshoot
+    # between checks, and the figure counts pages in use, not the WAL beside them.
+    HISTORY_INDEX_MAX_BYTES = 3_000_000_000
+    # How far under the cap an eviction run goes. Without this gap an index sitting exactly on the cap
+    # would evict again on the next write, and eviction is the expensive half of the operation.
+    HISTORY_INDEX_KEEP_MARGIN_BYTES = 500_000_000
+    # Transcript writes arrive one JSONL append at a time while an agent is streaming. Indexing each one
+    # as it lands makes the index compete with the agent for the same file; batching a few seconds of
+    # them costs nothing in search freshness and collapses a burst into one pass per file.
+    HISTORY_INDEX_DEBOUNCE_SECONDS = 5.0
+    # How long the indexer waits before retrying work that a disk or database failure cost it. Retrying
+    # every debounce window would hammer a failing disk; waiting for the next transcript to change would
+    # mean an idle deck never recovers, and never runs retention again either.
+    HISTORY_INDEX_RETRY_SECONDS = 300.0
     FILE_HISTORY_DATABASE = DATA_DIR / "file-history.sqlite3"
     FILE_HISTORY_MAX_VERSIONS_PER_FILE = 100
     FILE_HISTORY_MAX_BYTES = 512 * 1024 * 1024
@@ -412,6 +472,19 @@ class TermdeckConfig:
     DRAFT_REPLAY_DELAY_AGENT_SECONDS = 4.0
     DRAFT_REPLAY_DELAY_SHELL_SECONDS = 1.5
     PROMPT_SUBMIT_KEY_DELAY_SECONDS = 0.08
+    # The Enter that submits a pasted prompt is written after the paste, and the agent TUI has to have
+    # consumed the paste for it to land. A flat delay is a guess about how far behind that TUI is: a
+    # quiet one keeps up in well under 80ms, while one streaming tens of thousands of tokens can be much
+    # further behind, and the Enter is absorbed -- the prompt then sits in the composer, never sent.
+    # So wait for the terminal's own output to go quiet before pressing Enter, up to a cap.
+    PROMPT_SUBMIT_SETTLE_QUIET_SECONDS = 0.12
+    PROMPT_SUBMIT_SETTLE_MAX_SECONDS = 2.0
+    # Having pressed Enter, confirm the prompt actually arrived: it is confirmed when it shows up as a
+    # user turn in the agent's own transcript, which is the same thing the transcript view waits for.
+    # Until then, press Enter again. Stops at the first confirmation, and gives up at the deadline
+    # rather than pressing forever at a terminal that is never going to take it.
+    PROMPT_SUBMIT_CONFIRM_SECONDS = 15.0
+    PROMPT_SUBMIT_CONFIRM_POLL_SECONDS = 1.5
     PROMPT_AGENT_STARTUP_DELAY_SECONDS = 2.0
     PROMPT_AGENT_READY_TIMEOUT_SECONDS = 12.0
     FORK_RENAME_READY_DELAY_SECONDS = 1.5
