@@ -6,6 +6,10 @@ option a CLI expects several times -- codex's `-c key=value` -- and this is wher
 lands, so the two are tested together.
 """
 
+import json
+import os
+import shutil
+import subprocess
 import time
 import unittest
 from pathlib import Path
@@ -13,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from termdeck import agents
+from tests.test_terminal_cycle_order import method_source
 from termdeck.config import TermdeckConfig
 from termdeck.models import SessionRecord
 from termdeck.session_manager import TerminalSessionManager
@@ -383,3 +388,60 @@ class RestartShowsItsCommandTest(unittest.TestCase):
 
     def test_a_terminal_with_no_command_still_names_what_it_runs(self) -> None:
         self.assertIn(TermdeckConfig.SHELL, self.divider(False, ""))
+
+
+MODEL_NAME_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_MODEL_NAME_SCENARIO);
+const elements = {
+  "modal-model-effort": { value: scenario.selected },
+  "modal-model-effort-field": { classList: { contains: () => scenario.effortFieldHidden } },
+};
+const app = { $: (id) => elements[id], __METHODS__ };
+process.stdout.write(JSON.stringify({ name: app.modelNameWithEffort(scenario.field, "modal-model-effort") }));
+"""
+
+
+class ModelNameFromTheDialogTest(unittest.TestCase):
+    """What the dialog hands over as the model, while its list of levels is still loading.
+
+    The levels come from codex's catalog, which takes about three seconds to answer on the first open
+    because codex starts an app server for it. Until then there is no list to read a level off -- but the
+    field already holds one, because that is how the last choice is remembered ("gpt-6-astra high").
+    Dropping it meant opening a terminal quickly started it on the agent's default while the box plainly
+    said otherwise.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (Path(__file__).resolve().parent.parent / "termdeck" / "static" / "app_settings_ui.js").read_text()
+        cls.harness = MODEL_NAME_HARNESS.replace(
+            "__METHODS__", method_source(source, "modelNameWithEffort(modelValue, effortSelectId)"))
+
+    def name_for(self, field: str, selected: str = "", effort_field_hidden: bool = False) -> str:
+        scenario = {"field": field, "selected": selected, "effortFieldHidden": effort_field_hidden}
+        done = subprocess.run([self.node, "-e", self.harness], capture_output=True, text=True, check=False,
+                              env={**os.environ, "TERMDECK_MODEL_NAME_SCENARIO": json.dumps(scenario)})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)["name"]
+
+    def test_the_remembered_level_survives_the_catalog_still_loading(self) -> None:
+        self.assertEqual(self.name_for("gpt-6-astra high", effort_field_hidden=True), "gpt-6-astra high")
+
+    def test_a_chosen_level_is_what_is_sent(self) -> None:
+        self.assertEqual(self.name_for("gpt-6-astra high", selected="max"), "gpt-6-astra max")
+
+    def test_choosing_the_model_default_sends_no_level(self) -> None:
+        # The blank option is a deliberate choice -- "whatever the agent is configured for" -- so it has
+        # to beat the level the field was remembered with.
+        self.assertEqual(self.name_for("gpt-6-astra high", selected=""), "gpt-6-astra")
+
+    def test_a_model_the_catalog_does_not_know_passes_through(self) -> None:
+        self.assertEqual(self.name_for("something-invented", effort_field_hidden=True), "something-invented")
+
+    def test_an_empty_field_stays_empty(self) -> None:
+        # Blank means the agent's own default model; it must not become a stray level.
+        self.assertEqual(self.name_for("", selected="high"), "high")
+        self.assertEqual(self.name_for("", effort_field_hidden=True), "")

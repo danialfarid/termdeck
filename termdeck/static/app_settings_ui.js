@@ -3350,10 +3350,16 @@ Object.assign(TermdeckApp.prototype, {
   // What the dialogs hand over as the model: "<model> <level>", the shape the agent turns into start
   // parameters, and the same shape the transcript's picker names a choice with.
   modelNameWithEffort(modelValue, effortSelectId) {
-    const model = String(modelValue || "").trim().split(/\s+/)[0] || "";
+    const [model, typedEffort] = String(modelValue || "").trim().split(/\s+/);
     const field = this.$(`${effortSelectId}-field`);
-    const effort = field && !field.classList.contains("hidden") ? this.$(effortSelectId).value : "";
-    return [model, effort].filter(Boolean).join(" ");
+    // The levels come from a catalog that takes a moment to arrive -- measured at three seconds on the
+    // first open, because codex starts an app server to answer -- and until it does there is no list to
+    // read a level off. What the field holds is a level all the same: it is how the last choice was
+    // remembered, and how the transcript's own picker names one. Dropping it while the catalog was in
+    // flight meant opening a terminal quickly silently started it on the agent's default instead of on
+    // what the box plainly said, so what you saw and what you got disagreed for those three seconds.
+    const effort = field && !field.classList.contains("hidden") ? this.$(effortSelectId).value : typedEffort;
+    return [model || "", effort || ""].filter(Boolean).join(" ");
   },
 
   openModal(groupId = null, afterSessionId = null, initialAgentText = "", options = {}) {
