@@ -578,6 +578,20 @@
     </div>
   </form>
 </div>
+<div id="restart-modal-backdrop" class="hidden">
+  <form id="restart-modal" autocomplete="off">
+    <div class="modal-title">Restart with…</div>
+    <div id="restart-modal-session"></div>
+    <label id="restart-modal-permission-field">Permission<select id="restart-modal-permission"></select></label>
+    <label>Additional start parameters (optional)<input id="restart-modal-additional-args" placeholder="e.g. --flag value" spellcheck="false" autocomplete="off"><small>Matching options on the current command are replaced; other parameters are appended.</small></label>
+    <div id="restart-modal-command" class="restart-modal-command"></div>
+    <div id="restart-modal-error" class="hidden" role="alert" aria-live="assertive"></div>
+    <div class="modal-actions">
+      <button id="restart-modal-cancel" type="button">Cancel</button>
+      <button id="restart-modal-confirm" class="modal-primary" type="submit">Restart</button>
+    </div>
+  </form>
+</div>
 <div id="worktree-modal-backdrop" class="hidden">
   <div id="worktree-modal">
   <div class="modal-title">New worktree</div>

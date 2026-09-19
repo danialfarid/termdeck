@@ -1697,7 +1697,7 @@ class TerminalSessionManager:
         self._schedule_screen_repaint(ms, 0)
         return ms.screen_repaint_task is not None
 
-    async def restart_session(self, session_id: str, permission: str = "") -> None:
+    async def restart_session(self, session_id: str, permission: str = "", additional_args: str = "") -> None:
         ms = self._sessions[session_id]
         agent = agents.agent_cli(ms.record.agent_kind)
         if ms.detect_task is not None:
@@ -1710,6 +1710,10 @@ class TerminalSessionManager:
             permission = agent.restart_permission(self, ms)
         if permission:
             self._set_restart_permission(ms.record, permission)
+        if additional_args.strip():
+            # After the permission, so a flag typed here wins over the one the menu picked: someone
+            # writing it out by hand is being more specific than someone choosing from a list.
+            ms.record.command = self.append_additional_start_arguments(ms.record.command, additional_args)
         self._persist()
         if not await self._terminate_proc(ms):
             raise RuntimeError(f"could not stop dtach session before restart: {session_id}")

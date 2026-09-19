@@ -3981,6 +3981,14 @@ class TermdeckApp {
       event.preventDefault();
       void this.createSession();
     });
+    this.$("restart-modal-cancel").onclick = () => this.closeRestartDialog();
+    this.$("restart-modal").addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.confirmRestartDialog();
+    });
+    this.$("restart-modal-backdrop").onclick = (event) => {
+      if (event.target === this.$("restart-modal-backdrop")) this.closeRestartDialog();
+    };
     this.$("modal-model").onchange = () => {
       this.clearModalError();
       this.updateModalModelField();

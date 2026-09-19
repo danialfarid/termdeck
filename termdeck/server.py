@@ -214,6 +214,9 @@ class MoveSessionProjectRequest(BaseModel):
 
 class RestartSessionRequest(BaseModel):
     permission: str = ""
+    # Extra flags for the restarted command, in shell syntax. An option given here replaces the same
+    # option already on the command rather than being appended twice.
+    additional_args: str = ""
 
 
 class SessionModelRequest(BaseModel):
@@ -3401,7 +3404,8 @@ class TermdeckServer:
         try:
             request_permission = request.permission.strip() if request else ""
             permission = permission.strip() or request_permission
-            await self.manager.restart_session(session_id, permission)
+            await self.manager.restart_session(session_id, permission,
+                                               request.additional_args if request else "")
         except RuntimeError as restart_error:
             raise HTTPException(status_code=409, detail=str(restart_error)) from restart_error
         except ValueError as restart_error:

@@ -165,3 +165,63 @@ class TaskApiRecordsOriginTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RestartWithExtraParamsTest(unittest.IsolatedAsyncioTestCase):
+    """Restart can change the permission and add start parameters in one go, which is why the context
+    menu opens a dialog rather than a submenu of permissions."""
+
+    def setUp(self) -> None:
+        self.manager = TerminalSessionManager.__new__(TerminalSessionManager)
+        self.session = SimpleNamespace(
+            record=record("s1", command="claude --permission-mode default", agent_kind="claude",
+                          agent_session_id=None),
+            detect_task=None, exit_code=0, dormant=True)
+        self.manager._sessions = {"s1": self.session}
+        for method in ("_persist", "_spawn", "_canonicalize_agent_resume_command"):
+            patcher = patch.object(TerminalSessionManager, method, lambda *a, **k: None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.terminate = AsyncMock(return_value=True)
+        terminate = patch.object(TerminalSessionManager, "_terminate_proc", self.terminate)
+        terminate.start()
+        self.addCleanup(terminate.stop)
+        # With no permission chosen, the agent is asked what the terminal already runs under, which it
+        # reads off the agent's own session state. Nothing here is testing that lookup.
+        self.manager._tracker = SimpleNamespace(claude_session_permission_mode=lambda *a, **k: "")
+        clear = patch.object(TerminalSessionManager, "replay", SimpleNamespace(clear_for_restart=lambda ms: None),
+                             create=True)
+        clear.start()
+        self.addCleanup(clear.stop)
+
+    async def test_extra_parameters_reach_the_restarted_command(self) -> None:
+        await self.manager.restart_session("s1", "", "--verbose")
+
+        self.assertIn("--verbose", self.session.record.command)
+
+    async def test_an_option_given_here_replaces_the_one_already_there(self) -> None:
+        # Otherwise the command carries the flag twice and the agent sees whichever it reads last.
+        await self.manager.restart_session("s1", "", "--permission-mode plan")
+
+        self.assertEqual(self.session.record.command.count("--permission-mode"), 1)
+        self.assertIn("plan", self.session.record.command)
+
+    async def test_a_typed_flag_wins_over_the_chosen_permission(self) -> None:
+        # Writing it out by hand is more specific than picking from a list.
+        await self.manager.restart_session("s1", "acceptEdits", "--permission-mode plan")
+
+        self.assertIn("plan", self.session.record.command)
+        self.assertNotIn("acceptEdits", self.session.record.command)
+
+    async def test_unparseable_parameters_are_refused_before_the_terminal_is_killed(self) -> None:
+        # Raising is not enough: raising AFTER the terminal has been stopped leaves it dead with nothing
+        # restarted. The parameters have to be rejected while the terminal is still running.
+        with self.assertRaises(ValueError):
+            await self.manager.restart_session("s1", "", '--flag "unclosed')
+
+        self.terminate.assert_not_awaited()
+
+    async def test_no_extra_parameters_leaves_the_command_alone(self) -> None:
+        await self.manager.restart_session("s1", "")
+
+        self.assertEqual(self.session.record.command, "claude --permission-mode default")

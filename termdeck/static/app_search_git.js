@@ -4290,13 +4290,8 @@ Object.assign(TermdeckApp.prototype, {
         () => this.openModal(null, session.session_id), "add");
       this.addContextItem(menu, this.shortcutLabel("Restart", "restart-terminal"),
         () => this.restartSession(session.session_id), "refresh");
-      const permissions = this.agentPermissions(session.agent_kind);
-      if (permissions.length > 1) {
-        this.addContextSubmenu(menu, "Restart with permission", permissions.map((entry) => ({
-          label: entry.label,
-          handler: () => this.restartSession(session.session_id, entry.value),
-          icon: "refresh",
-        })), "refresh");
+      if (this.agentSpec(session.agent_kind)?.is_agent) {
+        this.addContextItem(menu, "Restart with…", () => this.openRestartDialog(session), "refresh");
       }
       this.addContextItem(menu, "Stop", session.running ? () => this.stopSession(session.session_id) : null, "debug-stop");
       this.addContextItem(menu, this.shortcutLabel("Rename", "rename-terminal"),

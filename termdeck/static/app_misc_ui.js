@@ -876,7 +876,65 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  async restartSession(sessionId, permission = "") {
+  openRestartDialog(session) {
+    // One dialog rather than a submenu of permissions, because the two things someone changes on a
+    // restart -- which permission, and what flags -- are chosen together, and a submenu can only offer
+    // the first. It shows the command it is about to run, since extra parameters replace options
+    // already on it and that is easier to see than to reason about.
+    const backdrop = this.$("restart-modal-backdrop");
+    if (!backdrop) return;
+    this.restartDialogSessionId = session.session_id;
+    this.$("restart-modal-session").textContent = this.titlePresentation(session).text || session.session_id;
+    const permissions = this.agentPermissions(session.agent_kind);
+    const select = this.$("restart-modal-permission");
+    select.textContent = "";
+    for (const entry of permissions) {
+      const option = document.createElement("option");
+      option.value = entry.value;
+      option.textContent = entry.label;
+      select.appendChild(option);
+    }
+    // Blank first: restarting without choosing keeps whatever the terminal already runs under, which
+    // is what the plain Restart does.
+    const unchanged = document.createElement("option");
+    unchanged.value = "";
+    unchanged.textContent = "Unchanged";
+    select.prepend(unchanged);
+    select.value = "";
+    this.$("restart-modal-permission-field").classList.toggle("hidden", permissions.length < 2);
+    this.$("restart-modal-additional-args").value = "";
+    this.$("restart-modal-error").classList.add("hidden");
+    this.$("restart-modal-command").textContent = session.command || "";
+    backdrop.classList.remove("hidden");
+    this.$("restart-modal-additional-args").focus();
+  },
+
+
+  closeRestartDialog() {
+    this.$("restart-modal-backdrop")?.classList.add("hidden");
+    this.restartDialogSessionId = "";
+  },
+
+
+  async confirmRestartDialog() {
+    const sessionId = this.restartDialogSessionId;
+    if (!sessionId) return;
+    const permission = this.$("restart-modal-permission").value;
+    const additionalArgs = this.$("restart-modal-additional-args").value;
+    const error = this.$("restart-modal-error");
+    error.classList.add("hidden");
+    const failure = await this.restartSession(sessionId, permission, additionalArgs);
+    if (!failure) {
+      this.closeRestartDialog();
+      return;
+    }
+    // Kept open on a bad flag so the text can be corrected rather than retyped from the context menu.
+    error.textContent = failure;
+    error.classList.remove("hidden");
+  },
+
+
+  async restartSession(sessionId, permission = "", additionalArgs = "") {
     const wasDormant = !!this.session(sessionId)?.dormant;
     this.activate(sessionId, { startDormant: false });
     this.$("status-name").textContent = "restarting…";
@@ -885,12 +943,15 @@ Object.assign(TermdeckApp.prototype, {
     const response = await fetch(`/api/sessions/${sessionId}/restart`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ permission }),
+      body: JSON.stringify({ permission, additional_args: additionalArgs }),
     });
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));
-      this.$("status-name").textContent = detail?.detail || "restart failed";
-      return;
+      const message = detail?.detail || "restart failed";
+      this.$("status-name").textContent = message;
+      // Returned as well as shown: a caller with a dialog open needs to keep it open and say why,
+      // where the status bar alone would be behind it.
+      return message;
     }
     await this.refresh();
     if (wasDormant && this.activeId === sessionId) {

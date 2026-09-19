@@ -76,6 +76,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The terminal context menu's "Restart with permission" submenu is now "Restart with…", a dialog that
+  takes a permission and additional start parameters together and shows the command it is about to run.
+  A parameter typed here replaces the matching option already on that command rather than being added
+  beside it, and unparseable parameters are refused while the terminal is still running.
 - Agents an agent spawns are grouped under it in the sidebar, rather than scattered through the list as
   unrelated terminals. Collapsed they are one line: a dot carrying their combined state — throbbing
   while any is working, lit when one has finished unread, ringed when one is waiting on an answer —
