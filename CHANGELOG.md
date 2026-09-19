@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-09-19
+
 ### Fixed
 
 - Terminal find closes when you switch terminals, and its box is emptied. It stayed open on the next
@@ -66,7 +68,7 @@ All notable changes to this project are documented here. The format follows
   evicting the oldest transcripts when it passes that, and drops transcripts that have been deleted
   from disk instead of keeping their search hits forever. Evicted transcripts stay evicted rather than
   being indexed straight back in by the next startup scan, and come back if something appends to them
-  or the ceiling is raised.
+  or the index is rebuilt.
 - Transcript changes are indexed in batches of a few seconds rather than one at a time, so a streaming
   agent no longer has the indexer re-reading its transcript on every append.
 - The indexer survives a full or failing disk instead of stopping for the life of the server. It reports
@@ -936,7 +938,11 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/danialfarid/termdeck/compare/v0.16.2...v0.17.0
+[0.16.2]: https://github.com/danialfarid/termdeck/compare/v0.16.1...v0.16.2
+[0.16.1]: https://github.com/danialfarid/termdeck/compare/v0.16.0...v0.16.1
+[0.16.0]: https://github.com/danialfarid/termdeck/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/danialfarid/termdeck/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/danialfarid/termdeck/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/danialfarid/termdeck/compare/v0.13.0...v0.14.0
