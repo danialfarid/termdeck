@@ -2030,11 +2030,11 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
 #restart-modal input, #restart-modal select, #modal input, #modal select { background: var(--bg); border: 1px solid var(--border); border-radius: 7px; color: var(--text); padding: 8px 10px; font-size: 13px; font-family: Menlo, monospace; outline: none; }
 #restart-modal select, #modal select { cursor: pointer; }
 #modal input:focus, #modal select:focus { border-color: var(--accent); }
-#modal label.hidden { display: none; }
-#modal .modal-checkbox-label { display: flex; gap: 5px; margin: 3px 0 10px; color: var(--text); }
-#modal .modal-checkbox-label span { display: flex; align-items: center; gap: 7px; }
-#modal .modal-checkbox-label input { width: auto; padding: 0; }
-#modal .modal-checkbox-label small { color: var(--dim); font-size: 10px; }
+#modal label.hidden, #restart-modal label.hidden { display: none; }
+#modal .modal-checkbox-label, #restart-modal .modal-checkbox-label { display: flex; gap: 5px; margin: 3px 0 10px; color: var(--text); }
+#modal .modal-checkbox-label span, #restart-modal .modal-checkbox-label span { display: flex; align-items: center; gap: 7px; }
+#modal .modal-checkbox-label input, #restart-modal .modal-checkbox-label input { width: auto; padding: 0; }
+#modal .modal-checkbox-label small, #restart-modal .modal-checkbox-label small { color: var(--dim); font-size: 10px; }
 #modal-worktree-options { padding: 9px 10px 1px; margin: -2px 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); }
 #modal-worktree-options.hidden { display: none; }
 #modal-project-picker { display: flex; align-items: center; gap: 5px; }

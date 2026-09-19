@@ -79,7 +79,10 @@ class CodexCli(AgentCli):
                 '4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805-4.783 2.7582a.7948.7948 0 0 0-.3927.6813z'
                 'M9.4041 10.4976l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"/></svg>')
 
-    REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
+    # As codex's own model catalog reports them (`model/list` over the app server). "max" and "ultra"
+    # arrived with the gpt-6 models; without them "gpt-6-astra max" was read as a model called
+    # "gpt-6-astra max" and started nothing.
+    REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max", "ultra"})
     ROLLOUT_UUID_RE = re.compile(
         r"rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
     subagent_file_marker = b'"source":{"subagent"'
@@ -98,6 +101,11 @@ class CodexCli(AgentCli):
             model_name = " ".join(parts[:-1])
         arguments.extend(("--model", model_name))
         return tuple(arguments)
+
+    def disable_animation_arguments(self) -> tuple[str, ...]:
+        # Codex's TUI redraws its composer while it works, and the redraw walks the cursor across the
+        # line and back. `tui.animations` is codex's own switch for it.
+        return ("-c", "tui.animations=false")
 
     def termdeck_instruction_arguments(self, instruction_file: Path) -> tuple[str, ...]:
         return ("-c", f"model_instructions_file={json.dumps(str(instruction_file))}")

@@ -928,6 +928,20 @@ Object.assign(TermdeckApp.prototype, {
     select.prepend(unchanged);
     select.value = "";
     this.$("restart-modal-permission-field").classList.toggle("hidden", permissions.length < 2);
+    // Blank means the model already on the command, the same way a blank permission means the one it
+    // already runs under. The list is a suggestion, not a constraint: a model the catalog has not heard
+    // of is still typed in here.
+    const spec = this.agentSpec(session.agent_kind);
+    this.$("restart-modal-model-field").classList.toggle("hidden", !spec?.is_agent);
+    this.$("restart-modal-model").value = "";
+    this.$("restart-modal-model").placeholder = "unchanged";
+    this.$("restart-modal-model-help").textContent = spec?.model_help ||
+      "Leave blank to restart on the model the command already names.";
+    void this.fillModelSuggestionList("restart-modal-model-ids", session.agent_kind);
+    const animations = this.$("restart-modal-disable-animations-field");
+    animations.classList.toggle("hidden", !spec?.supports_disable_animations);
+    this.$("restart-modal-disable-animations").checked = spec?.supports_disable_animations
+      ? this.settings.disable_agent_animations === true : false;
     this.$("restart-modal-additional-args").value = "";
     this.$("restart-modal-error").classList.add("hidden");
     this.$("restart-modal-command").textContent = session.command || "";
@@ -947,9 +961,19 @@ Object.assign(TermdeckApp.prototype, {
     if (!sessionId) return;
     const permission = this.$("restart-modal-permission").value;
     const additionalArgs = this.$("restart-modal-additional-args").value;
+    const modelField = this.$("restart-modal-model-field");
+    const modelName = modelField.classList.contains("hidden") ? "" : this.$("restart-modal-model").value.trim();
+    const animationsField = this.$("restart-modal-disable-animations-field");
+    const disableAnimations = !animationsField.classList.contains("hidden") &&
+      this.$("restart-modal-disable-animations").checked;
+    if (!animationsField.classList.contains("hidden")) {
+      this.settings.disable_agent_animations = disableAnimations;
+      this.saveSettings();
+    }
     const error = this.$("restart-modal-error");
     error.classList.add("hidden");
-    const failure = await this.restartSession(sessionId, permission, additionalArgs);
+    const failure = await this.restartSession(sessionId, permission, additionalArgs,
+      { modelName, disableAnimations });
     if (!failure) {
       this.closeRestartDialog();
       return;
@@ -960,7 +984,7 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  async restartSession(sessionId, permission = "", additionalArgs = "") {
+  async restartSession(sessionId, permission = "", additionalArgs = "", options = {}) {
     const wasDormant = !!this.session(sessionId)?.dormant;
     this.activate(sessionId, { startDormant: false });
     this.$("status-name").textContent = "restarting…";
@@ -969,7 +993,8 @@ Object.assign(TermdeckApp.prototype, {
     const response = await fetch(`/api/sessions/${sessionId}/restart`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ permission, additional_args: additionalArgs }),
+      body: JSON.stringify({ permission, additional_args: additionalArgs,
+        model_name: options.modelName || "", disable_animations: options.disableAnimations === true }),
     });
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));

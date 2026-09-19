@@ -561,7 +561,9 @@
       <option value="agy">AGY</option>
       <option value="none">Shell</option>
     </select></label>
-    <label id="modal-model-name-field">Model ID (optional)<input id="modal-model-name" placeholder="agent default" spellcheck="false"><small id="modal-model-help"></small></label>
+    <label id="modal-model-name-field">Model ID (optional)<input id="modal-model-name" list="modal-model-ids" placeholder="agent default" spellcheck="false" autocomplete="off"><small id="modal-model-help"></small></label>
+    <datalist id="modal-model-ids"></datalist>
+    <label id="modal-disable-animations-field" class="modal-checkbox-label"><span><input id="modal-disable-animations" type="checkbox">Disable the agent's animations</span></label>
     <label id="modal-permission-field">Permission<select id="modal-permission"></select></label>
     <label id="modal-additional-args-field">Additional start parameters (optional)<input id="modal-additional-args" placeholder="e.g. --flag value" spellcheck="false" autocomplete="off"><small>Matching generated options are replaced; other parameters are appended.</small></label>
     <label>Session name / Resume existing session<input id="modal-session-title" list="modal-session-refs" placeholder="optional: name this terminal or saved ID/name to resume" spellcheck="false"></label>
@@ -583,6 +585,9 @@
     <div class="modal-title">Restart with…</div>
     <div id="restart-modal-session"></div>
     <label id="restart-modal-permission-field">Permission<select id="restart-modal-permission"></select></label>
+    <label id="restart-modal-model-field">Model (optional)<input id="restart-modal-model" list="restart-modal-model-ids" placeholder="unchanged" spellcheck="false" autocomplete="off"><small id="restart-modal-model-help"></small></label>
+    <datalist id="restart-modal-model-ids"></datalist>
+    <label id="restart-modal-disable-animations-field" class="modal-checkbox-label"><span><input id="restart-modal-disable-animations" type="checkbox">Disable the agent's animations</span></label>
     <label>Additional start parameters (optional)<input id="restart-modal-additional-args" placeholder="e.g. --flag value" spellcheck="false" autocomplete="off"><small>Matching options on the current command are replaced; other parameters are appended.</small></label>
     <div id="restart-modal-command" class="restart-modal-command"></div>
     <div id="restart-modal-error" class="hidden" role="alert" aria-live="assertive"></div>

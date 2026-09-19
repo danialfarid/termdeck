@@ -101,3 +101,45 @@ class TranscriptFoldsAreOutOfFindsReachTest(unittest.TestCase):
         # The summary is the fold's only handle; hiding it would leave nothing to click.
         rule = re.search(r"#history-body details:not\(\[open\]\)([^{]*)\{", self.style_css)
         self.assertIn(":not(summary)", rule.group(1))
+
+
+class StartParameterDialogWiringTest(unittest.TestCase):
+    """The new-terminal and restart dialogs offer the same two choices, and both reach the server.
+
+    Each is four parts in three files -- markup, the code that fills it, the code that reads it, and the
+    request field -- so a half-wired one looks finished and silently does nothing.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        static = Path(__file__).resolve().parent.parent / "termdeck" / "static"
+        cls.app_js = "\n".join(path.read_text() for path in sorted(static.glob("app*.js")))
+        cls.index_html = (static / "index.html").read_text()
+        cls.style_css = (static / "style.css").read_text()
+
+    def test_both_model_fields_offer_a_suggestion_list(self) -> None:
+        # A list the field is not bound to suggests nothing, and a list nothing fills is empty.
+        for field, list_id in (("modal-model-name", "modal-model-ids"),
+                               ("restart-modal-model", "restart-modal-model-ids")):
+            self.assertRegex(self.index_html, rf'id="{field}"[^>]*list="{list_id}"')
+            self.assertIn(f'<datalist id="{list_id}">', self.index_html)
+            self.assertIn(f'fillModelSuggestionList("{list_id}"', self.app_js)
+
+    def test_the_model_fields_stay_typable(self) -> None:
+        # An <input list=...> is a suggestion; a <select> would only offer what the catalog knows.
+        for field in ("modal-model-name", "restart-modal-model"):
+            self.assertRegex(self.index_html, rf'<input id="{field}"')
+
+    def test_both_dialogs_carry_the_animations_checkbox(self) -> None:
+        for field in ("modal-disable-animations", "restart-modal-disable-animations"):
+            self.assertIn(f'id="{field}" type="checkbox"', self.index_html)
+            self.assertIn(f'this.$("{field}").checked', self.app_js)
+            # Its row is hidden for agents with nothing to turn off, so the client has to hold the row.
+            self.assertIn(f'this.$("{field}-field")', self.app_js)
+
+    def test_both_dialogs_send_what_was_chosen(self) -> None:
+        self.assertIn("disable_animations: disableAnimations", self.app_js)
+        self.assertIn("model_name: options.modelName", self.app_js)
+
+    def test_the_checkbox_rows_are_styled_in_both(self) -> None:
+        self.assertIn("#restart-modal .modal-checkbox-label", self.style_css)

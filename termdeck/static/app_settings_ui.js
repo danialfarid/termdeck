@@ -3243,6 +3243,46 @@ Object.assign(TermdeckApp.prototype, {
     if (ordered.some((spec) => spec.kind === previous)) select.value = previous;
   },
 
+
+  // The models an agent can actually be started on, for the suggestion list behind the model field.
+  // Only codex publishes a catalog (the same one the transcript's /model picker uses); everything else
+  // gets an empty list, which leaves the field as the free-text box it has always been. Either way the
+  // field stays typable: a model the catalog has not heard of yet is still a model you can start on.
+  async agentModelSuggestions(kind) {
+    if (kind !== "codex") return [];
+    if (this.agentModelSuggestionCache?.has(kind)) return this.agentModelSuggestionCache.get(kind);
+    try {
+      const response = await fetch("/api/agents/codex/models");
+      if (!response.ok) throw new Error(String(response.status));
+      const catalog = await response.json();
+      const models = (Array.isArray(catalog.models) ? catalog.models : [])
+        .map((model) => String(model.id || "")).filter(Boolean);
+      if (!this.agentModelSuggestionCache) this.agentModelSuggestionCache = new Map();
+      this.agentModelSuggestionCache.set(kind, models);
+      return models;
+    } catch (_error) {
+      // A catalog that cannot be reached (codex not installed, no account) is not an error worth
+      // reporting here: the field works without it.
+      return [];
+    }
+  },
+
+
+  async fillModelSuggestionList(listId, kind) {
+    const list = this.$(listId);
+    if (!list) return;
+    const token = `${listId}:${kind}`;
+    this.modelSuggestionToken = token;
+    const models = await this.agentModelSuggestions(kind);
+    if (this.modelSuggestionToken !== token) return;
+    list.textContent = "";
+    for (const model of models) {
+      const option = document.createElement("option");
+      option.value = model;
+      list.appendChild(option);
+    }
+  },
+
   openModal(groupId = null, afterSessionId = null, initialAgentText = "", options = {}) {
     this.pendingNewAgentSelection = this.normalizeSelectionText(initialAgentText);
     this.pendingNewAgentSelectionUseHistory = options.useHistoryComposer === true;
@@ -3334,6 +3374,11 @@ Object.assign(TermdeckApp.prototype, {
     input.value = this.modalModelDrafts[model] || "";
     input.placeholder = spec?.model_placeholder || "agent default";
     this.$("modal-model-help").textContent = spec?.model_help || "Leave blank to use the agent's configured default.";
+    void this.fillModelSuggestionList("modal-model-ids", model);
+    const animations = this.$("modal-disable-animations-field");
+    animations.classList.toggle("hidden", !spec?.supports_disable_animations);
+    this.$("modal-disable-animations").checked = spec?.supports_disable_animations
+      ? this.settings.disable_agent_animations === true : false;
   },
 
 
@@ -3358,6 +3403,8 @@ Object.assign(TermdeckApp.prototype, {
     const model = this.$("modal-model").value;
     const modelName = this.$("modal-model-name").value.trim();
     const additionalArgs = this.$("modal-additional-args").value.trim();
+    const disableAnimations = this.$("modal-disable-animations").checked &&
+      !this.$("modal-disable-animations-field").classList.contains("hidden");
     const permission = this.$("modal-permission").value;
     const resolved = this.resolveSessionNameAndReference(model, this.$("modal-session-title").value);
     if (resolved.error) {
@@ -3370,6 +3417,11 @@ Object.assign(TermdeckApp.prototype, {
     this.settings.last_model = model;
     this.settings.last_model_names = { ...(this.settings.last_model_names || {}), [model]: modelName };
     this.settings.last_permissions = { ...(this.settings.last_permissions || {}), [model]: permission };
+    // Remembered like the model and the permission: someone who turns an agent's animations off wants
+    // them off, not off once.
+    if (!this.$("modal-disable-animations-field").classList.contains("hidden")) {
+      this.settings.disable_agent_animations = disableAnimations;
+    }
     this.saveSettings();
     // Land the new terminal directly below the one in focus rather than at the end of the sidebar.
     // An explicitly chosen group already dictates placement, so it wins.
@@ -3378,7 +3430,8 @@ Object.assign(TermdeckApp.prototype, {
     const res = await fetch("/api/sessions", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, model_name: modelName, permission, session_ref: sessionRef, cwd, title,
-        project, additional_args: additionalArgs, worktree_id: this.stateWorktreeId() }),
+        project, additional_args: additionalArgs, disable_animations: disableAnimations,
+        worktree_id: this.stateWorktreeId() }),
     });
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
