@@ -1006,6 +1006,71 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  droppableUnderAgentStack(parentSessionId) {
+    // The sessions a drop would file here, or [] when the drop means nothing: the parent itself, or
+    // terminals already filed under it.
+    const source = this.dragItem;
+    if (!source || source.type !== "layout" || source.kind !== "session") return [];
+    if (source.worktreeId && source.worktreeId !== this.stateWorktreeId()) return [];
+    return this.sessionIdsFromDragItem(source).filter((id) =>
+      id !== parentSessionId && (this.session(id)?.spawned_by_session_id || "") !== parentSessionId);
+  },
+
+
+  makeAgentStackDropTarget(stack, parent) {
+    // setDragLandingMode writes its label into this element, so a stack without one shows the highlight
+    // and says nothing about what the drop would do.
+    const indicator = document.createElement("span");
+    indicator.className = "group-drop-indicator";
+    indicator.innerHTML = '<span class="codicon codicon-type-hierarchy-sub"></span><span>file under</span>';
+    stack.appendChild(indicator);
+    stack.ondragover = (event) => {
+      if (!this.droppableUnderAgentStack(parent.session_id).length) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      this.clearDragLandingIndicator();
+      this.setDragLandingMode(stack, "drop-group",
+        `file under ${this.titlePresentation(parent).text || parent.session_id}`);
+    };
+    stack.ondragleave = (event) => {
+      if (!event.relatedTarget || !stack.contains(event.relatedTarget)) this.clearDragLandingIndicator();
+    };
+    stack.ondrop = (event) => {
+      const sessionIds = this.droppableUnderAgentStack(parent.session_id);
+      event.preventDefault();
+      event.stopPropagation();
+      this.clearDragLandingIndicator();
+      this.dragItem = null;
+      if (sessionIds.length) void this.setSpawnedParent(sessionIds, parent.session_id);
+    };
+  },
+
+
+  async setSpawnedParent(sessionIds, parentSessionId) {
+    // Empty parent clears it, which is what dropping a child back into the list means.
+    const changed = [];
+    for (const sessionId of sessionIds) {
+      const session = this.session(sessionId);
+      if (!session || (session.spawned_by_session_id || "") === (parentSessionId || "")) continue;
+      const response = await fetch(`/api/sessions/${sessionId}/spawned-by`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parent_session_id: parentSessionId }),
+      });
+      if (response.ok) {
+        changed.push(sessionId);
+        continue;
+      }
+      // The server refuses a parent that would close a loop. Say so rather than leaving a drag that
+      // visibly did nothing.
+      const detail = await response.json().catch(() => ({}));
+      this.$("status-name").textContent = detail?.detail || "could not file that terminal";
+    }
+    if (changed.length) await this.refresh();
+    return changed.length;
+  },
+
+
   spawnedChildrenOf(sessionId) {
     return (this.spawnedChildrenByParent || new Map()).get(sessionId) || [];
   },
@@ -1031,6 +1096,7 @@ Object.assign(TermdeckApp.prototype, {
     const stack = document.createElement("div");
     stack.className = "agent-stack" + (expanded ? " expanded" : " collapsed");
     stack.dataset.parentId = parent.session_id;
+    this.makeAgentStackDropTarget(stack, parent);
 
     // The rule belongs to both states: it is what says this group is the parent's, and it is the one
     // control that is in the same place whether the stack is open or shut.

@@ -150,6 +150,7 @@ body:not(.vscode-mode) #sidebar { color: var(--sidebar-text-color); --text: var(
 .group-drop-indicator { display: none; align-items: center; gap: 3px; flex: none; color: var(--accent); font-size: calc(var(--sidebar-font-size) - 2px); }
 .group-drop-indicator .codicon { font-size: 11px; }
 .session-item.drop-before .group-drop-indicator, .session-item.drop-after .group-drop-indicator,
+.agent-stack.drop-group .group-drop-indicator,
 .session-item.drop-group .group-drop-indicator, .session-item.group-drop-pending .group-drop-indicator,
 .session-item.group-drop-target .group-drop-indicator, .terminal-group-label.drop-before .group-drop-indicator,
 .terminal-group-label.drop-after .group-drop-indicator, .terminal-group-label.drop-group .group-drop-indicator,
@@ -2433,3 +2434,9 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
 #restart-modal-error { margin-bottom: 10px; color: var(--red); font: 11px/1.4 Menlo, monospace; }
 #restart-modal-error.hidden { display: none; }
 #restart-modal-permission-field.hidden { display: none; }
+
+/* A stack accepts a terminal dropped onto it, filing that terminal under the same parent. The indicator
+   sits inside it, so the label says what the drop does rather than only lighting the area up. */
+.agent-stack { position: relative; }
+.agent-stack > .group-drop-indicator { position: absolute; right: 8px; top: 1px; }
+.agent-stack.drop-group { outline: 1px dashed var(--accent); outline-offset: -1px; border-radius: 7px; background: var(--active-bg); }

@@ -6088,6 +6088,21 @@ class TermdeckApp {
           this.dragItem = null;
           return;
         }
+        // Dragged out of the group it was filed under. Dropping a spawned agent back into the list is
+        // how that relationship is undone, mirroring the drop onto a stack that made it. The move
+        // happens after, because un-filing puts the terminal back in the layout it is being moved in.
+        const escaping = sourceSessionIds.filter((id) => this.session(id)?.spawned_by_session_id);
+        if (escaping.length) {
+          const rect = item.getBoundingClientRect();
+          const dropAfter = item.classList.contains("drop-after") ||
+            (kind === "session" && event.clientY >= rect.top + rect.height / 2);
+          void this.setSpawnedParent(escaping, "").then(() => {
+            if (kind === "session") this.repositionSelectedSessions(sourceSessionIds, targetId, dropAfter);
+          });
+          this.clearDragLandingIndicator();
+          this.dragItem = null;
+          return;
+        }
         const sessionGroups = this.getProjectState().session_groups || {};
         const targetGroup = kind === "session" ? sessionGroups[targetId] : null;
         const targetRect = kind === "session" ? item.getBoundingClientRect() : null;
