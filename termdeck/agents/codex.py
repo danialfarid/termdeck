@@ -127,6 +127,12 @@ class CodexCli(AgentCli):
         cleaned = self._ensure_searchable_scrollback(self.strip_session_arguments(parts))
         return f"{shlex.join(cleaned)} resume {agent_session_id}"
 
+    def fresh_session_command(self, original_command: str) -> str:
+        parts = self.command_parts(original_command)
+        if not parts:
+            return f"{self.executable} {self.NO_ALT_SCREEN_FLAG}"
+        return shlex.join(self._ensure_searchable_scrollback(self.strip_session_arguments(parts)))
+
     def fork_command(self, original_command: str, agent_session_id: str, session_name: str = "") -> str:
         parts = self.command_parts(original_command)
         cleaned = self.strip_session_arguments(parts) if parts else [self.executable]

@@ -53,6 +53,10 @@ class ManagedSession:
         self.detect_task: asyncio.Task | None = None
         self.detect_kind: str = "none"
         self.detect_baseline: set[Path] = set()
+        # When a spawn was a resume of a bound agent session: an agent that gives up on one stops during
+        # startup without anyone typing, which is how that is told apart from one that was quit.
+        self.resume_spawn_monotonic = 0.0
+        self.resume_fallback_used = False
         self.cols = record.cols
         self.rows = record.rows
         self.cli_title: str | None = record.cli_title
@@ -553,11 +557,11 @@ class TerminalSessionManager:
             # taller client terminal -- and newlines from there scroll content and divider into
             # scrollback before the resumed TUI's home-and-erase can wipe them. The pty's rows bound
             # how deep the TUI can have painted, so that many newlines always carries everything.
-            divider = TermdeckConfig.REATTACH_DIVIDER if reattach else TermdeckConfig.RESPAWN_DIVIDER
+            divider = self._spawn_divider(reattach, command)
             payload = "\r\n" + divider + "\x1b[9999;1H" + "\r\n" * (ms.rows + 4)
             self._handle_output(ms, payload.encode(), mark_activity=False)
         elif ms.buffer and not skip_existing_history_separator:
-            divider = TermdeckConfig.REATTACH_DIVIDER if reattach else TermdeckConfig.RESPAWN_DIVIDER
+            divider = self._spawn_divider(reattach, command)
             self._handle_output(ms, ("\r\n" * ms.rows + divider + "\r\n").encode(), mark_activity=False)
         elif not reattach:
             self._handle_output(ms, TermdeckConfig.SPAWN_BANNER_TEMPLATE.format(command=command or TermdeckConfig.SHELL).encode(),
@@ -575,6 +579,8 @@ class TerminalSessionManager:
                     command, self.agent_instructions.ensure_instruction_file())
         elif agent.is_agent and not reattach:
             self.agent_instructions.synchronize_global_instruction_files(False)
+        resuming = not reattach and bool(ms.record.agent_session_id) and agent.canonical_resume_command
+        ms.resume_spawn_monotonic = time.monotonic() if resuming else 0.0
         try:
             ms.proc = PtyProcess(process_command, Path(ms.record.cwd), ms.cols, ms.rows,
                                  functools.partial(self._handle_output, ms), functools.partial(self._handle_exit, ms),
@@ -1197,8 +1203,59 @@ class TerminalSessionManager:
             ms.processing_expiry_task.cancel()
         if ms.output_activity_expiry_task is not None and not ms.output_activity_expiry_task.done():
             ms.output_activity_expiry_task.cancel()
+        if self._refused_resume(ms):
+            self._start_fresh_after_refused_resume(ms)
+            return
         self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.EXIT, WsMessageFields.CODE: exit_code,
                                      WsMessageFields.DORMANT: ms.dormant})
+        self._broadcast_status(ms)
+
+    @staticmethod
+    def _spawn_divider(reattach: bool, command: str) -> str:
+        """The line that marks a respawn, carrying the command it is about to run.
+
+        A terminal with nothing in it announces its command already. One being restarted said only
+        "restarted", which is where the command actually matters: restarting is when it changes -- a
+        different model, a permission, a resume that the agent may or may not take -- and the line above
+        the new output is the only place to see what it became.
+        """
+        if reattach:
+            return TermdeckConfig.REATTACH_DIVIDER
+        banner = TermdeckConfig.SPAWN_BANNER_TEMPLATE.format(command=command or TermdeckConfig.SHELL)
+        return f"{TermdeckConfig.RESPAWN_DIVIDER}\r\n{banner.rstrip()}"
+
+    def _refused_resume(self, ms: ManagedSession) -> bool:
+        """Whether this exit was the agent declining to resume the session it was pointed at.
+
+        Codex refuses a thread that recorded no turns -- any terminal restarted before it was ever used,
+        which after its 0.155 storage change is the common case. Nothing else clears it: the saved
+        command is kept rewritten as a resume of the bound session, so every later restart dies the same
+        way and the terminal is dead for good, whatever the user presses.
+
+        The signal is not what it wrote -- measured, codex paints its whole splash and "Resuming session…"
+        first -- but that it stopped on its own during startup. An agent that ran and was quit was quit
+        BY someone: leaving takes a keystroke, and none arrived here.
+        """
+        if ms.resume_fallback_used or not ms.resume_spawn_monotonic or not ms.record.agent_session_id:
+            return False
+        if time.monotonic() - ms.resume_spawn_monotonic > TermdeckConfig.REFUSED_RESUME_WINDOW_SECONDS:
+            return False
+        # Typing, not input: a terminal's input channel also carries xterm's own protocol replies, which
+        # arrive constantly while nobody is touching the keyboard (see last_typing_monotonic).
+        return ms.last_typing_monotonic < ms.resume_spawn_monotonic
+
+    def _start_fresh_after_refused_resume(self, ms: ManagedSession) -> None:
+        agent = agents.agent_cli(ms.record.agent_kind)
+        refused = ms.record.agent_session_id
+        ms.resume_fallback_used = True
+        # The binding goes with it: kept, the command would be rewritten back into a resume of the same
+        # refused session on the next restart. The agent makes a new session and detection binds that.
+        ms.record.agent_session_id = None
+        ms.record.command = agent.fresh_session_command(ms.record.command)
+        self._persist()
+        self._handle_output(ms, TermdeckConfig.REFUSED_RESUME_TEMPLATE.format(session=refused).encode(),
+                            mark_activity=False)
+        self._spawn(ms, resume=True)
         self._broadcast_status(ms)
 
     def _broadcast_control(self, ms: ManagedSession, payload: dict[str, object]) -> None:

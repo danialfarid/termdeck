@@ -503,6 +503,14 @@ class TermdeckConfig:
     RESPAWN_DIVIDER = "\x1b[2m──────────── restarted ────────────\x1b[0m"
     REATTACH_DIVIDER = "\x1b[2m──────────── reconnected (kept running) ────────────\x1b[0m"
     SPAWN_ERROR_TEMPLATE = "\x1b[31m[termdeck] spawn failed: {error}\x1b[0m\r\n"
+    REFUSED_RESUME_TEMPLATE = ("\x1b[2m[termdeck] {session} could not be resumed; starting a new "
+                               "session\x1b[0m\r\n")
+    # An agent that will not resume the session it was pointed at gives up during startup: measured at
+    # ~3s for codex 0.155 on a thread with no recorded turns, after a full splash screen and "Resuming
+    # session…" -- so the output it wrote says nothing useful, and the window has to cover a startup.
+    # What separates this from an agent that ran and was quit is that quitting takes typing, and nobody
+    # typed here.
+    REFUSED_RESUME_WINDOW_SECONDS = 15.0
     UVICORN_LOG_LEVEL = PlatformPaths.env_text(PlatformPaths.ENV_LOG_LEVEL, "info")
     # Without a bound, uvicorn's graceful shutdown waits forever for connections that never end -- every
     # terminal stream is an open websocket, and _pump_queue_to_client awaits its queue in a `while True`.

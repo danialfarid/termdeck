@@ -6,12 +6,14 @@ option a CLI expects several times -- codex's `-c key=value` -- and this is wher
 lands, so the two are tested together.
 """
 
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from termdeck import agents
+from termdeck.config import TermdeckConfig
 from termdeck.models import SessionRecord
 from termdeck.session_manager import TerminalSessionManager
 
@@ -266,3 +268,118 @@ class RestartLooksAgainBeforeRefusingTest(unittest.IsolatedAsyncioTestCase):
             await self.manager.restart_session("s1")
 
         detect.assert_not_awaited()
+
+
+class RefusedResumeStartsFreshTest(unittest.TestCase):
+    """An agent that will not resume the session it was pointed at must not leave a dead terminal.
+
+    The saved command is kept rewritten as a resume of the bound session, so once the agent refuses it
+    every later restart dies the same way: the terminal is dead for good and nothing the user can press
+    changes that. Codex refuses a thread that recorded no turns, which is any terminal restarted before
+    it was ever used -- and after the 0.155 storage change that is the common case.
+
+    What it wrote says nothing: measured against codex 0.155, a refused resume paints the whole splash
+    screen and "Resuming session..." -- 12KB -- before giving up 3 seconds in. What it comes down to is
+    that it stopped by itself, and leaving takes a keystroke.
+    """
+
+    def setUp(self) -> None:
+        self.manager = TerminalSessionManager.__new__(TerminalSessionManager)
+        self.session = SimpleNamespace(
+            record=record("s1", command="codex --no-alt-screen resume thread-1", agent_session_id="thread-1"),
+            proc=object(), exit_code=None, dormant=False, resume_fallback_used=False,
+            resume_spawn_monotonic=0.0, last_typing_monotonic=0.0,
+            processing_expiry_task=None, output_activity_expiry_task=None, client_queues=[])
+        self.manager._sessions = {"s1": self.session}
+        self.spawned = []
+        for method, replacement in (("_persist", lambda *a, **k: None),
+                                    ("_broadcast_status", lambda *a, **k: None),
+                                    ("_broadcast_control", lambda *a, **k: None),
+                                    ("_dtach_socket_live", lambda *a, **k: False),
+                                    ("_dtach_socket", lambda self_, session_id: Path("/tmp/s.sock")),
+                                    ("_handle_output", lambda self_, ms, data, mark_activity=True: None)):
+            patcher = patch.object(TerminalSessionManager, method, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        spawn = patch.object(TerminalSessionManager, "_spawn",
+                             lambda self_, ms, **kwargs: self.spawned.append(ms.record.command))
+        spawn.start()
+        self.addCleanup(spawn.stop)
+
+    def exit_after(self, seconds: float, typed: bool = False, exit_code: int = 0) -> None:
+        """The terminal was spawned as a resume this long ago, perhaps typed into, and has now exited."""
+        self.session.resume_spawn_monotonic = time.monotonic() - seconds
+        self.session.last_typing_monotonic = time.monotonic() if typed else 0.0
+        self.manager._handle_exit(self.session, self.session.proc, exit_code)
+
+    def test_a_refused_resume_comes_back_as_a_new_session(self) -> None:
+        self.exit_after(3.0)
+
+        self.assertEqual(self.spawned, ["codex --no-alt-screen"])
+
+    def test_the_refused_session_is_let_go_of(self) -> None:
+        # Kept, the command would be rewritten back into a resume of the same refused session and the
+        # next restart would die exactly the same way.
+        self.exit_after(3.0)
+
+        self.assertIsNone(self.session.record.agent_session_id)
+
+    def test_an_agent_that_was_quit_is_left_alone(self) -> None:
+        # Quitting is a keystroke. Respawning over it would fight the person who just left.
+        self.exit_after(3.0, typed=True)
+
+        self.assertEqual(self.spawned, [])
+        self.assertEqual(self.session.record.agent_session_id, "thread-1")
+
+    def test_an_agent_that_ran_for_a_while_is_left_alone(self) -> None:
+        # Long past startup: whatever ended it, it was not a refused resume.
+        self.exit_after(45.0)
+
+        self.assertEqual(self.spawned, [])
+
+    def test_it_only_tries_once(self) -> None:
+        # Otherwise an agent that exits during startup for any other reason is respawned forever.
+        self.exit_after(3.0)
+        self.session.record.agent_session_id = "thread-2"
+        self.exit_after(3.0)
+
+        self.assertEqual(len(self.spawned), 1)
+
+    def test_a_terminal_with_no_session_bound_is_left_alone(self) -> None:
+        self.session.record.agent_session_id = None
+        self.exit_after(3.0)
+
+        self.assertEqual(self.spawned, [])
+
+    def test_a_spawn_that_was_not_a_resume_is_left_alone(self) -> None:
+        self.session.resume_spawn_monotonic = 0.0
+        self.manager._handle_exit(self.session, self.session.proc, 0)
+
+        self.assertEqual(self.spawned, [])
+
+
+class RestartShowsItsCommandTest(unittest.TestCase):
+    """Restarting is when the command changes, so that is where it has to be visible.
+
+    A terminal opened from scratch prints "[termdeck] spawn: <command>" because it has nothing else in
+    it. A restarted one printed only "restarted" -- and a restart is exactly when the command becomes
+    something else: a different model, another permission, a resume the agent may or may not take.
+    """
+
+    def divider(self, reattach: bool, command: str) -> str:
+        return TerminalSessionManager._spawn_divider(reattach, command)
+
+    def test_a_restart_names_the_command_it_is_running(self) -> None:
+        line = self.divider(False, "codex --model gpt-6-astra resume thread-1")
+
+        self.assertIn("codex --model gpt-6-astra resume thread-1", line)
+        self.assertIn("restarted", line)
+
+    def test_reconnecting_to_a_terminal_that_kept_running_does_not(self) -> None:
+        # Nothing was started, so there is no command to report; the process is the one already there.
+        line = self.divider(True, "codex --model gpt-6-astra")
+
+        self.assertNotIn("gpt-6-astra", line)
+
+    def test_a_terminal_with_no_command_still_names_what_it_runs(self) -> None:
+        self.assertIn(TermdeckConfig.SHELL, self.divider(False, ""))

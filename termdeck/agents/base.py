@@ -137,6 +137,13 @@ class AgentCli:
     def fork_command(self, original_command: str, agent_session_id: str, session_name: str = "") -> str:
         return original_command
 
+    def fresh_session_command(self, original_command: str) -> str:
+        """The same command with any reference to an existing session taken off it.
+
+        Used when the agent refuses the session it was pointed at, which leaves nothing to resume.
+        """
+        return original_command
+
     def termdeck_instruction_arguments(self, instruction_file: Path) -> tuple[str, ...]:
         return ()
 

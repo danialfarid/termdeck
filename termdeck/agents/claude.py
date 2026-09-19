@@ -827,6 +827,10 @@ class ClaudeCli(AgentCli):
             cleaned = [self.executable]
         return f"{shlex.join(cleaned)} {self.RESUME_FLAG} {agent_session_id}"
 
+    def fresh_session_command(self, original_command: str) -> str:
+        cleaned = self.strip_flag_with_value(self.command_parts(original_command), self.RESUME_FLAG)
+        return shlex.join(cleaned) if cleaned else self.executable
+
     def fork_command(self, original_command: str, agent_session_id: str, session_name: str = "") -> str:
         cleaned = self.strip_flag_with_value(self.command_parts(original_command),
                                              self.RESUME_FLAG)
