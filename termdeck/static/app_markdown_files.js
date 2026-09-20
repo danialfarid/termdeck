@@ -1133,9 +1133,9 @@ Object.assign(TermdeckApp.prototype, {
     }
     modelEl.textContent = model;
     modelEl.classList.remove("hidden");
-    // Changing it means driving the agent's own model picker, which only codex publishes a catalog for,
-    // so only there is this a control rather than a readout.
-    const selectable = this.agentSpec(session?.agent_kind)?.kind === "codex";
+    // A control for any agent that can be told to change model -- codex through the picker TermDeck
+    // drives for it, anything that offers /model in its transcript through that. A readout for the rest.
+    const selectable = !!session && (this.agentModelCatalogKind(session) || !!this.agentModelCommand(session));
     modelEl.classList.toggle("selectable", selectable);
     modelEl.title = selectable ? `${modelEl.textContent} · click to change model` : modelEl.textContent;
     modelEl.setAttribute("role", selectable ? "button" : "note");
@@ -1154,11 +1154,52 @@ Object.assign(TermdeckApp.prototype, {
   // the running agent through its own picker; one typed in cannot -- that picker only knows what it
   // lists -- so a model from outside it restarts the terminal on it instead, which resumes the session
   // rather than starting a new one.
+  // Whether the agent publishes a catalog TermDeck can drive its picker from -- codex does; nothing else
+  // has one -- and the command it takes for the job otherwise.
+  agentModelCatalogKind(session) {
+    return this.agentSpec(session?.agent_kind)?.kind === "codex" ? "codex" : "";
+  },
+
+
+  agentModelCommand(session) {
+    const commands = this.agentSpec(session?.agent_kind)?.transcript_commands || [];
+    return commands.some((entry) => entry.command === "/model") ? "/model" : "";
+  },
+
+
+  // What to offer an agent with no catalog: the models this deck has actually started terminals of that
+  // kind on, and whatever this one is running now. Better than a list of names written down here, which
+  // would go stale the week an agent renames a model.
+  modelsSeenForAgent(agentKind, current) {
+    const seen = [];
+    const add = (value) => {
+      const model = String(value || "").trim();
+      if (model && !seen.includes(model)) seen.push(model);
+    };
+    add(String(current || "").split(/\s+/)[0]);
+    for (const session of this.sessions) {
+      if (session.agent_kind !== agentKind) continue;
+      const parts = this.commandParts(session.command || "");
+      const index = parts.indexOf("--model");
+      if (index >= 0) add(parts[index + 1]);
+    }
+    return seen.map((id) => ({ id, efforts: [], defaultEffort: "" }));
+  },
+
+
+  commandParts(command) {
+    return String(command || "").split(/\s+/).filter(Boolean);
+  },
+
+
   async chooseHistoryModel() {
     const session = this.session(this.activeId);
     const view = this.views.get(this.activeId) || this.sessionInteractionState(this.activeId);
     if (!session) return;
-    const models = await this.agentModelSuggestions(session.agent_kind);
+    const models = this.agentModelCatalogKind(session)
+      ? await this.agentModelSuggestions(session.agent_kind)
+      : this.modelsSeenForAgent(session.agent_kind,
+                                this.historyModelDisplay(session, this.historyTurnsBySession.get(session.session_id) || []));
     const current = String(this.sessionModelById.get(session.session_id) ||
       this.historyModelDisplay(session, this.historyTurnsBySession.get(session.session_id) || []) || "");
     const currentModel = current.split(/\s+/)[0] || "";
@@ -1169,7 +1210,7 @@ Object.assign(TermdeckApp.prototype, {
     const chosen = await uiSelect("Choose the model this terminal runs on.", choices,
                                   { title: "Change model", currentValue: currentModel });
     if (!chosen) return;
-    if (chosen === HISTORY_MODEL_OTHER) return this.restartHistoryModelByName(session, current);
+    if (chosen === HISTORY_MODEL_OTHER) return this.chooseHistoryModelByName(session, current);
     const model = models.find((entry) => entry.id === chosen);
     const efforts = model?.efforts || [];
     if (!efforts.length) return this.applyHistoryModel(session, view, chosen, "");
@@ -1182,11 +1223,18 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  async restartHistoryModelByName(session, current) {
-    const typed = await uiPrompt("Model to run this terminal on. Add a reasoning level after it if the " +
-                                 "agent takes one, as in \"gpt-6-astra max\".", current);
+  // A model nobody listed. An agent that takes a model command is simply told; one whose picker TermDeck
+  // drives by position cannot be -- that picker only knows what it lists -- so that one restarts on it,
+  // which resumes the session rather than starting a new one.
+  async chooseHistoryModelByName(session, current) {
+    const command = this.agentModelCommand(session);
+    const typed = await uiPrompt(command
+      ? "Model to run this terminal on, as the agent names it."
+      : "Model to run this terminal on. Add a reasoning level after it if the agent takes one, as in " +
+        "\"gpt-6-astra max\".", current);
     const modelName = String(typed || "").trim();
     if (!modelName) return;
+    if (command) return this.sendHistoryModelCommand(session, modelName);
     if (!await uiConfirm(`Restart "${this.titlePresentation(session).text}" on ${modelName}? ` +
                          "A model the agent's picker does not list can only be applied by starting it again, " +
                          "which resumes this session.")) return;
@@ -1195,7 +1243,33 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // Told through the agent's own command, the way someone would type it into the composer.
+  async sendHistoryModelCommand(session, modelName) {
+    const command = this.agentModelCommand(session);
+    if (!command) return;
+    this.$("status-name").textContent = `switching model to ${modelName}…`;
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(session.session_id)}/prompt`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: `${command} ${modelName}`, bracketed: false, queue: false,
+                               automatically_queue_when_busy: false }),
+      });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({}));
+        throw new Error(String(failure.detail || `model change failed (${response.status})`));
+      }
+      this.sessionModelById.set(session.session_id, modelName);
+      this.renderHistoryMeta();
+      this.$("status-name").textContent = `model: ${modelName}`;
+    } catch (error) {
+      this.$("status-name").textContent = error instanceof Error ? error.message : "unable to change model";
+    }
+  },
+
+
   async applyHistoryModel(session, view, modelId, effort) {
+    // An agent with a command of its own is told with it; the rest is codex's picker, driven by position.
+    if (!this.agentModelCatalogKind(session)) return this.sendHistoryModelCommand(session, modelId);
     this.$("status-name").textContent = `switching model to ${[modelId, effort].filter(Boolean).join(" ")}…`;
     try {
       const response = await fetch(`/api/sessions/${encodeURIComponent(session.session_id)}/model`, {
