@@ -6,6 +6,84 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-09-20
+
+### Added
+
+- Both start dialogs ask for a model and a reasoning level, not just a name typed from memory. The
+  models codex publishes are offered as suggestions behind a field that stays typable, so a model the
+  catalog has not heard of can still be started on, and the level beside it belongs to whichever model
+  is in the field. "Restart with…" gained the same pair, blank meaning the model the command already
+  names, so a restart can change what a terminal runs on and not only what it may do.
+- Both start dialogs can turn an agent's own visual effects off — `tui.whimsy` for codex, whose
+  composer twinkles and redraws while it works. The flag belongs to the agent, so a CLI that gains such
+  a switch is one method away from being offered it, and the choice is remembered like the model and
+  the permission.
+- The terminal cursor's blink can be turned off, in settings. An agent that redraws its composer walks
+  the cursor across the line and back on every redraw, and a blinking cursor on top of that is what
+  reads as flickering. A TUI asking for a blinking cursor of its own is refused while the switch is off,
+  keeping the shape it asked for and dropping only the blink.
+- A terminal can be filed under another by holding a drag over the middle of its row — where the gesture
+  for "these two belong together" already lived. The first hold still offers the group; holding on past
+  it offers to file instead, and the label says which is on the table. Filing under itself, where it
+  already is, or under one of its own children is refused.
+
+### Changed
+
+- The + at the top of the terminal list makes a terminal of its own. The dialog opened from there is not
+  told where to put it, and fell back to whatever was selected — landing it in that terminal's group, or
+  inside its stack. A group's own + and a row's "New terminal after this" still say where.
+- A terminal asked for from a spawned agent opens under that agent, rather than a level out beside the
+  agent that spawned it.
+- The transcript's folded blocks stay folded when the browser's find-in-page runs. Chrome searches
+  inside a closed block and forces it open on a match, so a search sprang open folded code edits,
+  thinking blocks and folded repetitions — including the ones the transcript's own filters had just
+  folded away.
+- The session description is set as prose rather than code — reading font, a reading measure, and
+  spellchecking — and its panel closes on a click anywhere else, saving what is in it.
+
+### Fixed
+
+- Pairing a computer for remote access again puts the connector on the new token. Pairing saved the
+  token and asked for a connector, but the one already running was left alone with the token the relay
+  had just replaced: the relay accepted the computer while the deck went on being refused, and a phone
+  waited for a computer that was right there.
+- A prompt sent through the API to a busy agent that has no prompt queue is sent rather than queued.
+  Queueing is Tab, which queues only for an agent whose composer does that, so for the others the prompt
+  was pasted and left sitting there — the draft cleared, the confirmation that watches a prompt into the
+  transcript skipped, and the caller told it had been queued.
+- A codex terminal binds to its session from the moment it starts, through the writer lock a running
+  codex holds for the thread it is writing, rather than only once the session has a transcript file. A
+  terminal that had not yet taken a turn had nothing to bind to, so its identity never resolved and it
+  could not be restarted at all.
+- Restarting looks for the session once more before refusing over an unresolved identity, which was
+  otherwise permanent for a terminal that was never typed into.
+- A terminal whose agent refuses to resume the session it is pointed at starts a new one rather than
+  staying dead. The saved command is kept rewritten as a resume, so every restart ran the same refused
+  resume and died the same way.
+- Restarting names the command it runs, under the "restarted" line: a restart is exactly when that
+  command becomes something else.
+- A `-c key=value` start parameter is identified by its key, so adding one no longer strips every other
+  one already on the command — codex's reasoning effort survives anything else set that way. Codex's
+  reasoning levels now include `max` and `ultra`.
+- A terminal renamed from inside Claude takes the new name, and stops spinning. Claude may have moved
+  the conversation to a new transcript by then, leaving the deck bound to one that carries the old name
+  and an unfinished last turn, which is a spinner with nothing left to stop it. An unfinished turn in a
+  transcript nothing has written to for half an hour now reads as stopped.
+- Undo in the deck's own text fields is left to the field. Meta+Z is bound to the terminal composer's
+  undo, and the dispatcher claimed it before looking at what had focus, so undo did nothing where it was
+  pressed and something invisible somewhere else.
+- Next and previous terminal step through the sidebar in the order it is drawn in, so an open stack is
+  walked in place and a collapsed one is stepped over rather than selecting a terminal nobody can see.
+- Revealing a terminal opens the stacks above it. A terminal filed under another has no row while that
+  stack is shut, so opening one by its link switched the deck to it and left the sidebar showing no sign
+  of it.
+- An unread badge that lands on the terminal being looked at clears. Unread is project state, so it
+  arrives from another window or a phone as well, and selecting a terminal is what clears a badge — but
+  it was already selected, so clicking its row did nothing.
+- The line marking a stack reaches the title of a row carrying a band of activity dots, rather than
+  starting below it.
+
 ## [0.17.0] — 2026-09-19
 
 ### Fixed
@@ -940,7 +1018,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/danialfarid/termdeck/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/danialfarid/termdeck/compare/v0.16.2...v0.17.0
 [0.16.2]: https://github.com/danialfarid/termdeck/compare/v0.16.1...v0.16.2
 [0.16.1]: https://github.com/danialfarid/termdeck/compare/v0.16.0...v0.16.1
