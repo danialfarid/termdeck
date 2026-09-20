@@ -77,8 +77,8 @@ class CreateSessionRequest(BaseModel):
     model: str = ""
     model_name: str = ""
     additional_args: str = ""
-    # Ask the agent for the start parameters that turn its own animations off, where it has any.
-    disable_animations: bool = False
+    # Ask the agent for the start parameters that turn its own visual effects off, where it has any.
+    disable_effects: bool = False
     permission: str = ""
     session_ref: str = ""
     after: str | None = None
@@ -219,8 +219,8 @@ class RestartSessionRequest(BaseModel):
     # The model to restart under, blank to keep the one the command already names. Turned into start
     # parameters by the agent, so codex's "<model> <effort>" reaches its reasoning-effort override.
     model_name: str = ""
-    # Ask the agent for the start parameters that turn its own animations off, where it has any.
-    disable_animations: bool = False
+    # Ask the agent for the start parameters that turn its own visual effects off, where it has any.
+    disable_effects: bool = False
     # Extra flags for the restarted command, in shell syntax. An option given here replaces the same
     # option already on the command rather than being appended twice.
     additional_args: str = ""
@@ -573,9 +573,9 @@ class UiSettings(BaseModel):
     # The block cursor in a terminal. Off is for agents whose composer redraws itself constantly: every
     # redraw walks the cursor across the line and back, and a blinking cursor makes that flicker.
     terminal_cursor_blink: bool = True
-    # What the animations checkbox in the new-terminal and restart dialogs starts on. Remembered like
-    # the model and the permission: turning an agent's animations off means off, not off once.
-    disable_agent_animations: bool = False
+    # What the visual-effects checkbox in the new-terminal and restart dialogs starts on. Remembered
+    # like the model and the permission: turning an agent's effects off means off, not off once.
+    disable_agent_effects: bool = False
     # Ceiling for the transcript search index, in MB; 0 uses the built-in default. 0 or less disables it.
     history_index_max_mb: int = 0
     search_glob: str = "!*.json, !*.csv, !*.log"
@@ -2912,7 +2912,7 @@ class TermdeckServer:
             if request.model.strip():
                 command = self.manager.command_for_new_session(
                     request.model, request.permission, request.session_ref, request.model_name,
-                    request.additional_args, request.disable_animations)
+                    request.additional_args, request.disable_effects)
                 self._raise_if_model_dependency_missing(request.model)
             elif request.additional_args.strip():
                 command = self.manager.append_additional_start_arguments(command, request.additional_args)
@@ -3425,7 +3425,7 @@ class TermdeckServer:
             await self.manager.restart_session(session_id, permission,
                                                request.additional_args if request else "",
                                                request.model_name if request else "",
-                                               bool(request.disable_animations) if request else False)
+                                               bool(request.disable_effects) if request else False)
         except RuntimeError as restart_error:
             raise HTTPException(status_code=409, detail=str(restart_error)) from restart_error
         except ValueError as restart_error:

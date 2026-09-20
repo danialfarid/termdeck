@@ -106,10 +106,10 @@ class CodexCli(AgentCli):
         arguments.extend(("--model", model_name))
         return tuple(arguments)
 
-    def disable_animation_arguments(self) -> tuple[str, ...]:
-        # Codex's TUI redraws its composer while it works, and the redraw walks the cursor across the
-        # line and back. `tui.animations` is codex's own switch for it.
-        return ("-c", "tui.animations=false")
+    def disable_effect_arguments(self) -> tuple[str, ...]:
+        # `tui.whimsy` is codex's own switch for the flourishes it draws around its composer while it
+        # works -- the twinkling, and the redraws that walk the cursor across the line and back.
+        return ("-c", "tui.whimsy=false")
 
     def termdeck_instruction_arguments(self, instruction_file: Path) -> tuple[str, ...]:
         return ("-c", f"model_instructions_file={json.dumps(str(instruction_file))}")

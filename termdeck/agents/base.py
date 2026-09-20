@@ -112,8 +112,8 @@ class AgentCli:
     def model_arguments(self, model_name: str) -> tuple[str, ...]:
         return ("--model", model_name)
 
-    def disable_animation_arguments(self) -> tuple[str, ...]:
-        """Start parameters that turn this CLI's own animations off, or () when it has none to turn off.
+    def disable_effect_arguments(self) -> tuple[str, ...]:
+        """Start parameters that turn this CLI's own visual effects off, or () when it has none.
 
         The dialogs ask every agent and show the option to the ones that answer, so a CLI that gains a
         switch for this is one method away from having it offered.
@@ -481,7 +481,7 @@ class AgentCli:
                 "fullscreen_tui": self.fullscreen_tui,
                 "supports_agent_rename": self.supports_agent_rename,
                 "model_placeholder": self.model_placeholder, "model_help": self.model_help,
-                "supports_disable_animations": bool(self.disable_animation_arguments()),
+                "supports_disable_effects": bool(self.disable_effect_arguments()),
                 "activity_source": self.activity_source,
                 "records_raw_replay": self.records_raw_replay, "has_prompt_queue": self.has_prompt_queue,
                 "transcript_commands": [{"command": command, "description": description}

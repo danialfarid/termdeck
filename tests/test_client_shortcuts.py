@@ -130,15 +130,15 @@ class StartParameterDialogWiringTest(unittest.TestCase):
         for field in ("modal-model-name", "restart-modal-model"):
             self.assertRegex(self.index_html, rf'<input id="{field}"')
 
-    def test_both_dialogs_carry_the_animations_checkbox(self) -> None:
-        for field in ("modal-disable-animations", "restart-modal-disable-animations"):
+    def test_both_dialogs_carry_the_effects_checkbox(self) -> None:
+        for field in ("modal-disable-effects", "restart-modal-disable-effects"):
             self.assertIn(f'id="{field}" type="checkbox"', self.index_html)
             self.assertIn(f'this.$("{field}").checked', self.app_js)
             # Its row is hidden for agents with nothing to turn off, so the client has to hold the row.
             self.assertIn(f'this.$("{field}-field")', self.app_js)
 
     def test_both_dialogs_send_what_was_chosen(self) -> None:
-        self.assertIn("disable_animations: disableAnimations", self.app_js)
+        self.assertIn("disable_effects: disableEffects", self.app_js)
         self.assertIn("model_name: options.modelName", self.app_js)
 
     def test_the_checkbox_rows_are_styled_in_both(self) -> None:

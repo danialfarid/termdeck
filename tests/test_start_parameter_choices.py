@@ -1,8 +1,8 @@
-"""Choosing a model, and turning an agent's animations off, from the new-terminal and restart dialogs.
+"""Choosing a model, and turning an agent's visual effects off, from the new-terminal and restart dialogs.
 
 Both dialogs reach the same place: start parameters merged onto a command, where an option given later
 replaces the same option already there. That merge was keyed on the flag alone, which is wrong for an
-option a CLI expects several times -- codex's `-c key=value` -- and this is where the animations switch
+option a CLI expects several times -- codex's `-c key=value` -- and this is where the effects switch
 lands, so the two are tested together.
 """
 
@@ -35,7 +35,7 @@ class RepeatableOptionOverrideTest(unittest.TestCase):
     """`-c key=value` is identified by its key, not by `-c`.
 
     Codex takes several of them, and TermDeck writes one itself for the reasoning effort. Keyed on the
-    flag, adding any `-c` stripped every other `-c` already on the command -- so turning animations off
+    flag, adding any `-c` stripped every other `-c` already on the command -- so turning effects off
     would silently drop the reasoning effort the terminal was started with.
     """
 
@@ -45,10 +45,10 @@ class RepeatableOptionOverrideTest(unittest.TestCase):
         return TerminalSessionManager.append_additional_start_arguments(self.COMMAND, arguments)
 
     def test_a_different_key_is_added_beside_the_one_already_there(self) -> None:
-        merged = self.merge("-c tui.animations=false")
+        merged = self.merge("-c tui.whimsy=false")
 
         self.assertIn("model_reasoning_effort=xhigh", merged)
-        self.assertIn("tui.animations=false", merged)
+        self.assertIn("tui.whimsy=false", merged)
 
     def test_the_same_key_replaces_it(self) -> None:
         merged = self.merge('-c model_reasoning_effort="low"')
@@ -66,19 +66,19 @@ class RepeatableOptionOverrideTest(unittest.TestCase):
         self.assertIn("model_reasoning_effort=xhigh", self.merge("--search"))
 
 
-class DisableAnimationArgumentsTest(unittest.TestCase):
+class DisableEffectArgumentsTest(unittest.TestCase):
     """The flag belongs to the agent, not to the dialog: the dialogs ask, and show the option to
     whichever agents answer."""
 
     def test_codex_offers_its_own_switch(self) -> None:
-        self.assertEqual(agents.agent_cli("codex").disable_animation_arguments(), ("-c", "tui.animations=false"))
+        self.assertEqual(agents.agent_cli("codex").disable_effect_arguments(), ("-c", "tui.whimsy=false"))
 
     def test_an_agent_with_nothing_to_turn_off_says_so(self) -> None:
-        self.assertEqual(agents.agent_cli("claude").disable_animation_arguments(), ())
+        self.assertEqual(agents.agent_cli("claude").disable_effect_arguments(), ())
 
     def test_the_dialogs_are_told_which_agents_have_one(self) -> None:
-        self.assertIs(agents.agent_cli("codex").client_descriptor()["supports_disable_animations"], True)
-        self.assertIs(agents.agent_cli("claude").client_descriptor()["supports_disable_animations"], False)
+        self.assertIs(agents.agent_cli("codex").client_descriptor()["supports_disable_effects"], True)
+        self.assertIs(agents.agent_cli("claude").client_descriptor()["supports_disable_effects"], False)
 
 
 class NewSessionCommandTest(unittest.TestCase):
@@ -89,28 +89,28 @@ class NewSessionCommandTest(unittest.TestCase):
                                                "", **kwargs)
 
     def test_the_checkbox_puts_the_agent_s_switch_on_the_command(self) -> None:
-        self.assertIn("tui.animations=false", self.command(disable_animations=True))
+        self.assertIn("tui.whimsy=false", self.command(disable_effects=True))
 
     def test_it_is_absent_unless_asked_for(self) -> None:
-        self.assertNotIn("tui.animations", self.command())
+        self.assertNotIn("tui.whimsy", self.command())
 
     def test_it_does_not_disturb_the_model_choice(self) -> None:
         # The chosen model reaches codex as a --model plus a -c for the reasoning effort, which is the
         # pair the flag-keyed merge used to break.
-        built = self.command(model_name="gpt-5.6-luna xhigh", disable_animations=True)
+        built = self.command(model_name="gpt-5.6-luna xhigh", disable_effects=True)
 
         self.assertIn("--model gpt-5.6-luna", built)
         self.assertIn('model_reasoning_effort="xhigh"', built)
-        self.assertIn("tui.animations=false", built)
+        self.assertIn("tui.whimsy=false", built)
 
     def test_a_parameter_typed_by_hand_still_wins(self) -> None:
-        built = self.command(disable_animations=True, additional_args="-c tui.animations=true")
+        built = self.command(disable_effects=True, additional_args="-c tui.whimsy=true")
 
-        self.assertIn("tui.animations=true", built)
-        self.assertNotIn("tui.animations=false", built)
+        self.assertIn("tui.whimsy=true", built)
+        self.assertNotIn("tui.whimsy=false", built)
 
     def test_an_agent_with_no_such_switch_is_unaffected(self) -> None:
-        self.assertNotIn("-c", self.command(model="claude", disable_animations=True))
+        self.assertNotIn("-c", self.command(model="claude", disable_effects=True))
 
 
 class RestartWithModelTest(unittest.IsolatedAsyncioTestCase):
@@ -157,10 +157,10 @@ class RestartWithModelTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.session.record.command, before)
 
-    async def test_the_animations_checkbox_reaches_the_restarted_command(self) -> None:
+    async def test_the_effects_checkbox_reaches_the_restarted_command(self) -> None:
         await self.manager.restart_session("s1", "", "", "", True)
 
-        self.assertIn("tui.animations=false", self.session.record.command)
+        self.assertIn("tui.whimsy=false", self.session.record.command)
         # Re-quoted by the merge, which strips the inner quotes the value was written with. Checked
         # against codex 0.155.0: `-c model_reasoning_effort=xhigh` and `-c model_reasoning_effort="xhigh"`
         # are read the same.

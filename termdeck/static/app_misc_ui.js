@@ -946,10 +946,10 @@ Object.assign(TermdeckApp.prototype, {
       "Leave blank to restart on the model the command already names.";
     void this.fillModelSuggestionList("restart-modal-model-ids", session.agent_kind,
       "restart-modal-model-effort", "restart-modal-model");
-    const animations = this.$("restart-modal-disable-animations-field");
-    animations.classList.toggle("hidden", !spec?.supports_disable_animations);
-    this.$("restart-modal-disable-animations").checked = spec?.supports_disable_animations
-      ? this.settings.disable_agent_animations === true : false;
+    const effects = this.$("restart-modal-disable-effects-field");
+    effects.classList.toggle("hidden", !spec?.supports_disable_effects);
+    this.$("restart-modal-disable-effects").checked = spec?.supports_disable_effects
+      ? this.settings.disable_agent_effects === true : false;
     this.$("restart-modal-additional-args").value = "";
     this.$("restart-modal-error").classList.add("hidden");
     this.$("restart-modal-command").textContent = session.command || "";
@@ -972,17 +972,17 @@ Object.assign(TermdeckApp.prototype, {
     const modelField = this.$("restart-modal-model-field");
     const modelName = modelField.classList.contains("hidden") ? ""
       : this.modelNameWithEffort(this.$("restart-modal-model").value, "restart-modal-model-effort");
-    const animationsField = this.$("restart-modal-disable-animations-field");
-    const disableAnimations = !animationsField.classList.contains("hidden") &&
-      this.$("restart-modal-disable-animations").checked;
-    if (!animationsField.classList.contains("hidden")) {
-      this.settings.disable_agent_animations = disableAnimations;
+    const effectsField = this.$("restart-modal-disable-effects-field");
+    const disableEffects = !effectsField.classList.contains("hidden") &&
+      this.$("restart-modal-disable-effects").checked;
+    if (!effectsField.classList.contains("hidden")) {
+      this.settings.disable_agent_effects = disableEffects;
       this.saveSettings();
     }
     const error = this.$("restart-modal-error");
     error.classList.add("hidden");
     const failure = await this.restartSession(sessionId, permission, additionalArgs,
-      { modelName, disableAnimations });
+      { modelName, disableEffects });
     if (!failure) {
       this.closeRestartDialog();
       return;
@@ -1003,7 +1003,7 @@ Object.assign(TermdeckApp.prototype, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ permission, additional_args: additionalArgs,
-        model_name: options.modelName || "", disable_animations: options.disableAnimations === true }),
+        model_name: options.modelName || "", disable_effects: options.disableEffects === true }),
     });
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));

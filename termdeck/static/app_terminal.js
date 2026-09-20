@@ -3760,6 +3760,12 @@ Object.assign(TermdeckApp.prototype, {
       const migratedVirtualWebgl = incoming.virtual_tall_webgl === true && incoming.tall_webgl == null;
       if (migratedVirtualWebgl) incoming.tall_webgl = true;
       delete incoming.virtual_tall_webgl;
+      // The checkbox was named for codex's animations and is now named for its effects, which is what
+      // it turns off. Someone who ticked it meant it, and should not have to tick it again.
+      if (incoming.disable_agent_animations === true && incoming.disable_agent_effects == null) {
+        incoming.disable_agent_effects = true;
+      }
+      delete incoming.disable_agent_animations;
       delete incoming.claude_raw_replay_experimental;
       delete incoming.claude_full_raw_replay_experimental;
       // The panel used to float over the workspace, and its stored width was a floating-overlay

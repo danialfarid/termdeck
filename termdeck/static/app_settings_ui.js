@@ -3454,10 +3454,10 @@ Object.assign(TermdeckApp.prototype, {
     input.placeholder = spec?.model_placeholder || "agent default";
     this.$("modal-model-help").textContent = spec?.model_help || "Leave blank to use the agent's configured default.";
     void this.fillModelSuggestionList("modal-model-ids", model, "modal-model-effort", "modal-model-name");
-    const animations = this.$("modal-disable-animations-field");
-    animations.classList.toggle("hidden", !spec?.supports_disable_animations);
-    this.$("modal-disable-animations").checked = spec?.supports_disable_animations
-      ? this.settings.disable_agent_animations === true : false;
+    const effects = this.$("modal-disable-effects-field");
+    effects.classList.toggle("hidden", !spec?.supports_disable_effects);
+    this.$("modal-disable-effects").checked = spec?.supports_disable_effects
+      ? this.settings.disable_agent_effects === true : false;
   },
 
 
@@ -3496,8 +3496,8 @@ Object.assign(TermdeckApp.prototype, {
     const model = this.$("modal-model").value;
     const modelName = this.modelNameWithEffort(this.$("modal-model-name").value, "modal-model-effort");
     const additionalArgs = this.$("modal-additional-args").value.trim();
-    const disableAnimations = this.$("modal-disable-animations").checked &&
-      !this.$("modal-disable-animations-field").classList.contains("hidden");
+    const disableEffects = this.$("modal-disable-effects").checked &&
+      !this.$("modal-disable-effects-field").classList.contains("hidden");
     const permission = this.$("modal-permission").value;
     const resolved = this.resolveSessionNameAndReference(model, this.$("modal-session-title").value);
     if (resolved.error) {
@@ -3512,8 +3512,8 @@ Object.assign(TermdeckApp.prototype, {
     this.settings.last_permissions = { ...(this.settings.last_permissions || {}), [model]: permission };
     // Remembered like the model and the permission: someone who turns an agent's animations off wants
     // them off, not off once.
-    if (!this.$("modal-disable-animations-field").classList.contains("hidden")) {
-      this.settings.disable_agent_animations = disableAnimations;
+    if (!this.$("modal-disable-effects-field").classList.contains("hidden")) {
+      this.settings.disable_agent_effects = disableEffects;
     }
     this.saveSettings();
     // Land the new terminal directly below the one in focus rather than at the end of the sidebar.
@@ -3523,7 +3523,7 @@ Object.assign(TermdeckApp.prototype, {
     const res = await fetch("/api/sessions", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, model_name: modelName, permission, session_ref: sessionRef, cwd, title,
-        project, additional_args: additionalArgs, disable_animations: disableAnimations,
+        project, additional_args: additionalArgs, disable_effects: disableEffects,
         worktree_id: this.stateWorktreeId() }),
     });
     if (!res.ok) {

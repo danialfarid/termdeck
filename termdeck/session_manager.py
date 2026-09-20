@@ -325,7 +325,7 @@ class TerminalSessionManager:
                             worktree_id=worktree_id, description=description)
 
     def command_for_new_session(self, model: str, permission: str, session_ref: str, model_name: str = "",
-                                additional_args: str = "", disable_animations: bool = False) -> str:
+                                additional_args: str = "", disable_effects: bool = False) -> str:
         raw_model = model.strip().strip("\"'").lower()
         kind = agents.resolve_model_alias(raw_model) or agents.CodexCli.kind
         try:
@@ -335,10 +335,10 @@ class TerminalSessionManager:
         if not agent.launchable:
             raise ValueError(f"agent cannot be launched: {model}")
         command = agent.build_command(permission, model_name.strip(), session_ref.strip(), self._tracker)
-        if disable_animations:
+        if disable_effects:
             # Before the typed parameters, so writing the same option out by hand still wins.
             command = self.append_additional_start_arguments(
-                command, shlex.join(agent.disable_animation_arguments()))
+                command, shlex.join(agent.disable_effect_arguments()))
         permission_options = frozenset((*agent.permission_switch_flags, *agent.permission_value_flags))
         return self.append_additional_start_arguments(command, additional_args, permission_options)
 
@@ -1783,7 +1783,7 @@ class TerminalSessionManager:
         return ms.screen_repaint_task is not None
 
     async def restart_session(self, session_id: str, permission: str = "", additional_args: str = "",
-                              model_name: str = "", disable_animations: bool = False) -> None:
+                              model_name: str = "", disable_effects: bool = False) -> None:
         ms = self._sessions[session_id]
         agent = agents.agent_cli(ms.record.agent_kind)
         if ms.detect_task is not None:
@@ -1810,9 +1810,9 @@ class TerminalSessionManager:
         if model_name.strip():
             ms.record.command = self.append_additional_start_arguments(
                 ms.record.command, shlex.join(agent.model_arguments(model_name.strip())))
-        if disable_animations:
+        if disable_effects:
             ms.record.command = self.append_additional_start_arguments(
-                ms.record.command, shlex.join(agent.disable_animation_arguments()))
+                ms.record.command, shlex.join(agent.disable_effect_arguments()))
         if additional_args.strip():
             # After the permission and the picked model, so a flag typed here wins over the one the
             # dialog chose: someone writing it out by hand is being more specific than someone choosing
