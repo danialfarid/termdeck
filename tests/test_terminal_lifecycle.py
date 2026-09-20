@@ -1519,7 +1519,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.has_session.return_value = True
         server.manager.session_summary_by_id.return_value = {"processing": True, "session_id": "child-01"}
         server.manager.ensure_session_running.return_value = None
-        server.manager.submit_prompt = AsyncMock()
+        server.manager.submit_prompt = AsyncMock(return_value=False)
 
         response = await server._follow_up_task_prompt(
             "child-01", FollowUpTaskPromptRequest(prompt="summarize the result"))
@@ -1533,7 +1533,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager = MagicMock()
         server.manager.has_session.return_value = True
         server.manager.session_summary_by_id.return_value = {"processing": True, "session_id": "busy-01"}
-        server.manager.submit_prompt = AsyncMock()
+        server.manager.submit_prompt = AsyncMock(return_value=False)
 
         response = await server._submit_prompt("busy-01", SubmitPromptRequest(
             text="run this next", automatically_queue_when_busy=False))
@@ -1569,7 +1569,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             {"session_id": "task-model", "project": "stock", "running": True},
         ]
         server.manager.ensure_session_running.return_value = None
-        server.manager.submit_prompt = AsyncMock()
+        server.manager.submit_prompt = AsyncMock(return_value=False)
         request = RunTerminalTaskRequest(command="run checks", model_name="gpt-5.6-luna xhigh",
                                          additional_args="--config custom")
         await server._run_terminal_task(request)
@@ -1595,7 +1595,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             {"session_id": "fork-01", "project": "stock", "running": True},
         ]
         server.manager.ensure_session_running.return_value = None
-        server.manager.submit_prompt = AsyncMock()
+        server.manager.submit_prompt = AsyncMock(return_value=False)
         server._schedule_task_result_delivery = MagicMock()
 
         with patch.object(server, "_place_session_after", return_value={"position": "after"}) as place:
@@ -1626,7 +1626,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             {"session_id": "task-01", "project": "stock", "running": True},
         ]
         server.manager.ensure_session_running.return_value = None
-        server.manager.submit_prompt = AsyncMock()
+        server.manager.submit_prompt = AsyncMock(return_value=False)
 
         request = RunTerminalTaskRequest(command="run checks", cwd="/tmp", project="stock", output_path="/tmp/task-out.txt", description="Run checks")
         response = await server._run_terminal_task(request)
@@ -1665,7 +1665,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             {"session_id": "task-02", "project": "stock", "running": True},
         ]
         server.manager.ensure_session_running.return_value = None
-        server.manager.submit_prompt = AsyncMock()
+        server.manager.submit_prompt = AsyncMock(return_value=False)
 
         class Store:
             def __init__(self) -> None:
@@ -1792,7 +1792,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             {"processing": False},
         ]
         server.manager.session_history_source.return_value = ("codex", "/tmp", "child-agent")
-        server.manager.submit_prompt = AsyncMock()
+        server.manager.submit_prompt = AsyncMock(return_value=False)
         server.transcripts = MagicMock()
         server.transcripts.history_page.return_value = {"turns": [{"role": "assistant", "text": "finished", "final": True}]}
         server._origin_delivery_locks = {}
@@ -1826,7 +1826,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             {"processing": True},
         ]
         server.manager.session_history_source.return_value = ("codex", "/tmp", "child-agent")
-        server.manager.submit_prompt = AsyncMock()
+        server.manager.submit_prompt = AsyncMock(return_value=False)
         server.transcripts = MagicMock()
         server.transcripts.history_page.side_effect = [
             {"turns": [{"role": "user", "text": "hi"}]},
@@ -1856,7 +1856,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.create_session.return_value = child
         server.manager.session_summary.side_effect = [{"session_id": "child-01"}, {"session_id": "child-01"}]
         server.manager.ensure_session_running.return_value = None
-        server.manager.submit_prompt = AsyncMock()
+        server.manager.submit_prompt = AsyncMock(return_value=False)
         server._schedule_task_result_delivery = MagicMock()
 
         with patch.object(server, "_place_session_after", return_value={"position": "after"}):

@@ -3181,8 +3181,12 @@ class TermdeckServer:
         try:
             self.manager.ensure_session_running(session_id)
             processing = bool(self.manager.session_summary_by_id(session_id).get("processing"))
-            queued = request.queue or (automatically_queue_when_busy and request.automatically_queue_when_busy and processing)
-            await self.manager.submit_prompt(session_id, request.text, request.bracketed, queued)
+            wanted_queue = request.queue or (automatically_queue_when_busy and
+                                             request.automatically_queue_when_busy and processing)
+            # What actually happened, not what was asked for: an agent whose composer has no queue is
+            # submitted to instead, and a caller told "queued" about a prompt that was sent has been
+            # told the wrong thing.
+            queued = await self.manager.submit_prompt(session_id, request.text, request.bracketed, wanted_queue)
         except ValueError as prompt_error:
             raise HTTPException(status_code=409, detail=str(prompt_error)) from prompt_error
         return {"session": self.manager.session_summary_by_id(session_id), "prompt_submitted": True, "queued": queued}

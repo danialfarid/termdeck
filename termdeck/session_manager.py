@@ -1556,11 +1556,17 @@ class TerminalSessionManager:
         self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT,
                                      WsMessageFields.DRAFT: normalized})
 
-    async def submit_prompt(self, session_id: str, text: str, bracketed: bool, queue: bool = False) -> None:
-        """Paste a Markdown prompt, then send Enter or Tab after the agent TUI has consumed it."""
+    async def submit_prompt(self, session_id: str, text: str, bracketed: bool, queue: bool = False) -> bool:
+        """Paste a Markdown prompt, then send Enter or Tab after the agent TUI has consumed it.
+
+        Returns whether it was queued rather than submitted. Queueing is Tab, and Tab only queues for an
+        agent whose composer does that -- for any other it does nothing at all, which left the prompt
+        sitting in the composer looking typed but unsent, with nothing watching for it to land.
+        """
         await self._wait_for_prompt_ready(self._sessions[session_id])
         normalized = str(text or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
         ms = self._sessions[session_id]
+        queue = queue and agents.agent_cli(ms.record.agent_kind).has_prompt_queue
         agents.agent_cli(ms.record.agent_kind).on_api_prompt_submitted(self, ms, queue)
         payload = "\x15"
         if normalized:
@@ -1583,6 +1589,7 @@ class TerminalSessionManager:
         # if the browser is refreshed immediately afterward.
         self._persist()
         self._broadcast_control(self._sessions[session_id], {WsMessageFields.TYPE: WsMessageFields.PROMPT_SUBMITTED})
+        return queue
 
     async def _wait_for_paste_to_settle(self, ms: ManagedSession) -> None:
         """Wait until the terminal has stopped producing output, so Enter lands after the paste.
