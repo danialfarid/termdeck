@@ -572,7 +572,11 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 #session-description-session { margin-top: 3px; overflow: hidden; color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 #session-description-close { width: 26px; height: 24px; flex: none; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--dim); cursor: pointer; }
 #session-description-close:hover { border-color: var(--border); background: var(--panel2); color: var(--text); }
-#session-description-input { width: 100%; min-height: 0; flex: 1; resize: vertical; padding: 10px 11px; border: 1px solid var(--border); border-radius: 6px; outline: none; background: var(--bg); color: var(--text); font: var(--code-font-size)/1.35 Menlo, monospace; }
+/* Prose, not code: what goes in here is a note to a person about what a terminal is for, so it is set
+   in the reading font at a reading measure and spellchecked, rather than in the monospace the rest of
+   the deck uses for output. */
+#session-description-input { width: 100%; min-height: 0; flex: 1; resize: vertical; padding: 11px 13px; border: 1px solid var(--border); border-radius: 6px; outline: none; background: var(--bg); color: var(--text); font: calc(var(--system-font-size) + 1px)/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+#session-description-input::placeholder { color: var(--dim); opacity: .75; }
 #session-description-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--active-border); }
 #session-description-input:read-only { opacity: .7; }
 #session-description-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex: none; }

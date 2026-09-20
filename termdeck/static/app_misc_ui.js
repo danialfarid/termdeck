@@ -507,6 +507,13 @@ Object.assign(TermdeckApp.prototype, {
       // Cmd+C is the browser/xterm copy gesture. Let its native copy event record the selection so
       // the app shortcut cannot race it or replace the clipboard operation with another action.
       if (actionId === "selection-copy") return false;
+      // Undo belongs to whatever has focus. Typing in a field of the app's own -- the description
+      // drawer, a composer, a dialog -- Meta+Z is the browser's undo of that text, and taking it here
+      // sent an undo keystroke to the terminal instead while the field kept every character: undo
+      // simply did nothing where it was pressed.
+      if (TEXT_EDITING_ACTIONS.has(actionId) && this.isTypingTarget(e) && !e.target?.closest?.(".xterm")) {
+        return false;
+      }
       if (FILE_HISTORY_SHORTCUT_ACTIONS.has(actionId) && !this.fileHistoryActiveComparison?.isDiff) return false;
       if (["selection-copy", "selection-note-new", "selection-note-append"].includes(actionId) &&
           !this.readSelectionActionState()) return false;

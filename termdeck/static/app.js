@@ -285,6 +285,9 @@ const SEARCH_HISTORY_STORAGE_KEY = "termdeck.search_history";
 const SEARCH_HISTORY_RECORD_DELAY_MS = 3000;
 const PROMPT_DRAFT_SYNC_PASTE_DELAY_MS = 250;
 const FILE_AUTOSAVE_DELAY_MS = 500;
+// Shortcuts that are also a text field's own editing gesture. They stand down while one has focus: the
+// field's is what the person pressing them means, and it is the one the browser would have run.
+const TEXT_EDITING_ACTIONS = new Set(["undo-terminal-edit"]);
 const SESSION_GROUP_HOVER_DELAY_MS = 700;
 // Holding on past the group offer files the terminal under the one being hovered instead. Two stages on
 // one spot rather than two places to aim at: the label changes as it passes, so the second is found by
