@@ -11,6 +11,7 @@ source and run under node against stubs, with the drag's timers driven by hand.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import unittest
@@ -274,3 +275,73 @@ class RevealOpensTheStacksAboveTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         # It walks up once and stops on the terminal it started from, rather than going round for good.
         self.assertEqual(json.loads(done.stdout)["expanded"], ["b"])
+
+
+PLACEMENT_CHOICE_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_PLACEMENT_CHOICE_SCENARIO);
+const app = {
+  activeId: scenario.activeId,
+  modalAfterSessionId: scenario.afterSessionId,
+  modalGroupId: scenario.groupId,
+  modalTopLevel: scenario.topLevel,
+  sessions: scenario.sessions,
+  session(id) { return this.sessions.find((s) => s.session_id === id) || null; },
+};
+// The one expression out of createSessionFromModal that decides where a new terminal lands. It reads
+// `this`, so it runs against the app rather than at the top level.
+const targetGroupId = app.modalGroupId;
+const requestedAfterSessionId = app.modalAfterSessionId;
+const topLevel = app.modalTopLevel === true;
+const anchorSessionId = (function () {
+__ANCHOR__
+  return anchorSessionId;
+}).call(app);
+process.stdout.write(JSON.stringify({ anchorSessionId, targetGroupId }));
+"""
+
+
+class NewTerminalAnchorTest(unittest.TestCase):
+    """What the new-terminal dialog does with the terminal that happens to be selected.
+
+    Opened from a group's own + or from a row's "New terminal after this", the dialog has been told
+    where to put it. Opened from the + at the top of the list, it has not -- and it used to fall back to
+    the selected terminal anyway, so a terminal asked for at the top landed in whatever group that one
+    was in, or filed under the agent that spawned it.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_settings_ui.js").read_text()
+        anchor = re.search(r"    const anchorSessionId = topLevel \? null\n(?:.*\n){2}", source)
+        assert anchor, "the placement expression was not found"
+        cls.harness = PLACEMENT_CHOICE_HARNESS.replace("__ANCHOR__", anchor.group(0))
+
+    def anchor_for(self, top_level=False, after=None, group=None, active="child"):
+        scenario = {"sessions": SESSIONS, "activeId": active, "afterSessionId": after,
+                    "groupId": group, "topLevel": top_level}
+        done = subprocess.run([self.node, "-e", self.harness], capture_output=True, text=True, check=False,
+                              env={**os.environ, "TERMDECK_PLACEMENT_CHOICE_SCENARIO": json.dumps(scenario)})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_the_plus_at_the_top_anchors_to_nothing(self) -> None:
+        result = self.anchor_for(top_level=True)
+
+        self.assertIsNone(result["anchorSessionId"])
+        self.assertIsNone(result["targetGroupId"])
+
+    def test_it_ignores_the_selected_terminal_even_when_there_is_one(self) -> None:
+        self.assertIsNone(self.anchor_for(top_level=True, active="loner")["anchorSessionId"])
+
+    def test_new_terminal_after_this_still_lands_after_that_one(self) -> None:
+        self.assertEqual(self.anchor_for(after="loner")["anchorSessionId"], "loner")
+
+    def test_without_being_told_it_still_follows_the_selection(self) -> None:
+        # The dialog opened from elsewhere with no instruction keeps landing beside what is in focus.
+        self.assertEqual(self.anchor_for()["anchorSessionId"], "child")
+
+    def test_a_group_takes_precedence_over_the_selection(self) -> None:
+        self.assertIsNone(self.anchor_for(group="group-1")["anchorSessionId"])

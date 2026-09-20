@@ -611,7 +611,7 @@ Object.assign(TermdeckApp.prototype, {
 
   runAction(actionId) {
     if (this.runContextMenuAction(actionId)) return;
-    if (actionId === "new-terminal") this.openModal();
+    if (actionId === "new-terminal") this.openModal(null, null, "", { topLevel: true });
     else if (actionId === "new-project") void this.addProjectFromHeader();
     else if (actionId === "new-worktree") this.openWorktreeModal();
     else if (actionId === "new-group") this.createTerminalGroup();

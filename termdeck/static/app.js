@@ -3144,7 +3144,7 @@ class TermdeckApp {
     this.closeHeaderAddMenu();
     if (action === "project") void this.addProjectFromHeader();
     else if (action === "worktree") this.openWorktreeModal();
-    else if (action === "terminal") this.openModal();
+    else if (action === "terminal") this.openModal(null, null, "", { topLevel: true });
     else if (action === "group") this.createTerminalGroup();
     else if (action === "import-session") this.chooseSessionArchive();
     else if (action === "export-project") void this.exportProjectArchive();
@@ -6361,7 +6361,7 @@ class TermdeckApp {
       add.setAttribute("aria-label", add.title);
       add.onclick = (event) => {
         event.stopPropagation();
-        this.openModal();
+        this.openModal(null, null, "", { topLevel: true });
       };
       controls.append(sort, add);
       label.appendChild(controls);

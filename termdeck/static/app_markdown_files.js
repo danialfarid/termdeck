@@ -4306,7 +4306,7 @@ Object.assign(TermdeckApp.prototype, {
 
   quickOpenCommands() {
     const commands = [
-      { title: "New terminal", icon: "add", run: () => this.openModal() },
+      { title: "New terminal", icon: "add", run: () => this.openModal(null, null, "", { topLevel: true }) },
       { title: "Show Problems", icon: "warning", run: () => this.setProblemsOpen(true) },
       { title: "Show file Outline", icon: "symbol-class", run: () => this.toggleFileInspector("outline", true) },
       { title: "Split active editor", icon: "split-horizontal", run: () => this.toggleSplitEditor(true) },
@@ -6055,7 +6055,8 @@ Object.assign(TermdeckApp.prototype, {
       }
       const agentEntries = [{
         label: "New agent…",
-        handler: hasSelection ? () => this.openNewAgentFromSelection(selectionText) : () => this.openModal(),
+        handler: hasSelection ? () => this.openNewAgentFromSelection(selectionText)
+          : () => this.openModal(null, null, "", { topLevel: true }),
         icon: "add",
       }, { kind: "label", label: "Existing agents" }];
       const existingAgents = this.recentAgentSessionsForContextMenu();

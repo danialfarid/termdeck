@@ -3368,6 +3368,10 @@ Object.assign(TermdeckApp.prototype, {
     this.modalGroupId = !this.vscodeMode && groupId && this.terminalGroups().some((group) => group.id === groupId)
       ? groupId : null;
     this.modalAfterSessionId = !this.modalGroupId && afterSessionId && this.session(afterSessionId) ? afterSessionId : null;
+    // The + at the top of the list, and the New terminal it shares its action with, mean a terminal of
+    // its own: not in the group the selected one is in, not filed under it, not tucked in beside it.
+    // Opening one from a group's own + or from a row's "New terminal after this" still says where.
+    this.modalTopLevel = options.topLevel === true;
     this.populateModalModelOptions();
     const model = this.settings.last_model || DEFAULT_COMMAND;
     this.$("modal-model").value = this.agentSpecs[model] ? model : DEFAULT_COMMAND;
@@ -3493,6 +3497,7 @@ Object.assign(TermdeckApp.prototype, {
     const pendingAgentTextUseHistory = this.pendingNewAgentSelectionUseHistory;
     const targetGroupId = this.modalGroupId;
     const requestedAfterSessionId = this.modalAfterSessionId;
+    const topLevel = this.modalTopLevel === true;
     const model = this.$("modal-model").value;
     const modelName = this.modelNameWithEffort(this.$("modal-model-name").value, "modal-model-effort");
     const additionalArgs = this.$("modal-additional-args").value.trim();
@@ -3518,7 +3523,8 @@ Object.assign(TermdeckApp.prototype, {
     this.saveSettings();
     // Land the new terminal directly below the one in focus rather than at the end of the sidebar.
     // An explicitly chosen group already dictates placement, so it wins.
-    const anchorSessionId = !targetGroupId && requestedAfterSessionId && this.session(requestedAfterSessionId)
+    const anchorSessionId = topLevel ? null
+      : !targetGroupId && requestedAfterSessionId && this.session(requestedAfterSessionId)
       ? requestedAfterSessionId : !targetGroupId && this.activeId && this.session(this.activeId) ? this.activeId : null;
     const res = await fetch("/api/sessions", {
       method: "POST", headers: { "Content-Type": "application/json" },
