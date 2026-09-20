@@ -1133,7 +1133,87 @@ Object.assign(TermdeckApp.prototype, {
     }
     modelEl.textContent = model;
     modelEl.classList.remove("hidden");
-    modelEl.title = modelEl.textContent;
+    // Changing it means driving the agent's own model picker, which only codex publishes a catalog for,
+    // so only there is this a control rather than a readout.
+    const selectable = this.agentSpec(session?.agent_kind)?.kind === "codex";
+    modelEl.classList.toggle("selectable", selectable);
+    modelEl.title = selectable ? `${modelEl.textContent} · click to change model` : modelEl.textContent;
+    modelEl.setAttribute("role", selectable ? "button" : "note");
+    if (selectable) modelEl.tabIndex = 0;
+    else modelEl.removeAttribute("tabindex");
+    modelEl.onclick = selectable ? () => void this.chooseHistoryModel() : null;
+    modelEl.onkeydown = selectable ? (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      void this.chooseHistoryModel();
+    } : null;
+  },
+
+
+  // The model on the transcript, picked rather than typed into the terminal. The catalog's models change
+  // the running agent through its own picker; one typed in cannot -- that picker only knows what it
+  // lists -- so a model from outside it restarts the terminal on it instead, which resumes the session
+  // rather than starting a new one.
+  async chooseHistoryModel() {
+    const session = this.session(this.activeId);
+    const view = this.views.get(this.activeId) || this.sessionInteractionState(this.activeId);
+    if (!session) return;
+    const models = await this.agentModelSuggestions(session.agent_kind);
+    const current = String(this.sessionModelById.get(session.session_id) ||
+      this.historyModelDisplay(session, this.historyTurnsBySession.get(session.session_id) || []) || "");
+    const currentModel = current.split(/\s+/)[0] || "";
+    const choices = [...models.map((model) => ({ value: model.id, label: model.id,
+                                                 description: model.efforts.join(", ") })),
+                     { value: HISTORY_MODEL_OTHER, label: "Other model…",
+                       description: "Type a model this list does not have" }];
+    const chosen = await uiSelect("Choose the model this terminal runs on.", choices,
+                                  { title: "Change model", currentValue: currentModel });
+    if (!chosen) return;
+    if (chosen === HISTORY_MODEL_OTHER) return this.restartHistoryModelByName(session, current);
+    const model = models.find((entry) => entry.id === chosen);
+    const efforts = model?.efforts || [];
+    if (!efforts.length) return this.applyHistoryModel(session, view, chosen, "");
+    const currentEffort = current.split(/\s+/)[1] || model.defaultEffort || efforts[0];
+    const effort = await uiSelect(`Choose the reasoning level for ${chosen}.`,
+                                  efforts.map((value) => ({ value, label: value })),
+                                  { title: "Reasoning level", currentValue: currentEffort });
+    if (!effort) return;
+    return this.applyHistoryModel(session, view, chosen, effort);
+  },
+
+
+  async restartHistoryModelByName(session, current) {
+    const typed = await uiPrompt("Model to run this terminal on. Add a reasoning level after it if the " +
+                                 "agent takes one, as in \"gpt-6-astra max\".", current);
+    const modelName = String(typed || "").trim();
+    if (!modelName) return;
+    if (!await uiConfirm(`Restart "${this.titlePresentation(session).text}" on ${modelName}? ` +
+                         "A model the agent's picker does not list can only be applied by starting it again, " +
+                         "which resumes this session.")) return;
+    const failure = await this.restartSession(session.session_id, "", "", { modelName });
+    this.$("status-name").textContent = failure || `restarted on ${modelName}`;
+  },
+
+
+  async applyHistoryModel(session, view, modelId, effort) {
+    this.$("status-name").textContent = `switching model to ${[modelId, effort].filter(Boolean).join(" ")}…`;
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(session.session_id)}/model`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: modelId, reasoning_effort: effort }),
+      });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({}));
+        throw new Error(String(failure.detail || `model change failed (${response.status})`));
+      }
+      const updated = await response.json();
+      if (updated.session) this.applySessionStatus({ ...updated.session, session_id: session.session_id });
+      this.sessionModelById.set(session.session_id, [modelId, effort].filter(Boolean).join(" "));
+      if (view) this.renderHistoryMeta();
+      this.$("status-name").textContent = `model: ${[modelId, effort].filter(Boolean).join(" ")}`;
+    } catch (error) {
+      this.$("status-name").textContent = error instanceof Error ? error.message : "unable to change model";
+    }
   },
 
 
@@ -3257,8 +3337,9 @@ Object.assign(TermdeckApp.prototype, {
         this.refreshFilteredHistoryView();
       };
     }
-    this.$("history-filter-collapse-edits").onchange = (event) => {
-      if (event.currentTarget.checked !== this.historyEditsCollapsed) this.toggleHistoryEdits();
+    // Ticked means expanded, because folded is what they are unless asked otherwise.
+    this.$("history-filter-expand-code").onchange = (event) => {
+      if (event.currentTarget.checked === this.historyEditsCollapsed) this.toggleHistoryEdits();
     };
     document.addEventListener("pointerdown", (event) => {
       if (menu.classList.contains("hidden") || menu.contains(event.target) || toggles.some((toggle) => toggle.contains(event.target))) return;
@@ -3404,9 +3485,9 @@ Object.assign(TermdeckApp.prototype, {
       const icon = button.querySelector(".codicon");
       if (icon) icon.className = `codicon codicon-${this.historyEditsCollapsed ? "expand-all" : "collapse-all"}`;
     }
-    const menuToggle = this.$("history-filter-collapse-edits");
+    const menuToggle = this.$("history-filter-expand-code");
     if (menuToggle) {
-      menuToggle.checked = this.historyEditsCollapsed && hasEdits;
+      menuToggle.checked = !this.historyEditsCollapsed && hasEdits;
       menuToggle.disabled = !hasEdits;
     }
   },
@@ -3428,8 +3509,28 @@ Object.assign(TermdeckApp.prototype, {
     }
     const additions = Array.isArray(turn.diff) ? turn.diff.filter((line) => line.kind === "add").length : 0;
     const removals = Array.isArray(turn.diff) ? turn.diff.filter((line) => line.kind === "remove").length : 0;
-    const fileSummary = files.length ? `${files.length} file${files.length === 1 ? "" : "s"}` : "file details unavailable";
+    // Folded, this line is all there is to go on, so it names the file rather than counting how many
+    // there were: "2 files" says nothing about which. Long paths are shortened against the terminal's
+    // own directory, and a handful of files falls back to the count so the line stays one line.
+    const named = files.slice(0, HISTORY_EDIT_SUMMARY_FILES).map((file) => this.historyEditSummaryPath(file));
+    const fileSummary = !files.length ? "file details unavailable"
+      : files.length > HISTORY_EDIT_SUMMARY_FILES
+      ? `${named.join(", ")} +${files.length - HISTORY_EDIT_SUMMARY_FILES} more`
+      : named.join(", ");
     return `${fileSummary} · +${additions} / −${removals} lines`;
+  },
+
+
+  // A file's name for the one line a folded edit gets. Relative to the terminal's own directory where it
+  // can be, and otherwise the last couple of segments: an agent working outside its terminal's directory
+  // writes absolute paths, and two of those are longer than the line they have to share. The whole path
+  // is in the diff underneath.
+  historyEditSummaryPath(path) {
+    const shortened = this.historyDiffPath(path);
+    if (!shortened.startsWith("/")) return shortened;
+    const segments = shortened.split("/").filter(Boolean);
+    return segments.length > HISTORY_EDIT_SUMMARY_PATH_SEGMENTS
+      ? `…/${segments.slice(-HISTORY_EDIT_SUMMARY_PATH_SEGMENTS).join("/")}` : shortened;
   },
 
 

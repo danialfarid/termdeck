@@ -599,6 +599,10 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 #history-filter-menu input { margin: 0; accent-color: var(--accent); }
 #history-model { color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; opacity: 0.92; }
 #history-model.hidden { display: none; }
+/* A readout for agents whose model TermDeck cannot change, a control for the ones it can: dotted
+   underline rather than a button, because it stays a line of status either way. */
+#history-model.selectable { cursor: pointer; text-decoration: underline dotted currentColor; text-underline-offset: 3px; }
+#history-model.selectable:hover, #history-model.selectable:focus-visible { color: var(--text); opacity: 1; outline: none; }
 #history-thinking-banner { display: flex; align-items: center; gap: 8px; padding: 5px 12px 4px; border-top: 1px solid var(--border); color: var(--accent); font: 600 calc(var(--ui-font-size) - 1px) Menlo, monospace; letter-spacing: 0.04em; text-transform: uppercase; }
 #history-thinking-banner.hidden { display: none; }
 #history-thinking-banner #history-thinking-duration { min-width: 30px; opacity: 0.82; will-change: opacity; animation: history-thinking-duration-pulse var(--thinking-blink-interval) ease-in-out infinite; }

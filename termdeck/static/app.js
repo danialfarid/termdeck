@@ -278,6 +278,12 @@ const CLAUDE_WEBGL_COLD_PRIME_MIN_MS = 900;
 const CLAUDE_WEBGL_COLD_PRIME_IDLE_MS = 220;
 const CLAUDE_WEBGL_COLD_PRIME_MAX_MS = 2400;
 const CLAUDE_WEBGL_COLD_PRIME_RETRY_MS = 60;
+// The entry in the model picker that means "not one of these".
+const HISTORY_MODEL_OTHER = "__termdeck_other_model__";
+// Trailing segments kept of a path that is not under the terminal's own directory.
+const HISTORY_EDIT_SUMMARY_PATH_SEGMENTS = 2;
+// Files named on a folded code edit's own line before it gives up and counts the rest.
+const HISTORY_EDIT_SUMMARY_FILES = 2;
 const HISTORY_BACKGROUND_TARGET_TURNS = 320;
 const HISTORY_BACKGROUND_PAGE_TURNS = 160;
 const HISTORY_BACKGROUND_LOAD_DELAY_MS = 180;
@@ -750,7 +756,10 @@ class TermdeckApp {
     this.historyTurns = [];
     this.historyRenderedTurns = [];
     this.historyLoaded = false;
-    this.historyEditsCollapsed = false;
+    // Code edits start folded. Their summary names the files and the lines changed, which is what a
+    // reader scanning a transcript is after; the diff itself is a wall of text between them and the next
+    // thing the agent said, and it is one click away.
+    this.historyEditsCollapsed = true;
     this.historyFilters = { hidePrompts: false, promptsOnly: false, responsesOnly: false, hideThinking: false, codeOnly: false, foldRepetitive: false };
     this.headerPickerActiveIndices = { project: 0, worktree: 0 };
     this.closedExpanded = false;
