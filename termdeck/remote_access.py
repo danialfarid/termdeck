@@ -165,6 +165,12 @@ class RemoteAccessManager:
                     self.credential_store.save(credentials)
                     self.credentials = credentials
                     self.pairing_state = None
+                    self.last_error = ""
+                    # The connector running right now holds the token the relay has just replaced, and
+                    # _start_connector leaves a live one alone -- so pairing saved a good token while the
+                    # deck went on presenting the old one and being refused. Pairing again looked like it
+                    # did nothing: the relay accepted the computer, and the phone still waited for it.
+                    await self._stop_connector()
                     self._start_connector(credentials)
                     return
                 if payload["state"] == "expired":
