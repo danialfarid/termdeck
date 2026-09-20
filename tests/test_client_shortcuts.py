@@ -143,3 +143,34 @@ class StartParameterDialogWiringTest(unittest.TestCase):
 
     def test_the_checkbox_rows_are_styled_in_both(self) -> None:
         self.assertIn("#restart-modal .modal-checkbox-label", self.style_css)
+
+
+class DescriptionDrawerClosesOnAClickAwayTest(unittest.TestCase):
+    """The description drawer sits over the terminal it describes, so a click anywhere else is someone
+    going back to work and the drawer should get out of the way.
+
+    Its own toggle has to be excluded, or the mousedown closes it and the click that follows reopens it,
+    leaving a button that cannot put it away.
+
+    tools/scroll-tests checks the behaviour in a real browser; this is the cheap guard that the drawer is
+    still in the handler that every other panel closes from.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        static = Path(__file__).resolve().parent.parent / "termdeck" / "static"
+        cls.app_js = (static / "app.js").read_text()
+
+    def outside_click_handler(self) -> str:
+        handler = re.search(r'document\.addEventListener\("mousedown".*?\n    \}\);', self.app_js, re.S)
+        self.assertIsNotNone(handler, "the click-away handler was not found")
+        return handler.group(0)
+
+    def test_the_drawer_closes_from_the_click_away_handler(self) -> None:
+        self.assertIn("closeSessionDescriptionEditor()", self.outside_click_handler())
+
+    def test_a_click_inside_it_is_not_a_click_away(self) -> None:
+        self.assertIn("descriptionDrawer.contains(e.target)", self.outside_click_handler())
+
+    def test_its_own_toggle_is_left_to_do_the_toggling(self) -> None:
+        self.assertIn('this.$("session-description-toggle")?.contains(e.target)', self.outside_click_handler())

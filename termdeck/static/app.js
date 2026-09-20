@@ -3982,6 +3982,14 @@ class TermdeckApp {
           !e.target.closest("#file-type-filter-button, #search-file-type-filter-button, #recent-file-type-filter-button")) {
         this.closeFileTypeFilterMenu();
       }
+      // The drawer sits over the terminal it describes, so a click anywhere else is someone going back
+      // to work. Closing saves what is in it, the same as the close button does -- the text is
+      // autosaved as it is typed, and this is not the place to make an exception to that.
+      const descriptionDrawer = this.$("session-description-drawer");
+      if (descriptionDrawer && !descriptionDrawer.classList.contains("hidden") &&
+          !descriptionDrawer.contains(e.target) && !this.$("session-description-toggle")?.contains(e.target)) {
+        this.closeSessionDescriptionEditor();
+      }
       const notebookPanel = this.$("notebook-panel");
       const notebookToggle = this.$("notebook-toggle");
       const fileTabsNotebook = this.$("file-tabs-notebook");
