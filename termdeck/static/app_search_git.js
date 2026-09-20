@@ -1081,10 +1081,35 @@ Object.assign(TermdeckApp.prototype, {
 
   toggleAgentStack(parentId) {
     if (!this.expandedAgentStacks.delete(parentId)) this.expandedAgentStacks.add(parentId);
+    this.persistExpandedAgentStacks();
+    this.renderList();
+  },
+
+
+  persistExpandedAgentStacks() {
     try {
       localStorage.setItem(EXPANDED_AGENT_STACKS_KEY, JSON.stringify([...this.expandedAgentStacks]));
-    } catch { /* a private window refuses storage; the stack still opens for this visit */ }
-    this.renderList();
+    } catch { /* a private window refuses storage; the stacks still open for this visit */ }
+  },
+
+
+  // Opens every stack between this terminal and the list, so its row exists to be shown. Returns whether
+  // anything had to be opened. The walk carries its own guard: parentage is editable by hand and reloaded
+  // from disk, so a loop can already be there, and this must end on one rather than spin.
+  openAgentStacksAbove(sessionId) {
+    const seen = new Set([sessionId]);
+    let opened = false;
+    let parentId = this.session(sessionId)?.spawned_by_session_id || "";
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      if (!this.expandedAgentStacks.has(parentId)) {
+        this.expandedAgentStacks.add(parentId);
+        opened = true;
+      }
+      parentId = this.session(parentId)?.spawned_by_session_id || "";
+    }
+    if (opened) this.persistExpandedAgentStacks();
+    return opened;
   },
 
   renderSpawnedStack(parent, list) {
@@ -1424,6 +1449,11 @@ Object.assign(TermdeckApp.prototype, {
       this.queueTerminalGroupUpdate(groupId, { collapsed: false });
       renderRequired = true;
     }
+    // A terminal filed under another has no row at all while that stack is shut, and one nested deeper
+    // has none while any stack above it is shut. The reveal then had nothing to scroll to and gave up
+    // silently, leaving the terminal the deck had just switched to invisible in the sidebar -- which is
+    // what opening one by its link looked like.
+    if (this.openAgentStacksAbove(sessionId)) renderRequired = true;
     if (focus) {
       this.sidebarSelectedFileKeys.clear();
       this.sidebarSelectedSessionIds = new Set([sessionId]);

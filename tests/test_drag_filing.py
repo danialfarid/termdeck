@@ -192,3 +192,85 @@ class NewTerminalPlacementTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+REVEAL_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_REVEAL_SCENARIO);
+const stored = [];
+global.localStorage = { setItem: (key, value) => stored.push(JSON.parse(value)) };
+const EXPANDED_AGENT_STACKS_KEY = "termdeck.expanded_agent_stacks";
+const app = {
+  sessions: scenario.sessions,
+  expandedAgentStacks: new Set(scenario.expanded),
+  session(id) { return this.sessions.find((s) => s.session_id === id) || null; },
+  __METHODS__
+};
+const opened = app.openAgentStacksAbove(scenario.sessionId);
+process.stdout.write(JSON.stringify({ opened, expanded: [...app.expandedAgentStacks], stored }));
+"""
+
+
+class RevealOpensTheStacksAboveTest(unittest.TestCase):
+    """A terminal filed under another has no row at all while that stack is shut.
+
+    Revealing the active terminal in the sidebar looked for its row and gave up quietly when there was
+    none, so opening a spawned agent -- by its link, by a shortcut, by anything that selects it -- left
+    the sidebar showing no sign of the terminal the deck had just switched to.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_search_git.js").read_text()
+        cls.harness = REVEAL_HARNESS.replace("__METHODS__", "\n  ".join(
+            method_source(source, name) for name in
+            ("persistExpandedAgentStacks()", "openAgentStacksAbove(sessionId)")))
+
+    def reveal(self, session_id, expanded=()):
+        scenario = {"sessions": SESSIONS, "sessionId": session_id, "expanded": list(expanded)}
+        done = subprocess.run([self.node, "-e", self.harness], capture_output=True, text=True, check=False,
+                              env={**os.environ, "TERMDECK_REVEAL_SCENARIO": json.dumps(scenario)})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_the_stack_holding_it_is_opened(self) -> None:
+        result = self.reveal("child")
+
+        self.assertIs(result["opened"], True)
+        self.assertEqual(result["expanded"], ["parent"])
+
+    def test_every_stack_above_a_nested_one_is_opened(self) -> None:
+        # Opening only the terminal's own parent leaves that parent with no row either.
+        result = self.reveal("grandchild")
+
+        self.assertEqual(sorted(result["expanded"]), ["child", "parent"])
+
+    def test_a_terminal_in_the_list_opens_nothing(self) -> None:
+        result = self.reveal("loner")
+
+        self.assertIs(result["opened"], False)
+        self.assertEqual(result["stored"], [])
+
+    def test_stacks_already_open_are_left_alone(self) -> None:
+        # Nothing to do, and nothing to write: this runs on every reveal.
+        result = self.reveal("child", expanded=["parent"])
+
+        self.assertIs(result["opened"], False)
+        self.assertEqual(result["stored"], [])
+
+    def test_what_was_opened_is_remembered(self) -> None:
+        self.assertEqual(self.reveal("child")["stored"], [["parent"]])
+
+    def test_parentage_that_loops_does_not_hang_the_walk(self) -> None:
+        # Editable by hand and reloaded from disk, so a loop can already be there.
+        scenario = {"sessions": [{"session_id": "a", "title": "a", "spawned_by_session_id": "b"},
+                                 {"session_id": "b", "title": "b", "spawned_by_session_id": "a"}],
+                    "sessionId": "a", "expanded": []}
+        done = subprocess.run([self.node, "-e", self.harness], capture_output=True, text=True, check=False,
+                              timeout=10,
+                              env={**os.environ, "TERMDECK_REVEAL_SCENARIO": json.dumps(scenario)})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        # It walks up once and stops on the terminal it started from, rather than going round for good.
+        self.assertEqual(json.loads(done.stdout)["expanded"], ["b"])
