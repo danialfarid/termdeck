@@ -3265,10 +3265,12 @@ Object.assign(TermdeckApp.prototype, {
   // gets an empty list, which leaves the field as the free-text box it has always been. Either way the
   // field stays typable: a model the catalog has not heard of yet is still a model you can start on.
   async agentModelSuggestions(kind) {
-    if (kind !== "codex") return [];
+    // Every agent is asked; the ones with nothing to say answer with nothing, and the field stays the
+    // free-text box it was. Codex answers from its app server, claude from its own help and settings.
+    if (!kind || !this.agentSpec(kind)?.is_agent) return [];
     if (this.agentModelSuggestionCache?.has(kind)) return this.agentModelSuggestionCache.get(kind);
     try {
-      const response = await fetch("/api/agents/codex/models");
+      const response = await fetch(`/api/agents/${encodeURIComponent(kind)}/models`);
       if (!response.ok) throw new Error(String(response.status));
       const catalog = await response.json();
       const models = (Array.isArray(catalog.models) ? catalog.models : [])

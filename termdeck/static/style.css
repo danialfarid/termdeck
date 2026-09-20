@@ -597,12 +597,19 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 #history-filter-menu label { display: flex; align-items: center; gap: 8px; min-height: 29px; padding: 3px 7px; border-radius: 5px; color: var(--text); cursor: pointer; font: var(--ui-font-size)/1.2 Menlo, monospace; }
 #history-filter-menu label:hover { background: var(--active-bg); }
 #history-filter-menu input { margin: 0; accent-color: var(--accent); }
-#history-model { color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; opacity: 0.92; }
+#history-model { color: var(--dim); font: calc(var(--ui-font-size) + 1px)/1.2 Menlo, monospace; opacity: 0.92; }
 #history-model.hidden { display: none; }
-/* A readout for agents whose model TermDeck cannot change, a control for the ones it can: dotted
-   underline rather than a button, because it stays a line of status either way. */
-#history-model.selectable { cursor: pointer; text-decoration: underline dotted currentColor; text-underline-offset: 3px; }
-#history-model.selectable:hover, #history-model.selectable:focus-visible { color: var(--text); opacity: 1; outline: none; }
+/* A readout for agents whose model TermDeck cannot change, and a button for the ones it can -- pill,
+   border and a chevron, because nothing about a line of status says "press me" on its own. */
+#history-model.selectable {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px 3px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--panel2);
+  color: var(--text); opacity: 1; cursor: pointer;
+}
+#history-model.selectable::after { content: "▾"; font-size: 10px; opacity: .8; }
+#history-model.selectable:hover, #history-model.selectable:focus-visible {
+  border-color: var(--accent); background: var(--active-bg); outline: none;
+}
 #history-thinking-banner { display: flex; align-items: center; gap: 8px; padding: 5px 12px 4px; border-top: 1px solid var(--border); color: var(--accent); font: 600 calc(var(--ui-font-size) - 1px) Menlo, monospace; letter-spacing: 0.04em; text-transform: uppercase; }
 #history-thinking-banner.hidden { display: none; }
 #history-thinking-banner #history-thinking-duration { min-width: 30px; opacity: 0.82; will-change: opacity; animation: history-thinking-duration-pulse var(--thinking-blink-interval) ease-in-out infinite; }

@@ -9,6 +9,7 @@ from typing import Iterable
 
 from termdeck.agents.base import UUID_RE, AgentCli, AgentSessionState
 from termdeck.config import TermdeckConfig
+from termdeck.platform_paths import PlatformPaths
 from termdeck.proc_tree import ProcTreeSnapshot
 from termdeck.transcript_turns import TurnBuilder
 from termdeck.util import TimeUtil
@@ -49,9 +50,19 @@ class ClaudeCli(AgentCli):
     supports_agent_rename = True
     accepts_session_ref = True
     transcript_commands = (("/model", "Change the active model"),
+                           ("/effort", "Change the reasoning effort level"),
                            ("/compact", "Compact the conversation context"),
                            ("/context", "Show current context usage"),
                            ("/usage", "Show plan usage and session cost"))
+    SETTINGS_FILE = Path.home() / ".claude" / "settings.json"
+    STATE_FILE = Path.home() / ".claude.json"
+    # Claude's own help is the authority on both: it names the aliases it takes and lists the levels.
+    MODEL_ALIAS_HELP_RE = re.compile(r"--model <model>(.*?)(?=\n\s*-{1,2}\w)", re.S)
+    EFFORT_HELP_RE = re.compile(r"--effort <level>(.*?)(?=\n\s*-{1,2}\w)", re.S)
+    QUOTED_RE = re.compile(r"'([^']+)'")
+    # An apostrophe in the prose ("a model's full name") opens a quote that closes at the next one, so
+    # what comes back has to look like a model name to be taken for one.
+    MODEL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-]*(?:\[[A-Za-z0-9]+\])?$")
 
     permission_flags = {
         "default": (),
@@ -826,6 +837,94 @@ class ClaudeCli(AgentCli):
         if not cleaned:
             cleaned = [self.executable]
         return f"{shlex.join(cleaned)} {self.RESUME_FLAG} {agent_session_id}"
+
+    def model_command(self) -> str:
+        return "/model"
+
+    def effort_command(self) -> str:
+        # Claude takes the level separately from the model, unlike codex where the two are one choice.
+        return "/effort"
+
+    async def list_models(self) -> list[dict[str, object]]:
+        """What claude itself says it takes: the aliases its help names, and the models this install has
+        actually used, which is where the full ids come from -- help gives examples, not a catalog.
+        """
+        help_text = await self._help_text()
+        aliases = self._quoted_names(self.MODEL_ALIAS_HELP_RE, help_text)
+        efforts = self._effort_levels(help_text)
+        known = self._models_from_claude_state()
+        seen: list[str] = []
+        for model in [*aliases, *known]:
+            if model and model not in seen:
+                seen.append(model)
+        levels = [{"value": level, "description": ""} for level in efforts]
+        return [{"id": model, "label": model, "description": "",
+                 "reasoning_efforts": levels,
+                 "default_reasoning_effort": self._effort_for_model(model)} for model in seen]
+
+    async def _help_text(self) -> str:
+        cached = getattr(self, "_help_cache", None)
+        if cached and time.monotonic() - cached[0] < TermdeckConfig.AGENT_MODEL_CATALOG_CACHE_SECONDS:
+            return cached[1]
+        # Resolved rather than run off PATH: the deck is started by launchd, whose PATH does not carry
+        # the directories a CLI installs itself into.
+        binary = PlatformPaths.resolve_binary(PlatformPaths.ENV_CLAUDE_BIN, self.executable)
+        process = await asyncio.create_subprocess_exec(
+            binary, "--help", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        try:
+            stdout, _ = await asyncio.wait_for(process.communicate(),
+                                               timeout=TermdeckConfig.AGENT_MODEL_CATALOG_TIMEOUT_SECONDS)
+        except TimeoutError:
+            process.kill()
+            return ""
+        text = stdout.decode(errors="replace")
+        self._help_cache = (time.monotonic(), text)
+        return text
+
+    @classmethod
+    def _quoted_names(cls, pattern: re.Pattern[str], help_text: str) -> list[str]:
+        section = pattern.search(help_text)
+        found = cls.QUOTED_RE.findall(section.group(1)) if section else []
+        return [name for name in found if cls.MODEL_NAME_RE.fullmatch(name)]
+
+    @classmethod
+    def _effort_levels(cls, help_text: str) -> list[str]:
+        section = cls.EFFORT_HELP_RE.search(help_text)
+        if not section:
+            return []
+        listed = re.search(r"\(([^)]*)\)", " ".join(section.group(1).split()))
+        return [level.strip() for level in listed.group(1).split(",") if level.strip()] if listed else []
+
+    @classmethod
+    def _claude_json(cls, path: Path) -> dict[str, object]:
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    @classmethod
+    def _models_from_claude_state(cls) -> list[str]:
+        """Full model ids this install has on record: what it is set to, what it has settings for, and
+        the options claude itself last offered. Help names aliases; these are the names behind them."""
+        settings = cls._claude_json(cls.SETTINGS_FILE)
+        state = cls._claude_json(cls.STATE_FILE)
+        models = [str(settings.get("model") or "")]
+        model_settings = settings.get("modelSettings")
+        if isinstance(model_settings, dict):
+            models.extend(str(model) for model in model_settings)
+        offered = state.get("additionalModelOptionsCache")
+        if isinstance(offered, list):
+            models.extend(str(option.get("value") or "") for option in offered if isinstance(option, dict))
+        return [model for model in models if model]
+
+    @classmethod
+    def _effort_for_model(cls, model: str) -> str:
+        model_settings = cls._claude_json(cls.SETTINGS_FILE).get("modelSettings")
+        if not isinstance(model_settings, dict):
+            return ""
+        entry = model_settings.get(model) or model_settings.get(model.split("[", 1)[0])
+        return str(entry.get("effortLevel") or "") if isinstance(entry, dict) else ""
 
     def fresh_session_command(self, original_command: str) -> str:
         cleaned = self.strip_flag_with_value(self.command_parts(original_command), self.RESUME_FLAG)

@@ -112,6 +112,22 @@ class AgentCli:
     def model_arguments(self, model_name: str) -> tuple[str, ...]:
         return ("--model", model_name)
 
+    async def list_models(self) -> list[dict[str, object]]:
+        """The models this CLI takes, as it names them, or [] when it does not say.
+
+        Shaped like codex's own catalog -- id, reasoning_efforts, default_reasoning_effort -- because
+        that is what the dialogs and the transcript's picker already read.
+        """
+        return []
+
+    def model_command(self) -> str:
+        """The command that changes the model from inside the session, or "" when there is none."""
+        return ""
+
+    def effort_command(self) -> str:
+        """The command that sets the reasoning level, where that is separate from the model."""
+        return ""
+
     def disable_effect_arguments(self) -> tuple[str, ...]:
         """Start parameters that turn this CLI's own visual effects off, or () when it has none.
 
@@ -482,6 +498,7 @@ class AgentCli:
                 "supports_agent_rename": self.supports_agent_rename,
                 "model_placeholder": self.model_placeholder, "model_help": self.model_help,
                 "supports_disable_effects": bool(self.disable_effect_arguments()),
+                "model_command": self.model_command(), "effort_command": self.effort_command(),
                 "activity_source": self.activity_source,
                 "records_raw_replay": self.records_raw_replay, "has_prompt_queue": self.has_prompt_queue,
                 "transcript_commands": [{"command": command, "description": description}

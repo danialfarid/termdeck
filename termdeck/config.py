@@ -133,6 +133,10 @@ class TermdeckConfig:
     FILEBROWSER_STATIC_NAME = "filebrowser-static"
     API_AGENTS_ROUTE = "/api/agents"
     API_CODEX_MODELS_ROUTE = "/api/agents/codex/models"
+    API_AGENT_MODELS_ROUTE = "/api/agents/{agent_kind}/models"
+    # A CLI is asked what models it takes by running its own help, which is cheap but not free.
+    AGENT_MODEL_CATALOG_CACHE_SECONDS = 300.0
+    AGENT_MODEL_CATALOG_TIMEOUT_SECONDS = 15.0
     API_SESSIONS_ROUTE = "/api/sessions"
     API_SESSION_EXPORT_ROUTE = "/api/sessions/{session_id}/export"
     API_SESSION_IMPORT_ROUTE = "/api/sessions/import"

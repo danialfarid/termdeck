@@ -794,6 +794,7 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_AGENTS_ROUTE, response_model=None)(self._list_agent_clis)
         app.get(TermdeckConfig.API_AGENT_SESSIONS_ROUTE, response_model=None)(self._list_agent_sessions)
         app.get(TermdeckConfig.API_CODEX_MODELS_ROUTE, response_model=None)(self._list_codex_models)
+        app.get(TermdeckConfig.API_AGENT_MODELS_ROUTE, response_model=None)(self._list_agent_models)
         app.get(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._list_sessions)
         app.post(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._create_session)
         app.get(TermdeckConfig.API_SESSION_EXPORT_ROUTE, response_model=None)(self._export_session)
@@ -3313,6 +3314,20 @@ class TermdeckServer:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
         return await asyncio.to_thread(self.manager.session_usage, session_id)
+
+    async def _list_agent_models(self, agent_kind: str) -> dict[str, object]:
+        """The models an agent takes. Codex publishes a catalog over its app server; anything else is
+        asked through its own adapter, and an agent that does not say answers with nothing."""
+        if agent_kind == agents.CodexCli.kind:
+            return await self._list_codex_models()
+        try:
+            agent = agents.agent_cli(agent_kind)
+        except ValueError:
+            raise HTTPException(status_code=404, detail=f"unknown agent: {agent_kind}") from None
+        try:
+            return {"models": await agent.list_models()}
+        except (FileNotFoundError, OSError, RuntimeError, TimeoutError) as catalog_error:
+            raise HTTPException(status_code=503, detail=str(catalog_error)) from catalog_error
 
     async def _list_codex_models(self) -> dict[str, object]:
         try:

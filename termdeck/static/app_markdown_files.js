@@ -1162,8 +1162,12 @@ Object.assign(TermdeckApp.prototype, {
 
 
   agentModelCommand(session) {
-    const commands = this.agentSpec(session?.agent_kind)?.transcript_commands || [];
-    return commands.some((entry) => entry.command === "/model") ? "/model" : "";
+    return String(this.agentSpec(session?.agent_kind)?.model_command || "");
+  },
+
+
+  agentEffortCommand(session) {
+    return String(this.agentSpec(session?.agent_kind)?.effort_command || "");
   },
 
 
@@ -1196,12 +1200,13 @@ Object.assign(TermdeckApp.prototype, {
     const session = this.session(this.activeId);
     const view = this.views.get(this.activeId) || this.sessionInteractionState(this.activeId);
     if (!session) return;
-    const models = this.agentModelCatalogKind(session)
-      ? await this.agentModelSuggestions(session.agent_kind)
-      : this.modelsSeenForAgent(session.agent_kind,
-                                this.historyModelDisplay(session, this.historyTurnsBySession.get(session.session_id) || []));
     const current = String(this.sessionModelById.get(session.session_id) ||
       this.historyModelDisplay(session, this.historyTurnsBySession.get(session.session_id) || []) || "");
+    // The agent's own answer where it has one -- codex's catalog, claude's help and settings -- and the
+    // models this deck has started it on where it has none.
+    const published = await this.agentModelSuggestions(session.agent_kind);
+    const models = published.length ? published
+      : this.modelsSeenForAgent(session.agent_kind, current);
     const currentModel = current.split(/\s+/)[0] || "";
     const choices = [...models.map((model) => ({ value: model.id, label: model.id,
                                                  description: model.efforts.join(", ") })),
@@ -1244,32 +1249,41 @@ Object.assign(TermdeckApp.prototype, {
 
 
   // Told through the agent's own command, the way someone would type it into the composer.
-  async sendHistoryModelCommand(session, modelName) {
+  async sendHistoryModelCommand(session, modelName, effort = "") {
     const command = this.agentModelCommand(session);
     if (!command) return;
-    this.$("status-name").textContent = `switching model to ${modelName}…`;
+    const chosen = [modelName, effort].filter(Boolean).join(" ");
+    this.$("status-name").textContent = `switching model to ${chosen}…`;
     try {
-      const response = await fetch(`/api/sessions/${encodeURIComponent(session.session_id)}/prompt`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: `${command} ${modelName}`, bracketed: false, queue: false,
-                               automatically_queue_when_busy: false }),
-      });
-      if (!response.ok) {
-        const failure = await response.json().catch(() => ({}));
-        throw new Error(String(failure.detail || `model change failed (${response.status})`));
-      }
-      this.sessionModelById.set(session.session_id, modelName);
+      await this.sendHistoryCommand(session, `${command} ${modelName}`);
+      // The level is a command of its own for an agent that keeps them apart, and it goes after the
+      // model: it is the model's level, and the model has to be the current one first.
+      const effortCommand = effort ? this.agentEffortCommand(session) : "";
+      if (effortCommand) await this.sendHistoryCommand(session, `${effortCommand} ${effort}`);
+      this.sessionModelById.set(session.session_id, chosen);
       this.renderHistoryMeta();
-      this.$("status-name").textContent = `model: ${modelName}`;
+      this.$("status-name").textContent = `model: ${chosen}`;
     } catch (error) {
       this.$("status-name").textContent = error instanceof Error ? error.message : "unable to change model";
     }
   },
 
 
+  async sendHistoryCommand(session, text) {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(session.session_id)}/prompt`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, bracketed: false, queue: false, automatically_queue_when_busy: false }),
+    });
+    if (!response.ok) {
+      const failure = await response.json().catch(() => ({}));
+      throw new Error(String(failure.detail || `${text.split(" ")[0]} failed (${response.status})`));
+    }
+  },
+
+
   async applyHistoryModel(session, view, modelId, effort) {
     // An agent with a command of its own is told with it; the rest is codex's picker, driven by position.
-    if (!this.agentModelCatalogKind(session)) return this.sendHistoryModelCommand(session, modelId);
+    if (!this.agentModelCatalogKind(session)) return this.sendHistoryModelCommand(session, modelId, effort);
     this.$("status-name").textContent = `switching model to ${[modelId, effort].filter(Boolean).join(" ")}…`;
     try {
       const response = await fetch(`/api/sessions/${encodeURIComponent(session.session_id)}/model`, {
