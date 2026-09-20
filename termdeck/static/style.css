@@ -917,19 +917,27 @@ body.vscode-native-mode #project-terminal-search-btn { display: none !important;
   position: absolute; left: 0; top: 0; bottom: 0; width: 7px; padding: 0;
   border: 0; background: none; cursor: pointer; z-index: 1;
 }
+/* The half of the line that runs through the parent row, drawn by the ROW. The stack cannot know how
+   tall the row above it is -- a description line, or a band of activity dots under the title, makes it
+   taller -- so a fixed rise from the stack stopped short and the line began below the row it belongs
+   to. It starts where that row's own status dot sits: the middle of the title, which the activity band
+   shifts up by half its height. */
+.session-item:has(+ .agent-stack)::after {
+  content: ""; position: absolute; left: 3px; width: 2px; bottom: 0;
+  top: calc(50% - var(--activity-band, 0px) / 2);
+  border-radius: 1px; background: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
 .agent-stack-rule::before {
-  /* It begins inside the parent row rather than at the top of the group, about half a row up, so it
-     reads as coming out of that terminal. Started at the group's own top edge it met the boundary
-     between two rows, and against a parent that is itself in someone's stack the two lines touched and
-     looked like one line running through both. Half a plain row: the padding plus half the title's
-     line box. A row carrying a description is taller, so this stays inside it either way. */
   content: ""; position: absolute; left: 3px; width: 2px;
-  top: calc(-6px - 0.6 * var(--sidebar-font-size)); bottom: 3px;
+  top: 0; bottom: 3px;
   /* Tinted toward the accent rather than left at the border colour, but only faintly: it is a hint that
      these terminals belong to the one above, not something to read. */
   border-radius: 1px; background: color-mix(in srgb, var(--accent) 30%, var(--border));
 }
-.agent-stack-rule:hover::before { background: var(--accent); }
+/* Hovering the control lights the whole line, both halves of it, or the row's half would stay dim while
+   the part below it brightens and they would stop reading as one line. */
+.agent-stack-rule:hover::before,
+.session-item:has(+ .agent-stack > .agent-stack-rule:hover)::after { background: var(--accent); }
 /* No indent: the rule beside them is what marks them as this terminal's, and every pixel taken off a
    row's left is a pixel off the title it has to fit. */
 .agent-stack.expanded > .agent-stack-children { margin-left: 0; }

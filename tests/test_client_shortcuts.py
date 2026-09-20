@@ -174,3 +174,45 @@ class DescriptionDrawerClosesOnAClickAwayTest(unittest.TestCase):
 
     def test_its_own_toggle_is_left_to_do_the_toggling(self) -> None:
         self.assertIn('this.$("session-description-toggle")?.contains(e.target)', self.outside_click_handler())
+
+
+class StackLineReachesIntoTheParentRowTest(unittest.TestCase):
+    """The line marking a stack runs from the middle of the terminal it belongs to down past its
+    children, and it is drawn in two halves: the stack draws the part beside the children, the parent row
+    draws the part through itself.
+
+    It was one piece, risen out of the stack by a fixed amount measured against a plain row. A row is
+    taller when it carries a band of activity dots under its title, and the fixed rise then stopped short
+    of it -- the line began below the row it belongs to instead of inside it.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.style_css = (Path(__file__).resolve().parent.parent / "termdeck" / "static" / "style.css").read_text()
+
+    def connector(self) -> str:
+        rule = re.search(r"\.session-item:has\(\+ \.agent-stack\)::after \{([^}]*)\}", self.style_css)
+        self.assertIsNotNone(rule, "nothing draws the line through the parent row")
+        return rule.group(1)
+
+    def test_the_row_draws_its_own_half(self) -> None:
+        # Only the row knows how tall it is.
+        self.assertIn("position: absolute", self.connector())
+
+    def test_it_starts_at_the_middle_of_the_title(self) -> None:
+        # Where the row's own status dot sits. The activity band shifts that up by half its height, which
+        # is the same correction the dot and the type icon already make.
+        self.assertIn("calc(50% - var(--activity-band, 0px) / 2)", self.connector())
+
+    def test_it_reaches_the_bottom_of_the_row(self) -> None:
+        # The stack's half starts at its own top edge, so anything short of the row's bottom is a break.
+        self.assertIn("bottom: 0", self.connector())
+
+    def test_the_stacks_half_no_longer_reaches_up_by_a_fixed_amount(self) -> None:
+        stack_rule = re.search(r"\.agent-stack-rule::before \{([^}]*)\}", self.style_css)
+        self.assertIsNotNone(stack_rule, "the stack no longer draws its half of the line")
+        self.assertIn("top: 0", stack_rule.group(1))
+        self.assertNotIn("sidebar-font-size", stack_rule.group(1))
+
+    def test_hovering_the_control_lights_both_halves(self) -> None:
+        self.assertIn(".session-item:has(+ .agent-stack > .agent-stack-rule:hover)::after", self.style_css)
