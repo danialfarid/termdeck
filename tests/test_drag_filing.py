@@ -132,5 +132,63 @@ class DragFilingTest(unittest.TestCase):
         self.assertEqual(self.run_scenario("parent", ["loner"], hold=True)["delays"], [700, 1500])
 
 
+PLACEMENT_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_PLACEMENT_SCENARIO);
+const calls = [];
+const app = {
+  sessions: scenario.sessions,
+  session(id) { return this.sessions.find((s) => s.session_id === id) || null; },
+  setSpawnedParent(ids, parentId) { calls.push({ filed: ids, under: parentId }); return Promise.resolve(); },
+  repositionSelectedSessions(ids, anchorId, after) { calls.push({ moved: ids, after: anchorId, below: after }); },
+  __METHODS__
+};
+app.placeCreatedSessionByAnchor(scenario.createdId, scenario.anchorId)
+  .then(() => process.stdout.write(JSON.stringify({ calls })));
+"""
+
+
+class NewTerminalPlacementTest(unittest.TestCase):
+    """Where a terminal created from another one goes.
+
+    A terminal filed under another is not drawn from the layout -- its row lives in the stack under its
+    parent -- so moving the new one after it in the layout put it wherever that position fell on screen,
+    past the whole stack. Asking a spawned agent for another one dropped the new terminal below the agent
+    that spawned IT.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_settings_ui.js").read_text()
+        cls.harness = PLACEMENT_HARNESS.replace(
+            "__METHODS__", method_source(source, "async placeCreatedSessionByAnchor(createdSessionId, anchorSessionId)"))
+
+    def place(self, anchor_id, created_id="fresh"):
+        sessions = SESSIONS + [{"session_id": "fresh", "title": "new one", "spawned_by_session_id": None}]
+        scenario = {"sessions": sessions, "anchorId": anchor_id, "createdId": created_id}
+        done = subprocess.run([self.node, "-e", self.harness], capture_output=True, text=True, check=False,
+                              env={**os.environ, "TERMDECK_PLACEMENT_SCENARIO": json.dumps(scenario)})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)["calls"]
+
+    def test_one_asked_from_a_filed_terminal_is_filed_under_it(self) -> None:
+        self.assertEqual(self.place("child"), [{"filed": ["fresh"], "under": "child"}])
+
+    def test_one_asked_from_a_terminal_in_the_list_still_lands_below_it(self) -> None:
+        # "New terminal after this" says after, and at the top level after is a place the layout has.
+        self.assertEqual(self.place("loner"), [{"moved": ["fresh"], "after": "loner", "below": True}])
+
+    def test_it_nests_under_a_terminal_that_is_itself_nested(self) -> None:
+        self.assertEqual(self.place("grandchild"), [{"filed": ["fresh"], "under": "grandchild"}])
+
+    def test_an_anchor_that_is_gone_places_nothing(self) -> None:
+        self.assertEqual(self.place("closed-since"), [])
+
+    def test_a_terminal_that_never_arrived_places_nothing(self) -> None:
+        self.assertEqual(self.place("child", created_id="never-created"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

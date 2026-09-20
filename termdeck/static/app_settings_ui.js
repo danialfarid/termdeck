@@ -3474,6 +3474,20 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // Where a terminal created from another one goes. Ordinarily just after it -- but a terminal that is
+  // itself filed under another is not drawn from the layout: its row lives in the stack under its
+  // parent. Moving the new one after it in the layout therefore put it wherever that position fell on
+  // screen, which is past the whole stack -- so asking a spawned agent for another one dropped the new
+  // terminal below the agent that spawned IT. Under the terminal it was asked from is what "after this"
+  // means when "this" is inside a stack.
+  async placeCreatedSessionByAnchor(createdSessionId, anchorSessionId) {
+    const anchor = this.session(anchorSessionId);
+    if (!anchor || !this.session(createdSessionId)) return;
+    if (anchor.spawned_by_session_id) await this.setSpawnedParent([createdSessionId], anchorSessionId);
+    else this.repositionSelectedSessions([createdSessionId], anchorSessionId, true);
+  },
+
+
   async createSessionFromModal() {
     const pendingAgentText = this.pendingNewAgentSelection;
     const pendingAgentTextUseHistory = this.pendingNewAgentSelectionUseHistory;
@@ -3534,8 +3548,8 @@ Object.assign(TermdeckApp.prototype, {
       });
       this.queueSessionGroupAssignments({ [created.session_id]: targetGroupId });
       this.renderList();
-    } else if (anchorSessionId && this.session(anchorSessionId) && this.session(created.session_id)) {
-      this.repositionSelectedSessions([created.session_id], anchorSessionId, true);
+    } else if (anchorSessionId) {
+      await this.placeCreatedSessionByAnchor(created.session_id, anchorSessionId);
     }
     this.activate(created.session_id, { reveal: true });
     const createdSession = this.session(created.session_id) || created;
