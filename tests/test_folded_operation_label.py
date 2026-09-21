@@ -96,6 +96,53 @@ class ShippedSummaryTest(unittest.TestCase):
     def test_the_count_comes_before_the_word(self) -> None:
         self.assertEqual([part.strip() for part in self.appended.split(",")], ["thinkingCount", "thinkingTitle"])
 
+    def test_a_block_with_a_preview_puts_it_on_the_lid(self) -> None:
+        # Every other kind of event -- a result above all -- writes its own title and would drop the
+        # preview on the floor without this.
+        source = (Path(__file__).resolve().parent.parent / "termdeck" / "static" / "app_markdown_files.js").read_text()
+        match = re.search(r"summary\.textContent = turn\.kind === \"edit\"(.{0,700}?)\n        \}", source, re.S)
+        self.assertIsNotNone(match, "the event summary moved")
+
+        self.assertIn("if (turn.preview)", match.group(1))
+        self.assertIn("summary.append(preview)", match.group(1))
+
+
+class ResultPreviewTest(unittest.TestCase):
+    """A shut block called "Result" says only that something came back."""
+
+    def test_a_result_carries_its_first_line(self) -> None:
+        turn = result("The file /repo/style.css has been updated successfully.\nnothing else matters here")
+
+        self.assertEqual(turn["preview"], "The file /repo/style.css has been updated successfully.")
+
+    def test_a_long_path_is_cut_to_the_end_that_tells_two_apart(self) -> None:
+        # The whole lid went on the part every line shares, and two results read identically.
+        turn = result("The file /Users/someone/work/project/termdeck/transcript_turns.py has been updated.")
+
+        self.assertEqual(turn["preview"], "The file …/termdeck/transcript_turns.py has been updated.")
+
+    def test_a_tool_says_what_it_was_given(self) -> None:
+        self.assertEqual(tool("Bash", {"command": "pytest -q"})["preview"], "Bash pytest -q".split(" ", 1)[1])
+
+    def test_nothing_came_back_is_no_preview(self) -> None:
+        self.assertNotIn("preview", result("   "))
+
+    def test_a_message_has_no_lid_to_write_on(self) -> None:
+        self.assertNotIn("preview", TurnBuilder.turn("assistant", "I will start with the parser."))
+
+    def test_a_code_edit_keeps_its_own_summary(self) -> None:
+        # Edits say which files changed and by how much; a first line of diff would say less.
+        edit = tool("Edit", {"file_path": "/repo/app.js", "old_string": "a", "new_string": "b"})
+
+        self.assertEqual(edit["kind"], "edit")
+        self.assertNotIn("preview", edit)
+
+    def test_the_preview_is_one_line_long_at_most(self) -> None:
+        turn = result("x" * 400)
+
+        self.assertLessEqual(len(str(turn["preview"])), TurnBuilder.LATEST_OPERATION_CHARS)
+        self.assertTrue(str(turn["preview"]).endswith("…"))
+
 
 class OperationDetailTest(unittest.TestCase):
     def test_the_first_line_of_plain_text(self) -> None:

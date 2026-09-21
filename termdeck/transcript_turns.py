@@ -39,6 +39,12 @@ class TurnBuilder:
             turn["timestamp"] = timestamp
         if kind != "message":
             turn.update({"kind": kind, "title": title or kind.title(), "expanded": expanded})
+            # A shut block called "Result" says only that something came back. The first line of what
+            # came back goes on the lid, the way a folded run of operations carries its newest one,
+            # so a transcript of shut blocks still reads as work rather than as a list of lids.
+            preview = cls.short_detail(clean) if kind in {"tool", "result"} else ""
+            if preview:
+                turn["preview"] = preview
         return turn
 
     @classmethod
@@ -390,10 +396,28 @@ class TurnBuilder:
         if newest is None:
             return ""
         title = str(newest.get("title") or "").strip()
-        detail = cls.operation_detail(str(newest.get("text") or ""))
+        detail = cls.short_detail(str(newest.get("text") or ""))
+        return f"{title} {detail}".strip() if title else detail
+
+    @classmethod
+    def short_detail(cls, text: str) -> str:
+        """One line of an operation or its result, cut to what fits on a lid beside its title."""
+        detail = " ".join(cls.shorten_paths(word) for word in cls.operation_detail(text).split())
         if len(detail) > cls.LATEST_OPERATION_CHARS:
             detail = detail[:cls.LATEST_OPERATION_CHARS - 1].rstrip() + "…"
-        return f"{title} {detail}".strip() if title else detail
+        return detail
+
+    @staticmethod
+    def shorten_paths(word: str) -> str:
+        """A full path spends the whole lid on the part every line shares.
+
+        "The file /Users/someone/work/project/src/thing.py has been updated" is cut off before it says
+        what happened, and two such lines look identical. The end of a path is the part that tells them
+        apart, so only that is kept.
+        """
+        if not word.startswith("/") or word.count("/") < 3:
+            return word
+        return "…/" + "/".join(word.rsplit("/", 2)[-2:])
 
     @classmethod
     def operation_detail(cls, text: str) -> str:

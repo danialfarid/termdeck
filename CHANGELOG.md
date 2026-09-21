@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.19.4] — 2026-09-20
+
+### Added
+
+- A shut block of output says what came back, not only that something did: "Result · The file
+  …/termdeck/transcript_turns.py has been updated successfully". Long paths keep the end that tells
+  two of them apart, so the lid is not spent on the part every line shares. Code edits keep their own
+  summary, which already says which files changed and by how much.
+
 ## [0.19.3] — 2026-09-20
 
 ### Fixed

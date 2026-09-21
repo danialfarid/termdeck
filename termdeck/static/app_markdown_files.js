@@ -3759,6 +3759,14 @@ Object.assign(TermdeckApp.prototype, {
               : turn.kind === "plan" && Array.isArray(turn.plan)
               ? `Plan · ${turn.plan.length} steps`
               : (turn.title || turn.kind);
+          // "Result" on its own says only that something came back. What came back goes on the lid,
+          // the way a folded run of operations carries its newest one.
+          if (turn.preview) {
+            const preview = document.createElement("span");
+            preview.className = "history-thinking-latest";
+            preview.textContent = ` · ${turn.preview}`;
+            summary.append(preview);
+          }
         }
         if (turn.kind === "thinking" && Array.isArray(turn.items) && turn.items.length) {
           const results = document.createElement("div");
