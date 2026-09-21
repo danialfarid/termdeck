@@ -2367,7 +2367,6 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
     position: fixed; z-index: 131; top: max(8px, env(safe-area-inset-top)); right: max(54px, calc(env(safe-area-inset-right) + 54px));
     display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px;
   }
-  body.mobile-touch-layout.notebook-open #notebook-panel #notebook-close { z-index: 132; }
   body.mobile-history-surface #history-notebook-toggle { display: none; }
   body.mobile-history-surface #history-filter-toggle { display: none; }
   body.mobile-history-surface #history-filter-menu { position: fixed; z-index: 110; top: max(55px, calc(env(safe-area-inset-top) + 55px)); left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); min-width: 0; }
@@ -2388,7 +2387,8 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   }
   #notebook-panel.notebook-over-file-area { top: max(6px, env(safe-area-inset-top)); }
   #notebook-resizer { display: none; }
-  #notebook-head { min-height: 50px; padding: 6px 52px 6px 8px; }
+  /* No close button in the corner to leave room for: the tabs get the whole width. */
+  #notebook-head { min-height: 50px; padding: 6px 8px; }
   #notebook-actions button { width: 38px; height: 38px; }
   /* Tabs that may shrink are tabs with nothing readable on them: on a phone six notes squeezed into
      the width of one and the titles ran together. Each tab keeps a width it can be read and hit at,
@@ -2406,11 +2406,10 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   .notebook-copies-tab { min-width: 0; padding: 0 8px; height: 34px; }
   .notebook-copies-label { display: none; }
   .notebook-copies-icon { font-size: 15px; }
+  /* The Notes button that opened the notebook closes it again, and it stays on screen while the
+     notebook is open, so a second × in the corner is one more thing over the writing. */
   #notebook-panel #notebook-actions #notebook-close,
-  #notebook-panel.notebook-over-file-area #notebook-actions #notebook-close {
-    position: absolute; top: 5px; right: 5px; width: 40px; height: 40px; border-radius: 9px;
-  }
-  #notebook-close .codicon { font-size: 20px; }
+  #notebook-panel.notebook-over-file-area #notebook-actions #notebook-close { display: none; }
   #notebook-editor-host, #notebook-editor-host .monaco-editor, #notebook-editor-host .monaco-scrollable-element {
     touch-action: pan-x pan-y pinch-zoom;
   }

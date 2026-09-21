@@ -81,6 +81,16 @@ class MobileTabRowStyleTest(unittest.TestCase):
     def test_the_trash_button_stays_on_a_desktop(self) -> None:
         self.assertNotIn("display: none", rule(self.full.split(MOBILE_MEDIA)[0], ".notebook-tab-close"))
 
+    def test_the_notebook_has_no_close_button_of_its_own(self) -> None:
+        # The Notes button that opened it closes it again, and stays on screen while it is open.
+        self.assertIn("display: none", rule(self.block, "#notebook-panel #notebook-actions #notebook-close,\n"
+                                                        "  #notebook-panel.notebook-over-file-area #notebook-actions #notebook-close"))
+
+    def test_the_close_button_stays_on_a_desktop(self) -> None:
+        desktop = self.full.split(MOBILE_MEDIA)[0]
+
+        self.assertNotIn("display: none", rule(desktop, "#notebook-actions #notebook-close"))
+
     def test_copied_shows_its_icon_without_the_word(self) -> None:
         self.assertIn("display: none", rule(self.block, ".notebook-copies-label"))
         self.assertNotIn("display: none", rule(self.block, ".notebook-copies-icon"))
