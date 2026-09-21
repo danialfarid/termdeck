@@ -380,7 +380,7 @@ class TurnBuilder:
     def latest_operation_label(cls, raw_items: list[dict[str, str]]) -> str:
         """What the agent is doing right now, in one line, for a block that is folded shut.
 
-        A run of operations folds into "Thinking · 12 operations", which says how busy it has been and
+        A run of operations folds into "12 Thinking", which says how busy it has been and
         nothing about what it is busy with. An agent that writes a line before it starts says it
         itself; one that goes straight to work says nothing at all, and the transcript then reads as a
         row of identical lids. The newest operation is the answer to "what is it doing", so it is on
@@ -472,7 +472,9 @@ class TurnBuilder:
                     "role": "event",
                     "text": "",
                     "kind": "thinking",
-                    "title": f"Thinking · {len(raw_items)} operations",
+                    # Just the count: "operations" is a long word to spend a line wrapping on, and the
+                    # number in front of "Thinking" says the same thing.
+                    "title": f"{len(raw_items)} Thinking",
                     "expanded": False,
                     "items": items,
                     "latest": cls.latest_operation_label(raw_items),

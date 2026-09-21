@@ -1,12 +1,14 @@
 """What a folded block of operations says it is doing.
 
-A run of tool calls folds into "Thinking · 12 operations", which says how busy the agent has been and
+A run of tool calls folds into "12 Thinking", which says how busy the agent has been and
 nothing about what with. An agent that writes a line before it starts says it itself; one that goes
 straight to work says nothing, and a column of folded blocks reads as a row of identical lids.
 """
 
 import json
+import re
 import unittest
+from pathlib import Path
 
 from termdeck.transcript_turns import TurnBuilder
 
@@ -68,7 +70,31 @@ class FoldedOperationLabelTest(unittest.TestCase):
         folded = self.fold(turns)
 
         self.assertEqual(len(folded["items"]), 4)
-        self.assertEqual(folded["title"], "Thinking · 4 operations")
+        self.assertEqual(folded["title"], "4 Thinking")
+
+    def test_the_lid_spends_no_width_on_the_word_operations(self) -> None:
+        # It wrapped to a second line on a phone, for a word that says nothing the number does not.
+        folded = self.fold([tool("Bash", {"command": "pytest -q"}), result("ok")])
+
+        self.assertEqual(folded["title"], "2 Thinking")
+        self.assertNotIn("operation", str(folded["title"]))
+
+
+class ShippedSummaryTest(unittest.TestCase):
+    """The client builds the lid from the items it has, so it says it in its own code."""
+
+    def setUp(self) -> None:
+        source = (Path(__file__).resolve().parent.parent / "termdeck" / "static" / "app_markdown_files.js").read_text()
+        match = re.search(r'thinkingCount\.className = "history-thinking-count";(.{0,240}?)summary\.append\(([^)]*)\)',
+                          source, re.S)
+        self.assertIsNotNone(match, "the thinking summary moved")
+        self.count_text, self.appended = match.group(1), match.group(2)
+
+    def test_the_count_carries_no_wording(self) -> None:
+        self.assertNotIn("operation", self.count_text)
+
+    def test_the_count_comes_before_the_word(self) -> None:
+        self.assertEqual([part.strip() for part in self.appended.split(",")], ["thinkingCount", "thinkingTitle"])
 
 
 class OperationDetailTest(unittest.TestCase):

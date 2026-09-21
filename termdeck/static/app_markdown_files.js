@@ -3564,7 +3564,7 @@ Object.assign(TermdeckApp.prototype, {
   // Identity for re-finding a rendered element across a full rebuild. Purely DOM-side:
   // after paged history loads, body.children and historyTurns segment differently mid-array,
   // so index-based correlation attributes state to the wrong turns. Digits are collapsed
-  // ("Thinking · 12 operations" grows while streaming) and volatile classes dropped;
+  // ("12 Thinking" grows while streaming) and volatile classes dropped;
   // same-key elements align by document order.
   historyElementPreserveKey(element) {
     const classes = [...(element.classList || [])].filter((name) => name !== "active").join(" ");
@@ -3739,10 +3739,12 @@ Object.assign(TermdeckApp.prototype, {
           const thinkingTitle = document.createElement("span");
           thinkingTitle.className = "history-thinking-title";
           thinkingTitle.textContent = "Thinking";
+          // The count in front of the word, and nothing else: "operations" is a long word to spend a
+          // wrapped line on, and on a phone that is what it cost.
           const thinkingCount = document.createElement("span");
           thinkingCount.className = "history-thinking-count";
-          thinkingCount.textContent = ` · ${turn.items.length} operations`;
-          summary.append(thinkingTitle, thinkingCount);
+          thinkingCount.textContent = `${turn.items.length} `;
+          summary.append(thinkingCount, thinkingTitle);
           // A shut block says how busy the agent has been and nothing about what with. The newest
           // operation goes on the lid, so a column of folded blocks reads as work rather than lids.
           if (turn.latest) {
@@ -4231,8 +4233,7 @@ Object.assign(TermdeckApp.prototype, {
 
 
   initNotebook() {
-    const toggles = [this.$("notebook-toggle"), this.$("history-notebook-toggle"), this.$("file-tabs-notebook"),
-      this.$("mobile-notebook-toggle")].filter(Boolean);
+    const toggles = this.notebookToggleElements();
     const panel = this.$("notebook-panel");
     const host = this.$("notebook-editor-host");
     if (!toggles.length || !panel || !host) return;
@@ -7064,6 +7065,16 @@ Object.assign(TermdeckApp.prototype, {
   // press, where there is no gesture to tell apart. The row answers for its tabs itself and stops the
   // event going further, so the hold is followed from here too: a listener on a tab would never hear
   // the press that starts it.
+  // Every button that opens the notebook, in one place. A press on one of these is not a press outside
+  // the notebook: the button closes it itself. Counting one as outside closed the notebook and then
+  // let the button's own handler open it again, so on a phone -- where the button in use is the mobile
+  // one, which the outside check had never heard of -- the notebook could not be closed at all.
+  notebookToggleElements() {
+    return [this.$("notebook-toggle"), this.$("history-notebook-toggle"), this.$("file-tabs-notebook"),
+      this.$("mobile-notebook-toggle")].filter(Boolean);
+  },
+
+
   installNotebookTabGestures() {
     const notebookTabs = this.$("notebook-tabs");
     if (!notebookTabs) return;
@@ -7494,8 +7505,7 @@ Object.assign(TermdeckApp.prototype, {
 
   renderNotebook() {
     const panel = this.$("notebook-panel");
-    const toggles = [this.$("notebook-toggle"), this.$("history-notebook-toggle"), this.$("file-tabs-notebook"),
-      this.$("mobile-notebook-toggle")].filter(Boolean);
+    const toggles = this.notebookToggleElements();
     if (!panel || !toggles.length) return;
     const notebookOpen = !!this.settings.notebook_open;
     document.body.classList.toggle("notebook-open", notebookOpen);

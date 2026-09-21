@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Pressing the Notes button on a phone closes the notebook. A press outside the notebook closes it, and
+  the check for "outside" knew two of the four buttons that open it — so the press closed the notebook
+  and the button's own handler opened it again, and it could not be closed at all.
+- A folded block of operations reads "12 Thinking · Bash Run the tests". "Operations" was a long word
+  to spend a wrapped line on, and on a phone that is what it cost.
+
 ## [0.19.2] — 2026-09-20
 
 ### Added

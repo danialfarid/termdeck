@@ -4028,10 +4028,8 @@ class TermdeckApp {
         this.closeSessionDescriptionEditor();
       }
       const notebookPanel = this.$("notebook-panel");
-      const notebookToggle = this.$("notebook-toggle");
-      const fileTabsNotebook = this.$("file-tabs-notebook");
-      if (this.settings.notebook_open && notebookPanel && !notebookPanel.contains(e.target) &&
-          !notebookToggle?.contains(e.target) && !fileTabsNotebook?.contains(e.target)) {
+      const onAToggle = this.notebookToggleElements().some((toggle) => toggle.contains(e.target));
+      if (this.settings.notebook_open && notebookPanel && !notebookPanel.contains(e.target) && !onAToggle) {
         this.setNotebookOpen(false, { focus: false });
       }
     });
