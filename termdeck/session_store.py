@@ -13,6 +13,9 @@ class ClosedSessionStore:
     TMP_SUFFIX = ".tmp"
     CLOSED_AT_FIELD = "closed_at_est"
     GROUP_NAME_FIELD = "group_name"
+    # The group a terminal belonged to, kept so reopening puts it back where it was. The name alone is
+    # for reading; the id is what says which group, when two carry the same name.
+    GROUP_ID_FIELD = "group_id"
     SESSION_ID_FIELD = "session_id"
 
     def __init__(self, closed_file: Path, backup_manager: StateBackupManager | None = None) -> None:
@@ -32,10 +35,11 @@ class ClosedSessionStore:
         tmp_file.write_text(json.dumps(items, indent=2))
         tmp_file.replace(self._closed_file)
 
-    def push(self, record: SessionRecord, closed_at_est: str, group_name: str = "") -> None:
+    def push(self, record: SessionRecord, closed_at_est: str, group_name: str = "", group_id: str = "") -> None:
         items = [item for item in self.load_all() if item[self.SESSION_ID_FIELD] != record.session_id]
         items.insert(0, {**record.to_dict(), self.CLOSED_AT_FIELD: closed_at_est,
-                         self.GROUP_NAME_FIELD: " ".join(group_name.split())})
+                         self.GROUP_NAME_FIELD: " ".join(group_name.split()),
+                         self.GROUP_ID_FIELD: group_id})
         self._save(items[:TermdeckConfig.CLOSED_HISTORY_MAX])
 
     def pop(self, session_id: str) -> SessionRecord | None:
@@ -46,7 +50,12 @@ class ClosedSessionStore:
         self._save(remaining)
         target = next(item for item in items if item[self.SESSION_ID_FIELD] == session_id)
         return SessionRecord.from_dict({key: value for key, value in target.items()
-                                        if key not in {self.CLOSED_AT_FIELD, self.GROUP_NAME_FIELD}})
+                                        if key not in {self.CLOSED_AT_FIELD, self.GROUP_NAME_FIELD,
+                                                       self.GROUP_ID_FIELD}})
+
+    def group_id_for(self, session_id: str) -> str:
+        item = next((item for item in self.load_all() if item[self.SESSION_ID_FIELD] == session_id), None)
+        return str(item.get(self.GROUP_ID_FIELD) or "") if item else ""
 
     def remove(self, session_id: str) -> None:
         self._save([item for item in self.load_all() if item[self.SESSION_ID_FIELD] != session_id])

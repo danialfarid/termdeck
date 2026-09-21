@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Reopening a closed terminal puts it back in the group it was closed from. The assignment was dropped
+  when the terminal closed — they accumulate otherwise — and nothing remembered it, so the terminal
+  came back at the end of the list with no sign of where it used to live. The group now travels with
+  the closed record, and reopening restores it unless that group is gone.
+
 ## [0.20.0] — 2026-09-21
 
 ### Added

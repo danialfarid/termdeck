@@ -976,12 +976,30 @@ class TermdeckServer:
         return list(self.manager.list_closed_sessions(project or None, worktree_id or None))
 
     async def _reopen_closed(self, session_id: str) -> dict[str, object]:
+        group_id = self.manager.closed_session_group_id(session_id)
         try:
             ms = self.manager.reopen_closed_session(session_id)
         except KeyError as missing:
             raise HTTPException(status_code=404, detail=session_id) from missing
+        self._restore_session_group(ms, group_id)
         self._broadcast_project_state_snapshot(ms.record.project, ms.record.worktree_id)
         return self.manager.session_summary(ms)
+
+    def _restore_session_group(self, ms: object, group_id: str) -> None:
+        """Put a reopened terminal back in the group it was closed from, if that group is still there.
+
+        A terminal came back at the end of the list instead, with no sign of where it used to live,
+        because its assignment was dropped when it closed.
+        """
+        if not group_id:
+            return
+        record = ms.record
+        settings, key, state = self._project_state_context(record.project, record.worktree_id)
+        if not any(str(group.get("id", "")) == group_id for group in state.terminal_groups):
+            return
+        state.session_groups = {**state.session_groups, record.session_id: group_id}
+        settings.project_state[key] = state
+        self.settings_store.save(settings.model_dump())
 
     async def _purge_closed(self, session_id: str) -> dict[str, object]:
         closed = next((item for item in self.manager.list_closed_sessions(None)
@@ -3699,36 +3717,39 @@ class TermdeckServer:
         # know it, and without it the closed entry recorded no group at all. The server knows, so
         # it looks the group up itself -- otherwise the closed list fell back to reading the live
         # assignment, which is why a closed terminal still showed under its old group.
-        released = self._release_session_group(session_id)
-        group_name = group_name or released
-        socket_removed = await self.manager.delete_session(session_id, group_name)
+        released_name, released_id = self._release_session_group(session_id)
+        group_name = group_name or released_name
+        socket_removed = await self.manager.delete_session(session_id, group_name, released_id)
         if not socket_removed:
             raise HTTPException(status_code=409, detail="could not terminate the detached terminal process tree")
         self._broadcast_project_state_snapshot(str(previous.get("project", "")),
                                                 str(previous.get("worktree_id") or "root"))
         return {ApiFields.DELETED: session_id, "socket_removed": True, "group_name": group_name}
 
-    def _release_session_group(self, session_id: str) -> str:
-        """Drop a closing terminal's group assignment, returning the group's name for the archive.
+    def _release_session_group(self, session_id: str) -> tuple[str, str]:
+        """Drop a closing terminal's group assignment, returning the group it was in.
 
         Assignments outlive their terminals otherwise: every closed terminal left one behind, and
-        they accumulate for the life of the deck.
+        they accumulate for the life of the deck. The group goes on the closed record instead, so
+        reopening the terminal puts it back where it was rather than at the end of the list.
         """
         settings = UiSettings(**self.settings_store.load())
-        name, released = "", False
+        name, group = "", ""
+        released = False
         for key, state in settings.project_state.items():
             group_id = state.session_groups.get(session_id)
             if group_id is None:
                 continue
             released = True
-            name = name or next((group.get("name", "") for group in state.terminal_groups
-                                 if group.get("id") == group_id), "")
+            group = group or str(group_id)
+            name = name or next((entry.get("name", "") for entry in state.terminal_groups
+                                 if entry.get("id") == group_id), "")
             state.session_groups = {member: assigned for member, assigned in state.session_groups.items()
                                     if member != session_id}
             settings.project_state[key] = state
         if released:
             self.settings_store.save(settings.model_dump())
-        return name
+        return name, group
 
     async def _kill_all_terminals(self) -> dict[str, int]:
         return {"killed": await self.manager.kill_all_running_sessions()}

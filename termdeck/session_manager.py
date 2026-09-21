@@ -1947,7 +1947,7 @@ class TerminalSessionManager:
         self._persist()
         self._broadcast_status(ms)
 
-    async def delete_session(self, session_id: str, group_name: str = "") -> bool:
+    async def delete_session(self, session_id: str, group_name: str = "", group_id: str = "") -> bool:
         ms = self._sessions[session_id]
         if ms.detect_task is not None:
             ms.detect_task.cancel()
@@ -1958,7 +1958,7 @@ class TerminalSessionManager:
         self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DELETED})
         if not ms.record.title_user_set and ms.cli_title:
             ms.record.title = ms.cli_title
-        self._closed_store.push(ms.record, TimeUtil.now_est_naive_iso(), group_name)
+        self._closed_store.push(ms.record, TimeUtil.now_est_naive_iso(), group_name, group_id)
         self._persist()
         return True
 
@@ -2012,6 +2012,9 @@ class TerminalSessionManager:
         if worktree_id is None:
             return filtered
         return [item for item in filtered if str(item.get("worktree_id") or "root") == worktree_id]
+
+    def closed_session_group_id(self, session_id: str) -> str:
+        return self._closed_store.group_id_for(session_id)
 
     def reopen_closed_session(self, session_id: str) -> ManagedSession:
         record = self._closed_store.pop(session_id)

@@ -21,6 +21,7 @@ from termdeck.agents.claude import ClaudeCli
 from termdeck.codex_model_catalog import CodexModelCatalog
 from termdeck.file_service import ProjectFileService
 from termdeck.models import SessionRecord
+from termdeck.session_store import ClosedSessionStore
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot, ProcTreeUtil
 from termdeck.pty_process import PtyProcess
@@ -2758,7 +2759,10 @@ class ProcessingRequiresALiveProcessTest(unittest.TestCase):
 
 
 class ReleaseSessionGroupTest(unittest.TestCase):
-    """Closing a terminal hands its group name to the archive and frees the assignment."""
+    """Closing a terminal hands its group to the archive and frees the assignment.
+
+    The group travels with the closed record so reopening puts the terminal back in it; the name is
+    what the closed list shows, and the id is what says which group when two share a name."""
 
     class Store:
         def __init__(self, payload):
@@ -2778,7 +2782,7 @@ class ReleaseSessionGroupTest(unittest.TestCase):
 
     def test_group_name_is_returned_and_assignment_released(self) -> None:
         server = self._server({"doomed": "g1", "kept": "g1"}, [{"id": "g1", "name": "cpcv"}])
-        self.assertEqual(server._release_session_group("doomed"), "cpcv")
+        self.assertEqual(server._release_session_group("doomed"), ("cpcv", "g1"))
         stored = server.settings_store.payload["project_state"]["stock"]["session_groups"]
         self.assertNotIn("doomed", stored)
         self.assertEqual(stored.get("kept"), "g1", "other members stay in the group")
@@ -2786,13 +2790,115 @@ class ReleaseSessionGroupTest(unittest.TestCase):
     def test_ungrouped_session_changes_nothing(self) -> None:
         server = self._server({"kept": "g1"}, [{"id": "g1", "name": "cpcv"}])
         before = server.settings_store.payload
-        self.assertEqual(server._release_session_group("never-grouped"), "")
+        self.assertEqual(server._release_session_group("never-grouped"), ("", ""))
         self.assertIs(server.settings_store.payload, before, "no write when there was nothing to release")
 
     def test_assignment_is_released_even_when_the_group_has_no_name(self) -> None:
         server = self._server({"doomed": "g1"}, [{"id": "g1"}])
-        self.assertEqual(server._release_session_group("doomed"), "")
+        self.assertEqual(server._release_session_group("doomed"), ("", "g1"))
         self.assertNotIn("doomed", server.settings_store.payload["project_state"]["stock"]["session_groups"])
+
+
+class ClosedSessionGroupMemoryTest(unittest.TestCase):
+    """What a closed terminal remembers about where it lived."""
+
+    def store(self) -> "ClosedSessionStore":
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        return ClosedSessionStore(Path(directory) / "closed_sessions.json")
+
+    @staticmethod
+    def record(session_id: str = "s1") -> SessionRecord:
+        return record(session_id)
+
+    def test_the_group_it_was_in_is_remembered(self) -> None:
+        store = self.store()
+
+        store.push(self.record(), "2026-09-21 19:00:00", "cpcv", "group-1")
+
+        self.assertEqual(store.group_id_for("s1"), "group-1")
+        self.assertEqual(store.load_all()[0]["group_name"], "cpcv")
+
+    def test_a_terminal_that_was_in_no_group_remembers_none(self) -> None:
+        store = self.store()
+
+        store.push(self.record(), "2026-09-21 19:00:00")
+
+        self.assertEqual(store.group_id_for("s1"), "")
+
+    def test_the_terminal_that_comes_back_is_the_one_that_was_closed(self) -> None:
+        # The group belongs to the deck's layout rather than to the terminal, so it is read from the
+        # record and not carried into the session that is rebuilt from it.
+        store = self.store()
+        store.push(self.record(), "2026-09-21 19:00:00", "cpcv", "group-1")
+
+        reopened = store.pop("s1")
+
+        self.assertEqual((reopened.session_id, reopened.project), ("s1", "test"))
+        self.assertEqual(store.group_id_for("s1"), "", "and it is no longer among the closed")
+
+    def test_an_older_closed_file_has_no_group_and_says_so(self) -> None:
+        store = self.store()
+        store.push(self.record(), "2026-09-21 19:00:00", "cpcv", "group-1")
+        items = store.load_all()
+        del items[0]["group_id"]
+        store._save(items)
+
+        self.assertEqual(store.group_id_for("s1"), "")
+
+
+class RestoreSessionGroupTest(unittest.TestCase):
+    """Reopening a terminal puts it back in the group it was closed from."""
+
+    def test_reopening_asks_for_the_group_and_puts_the_terminal_in_it(self) -> None:
+        server = self._server({}, [{"id": "g1", "name": "cpcv"}])
+        reopened = self._session()
+        server.manager = MagicMock()
+        server.manager.closed_session_group_id.return_value = "g1"
+        server.manager.reopen_closed_session.return_value = reopened
+        server.manager.session_summary.return_value = {"session_id": "reopened"}
+        server._broadcast_project_state_snapshot = MagicMock()
+
+        asyncio.run(server._reopen_closed("reopened"))
+
+        server.manager.closed_session_group_id.assert_called_once_with("reopened")
+        self.assertEqual(self.assignments(server), {"reopened": "g1"})
+
+    def _server(self, assignments, groups):
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.settings_store = ReleaseSessionGroupTest.Store({"project_state": {
+            "stock": {"session_groups": assignments, "terminal_groups": groups}}})
+        return server
+
+    @staticmethod
+    def _session(session_id="reopened"):
+        return SimpleNamespace(record=SimpleNamespace(session_id=session_id, project="stock", worktree_id="root"))
+
+    def assignments(self, server):
+        return server.settings_store.payload["project_state"]["stock"]["session_groups"]
+
+    def test_the_terminal_goes_back_into_its_group(self) -> None:
+        server = self._server({"kept": "g1"}, [{"id": "g1", "name": "cpcv"}])
+
+        server._restore_session_group(self._session(), "g1")
+
+        self.assertEqual(self.assignments(server), {"kept": "g1", "reopened": "g1"})
+
+    def test_a_group_that_is_gone_leaves_the_terminal_where_it_is(self) -> None:
+        # The group was deleted while the terminal was closed; there is nothing to go back to.
+        server = self._server({"kept": "g1"}, [{"id": "g1", "name": "cpcv"}])
+
+        server._restore_session_group(self._session(), "vanished")
+
+        self.assertEqual(self.assignments(server), {"kept": "g1"})
+
+    def test_a_terminal_that_was_in_no_group_is_left_alone(self) -> None:
+        server = self._server({"kept": "g1"}, [{"id": "g1", "name": "cpcv"}])
+        before = server.settings_store.payload
+
+        server._restore_session_group(self._session(), "")
+
+        self.assertIs(server.settings_store.payload, before)
 
 
 class ColdAttachRepaintTest(unittest.TestCase):
