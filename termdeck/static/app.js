@@ -1633,8 +1633,18 @@ class TermdeckApp {
       const noteId = String(note?.note_id || "");
       return noteId && !arrivingIds.has(noteId) && this.unsavedNotebookNoteIds.has(noteId);
     });
-    if (!kept.length && arriving.length === patch.notebook_notes.length) return {};
-    return { notebook_notes: [...arriving, ...kept] };
+    const notes = [...arriving, ...kept];
+    const merged = kept.length || arriving.length !== patch.notebook_notes.length ? { notebook_notes: notes } : {};
+    // Which note a window is looking at is that window's business. Two windows on the same project
+    // each write their own, so following whatever arrived made the tabs jump to the other window's
+    // note and back again on every save -- one tap read as two. This page keeps its own choice for as
+    // long as that note is still there; when it is not, whatever arrived decides.
+    const openHere = String(current?.notebook_active_note_id || "");
+    if (openHere && notes.some((note) => String(note?.note_id || "") === openHere)) {
+      merged.notebook_active_note_id = openHere;
+      if (typeof current.notebook_text === "string") merged.notebook_text = current.notebook_text;
+    }
+    return merged;
   }
 
   async refreshCurrentProjectState() {

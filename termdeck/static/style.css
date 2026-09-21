@@ -1693,7 +1693,6 @@ body.theme-light #notebook-panel { --notebook-bg: color-mix(in srgb, var(--term-
 body.dragging-notebook { user-select: none; cursor: col-resize; }
 #notebook-panel.hidden { display: none; }
 #notebook-panel.notebook-over-file-area { top: 30px; }
-#notebook-panel.notebook-over-file-area #notebook-actions #notebook-close { top: 34px; }
 #notebook-panel:not(.hidden):not(.notebook-closing) { animation: termdeck-notebook-open 220ms cubic-bezier(0.2, 0.85, 0.25, 1); transform-origin: top right; }
 #notebook-panel.notebook-closing { animation: termdeck-notebook-close 180ms cubic-bezier(0.55, 0, 0.8, 0.25) forwards; transform-origin: top right; pointer-events: none; }
 @keyframes termdeck-notebook-open {
@@ -1704,12 +1703,20 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
   from { opacity: 1; transform: translateY(0) scale(1); }
   to { opacity: 0; transform: translateY(-10px) scale(0.965); }
 }
+/* The Notes button is what opens and closes the notebook, so the panel opens beside it rather than over
+   it: the button keeps its place, the head stops short of it, and the head's own buttons sit to its
+   left. There is nothing for a × in the corner to do that pressing Notes again does not. */
+body.notebook-open #notebook-toggle,
+body.notebook-open #history-notebook-toggle,
+body.notebook-open #file-tabs-notebook,
+body.notebook-open #mobile-notebook-toggle { position: relative; z-index: 29; }
+body.notebook-open #terminal-actions { z-index: 29; }
 #notebook-head {
   flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 44px 6px 11px;
+  padding: 6px 56px 6px 11px;
   background: color-mix(in srgb, var(--notebook-bg) 88%, var(--panel2) 12%);
   border-bottom: 1px solid var(--border);
 }
@@ -1737,8 +1744,6 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
   cursor: pointer;
 }
 #notebook-actions button:hover, #notebook-actions button.on { color: var(--accent); border-color: var(--accent); }
-#notebook-actions #notebook-close { position: fixed; top: 4px; right: 14px; z-index: 26; width: 30px; height: 30px; border-radius: 10px; }
-#notebook-close .codicon { font-size: 16px; }
 #notebook-recent-copies { display: none; min-height: 0; flex: 1; flex-direction: column; background: color-mix(in srgb, var(--notebook-bg) 88%, var(--panel) 12%); }
 #notebook-panel.notebook-copies-open #notebook-recent-copies { display: flex; }
 #notebook-panel.notebook-copies-open #notebook-editor-host,
@@ -2415,10 +2420,6 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   .notebook-copies-tab { min-width: 0; padding: 0 8px; height: 34px; }
   .notebook-copies-label { display: none; }
   .notebook-copies-icon { font-size: 15px; }
-  /* The Notes button that opened the notebook closes it again, and it stays on screen while the
-     notebook is open, so a second × in the corner is one more thing over the writing. */
-  #notebook-panel #notebook-actions #notebook-close,
-  #notebook-panel.notebook-over-file-area #notebook-actions #notebook-close { display: none; }
   #notebook-editor-host, #notebook-editor-host .monaco-editor, #notebook-editor-host .monaco-scrollable-element {
     touch-action: pan-x pan-y pinch-zoom;
   }

@@ -76,6 +76,29 @@ class NotebookNoteMergeTest(unittest.TestCase):
 
         self.assertEqual(kept, ["old"])
 
+    def test_the_note_this_window_is_looking_at_is_its_own_business(self) -> None:
+        # Two windows each write their own, so following whatever arrived made the tabs jump to the
+        # other window's note and back on every save: one tap read as two highlights.
+        state = self.apply({"notebook_notes": [note("a"), note("b")], "notebook_active_note_id": "b",
+                            "notebook_text": "mine"},
+                           {"notebook_notes": [note("a"), note("b")], "notebook_active_note_id": "a",
+                            "notebook_text": "theirs"})
+
+        self.assertEqual(state["notebook_active_note_id"], "b")
+        self.assertEqual(state["notebook_text"], "mine")
+
+    def test_when_the_note_it_was_looking_at_is_gone_it_takes_what_arrived(self) -> None:
+        state = self.apply({"notebook_notes": [note("a"), note("b")], "notebook_active_note_id": "b"},
+                           {"notebook_notes": [note("a")], "notebook_active_note_id": "a"})
+
+        self.assertEqual(state["notebook_active_note_id"], "a")
+
+    def test_a_window_with_no_note_open_takes_what_arrived(self) -> None:
+        state = self.apply({"notebook_notes": [], "notebook_active_note_id": ""},
+                           {"notebook_notes": [note("a")], "notebook_active_note_id": "a"})
+
+        self.assertEqual(state["notebook_active_note_id"], "a")
+
     def test_what_arrives_is_what_those_notes_say(self) -> None:
         # Only the ones it has not heard of are added back; for the rest the server's copy wins, or a
         # note edited in another window would keep this page's older text.

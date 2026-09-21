@@ -79,5 +79,36 @@ class OutsidePressTest(unittest.TestCase):
         self.assertIn("setNotebookOpen(false", self.branch)
 
 
+class NoCloseButtonTest(unittest.TestCase):
+    """Pressing Notes again is the way out, so there is no × to press instead."""
+
+    def setUp(self) -> None:
+        static = Path(__file__).resolve().parent.parent / "termdeck" / "static"
+        self.html = (static / "index.html").read_text()
+        self.css = (static / "style.css").read_text()
+        self.js = (static / "app_markdown_files.js").read_text()
+
+    def test_the_notebook_has_no_close_button(self) -> None:
+        self.assertNotIn('id="notebook-close"', self.html)
+        self.assertNotIn("notebook-close\"", self.js)
+
+    def test_the_notes_button_is_above_the_panel_it_opens(self) -> None:
+        # The panel covered it, which is why a × was needed in the first place: the button that opened
+        # the notebook could not be pressed again to close it.
+        toggles = re.search(r"body\.notebook-open #notebook-toggle,(.{0,400}?)\{([^}]*)\}", self.css, re.S)
+        self.assertIsNotNone(toggles, "the rule lifting the toggles above the panel is gone")
+        panel_z = int(re.search(r"#notebook-panel\s*\{[^}]*z-index:\s*(\d+)", self.css).group(1))
+
+        self.assertGreater(int(re.search(r"z-index:\s*(\d+)", toggles.group(2)).group(1)), panel_z)
+        for toggle in ("#history-notebook-toggle", "#file-tabs-notebook", "#mobile-notebook-toggle"):
+            self.assertIn(toggle, toggles.group(1))
+
+    def test_the_head_stops_short_of_the_button(self) -> None:
+        # Its own buttons sit to the left of the Notes button rather than underneath it.
+        padding = re.search(r"#notebook-head\s*\{[^}]*padding:\s*\d+px\s+(\d+)px", self.css)
+
+        self.assertGreaterEqual(int(padding.group(1)), 48)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4272,9 +4272,6 @@ Object.assign(TermdeckApp.prototype, {
       event.stopImmediatePropagation();
       this.openNotebookFind(event.altKey);
     }, true);
-    this.$("notebook-close").onclick = () => {
-      this.setNotebookOpen(false);
-    };
     const notebookResizer = this.$("notebook-resizer");
     notebookResizer.onpointerdown = this.startNotebookResize.bind(this);
     notebookResizer.onpointermove = this.resizeNotebookFromPointer.bind(this);

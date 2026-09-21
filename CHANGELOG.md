@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The notebook has no × of its own any more, on any screen. The Notes button is a push button: it
+  opens the notebook beside itself and closes it again, keeping its place, with the head's own buttons
+  to its left. The panel used to cover the button, which is the only reason a second way out existed.
+
+### Fixed
+
+- Switching notes no longer flashes the previous note's tab on the way. Which note a window is looking
+  at is that window's business, and taking whatever arrived meant two open windows each pulled the
+  tabs to their own note: one tap read as two highlights.
+
 ## [0.19.5] — 2026-09-21
 
 ### Fixed
