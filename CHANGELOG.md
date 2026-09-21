@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.19.1] — 2026-09-20
+
 ### Fixed
 
 - On a phone the Notes button sat on top of the notebook's own buttons. It moves to the corner the
@@ -1078,7 +1080,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.19.1...HEAD
+[0.19.1]: https://github.com/danialfarid/termdeck/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/danialfarid/termdeck/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/danialfarid/termdeck/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/danialfarid/termdeck/compare/v0.16.2...v0.17.0
