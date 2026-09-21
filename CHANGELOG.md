@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.19.6] — 2026-09-21
+
 ### Changed
 
 - The notebook has no × of its own any more, on any screen. The Notes button is a push button: it
@@ -1135,7 +1137,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.19.5...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.19.6...HEAD
+[0.19.6]: https://github.com/danialfarid/termdeck/compare/v0.19.5...v0.19.6
 [0.19.5]: https://github.com/danialfarid/termdeck/compare/v0.19.4...v0.19.5
 [0.19.4]: https://github.com/danialfarid/termdeck/compare/v0.19.3...v0.19.4
 [0.19.3]: https://github.com/danialfarid/termdeck/compare/v0.19.2...v0.19.3
