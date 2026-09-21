@@ -984,6 +984,10 @@ class TermdeckApp {
     // Notes made here whose write has not been acknowledged yet. Until it is, arriving state knows
     // nothing about them, so they are the ones worth holding on to.
     this.unsavedNotebookNoteIds = new Set();
+    // Notes this page may not write: the server has a newer version than the one this page wrote from,
+    // so the note is locked here until it has been refreshed.
+    this.notebookNoteConflicts = new Map();
+    this.notebookConflictDialogNoteId = "";
     this.selectedTreeRow = null;
     this.iconMap = null;
     this.lastValidNavState = null;
@@ -1609,8 +1613,26 @@ class TermdeckApp {
   applyLocalProjectStatePatch(patch, stateKey = this.projectStateKey()) {
     const states = this.settings.project_state || {};
     const current = states[stateKey] || {};
-    states[stateKey] = { ...current, ...patch, ...this.notebookNotesPatch(patch, current) };
+    states[stateKey] = { ...current, ...patch, ...this.notebookNotesPatch(patch, current),
+      ...this.selectionCopyHistoryPatch(patch, current) };
     this.settings.project_state = states;
+  }
+
+  // Copies are collected by every window, and the list is written back whole, so taking whatever
+  // arrives put an older window's list back over the newer one: things copied a minute ago were gone
+  // and week-old ones were at the top. Both lists are kept, newest first, and the cap applied after.
+  selectionCopyHistoryPatch(patch, current) {
+    if (!Array.isArray(patch?.selection_copy_history) || !Array.isArray(current?.selection_copy_history)) return {};
+    const entries = new Map();
+    for (const entry of [...patch.selection_copy_history, ...current.selection_copy_history]) {
+      const text = typeof entry === "string" ? entry : String(entry?.text || "");
+      if (!text) continue;
+      const copiedAt = Number(typeof entry === "string" ? 0 : entry?.copied_at_ms) || 0;
+      const known = entries.get(text);
+      if (!known || copiedAt > known.copied_at_ms) entries.set(text, { text, copied_at_ms: copiedAt });
+    }
+    const merged = [...entries.values()].sort((left, right) => right.copied_at_ms - left.copied_at_ms).slice(0, 50);
+    return { selection_copy_history: merged };
   }
 
   // Project state arrives whole -- from a refetch, or from the broadcast every save anywhere in the deck
@@ -1697,10 +1719,14 @@ class TermdeckApp {
     const separator = path.includes("?") ? "&" : "?";
     const query = params.toString();
     const url = query ? `${path}${separator}${query}` : path;
-    const payload = body === null ? "" : JSON.stringify(this.copySettings(body));
     this.projectStateSavePromise = this.projectStateSavePromise.catch((error) => {
       console.error("TermDeck project resource save failed", error);
     }).then(async () => {
+      // Built when the request goes out, not when it was queued: a caller whose body carries the
+      // version it is writing from -- a note -- would otherwise send the version it had several
+      // queued writes ago, and be told it is out of date by its own earlier self.
+      const value = typeof body === "function" ? body() : body;
+      const payload = value === null || value === undefined ? "" : JSON.stringify(this.copySettings(value));
       let response;
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
@@ -1711,9 +1737,16 @@ class TermdeckApp {
           if (attempt === 1) throw error;
         }
       }
+      // A refusal the caller knows how to answer is its business, not an error to report: a note
+      // written from a copy that is no longer current is refused, and the page has to say so and
+      // offer the newer text rather than flash a status line and carry on.
+      if (response && !response.ok && options.onRefused) {
+        const detail = await response.json().catch(() => ({}));
+        if (options.onRefused(response.status, detail?.detail ?? detail)) return;
+      }
       if (!response?.ok) throw new Error(`project resource save failed (${response?.status || "network"})`);
       // The caller may need to know the server has it now, and not merely that it was asked.
-      options.onSaved?.();
+      options.onSaved?.(await response.clone().json().catch(() => ({})));
     }).catch((error) => {
       console.error("TermDeck project resource save failed", error);
       if (options.silent) return;

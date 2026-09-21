@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import shutil
 import tempfile
 import time
 import unittest
@@ -23,6 +24,7 @@ from termdeck.models import SessionRecord
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot, ProcTreeUtil
 from termdeck.pty_process import PtyProcess
+from termdeck.file_history_service import FileHistoryService
 from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, NotebookNoteCreateRequest, NotebookNoteSaveRequest, ProjectStatePatch, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, SubmitPromptRequest, TermdeckServer, UiSettings
 from termdeck.replay_recorder import ReplayRecorder
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
@@ -273,7 +275,7 @@ class UiSettingsTest(unittest.TestCase):
         self.assertTrue(payload["notebook_open"])
         self.assertTrue(payload["notebook_preview"])
         self.assertEqual(payload["notebook_text"], "# Notes\n\n- item")
-        self.assertEqual(payload["notebook_notes"], [{"note_id": "note-1", "text": "# Notes\n\n- item"}])
+        self.assertEqual(payload["notebook_notes"], [{"note_id": "note-1", "text": "# Notes\n\n- item", "revision": 0}])
         self.assertEqual(payload["notebook_active_note_id"], "note-1")
         self.assertTrue(payload["notebook_notes_initialized"])
 
@@ -305,6 +307,11 @@ class NotebookNoteApiTest(unittest.TestCase):
         server.settings_store = Store()
         server.manager = MagicMock()
         server.manager.list_sessions.return_value = []
+        # A real history store on a database of its own: every save is meant to leave a version behind,
+        # and a stub would not say whether it does.
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        server.notebook_history = FileHistoryService(Path(directory) / "notebook-history.sqlite3")
         return server
 
     def notes(self, server: TermdeckServer) -> list[tuple[str, str]]:
@@ -382,14 +389,14 @@ class NotebookNoteApiTest(unittest.TestCase):
 
         listing = asyncio.run(server._list_notebook_notes(project="stock", worktree_id="root"))
 
-        self.assertEqual(listing["notes"], [{"note_id": "note-1", "text": "first"}])
+        self.assertEqual(listing["notes"], [{"note_id": "note-1", "text": "first", "revision": 0}])
         self.assertEqual(listing["active_note_id"], "note-1")
 
     def test_reading_one_note_reports_its_text(self) -> None:
         server = self.server([NotebookNote(note_id="note-1", text="first")])
 
         self.assertEqual(asyncio.run(server._read_notebook_note(note_id="note-1", project="stock", worktree_id="root")),
-                         {"note_id": "note-1", "text": "first"})
+                         {"note_id": "note-1", "text": "first", "revision": 0})
 
     def test_reading_a_missing_note_is_rejected(self) -> None:
         server = self.server([NotebookNote(note_id="note-1", text="first")])
@@ -414,6 +421,92 @@ class NotebookNoteApiTest(unittest.TestCase):
                                                project="stock", worktree_id="root"))
 
         self.assertEqual(self.notes(server), [("note-1", "first"), ("note-2", "added")])
+
+    def test_a_write_from_the_copy_that_is_current_goes_through(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first", revision=3)])
+
+        written = asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="second", base_revision=3),
+                                                         note_id="note-1", project="stock", worktree_id="root"))
+
+        self.assertEqual(self.notes(server), [("note-1", "second")])
+        self.assertEqual(written["note"]["revision"], 4)
+
+    def test_a_write_from_an_older_copy_is_refused(self) -> None:
+        # A window left open on a phone holds the note as it was; its next save would otherwise write
+        # that copy over everything typed on the laptop since, with no trace of the newer text anywhere.
+        server = self.server([NotebookNote(note_id="note-1", text="typed on the laptop", revision=4)])
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="the phone's stale copy",
+                                                                           base_revision=3),
+                                                   note_id="note-1", project="stock", worktree_id="root"))
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["reason"], "note_changed_elsewhere")
+        self.assertEqual(raised.exception.detail["note"]["text"], "typed on the laptop")
+        self.assertEqual(self.notes(server), [("note-1", "typed on the laptop")])
+
+    def test_a_client_that_says_nothing_about_revisions_is_still_served(self) -> None:
+        # An older page, or a script with curl: it cannot be told what it did not ask about.
+        server = self.server([NotebookNote(note_id="note-1", text="first", revision=2)])
+
+        asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="second"), note_id="note-1",
+                                               project="stock", worktree_id="root"))
+
+        self.assertEqual(self.notes(server), [("note-1", "second")])
+
+    def versions(self, server: TermdeckServer, note_id: str = "note-1") -> list[str]:
+        history = asyncio.run(server._notebook_note_history(note_id=note_id, project="stock", worktree_id="root"))
+        return [asyncio.run(server._notebook_note_version(note_id=note_id, version_id=version["version_id"],
+                                                          project="stock", worktree_id="root"))["content"]
+                for version in history["versions"]]
+
+    def test_saves_a_while_apart_are_each_a_version(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first", revision=1)])
+
+        with patch.object(TermdeckConfig, "FILE_HISTORY_COALESCE_SECONDS", 0):
+            asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="second", base_revision=1),
+                                                   note_id="note-1", project="stock", worktree_id="root"))
+            asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="third", base_revision=2),
+                                                   note_id="note-1", project="stock", worktree_id="root"))
+
+        self.assertEqual(self.versions(server), ["third", "second", "first"])
+
+    def test_one_burst_of_typing_is_one_version(self) -> None:
+        # The editor saves every fraction of a second while a person types. Each keystroke is not a
+        # version anyone wants to scroll past, so writes close together fold into one -- and what the
+        # note said before the typing started is kept beside it.
+        server = self.server([NotebookNote(note_id="note-1", text="before typing", revision=1)])
+
+        for index, text in enumerate(["b", "bu", "bur", "burst"]):
+            asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text=text, base_revision=1 + index),
+                                                   note_id="note-1", project="stock", worktree_id="root"))
+
+        self.assertEqual(self.versions(server), ["burst", "before typing"])
+
+    def test_the_version_a_write_overwrote_is_kept_as_well(self) -> None:
+        # The text a note held before a write may never have been seen by this server -- another window
+        # wrote it -- and it is the version someone will want back.
+        server = self.server([NotebookNote(note_id="note-1", text="written elsewhere", revision=1)])
+
+        asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="written here", base_revision=1),
+                                               note_id="note-1", project="stock", worktree_id="root"))
+        history = asyncio.run(server._notebook_note_history(note_id="note-1", project="stock", worktree_id="root"))
+
+        self.assertEqual(len(history["versions"]), 2)
+
+    def test_a_version_of_another_note_is_not_served_as_this_one(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first"), NotebookNote(note_id="note-2", text="other")])
+        asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="other edited"), note_id="note-2",
+                                               project="stock", worktree_id="root"))
+        other = asyncio.run(server._notebook_note_history(note_id="note-2", project="stock",
+                                                          worktree_id="root"))["versions"][0]["version_id"]
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(server._notebook_note_version(note_id="note-1", version_id=other, project="stock",
+                                                      worktree_id="root"))
+
+        self.assertEqual(raised.exception.status_code, 404)
 
     def test_deleting_a_note_removes_only_that_note(self) -> None:
         server = self.server([NotebookNote(note_id="note-1", text="first"), NotebookNote(note_id="note-2", text="second")])

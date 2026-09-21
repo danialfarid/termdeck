@@ -48,7 +48,8 @@ class NotebookNoteMergeTest(unittest.TestCase):
         cls.harness = HARNESS.replace("__METHODS__", "\n  ".join(
             method_source(source, name) for name in
             ("applyLocalProjectStatePatch(patch, stateKey = this.projectStateKey())",
-             "notebookNotesPatch(patch, current)")))
+             "notebookNotesPatch(patch, current)",
+             "selectionCopyHistoryPatch(patch, current)")))
 
     def apply(self, current, patch, deleted=(), unsaved=()):
         scenario = {"current": current, "patch": patch, "deleted": list(deleted), "unsaved": list(unsaved)}
@@ -150,7 +151,9 @@ const app = {
   notebookProjectStateKey: () => "stock",
   notebookProjectState: () => ({ notebook_notes: scenario.notes }),
   unsavedNotebookNoteIds: new Set(),
-  queueProjectResourceRequest: (stateKey, path, method, body) => requests.push({ stateKey, path, method, body }),
+  notebookNoteConflicts: new Map(),
+  queueProjectResourceRequest: (stateKey, path, method, body) =>
+    requests.push({ stateKey, path, method, body: typeof body === "function" ? body() : body }),
   __METHODS__
 };
 if (scenario.call === "saveNotebookNotes") app.saveNotebookNotes();
@@ -200,10 +203,12 @@ class NotebookRequestTest(unittest.TestCase):
                                  "body": {"note_id": "note-new", "text": "hello"}}])
 
     def test_writing_a_note_writes_that_note_alone(self) -> None:
-        sent = self.requests("saveNotebookNote", [note("note-mtem9cgd-w60jdb", "edited")])
+        # And says which version of it the text was written from, so a write made from a copy the
+        # server has moved past is refused rather than applied over the newer one.
+        sent = self.requests("saveNotebookNote", [{**note("note-mtem9cgd-w60jdb", "edited"), "revision": 7}])
 
         self.assertEqual(sent, [{"stateKey": "stock", "path": "/api/notebook/notes/note-mtem9cgd-w60jdb",
-                                 "method": "PUT", "body": {"text": "edited"}}])
+                                 "method": "PUT", "body": {"text": "edited", "base_revision": 7}}])
 
     def test_notes_carried_over_from_the_old_notebook_are_each_created(self) -> None:
         # The one time every note is written at once: bringing the notes of the old global notebook

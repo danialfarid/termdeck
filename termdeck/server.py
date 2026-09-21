@@ -17,7 +17,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from termdeck import agents
 from termdeck.access_control import DirectAccessMiddleware, DirectAccessPolicy
@@ -238,10 +238,28 @@ class CloseSessionRequest(BaseModel):
 class NotebookNote(BaseModel):
     note_id: str
     text: str = ""
+    # Bumped on every write. A client sends back the revision its copy came from, and a write from an
+    # older copy is refused rather than allowed to overwrite what it never saw.
+    revision: int = 0
+
+
+class SelectionCopy(BaseModel):
+    """A piece of text someone copied, and when. Older settings hold bare strings; they load as text
+    with no time, which reads as "copied at an unknown moment" rather than as the newest entry."""
+
+    text: str
+    copied_at_ms: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_text(cls, value: object) -> object:
+        return {"text": value} if isinstance(value, str) else value
 
 
 class NotebookNoteSaveRequest(BaseModel):
     text: str = ""
+    # Absent means an older client that knows nothing of revisions; its write is taken as before.
+    base_revision: int | None = None
 
 
 class NotebookNoteCreateRequest(BaseModel):
@@ -278,7 +296,7 @@ class ProjectStatePatch(BaseModel):
     notebook_active_note_id: str | None = None
     notebook_notes_initialized: bool | None = None
     notebook_text: str | None = None
-    selection_copy_history: list[str] | None = None
+    selection_copy_history: list[SelectionCopy] | None = None
     selection_copy_history_initialized: bool | None = None
 
 
@@ -545,7 +563,7 @@ class ProjectUiState(BaseModel):
     notebook_active_note_id: str = ""
     notebook_notes_initialized: bool = False
     notebook_text: str = ""
-    selection_copy_history: list[str] = []
+    selection_copy_history: list[SelectionCopy] = []
     selection_copy_history_initialized: bool = False
 
 
@@ -613,7 +631,7 @@ class UiSettings(BaseModel):
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
     md_prompt_drafts: dict[str, str] = {}
-    selection_copy_history: list[str] = []
+    selection_copy_history: list[SelectionCopy] = []
     notebook_open: bool = False
     notebook_left: int = -1
     notebook_preview: bool = False
@@ -680,6 +698,7 @@ class TermdeckServer:
         self.worktrees = GitWorktreeService(TermdeckConfig.WORKTREES_DIR)
         self.worktree_registry = WorktreeRegistry(TermdeckConfig.WORKTREE_REGISTRY_FILE, self.state_backup, self.worktrees)
         self.file_history = FileHistoryService(TermdeckConfig.FILE_HISTORY_DATABASE)
+        self.notebook_history = FileHistoryService(TermdeckConfig.NOTEBOOK_HISTORY_DATABASE)
         self.search = ProjectSearchService(self.files)
         self.stats = ResourceStatsService()
         self.transcripts = TranscriptService()
@@ -878,6 +897,8 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_NOTEBOOK_NOTES_ROUTE, response_model=None)(self._list_notebook_notes)
         app.post(TermdeckConfig.API_NOTEBOOK_NOTES_ROUTE, response_model=None)(self._create_notebook_note)
         app.get(TermdeckConfig.API_NOTEBOOK_NOTE_ROUTE, response_model=None)(self._read_notebook_note)
+        app.get(TermdeckConfig.API_NOTEBOOK_NOTE_HISTORY_ROUTE, response_model=None)(self._notebook_note_history)
+        app.get(TermdeckConfig.API_NOTEBOOK_NOTE_VERSION_ROUTE, response_model=None)(self._notebook_note_version)
         app.put(TermdeckConfig.API_NOTEBOOK_NOTE_ROUTE, response_model=None)(self._save_notebook_note)
         app.delete(TermdeckConfig.API_NOTEBOOK_NOTE_ROUTE, response_model=None)(self._delete_notebook_note)
         app.get(TermdeckConfig.API_FILE_LIST_ROUTE, response_model=None)(self._list_files)
@@ -2325,8 +2346,8 @@ class TermdeckServer:
             "notebook_active_note_id": current.notebook_active_note_id or imported.notebook_active_note_id,
             "notebook_notes_initialized": current.notebook_notes_initialized or imported.notebook_notes_initialized,
             "notebook_text": current.notebook_text or imported.notebook_text,
-            "selection_copy_history": list(dict.fromkeys([*current.selection_copy_history,
-                                                            *imported.selection_copy_history]))[:50],
+            "selection_copy_history": list({copy.text: copy for copy in [*imported.selection_copy_history,
+                                                                         *current.selection_copy_history]}.values())[:50],
             "selection_copy_history_initialized": current.selection_copy_history_initialized or
                                                   imported.selection_copy_history_initialized,
         })
@@ -2710,9 +2731,10 @@ class TermdeckServer:
         note = next((entry for entry in state.notebook_notes if entry.note_id == note_id), None)
         created = note is None
         if note is None:
-            note = NotebookNote(note_id=note_id, text=request.text)
+            note = NotebookNote(note_id=note_id, text=request.text, revision=1)
             state.notebook_notes = [*state.notebook_notes, note]
             state.notebook_notes_initialized = True
+            self._record_notebook_history(key, note_id, None, request.text)
             payload = self._save_project_state(settings, key, state, project, worktree_id)
         else:
             payload = self._terminal_layout_payload(project, settings, worktree_id)
@@ -2732,13 +2754,64 @@ class TermdeckServer:
         if not note_id.strip():
             raise HTTPException(status_code=422, detail="note_id is required")
         settings, key, state = self._project_state_context(project, worktree_id)
-        notes = [note.model_copy(update={"text": request.text}) if note.note_id == note_id else note
-                 for note in state.notebook_notes]
-        if all(note.note_id != note_id for note in state.notebook_notes):
-            notes.append(NotebookNote(note_id=note_id, text=request.text))
+        existing = next((note for note in state.notebook_notes if note.note_id == note_id), None)
+        self._require_current_revision(existing, request.base_revision)
+        revision = (existing.revision if existing else 0) + 1
+        written = NotebookNote(note_id=note_id, text=request.text, revision=revision)
+        notes = [written if note.note_id == note_id else note for note in state.notebook_notes]
+        if existing is None:
+            notes.append(written)
         state.notebook_notes = notes
         state.notebook_notes_initialized = True
-        return self._save_project_state(settings, key, state, project, worktree_id)
+        self._record_notebook_history(key, note_id, existing.text if existing else None, request.text)
+        payload = self._save_project_state(settings, key, state, project, worktree_id)
+        return {**payload, "note": written.model_dump()}
+
+    def _require_current_revision(self, existing: NotebookNote | None, base_revision: int | None) -> None:
+        """Refuse a write made from a copy of the note that is no longer the current one.
+
+        Every window keeps its own copy of a note and writes the whole text back. A window holding an
+        older copy -- one left open on a phone while the note was edited on a laptop -- would write its
+        copy over the newer one on its next save, and the newer text was gone with no trace of it
+        anywhere. The write is refused instead, and the window that made it is told to catch up.
+        """
+        if base_revision is None or existing is None or existing.revision == base_revision:
+            return
+        raise HTTPException(status_code=409, detail={
+            "reason": "note_changed_elsewhere",
+            "note": existing.model_dump(),
+            "message": "This note was changed somewhere else. Refresh it before editing.",
+        })
+
+    def _record_notebook_history(self, key: str, note_id: str, previous_text: str | None, text: str) -> None:
+        """Every version of a note that was ever saved, kept the way a file's versions are kept.
+
+        The text a note held before a write is recorded as well as the text after it, so a version
+        written by a window that never told this server about it -- or one this server only learns of
+        because it is about to be overwritten -- is still in the history rather than lost.
+        """
+        root = f"/notebook/{key}"
+        path = f"{note_id}.md"
+        if previous_text is not None:
+            self.notebook_history.observe_file(root, path, previous_text)
+        self.notebook_history.record_snapshot(root, path, text, "manual")
+
+    async def _notebook_note_history(self, note_id: str, project: str = "",
+                                     worktree_id: str = "") -> dict[str, object]:
+        key = self._project_state_key(project, worktree_id)
+        versions = self.notebook_history.list_versions(f"/notebook/{key}", f"{note_id}.md")
+        # Wall-clock EST is what the store keeps; a page that wants to say "12m ago" needs the instant,
+        # and working the offset out in a browser that may be in another zone is how it gets it wrong.
+        for version in versions:
+            version["captured_at_ms"] = int(TimeUtil.est_naive_iso_timestamp(str(version["captured_at_est"])) * 1000)
+        return {"note_id": note_id, "versions": versions}
+
+    async def _notebook_note_version(self, note_id: str, version_id: int, project: str = "",
+                                     worktree_id: str = "") -> dict[str, object]:
+        key = self._project_state_key(project, worktree_id)
+        if not self.notebook_history.version_belongs_to_file(version_id, f"/notebook/{key}", f"{note_id}.md"):
+            raise HTTPException(status_code=404, detail=f"unknown version for {note_id}: {version_id}")
+        return self.notebook_history.get_version(version_id)
 
     async def _delete_notebook_note(self, note_id: str, project: str = "", worktree_id: str = "") -> dict[str, object]:
         settings, key, state = self._project_state_context(project, worktree_id)

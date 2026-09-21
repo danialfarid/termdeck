@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Every version of every note that was ever saved is kept, the way a file's versions are, and a note's
+  tab menu opens them: pick one by when it was written and it opens as a note of its own, beside the
+  current one rather than over it.
+- Copied text says when it was copied, and a copy made in one window no longer disappears from another.
+  The list was written back whole by whichever window saved last, so an older window could put its list
+  back over a newer one -- recent copies gone, week-old ones at the top.
+
+### Fixed
+
+- A window can no longer overwrite a note it has not caught up with. Each window keeps its own copy and
+  writes the whole text back, so a window left open while the note was edited somewhere else wrote its
+  stale copy over the newer one, and the newer text existed nowhere afterwards. A write now says which
+  version it was made from; a write from an older version is refused, the note is locked in that window
+  with a dialog offering to refresh, and anything typed on the stale copy is kept as a separate note
+  rather than dropped.
+
 ## [0.19.7] — 2026-09-21
 
 ### Changed

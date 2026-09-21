@@ -6428,7 +6428,8 @@ Object.assign(TermdeckApp.prototype, {
     if (statText?.textContent === "Failed to fetch") statText.textContent = "";
     const notebookState = this.notebookProjectState();
     const previous = this.projectSelectionCopyHistory();
-    notebookState.selection_copy_history = [copied, ...previous.filter((item) => item !== copied)].slice(0, 50);
+    notebookState.selection_copy_history = [{ text: copied, copied_at_ms: Date.now() },
+      ...previous.filter((entry) => entry.text !== copied)].slice(0, 50);
     this.saveProjectSelectionCopyHistory();
     const panel = this.$("selection-copy-history-panel");
     if (panel && !panel.classList.contains("hidden")) this.renderSelectionCopyHistory();
@@ -6471,7 +6472,8 @@ Object.assign(TermdeckApp.prototype, {
       panel.appendChild(list);
       return;
     }
-    for (const [index, text] of history.entries()) {
+    for (const [index, entry] of history.entries()) {
+      const text = entry.text;
       const item = document.createElement("button");
       item.type = "button";
       item.className = "selection-copy-history-item";
@@ -6480,7 +6482,14 @@ Object.assign(TermdeckApp.prototype, {
       item.setAttribute("role", "option");
       item.setAttribute("aria-selected", String(index === this.selectionCopyHistoryIndex));
       item.title = "Insert into the active prompt";
-      item.textContent = text;
+      const when = this.relativeTimeLabel(entry.copied_at_ms);
+      if (when) {
+        const stamp = document.createElement("span");
+        stamp.className = "selection-copy-history-when";
+        stamp.textContent = when;
+        item.appendChild(stamp);
+      }
+      item.appendChild(document.createTextNode(text));
       item.onclick = () => this.insertSelectionCopyHistory(text, true);
       list.appendChild(item);
     }
@@ -6890,15 +6899,167 @@ Object.assign(TermdeckApp.prototype, {
     if (!note?.note_id) return;
     this.unsavedNotebookNoteIds.add(note.note_id);
     this.queueProjectResourceRequest(this.notebookProjectStateKey(), "/api/notebook/notes", "POST",
-      { note_id: note.note_id, text: note.text || "" },
-      { onSaved: () => this.unsavedNotebookNoteIds.delete(note.note_id) });
+      { note_id: note.note_id, text: note.text || "" }, {
+        onSaved: (payload) => {
+          this.unsavedNotebookNoteIds.delete(note.note_id);
+          // The version the note starts at, so its first write says which copy it was made from.
+          if (Number.isInteger(payload?.note?.revision)) note.revision = payload.note.revision;
+        },
+      });
   },
 
 
+  // A write carries the version of the note it was made from. The server refuses one made from a copy
+  // that is no longer current -- a window left open while the note was edited somewhere else -- which
+  // is how a stale copy used to overwrite everything typed since, leaving no trace of the newer text.
   saveNotebookNote(note) {
     if (!note?.note_id) return;
+    if (this.notebookNoteConflicts.has(note.note_id)) return;
     this.queueProjectResourceRequest(this.notebookProjectStateKey(),
-      `/api/notebook/notes/${encodeURIComponent(note.note_id)}`, "PUT", { text: note.text || "" });
+      `/api/notebook/notes/${encodeURIComponent(note.note_id)}`, "PUT",
+      () => ({ text: note.text || "", base_revision: Number.isInteger(note.revision) ? note.revision : null }), {
+        onSaved: (payload) => {
+          if (Number.isInteger(payload?.note?.revision)) note.revision = payload.note.revision;
+        },
+        onRefused: (status, detail) => {
+          if (status !== 409 || detail?.reason !== "note_changed_elsewhere") return false;
+          this.holdNotebookNoteForRefresh(note.note_id, detail.note);
+          return true;
+        },
+      });
+  },
+
+
+  // "12m ago", from the instant the server worked out. The stored stamp is wall-clock EST, and a page
+  // in another zone that reads it as its own local time is wrong by the difference between them.
+  relativeTimeLabel(timestampMs, fallback = "") {
+    if (!Number.isFinite(timestampMs) || !timestampMs) return String(fallback || "");
+    const age = this.formatTerminalAge(Math.max(0, Date.now() - timestampMs));
+    return age === "just now" ? age : `${age} ago`;
+  },
+
+
+  // Every version of a note that was ever saved is kept, the way a file's versions are, so text that
+  // went missing can be read back and put where it belongs.
+  async openNotebookNoteHistory(noteId) {
+    const params = this.projectStateSearchParams(this.notebookProjectStateKey());
+    let versions = [];
+    try {
+      const response = await fetch(`/api/notebook/notes/${encodeURIComponent(noteId)}/history?${params}`);
+      if (!response.ok) throw new Error(String(response.status));
+      versions = (await response.json()).versions || [];
+    } catch (error) {
+      void uiAlert("Could not read this note's history.");
+      return;
+    }
+    if (!versions.length) {
+      void uiAlert("This note has no earlier versions yet.");
+      return;
+    }
+    const chosen = await TermdeckDialogs.select("Pick a version to look at.", versions.map((version) => ({
+      value: String(version.version_id),
+      label: this.relativeTimeLabel(version.captured_at_ms, version.captured_at_est),
+      description: `${version.byte_size.toLocaleString()} characters`,
+    })), { title: "Note history", confirmLabel: "Open" });
+    if (!chosen) return;
+    await this.openNotebookNoteVersion(noteId, chosen);
+  },
+
+
+  async openNotebookNoteVersion(noteId, versionId) {
+    const params = this.projectStateSearchParams(this.notebookProjectStateKey());
+    let version;
+    try {
+      const response = await fetch(
+        `/api/notebook/notes/${encodeURIComponent(noteId)}/history/${encodeURIComponent(versionId)}?${params}`);
+      if (!response.ok) throw new Error(String(response.status));
+      version = await response.json();
+    } catch (error) {
+      void uiAlert("Could not read that version.");
+      return;
+    }
+    // As a note of its own rather than in place of what is there: the version being looked at is
+    // older by definition, and putting it over the current text is how text goes missing.
+    const note = { note_id: this.createNotebookNoteId(), text: String(version.content || "") };
+    const notebookState = this.notebookProjectState();
+    notebookState.notebook_notes.push(note);
+    notebookState.notebook_active_note_id = note.note_id;
+    notebookState.notebook_text = note.text;
+    this.createNotebookNoteRecord(note);
+    this.notebookCopiesOpen = false;
+    this.notebookMounted = false;
+    this.renderNotebook();
+    await this.mountNotebookEditor();
+    this.saveNotebookProjectState();
+    this.$("status-name").textContent = "opened an earlier version as a new note";
+  },
+
+
+  // The note is locked here until it has been refreshed: anything typed on top of a copy the server
+  // has already moved past cannot be saved, and letting the typing continue only makes more of it.
+  holdNotebookNoteForRefresh(noteId, serverNote) {
+    this.notebookNoteConflicts.set(noteId, serverNote || null);
+    this.applyNotebookEditability();
+    void this.askToRefreshNotebookNote(noteId);
+  },
+
+
+  applyNotebookEditability() {
+    if (!this.notebookEditor) return;
+    const note = this.activeNotebookNote();
+    const held = !!note && this.notebookNoteConflicts.has(note.note_id);
+    this.notebookEditor.updateOptions({ readOnly: held });
+  },
+
+
+  async askToRefreshNotebookNote(noteId) {
+    if (this.notebookConflictDialogNoteId === noteId) return;
+    this.notebookConflictDialogNoteId = noteId;
+    // The newer copy's own title: this page's copy already says whatever was typed on top of it, and
+    // naming the note after that reads as a note nobody else has ever seen.
+    const serverNote = this.notebookNoteConflicts.get(noteId);
+    const note = serverNote || this.notebookProjectState().notebook_notes.find((entry) => entry.note_id === noteId);
+    const title = note ? this.notebookTabTitle(note) : "This note";
+    const refresh = await uiConfirm(
+      `"${title}" was changed somewhere else, so it is locked here until you refresh it.\n\n` +
+      "Refreshing loads the newer text. Anything you typed here that was never saved is kept as a " +
+      "separate note, so nothing is thrown away.",
+      { title: "Note changed elsewhere", confirmLabel: "Refresh", cancelLabel: "Leave it locked" });
+    this.notebookConflictDialogNoteId = "";
+    if (refresh) await this.refreshNotebookNote(noteId);
+  },
+
+
+  async refreshNotebookNote(noteId) {
+    const params = this.projectStateSearchParams(this.notebookProjectStateKey());
+    let latest;
+    try {
+      const response = await fetch(`/api/notebook/notes/${encodeURIComponent(noteId)}?${params}`);
+      if (!response.ok) throw new Error(String(response.status));
+      latest = await response.json();
+    } catch (error) {
+      void uiAlert("Could not read the newer version of this note. Check the connection and try again.");
+      return;
+    }
+    const notebookState = this.notebookProjectState();
+    const note = notebookState.notebook_notes.find((entry) => entry.note_id === noteId);
+    if (!note) return;
+    const model = this.notebookEditorModels.get(noteId);
+    const typedHere = model ? model.getValue() : note.text || "";
+    // What was typed here was never accepted by the server, so it exists nowhere else. It becomes a
+    // note of its own rather than being replaced by the newer text and lost.
+    if (typedHere.trim() && typedHere !== latest.text) {
+      const rescued = { note_id: this.createNotebookNoteId(), text: typedHere };
+      notebookState.notebook_notes.push(rescued);
+      this.createNotebookNoteRecord(rescued);
+    }
+    note.text = String(latest.text || "");
+    note.revision = Number.isInteger(latest.revision) ? latest.revision : note.revision;
+    if (model) model.setValue(note.text);
+    if (notebookState.notebook_active_note_id === noteId) notebookState.notebook_text = note.text;
+    this.notebookNoteConflicts.delete(noteId);
+    this.applyNotebookEditability();
+    this.renderNotebook();
   },
 
 
@@ -6923,9 +7084,20 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // Each entry says when it was copied. They used to be bare strings, and a list of strings cannot
+  // say which of two copies is the newer one -- which is how a window with an older list could put it
+  // back over a newer one and leave the recent copies missing.
   projectSelectionCopyHistory() {
     const history = this.notebookProjectState().selection_copy_history;
-    return Array.isArray(history) ? history : [];
+    return (Array.isArray(history) ? history : []).map((entry) => this.selectionCopyEntry(entry)).filter(Boolean);
+  },
+
+
+  selectionCopyEntry(entry) {
+    const text = typeof entry === "string" ? entry : String(entry?.text || "");
+    if (!text) return null;
+    const copiedAt = Number(typeof entry === "string" ? 0 : entry?.copied_at_ms);
+    return { text, copied_at_ms: Number.isFinite(copiedAt) ? copiedAt : 0 };
   },
 
 
@@ -6933,7 +7105,8 @@ Object.assign(TermdeckApp.prototype, {
     const notebookState = this.notebookProjectState();
     if (notebookState.selection_copy_history_initialized === true) return false;
     const legacyHistory = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
-    notebookState.selection_copy_history = [...new Set(legacyHistory.map((item) => String(item || "").trim()).filter(Boolean))].slice(0, 50);
+    notebookState.selection_copy_history = [...new Set(legacyHistory.map((item) => String(item?.text ?? item ?? "").trim())
+      .filter(Boolean))].map((text) => ({ text, copied_at_ms: 0 })).slice(0, 50);
     notebookState.selection_copy_history_initialized = true;
     this.settings.selection_copy_history = [];
     return true;
@@ -6969,7 +7142,10 @@ Object.assign(TermdeckApp.prototype, {
       const noteId = String(raw?.note_id || raw?.id || "").trim();
       if (!noteId || seen.has(noteId)) continue;
       seen.add(noteId);
-      notes.push({ note_id: noteId, text: String(raw?.text || "") });
+      // The version this copy came from travels with it. Rebuilding the note without it meant every
+      // write claimed to be from no particular version, and a write from a stale copy was taken.
+      notes.push({ note_id: noteId, text: String(raw?.text || ""),
+        ...(Number.isInteger(raw?.revision) ? { revision: raw.revision } : {}) });
     }
     if (!notes.length && (!scopedInitialized || hasLegacyNotebook)) {
       notes.push({ note_id: this.createNotebookNoteId(), text: String(sourceNotebookText || "") });
@@ -7168,6 +7344,7 @@ Object.assign(TermdeckApp.prototype, {
     menu.textContent = "";
     this.contextMenuTarget = { type: "notebook-tab", key: note.note_id };
     this.addContextItem(menu, "New note", () => { void this.createNotebookNote(); }, "new-file");
+    this.addContextItem(menu, "History…", () => { void this.openNotebookNoteHistory(note.note_id); }, "history");
     this.addContextItem(menu, "Move to Trash", () => { void this.closeNotebookNote(note.note_id); }, "trash");
     this.positionContextMenu(menu, event.clientX, event.clientY);
   },
@@ -7187,7 +7364,8 @@ Object.assign(TermdeckApp.prototype, {
       items.appendChild(empty);
       return;
     }
-    for (const text of history) {
+    for (const entry of history) {
+      const text = entry.text;
       const row = document.createElement("div");
       row.className = "notebook-recent-copy-row";
       const expanded = this.notebookExpandedCopy === text;
@@ -7195,7 +7373,14 @@ Object.assign(TermdeckApp.prototype, {
       row.title = expanded ? "Collapse copied text" : "Expand copied text";
       const content = document.createElement("div");
       content.className = "notebook-recent-copy-text";
-      content.textContent = text;
+      const when = this.relativeTimeLabel(entry.copied_at_ms);
+      if (when) {
+        const stamp = document.createElement("span");
+        stamp.className = "notebook-recent-copy-when";
+        stamp.textContent = when;
+        content.appendChild(stamp);
+      }
+      content.appendChild(document.createTextNode(text));
       content.title = expanded ? "Collapse copied text" : "Expand copied text";
       content.tabIndex = 0;
       content.setAttribute("role", "button");
@@ -7557,6 +7742,7 @@ Object.assign(TermdeckApp.prototype, {
     if (notebookOpen && this.activeNotebookNote() && !this.notebookMounted) {
       void this.mountNotebookEditor();
     }
+    this.applyNotebookEditability();
     this.updateEventlyDemoFeatureBanner();
   },
 

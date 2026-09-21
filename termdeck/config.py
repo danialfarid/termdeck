@@ -305,6 +305,8 @@ class TermdeckConfig:
     API_NOTEBOOK_TRASH_ROUTE = "/api/notebook/trash"
     API_NOTEBOOK_NOTES_ROUTE = "/api/notebook/notes"
     API_NOTEBOOK_NOTE_ROUTE = "/api/notebook/notes/{note_id}"
+    API_NOTEBOOK_NOTE_HISTORY_ROUTE = "/api/notebook/notes/{note_id}/history"
+    API_NOTEBOOK_NOTE_VERSION_ROUTE = "/api/notebook/notes/{note_id}/history/{version_id}"
     API_CLOSED_ROUTE = "/api/closed"
     API_CLOSED_ITEM_ROUTE = "/api/closed/{session_id}"
     API_CLOSED_REOPEN_ROUTE = "/api/closed/{session_id}/reopen"
@@ -403,6 +405,9 @@ class TermdeckConfig:
     FILE_HISTORY_MAX_VERSIONS_PER_FILE = 100
     FILE_HISTORY_MAX_BYTES = 512 * 1024 * 1024
     FILE_HISTORY_COALESCE_SECONDS = 10
+    # Every version of every note ever saved, kept apart from the files' own history so a note's past
+    # is not trimmed away by a busy repository.
+    NOTEBOOK_HISTORY_DATABASE = DATA_DIR / "notebook-history.sqlite3"
     WORKTREES_DIR = DATA_DIR / "worktrees"
     WORKTREE_REGISTRY_FILE = DATA_DIR / "worktrees.json"
     PS_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_PS_BIN, "ps")

@@ -108,10 +108,11 @@ class NotebookTabMenuTest(unittest.TestCase):
         cls.result = json.loads(done.stdout)
 
     def test_the_menu_offers_the_trash_the_tab_no_longer_shows(self) -> None:
-        # Hiding the × must not take the note with it: holding the tab is how one is thrown away.
+        # Hiding the × must not take the note with it: holding the tab is how one is thrown away, and
+        # where its earlier versions are read back from.
         labels = [item["label"] for item in self.result["items"] if isinstance(item, dict)]
 
-        self.assertEqual(labels, ["New note", "Move to Trash"])
+        self.assertEqual(labels, ["New note", "History…", "Move to Trash"])
 
     def test_it_opens_where_the_finger_is(self) -> None:
         self.assertEqual(self.result["positioned"], [{"x": 30, "y": 90}])
