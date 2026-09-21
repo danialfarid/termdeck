@@ -51,6 +51,8 @@ const app = {
     this.settings.project_state[stateKey] = { ...(this.settings.project_state[stateKey] || {}), ...patch };
   },
   // Everything below is scenery: this test is about the surface, not about the list.
+  notebookSignature() { return ""; },
+  reconcileNotebookAfterProjectState() {},
   applySessionOrder(sessions) { return sessions; },
   sessionListSignatureFor(sessions = this.sessions) { return sessions.map((s) => s.session_id).join("|"); },
   unreadSessionIdsForCurrentWorktreeView() { return new Set(); },

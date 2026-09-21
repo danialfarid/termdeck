@@ -6891,8 +6891,10 @@ Object.assign(TermdeckApp.prototype, {
   // disappeared the moment any other window saved anything of its own.
   createNotebookNoteRecord(note) {
     if (!note?.note_id) return;
+    this.unsavedNotebookNoteIds.add(note.note_id);
     this.queueProjectResourceRequest(this.notebookProjectStateKey(), "/api/notebook/notes", "POST",
-      { note_id: note.note_id, text: note.text || "" });
+      { note_id: note.note_id, text: note.text || "" },
+      { onSaved: () => this.unsavedNotebookNoteIds.delete(note.note_id) });
   },
 
 
@@ -7077,6 +7079,28 @@ Object.assign(TermdeckApp.prototype, {
   // the notebook: the button closes it itself. Counting one as outside closed the notebook and then
   // let the button's own handler open it again, so on a phone -- where the button in use is the mobile
   // one, which the outside check had never heard of -- the notebook could not be closed at all.
+  // Which notes there are and which one is open, as one string to compare against.
+  notebookSignature() {
+    const state = this.notebookProjectState();
+    const ids = Array.isArray(state.notebook_notes)
+      ? state.notebook_notes.map((note) => String(note?.note_id || "")).join("\n") : "";
+    return `${state.notebook_active_note_id || ""}\u0000${ids}`;
+  },
+
+
+  // Notes change under an open notebook: another window adds one, another device deletes one, or a
+  // delete of our own is confirmed. Nothing redrew the tab strip for any of that, so a note deleted
+  // here kept its tab until something else happened to render -- switching notes, usually, which is
+  // what made the delete look like it had been ignored and then applied late.
+  reconcileNotebookAfterProjectState(signatureBefore) {
+    if (!this.settings.notebook_open || this.notebookSignature() === signatureBefore) return;
+    // The editor may be showing a note that is no longer there; let it be mounted again for whichever
+    // note is open now. While the note being typed in is still there, nothing is disturbed.
+    if (!this.notebookNoteForEditorModel()) this.notebookMounted = false;
+    this.renderNotebook();
+  },
+
+
   notebookToggleElements() {
     return [this.$("notebook-toggle"), this.$("history-notebook-toggle"), this.$("file-tabs-notebook"),
       this.$("mobile-notebook-toggle")].filter(Boolean);

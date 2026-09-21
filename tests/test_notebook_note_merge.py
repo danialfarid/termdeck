@@ -25,6 +25,7 @@ const scenario = JSON.parse(process.env.TERMDECK_NOTE_SCENARIO);
 const app = {
   settings: { project_state: { stock: scenario.current } },
   deletedNotebookNoteIds: new Set(scenario.deleted || []),
+  unsavedNotebookNoteIds: new Set(scenario.unsaved || []),
   projectStateKey() { return "stock"; },
   __METHODS__
 };
@@ -49,22 +50,31 @@ class NotebookNoteMergeTest(unittest.TestCase):
             ("applyLocalProjectStatePatch(patch, stateKey = this.projectStateKey())",
              "notebookNotesPatch(patch, current)")))
 
-    def apply(self, current, patch, deleted=()):
-        scenario = {"current": current, "patch": patch, "deleted": list(deleted)}
+    def apply(self, current, patch, deleted=(), unsaved=()):
+        scenario = {"current": current, "patch": patch, "deleted": list(deleted), "unsaved": list(unsaved)}
         done = subprocess.run([self.node, "-e", self.harness], capture_output=True, text=True, check=False,
                               env={**os.environ, "TERMDECK_NOTE_SCENARIO": json.dumps(scenario)})
         self.assertEqual(done.returncode, 0, done.stderr)
         return json.loads(done.stdout)["state"]
 
-    def notes(self, current, patch, deleted=()):
-        return [entry["note_id"] for entry in self.apply(current, patch, deleted)["notebook_notes"]]
+    def notes(self, current, patch, deleted=(), unsaved=()):
+        return [entry["note_id"] for entry in self.apply(current, patch, deleted, unsaved)["notebook_notes"]]
 
-    def test_a_note_the_arriving_state_has_not_heard_of_is_kept(self) -> None:
-        # The write for it is still in flight; the broadcast that overtook it knows only the older list.
+    def test_a_note_whose_write_is_still_in_flight_is_kept(self) -> None:
+        # The broadcast that overtook the write knows only the older list.
         kept = self.notes({"notebook_notes": [note("old"), note("just-made")]},
-                          {"notebook_notes": [note("old")]})
+                          {"notebook_notes": [note("old")]}, unsaved=["just-made"])
 
         self.assertEqual(kept, ["old", "just-made"])
+
+    def test_a_note_deleted_in_another_window_goes(self) -> None:
+        # Once the server has acknowledged a note, its absence from what arrives is a delete, not a
+        # write of ours that has not landed. Holding every note this page has meant a note deleted on
+        # the laptop could never leave the phone.
+        kept = self.notes({"notebook_notes": [note("old"), note("binned-elsewhere")]},
+                          {"notebook_notes": [note("old")]})
+
+        self.assertEqual(kept, ["old"])
 
     def test_what_arrives_is_what_those_notes_say(self) -> None:
         # Only the ones it has not heard of are added back; for the rest the server's copy wins, or a
@@ -74,12 +84,14 @@ class NotebookNoteMergeTest(unittest.TestCase):
 
         self.assertEqual(state["notebook_notes"], [note("shared", "theirs")])
 
-    def test_a_note_deleted_here_is_not_put_back(self) -> None:
-        # The delete is in flight too, so the state arriving can still carry it.
+    def test_a_note_deleted_here_is_gone_even_while_state_still_carries_it(self) -> None:
+        # The delete is in flight, so state written before it lands still has the note. Taking that
+        # whole put the note back: its tab returned until something else redrew the strip, which is
+        # what a delete that "did not take" looked like.
         kept = self.notes({"notebook_notes": [note("old"), note("binned")]},
                           {"notebook_notes": [note("old"), note("binned")]}, deleted=["binned"])
 
-        self.assertEqual(kept, ["old", "binned"])
+        self.assertEqual(kept, ["old"])
 
     def test_nor_resurrected_once_the_delete_has_landed(self) -> None:
         kept = self.notes({"notebook_notes": [note("old"), note("binned")]},
@@ -103,7 +115,7 @@ class NotebookNoteMergeTest(unittest.TestCase):
         self.assertEqual(state["session_order"], ["b"])
 
     def test_a_first_note_on_a_page_that_had_none_is_kept(self) -> None:
-        kept = self.notes({"notebook_notes": [note("first")]}, {"notebook_notes": []})
+        kept = self.notes({"notebook_notes": [note("first")]}, {"notebook_notes": []}, unsaved=["first"])
 
         self.assertEqual(kept, ["first"])
 
@@ -114,6 +126,7 @@ const requests = [];
 const app = {
   notebookProjectStateKey: () => "stock",
   notebookProjectState: () => ({ notebook_notes: scenario.notes }),
+  unsavedNotebookNoteIds: new Set(),
   queueProjectResourceRequest: (stateKey, path, method, body) => requests.push({ stateKey, path, method, body }),
   __METHODS__
 };
@@ -142,6 +155,19 @@ class NotebookRequestTest(unittest.TestCase):
                               env={**os.environ, "TERMDECK_REQUEST_SCENARIO": json.dumps(scenario)})
         self.assertEqual(done.returncode, 0, done.stderr)
         return json.loads(done.stdout)["requests"]
+
+    def test_a_new_note_is_held_until_the_server_has_it(self) -> None:
+        # What arriving state does not carry is either a note of ours in flight or a note deleted
+        # somewhere else, and this is what tells them apart.
+        scenario = {"call": "createNotebookNoteRecord", "notes": [note("note-new", "hello")]}
+        done = subprocess.run([self.node, "-e", self.harness.replace(
+            'process.stdout.write(JSON.stringify({ requests }));',
+            'process.stdout.write(JSON.stringify({ unsaved: [...app.unsavedNotebookNoteIds] }));')],
+            capture_output=True, text=True, check=False,
+            env={**os.environ, "TERMDECK_REQUEST_SCENARIO": json.dumps(scenario)})
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+        self.assertEqual(json.loads(done.stdout)["unsaved"], ["note-new"])
 
     def test_a_new_note_is_created_at_the_id_the_page_gave_it(self) -> None:
         # The page has to show the note before the request comes back, so it names the note itself.

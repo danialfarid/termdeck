@@ -981,6 +981,9 @@ class TermdeckApp {
     // is only as new as the last write to land -- and without this they would be put back by the very
     // merge that stops a new note being dropped.
     this.deletedNotebookNoteIds = new Set();
+    // Notes made here whose write has not been acknowledged yet. Until it is, arriving state knows
+    // nothing about them, so they are the ones worth holding on to.
+    this.unsavedNotebookNoteIds = new Set();
     this.selectedTreeRow = null;
     this.iconMap = null;
     this.lastValidNavState = null;
@@ -1618,12 +1621,20 @@ class TermdeckApp {
   // only deleting one removes it, which is what the tombstones are for.
   notebookNotesPatch(patch, current) {
     if (!Array.isArray(patch?.notebook_notes) || !Array.isArray(current?.notebook_notes)) return {};
-    const arriving = new Set(patch.notebook_notes.map((note) => String(note?.note_id || "")));
+    // A note deleted here is gone both ways: state that still carries it was written before the delete
+    // landed, and taking it whole put the note back -- its tab returned, and only the next thing to
+    // redraw the strip took it away again, which read as a delete that did not take.
+    const arriving = patch.notebook_notes.filter((note) => !this.deletedNotebookNoteIds.has(String(note?.note_id || "")));
+    const arrivingIds = new Set(arriving.map((note) => String(note?.note_id || "")));
+    // Only a note the server has not acknowledged yet is held back from what arrives. Holding every
+    // note this page happens to have meant a note deleted in another window could never go: its
+    // absence is indistinguishable from a note of ours that has not landed, until the write lands.
     const kept = current.notebook_notes.filter((note) => {
       const noteId = String(note?.note_id || "");
-      return noteId && !arriving.has(noteId) && !this.deletedNotebookNoteIds.has(noteId);
+      return noteId && !arrivingIds.has(noteId) && this.unsavedNotebookNoteIds.has(noteId);
     });
-    return kept.length ? { notebook_notes: [...patch.notebook_notes, ...kept] } : {};
+    if (!kept.length && arriving.length === patch.notebook_notes.length) return {};
+    return { notebook_notes: [...arriving, ...kept] };
   }
 
   async refreshCurrentProjectState() {
@@ -1660,7 +1671,9 @@ class TermdeckApp {
       this.reconcileActiveSessionViewMode();
       return;
     }
+    const notebookBefore = this.notebookSignature();
     this.applyLocalProjectStatePatch(nextState, stateKey);
+    this.reconcileNotebookAfterProjectState(notebookBefore);
     this.refreshUnreadSessionsFromState();
     this.renderList();
     this.reconcileActiveSessionViewMode();
@@ -1689,6 +1702,8 @@ class TermdeckApp {
         }
       }
       if (!response?.ok) throw new Error(`project resource save failed (${response?.status || "network"})`);
+      // The caller may need to know the server has it now, and not merely that it was asked.
+      options.onSaved?.();
     }).catch((error) => {
       console.error("TermDeck project resource save failed", error);
       if (options.silent) return;
@@ -1708,8 +1723,10 @@ class TermdeckApp {
     const previousState = this.settings.project_state?.[stateKey] || {};
     const stateChanged = JSON.stringify(previousState) !== JSON.stringify(state);
     const allWorktrees = this.worktreeId === ALL_WORKTREES_ID;
+    const notebookBefore = this.notebookSignature();
     if (stateChanged) {
       this.applyLocalProjectStatePatch(state, stateKey);
+      this.reconcileNotebookAfterProjectState(notebookBefore);
       this.projectStateLocalRevision = (this.projectStateLocalRevision || 0) + 1;
       // The surface a terminal opens on is project state like any other, so it can change under an open
       // window: another client, another device, or the session-view-mode API. Only refreshCurrentProject-

@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Deleting a note removes it there and then. Its tab stayed until something else happened to redraw
+  the strip — switching notes, usually — because the state that arrived next had been written before
+  the delete landed and still carried the note, and nothing asked the notebook to catch up when notes
+  changed under it. Both are fixed, so a note added or deleted in another window now shows up here
+  without being asked, and a note made here still survives the broadcast that overtakes its write.
+
 ## [0.19.4] — 2026-09-20
 
 ### Added
