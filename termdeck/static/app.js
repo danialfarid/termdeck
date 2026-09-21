@@ -185,6 +185,10 @@ const MOBILE_CONNECTION_RETRY_MS = 3000;
 // and eventually it stops claiming to be in flight at all.
 const PENDING_PROMPT_UNCONFIRMED_MS = 25000;
 const PENDING_PROMPT_DISCARD_MS = 600000;
+// A prompt still waiting to be confirmed is looked for on this clock, rather than only when the
+// transcript happens to say something. An agent that has taken the prompt and gone quiet says nothing
+// for minutes, and meanwhile the message reads as one that was never delivered.
+const PENDING_PROMPT_RECHECK_MS = 4000;
 // Unfinished experiment: hold back writes to hidden terminals and catch them up on activation.
 // No setting and no toggle — flip this constant to work on it. See drainTerminalWrites().
 const DEFER_INACTIVE_TERMINAL_OUTPUT = false;
@@ -752,6 +756,7 @@ class TermdeckApp {
     this.historyRevisions = new Map();
     this.historyPendingPrompts = new Map();
     this.historyPendingPromptSequence = 0;
+    this.pendingPromptRecheckTimer = 0;
     this.historyFingerprint = "";
     this.historyTurns = [];
     this.historyRenderedTurns = [];

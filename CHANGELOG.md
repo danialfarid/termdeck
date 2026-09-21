@@ -13,8 +13,21 @@ All notable changes to this project are documented here. The format follows
   already there changes nothing, so a retry cannot undo what was typed in between. See
   [docs/api.md](docs/api.md#notebook-notes).
 
+- Holding a finger on a message in the transcript selects that message whole and opens the menu the
+  right-click opens on a desktop — Copy, New note, Search in files, Ask an agent — at the finger.
+  Selecting an answer to copy used to mean dragging two handles through text that scrolls away under
+  them. A hold that turns into a scroll is still a scroll.
+
 ### Fixed
 
+- A message sent while an agent was working now appears in the transcript. Claude Code does not record
+  one as a user turn — it hands the text to the turn already running and writes an attachment line
+  instead — so the transcript showed the agent answering a question nobody could see it being asked,
+  the phone left the message marked as not delivered, and the submit path kept pressing Enter at a
+  prompt the agent had already taken. (In one long session, 11 messages were missing this way.)
+- A prompt waiting to be confirmed is now looked for every few seconds, instead of only when the
+  transcript happens to say something. An agent that takes a prompt and then works quietly says
+  nothing for minutes, which left the message reading as one that was never sent.
 - A note made in one window stopped disappearing. Project state arrives whole — from a refetch, or from
   the broadcast every save anywhere in the deck produces — and the copy on the server is only as new as
   the last write to land, so a broadcast could overtake a new note and take it back out of the list.

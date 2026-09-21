@@ -129,6 +129,11 @@ class ClaudeCli(AgentCli):
             if payload.get("type") == "system" and payload.get("subtype") == "compact_boundary":
                 turns.append(self._compact_boundary_turn(payload))
                 continue
+            if payload.get("type") == "attachment":
+                mid_turn_prompt = self._mid_turn_prompt_turn(payload)
+                if mid_turn_prompt is not None:
+                    turns.append(mid_turn_prompt)
+                continue
             if payload.get("type") not in (TurnBuilder.ROLE_USER, TurnBuilder.ROLE_ASSISTANT):
                 continue
             message = payload.get("message")
@@ -162,6 +167,31 @@ class ClaudeCli(AgentCli):
             if disk_change is not None:
                 turns.append(disk_change)
         return turns
+
+    @staticmethod
+    def _mid_turn_prompt_turn(payload: dict[str, object]) -> dict[str, object] | None:
+        """A message sent while the agent was already working.
+
+        Claude Code does not record one as a user turn. It hands the text to the turn already running
+        and writes an attachment line instead, so the transcript showed the agent answering a question
+        nobody could see it being asked -- and, on a phone, the message sat marked as not yet delivered
+        long after it had been. The same gap kept the submit path pressing Enter at a prompt the agent
+        had already taken, because the transcript is what it waits to see the prompt in.
+
+        Only what a person sent. These lines also carry task notifications and other machinery, which
+        are not part of the conversation.
+        """
+        attachment = payload.get("attachment")
+        if not isinstance(attachment, dict) or attachment.get("type") != "queued_command":
+            return None
+        origin = attachment.get("origin")
+        if not isinstance(origin, dict) or origin.get("kind") != "human":
+            return None
+        text = str(attachment.get("prompt") or "").strip()
+        if not text:
+            return None
+        return TurnBuilder.turn(TurnBuilder.ROLE_USER, text,
+                                timestamp=attachment.get("timestamp") or TurnBuilder.extract_turn_timestamp(payload))
 
     @staticmethod
     def _disk_change_turn(payload: dict[str, object], model: str | None, timestamp: object) -> dict[str, object] | None:
@@ -222,7 +252,7 @@ class ClaudeCli(AgentCli):
         return text.lstrip("\x15") if role == TurnBuilder.ROLE_USER else text
 
     def is_user_payload(self, payload: dict[str, object]) -> bool:
-        return payload.get("type") == "user"
+        return payload.get("type") == "user" or self._mid_turn_prompt_turn(payload) is not None
 
     def payload_text(self, payload: dict[str, object]) -> str:
         if payload.get("type") in ("user", "assistant"):
@@ -230,16 +260,19 @@ class ClaudeCli(AgentCli):
             return TurnBuilder.content_text(message.get("content")) if isinstance(message, dict) else ""
         if payload.get("type") in ("tool_use", "tool_result"):
             return TurnBuilder.content_text(payload.get("input") or payload.get("content"))
-        return ""
+        return self.conversation_payload_text(payload)
 
     def conversation_payload_text(self, payload: dict[str, object]) -> str:
         if payload.get("type") in ("user", "assistant"):
             message = payload.get("message")
             return TurnBuilder.conversation_content_text(message.get("content") if isinstance(message, dict) else message)
-        return ""
+        # A message sent mid-turn is part of the conversation wherever the conversation is read:
+        # searching a transcript, or asking what was said last.
+        mid_turn_prompt = self._mid_turn_prompt_turn(payload)
+        return str(mid_turn_prompt["text"]) if mid_turn_prompt else ""
 
     def is_conversation_payload(self, payload: dict[str, object]) -> bool:
-        return payload.get("type") in ("user", "assistant")
+        return payload.get("type") in ("user", "assistant") or self._mid_turn_prompt_turn(payload) is not None
 
     def title_from_payload(self, payload: dict[str, object]) -> str:
         return str(payload.get("aiTitle", "")) if payload.get("type") == "ai-title" else ""

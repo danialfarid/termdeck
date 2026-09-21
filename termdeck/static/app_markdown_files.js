@@ -2624,7 +2624,33 @@ Object.assign(TermdeckApp.prototype, {
     if (remaining.length) this.historyPendingPrompts.set(sessionId, remaining);
     else this.historyPendingPrompts.delete(sessionId);
     this.persistHistoryPendingPrompts(sessionId, remaining);
+    this.syncPendingPromptRecheck(sessionId, remaining.length);
     return merged;
+  },
+
+
+  // A pending prompt was only re-examined when the transcript had something new to say. An agent that
+  // has taken the prompt and is working quietly says nothing for minutes, so the message sat there
+  // marked as not delivered -- which, on a phone, reads as a message that was never sent. While
+  // anything is pending, ask the transcript again on a clock; the asking stops the moment it is
+  // confirmed, discarded, or the transcript is closed.
+  syncPendingPromptRecheck(sessionId, pendingCount) {
+    const wanted = pendingCount > 0 && this.historyOpen && this.activeId === sessionId;
+    if (!wanted) {
+      if (this.pendingPromptRecheckTimer) clearInterval(this.pendingPromptRecheckTimer);
+      this.pendingPromptRecheckTimer = 0;
+      return;
+    }
+    if (this.pendingPromptRecheckTimer) return;
+    this.pendingPromptRecheckTimer = window.setInterval(() => {
+      const active = this.activeId;
+      const pending = active ? this.historyPendingPrompts.get(active) || [] : [];
+      if (!pending.length || !this.historyOpen) {
+        this.syncPendingPromptRecheck(active, 0);
+        return;
+      }
+      void this.loadHistory(active, { preserveScroll: true, followLatest: true });
+    }, PENDING_PROMPT_RECHECK_MS);
   },
 
 
@@ -4348,6 +4374,7 @@ Object.assign(TermdeckApp.prototype, {
       this.openSelectionContextMenu(state, { x: event.clientX, y: event.clientY }, contextKind);
     });
     document.addEventListener("auxclick", (event) => this.handleDetectedFileLinkAuxClick(event));
+    this.installTranscriptLongPressSelection();
     document.addEventListener("selectionchange", () => this.scheduleSelectionActions());
     document.addEventListener("mouseup", () => this.scheduleSelectionActions());
     document.addEventListener("copy", () => this.recordDocumentSelectionCopy());
@@ -5852,6 +5879,83 @@ Object.assign(TermdeckApp.prototype, {
       setTimeout(() => reveal(attempt + 1), 100);
     };
     requestAnimationFrame(() => reveal());
+  },
+
+
+  // What a finger can select in a transcript is one word, then two handles dragged through text that
+  // scrolls away under them. The unit people actually want is the message: a prompt, or an answer.
+  // Holding a finger on one selects that message whole, and the selection bar that already carries
+  // Copy, New note and Ask an agent opens on top of it.
+  transcriptSectionForSelection(target) {
+    if (target?.closest?.("button, input, textarea, .history-pending-action, .history-queued-item")) return null;
+    const section = target?.closest?.(".turn, .history-event, .history-repetition-group");
+    if (!section) return null;
+    // For a message, the text alone: the "You"/"Assistant" label above it and the delivery note below
+    // it are the transcript talking about the message, not part of what was said.
+    return section.querySelector(":scope > .turn-text") || section;
+  },
+
+
+  selectTranscriptSection(section, point) {
+    const selection = window.getSelection();
+    if (!selection) return false;
+    const range = document.createRange();
+    range.selectNodeContents(section);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    if (!String(selection).trim()) {
+      selection.removeAllRanges();
+      return false;
+    }
+    navigator.vibrate?.(8);
+    // Selecting text on its own leaves nothing to press. The menu a right-click opens on a desktop --
+    // Copy, New note, Search in files, Ask an agent -- is what the hold opens here, at the finger.
+    this.openSelectionContextMenu(this.readSelectionActionState(section), point, "history");
+    return true;
+  },
+
+
+  installTranscriptLongPressSelection() {
+    const body = this.$("history-body");
+    if (!body) return;
+    let press = null;
+    let suppressUntil = 0;
+    const cancelPress = () => {
+      if (press?.timer) window.clearTimeout(press.timer);
+      press = null;
+    };
+    body.addEventListener("pointerdown", (event) => {
+      cancelPress();
+      // Asked at the time of the press, not when the listener was wired: a window becomes a phone
+      // layout by being resized or by the setting changing, without a reload.
+      if (event.pointerType !== "touch" || !event.isPrimary || !this.touchMobileLayoutEnabled()) return;
+      const section = this.transcriptSectionForSelection(event.target);
+      if (!section) return;
+      press = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, section, timer: 0 };
+      const started = press;
+      started.timer = window.setTimeout(() => {
+        if (press !== started) return;
+        started.timer = 0;
+        if (this.selectTranscriptSection(started.section, { x: started.x, y: started.y })) {
+          suppressUntil = performance.now() + 800;
+        }
+        press = null;
+      }, MOBILE_TERMINAL_LONG_PRESS_MS);
+    }, { passive: true });
+    body.addEventListener("pointermove", (event) => {
+      if (!press || press.pointerId !== event.pointerId) return;
+      // Scrolling is a finger moving, so a hold that turns into a scroll is not a hold.
+      if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > MOBILE_TERMINAL_SELECTION_MOVE_TOLERANCE) cancelPress();
+    }, { passive: true });
+    body.addEventListener("pointerup", cancelPress, { passive: true });
+    body.addEventListener("pointercancel", cancelPress, { passive: true });
+    body.addEventListener("contextmenu", (event) => {
+      // The hold has already said what it selected; the menu the platform wants to open on top of it
+      // would only cover the selection bar.
+      if (performance.now() >= suppressUntil) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
   },
 
 
