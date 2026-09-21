@@ -18,6 +18,9 @@ All notable changes to this project are documented here. The format follows
   Selecting an answer to copy used to mean dragging two handles through text that scrolls away under
   them. A hold that turns into a scroll is still a scroll.
 
+- Holding a note's tab opens a menu with New note and Move to Trash, which is how a note is thrown
+  away on a phone now that the × is not on the tab.
+
 ### Fixed
 
 - A message sent while an agent was working now appears in the transcript. Claude Code does not record
@@ -25,6 +28,10 @@ All notable changes to this project are documented here. The format follows
   instead — so the transcript showed the agent answering a question nobody could see it being asked,
   the phone left the message marked as not delivered, and the submit path kept pressing Enter at a
   prompt the agent had already taken. (In one long session, 11 messages were missing this way.)
+- The notebook's tabs no longer pile up on a phone. They kept shrinking until six notes fitted in the
+  width of one and the titles ran together; each tab now keeps a width it can be read and hit at, and
+  the row scrolls sideways. The × that moves a note to the Trash is off the tab there — it sat a
+  mis-tap from the tab's own target — and "Copied" shows its icon and count without the word.
 - A prompt waiting to be confirmed is now looked for every few seconds, instead of only when the
   transcript happens to say something. An agent that takes a prompt and then works quietly says
   nothing for minutes, which left the message reading as one that was never sent.

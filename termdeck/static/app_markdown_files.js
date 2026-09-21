@@ -4231,13 +4231,44 @@ Object.assign(TermdeckApp.prototype, {
     this.normalizeNotebookNotes();
     for (const toggle of toggles) toggle.onclick = () => this.toggleNotebook();
     const notebookTabs = this.$("notebook-tabs");
+    // The tab row answers for its tabs itself, and stops the event going further, so a hold has to be
+    // followed from here too: a listener on the tab would never hear the press that starts it.
+    let tabHold = null;
+    const cancelTabHold = () => {
+      if (tabHold?.timer) window.clearTimeout(tabHold.timer);
+      tabHold = null;
+    };
     notebookTabs.addEventListener("pointerdown", (event) => {
       const tab = event.target.closest?.(".notebook-tab[data-note-id]");
       if (!tab || event.target.closest?.(".notebook-tab-close") || event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
-      void this.selectNotebookNote(tab.dataset.noteId);
+      const noteId = tab.dataset.noteId;
+      void this.selectNotebookNote(noteId);
+      cancelTabHold();
+      // On a phone the × is hidden, so holding the tab is how a note is thrown away -- the same hold
+      // that opens a menu on a terminal row.
+      if (event.pointerType !== "touch" || !this.touchMobileLayoutEnabled()) return;
+      tabHold = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, timer: 0 };
+      const started = tabHold;
+      started.timer = window.setTimeout(() => {
+        if (tabHold !== started) return;
+        cancelTabHold();
+        const note = this.notebookProjectState().notebook_notes.find((entry) => entry.note_id === noteId);
+        if (!note) return;
+        this.openNotebookTabContextMenu(
+          { preventDefault() {}, stopPropagation() {}, clientX: started.x, clientY: started.y }, note);
+      }, MOBILE_SIDEBAR_CONTEXT_LONG_PRESS_MS);
     }, true);
+    notebookTabs.addEventListener("pointermove", (event) => {
+      if (!tabHold || tabHold.pointerId !== event.pointerId) return;
+      // The row scrolls sideways, so a hold that starts moving is someone reaching another tab.
+      if (Math.hypot(event.clientX - tabHold.x, event.clientY - tabHold.y) > MOBILE_SIDEBAR_CONTEXT_MOVE_TOLERANCE) {
+        cancelTabHold();
+      }
+    }, { passive: true });
+    notebookTabs.addEventListener("pointerup", cancelTabHold, { passive: true });
+    notebookTabs.addEventListener("pointercancel", cancelTabHold, { passive: true });
     notebookTabs.addEventListener("click", (event) => {
       const tab = event.target.closest?.(".notebook-tab[data-note-id]");
       if (!tab || event.target.closest?.(".notebook-tab-close") || event.detail !== 0) return;
@@ -7038,6 +7069,7 @@ Object.assign(TermdeckApp.prototype, {
         void this.closeNotebookNote(note.note_id);
       };
       tab.append(label, close);
+      tab.oncontextmenu = (event) => this.openNotebookTabContextMenu(event, note);
       tabs.appendChild(tab);
       if (note.note_id === notebookState.notebook_active_note_id) requestAnimationFrame(() => tab.scrollIntoView({ block: "nearest", inline: "nearest" }));
     }
@@ -7059,6 +7091,19 @@ Object.assign(TermdeckApp.prototype, {
     copiedTab.append(copiedIcon, copiedLabel, copiedCount);
     copiedTab.onclick = () => this.selectNotebookCopies();
     tabs.appendChild(copiedTab);
+  },
+
+
+  openNotebookTabContextMenu(event, note) {
+    event.preventDefault();
+    event.stopPropagation();
+    const menu = this.$("context-menu");
+    if (!menu) return;
+    menu.textContent = "";
+    this.contextMenuTarget = { type: "notebook-tab", key: note.note_id };
+    this.addContextItem(menu, "New note", () => { void this.createNotebookNote(); }, "new-file");
+    this.addContextItem(menu, "Move to Trash", () => { void this.closeNotebookNote(note.note_id); }, "trash");
+    this.positionContextMenu(menu, event.clientX, event.clientY);
   },
 
 

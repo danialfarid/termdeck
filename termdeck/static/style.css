@@ -2390,6 +2390,22 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   #notebook-resizer { display: none; }
   #notebook-head { min-height: 50px; padding: 6px 52px 6px 8px; }
   #notebook-actions button { width: 38px; height: 38px; }
+  /* Tabs that may shrink are tabs with nothing readable on them: on a phone six notes squeezed into
+     the width of one and the titles ran together. Each tab keeps a width it can be read and hit at,
+     and the row scrolls sideways, which it was already set up to do. */
+  #notebook-tabs { gap: 6px; }
+  .notebook-tab { flex: none; min-width: 104px; max-width: 168px; height: 34px; }
+  .notebook-tab-label { max-width: none; height: 32px; padding: 0 10px; }
+  /* The × on a tab moves that note to the Trash. Next to the tab's own target it is a mis-tap away
+     from deleting a note, and the notebook closes by its own button, so on a phone the tab is the
+     whole tab. Holding it still offers "Move to Trash". */
+  /* Named through the row, because the codicon class it also carries is a stronger selector than a
+     plain class of ours and keeps it displayed. */
+  #notebook-tabs .notebook-tab-close { display: none; }
+  /* "Copied" spells out an icon that already says it, and the word costs most of a tab. */
+  .notebook-copies-tab { min-width: 0; padding: 0 8px; height: 34px; }
+  .notebook-copies-label { display: none; }
+  .notebook-copies-icon { font-size: 15px; }
   #notebook-panel #notebook-actions #notebook-close,
   #notebook-panel.notebook-over-file-area #notebook-actions #notebook-close {
     position: absolute; top: 5px; right: 5px; width: 40px; height: 40px; border-radius: 9px;

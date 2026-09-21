@@ -311,6 +311,33 @@ class NotebookNoteApiTest(unittest.TestCase):
         state = server.settings_store.payload["project_state"]["stock"]
         return [(note["note_id"], note["text"]) for note in state["notebook_notes"]]
 
+    def test_notes_written_before_this_api_are_still_notes(self) -> None:
+        # Notes made by earlier versions are named `note-<base36 time>-<random>`, not a UUID. Nothing
+        # reads an id apart from matching it, so the old ones keep working: listed, read, written.
+        old = [NotebookNote(note_id="note-mtem9cgd-w60jdb", text="kept"),
+               NotebookNote(note_id="note-mu2dqf8l-a5813r", text="also kept")]
+        server = self.server(old)
+
+        listing = asyncio.run(server._list_notebook_notes(project="stock", worktree_id="root"))
+        asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="kept and edited"),
+                                               note_id="note-mtem9cgd-w60jdb", project="stock", worktree_id="root"))
+
+        self.assertEqual([note["note_id"] for note in listing["notes"]],
+                         ["note-mtem9cgd-w60jdb", "note-mu2dqf8l-a5813r"])
+        self.assertEqual(self.notes(server),
+                         [("note-mtem9cgd-w60jdb", "kept and edited"), ("note-mu2dqf8l-a5813r", "also kept")])
+
+    def test_a_client_that_only_knows_how_to_write_still_makes_notes(self) -> None:
+        # An older page -- a phone on a cached script -- never calls create; it writes the note at the
+        # id it made up. That has to go on being how a note comes into existence.
+        server = self.server([NotebookNote(note_id="note-old", text="first")])
+
+        asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="made by an old client"),
+                                               note_id="note-mzzzzzzz-a1b2c3", project="stock", worktree_id="root"))
+
+        self.assertEqual(self.notes(server),
+                         [("note-old", "first"), ("note-mzzzzzzz-a1b2c3", "made by an old client")])
+
     def test_creating_a_note_without_an_id_mints_one(self) -> None:
         server = self.server([NotebookNote(note_id="note-1", text="first")])
 

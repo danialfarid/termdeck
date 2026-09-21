@@ -108,5 +108,64 @@ class NotebookNoteMergeTest(unittest.TestCase):
         self.assertEqual(kept, ["first"])
 
 
+REQUEST_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_REQUEST_SCENARIO);
+const requests = [];
+const app = {
+  notebookProjectStateKey: () => "stock",
+  notebookProjectState: () => ({ notebook_notes: scenario.notes }),
+  queueProjectResourceRequest: (stateKey, path, method, body) => requests.push({ stateKey, path, method, body }),
+  __METHODS__
+};
+if (scenario.call === "saveNotebookNotes") app.saveNotebookNotes();
+else app[scenario.call](scenario.notes[0]);
+process.stdout.write(JSON.stringify({ requests }));
+"""
+
+
+class NotebookRequestTest(unittest.TestCase):
+    """Which call goes out for which act, and that carrying old notes over still lands them."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_markdown_files.js").read_text()
+        cls.harness = REQUEST_HARNESS.replace("__METHODS__", "\n  ".join(
+            method_source(source, name) for name in
+            ("createNotebookNoteRecord(note)", "saveNotebookNote(note)", "saveNotebookNotes()")))
+
+    def requests(self, call: str, notes: list[dict]) -> list[dict]:
+        scenario = {"call": call, "notes": notes}
+        done = subprocess.run([self.node, "-e", self.harness], capture_output=True, text=True, check=False,
+                              env={**os.environ, "TERMDECK_REQUEST_SCENARIO": json.dumps(scenario)})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)["requests"]
+
+    def test_a_new_note_is_created_at_the_id_the_page_gave_it(self) -> None:
+        # The page has to show the note before the request comes back, so it names the note itself.
+        sent = self.requests("createNotebookNoteRecord", [note("note-new", "hello")])
+
+        self.assertEqual(sent, [{"stateKey": "stock", "path": "/api/notebook/notes", "method": "POST",
+                                 "body": {"note_id": "note-new", "text": "hello"}}])
+
+    def test_writing_a_note_writes_that_note_alone(self) -> None:
+        sent = self.requests("saveNotebookNote", [note("note-mtem9cgd-w60jdb", "edited")])
+
+        self.assertEqual(sent, [{"stateKey": "stock", "path": "/api/notebook/notes/note-mtem9cgd-w60jdb",
+                                 "method": "PUT", "body": {"text": "edited"}}])
+
+    def test_notes_carried_over_from_the_old_notebook_are_each_created(self) -> None:
+        # The one time every note is written at once: bringing the notes of the old global notebook
+        # into this project. Their ids are the old shape, and they must arrive intact.
+        sent = self.requests("saveNotebookNotes",
+                             [note("note-mtem9cgd-w60jdb", "old one"), note("note-mu2dqf8l-a5813r", "old two")])
+
+        self.assertEqual([entry["method"] for entry in sent], ["POST", "POST"])
+        self.assertEqual([entry["body"]["note_id"] for entry in sent],
+                         ["note-mtem9cgd-w60jdb", "note-mu2dqf8l-a5813r"])
+
+
 if __name__ == "__main__":
     unittest.main()
