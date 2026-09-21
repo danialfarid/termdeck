@@ -2353,18 +2353,20 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
     display: flex; align-items: center; gap: 3px;
   }
   body.mobile-touch-layout.notebook-open #mobile-history-controls > :not(#mobile-notebook-toggle) { display: none; }
+  /* The corner the notebook's own × used to hold. The head keeps that width clear, so the buttons
+     that belong to the note -- new note, find -- sit alongside it rather than under it. */
   body.mobile-touch-layout.notebook-open #mobile-notebook-toggle {
-    position: fixed; z-index: 131; top: max(8px, env(safe-area-inset-top)); right: max(54px, calc(env(safe-area-inset-right) + 54px));
+    position: fixed; z-index: 131; top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right));
     display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; margin: 0;
   }
   body.mobile-touch-layout.notebook-open #terminal-actions { z-index: 130; }
   body.mobile-touch-layout.notebook-open #terminal-actions > :not(#notebook-toggle) { display: none; }
   body.mobile-touch-layout.notebook-open #terminal-actions #notebook-toggle:not(.hidden) {
-    position: fixed; z-index: 131; top: max(8px, env(safe-area-inset-top)); right: max(54px, calc(env(safe-area-inset-right) + 54px));
+    position: fixed; z-index: 131; top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right));
     display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px;
   }
   body.mobile-touch-layout.notebook-open #file-tabs-notebook:not(.hidden) {
-    position: fixed; z-index: 131; top: max(8px, env(safe-area-inset-top)); right: max(54px, calc(env(safe-area-inset-right) + 54px));
+    position: fixed; z-index: 131; top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right));
     display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px;
   }
   body.mobile-history-surface #history-notebook-toggle { display: none; }
@@ -2387,15 +2389,17 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   }
   #notebook-panel.notebook-over-file-area { top: max(6px, env(safe-area-inset-top)); }
   #notebook-resizer { display: none; }
-  /* No close button in the corner to leave room for: the tabs get the whole width. */
-  #notebook-head { min-height: 50px; padding: 6px 8px; }
+  /* The Notes button sits in the corner over the panel, so the head stops short of it. */
+  #notebook-head { min-height: 50px; padding: 6px 52px 6px 8px; }
   #notebook-actions button { width: 38px; height: 38px; }
   /* Tabs that may shrink are tabs with nothing readable on them: on a phone six notes squeezed into
      the width of one and the titles ran together. Each tab keeps a width it can be read and hit at,
      and the row scrolls sideways, which it was already set up to do. */
   #notebook-tabs { gap: 6px; }
-  .notebook-tab { flex: none; min-width: 104px; max-width: 168px; height: 34px; }
-  .notebook-tab-label { max-width: none; height: 32px; padding: 0 10px; }
+  .notebook-tab { flex: none; min-width: 0; max-width: 168px; height: 34px; }
+  /* Six characters of the title, so a tab is worth reading and big enough to hit, and no wider than
+     its name needs. */
+  .notebook-tab-label { min-width: 6ch; max-width: none; height: 32px; padding: 0 10px; }
   /* The × on a tab moves that note to the Trash. Next to the tab's own target it is a mis-tap away
      from deleting a note, and the notebook closes by its own button, so on a phone the tab is the
      whole tab. Holding it still offers "Move to Trash". */

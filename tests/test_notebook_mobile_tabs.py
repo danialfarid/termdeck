@@ -64,10 +64,22 @@ class MobileTabRowStyleTest(unittest.TestCase):
         cls.full = (STATIC / "style.css").read_text()
 
     def test_a_tab_keeps_a_width_it_can_be_read_at(self) -> None:
-        declarations = rule(self.block, ".notebook-tab")
+        # Six characters of the title: enough to tell two notes apart and to hit, and no wider than
+        # the name needs.
+        self.assertIn("flex: none", rule(self.block, ".notebook-tab"))
+        self.assertRegex(rule(self.block, ".notebook-tab-label"), r"min-width:\s*6ch")
 
-        self.assertIn("flex: none", declarations)
-        self.assertRegex(declarations, r"min-width:\s*\d+px")
+    def test_the_head_stops_short_of_the_notes_button(self) -> None:
+        # The Notes button is fixed over the panel's corner. A head that runs under it puts its own
+        # buttons -- new note, find -- underneath a button that is not its own.
+        padding = re.search(r"padding:\s*\d+px\s+(\d+)px", rule(self.block, "#notebook-head"))
+
+        self.assertGreaterEqual(int(padding.group(1)), 40)
+
+    def test_the_notes_button_sits_in_the_corner(self) -> None:
+        toggle = rule(self.block, "body.mobile-touch-layout.notebook-open #mobile-notebook-toggle")
+
+        self.assertIn("right: max(8px, env(safe-area-inset-right))", toggle)
 
     def test_the_row_scrolls_rather_than_squeezing(self) -> None:
         # Tabs that no longer shrink have to go somewhere; the row was already set up to scroll.

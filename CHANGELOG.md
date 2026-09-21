@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- On a phone the Notes button sat on top of the notebook's own buttons. It moves to the corner the
+  notebook's × used to hold, and the head stops short of it, so new note and find sit alongside it.
+- A note's tab is no longer held wider than its name: six characters of the title is the floor, rather
+  than a fixed width that made short names take a third of the row.
+
 ## [0.19.0] — 2026-09-20
 
 ### Added
