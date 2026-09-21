@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-09-21
+
 ### Added
 
 - A note's earlier versions open in the notebook itself, from a button in its head: the versions down
@@ -1195,7 +1197,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.20.1...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/danialfarid/termdeck/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/danialfarid/termdeck/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/danialfarid/termdeck/compare/v0.19.7...v0.20.0
 [0.19.7]: https://github.com/danialfarid/termdeck/compare/v0.19.6...v0.19.7
