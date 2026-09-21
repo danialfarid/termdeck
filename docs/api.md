@@ -244,6 +244,48 @@ curl -sS -X DELETE "http://127.0.0.1:8530/api/sessions/$session_id"
 The delete succeeds only after TermDeck has terminated that session's dtach process tree and verified that its
 socket was removed. A failed cleanup returns HTTP 409 and leaves the terminal session visible for inspection.
 
+## Notebook notes
+
+The notebook of a project is a list of notes, each one addressed by an id that nothing else reuses. Every call
+works on a single note, so two open decks -- another window, another device, a script -- can write at the same
+time without either one erasing what the other added. All four calls take the usual `project` and `worktree_id`
+query parameters.
+
+List the notes, and which one the notebook currently shows:
+
+```sh
+curl -sS 'http://127.0.0.1:8530/api/notebook/notes?project=stock'
+```
+
+Create one. The response carries the note under `note`, including the `note_id` it lives at from now on:
+
+```sh
+curl -sS -X POST 'http://127.0.0.1:8530/api/notebook/notes?project=stock' \
+  -H 'Content-Type: application/json' -d '{"text": "# Release checklist\n"}'
+```
+
+A caller with an id of its own may send `note_id` as well; the desktop client does, because it has to show the
+note before the request comes back. Creating an id that is already there is not an error and changes nothing:
+the note keeps its text, and the response reports `"created": false`.
+
+Read or replace the text of one note. `PUT` writes the note whether or not the server has seen that id, so text
+is never refused because a create was lost:
+
+```sh
+curl -sS 'http://127.0.0.1:8530/api/notebook/notes/<note_id>?project=stock'
+curl -sS -X PUT 'http://127.0.0.1:8530/api/notebook/notes/<note_id>?project=stock' \
+  -H 'Content-Type: application/json' -d '{"text": "# Release checklist\n\n- tag\n"}'
+```
+
+Delete one. Nothing else is touched, and an unknown id returns HTTP 404:
+
+```sh
+curl -sS -X DELETE 'http://127.0.0.1:8530/api/notebook/notes/<note_id>?project=stock'
+```
+
+`POST /api/notebook/trash` is separate: it writes a note's text to the OS trash as Markdown, which is what the
+close button in the notebook does before the note is deleted.
+
 ## Terminal process health and orphan cleanup
 
 `GET /api/terminals/processes` is a local, read-only inventory of processes reachable from TermDeck's own

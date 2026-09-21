@@ -23,7 +23,7 @@ from termdeck.models import SessionRecord
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot, ProcTreeUtil
 from termdeck.pty_process import PtyProcess
-from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, NotebookNoteSaveRequest, ProjectStatePatch, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, SubmitPromptRequest, TermdeckServer, UiSettings
+from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, NotebookNoteCreateRequest, NotebookNoteSaveRequest, ProjectStatePatch, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, SubmitPromptRequest, TermdeckServer, UiSettings
 from termdeck.replay_recorder import ReplayRecorder
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
 from termdeck.transcript_turns import TurnBuilder
@@ -310,6 +310,67 @@ class NotebookNoteApiTest(unittest.TestCase):
     def notes(self, server: TermdeckServer) -> list[tuple[str, str]]:
         state = server.settings_store.payload["project_state"]["stock"]
         return [(note["note_id"], note["text"]) for note in state["notebook_notes"]]
+
+    def test_creating_a_note_without_an_id_mints_one(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first")])
+
+        created = asyncio.run(server._create_notebook_note(NotebookNoteCreateRequest(text="fresh"),
+                                                           project="stock", worktree_id="root"))
+
+        self.assertTrue(created["created"])
+        self.assertEqual(self.notes(server), [("note-1", "first"), (created["note"]["note_id"], "fresh")])
+
+    def test_two_notes_made_at_once_do_not_share_an_id(self) -> None:
+        server = self.server([])
+
+        ids = {asyncio.run(server._create_notebook_note(NotebookNoteCreateRequest(),
+                                                       project="stock", worktree_id="root"))["note"]["note_id"]
+               for _ in range(2)}
+
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(self.notes(server)), 2)
+
+    def test_creating_a_note_at_an_id_the_caller_chose_keeps_that_id(self) -> None:
+        # The UI has to show a note the moment it is made, so it names the note itself.
+        server = self.server([])
+
+        asyncio.run(server._create_notebook_note(NotebookNoteCreateRequest(note_id="note-mine", text="typed"),
+                                                 project="stock", worktree_id="root"))
+
+        self.assertEqual(self.notes(server), [("note-mine", "typed")])
+
+    def test_creating_a_note_that_is_already_here_leaves_its_text_alone(self) -> None:
+        # A retried create must not undo what was typed between the two attempts.
+        server = self.server([NotebookNote(note_id="note-1", text="typed since")])
+
+        created = asyncio.run(server._create_notebook_note(NotebookNoteCreateRequest(note_id="note-1", text=""),
+                                                           project="stock", worktree_id="root"))
+
+        self.assertFalse(created["created"])
+        self.assertEqual(self.notes(server), [("note-1", "typed since")])
+
+    def test_listing_notes_reports_them_with_the_active_one(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first")])
+        server.settings_store.payload["project_state"]["stock"]["notebook_active_note_id"] = "note-1"
+
+        listing = asyncio.run(server._list_notebook_notes(project="stock", worktree_id="root"))
+
+        self.assertEqual(listing["notes"], [{"note_id": "note-1", "text": "first"}])
+        self.assertEqual(listing["active_note_id"], "note-1")
+
+    def test_reading_one_note_reports_its_text(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first")])
+
+        self.assertEqual(asyncio.run(server._read_notebook_note(note_id="note-1", project="stock", worktree_id="root")),
+                         {"note_id": "note-1", "text": "first"})
+
+    def test_reading_a_missing_note_is_rejected(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first")])
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(server._read_notebook_note(note_id="note-9", project="stock", worktree_id="root"))
+
+        self.assertEqual(raised.exception.status_code, 404)
 
     def test_saving_one_note_leaves_notes_another_page_added_alone(self) -> None:
         server = self.server([NotebookNote(note_id="note-1", text="first"), NotebookNote(note_id="note-2", text="second")])

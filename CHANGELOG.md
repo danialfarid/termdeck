@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The notebook has a plain API of its own: list the notes of a project, create one, read or write the
+  text of one, delete one. Create mints the id when the caller has none, and creating an id that is
+  already there changes nothing, so a retry cannot undo what was typed in between. See
+  [docs/api.md](docs/api.md#notebook-notes).
+
+### Fixed
+
+- A note made in one window stopped disappearing. Project state arrives whole — from a refetch, or from
+  the broadcast every save anywhere in the deck produces — and the copy on the server is only as new as
+  the last write to land, so a broadcast could overtake a new note and take it back out of the list.
+  The editor then moved to another note and everything typed after that went there instead, which is
+  what "the note was not saved" looked like. Arriving state can no longer drop a note this page holds;
+  only deleting one removes it. Each note is also named by a UUID now, so two notes made in the same
+  moment on two machines cannot land on the same id.
+
 ## [0.18.0] — 2026-09-20
 
 ### Added

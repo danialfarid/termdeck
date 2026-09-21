@@ -972,6 +972,10 @@ class TermdeckApp {
     this.pendingNewAgentSelectionUseHistory = false;
     this.nativeSessionIds = new Set();
     this.sessionModelById = new Map();
+    // Notes this page has deleted. Arriving project state can still carry them -- the copy on the server
+    // is only as new as the last write to land -- and without this they would be put back by the very
+    // merge that stops a new note being dropped.
+    this.deletedNotebookNoteIds = new Set();
     this.selectedTreeRow = null;
     this.iconMap = null;
     this.lastValidNavState = null;
@@ -1597,8 +1601,24 @@ class TermdeckApp {
   applyLocalProjectStatePatch(patch, stateKey = this.projectStateKey()) {
     const states = this.settings.project_state || {};
     const current = states[stateKey] || {};
-    states[stateKey] = { ...current, ...patch };
+    states[stateKey] = { ...current, ...patch, ...this.notebookNotesPatch(patch, current) };
     this.settings.project_state = states;
+  }
+
+  // Project state arrives whole -- from a refetch, or from the broadcast every save anywhere in the deck
+  // produces -- and taking it whole threw away a note this page had just made, because the copy on the
+  // server is only as new as the last write to land. The note was written the moment it was made, but a
+  // broadcast could still overtake it, and then it was gone from the list: the editor moved to another
+  // note, and everything typed after that went there instead. A note is never dropped by arriving state;
+  // only deleting one removes it, which is what the tombstones are for.
+  notebookNotesPatch(patch, current) {
+    if (!Array.isArray(patch?.notebook_notes) || !Array.isArray(current?.notebook_notes)) return {};
+    const arriving = new Set(patch.notebook_notes.map((note) => String(note?.note_id || "")));
+    const kept = current.notebook_notes.filter((note) => {
+      const noteId = String(note?.note_id || "");
+      return noteId && !arriving.has(noteId) && !this.deletedNotebookNoteIds.has(noteId);
+    });
+    return kept.length ? { notebook_notes: [...patch.notebook_notes, ...kept] } : {};
   }
 
   async refreshCurrentProjectState() {

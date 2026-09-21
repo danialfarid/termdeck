@@ -6689,6 +6689,7 @@ Object.assign(TermdeckApp.prototype, {
     notebookState.notebook_active_note_id = note.note_id;
     notebookState.notebook_notes_initialized = true;
     notebookState.notebook_text = note.text;
+    this.createNotebookNoteRecord(note);
     this.openNotebookAfterSelectionEdit("selection added as new note");
   },
 
@@ -6706,6 +6707,7 @@ Object.assign(TermdeckApp.prototype, {
       notebookState.notebook_notes.push(note);
       notebookState.notebook_active_note_id = note.note_id;
       notebookState.notebook_notes_initialized = true;
+      this.createNotebookNoteRecord(note);
     }
     const current = String(note.text || "").trimEnd();
     note.text = current ? `${current}\n\n${text}\n` : `${text}\n`;
@@ -6716,8 +6718,13 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // A note is identified by an id nothing else will ever reuse, so that no write anywhere in the deck
+  // can land on top of it -- not another window, not another device, not a page that loaded before the
+  // note existed. That is what a UUID buys over a timestamp: two notes made in the same millisecond on
+  // two machines still get their own id.
   createNotebookNoteId() {
-    return `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const uuid = window.crypto?.randomUUID?.();
+    return `note-${uuid || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`}`;
   },
 
 
@@ -6771,10 +6778,17 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  // The notes themselves go one at a time, never as a list. Every open page of the deck -- another
+  // One note, one request: create it, write it, delete it. Every open page of the deck -- another
   // window, another device -- keeps its own copy of the notes, and a page that sent its whole copy
   // deleted the notes the other pages had added since it loaded: a note added in one window
   // disappeared the moment any other window saved anything of its own.
+  createNotebookNoteRecord(note) {
+    if (!note?.note_id) return;
+    this.queueProjectResourceRequest(this.notebookProjectStateKey(), "/api/notebook/notes", "POST",
+      { note_id: note.note_id, text: note.text || "" });
+  },
+
+
   saveNotebookNote(note) {
     if (!note?.note_id) return;
     this.queueProjectResourceRequest(this.notebookProjectStateKey(),
@@ -6789,14 +6803,15 @@ Object.assign(TermdeckApp.prototype, {
 
   saveNotebookNotes() {
     // Only normalizing at load writes every note at once -- to carry the notes of the old global
-    // notebook into this project. The page has just read those notes from the server, so writing
-    // them all back cannot overwrite anyone else's work.
-    for (const note of this.notebookProjectState().notebook_notes || []) this.saveNotebookNote(note);
+    // notebook into this project. They are new to this project, so each one is created rather than
+    // written: a note already carried over by another page keeps the text that page gave it.
+    for (const note of this.notebookProjectState().notebook_notes || []) this.createNotebookNoteRecord(note);
   },
 
 
   deleteNotebookNote(noteId) {
     if (!noteId) return;
+    this.deletedNotebookNoteIds.add(noteId);
     this.queueProjectResourceRequest(this.notebookProjectStateKey(),
       `/api/notebook/notes/${encodeURIComponent(noteId)}`, "DELETE");
   },
@@ -7199,7 +7214,7 @@ Object.assign(TermdeckApp.prototype, {
     notebookState.notebook_text = note.text;
     this.notebookSearchIndex = 0;
     this.renderNotebook();
-    this.saveNotebookNote(note);
+    this.createNotebookNoteRecord(note);
     this.saveNotebookProjectState();
     await this.mountNotebookEditor();
     this.focusNotebookEditor();

@@ -244,6 +244,13 @@ class NotebookNoteSaveRequest(BaseModel):
     text: str = ""
 
 
+class NotebookNoteCreateRequest(BaseModel):
+    """A new note. ``note_id`` is optional: the server mints one when the caller has none of its own."""
+
+    note_id: str = ""
+    text: str = ""
+
+
 class StateRecoveryRestoreRequest(BaseModel):
     snapshot: str
 
@@ -868,6 +875,9 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_LAN_STATUS_ROUTE, response_model=None)(self._lan_status)
         app.put(TermdeckConfig.API_LAN_ACCESS_ROUTE, response_model=None)(self._set_lan_access)
         app.post(TermdeckConfig.API_NOTEBOOK_TRASH_ROUTE, response_model=None)(self._trash_notebook_note)
+        app.get(TermdeckConfig.API_NOTEBOOK_NOTES_ROUTE, response_model=None)(self._list_notebook_notes)
+        app.post(TermdeckConfig.API_NOTEBOOK_NOTES_ROUTE, response_model=None)(self._create_notebook_note)
+        app.get(TermdeckConfig.API_NOTEBOOK_NOTE_ROUTE, response_model=None)(self._read_notebook_note)
         app.put(TermdeckConfig.API_NOTEBOOK_NOTE_ROUTE, response_model=None)(self._save_notebook_note)
         app.delete(TermdeckConfig.API_NOTEBOOK_NOTE_ROUTE, response_model=None)(self._delete_notebook_note)
         app.get(TermdeckConfig.API_FILE_LIST_ROUTE, response_model=None)(self._list_files)
@@ -2671,13 +2681,53 @@ class TermdeckServer:
         self._broadcast_project_state(layout_payload)
         return layout_payload
 
+    async def _list_notebook_notes(self, project: str = "", worktree_id: str = "") -> dict[str, object]:
+        _, _, state = self._project_state_context(project, worktree_id)
+        return {"project": project, "worktree_id": worktree_id or "root",
+                "active_note_id": state.notebook_active_note_id,
+                "notes": [note.model_dump() for note in state.notebook_notes]}
+
+    async def _read_notebook_note(self, note_id: str, project: str = "", worktree_id: str = "") -> dict[str, object]:
+        _, _, state = self._project_state_context(project, worktree_id)
+        for note in state.notebook_notes:
+            if note.note_id == note_id:
+                return note.model_dump()
+        raise HTTPException(status_code=404, detail=note_id)
+
+    async def _create_notebook_note(self, request: NotebookNoteCreateRequest, project: str = "",
+                                    worktree_id: str = "") -> dict[str, object]:
+        """Add one note and report the id it lives at from now on.
+
+        The id is what keeps a note safe: nothing else in the deck ever reuses it, so no later write --
+        from another window, another device, or automation -- can land on top of the note. A caller may
+        bring its own id, and the UI does, because it has to show the note the moment it is made rather
+        than when the request comes back; a caller with nothing to name it by leaves ``note_id`` out and
+        gets a fresh one. Creating an id that is already here is not an error and changes nothing: the
+        note stays as it is, so a retried create cannot undo what was typed in between.
+        """
+        note_id = request.note_id.strip() or f"note-{uuid.uuid4()}"
+        settings, key, state = self._project_state_context(project, worktree_id)
+        note = next((entry for entry in state.notebook_notes if entry.note_id == note_id), None)
+        created = note is None
+        if note is None:
+            note = NotebookNote(note_id=note_id, text=request.text)
+            state.notebook_notes = [*state.notebook_notes, note]
+            state.notebook_notes_initialized = True
+            payload = self._save_project_state(settings, key, state, project, worktree_id)
+        else:
+            payload = self._terminal_layout_payload(project, settings, worktree_id)
+        return {**payload, "note": note.model_dump(), "created": created}
+
     async def _save_notebook_note(self, request: NotebookNoteSaveRequest, note_id: str, project: str = "",
                                   worktree_id: str = "") -> dict[str, object]:
-        """Write one note, leaving every other note alone.
+        """Write the text of one note, leaving every other note alone.
 
         Each open deck page holds its own copy of the note list. A page that sent the whole list back
         deleted the notes other pages had added since it loaded, so a note added in one window
         vanished as soon as any other window saved.
+
+        The write stands on its own: a note at an id this server has not seen is written rather than
+        refused, so text does not get thrown away because the create never arrived.
         """
         if not note_id.strip():
             raise HTTPException(status_code=422, detail="note_id is required")
