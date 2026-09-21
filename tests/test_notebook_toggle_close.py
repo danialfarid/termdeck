@@ -27,7 +27,8 @@ const app = {
 process.stdout.write(JSON.stringify(app.notebookToggleElements().map((element) => element.id)));
 """
 
-TOGGLE_IDS = ["notebook-toggle", "history-notebook-toggle", "file-tabs-notebook", "mobile-notebook-toggle"]
+TOGGLE_IDS = ["notebook-toggle", "history-notebook-toggle", "file-tabs-notebook", "mobile-notebook-toggle",
+              "notebook-head-toggle"]
 
 
 class NotebookToggleElementsTest(unittest.TestCase):
@@ -92,22 +93,31 @@ class NoCloseButtonTest(unittest.TestCase):
         self.assertNotIn('id="notebook-close"', self.html)
         self.assertNotIn("notebook-close\"", self.js)
 
-    def test_the_notes_button_is_above_the_panel_it_opens(self) -> None:
-        # The panel covered it, which is why a × was needed in the first place: the button that opened
-        # the notebook could not be pressed again to close it.
-        toggles = re.search(r"body\.notebook-open #notebook-toggle,(.{0,400}?)\{([^}]*)\}", self.css, re.S)
-        self.assertIsNotNone(toggles, "the rule lifting the toggles above the panel is gone")
-        panel_z = int(re.search(r"#notebook-panel\s*\{[^}]*z-index:\s*(\d+)", self.css).group(1))
+    def test_the_panel_carries_a_notes_button_of_its_own(self) -> None:
+        # In the head, in line with the head's other buttons, in whichever mode the deck is in.
+        self.assertIn('id="notebook-head-toggle"', self.html)
+        actions = re.search(r'<span id="notebook-actions">(.*?)</span>\s*\n\s*</div>', self.html, re.S).group(1)
 
-        self.assertGreater(int(re.search(r"z-index:\s*(\d+)", toggles.group(2)).group(1)), panel_z)
-        for toggle in ("#history-notebook-toggle", "#file-tabs-notebook", "#mobile-notebook-toggle"):
-            self.assertIn(toggle, toggles.group(1))
+        self.assertIn("notebook-head-toggle", actions)
 
-    def test_the_head_stops_short_of_the_button(self) -> None:
-        # Its own buttons sit to the left of the Notes button rather than underneath it.
+    def test_the_button_outside_stands_down_while_the_notebook_is_open(self) -> None:
+        # It sits in a different place in each mode, and behind the panel in some of them, which is
+        # what made it look misaligned in one mode and swallowed in the other.
+        hidden_while_open = [selectors for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", self.css)
+                             if "body.notebook-open" in selectors and "display: none" in body]
+        self.assertTrue(hidden_while_open, "the rule standing the outside buttons down is gone")
+        stood_down = " ".join(hidden_while_open)
+
+        for toggle in ("#notebook-toggle", "#history-notebook-toggle", "#file-tabs-notebook", "#mobile-notebook-toggle"):
+            self.assertIn(toggle, stood_down)
+        # The one in the head is the one that stays: hiding it would leave no way back out.
+        self.assertNotIn("#notebook-head-toggle", stood_down)
+
+    def test_the_head_keeps_no_gap_for_a_button_that_is_not_there(self) -> None:
+        # The Notes button is inside the head now, so the head needs no corner kept clear for it.
         padding = re.search(r"#notebook-head\s*\{[^}]*padding:\s*\d+px\s+(\d+)px", self.css)
 
-        self.assertGreaterEqual(int(padding.group(1)), 48)
+        self.assertLessEqual(int(padding.group(1)), 16)
 
 
 if __name__ == "__main__":

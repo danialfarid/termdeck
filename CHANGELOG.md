@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The open notebook carries its own Notes button, in its head, in line with the head's other buttons
+  and in the same place whichever mode the deck is in. The button outside stands down while the
+  notebook is open: it sits in a different place in each mode — a few pixels below the head's buttons
+  in terminal mode, behind the panel in transcript mode — which is what made it look misaligned in one
+  and swallowed in the other. In terminal mode the button now sits exactly where the panel's own
+  button appears, so pressing Notes never moves it.
+
 ## [0.19.6] — 2026-09-21
 
 ### Changed

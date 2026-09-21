@@ -1218,7 +1218,9 @@ body.dragging-side { user-select: none; cursor: row-resize; }
 #git-review-area.git-review-patch #git-review-position, #git-review-area.git-review-patch #git-review-layout,
 #git-review-area.git-review-patch #git-review-open-file { display: none; }
 #terminal-actions { position: absolute; top: 10px; right: 30px; z-index: 5; display: flex; gap: 5px; }
-body:not(.vscode-mode) #terminal-actions { display: flex; }
+/* Pressing Notes should feel like the same button staying put: closed, it sits where the panel's own
+   Notes button appears when it opens, rather than a few pixels below it. */
+body:not(.vscode-mode) #terminal-actions { display: flex; top: 5px; right: 21px; }
 body:not(.vscode-mode) #terminal-actions > :not(#notebook-toggle) { display: none; }
 #terminal-actions button { width: 26px; height: 23px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--dim); cursor: pointer; opacity: 0.8; }
 #terminal-actions button:hover, #history-btn.on { color: var(--text); border-color: var(--accent); background: var(--panel2); opacity: 1; }
@@ -1703,20 +1705,21 @@ body.dragging-notebook { user-select: none; cursor: col-resize; }
   from { opacity: 1; transform: translateY(0) scale(1); }
   to { opacity: 0; transform: translateY(-10px) scale(0.965); }
 }
-/* The Notes button is what opens and closes the notebook, so the panel opens beside it rather than over
-   it: the button keeps its place, the head stops short of it, and the head's own buttons sit to its
-   left. There is nothing for a × in the corner to do that pressing Notes again does not. */
+/* Notes is a push button: pressing it opens the notebook, and pressing it again closes it. While the
+   notebook is open that button is the panel's own -- in its head, in line with the head's other
+   buttons, in whichever mode the deck is in -- because the button outside sits in a different place in
+   each mode, and behind the panel in some of them. So the one outside stands down while it is open. */
 body.notebook-open #notebook-toggle,
 body.notebook-open #history-notebook-toggle,
 body.notebook-open #file-tabs-notebook,
-body.notebook-open #mobile-notebook-toggle { position: relative; z-index: 29; }
-body.notebook-open #terminal-actions { z-index: 29; }
+body.notebook-open #mobile-notebook-toggle { display: none; }
+#notebook-head-toggle .note-taking-icon { width: 1.25em; height: 1.15em; }
 #notebook-head {
   flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 56px 6px 11px;
+  padding: 6px 11px;
   background: color-mix(in srgb, var(--notebook-bg) 88%, var(--panel2) 12%);
   border-bottom: 1px solid var(--border);
 }
@@ -2356,27 +2359,6 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   #mobile-notebook-toggle .note-taking-icon { transform: scale(1.08); }
   body.mobile-touch-layout.notebook-open #notebook-panel { z-index: 120; }
   body.mobile-touch-layout.notebook-open #mobile-sidebar-toggle { display: none; }
-  body.mobile-touch-layout.mobile-history-surface.notebook-open #mobile-history-controls {
-    position: fixed; z-index: 130; top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right));
-    display: flex; align-items: center; gap: 3px;
-  }
-  body.mobile-touch-layout.notebook-open #mobile-history-controls > :not(#mobile-notebook-toggle) { display: none; }
-  /* The corner the notebook's own × used to hold. The head keeps that width clear, so the buttons
-     that belong to the note -- new note, find -- sit alongside it rather than under it. */
-  body.mobile-touch-layout.notebook-open #mobile-notebook-toggle {
-    position: fixed; z-index: 131; top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right));
-    display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; margin: 0;
-  }
-  body.mobile-touch-layout.notebook-open #terminal-actions { z-index: 130; }
-  body.mobile-touch-layout.notebook-open #terminal-actions > :not(#notebook-toggle) { display: none; }
-  body.mobile-touch-layout.notebook-open #terminal-actions #notebook-toggle:not(.hidden) {
-    position: fixed; z-index: 131; top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right));
-    display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px;
-  }
-  body.mobile-touch-layout.notebook-open #file-tabs-notebook:not(.hidden) {
-    position: fixed; z-index: 131; top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right));
-    display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px;
-  }
   body.mobile-history-surface #history-notebook-toggle { display: none; }
   body.mobile-history-surface #history-filter-toggle { display: none; }
   body.mobile-history-surface #history-filter-menu { position: fixed; z-index: 110; top: max(55px, calc(env(safe-area-inset-top) + 55px)); left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); min-width: 0; }
@@ -2397,8 +2379,7 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   }
   #notebook-panel.notebook-over-file-area { top: max(6px, env(safe-area-inset-top)); }
   #notebook-resizer { display: none; }
-  /* The Notes button sits in the corner over the panel, so the head stops short of it. */
-  #notebook-head { min-height: 50px; padding: 6px 52px 6px 8px; }
+  #notebook-head { min-height: 50px; padding: 6px 8px; }
   #notebook-actions button { width: 38px; height: 38px; }
   /* Tabs that may shrink are tabs with nothing readable on them: on a phone six notes squeezed into
      the width of one and the titles ran together. Each tab keeps a width it can be read and hit at,

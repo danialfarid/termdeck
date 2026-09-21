@@ -7100,7 +7100,7 @@ Object.assign(TermdeckApp.prototype, {
 
   notebookToggleElements() {
     return [this.$("notebook-toggle"), this.$("history-notebook-toggle"), this.$("file-tabs-notebook"),
-      this.$("mobile-notebook-toggle")].filter(Boolean);
+      this.$("mobile-notebook-toggle"), this.$("notebook-head-toggle")].filter(Boolean);
   },
 
 

@@ -69,17 +69,11 @@ class MobileTabRowStyleTest(unittest.TestCase):
         self.assertIn("flex: none", rule(self.block, ".notebook-tab"))
         self.assertRegex(rule(self.block, ".notebook-tab-label"), r"min-width:\s*6ch")
 
-    def test_the_head_stops_short_of_the_notes_button(self) -> None:
-        # The Notes button is fixed over the panel's corner. A head that runs under it puts its own
-        # buttons -- new note, find -- underneath a button that is not its own.
+    def test_the_head_keeps_its_width_for_its_own_buttons(self) -> None:
+        # The Notes button is one of them now, so no corner is kept clear for a button outside.
         padding = re.search(r"padding:\s*\d+px\s+(\d+)px", rule(self.block, "#notebook-head"))
 
-        self.assertGreaterEqual(int(padding.group(1)), 40)
-
-    def test_the_notes_button_sits_in_the_corner(self) -> None:
-        toggle = rule(self.block, "body.mobile-touch-layout.notebook-open #mobile-notebook-toggle")
-
-        self.assertIn("right: max(8px, env(safe-area-inset-right))", toggle)
+        self.assertLessEqual(int(padding.group(1)), 16)
 
     def test_the_row_scrolls_rather_than_squeezing(self) -> None:
         # Tabs that no longer shrink have to go somewhere; the row was already set up to scroll.
