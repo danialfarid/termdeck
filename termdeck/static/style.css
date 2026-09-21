@@ -739,6 +739,9 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 .history-event.disk-change summary { color: var(--warn, #d8ae00); }
 .history-event.plan summary { color: var(--accent); }
 .history-event.thinking summary { color: var(--dim); }
+/* The newest operation, on the lid of a shut block. It gives way first when the row runs out of
+   width: the count beside it is the part that must stay readable. */
+.history-thinking-latest { min-width: 0; overflow: hidden; color: var(--dim); opacity: 0.85; font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; white-space: nowrap; text-overflow: ellipsis; }
 .history-event.thinking.active .history-thinking-title { color: var(--accent); will-change: opacity, transform; animation: history-thinking-title-pulse var(--thinking-blink-interval) ease-in-out infinite; }
 @keyframes history-thinking-title-pulse {
   0%, 100% { opacity: 0.35; transform: scale(0.98); }
@@ -2395,7 +2398,9 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   /* Tabs that may shrink are tabs with nothing readable on them: on a phone six notes squeezed into
      the width of one and the titles ran together. Each tab keeps a width it can be read and hit at,
      and the row scrolls sideways, which it was already set up to do. */
-  #notebook-tabs { gap: 6px; }
+  /* The row is a sideways scroller, and saying so is what lets the browser start the scroll on the
+     first finger rather than waiting to see what the page does with the touch. */
+  #notebook-tabs { gap: 6px; touch-action: pan-x; }
   .notebook-tab { flex: none; min-width: 0; max-width: 168px; height: 34px; }
   /* Six characters of the title, so a tab is worth reading and big enough to hit, and no wider than
      its name needs. */

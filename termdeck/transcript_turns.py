@@ -370,6 +370,52 @@ class TurnBuilder:
                         return text
         return ""
 
+    LATEST_OPERATION_CHARS = 64
+    # What an operation was given, in the order a reader wants it: what it says it is doing, then the
+    # command, then whatever it is pointed at.
+    OPERATION_DETAIL_KEYS = ("description", "command", "file_path", "path", "pattern", "query", "url",
+                             "prompt", "notebook_path", "name")
+
+    @classmethod
+    def latest_operation_label(cls, raw_items: list[dict[str, str]]) -> str:
+        """What the agent is doing right now, in one line, for a block that is folded shut.
+
+        A run of operations folds into "Thinking · 12 operations", which says how busy it has been and
+        nothing about what it is busy with. An agent that writes a line before it starts says it
+        itself; one that goes straight to work says nothing at all, and the transcript then reads as a
+        row of identical lids. The newest operation is the answer to "what is it doing", so it is on
+        the lid: the tool, and the first line of what it was given.
+        """
+        newest = next((item for item in reversed(raw_items) if item.get("kind") == "tool"), None)
+        if newest is None:
+            return ""
+        title = str(newest.get("title") or "").strip()
+        detail = cls.operation_detail(str(newest.get("text") or ""))
+        if len(detail) > cls.LATEST_OPERATION_CHARS:
+            detail = detail[:cls.LATEST_OPERATION_CHARS - 1].rstrip() + "…"
+        return f"{title} {detail}".strip() if title else detail
+
+    @classmethod
+    def operation_detail(cls, text: str) -> str:
+        """One line out of what a tool was handed, which is written as JSON -- so the first line is `{`."""
+        try:
+            value = json.loads(text)
+        except (TypeError, ValueError):
+            value = None
+        if isinstance(value, dict):
+            for key in cls.OPERATION_DETAIL_KEYS:
+                detail = value.get(key)
+                if isinstance(detail, str) and detail.strip():
+                    return detail.strip().splitlines()[0].strip()
+            for detail in value.values():
+                if isinstance(detail, str) and detail.strip():
+                    return detail.strip().splitlines()[0].strip()
+            return ""
+        if isinstance(value, str) and value.strip():
+            return value.strip().splitlines()[0].strip()
+        return next((line.strip() for line in text.splitlines()
+                     if line.strip() and line.strip() not in {"{", "}", "[", "]"}), "")
+
     @classmethod
     def collapse_thinking_events(cls, turns: list[dict[str, object]]) -> list[dict[str, object]]:
         collapsed: list[dict[str, object]] = []
@@ -429,6 +475,7 @@ class TurnBuilder:
                     "title": f"Thinking · {len(raw_items)} operations",
                     "expanded": False,
                     "items": items,
+                    "latest": cls.latest_operation_label(raw_items),
                 }
                 timestamp = next((item.get("timestamp") for item in turns[start:index]
                                   if item.get("timestamp") not in (None, "")), None)

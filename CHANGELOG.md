@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A folded run of operations says what the agent is doing, not only how much of it: "Thinking · 12
+  operations · Bash Run the tests". An agent that writes a line before it starts work says it itself;
+  one that goes straight to work said nothing, and a column of folded blocks read as a row of lids.
+
+### Fixed
+
+- The notebook's tab row can be scrolled on a phone. A finger landing on a tab opened that note there
+  and then, so every reach for a tab further along opened two or three notes on the way. A tap opens a
+  note, a swipe scrolls past it, and a hold still offers the Trash.
+
 ## [0.19.1] — 2026-09-20
 
 ### Fixed

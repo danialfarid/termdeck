@@ -3743,6 +3743,14 @@ Object.assign(TermdeckApp.prototype, {
           thinkingCount.className = "history-thinking-count";
           thinkingCount.textContent = ` · ${turn.items.length} operations`;
           summary.append(thinkingTitle, thinkingCount);
+          // A shut block says how busy the agent has been and nothing about what with. The newest
+          // operation goes on the lid, so a column of folded blocks reads as work rather than lids.
+          if (turn.latest) {
+            const latest = document.createElement("span");
+            latest.className = "history-thinking-latest";
+            latest.textContent = ` · ${turn.latest}`;
+            summary.append(latest);
+          }
         } else {
           summary.textContent = turn.kind === "edit"
               ? this.historyEditSummary(turn)
@@ -4230,52 +4238,7 @@ Object.assign(TermdeckApp.prototype, {
     if (!toggles.length || !panel || !host) return;
     this.normalizeNotebookNotes();
     for (const toggle of toggles) toggle.onclick = () => this.toggleNotebook();
-    const notebookTabs = this.$("notebook-tabs");
-    // The tab row answers for its tabs itself, and stops the event going further, so a hold has to be
-    // followed from here too: a listener on the tab would never hear the press that starts it.
-    let tabHold = null;
-    const cancelTabHold = () => {
-      if (tabHold?.timer) window.clearTimeout(tabHold.timer);
-      tabHold = null;
-    };
-    notebookTabs.addEventListener("pointerdown", (event) => {
-      const tab = event.target.closest?.(".notebook-tab[data-note-id]");
-      if (!tab || event.target.closest?.(".notebook-tab-close") || event.button !== 0) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const noteId = tab.dataset.noteId;
-      void this.selectNotebookNote(noteId);
-      cancelTabHold();
-      // On a phone the × is hidden, so holding the tab is how a note is thrown away -- the same hold
-      // that opens a menu on a terminal row.
-      if (event.pointerType !== "touch" || !this.touchMobileLayoutEnabled()) return;
-      tabHold = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, timer: 0 };
-      const started = tabHold;
-      started.timer = window.setTimeout(() => {
-        if (tabHold !== started) return;
-        cancelTabHold();
-        const note = this.notebookProjectState().notebook_notes.find((entry) => entry.note_id === noteId);
-        if (!note) return;
-        this.openNotebookTabContextMenu(
-          { preventDefault() {}, stopPropagation() {}, clientX: started.x, clientY: started.y }, note);
-      }, MOBILE_SIDEBAR_CONTEXT_LONG_PRESS_MS);
-    }, true);
-    notebookTabs.addEventListener("pointermove", (event) => {
-      if (!tabHold || tabHold.pointerId !== event.pointerId) return;
-      // The row scrolls sideways, so a hold that starts moving is someone reaching another tab.
-      if (Math.hypot(event.clientX - tabHold.x, event.clientY - tabHold.y) > MOBILE_SIDEBAR_CONTEXT_MOVE_TOLERANCE) {
-        cancelTabHold();
-      }
-    }, { passive: true });
-    notebookTabs.addEventListener("pointerup", cancelTabHold, { passive: true });
-    notebookTabs.addEventListener("pointercancel", cancelTabHold, { passive: true });
-    notebookTabs.addEventListener("click", (event) => {
-      const tab = event.target.closest?.(".notebook-tab[data-note-id]");
-      if (!tab || event.target.closest?.(".notebook-tab-close") || event.detail !== 0) return;
-      event.preventDefault();
-      event.stopPropagation();
-      void this.selectNotebookNote(tab.dataset.noteId);
-    }, true);
+    this.installNotebookTabGestures();
     this.$("notebook-new").onclick = () => { void this.createNotebookNote(); };
     this.$("notebook-find").onclick = () => this.openNotebookFind();
     this.$("notebook-find-close").onclick = () => this.closeNotebookFind(true);
@@ -7091,6 +7054,69 @@ Object.assign(TermdeckApp.prototype, {
     copiedTab.append(copiedIcon, copiedLabel, copiedCount);
     copiedTab.onclick = () => this.selectNotebookCopies();
     tabs.appendChild(copiedTab);
+  },
+
+
+  // A finger on a tab has not chosen anything yet. The row scrolls sideways, and opening the note under
+  // the finger the moment it lands meant every reach for a tab further along opened two or three notes
+  // on the way. Nothing is decided until the finger lifts without having travelled, and nothing is
+  // prevented on the way down either, or the row would not scroll at all. A mouse still acts on the
+  // press, where there is no gesture to tell apart. The row answers for its tabs itself and stops the
+  // event going further, so the hold is followed from here too: a listener on a tab would never hear
+  // the press that starts it.
+  installNotebookTabGestures() {
+    const notebookTabs = this.$("notebook-tabs");
+    if (!notebookTabs) return;
+    let hold = null;
+    const cancelHold = () => {
+      if (hold?.timer) window.clearTimeout(hold.timer);
+      hold = null;
+    };
+    notebookTabs.addEventListener("pointerdown", (event) => {
+      const tab = event.target.closest?.(".notebook-tab[data-note-id]");
+      if (!tab || event.target.closest?.(".notebook-tab-close") || event.button !== 0) return;
+      const noteId = tab.dataset.noteId;
+      cancelHold();
+      if (event.pointerType === "touch") {
+        hold = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, noteId, timer: 0, handled: false };
+        const started = hold;
+        // Holding is how a note is thrown away on a phone, where the × is not on the tab.
+        started.timer = window.setTimeout(() => {
+          if (hold !== started) return;
+          started.timer = 0;
+          started.handled = true;
+          const note = this.notebookProjectState().notebook_notes.find((entry) => entry.note_id === noteId);
+          if (!note) return;
+          this.openNotebookTabContextMenu(
+            { preventDefault() {}, stopPropagation() {}, clientX: started.x, clientY: started.y }, note);
+        }, MOBILE_SIDEBAR_CONTEXT_LONG_PRESS_MS);
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      void this.selectNotebookNote(noteId);
+    }, true);
+    notebookTabs.addEventListener("pointermove", (event) => {
+      if (!hold || hold.pointerId !== event.pointerId) return;
+      // Travel means the row is being scrolled, not that a tab is being chosen.
+      if (Math.hypot(event.clientX - hold.x, event.clientY - hold.y) > MOBILE_SIDEBAR_CONTEXT_MOVE_TOLERANCE) {
+        cancelHold();
+      }
+    }, { passive: true });
+    notebookTabs.addEventListener("pointerup", (event) => {
+      if (!hold || hold.pointerId !== event.pointerId) return;
+      const finished = hold;
+      cancelHold();
+      if (!finished.handled) void this.selectNotebookNote(finished.noteId);
+    }, { passive: true });
+    notebookTabs.addEventListener("pointercancel", cancelHold, { passive: true });
+    notebookTabs.addEventListener("click", (event) => {
+      const tab = event.target.closest?.(".notebook-tab[data-note-id]");
+      if (!tab || event.target.closest?.(".notebook-tab-close") || event.detail !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void this.selectNotebookNote(tab.dataset.noteId);
+    }, true);
   },
 
 
