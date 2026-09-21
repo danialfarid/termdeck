@@ -1113,7 +1113,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.19.3...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.19.4...HEAD
+[0.19.4]: https://github.com/danialfarid/termdeck/compare/v0.19.3...v0.19.4
 [0.19.3]: https://github.com/danialfarid/termdeck/compare/v0.19.2...v0.19.3
 [0.19.2]: https://github.com/danialfarid/termdeck/compare/v0.19.1...v0.19.2
 [0.19.1]: https://github.com/danialfarid/termdeck/compare/v0.19.0...v0.19.1
