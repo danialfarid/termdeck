@@ -6,8 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-09-20
+
 ### Added
 
+- The model shown beside the composer is a control. Click it and pick a model, then the reasoning level
+  that model offers; a model no list has heard of can be typed instead. Which of the two it takes comes
+  from the agent: codex is told by position, so a model outside its catalog restarts the terminal on it
+  (resuming the session, not starting a new one), while an agent with a command of its own — claude's
+  `/model`, then `/effort` for the level — is simply told, whatever the name. For an agent whose model
+  TermDeck cannot change it stays the readout it was.
+- Claude is asked which models it takes, rather than offered the ones this deck happens to have started
+  it on: its help names the aliases and the levels it accepts, and its settings carry the full ids this
+  install has used. Every agent is asked the same way, through its adapter; one with nothing to say
+  leaves the field the free-text box it was.
+- Code edits in a transcript are folded by default, and the one line a folded edit gets says which files
+  changed and by how much. Paths are shortened against the terminal's own directory. The filter that
+  collapsed them now expands them, since folded is what they are unless asked otherwise.
 - The notebook has a plain API of its own: list the notes of a project, create one, read or write the
   text of one, delete one. Create mints the id when the caller has none, and creating an id that is
   already there changes nothing, so a retry cannot undo what was typed in between. See
@@ -31,7 +46,8 @@ All notable changes to this project are documented here. The format follows
 - The notebook's tabs no longer pile up on a phone. They kept shrinking until six notes fitted in the
   width of one and the titles ran together; each tab now keeps a width it can be read and hit at, and
   the row scrolls sideways. The × that moves a note to the Trash is off the tab there — it sat a
-  mis-tap from the tab's own target — and "Copied" shows its icon and count without the word.
+  mis-tap from the tab's own target — and "Copied" shows its icon and count without the word. The
+  notebook's own × in the corner is gone too on a phone: the Notes button that opened it closes it.
 - A prompt waiting to be confirmed is now looked for every few seconds, instead of only when the
   transcript happens to say something. An agent that takes a prompt and then works quietly says
   nothing for minutes, which left the message reading as one that was never sent.
@@ -1055,7 +1071,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/danialfarid/termdeck/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/danialfarid/termdeck/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/danialfarid/termdeck/compare/v0.16.2...v0.17.0
 [0.16.2]: https://github.com/danialfarid/termdeck/compare/v0.16.1...v0.16.2
