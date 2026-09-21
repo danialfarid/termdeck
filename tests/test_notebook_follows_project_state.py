@@ -25,6 +25,7 @@ const app = {
   settings: { notebook_open: scenario.notebookOpen !== false },
   notebookProjectState: () => scenario.state,
   notebookNoteForEditorModel: () => (scenario.editorNoteIsGone ? null : { note_id: "shown" }),
+  applyArrivingNotebookText() {},
   renderNotebook() { rendered.push({ mountedAtRender: mounted }); },
   get notebookMounted() { return mounted; },
   set notebookMounted(value) { mounted = value; },

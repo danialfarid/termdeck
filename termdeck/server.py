@@ -698,7 +698,8 @@ class TermdeckServer:
         self.worktrees = GitWorktreeService(TermdeckConfig.WORKTREES_DIR)
         self.worktree_registry = WorktreeRegistry(TermdeckConfig.WORKTREE_REGISTRY_FILE, self.state_backup, self.worktrees)
         self.file_history = FileHistoryService(TermdeckConfig.FILE_HISTORY_DATABASE)
-        self.notebook_history = FileHistoryService(TermdeckConfig.NOTEBOOK_HISTORY_DATABASE)
+        self.notebook_history = FileHistoryService(TermdeckConfig.NOTEBOOK_HISTORY_DATABASE,
+                                                  TermdeckConfig.NOTEBOOK_HISTORY_MAX_VERSIONS_PER_NOTE)
         self.search = ProjectSearchService(self.files)
         self.stats = ResourceStatsService()
         self.transcripts = TranscriptService()

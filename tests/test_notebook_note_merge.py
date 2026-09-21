@@ -152,6 +152,7 @@ const app = {
   notebookProjectState: () => ({ notebook_notes: scenario.notes }),
   unsavedNotebookNoteIds: new Set(),
   notebookNoteConflicts: new Map(),
+  dirtyNotebookNoteIds: new Set(),
   queueProjectResourceRequest: (stateKey, path, method, body) =>
     requests.push({ stateKey, path, method, body: typeof body === "function" ? body() : body }),
   __METHODS__

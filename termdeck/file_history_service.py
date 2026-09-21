@@ -9,8 +9,11 @@ from termdeck.util import TimeUtil
 
 
 class FileHistoryService:
-    def __init__(self, database_path: Path) -> None:
+    def __init__(self, database_path: Path, max_versions_per_file: int | None = None) -> None:
         self._database_path = database_path
+        # Notes keep fewer versions than files: they are written on a timer while someone types, and a
+        # note nobody has opened for a month should not be holding a hundred of them.
+        self._max_versions_per_file = max_versions_per_file or TermdeckConfig.FILE_HISTORY_MAX_VERSIONS_PER_FILE
         self._lock = threading.RLock()
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as database:
@@ -61,7 +64,7 @@ class FileHistoryService:
             "DELETE FROM file_history WHERE version_id IN ("
             "SELECT version_id FROM file_history WHERE root = ? AND path = ? "
             "ORDER BY version_id DESC LIMIT -1 OFFSET ?)",
-            (root, path, TermdeckConfig.FILE_HISTORY_MAX_VERSIONS_PER_FILE),
+            (root, path, self._max_versions_per_file),
         )
         while True:
             total = database.execute("SELECT COALESCE(SUM(byte_size), 0) FROM file_history").fetchone()[0]

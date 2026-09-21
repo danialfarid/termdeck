@@ -33,7 +33,8 @@ const app = {
     }
     options.onSaved?.(scenario.saved || {});
   },
-  holdNotebookNoteForRefresh: (noteId, serverNote) => held.push({ noteId, serverNote }),
+  dirtyNotebookNoteIds: new Set(),
+  handleRefusedNotebookWrite: (noteId, serverNote) => held.push({ noteId, serverNote }),
   __METHODS__
 };
 const note = scenario.note;
@@ -53,6 +54,8 @@ const app = {
   notebookProjectState: () => state,
   notebookEditorModels: new Map([[scenario.note.note_id, model]]),
   notebookNoteConflicts: new Map([[scenario.note.note_id, null]]),
+  dirtyNotebookNoteIds: new Set([scenario.note.note_id]),
+  showNotebookError() {},
   createNotebookNoteId: () => "note-rescued",
   createNotebookNoteRecord: (note) => created.push(note),
   applyNotebookEditability() {},
@@ -123,6 +126,110 @@ class SaveCarriesItsVersionTest(unittest.TestCase):
         self.assertEqual(result["sent"], [])
 
 
+REFUSAL_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_REFUSAL_SCENARIO);
+const errors = [];
+const refreshed = [];
+const app = {
+  statusWs: { readyState: scenario.connected ? 1 : 3 },
+  notebookNoteConflicts: new Map(),
+  showNotebookError: (message) => errors.push(message),
+  refreshNotebookNote: (noteId, known) => { refreshed.push({ noteId, known }); },
+  applyNotebookEditability() {},
+  __METHODS__
+};
+global.WebSocket = { OPEN: 1 };
+app.handleRefusedNotebookWrite("note-1", scenario.serverNote);
+process.stdout.write(JSON.stringify({ errors, refreshed, locked: app.notebookNoteConflicts.has("note-1") }));
+"""
+
+
+class RefusedWriteTest(unittest.TestCase):
+    """What a refused write does depends on whether the newer text can reach this window by itself."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_markdown_files.js").read_text()
+        cls.harness = REFUSAL_HARNESS.replace("__METHODS__", "\n  ".join(
+            method_source(source, name) for name in
+            ("handleRefusedNotebookWrite(noteId, serverNote)", "notebookConnectedLive()")))
+
+    def refuse(self, connected: bool) -> dict:
+        scenario = {"connected": connected, "serverNote": {"note_id": "note-1", "text": "newer"}}
+        return run(self.harness, "TERMDECK_REFUSAL_SCENARIO", scenario, self.node)
+
+    def test_a_connected_window_takes_the_newer_text_by_itself(self) -> None:
+        # Nothing to ask: the newer text is on its way here anyway, so the note catches up and the
+        # only thing to say is that this save did not land.
+        result = self.refuse(connected=True)
+
+        self.assertEqual(result["refreshed"], [{"noteId": "note-1", "known": {"note_id": "note-1", "text": "newer"}}])
+        self.assertFalse(result["locked"])
+        self.assertIn("could not save the note", result["errors"][0])
+
+    def test_a_window_with_no_connection_is_told_and_held(self) -> None:
+        # There is nothing to catch up from, so the note waits rather than pretending to save.
+        result = self.refuse(connected=False)
+
+        self.assertEqual(result["refreshed"], [])
+        self.assertTrue(result["locked"])
+        self.assertIn("rejected", result["errors"][0])
+
+
+LIVE_TEXT_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_LIVE_SCENARIO);
+const models = new Map(scenario.notes.map((note) => [note.note_id,
+  { value: scenario.onScreen[note.note_id] ?? note.text, getValue() { return this.value; },
+    setValue(next) { this.value = next; } }]));
+const app = {
+  notebookProjectState: () => ({ notebook_notes: scenario.notes }),
+  notebookEditorModels: models,
+  dirtyNotebookNoteIds: new Set(scenario.dirty || []),
+  renderNotebookTabs() {},
+  __METHODS__
+};
+app.applyArrivingNotebookText();
+process.stdout.write(JSON.stringify(Object.fromEntries([...models].map(([id, model]) => [id, model.value]))));
+"""
+
+
+class ArrivingTextTest(unittest.TestCase):
+    """A note changed elsewhere shows the change here as it arrives."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_markdown_files.js").read_text()
+        cls.harness = LIVE_TEXT_HARNESS.replace(
+            "__METHODS__", method_source(source, "applyArrivingNotebookText()"))
+
+    def apply(self, notes: list, on_screen: dict, dirty: tuple = ()) -> dict:
+        scenario = {"notes": notes, "onScreen": on_screen, "dirty": list(dirty)}
+        return run(self.harness, "TERMDECK_LIVE_SCENARIO", scenario, self.node)
+
+    def test_an_open_note_follows_the_newer_text(self) -> None:
+        result = self.apply([{"note_id": "a", "text": "changed elsewhere"}], {"a": "what it said before"})
+
+        self.assertEqual(result["a"], "changed elsewhere")
+
+    def test_a_note_with_a_write_of_its_own_waiting_is_left_alone(self) -> None:
+        # What is being typed here is what the server is about to judge; putting anything over it
+        # would throw away the very text that has not been saved yet.
+        result = self.apply([{"note_id": "a", "text": "changed elsewhere"}], {"a": "being typed"}, dirty=("a",))
+
+        self.assertEqual(result["a"], "being typed")
+
+    def test_a_note_that_already_agrees_is_untouched(self) -> None:
+        result = self.apply([{"note_id": "a", "text": "same"}], {"a": "same"})
+
+        self.assertEqual(result["a"], "same")
+
+
 class RefreshKeepsWhatWasTypedTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -131,7 +238,7 @@ class RefreshKeepsWhatWasTypedTest(unittest.TestCase):
             raise unittest.SkipTest("node is not installed")
         source = (STATIC / "app_markdown_files.js").read_text()
         cls.harness = REFRESH_HARNESS.replace(
-            "__METHODS__", method_source(source, "async refreshNotebookNote(noteId)"))
+            "__METHODS__", method_source(source, "async refreshNotebookNote(noteId, known = null)"))
 
     def refresh(self, typed: str, server_text: str = "newer text") -> dict:
         scenario = {"note": {"note_id": "note-1", "text": typed, "revision": 1},

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -312,7 +313,8 @@ class NotebookNoteApiTest(unittest.TestCase):
         # and a stub would not say whether it does.
         directory = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, directory, True)
-        server.notebook_history = FileHistoryService(Path(directory) / "notebook-history.sqlite3")
+        server.notebook_history = FileHistoryService(Path(directory) / "notebook-history.sqlite3",
+                                                    TermdeckConfig.NOTEBOOK_HISTORY_MAX_VERSIONS_PER_NOTE)
         return server
 
     def notes(self, server: TermdeckServer) -> list[tuple[str, str]]:
@@ -472,6 +474,31 @@ class NotebookNoteApiTest(unittest.TestCase):
                                                    note_id="note-1", project="stock", worktree_id="root"))
 
         self.assertEqual(self.versions(server), ["third", "second", "first"])
+
+    def test_only_the_last_fifty_versions_are_kept(self) -> None:
+        # A note is written every fraction of a second while someone types; without a cap its history
+        # would outgrow the note by orders of magnitude.
+        server = self.server([NotebookNote(note_id="note-1", text="first", revision=1)])
+
+        with patch.object(TermdeckConfig, "FILE_HISTORY_COALESCE_SECONDS", 0):
+            for index in range(60):
+                asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text=f"version {index}",
+                                                                               base_revision=1 + index),
+                                                       note_id="note-1", project="stock", worktree_id="root"))
+        versions = self.versions(server)
+
+        self.assertEqual(len(versions), TermdeckConfig.NOTEBOOK_HISTORY_MAX_VERSIONS_PER_NOTE)
+        self.assertEqual(versions[0], "version 59", "the newest is kept")
+        self.assertNotIn("first", versions, "the oldest fall off the end")
+
+    def test_the_deck_keeps_note_versions_apart_from_the_files(self) -> None:
+        # Their own database and their own cap: a busy repository's file history would otherwise trim
+        # away the versions of a note nobody has opened this week.
+        source = (Path(__file__).resolve().parent.parent / "termdeck" / "server.py").read_text()
+        wiring = re.search(r"self\.notebook_history = FileHistoryService\(([^)]*)\)", source, re.S).group(1)
+
+        self.assertIn("NOTEBOOK_HISTORY_DATABASE", wiring)
+        self.assertIn("NOTEBOOK_HISTORY_MAX_VERSIONS_PER_NOTE", wiring)
 
     def test_one_burst_of_typing_is_one_version(self) -> None:
         # The editor saves every fraction of a second while a person types. Each keystroke is not a

@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A note's earlier versions open in the notebook itself, from a button in its head: the versions down
+  the left by when they were written, the one being looked at on the right, and a button to put it
+  back. Fifty versions are kept per note.
+- A note changed somewhere else changes here as it arrives, in the open editor, rather than the next
+  time someone opens it. A note being typed into is left alone: what is being typed is what the server
+  is about to judge.
+
+### Changed
+
+- A save the server refuses no longer asks anything. While the deck is connected the newer text is on
+  its way here anyway, so the note takes it and the notebook says, in red, that the save did not land.
+  With no connection there is nothing to catch up from, so the note is held and says the server
+  rejected the edit.
+- Copied text says when it was copied under the button beside it rather than in front of the text, and
+  the Insert button is gone: copying is what that list is for.
+
 ## [0.20.1] — 2026-09-21
 
 ### Fixed

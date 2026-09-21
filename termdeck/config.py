@@ -408,6 +408,7 @@ class TermdeckConfig:
     # Every version of every note ever saved, kept apart from the files' own history so a note's past
     # is not trimmed away by a busy repository.
     NOTEBOOK_HISTORY_DATABASE = DATA_DIR / "notebook-history.sqlite3"
+    NOTEBOOK_HISTORY_MAX_VERSIONS_PER_NOTE = 50
     WORKTREES_DIR = DATA_DIR / "worktrees"
     WORKTREE_REGISTRY_FILE = DATA_DIR / "worktrees.json"
     PS_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_PS_BIN, "ps")

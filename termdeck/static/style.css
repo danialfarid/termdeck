@@ -2490,4 +2490,33 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
 
 /* When a copy was made, in front of the text it holds. Copies from days ago sat beside copies from a
    minute ago with nothing to tell them apart. */
-.selection-copy-history-when, .notebook-recent-copy-when { margin-right: 7px; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font: calc(var(--ui-font-size) - 2px)/1.3 Menlo, monospace; white-space: nowrap; }
+.selection-copy-history-when { margin-right: 7px; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font: calc(var(--ui-font-size) - 2px)/1.3 Menlo, monospace; white-space: nowrap; }
+/* Under the copy button, in the column the buttons already occupy. */
+.notebook-recent-copy-actions { flex-direction: column; align-items: flex-end; gap: 3px; }
+.notebook-recent-copy-when { color: var(--dim); font: calc(var(--ui-font-size) - 2px)/1.2 Menlo, monospace; white-space: nowrap; }
+
+/* A note's earlier versions, in the panel the notebook already uses for its other views: the list on
+   the left, the version that is selected on the right, and one button to put it back. */
+#notebook-note-history { display: none; min-height: 0; flex: 1; flex-direction: column; background: color-mix(in srgb, var(--notebook-bg) 88%, var(--panel) 12%); }
+#notebook-panel.notebook-history-open #notebook-note-history { display: flex; }
+#notebook-panel.notebook-history-open #notebook-editor-host,
+#notebook-panel.notebook-history-open #notebook-find-bar { display: none; }
+#notebook-note-history-head { display: flex; align-items: center; gap: 8px; flex: none; padding: 9px 12px 8px; border-bottom: 1px solid var(--border); color: var(--dim); font: 600 calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; letter-spacing: 0.05em; text-transform: uppercase; }
+#notebook-note-history-count { color: var(--accent); font-weight: 500; }
+#notebook-note-history-restore { margin-left: auto; padding: 4px 9px; border: 1px solid var(--accent); border-radius: 6px; background: transparent; color: var(--accent); cursor: pointer; font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; text-transform: none; letter-spacing: 0; }
+#notebook-note-history-restore:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+#notebook-note-history-restore.hidden { display: none; }
+#notebook-note-history-close { width: 24px; height: 24px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--dim); cursor: pointer; }
+#notebook-note-history-close:hover { border-color: var(--accent); color: var(--accent); }
+#notebook-note-history-body { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr); }
+#notebook-note-history-items { min-height: 0; overflow-y: auto; border-right: 1px solid var(--border); padding: 6px; display: flex; flex-direction: column; gap: 3px; }
+.notebook-note-version { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text); cursor: pointer; text-align: left; font: calc(var(--ui-font-size) - 1px)/1.25 Menlo, monospace; }
+.notebook-note-version:hover { border-color: var(--active-border); background: var(--active-bg); }
+.notebook-note-version.active { border-color: var(--accent); background: var(--active-bg); }
+.notebook-note-version-size { color: var(--dim); font-size: calc(var(--ui-font-size) - 2px); }
+.notebook-note-version-current { color: var(--accent); font-size: calc(var(--ui-font-size) - 2px); }
+#notebook-note-history-preview { margin: 0; min-height: 0; overflow: auto; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font: var(--code-font-size)/1.45 Menlo, monospace; }
+.notebook-note-history-empty { padding: 8px; color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.3 Menlo, monospace; }
+/* A save the server refused, said in the notebook's own head. */
+#notebook-message { flex: none; max-width: 42%; overflow: hidden; color: var(--red, #f7768e); font: calc(var(--ui-font-size) - 1px)/1.25 Menlo, monospace; white-space: nowrap; text-overflow: ellipsis; }
+#notebook-message.hidden { display: none; }

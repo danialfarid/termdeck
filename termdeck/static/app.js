@@ -988,6 +988,15 @@ class TermdeckApp {
     // so the note is locked here until it has been refreshed.
     this.notebookNoteConflicts = new Map();
     this.notebookConflictDialogNoteId = "";
+    // The versions view of the notebook: which note's versions, which one is selected, and its text.
+    this.notebookHistoryOpen = false;
+    this.notebookHistoryNoteId = "";
+    this.notebookHistoryVersions = [];
+    this.notebookHistorySelectedId = 0;
+    this.notebookHistoryPreview = "";
+    this.notebookErrorTimer = 0;
+    // Notes with a write of their own outstanding. Text arriving from elsewhere waits for them.
+    this.dirtyNotebookNoteIds = new Set();
     this.selectedTreeRow = null;
     this.iconMap = null;
     this.lastValidNavState = null;
