@@ -2361,7 +2361,8 @@ class TermdeckServer:
             "session_groups": {**current.session_groups, **imported.session_groups},
             "terminal_layout": list(dict.fromkeys([*current.terminal_layout, *imported.terminal_layout])),
             "session_view_modes": {**current.session_view_modes, **imported.session_view_modes},
-            "notebook_notes": current.notebook_notes or imported.notebook_notes,
+            "notebook_notes": list({note.note_id: note for note in [*imported.notebook_notes,
+                                                                     *current.notebook_notes]}.values()),
             "notebook_active_note_id": current.notebook_active_note_id or imported.notebook_active_note_id,
             "notebook_notes_initialized": current.notebook_notes_initialized or imported.notebook_notes_initialized,
             "notebook_text": current.notebook_text or imported.notebook_text,
@@ -2677,15 +2678,19 @@ class TermdeckServer:
         state.session_view_modes = modes
         return self._save_project_state(settings, key, state, project, worktree_id)
 
+    # Reading any of these is fine; writing one means replacing a whole list that several windows
+    # share, which is how notes went missing. Each has calls of its own that write one entry.
+    WRITE_THROUGH_TARGETED_API = {
+        "terminal_groups", "session_groups", "terminal_layout", "session_order", "unread_sessions",
+        "recently_opened_terminal_ids", "session_view_modes", "notebook_notes",
+    }
+
     def _project_state_field_names(self) -> set[str]:
-        return set(ProjectStatePatch.model_fields) - {
-            "terminal_groups", "session_groups", "terminal_layout", "session_order", "unread_sessions",
-            "recently_opened_terminal_ids", "session_view_modes",
-        }
+        return set(ProjectStatePatch.model_fields) - self.WRITE_THROUGH_TARGETED_API
 
     async def _get_project_state_field(self, field_name: str, project: str = "",
                                        worktree_id: str = "") -> dict[str, object]:
-        if field_name not in self._project_state_field_names():
+        if field_name not in self._project_state_field_names() and field_name not in self.WRITE_THROUGH_TARGETED_API:
             raise HTTPException(status_code=404, detail=f"unknown project state field: {field_name}")
         _, _, state = self._project_state_context(project, worktree_id)
         return {"field": field_name, "value": getattr(state, field_name)}
@@ -2794,12 +2799,17 @@ class TermdeckServer:
         copy over the newer one on its next save, and the newer text was gone with no trace of it
         anywhere. The write is refused instead, and the window that made it is told to catch up.
         """
-        if base_revision is None or existing is None or existing.revision == base_revision:
+        # A note this server has never written has no version to be behind: settings files predating
+        # revisions hold notes at 0, and their first write is taken as it always was.
+        if existing is None or existing.revision == 0 or existing.revision == base_revision:
             return
+        # A caller that says nothing about the version it wrote from cannot be told it is behind, and
+        # taking such a write anyway is exactly how a stale window overwrote newer text. A note with
+        # no version yet -- one this server has never written -- is still written freely.
         raise HTTPException(status_code=409, detail={
             "reason": "note_changed_elsewhere",
             "note": existing.model_dump(),
-            "message": "This note was changed somewhere else. Refresh it before editing.",
+            "message": "This note was changed somewhere else. Read it again and write from that version.",
         })
 
     def _record_notebook_history(self, key: str, note_id: str, previous_text: str | None, text: str) -> None:

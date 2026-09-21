@@ -997,6 +997,8 @@ class TermdeckApp {
     this.notebookErrorTimer = 0;
     // Notes with a write of their own outstanding. Text arriving from elsewhere waits for them.
     this.dirtyNotebookNoteIds = new Set();
+    // Text already rescued into a note of its own, so a run of refusals makes one note, not twenty.
+    this.rescuedNotebookText = new Map();
     this.selectedTreeRow = null;
     this.iconMap = null;
     this.lastValidNavState = null;
@@ -1758,6 +1760,7 @@ class TermdeckApp {
       options.onSaved?.(await response.clone().json().catch(() => ({})));
     }).catch((error) => {
       console.error("TermDeck project resource save failed", error);
+      options.onFailed?.(error);
       if (options.silent) return;
       const status = this.$("stat-text");
       if (status) status.textContent = error.message;
@@ -3825,11 +3828,15 @@ class TermdeckApp {
       this.flushPendingSettingsSave();
       this.flushPendingFileSavesOnPageExit();
       this.flushPendingSearchHistoryRecord();
+      void this.flushNotebook();
     });
     window.addEventListener("beforeunload", () => {
       this.flushPendingSettingsSave();
       this.flushPendingFileSavesOnPageExit();
       this.flushPendingSearchHistoryRecord();
+      // The note is saved on a timer while it is typed into; a page closed inside that window took
+      // the last thing written with it.
+      void this.flushNotebook();
     });
     document.body.classList.toggle("termdeck-page-hidden", document.hidden);
     // Sibling tabs read this stamp to learn which session is being watched here, so they do not
@@ -3848,6 +3855,7 @@ class TermdeckApp {
         this.flushPendingSettingsSave();
         this.flushPendingFileSavesOnPageExit();
         this.flushPendingSearchHistoryRecord();
+        void this.flushNotebook();
         } else {
         this.updateRecentFilesWatch();
         void this.refreshCurrentProjectState();

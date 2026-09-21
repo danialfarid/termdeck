@@ -8,6 +8,7 @@ locked out of that note until it has caught up.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import unittest
@@ -58,6 +59,8 @@ const app = {
   showNotebookError() {},
   createNotebookNoteId: () => "note-rescued",
   createNotebookNoteRecord: (note) => created.push(note),
+  rescuedNotebookText: new Map(),
+  renderNotebookTabs() {},
   applyNotebookEditability() {},
   renderNotebook() {},
   __METHODS__
@@ -130,17 +133,26 @@ REFUSAL_HARNESS = """
 const scenario = JSON.parse(process.env.TERMDECK_REFUSAL_SCENARIO);
 const errors = [];
 const refreshed = [];
+const rescuedNotes = [];
+const state = { notebook_notes: [{ note_id: "note-1", text: scenario.typedHere || "typed here" }] };
 const app = {
   statusWs: { readyState: scenario.connected ? 1 : 3 },
   notebookNoteConflicts: new Map(),
   showNotebookError: (message) => errors.push(message),
   refreshNotebookNote: (noteId, known) => { refreshed.push({ noteId, known }); },
   applyNotebookEditability() {},
+  notebookProjectState: () => state,
+  notebookEditorModels: new Map(),
+  rescuedNotebookText: new Map(),
+  createNotebookNoteId: () => "note-rescued",
+  createNotebookNoteRecord: (note) => rescuedNotes.push(note),
+  renderNotebookTabs() {},
   __METHODS__
 };
 global.WebSocket = { OPEN: 1 };
 app.handleRefusedNotebookWrite("note-1", scenario.serverNote);
-process.stdout.write(JSON.stringify({ errors, refreshed, locked: app.notebookNoteConflicts.has("note-1") }));
+process.stdout.write(JSON.stringify({ errors, refreshed, rescuedNotes,
+  locked: app.notebookNoteConflicts.has("note-1") }));
 """
 
 
@@ -155,7 +167,8 @@ class RefusedWriteTest(unittest.TestCase):
         source = (STATIC / "app_markdown_files.js").read_text()
         cls.harness = REFUSAL_HARNESS.replace("__METHODS__", "\n  ".join(
             method_source(source, name) for name in
-            ("handleRefusedNotebookWrite(noteId, serverNote)", "notebookConnectedLive()")))
+            ("handleRefusedNotebookWrite(noteId, serverNote)", "notebookConnectedLive()",
+             "rescueRefusedNotebookText(noteId, serverText)")))
 
     def refuse(self, connected: bool) -> dict:
         scenario = {"connected": connected, "serverNote": {"note_id": "note-1", "text": "newer"}}
@@ -177,6 +190,13 @@ class RefusedWriteTest(unittest.TestCase):
         self.assertEqual(result["refreshed"], [])
         self.assertTrue(result["locked"])
         self.assertIn("rejected", result["errors"][0])
+
+    def test_a_held_note_keeps_what_was_typed_somewhere_it_will_survive(self) -> None:
+        # Refused text lives only in this browser; a reload would be the end of it.
+        result = self.refuse(connected=False)
+
+        self.assertEqual([note["text"] for note in result["rescuedNotes"]], ["typed here"])
+        self.assertIn("your text is in a new note", result["errors"][0])
 
 
 LIVE_TEXT_HARNESS = """
@@ -230,6 +250,74 @@ class ArrivingTextTest(unittest.TestCase):
         self.assertEqual(result["a"], "same")
 
 
+TYPING_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_TYPING_SCENARIO);
+const saved = [];
+const app = {
+  dirtyNotebookNoteIds: new Set(),
+  notebookProjectState: () => ({ notebook_active_note_id: scenario.note.note_id }),
+  renderNotebookTabs() {},
+  saveNotebookNote: (note) => saved.push(note.note_id),
+  __METHODS__
+};
+app.setNotebookNoteText(scenario.note, scenario.text, scenario.save !== false, false);
+process.stdout.write(JSON.stringify({ dirty: [...app.dirtyNotebookNoteIds], saved, text: scenario.note.text }));
+"""
+
+
+class TypingMarksTheNoteTest(unittest.TestCase):
+    """Typing claims the note from the keystroke, not from the save that follows it."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_markdown_files.js").read_text()
+        cls.harness = TYPING_HARNESS.replace(
+            "__METHODS__", method_source(source, "setNotebookNoteText(note, text, save = true, renderTitle = true)"))
+
+    def type(self, text: str, current: str = "before", save: bool = True) -> dict:
+        scenario = {"note": {"note_id": "note-1", "text": current}, "text": text, "save": save}
+        return run(self.harness, "TERMDECK_TYPING_SCENARIO", scenario, self.node)
+
+    def test_a_keystroke_claims_the_note_before_any_save(self) -> None:
+        # The editor writes on a timer; in between, arriving state saw a note with nothing outstanding
+        # and put the server's older copy over what was being typed.
+        result = self.type("being typed", save=False)
+
+        self.assertEqual(result["dirty"], ["note-1"])
+        self.assertEqual(result["saved"], [])
+
+    def test_text_that_did_not_change_claims_nothing(self) -> None:
+        result = self.type("before")
+
+        self.assertEqual(result["dirty"], [])
+
+
+class PageExitTest(unittest.TestCase):
+    """A page on its way out writes the note it was in the middle of."""
+
+    def setUp(self) -> None:
+        self.source = (STATIC.parent.parent / "termdeck" / "static" / "app.js").read_text()
+
+    def handler(self, name: str) -> str:
+        match = re.search(rf'addEventListener\("{name}", \(\) => \{{(.*?)\n    \}}\)', self.source, re.S)
+        self.assertIsNotNone(match, f"the {name} handler moved")
+        return match.group(1)
+
+    def test_closing_or_hiding_the_page_writes_the_note(self) -> None:
+        # The editor saves on a timer; a page closed inside that window took the last thing typed
+        # with it, while settings, files and search history were all written on the way out.
+        for name in ("pagehide", "beforeunload"):
+            self.assertIn("flushNotebook", self.handler(name), name)
+
+    def test_the_tab_going_to_the_background_writes_it_too(self) -> None:
+        hidden = re.search(r'visibilityState === "hidden"\) \{(.*?)\n      \}', self.source, re.S).group(1)
+
+        self.assertIn("flushNotebook", hidden)
+
+
 class RefreshKeepsWhatWasTypedTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -237,8 +325,9 @@ class RefreshKeepsWhatWasTypedTest(unittest.TestCase):
         if not cls.node:
             raise unittest.SkipTest("node is not installed")
         source = (STATIC / "app_markdown_files.js").read_text()
-        cls.harness = REFRESH_HARNESS.replace(
-            "__METHODS__", method_source(source, "async refreshNotebookNote(noteId, known = null)"))
+        cls.harness = REFRESH_HARNESS.replace("__METHODS__", "\n  ".join(
+            method_source(source, name) for name in
+            ("async refreshNotebookNote(noteId, known = null)", "rescueRefusedNotebookText(noteId, serverText)")))
 
     def refresh(self, typed: str, server_text: str = "newer text") -> dict:
         scenario = {"note": {"note_id": "note-1", "text": typed, "revision": 1},

@@ -268,13 +268,26 @@ A caller with an id of its own may send `note_id` as well; the desktop client do
 note before the request comes back. Creating an id that is already there is not an error and changes nothing:
 the note keeps its text, and the response reports `"created": false`.
 
-Read or replace the text of one note. `PUT` writes the note whether or not the server has seen that id, so text
-is never refused because a create was lost:
+Read or replace the text of one note. A note carries a `revision`, and a write says which revision it was made
+from; the write is refused with HTTP 409 when the note has moved on since, so a caller holding an old copy
+cannot overwrite what it never saw. The refusal carries the current note, so the caller can write again from it:
 
 ```sh
 curl -sS 'http://127.0.0.1:8530/api/notebook/notes/<note_id>?project=stock'
 curl -sS -X PUT 'http://127.0.0.1:8530/api/notebook/notes/<note_id>?project=stock' \
-  -H 'Content-Type: application/json' -d '{"text": "# Release checklist\n\n- tag\n"}'
+  -H 'Content-Type: application/json' -d '{"text": "# Release checklist\n\n- tag\n", "base_revision": 4}'
+```
+
+A write to an id the server has never seen creates the note, so text is not refused because a create was lost.
+A note still at revision 0 — one written into settings before revisions existed — takes one write without
+`base_revision` and carries a revision from then on.
+
+Every version a note is saved at is kept, alongside the text each write replaced, and the fifty most recent are
+served:
+
+```sh
+curl -sS 'http://127.0.0.1:8530/api/notebook/notes/<note_id>/history?project=stock'
+curl -sS 'http://127.0.0.1:8530/api/notebook/notes/<note_id>/history/<version_id>?project=stock'
 ```
 
 Delete one. Nothing else is touched, and an unknown id returns HTTP 404:

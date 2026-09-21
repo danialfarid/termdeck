@@ -30,6 +30,7 @@ const app = {
   notebookProjectState: () => state,
   notebookEditorModels: new Map([[scenario.note.note_id, model]]),
   setNotebookNoteText: (note, text) => { note.text = text; saved.push(text); },
+  flushNotebook: async () => { saved.push("flushed"); },
   renderNotebook() {},
   mountNotebookEditor() {},
   $: () => ({ textContent: "" }),
@@ -68,8 +69,15 @@ class RestoreVersionTest(unittest.TestCase):
     def test_the_version_goes_back_into_the_note(self) -> None:
         result = self.restore("what it says now", "what it said before")
 
-        self.assertEqual(result["saved"], ["what it said before"])
+        self.assertEqual(result["saved"], ["flushed", "what it said before"])
         self.assertEqual(result["text"], "what it said before")
+
+    def test_what_is_in_the_note_is_saved_before_the_older_text_goes_in(self) -> None:
+        # Otherwise restoring is itself a way to lose the paragraph someone was in the middle of: it
+        # was never saved, so it is in no version either.
+        result = self.restore("what it says now", "what it said before")
+
+        self.assertEqual(result["saved"][0], "flushed")
 
     def test_the_editor_shows_it_too(self) -> None:
         # The model is what the person types into; leaving it on the old text would put that back on

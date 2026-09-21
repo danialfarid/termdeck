@@ -27,7 +27,7 @@ from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot, ProcTreeUtil
 from termdeck.pty_process import PtyProcess
 from termdeck.file_history_service import FileHistoryService
-from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, NotebookNoteCreateRequest, NotebookNoteSaveRequest, ProjectStatePatch, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, SubmitPromptRequest, TermdeckServer, UiSettings
+from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, NotebookNoteCreateRequest, NotebookNoteSaveRequest, ProjectStatePatch, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, StoredValueRequest, SubmitPromptRequest, TermdeckServer, UiSettings
 from termdeck.replay_recorder import ReplayRecorder
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
 from termdeck.transcript_turns import TurnBuilder
@@ -449,14 +449,29 @@ class NotebookNoteApiTest(unittest.TestCase):
         self.assertEqual(raised.exception.detail["note"]["text"], "typed on the laptop")
         self.assertEqual(self.notes(server), [("note-1", "typed on the laptop")])
 
-    def test_a_client_that_says_nothing_about_revisions_is_still_served(self) -> None:
-        # An older page, or a script with curl: it cannot be told what it did not ask about.
+    def test_a_write_that_says_nothing_about_versions_is_refused(self) -> None:
+        # A caller that does not say which version it wrote from cannot be told it is behind, and
+        # taking the write anyway is exactly how a stale window overwrote newer text. It reads the
+        # note, gets the version with it, and writes from that.
         server = self.server([NotebookNote(note_id="note-1", text="first", revision=2)])
 
-        asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="second"), note_id="note-1",
-                                               project="stock", worktree_id="root"))
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="second"), note_id="note-1",
+                                                   project="stock", worktree_id="root"))
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(self.notes(server), [("note-1", "first")])
+
+    def test_a_note_this_server_has_never_written_takes_the_write(self) -> None:
+        # Settings written before notes had versions hold them at 0; their first write is taken as it
+        # always was, and carries a version from then on.
+        server = self.server([NotebookNote(note_id="note-1", text="first")])
+
+        written = asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="second"), note_id="note-1",
+                                                         project="stock", worktree_id="root"))
 
         self.assertEqual(self.notes(server), [("note-1", "second")])
+        self.assertEqual(written["note"]["revision"], 1)
 
     def versions(self, server: TermdeckServer, note_id: str = "note-1") -> list[str]:
         history = asyncio.run(server._notebook_note_history(note_id=note_id, project="stock", worktree_id="root"))
@@ -535,6 +550,26 @@ class NotebookNoteApiTest(unittest.TestCase):
                                                       worktree_id="root"))
 
         self.assertEqual(raised.exception.status_code, 404)
+
+    def test_the_whole_note_list_cannot_be_written_through_project_state(self) -> None:
+        # One call, one note. A list written whole by two windows is how notes went missing, and the
+        # field API would have let any caller do exactly that.
+        server = self.server([NotebookNote(note_id="note-1", text="first")])
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(server._put_project_state_field(StoredValueRequest(value=[]), field_name="notebook_notes",
+                                                        project="stock", worktree_id="root"))
+
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertEqual(self.notes(server), [("note-1", "first")])
+
+    def test_the_notes_can_still_be_read_through_project_state(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="first")])
+
+        field = asyncio.run(server._get_project_state_field(field_name="notebook_notes", project="stock",
+                                                            worktree_id="root"))
+
+        self.assertEqual([note.note_id for note in field["value"]], ["note-1"])
 
     def test_deleting_a_note_removes_only_that_note(self) -> None:
         server = self.server([NotebookNote(note_id="note-1", text="first"), NotebookNote(note_id="note-2", text="second")])
@@ -2824,6 +2859,35 @@ class ReleaseSessionGroupTest(unittest.TestCase):
         server = self._server({"doomed": "g1"}, [{"id": "g1"}])
         self.assertEqual(server._release_session_group("doomed"), ("", "g1"))
         self.assertNotIn("doomed", server.settings_store.payload["project_state"]["stock"]["session_groups"])
+
+
+class ImportedNotesTest(unittest.TestCase):
+    """Importing a project brings its notes along instead of dropping them."""
+
+    @staticmethod
+    def merge(current: list[NotebookNote], imported: list[NotebookNote]) -> list[tuple[str, str]]:
+        merged = TermdeckServer._merge_project_ui_states(ProjectUiState(notebook_notes=current),
+                                                         ProjectUiState(notebook_notes=imported))
+        return [(note.note_id, note.text) for note in merged.notebook_notes]
+
+    def test_imported_notes_join_the_ones_already_here(self) -> None:
+        # The destination keeping "whichever list is not empty" meant every imported note was dropped
+        # the moment the destination had one of its own.
+        merged = self.merge([NotebookNote(note_id="mine", text="mine")],
+                            [NotebookNote(note_id="theirs", text="theirs")])
+
+        self.assertEqual(sorted(merged), [("mine", "mine"), ("theirs", "theirs")])
+
+    def test_a_note_in_both_keeps_the_text_that_is_already_here(self) -> None:
+        merged = self.merge([NotebookNote(note_id="shared", text="what this deck says")],
+                            [NotebookNote(note_id="shared", text="what the archive says")])
+
+        self.assertEqual(merged, [("shared", "what this deck says")])
+
+    def test_an_import_into_an_empty_notebook_brings_everything(self) -> None:
+        merged = self.merge([], [NotebookNote(note_id="theirs", text="theirs")])
+
+        self.assertEqual(merged, [("theirs", "theirs")])
 
 
 class ClosedSessionGroupMemoryTest(unittest.TestCase):

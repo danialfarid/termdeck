@@ -2520,3 +2520,4 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
 /* A save the server refused, said in the notebook's own head. */
 #notebook-message { flex: none; max-width: 42%; overflow: hidden; color: var(--red, #f7768e); font: calc(var(--ui-font-size) - 1px)/1.25 Menlo, monospace; white-space: nowrap; text-overflow: ellipsis; }
 #notebook-message.hidden { display: none; }
+#notebook-actions button.hidden { display: none; }

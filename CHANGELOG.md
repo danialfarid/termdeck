@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- A write to a note must say which version it was made from. A caller that says nothing cannot be told
+  it is behind, and taking such a write is how a stale window overwrote newer text; it is refused now
+  unless the note has no version yet. `PUT /api/project-state/notebook_notes` no longer writes the
+  whole note list either — one call, one note. See [docs/api.md](docs/api.md#notebook-notes).
+- The versions button is not offered while the copied-text view is up: copies are not a note and have
+  no versions. Opening that view closes the versions view.
+
+### Fixed
+
+- Text typed in the moment before a save could be overwritten by state arriving from the server. The
+  note was claimed only when the save went out, a fraction of a second later, and anything arriving in
+  that gap was taken as newer. Typing claims the note from the keystroke.
+- A page closed, reloaded or sent to the background writes the note it was in the middle of. Settings,
+  files and search history were all written on the way out; the notebook was not, so the last thing
+  typed went with the page.
+- A save refused while the deck is not connected keeps what was typed: it goes into a note of its own
+  rather than living in a browser that is one reload away from losing it.
+- Restoring an earlier version saves what the note says first, so the paragraph someone was in the
+  middle of becomes a version instead of disappearing under the older text.
+- A delete that never reached the server stops hiding the note; it was filtered out of everything
+  arriving afterwards until the page was reloaded.
+- Importing a project brings its notes with it. The merge kept whichever list was not empty, so every
+  imported note was dropped the moment the destination had one of its own.
+
 ## [0.21.0] — 2026-09-21
 
 ### Added

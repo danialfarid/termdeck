@@ -6951,6 +6951,9 @@ Object.assign(TermdeckApp.prototype, {
   // went missing can be read back and put where it belongs. They open in the notebook itself: the
   // versions down the left, the one being looked at on the right, and a button to put it back.
   async openNotebookNoteHistory(noteId) {
+    // The copied-text view is not a note and has no versions; the button is hidden there, and this is
+    // the other way in (the tab menu), which must not open an empty panel either.
+    if (!noteId && this.notebookCopiesOpen) return;
     const note = noteId ? null : this.activeNotebookNote();
     const id = noteId || note?.note_id || "";
     if (!id) return;
@@ -7027,6 +7030,9 @@ Object.assign(TermdeckApp.prototype, {
       this.closeNotebookNoteHistory();
       return;
     }
+    // Whatever is in the note right now becomes a version before the older one goes in, so restoring
+    // cannot be the thing that loses the text someone was in the middle of writing.
+    await this.flushNotebook();
     this.setNotebookNoteText(note, text);
     const model = this.notebookEditorModels.get(noteId);
     if (model) model.setValue(text);
@@ -7101,9 +7107,32 @@ Object.assign(TermdeckApp.prototype, {
       void this.refreshNotebookNote(noteId, serverNote);
       return;
     }
+    // No connection to catch up over, so the note is held here. What was typed on it exists nowhere
+    // else, so it is kept as a note of its own first -- held text that is only in a browser is one
+    // reload away from being nothing.
+    const rescued = this.rescueRefusedNotebookText(noteId, serverNote?.text);
     this.notebookNoteConflicts.set(noteId, serverNote || null);
     this.applyNotebookEditability();
-    this.showNotebookError("the server rejected the edit — this note changed elsewhere");
+    this.showNotebookError(rescued
+      ? "the server rejected the edit — this note changed elsewhere, your text is in a new note"
+      : "the server rejected the edit — this note changed elsewhere");
+  },
+
+
+  // What this window typed and could not save. It goes into a note of its own, which is a write the
+  // server has no reason to refuse, so the text stops depending on this page staying open.
+  rescueRefusedNotebookText(noteId, serverText) {
+    const model = this.notebookEditorModels.get(noteId);
+    const note = this.notebookProjectState().notebook_notes.find((entry) => entry.note_id === noteId);
+    const typedHere = model ? model.getValue() : note?.text || "";
+    if (!typedHere.trim() || typedHere === serverText) return null;
+    if (this.rescuedNotebookText.get(noteId) === typedHere) return null;
+    this.rescuedNotebookText.set(noteId, typedHere);
+    const rescued = { note_id: this.createNotebookNoteId(), text: typedHere };
+    this.notebookProjectState().notebook_notes.push(rescued);
+    this.createNotebookNoteRecord(rescued);
+    this.renderNotebookTabs();
+    return rescued;
   },
 
 
@@ -7136,15 +7165,10 @@ Object.assign(TermdeckApp.prototype, {
     const notebookState = this.notebookProjectState();
     const note = notebookState.notebook_notes.find((entry) => entry.note_id === noteId);
     if (!note) return;
-    const model = this.notebookEditorModels.get(noteId);
-    const typedHere = model ? model.getValue() : note.text || "";
     // What was typed here was never accepted by the server, so it exists nowhere else. It becomes a
     // note of its own rather than being replaced by the newer text and lost.
-    if (typedHere.trim() && typedHere !== latest.text) {
-      const rescued = { note_id: this.createNotebookNoteId(), text: typedHere };
-      notebookState.notebook_notes.push(rescued);
-      this.createNotebookNoteRecord(rescued);
-    }
+    this.rescueRefusedNotebookText(noteId, latest.text);
+    const model = this.notebookEditorModels.get(noteId);
     note.text = String(latest.text || "");
     note.revision = Number.isInteger(latest.revision) ? latest.revision : note.revision;
     if (model) model.setValue(note.text);
@@ -7173,7 +7197,11 @@ Object.assign(TermdeckApp.prototype, {
     if (!noteId) return;
     this.deletedNotebookNoteIds.add(noteId);
     this.queueProjectResourceRequest(this.notebookProjectStateKey(),
-      `/api/notebook/notes/${encodeURIComponent(noteId)}`, "DELETE");
+      `/api/notebook/notes/${encodeURIComponent(noteId)}`, "DELETE", null, {
+        // A delete that never landed must stop hiding a note the server still has, or the note is
+        // invisible here until the page is reloaded.
+        onFailed: () => this.deletedNotebookNoteIds.delete(noteId),
+      });
   },
 
 
@@ -7546,6 +7574,9 @@ Object.assign(TermdeckApp.prototype, {
     const normalizedText = String(text || "");
     const changed = note.text !== normalizedText;
     note.text = normalizedText;
+    // From the keystroke, not from the save that follows it: in between, arriving state would see a
+    // note with nothing outstanding and put the server's older copy over what was being typed.
+    if (changed) this.dirtyNotebookNoteIds.add(note.note_id);
     const notebookState = this.notebookProjectState();
     if (notebookState.notebook_active_note_id === note.note_id) notebookState.notebook_text = normalizedText;
     if (changed && renderTitle) this.renderNotebookTabs();
@@ -7559,6 +7590,8 @@ Object.assign(TermdeckApp.prototype, {
       return;
     }
     this.notebookCopiesOpen = true;
+    this.notebookHistoryOpen = false;
+    this.notebookHistoryNoteId = "";
     this.closeNotebookFind(false);
     this.renderNotebook();
   },
@@ -7840,6 +7873,8 @@ Object.assign(TermdeckApp.prototype, {
     }
     panel.classList.toggle("notebook-copies-open", this.notebookCopiesOpen);
     panel.classList.toggle("notebook-history-open", this.notebookHistoryOpen);
+    const historyButton = this.$("notebook-history");
+    if (historyButton) historyButton.classList.toggle("hidden", this.notebookCopiesOpen);
     if (this.notebookHistoryOpen) this.renderNotebookNoteHistory();
     for (const toggle of toggles) {
       toggle.classList.toggle("on", notebookOpen);
