@@ -147,6 +147,24 @@ class VersionsPanelShapeTest(unittest.TestCase):
         self.assertIn('id="notebook-note-history-restore"', self.html)
         self.assertIn('this.$("notebook-note-history-restore").onclick', self.js)
 
+    def test_the_restore_button_sits_under_the_versions_button(self) -> None:
+        # The same column, and out of every row: it appears only while a version is being read, and
+        # from inside a row that would shift whatever sits beside it.
+        head = re.search(r'<div id="notebook-head">(.*?)\n  </div>', self.html, re.S).group(1)
+        panel_head = re.search(r'<div id="notebook-note-history-head">(.*?)</div>', self.html, re.S).group(1)
+
+        self.assertIn('id="notebook-note-history-restore"', head)
+        self.assertNotIn('id="notebook-note-history-restore"', panel_head)
+        rule = re.search(r"#notebook-note-history-restore \{([^}]*)\}", self.css).group(1)
+        self.assertIn("position: absolute", rule)
+        versions = re.search(r"#notebook-history \{([^}]*)\}", self.css).group(1)
+
+        self.assertGreater(self.margin(rule), self.margin(versions), "it hangs below the versions button")
+
+    @staticmethod
+    def margin(rule: str) -> int:
+        return int(re.search(r"margin-top: (\d+)px", rule).group(1))
+
 
 class CopiedTextShapeTest(unittest.TestCase):
     """A copy says when it was made, under the button beside it, and offers only to be copied again."""

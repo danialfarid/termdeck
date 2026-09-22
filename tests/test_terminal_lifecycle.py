@@ -490,6 +490,30 @@ class NotebookNoteApiTest(unittest.TestCase):
 
         self.assertEqual(self.versions(server), ["third", "second", "first"])
 
+    def test_a_write_that_replaces_the_text_keeps_what_it_replaced(self) -> None:
+        # Writes seconds apart fold together, because typing makes one every fraction of a second.
+        # A write that replaces the text wholesale -- restoring a version, pasting over everything --
+        # is not typing, and folding it destroyed the version it replaced seconds after it appeared.
+        server = self.server([NotebookNote(note_id="note-1", text="a paragraph", revision=1)])
+
+        asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="a paragraph, extended",
+                                                                       base_revision=1),
+                                               note_id="note-1", project="stock", worktree_id="root"))
+        asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="something else entirely",
+                                                                       base_revision=2),
+                                               note_id="note-1", project="stock", worktree_id="root"))
+
+        self.assertEqual(self.versions(server), ["something else entirely", "a paragraph, extended", "a paragraph"])
+
+    def test_typing_on_still_folds_into_one_version(self) -> None:
+        server = self.server([NotebookNote(note_id="note-1", text="a", revision=1)])
+
+        for index, text in enumerate(["a p", "a par", "a paragraph"]):
+            asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text=text, base_revision=1 + index),
+                                                   note_id="note-1", project="stock", worktree_id="root"))
+
+        self.assertEqual(self.versions(server), ["a paragraph", "a"])
+
     def test_only_the_last_fifty_versions_are_kept(self) -> None:
         # A note is written every fraction of a second while someone types; without a cap its history
         # would outgrow the note by orders of magnitude.

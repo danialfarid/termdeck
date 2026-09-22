@@ -6,9 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Restoring an earlier version can no longer take unsaved text with it. The save queued for the text
+  being replaced carries that text rather than whatever the note has become by the time it goes out,
+  waiting on a flush now waits for the write to land, and a version that replaces the text wholesale
+  is kept apart from the one it replaced instead of folding into it seconds later.
+- A page closing writes the note straight out, with keepalive, rather than adding it to a queue that
+  may never reach it.
+
 ### Changed
 
-- The versions button moved out of the notebook's row of buttons to just under them. It belongs to a
+- The versions button moved out of the notebook's row of buttons to just under them, with Restore
+  under it again while a version is being read. It belongs to a
   note, so it comes and goes with one, and from the row itself that shifted every other button
   sideways each time. It is a push button now: it opens the versions and puts the note back, so the
   panel has no × of its own.

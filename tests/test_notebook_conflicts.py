@@ -265,6 +265,91 @@ process.stdout.write(JSON.stringify({ dirty: [...app.dirtyNotebookNoteIds], save
 """
 
 
+SNAPSHOT_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_SNAPSHOT_SCENARIO);
+const bodies = [];
+const note = { note_id: "note-1", text: scenario.textWhenQueued, revision: 2 };
+const app = {
+  notebookProjectStateKey: () => "stock",
+  notebookNoteConflicts: new Map(),
+  dirtyNotebookNoteIds: new Set(),
+  queueProjectResourceRequest: (stateKey, path, method, body) => bodies.push(body),
+  __METHODS__
+};
+app.saveNotebookNote(note);
+// Whatever happens to the note between queueing and sending -- restoring a version, another
+// keystroke -- the request that was queued carries what it was queued for.
+note.text = scenario.textWhenSent;
+note.revision = scenario.revisionWhenSent;
+process.stdout.write(JSON.stringify({ sent: bodies.map((body) => body()) }));
+"""
+
+
+FLUSH_HARNESS = """
+let settled = false;
+const queue = new Promise((resolve) => setTimeout(() => { settled = true; resolve(); }, 30));
+const app = {
+  notebookEditor: { getValue: () => "typed" },
+  notebookMounted: true,
+  notebookNoteForEditorModel: () => ({ note_id: "note-1", text: "before" }),
+  projectStateSavePromise: queue,
+  setNotebookNoteText() {},
+  __METHODS__
+};
+await app.flushNotebook();
+process.stdout.write(JSON.stringify({ settledWhenFlushReturned: settled }));
+"""
+
+
+class FlushWaitsForTheWriteTest(unittest.TestCase):
+    """Waiting on a flush means waiting for the write, not for it to have been asked for."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_markdown_files.js").read_text()
+        cls.harness = FLUSH_HARNESS.replace("__METHODS__", method_source(source, "flushNotebook()"))
+
+    def test_awaiting_a_flush_waits_for_the_save_to_land(self) -> None:
+        # Restoring a version awaits this before putting older text in; a flush that finishes early
+        # let the restore overtake the save it was meant to let through.
+        result = run(self.harness, "TERMDECK_FLUSH_SCENARIO", {}, self.node)
+
+        self.assertTrue(result["settledWhenFlushReturned"])
+
+
+class QueuedSaveCarriesItsOwnTextTest(unittest.TestCase):
+    """A queued write carries the text it was queued for, and the version as it is when it goes."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_markdown_files.js").read_text()
+        cls.harness = SNAPSHOT_HARNESS.replace("__METHODS__", method_source(source, "saveNotebookNote(note)"))
+
+    def save(self, queued: str, later: str, revision: int = 5) -> dict:
+        scenario = {"textWhenQueued": queued, "textWhenSent": later, "revisionWhenSent": revision}
+        return run(self.harness, "TERMDECK_SNAPSHOT_SCENARIO", scenario, self.node)
+
+    def test_the_text_is_the_text_it_was_queued_for(self) -> None:
+        # Building the whole body at send time turned a save of one paragraph into a write of the
+        # text that had replaced it, so the paragraph was never written anywhere.
+        result = self.save("the paragraph being saved", "a version restored over it")
+
+        self.assertEqual(result["sent"][0]["text"], "the paragraph being saved")
+
+    def test_the_version_is_the_one_the_note_has_when_it_goes(self) -> None:
+        # The opposite for the revision: writes land one after another, and each has to say which
+        # version it follows, or the second is refused for being behind its own predecessor.
+        result = self.save("first", "second", revision=5)
+
+        self.assertEqual(result["sent"][0]["base_revision"], 5)
+
+
 class TypingMarksTheNoteTest(unittest.TestCase):
     """Typing claims the note from the keystroke, not from the save that follows it."""
 
@@ -295,11 +380,48 @@ class TypingMarksTheNoteTest(unittest.TestCase):
         self.assertEqual(result["dirty"], [])
 
 
+EXIT_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_EXIT_SCENARIO);
+const requests = [];
+global.fetch = (url, options) => { requests.push({ url, ...options }); return Promise.resolve({ ok: true }); };
+const note = { note_id: "note-1", text: "before", revision: 4 };
+const app = {
+  notebookEditor: { getValue: () => scenario.editorText },
+  notebookMounted: scenario.mounted !== false,
+  notebookNoteForEditorModel: () => (scenario.noNote ? null : note),
+  notebookProjectStateKey: () => "stock",
+  projectStateSearchParams: () => new URLSearchParams({ project: "stock" }),
+  dirtyNotebookNoteIds: new Set(scenario.dirty || []),
+  notebookNoteConflicts: new Map(scenario.locked ? [["note-1", null]] : []),
+  notebookProjectState: () => ({ notebook_active_note_id: "note-1" }),
+  renderNotebookTabs() {},
+  saveNotebookNote() {},
+  __METHODS__
+};
+app.flushNotebookOnPageExit();
+process.stdout.write(JSON.stringify({ requests, text: note.text }));
+"""
+
+
 class PageExitTest(unittest.TestCase):
     """A page on its way out writes the note it was in the middle of."""
 
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_markdown_files.js").read_text()
+        cls.harness = EXIT_HARNESS.replace("__METHODS__", "\n  ".join(
+            method_source(source, name) for name in
+            ("flushNotebookOnPageExit()", "setNotebookNoteText(note, text, save = true, renderTitle = true)")))
+
     def setUp(self) -> None:
         self.source = (STATIC.parent.parent / "termdeck" / "static" / "app.js").read_text()
+
+    def exit(self, **scenario: object) -> dict:
+        base = {"editorText": "typed on the way out", "dirty": ["note-1"]}
+        return run(self.harness, "TERMDECK_EXIT_SCENARIO", {**base, **scenario}, self.node)
 
     def handler(self, name: str) -> str:
         match = re.search(rf'addEventListener\("{name}", \(\) => \{{(.*?)\n    \}}\)', self.source, re.S)
@@ -310,12 +432,49 @@ class PageExitTest(unittest.TestCase):
         # The editor saves on a timer; a page closed inside that window took the last thing typed
         # with it, while settings, files and search history were all written on the way out.
         for name in ("pagehide", "beforeunload"):
-            self.assertIn("flushNotebook", self.handler(name), name)
+            self.assertIn("flushNotebookOnPageExit", self.handler(name), name)
 
     def test_the_tab_going_to_the_background_writes_it_too(self) -> None:
         hidden = re.search(r'visibilityState === "hidden"\) \{(.*?)\n      \}', self.source, re.S).group(1)
 
-        self.assertIn("flushNotebook", hidden)
+        self.assertIn("flushNotebookOnPageExit", hidden)
+
+    def test_the_write_goes_out_by_itself_rather_than_joining_the_queue(self) -> None:
+        # A page that is closing cannot wait behind other requests; keepalive is what makes the
+        # browser carry this one out with it.
+        result = self.exit()
+
+        self.assertEqual(len(result["requests"]), 1)
+        request = result["requests"][0]
+        self.assertEqual(request["method"], "PUT")
+        self.assertTrue(request["keepalive"])
+        self.assertEqual(json.loads(request["body"]), {"text": "typed on the way out", "base_revision": 4})
+
+    def test_a_note_with_nothing_outstanding_is_not_written_again(self) -> None:
+        # The editor holds what the note holds, and the note has no save waiting: there is nothing a
+        # write on the way out would add.
+        result = self.exit(editorText="before", dirty=[])
+
+        self.assertEqual(result["requests"], [])
+
+    def test_text_left_in_the_editor_counts_as_outstanding(self) -> None:
+        # Typing may not have reached the note object yet; taking the editor's word for it is the
+        # whole point of writing on the way out.
+        result = self.exit(dirty=[])
+
+        self.assertEqual(len(result["requests"]), 1)
+        self.assertEqual(result["text"], "typed on the way out")
+
+    def test_a_locked_note_is_not_written_on_the_way_out_either(self) -> None:
+        # Its writes are refused; a keepalive one would be refused too, and the text is already kept.
+        result = self.exit(locked=True)
+
+        self.assertEqual(result["requests"], [])
+
+    def test_a_page_with_no_note_open_writes_nothing(self) -> None:
+        result = self.exit(noNote=True)
+
+        self.assertEqual(result["requests"], [])
 
 
 class RefreshKeepsWhatWasTypedTest(unittest.TestCase):

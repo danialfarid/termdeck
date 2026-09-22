@@ -6919,14 +6919,19 @@ Object.assign(TermdeckApp.prototype, {
     if (this.notebookNoteConflicts.has(note.note_id)) return;
     // Waiting to be saved: arriving text must not be put over it while it is.
     this.dirtyNotebookNoteIds.add(note.note_id);
+    // The text as it is now; only the version is read when the request goes out. A body built
+    // entirely at send time wrote whatever the note had become by then, so a save queued for one
+    // paragraph could be turned into a write of the text that replaced it -- and the paragraph it was
+    // queued for was never written anywhere.
+    const text = note.text || "";
     this.queueProjectResourceRequest(this.notebookProjectStateKey(),
       `/api/notebook/notes/${encodeURIComponent(note.note_id)}`, "PUT",
-      () => ({ text: note.text || "", base_revision: Number.isInteger(note.revision) ? note.revision : null }), {
+      () => ({ text, base_revision: Number.isInteger(note.revision) ? note.revision : null }), {
         onSaved: (payload) => {
           if (Number.isInteger(payload?.note?.revision)) note.revision = payload.note.revision;
           // The message stays for its own few seconds: the write that follows a refusal is the note
           // catching up, and clearing on it took the news away before anyone could read it.
-          if (note.text === (payload?.note?.text ?? note.text)) this.dirtyNotebookNoteIds.delete(note.note_id);
+          if (note.text === text) this.dirtyNotebookNoteIds.delete(note.note_id);
         },
         onRefused: (status, detail) => {
           if (status !== 409 || detail?.reason !== "note_changed_elsewhere") return false;
@@ -7660,10 +7665,33 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // Waiting on this means waiting for the write to land, not merely for it to be asked for: callers
+  // that go on to change the note -- restoring a version -- would otherwise race their own save.
   flushNotebook() {
     if (!this.notebookEditor || !this.notebookMounted) return Promise.resolve();
     this.setNotebookNoteText(this.notebookNoteForEditorModel(), this.notebookEditor.getValue());
-    return Promise.resolve();
+    return this.projectStateSavePromise || Promise.resolve();
+  },
+
+
+  // A page on its way out cannot wait for a queue. This write goes straight out, with keepalive, so
+  // the browser carries it even as the page dies; the queued one behind it is harmless either way,
+  // because the two carry the same text and the second is refused or a no-op.
+  flushNotebookOnPageExit() {
+    if (!this.notebookEditor || !this.notebookMounted) return;
+    const note = this.notebookNoteForEditorModel();
+    if (!note) return;
+    this.setNotebookNoteText(note, this.notebookEditor.getValue(), false, false);
+    if (!this.dirtyNotebookNoteIds.has(note.note_id) || this.notebookNoteConflicts.has(note.note_id)) return;
+    const params = this.projectStateSearchParams(this.notebookProjectStateKey());
+    const body = JSON.stringify({ text: note.text || "",
+      base_revision: Number.isInteger(note.revision) ? note.revision : null });
+    try {
+      void fetch(`/api/notebook/notes/${encodeURIComponent(note.note_id)}?${params}`, {
+        method: "PUT", keepalive: true, headers: { "Content-Type": "application/json" }, body });
+    } catch (error) {
+      // Nothing left to do on the way out; the queued save is the only other chance.
+    }
   },
 
 

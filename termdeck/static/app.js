@@ -3828,7 +3828,7 @@ class TermdeckApp {
       this.flushPendingSettingsSave();
       this.flushPendingFileSavesOnPageExit();
       this.flushPendingSearchHistoryRecord();
-      void this.flushNotebook();
+      this.flushNotebookOnPageExit();
     });
     window.addEventListener("beforeunload", () => {
       this.flushPendingSettingsSave();
@@ -3836,7 +3836,7 @@ class TermdeckApp {
       this.flushPendingSearchHistoryRecord();
       // The note is saved on a timer while it is typed into; a page closed inside that window took
       // the last thing written with it.
-      void this.flushNotebook();
+      this.flushNotebookOnPageExit();
     });
     document.body.classList.toggle("termdeck-page-hidden", document.hidden);
     // Sibling tabs read this stamp to learn which session is being watched here, so they do not
@@ -3855,7 +3855,7 @@ class TermdeckApp {
         this.flushPendingSettingsSave();
         this.flushPendingFileSavesOnPageExit();
         this.flushPendingSearchHistoryRecord();
-        void this.flushNotebook();
+        this.flushNotebookOnPageExit();
         } else {
         this.updateRecentFilesWatch();
         void this.refreshCurrentProjectState();

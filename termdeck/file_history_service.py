@@ -47,8 +47,8 @@ class FileHistoryService:
 
     def _latest(self, database: sqlite3.Connection, root: str, path: str) -> sqlite3.Row | None:
         return database.execute(
-            "SELECT version_id, content_hash, source, captured_at_est FROM file_history WHERE root = ? AND path = ? "
-            "ORDER BY version_id DESC LIMIT 1", (root, path)
+            "SELECT version_id, content, content_hash, source, captured_at_est FROM file_history "
+            "WHERE root = ? AND path = ? ORDER BY version_id DESC LIMIT 1", (root, path)
         ).fetchone()
 
     @staticmethod
@@ -58,6 +58,17 @@ class FileHistoryService:
         latest_time = datetime.fromisoformat(str(latest["captured_at_est"]))
         current_time = datetime.fromisoformat(captured_at_est)
         return (current_time - latest_time).total_seconds() < TermdeckConfig.FILE_HISTORY_COALESCE_SECONDS
+
+    @staticmethod
+    def _continues(previous: str, content: str) -> bool:
+        """Whether this version carries on from the one before it, rather than replacing it.
+
+        Versions written seconds apart are folded together, because someone typing produces one every
+        fraction of a second and nobody wants to scroll through them. But a write that replaces the
+        text wholesale -- restoring an earlier version, pasting over everything -- is not that, and
+        folding it destroyed the version it replaced seconds after it was recorded.
+        """
+        return content.startswith(previous) or previous.startswith(content)
 
     def _trim(self, database: sqlite3.Connection, root: str, path: str) -> None:
         database.execute(
@@ -84,7 +95,8 @@ class FileHistoryService:
             latest = self._latest(database, canonical_root, canonical_path)
             if latest is not None and latest["content_hash"] == content_hash:
                 return int(latest["version_id"])
-            if latest is not None and source == "manual" and self._is_recent_manual_snapshot(latest, captured_at_est):
+            if (latest is not None and source == "manual" and self._is_recent_manual_snapshot(latest, captured_at_est)
+                    and self._continues(str(latest["content"]), content)):
                 database.execute(
                     "UPDATE file_history SET content = ?, content_hash = ?, byte_size = ?, captured_at_est = ? "
                     "WHERE version_id = ?",

@@ -2505,8 +2505,10 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
 #notebook-panel.notebook-history-open #notebook-find-bar { display: none; }
 #notebook-note-history-head { display: flex; align-items: center; gap: 8px; flex: none; padding: 9px 12px 8px; border-bottom: 1px solid var(--border); color: var(--dim); font: 600 calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; letter-spacing: 0.05em; text-transform: uppercase; }
 #notebook-note-history-count { color: var(--accent); font-weight: 500; }
-#notebook-note-history-restore { margin-left: auto; padding: 4px 9px; border: 1px solid var(--accent); border-radius: 6px; background: transparent; color: var(--accent); cursor: pointer; font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; text-transform: none; letter-spacing: 0; }
-#notebook-note-history-restore:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+/* Under the versions button, in the same column: it belongs to the versions, and it appears only
+   while one is being read, so it must not move anything either. */
+#notebook-note-history-restore { position: absolute; z-index: 2; top: 100%; right: 11px; margin-top: 34px; width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--accent); border-radius: 7px; background: var(--panel2); color: var(--accent); cursor: pointer; }
+#notebook-note-history-restore:hover { background: color-mix(in srgb, var(--accent) 18%, var(--panel2)); }
 #notebook-note-history-restore.hidden { display: none; }
 #notebook-note-history-body { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr); }
 #notebook-note-history-items { min-height: 0; overflow-y: auto; border-right: 1px solid var(--border); padding: 6px; display: flex; flex-direction: column; gap: 3px; }
