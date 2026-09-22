@@ -2094,16 +2094,23 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  // What this window has already told the server about, so a save writes what it opened and what it
-  // closed -- and never speaks for a file it has not touched.
+  // What this window has open and the server already knows about, so a save writes what it opened and
+  // what it closed -- and never speaks for a file it has not touched. Remembering everything that was
+  // saved instead would speak for other projects: this window restores the project it is on, and every
+  // file saved under any other one would read as closed here and be deleted on the next save.
   rememberPersistedOpenFiles() {
-    const remembered = new Map();
-    for (const [projectKey, state] of Object.entries(this.settings.project_state || {})) {
-      remembered.set(projectKey, new Map((state.open_files || []).filter((file) => file?.root && file?.path)
-        .map((file) => [`${file.root}|${file.path}`, { root: file.root, path: file.path,
-          mtime: String(file.mtime || 0), git_status: String(file.git_status || "") }])));
-    }
-    this.persistedOpenFiles = remembered;
+    this.persistedOpenFiles = this.openFilesByProject();
+  },
+
+
+  // A file this window failed to tell the server about is forgotten again, so the next save says it
+  // once more: an open it never reported is opened again, a close it never reported is closed again.
+  forgetPersistedOpenFile(change) {
+    const known = this.persistedOpenFiles.get(change.projectKey) || new Map();
+    const key = `${change.file.root}|${change.file.path}`;
+    if (change.open) known.delete(key);
+    else known.set(key, change.file);
+    this.persistedOpenFiles.set(change.projectKey, known);
   },
 
 
@@ -2134,13 +2141,19 @@ Object.assign(TermdeckApp.prototype, {
     this.settings.project_state = states;
     if (!changes.length) return;
     this.openFilesPersistPromise = this.openFilesPersistPromise.then(async () => {
-      for (const change of changes) {
-        const params = this.projectStateSearchParams(change.projectKey);
-        const response = await fetch(`/api/open-files?${params}`, { method: change.open ? "POST" : "DELETE",
-          keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify(change.file) });
-        // A file closed somewhere else before this window got to it is closed either way.
-        if (!response.ok && !(response.status === 404 && !change.open)) {
-          throw new Error(`server returned ${response.status}`);
+      for (const [index, change] of changes.entries()) {
+        try {
+          const params = this.projectStateSearchParams(change.projectKey);
+          const response = await fetch(`/api/open-files?${params}`, { method: change.open ? "POST" : "DELETE",
+            keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify(change.file) });
+          // A file closed somewhere else before this window got to it is closed either way.
+          if (!response.ok && !(response.status === 404 && !change.open)) {
+            throw new Error(`server returned ${response.status}`);
+          }
+        } catch (error) {
+          // This one failed and the ones behind it were never sent, so none of them are written yet.
+          for (const pending of changes.slice(index)) this.forgetPersistedOpenFile(pending);
+          throw error;
         }
       }
     }).catch((error) => { this.$("stat-text").textContent = `Could not persist open files: ${error.message}`; });
