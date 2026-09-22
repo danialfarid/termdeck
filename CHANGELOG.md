@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The versions button moved out of the notebook's row of buttons to just under them. It belongs to a
+  note, so it comes and goes with one, and from the row itself that shifted every other button
+  sideways each time. It is a push button now: it opens the versions and puts the note back, so the
+  panel has no × of its own.
+- The description button stays lit while the drawer it opened is open, the way the deck's other push
+  buttons do. Nothing in the bar said whether the drawer below it was open.
+
+### Changed
+
 - A write to a note must say which version it was made from. A caller that says nothing cannot be told
   it is behind, and taking such a write is how a stale window overwrote newer text; it is refused now
   unless the note has no version yet. `PUT /api/project-state/notebook_notes` no longer writes the

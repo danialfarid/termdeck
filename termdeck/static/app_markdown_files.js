@@ -4250,8 +4250,7 @@ Object.assign(TermdeckApp.prototype, {
     this.installNotebookTabGestures();
     this.$("notebook-new").onclick = () => { void this.createNotebookNote(); };
     this.$("notebook-find").onclick = () => this.openNotebookFind();
-    this.$("notebook-history").onclick = () => { void this.openNotebookNoteHistory(""); };
-    this.$("notebook-note-history-close").onclick = () => this.closeNotebookNoteHistory();
+    this.$("notebook-history").onclick = () => this.toggleNotebookNoteHistory();
     this.$("notebook-note-history-restore").onclick = () => { void this.restoreNotebookNoteVersion(); };
     this.$("notebook-find-close").onclick = () => this.closeNotebookFind(true);
     this.$("notebook-find-prev").onclick = () => this.stepNotebookSearch(-1);
@@ -6950,6 +6949,17 @@ Object.assign(TermdeckApp.prototype, {
   // Every version of a note that was ever saved is kept, the way a file's versions are, so text that
   // went missing can be read back and put where it belongs. They open in the notebook itself: the
   // versions down the left, the one being looked at on the right, and a button to put it back.
+  // One button for both directions, like the Notes button itself: it opens the versions of the note
+  // being read, and pressing it again puts the note back.
+  toggleNotebookNoteHistory() {
+    if (this.notebookHistoryOpen) {
+      this.closeNotebookNoteHistory();
+      return;
+    }
+    void this.openNotebookNoteHistory("");
+  },
+
+
   async openNotebookNoteHistory(noteId) {
     // The copied-text view is not a note and has no versions; the button is hidden there, and this is
     // the other way in (the tab menu), which must not open an empty panel either.
@@ -7874,7 +7884,12 @@ Object.assign(TermdeckApp.prototype, {
     panel.classList.toggle("notebook-copies-open", this.notebookCopiesOpen);
     panel.classList.toggle("notebook-history-open", this.notebookHistoryOpen);
     const historyButton = this.$("notebook-history");
-    if (historyButton) historyButton.classList.toggle("hidden", this.notebookCopiesOpen);
+    if (historyButton) {
+      historyButton.classList.toggle("hidden", this.notebookCopiesOpen);
+      historyButton.classList.toggle("on", this.notebookHistoryOpen);
+      historyButton.setAttribute("aria-pressed", String(this.notebookHistoryOpen));
+      historyButton.title = this.notebookHistoryOpen ? "Back to the note" : "Earlier versions of this note";
+    }
     if (this.notebookHistoryOpen) this.renderNotebookNoteHistory();
     for (const toggle of toggles) {
       toggle.classList.toggle("on", notebookOpen);

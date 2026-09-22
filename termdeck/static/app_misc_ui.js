@@ -1179,10 +1179,21 @@ Object.assign(TermdeckApp.prototype, {
     sessionLabel.title = sessionLabel.textContent;
     this.$("session-description-status").textContent = this.readOnlyMode ? "read-only mode" : "Autosaves while you type";
     drawer.classList.remove("hidden");
+    this.markSessionDescriptionToggle(true);
     requestAnimationFrame(() => {
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
     });
+  },
+
+
+  // The button stays lit while the drawer it opened is open, so it reads as pressed rather than as
+  // something that flashed and did nothing. It closes by being pressed again, and looks it.
+  markSessionDescriptionToggle(open) {
+    const toggle = this.$("session-description-toggle");
+    if (!toggle) return;
+    toggle.classList.toggle("on", !!open);
+    toggle.setAttribute("aria-pressed", String(!!open));
   },
 
 
@@ -1197,6 +1208,7 @@ Object.assign(TermdeckApp.prototype, {
     }
     const drawer = this.$("session-description-drawer");
     if (drawer) drawer.classList.add("hidden");
+    this.markSessionDescriptionToggle(false);
     this.sessionDescriptionEditingId = "";
     if (!this.touchMobileLayoutEnabled()) this.refocusActiveInputAfterToolbarAction();
   },

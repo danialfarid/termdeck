@@ -96,7 +96,7 @@ class NoCloseButtonTest(unittest.TestCase):
     def test_the_panel_carries_a_notes_button_of_its_own(self) -> None:
         # In the head, in line with the head's other buttons, in whichever mode the deck is in.
         self.assertIn('id="notebook-head-toggle"', self.html)
-        actions = re.search(r'<span id="notebook-actions">(.*?)</span>\s*\n\s*</div>', self.html, re.S).group(1)
+        actions = re.search(r'<span id="notebook-actions">(.*?)\n    </span>', self.html, re.S).group(1)
 
         self.assertIn("notebook-head-toggle", actions)
 

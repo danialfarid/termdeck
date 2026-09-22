@@ -112,10 +112,30 @@ class VersionsPanelShapeTest(unittest.TestCase):
         self.js = (STATIC / "app_markdown_files.js").read_text()
 
     def test_the_notebook_has_a_button_for_its_versions(self) -> None:
+        # In the head but not among its buttons: it comes and goes with the note being read, and from
+        # the row itself that moved every other button sideways each time.
+        head = re.search(r'<div id="notebook-head">(.*?)\n  </div>', self.html, re.S).group(1)
         actions = re.search(r'<span id="notebook-actions">(.*?)\n    </span>', self.html, re.S).group(1)
 
-        self.assertIn('id="notebook-history"', actions)
+        self.assertIn('id="notebook-history"', head)
+        self.assertNotIn('id="notebook-history"', actions)
+        self.assertRegex(self.css, r"#notebook-history \{[^}]*position: absolute")
         self.assertIn('this.$("notebook-history").onclick', self.js)
+
+    def test_the_same_button_puts_the_note_back(self) -> None:
+        # The way the Notes button itself works; there is no x to look for.
+        self.assertIn('this.$("notebook-history").onclick = () => this.toggleNotebookNoteHistory();', self.js)
+        self.assertNotIn("notebook-note-history-close", self.html)
+        toggle = re.search(r"toggleNotebookNoteHistory\(\) \{(.*?)\n  \},", self.js, re.S).group(1)
+
+        self.assertIn("closeNotebookNoteHistory", toggle)
+        self.assertIn("openNotebookNoteHistory", toggle)
+
+    def test_it_is_not_offered_on_the_copied_text_view(self) -> None:
+        # Copies are not a note and have no versions; the button is only there for a note.
+        render = re.search(r"renderNotebook\(\) \{(.*?)\n  \},", self.js, re.S).group(1)
+
+        self.assertIn('historyButton.classList.toggle("hidden", this.notebookCopiesOpen)', render)
 
     def test_the_versions_open_in_the_notebook_rather_than_a_dialog(self) -> None:
         self.assertIn('id="notebook-note-history"', self.html)

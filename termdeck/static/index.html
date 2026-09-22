@@ -446,7 +446,7 @@
     <button id="file-history-toggle" class="hidden" title="File history" aria-label="File history" aria-pressed="false"><span class="codicon codicon-history"></span></button>
     <button id="editor-wrap-toggle" title="Editor no wrap: off" aria-label="Toggle editor no wrap" aria-pressed="false"><span class="codicon codicon-word-wrap"></span></button>
     <button id="file-split-toggle" class="hidden" title="Compare / split editor" aria-label="Compare / split editor"><span class="codicon codicon-split-horizontal"></span></button>
-    <button id="session-description-toggle" title="Edit session description · click again to close" aria-label="Edit session description"><span class="codicon codicon-note"></span></button>
+    <button id="session-description-toggle" title="Edit session description · click again to close" aria-label="Edit session description" aria-pressed="false"><span class="codicon codicon-note"></span></button>
     <button id="attach-btn" title="Attach file/image → inserts its path (also paste or drag-drop onto the terminal)"><span class="codicon codicon-cloud-upload"></span></button>
     <button id="conversation-outline-toggle" class="transcript-unavailable" title="Conversation outline" aria-label="Conversation outline"><span class="codicon codicon-list-tree"></span></button>
     <button id="problems-toggle" title="Problems" aria-label="Problems"><span class="codicon codicon-warning"></span></button>
@@ -486,9 +486,9 @@
     <span id="notebook-actions">
       <button id="notebook-new" title="New note" aria-label="New note"><span class="codicon codicon-add"></span></button>
       <button id="notebook-find" title="Find in note" aria-label="Find in note"><span class="codicon codicon-search"></span></button>
-      <button id="notebook-history" title="Earlier versions of this note" aria-label="Earlier versions of this note"><span class="codicon codicon-history"></span></button>
       <button id="notebook-head-toggle" class="on" title="Close notebook" aria-label="Close notebook" aria-pressed="true"><span class="note-taking-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M10 15q-.425 0-.712-.288T9 14v-2.425q0-.4.15-.763t.425-.637l8.6-8.6q.3-.3.675-.45t.75-.15q.4 0 .763.15t.662.45L22.425 3q.275.3.425.663T23 4.4t-.137.738t-.438.662l-8.6 8.6q-.275.275-.637.438t-.763.162zm9.6-9.2l1.425-1.4l-1.4-1.4L18.2 4.4zM5 21q-.825 0-1.412-.587T3 19V5q0-.825.588-1.412T5 3h6.5q.35 0 .575.175t.35.45t.087.55t-.287.525l-4.65 4.65q-.275.275-.425.638T7 10.75V15q0 .825.588 1.412T9 17h4.225q.4 0 .763-.15t.637-.425L19.3 11.75q.25-.25.525-.288t.55.088t.45.35t.175.575V19q0 .825-.587 1.413T19 21z"/></svg></span></button>
     </span>
+    <button id="notebook-history" title="Earlier versions of this note" aria-label="Earlier versions of this note" aria-pressed="false"><span class="codicon codicon-history"></span></button>
   </div>
   <div id="notebook-recent-copies">
     <div id="notebook-recent-copies-head"><span>Recent copied text</span><span id="notebook-recent-copies-count"></span></div>
@@ -498,7 +498,6 @@
     <div id="notebook-note-history-head">
       <span>Earlier versions</span><span id="notebook-note-history-count"></span>
       <button id="notebook-note-history-restore" class="hidden" title="Put this version back into the note">Restore this version</button>
-      <button id="notebook-note-history-close" class="codicon codicon-close" title="Close versions" aria-label="Close versions"></button>
     </div>
     <div id="notebook-note-history-body">
       <div id="notebook-note-history-items" role="listbox" aria-label="Earlier versions of this note"></div>

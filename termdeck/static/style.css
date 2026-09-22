@@ -545,7 +545,8 @@ body.termdeck-read-only #history-prompt { color: var(--dim); cursor: not-allowed
 #history-btn:hover, #attach-btn:hover, #terminal-resync-btn:hover, #scroll-bottom-btn:hover, #editor-wrap-toggle:hover, #session-description-toggle:hover,
 #history-edits-toggle:hover, #history-scroll-bottom:hover, #reveal-session-btn:hover, #file-history-toggle:hover,
 #file-split-toggle:hover, #notebook-toggle:hover, #problems-toggle:hover, #conversation-outline-toggle:hover { color: var(--text); border-color: var(--border); }
-#file-history-toggle.on, #file-split-toggle.on, #notebook-toggle.on, #problems-toggle.on, #conversation-outline-toggle.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
+#file-history-toggle.on, #file-split-toggle.on, #notebook-toggle.on, #problems-toggle.on, #conversation-outline-toggle.on,
+#session-description-toggle.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 #history-btn.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 #history-btn .codicon, #attach-btn .codicon, #terminal-resync-btn .codicon, #scroll-bottom-btn .codicon, #file-history-toggle .codicon, #session-description-toggle .codicon,
 #editor-wrap-toggle .codicon, #file-split-toggle .codicon, #notebook-toggle .codicon, #history-edits-toggle .codicon, #history-scroll-bottom .codicon,
@@ -1715,6 +1716,7 @@ body.notebook-open #file-tabs-notebook,
 body.notebook-open #mobile-notebook-toggle { display: none; }
 #notebook-head-toggle .note-taking-icon { width: 1.25em; height: 1.15em; }
 #notebook-head {
+  position: relative;
   flex: none;
   display: flex;
   align-items: center;
@@ -2506,8 +2508,6 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
 #notebook-note-history-restore { margin-left: auto; padding: 4px 9px; border: 1px solid var(--accent); border-radius: 6px; background: transparent; color: var(--accent); cursor: pointer; font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace; text-transform: none; letter-spacing: 0; }
 #notebook-note-history-restore:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 #notebook-note-history-restore.hidden { display: none; }
-#notebook-note-history-close { width: 24px; height: 24px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--dim); cursor: pointer; }
-#notebook-note-history-close:hover { border-color: var(--accent); color: var(--accent); }
 #notebook-note-history-body { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr); }
 #notebook-note-history-items { min-height: 0; overflow-y: auto; border-right: 1px solid var(--border); padding: 6px; display: flex; flex-direction: column; gap: 3px; }
 .notebook-note-version { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text); cursor: pointer; text-align: left; font: calc(var(--ui-font-size) - 1px)/1.25 Menlo, monospace; }
@@ -2520,4 +2520,9 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
 /* A save the server refused, said in the notebook's own head. */
 #notebook-message { flex: none; max-width: 42%; overflow: hidden; color: var(--red, #f7768e); font: calc(var(--ui-font-size) - 1px)/1.25 Menlo, monospace; white-space: nowrap; text-overflow: ellipsis; }
 #notebook-message.hidden { display: none; }
-#notebook-actions button.hidden { display: none; }
+/* Under the head's own buttons, over the top corner of the writing: it belongs to a note, so it comes
+   and goes with one, and from here that costs the buttons above it nothing. */
+#notebook-history { position: absolute; z-index: 2; top: 100%; right: 11px; margin-top: 5px; width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 7px; background: var(--panel2); color: var(--dim); cursor: pointer; }
+#notebook-history:hover { border-color: var(--accent); color: var(--accent); }
+#notebook-history.on { border-color: var(--accent); color: var(--accent); background: var(--active-bg); }
+#notebook-history.hidden { display: none; }
