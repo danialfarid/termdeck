@@ -281,33 +281,6 @@ class StateRecoveryRestoreRequest(BaseModel):
     snapshot: str
 
 
-class ProjectStatePatch(BaseModel):
-    active_session_id: str | None = None
-    color: str | None = None
-    root_worktree_color: str | None = None
-    open_files: list[dict[str, str]] | None = None
-    open_files_collapsed: bool | None = None
-    recent_files_collapsed: bool | None = None
-    recent_file_exclude_glob: str | None = None
-    recently_opened_terminal_ids: list[str] | None = None
-    session_order: list[str] | None = None
-    # Legacy-only fields: the desktop client migrates saved pins into its
-    # ordinary terminal layout, then clears them. New UI/API code has no pin action.
-    pinned_sessions: list[str] | None = None
-    pinned_groups: list[str] | None = None
-    unread_sessions: list[str] | None = None
-    terminal_groups: list[dict[str, str | bool]] | None = None
-    session_groups: dict[str, str] | None = None
-    terminal_layout: list[str] | None = None
-    session_view_modes: dict[str, str] | None = None
-    notebook_notes: list[NotebookNote] | None = None
-    notebook_active_note_id: str | None = None
-    notebook_notes_initialized: bool | None = None
-    notebook_text: str | None = None
-    selection_copy_history: list[SelectionCopy] | None = None
-    selection_copy_history_initialized: bool | None = None
-
-
 class StoredValueRequest(BaseModel):
     value: object
 
@@ -866,7 +839,6 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_SESSION_HISTORY_ROUTE, response_model=None)(self._session_history)
         app.get(TermdeckConfig.API_SESSION_HISTORY_PAGE_ROUTE, response_model=None)(self._session_history_page)
         app.get(TermdeckConfig.API_TERMINAL_LAYOUT_ROUTE, response_model=None)(self._get_terminal_layout)
-        app.patch(TermdeckConfig.API_TERMINAL_LAYOUT_ROUTE, response_model=None)(self._patch_terminal_layout)
         app.get(TermdeckConfig.API_TERMINAL_GROUPS_ROUTE, response_model=None)(self._get_terminal_groups)
         app.post(TermdeckConfig.API_TERMINAL_GROUPS_ROUTE, response_model=None)(self._create_terminal_group)
         app.patch(TermdeckConfig.API_TERMINAL_GROUP_ROUTE, response_model=None)(self._update_terminal_group)
@@ -1178,7 +1150,7 @@ class TermdeckServer:
         if unknown_fields:
             raise HTTPException(status_code=422, detail=f"unknown settings: {', '.join(sorted(unknown_fields))}")
         if "project_state" in incoming_settings:
-            raise HTTPException(status_code=409, detail="project state must use /api/terminal-layout")
+            raise HTTPException(status_code=409, detail="project state must use /api/project-state/<field>")
         current_settings = self.settings_store.load()
         previous_enabled = UiSettings(**current_settings).agent_api_instructions_enabled
         merged_settings = {**current_settings, **incoming_settings}
@@ -2696,7 +2668,7 @@ class TermdeckServer:
     }
 
     def _project_state_field_names(self) -> set[str]:
-        return set(ProjectStatePatch.model_fields) - self.WRITE_THROUGH_TARGETED_API
+        return set(ProjectUiState.model_fields) - self.WRITE_THROUGH_TARGETED_API
 
     async def _get_project_state_field(self, field_name: str, project: str = "",
                                        worktree_id: str = "") -> dict[str, object]:
@@ -2707,6 +2679,15 @@ class TermdeckServer:
 
     async def _put_project_state_field(self, request: StoredValueRequest, field_name: str, project: str = "",
                                        worktree_id: str = "") -> dict[str, object]:
+        """Write one field of the project state and nothing else.
+
+        Every write is one field now: pinning a terminal writes the pins, opening the notebook on
+        another note writes which note, and neither carries the rest of the state along with it. A
+        write that carried everything was a write made from whatever the sending window happened to
+        be holding, so a stale window put its whole copy back over what another one had just saved.
+        """
+        if field_name in self.WRITE_THROUGH_TARGETED_API:
+            raise HTTPException(status_code=409, detail=f"project resources require targeted APIs: {field_name}")
         if field_name not in self._project_state_field_names():
             raise HTTPException(status_code=404, detail=f"unknown project state field: {field_name}")
         settings, key, state = self._project_state_context(project, worktree_id)
@@ -2717,25 +2698,6 @@ class TermdeckServer:
         except ValidationError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return self._save_project_state(settings, key, state, project, worktree_id)
-
-    async def _patch_terminal_layout(self, patch: ProjectStatePatch, project: str = "", worktree_id: str = "") -> dict[str, object]:
-        resource_fields = {"terminal_groups", "session_groups", "terminal_layout", "session_order",
-                           "unread_sessions", "recently_opened_terminal_ids", "session_view_modes", "notebook_notes",
-                           "selection_copy_history"}
-        supplied_resource_fields = resource_fields & patch.model_fields_set
-        if supplied_resource_fields:
-            raise HTTPException(status_code=409,
-                                detail=f"project resources require targeted APIs: {', '.join(sorted(supplied_resource_fields))}")
-        settings = UiSettings(**self.settings_store.load())
-        key = self._project_state_key(project, worktree_id)
-        current = settings.project_state.get(key, ProjectUiState()).model_dump()
-        current.update(patch.model_dump(exclude_none=True))
-        settings.project_state[key] = ProjectUiState(**current)
-        payload = settings.model_dump()
-        self.settings_store.save(payload)
-        layout_payload = self._terminal_layout_payload(project, UiSettings(**payload), worktree_id)
-        self._broadcast_project_state(layout_payload)
-        return layout_payload
 
     async def _list_selection_copies(self, project: str = "", worktree_id: str = "") -> dict[str, object]:
         _, _, state = self._project_state_context(project, worktree_id)

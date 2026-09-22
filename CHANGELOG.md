@@ -16,6 +16,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Every part of the project state is written by a call of its own. Clearing the pins, or opening the
+  notebook on another note, wrote the whole state — from the copy the window making the change
+  happened to be holding — so a window open for a while put its own stale notes, layout and copied
+  text back over what had been saved since it loaded. `PATCH /api/terminal-layout` is gone; that call
+  reads, and `PUT /api/project-state/<field>` writes one field. See
+  [docs/api.md](docs/api.md#project-state).
+- A copy says how old it is in one unit — `2m`, `4h`, `1d` — and resting on it gives the date and time
+  it was made. Both in the notebook's copied text and in the ⌘⇧V picker.
 - In the paste picker, the time a copy was made moved to the end of its row. In front of the text it
   pushed the first words of every copy out of line, and the first words are how anyone finds the copy
   they are looking for.

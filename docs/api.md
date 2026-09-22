@@ -299,6 +299,31 @@ curl -sS -X DELETE 'http://127.0.0.1:8530/api/notebook/notes/<note_id>?project=s
 `POST /api/notebook/trash` is separate: it writes a note's text to the OS trash as Markdown, which is what the
 close button in the notebook does before the note is deleted.
 
+## Project state
+
+Everything the deck remembers about a project — which terminal is selected, the colours, the open
+files, which note the notebook is on — is read whole and written one field at a time:
+
+```sh
+curl -sS 'http://127.0.0.1:8530/api/terminal-layout?project=stock'
+curl -sS 'http://127.0.0.1:8530/api/project-state/active_session_id?project=stock'
+curl -sS -X PUT 'http://127.0.0.1:8530/api/project-state/active_session_id?project=stock' \
+  -H 'Content-Type: application/json' -d '{"value": "abc123"}'
+```
+
+There is no call that writes the whole state. One that did wrote every field from the copy the caller
+was holding, so a deck open in another window put its own stale copy back over what had been saved
+since it loaded.
+
+The fields several windows add to are refused by this call with HTTP 409, because replacing such a
+list is itself the loss: `terminal_groups`, `session_groups`, `terminal_layout`, `session_order`,
+`unread_sessions`, `recently_opened_terminal_ids`, `session_view_modes`, `notebook_notes` and
+`selection_copy_history`. Each has calls of its own that add, move or remove one entry —
+`/api/terminal-groups`, `/api/session-group-assignments`, `/api/terminal-layout/move`,
+`/api/session-order/move`, `/api/session-unread`, `/api/recently-opened-terminals/<session_id>`,
+`/api/session-view-modes/<session_id>`, `/api/notebook/notes` and `/api/notebook/copies`. All of them
+can still be read through `/api/project-state/<field>`.
+
 ## Copied text
 
 The copied-text list beside the notes is written one copy at a time, for the same reason the notes are: a deck

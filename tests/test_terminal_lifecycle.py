@@ -27,7 +27,7 @@ from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot, ProcTreeUtil
 from termdeck.pty_process import PtyProcess
 from termdeck.file_history_service import FileHistoryService
-from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, NotebookNoteCreateRequest, NotebookNoteSaveRequest, ProjectStatePatch, ProjectUiState, RunTerminalTaskRequest, SelectionCopyRequest, SessionGroupAssignmentsRequest, StoredValueRequest, SubmitPromptRequest, TermdeckServer, UiSettings
+from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, NotebookNoteCreateRequest, NotebookNoteSaveRequest, ProjectUiState, RunTerminalTaskRequest, SelectionCopyRequest, SessionGroupAssignmentsRequest, StoredValueRequest, SubmitPromptRequest, TermdeckServer, UiSettings
 from termdeck.replay_recorder import ReplayRecorder
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
 from termdeck.transcript_turns import TurnBuilder
@@ -642,8 +642,9 @@ class NotebookNoteApiTest(unittest.TestCase):
             {"text": "kept", "copied_at_ms": 1}]
 
         with self.assertRaises(HTTPException) as raised:
-            asyncio.run(server._patch_terminal_layout(ProjectStatePatch(selection_copy_history=[]),
-                                                      project="stock", worktree_id="root"))
+            asyncio.run(server._put_project_state_field(StoredValueRequest(value=[]),
+                                                        field_name="selection_copy_history",
+                                                        project="stock", worktree_id="root"))
 
         self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual([copy["text"] for copy in
@@ -658,7 +659,7 @@ class NotebookNoteApiTest(unittest.TestCase):
             asyncio.run(server._put_project_state_field(StoredValueRequest(value=[]), field_name="notebook_notes",
                                                         project="stock", worktree_id="root"))
 
-        self.assertEqual(raised.exception.status_code, 404)
+        self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual(self.notes(server), [("note-1", "first")])
 
     def test_the_notes_can_still_be_read_through_project_state(self) -> None:
@@ -684,22 +685,12 @@ class NotebookNoteApiTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 404)
 
-    def test_patching_the_whole_note_list_is_rejected(self) -> None:
+    def test_writing_which_note_is_open_still_works(self) -> None:
         server = self.server([NotebookNote(note_id="note-1", text="first")])
 
-        with self.assertRaises(HTTPException) as raised:
-            asyncio.run(server._patch_terminal_layout(
-                ProjectStatePatch(notebook_notes=[NotebookNote(note_id="note-1", text="first")]),
-                project="stock", worktree_id="root"))
-
-        self.assertEqual(raised.exception.status_code, 409)
-        self.assertIn("notebook_notes", raised.exception.detail)
-
-    def test_patching_the_active_note_still_works(self) -> None:
-        server = self.server([NotebookNote(note_id="note-1", text="first")])
-
-        asyncio.run(server._patch_terminal_layout(ProjectStatePatch(notebook_active_note_id="note-1"),
-                                                  project="stock", worktree_id="root"))
+        asyncio.run(server._put_project_state_field(StoredValueRequest(value="note-1"),
+                                                    field_name="notebook_active_note_id",
+                                                    project="stock", worktree_id="root"))
 
         self.assertEqual(server.settings_store.payload["project_state"]["stock"]["notebook_active_note_id"], "note-1")
         self.assertEqual(self.notes(server), [("note-1", "first")])

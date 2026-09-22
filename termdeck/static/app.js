@@ -1001,6 +1001,9 @@ class TermdeckApp {
     this.dirtyNotebookNoteIds = new Set();
     // Text already rescued into a note of its own, so a run of refusals makes one note, not twenty.
     this.rescuedNotebookText = new Map();
+    // What this page last wrote for the notebook's own fields, per project, so a save writes the ones
+    // that changed and leaves the others alone.
+    this.savedNotebookProjectFields = new Map();
     this.selectedTreeRow = null;
     this.iconMap = null;
     this.lastValidNavState = null;
@@ -1603,7 +1606,8 @@ class TermdeckApp {
 
   patchProjectState(patch) {
     const resourceFields = new Set(["terminal_groups", "session_groups", "terminal_layout", "session_order",
-      "unread_sessions", "recently_opened_terminal_ids", "session_view_modes"]);
+      "unread_sessions", "recently_opened_terminal_ids", "session_view_modes", "notebook_notes",
+      "selection_copy_history"]);
     const invalidFields = Object.keys(patch).filter((field) => resourceFields.has(field));
     if (invalidFields.length) throw new Error(`project resources require targeted APIs: ${invalidFields.join(", ")}`);
     const states = this.settings.project_state || {};
@@ -1829,6 +1833,9 @@ class TermdeckApp {
     this.renderTopbar();
   }
 
+  // One field, one request. A write that carried the whole state carried the sending window's copy of
+  // every other field with it, so clearing the pins put that window's notes, layout and copied text
+  // back over whatever had been saved since it loaded.
   queueProjectStatePatch(stateKey, patch) {
     for (const [field, value] of Object.entries(patch)) {
       this.queueProjectResourceRequest(stateKey, `/api/project-state/${encodeURIComponent(field)}`, "PUT", { value });

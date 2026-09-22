@@ -6492,11 +6492,12 @@ Object.assign(TermdeckApp.prototype, {
       item.appendChild(body);
       // At the end of the row, on the right: in front of the text it pushed the first words of every
       // copy out of line, and the first words are how anyone finds the one they want.
-      const when = this.relativeTimeLabel(entry.copied_at_ms);
-      if (when) {
+      const when = this.copyAgeLabel(entry.copied_at_ms);
+      if (when.short) {
         const stamp = document.createElement("span");
         stamp.className = "selection-copy-history-when";
-        stamp.textContent = when;
+        stamp.textContent = when.short;
+        stamp.title = when.exact;
         item.appendChild(stamp);
       }
       item.onclick = () => this.insertSelectionCopyHistory(text, true);
@@ -6887,16 +6888,23 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // Each of these is written on its own, and only when it changed: switching note writes which note
+  // is open and nothing else. They used to go out together through the layout call, which meant every
+  // note switch also wrote the two fields beside them from this window's copy of the state.
   saveNotebookProjectState() {
     const stateKey = this.notebookProjectStateKey();
     const notebookState = this.notebookProjectState();
-    const patch = {
+    const values = {
       notebook_active_note_id: notebookState.notebook_active_note_id || "",
       notebook_notes_initialized: !!notebookState.notebook_notes_initialized,
       notebook_text: notebookState.notebook_text || "",
     };
+    const written = this.savedNotebookProjectFields.get(stateKey) || {};
+    const patch = Object.fromEntries(Object.entries(values).filter(([field, value]) => written[field] !== value));
+    this.savedNotebookProjectFields.set(stateKey, values);
+    if (!Object.keys(patch).length) return;
     this.applyLocalProjectStatePatch(patch, stateKey);
-    this.queueProjectResourceRequest(stateKey, "/api/terminal-layout", "PATCH", patch);
+    this.queueProjectStatePatch(stateKey, patch);
   },
 
 
@@ -6946,6 +6954,20 @@ Object.assign(TermdeckApp.prototype, {
           return true;
         },
       });
+  },
+
+
+  // One unit and nothing else: "2m", "4h", "1d". A copy sits beside the text it was taken from, where
+  // "2h 14m ago" is three words of a narrow column; the whole date and time is on the stamp itself,
+  // for the one copy someone is actually looking for.
+  copyAgeLabel(timestampMs) {
+    const stamp = Number(timestampMs);
+    if (!Number.isFinite(stamp) || !stamp) return { short: "", exact: "" };
+    const minutes = Math.floor(Math.max(0, Date.now() - stamp) / 60000);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    const short = days ? `${days}d` : hours ? `${hours}h` : minutes ? `${minutes}m` : "now";
+    return { short, exact: new Date(stamp).toLocaleString() };
   },
 
 
@@ -7573,11 +7595,12 @@ Object.assign(TermdeckApp.prototype, {
       actions.appendChild(copy);
       // Under the button rather than in front of the text: a stamp at the start of the line pushed
       // the text it belongs to out of the way, and this column is otherwise empty.
-      const when = this.relativeTimeLabel(entry.copied_at_ms);
-      if (when) {
+      const when = this.copyAgeLabel(entry.copied_at_ms);
+      if (when.short) {
         const stamp = document.createElement("span");
         stamp.className = "notebook-recent-copy-when";
-        stamp.textContent = when;
+        stamp.textContent = when.short;
+        stamp.title = when.exact;
         actions.appendChild(stamp);
       }
       row.append(content, actions);
