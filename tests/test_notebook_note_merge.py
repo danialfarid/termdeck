@@ -174,7 +174,8 @@ class NotebookRequestTest(unittest.TestCase):
         source = (STATIC / "app_markdown_files.js").read_text()
         cls.harness = REQUEST_HARNESS.replace("__METHODS__", "\n  ".join(
             method_source(source, name) for name in
-            ("createNotebookNoteRecord(note)", "saveNotebookNote(note)", "saveNotebookNotes()")))
+            ("createNotebookNoteRecord(note)", "saveNotebookNote(note)", "saveNotebookNotes()",
+             "saveSelectionCopy(entry)")))
 
     def requests(self, call: str, notes: list[dict]) -> list[dict]:
         scenario = {"call": call, "notes": notes}
@@ -182,6 +183,17 @@ class NotebookRequestTest(unittest.TestCase):
                               env={**os.environ, "TERMDECK_REQUEST_SCENARIO": json.dumps(scenario)})
         self.assertEqual(done.returncode, 0, done.stderr)
         return json.loads(done.stdout)["requests"]
+
+    def test_a_copy_goes_out_on_its_own(self) -> None:
+        # One copy, one call: the list belongs to the server, because every window collects copies.
+        scenario = {"call": "saveSelectionCopy", "notes": [{"text": "copied text", "copied_at_ms": 1234}]}
+        done = subprocess.run([self.node, "-e", self.harness], capture_output=True, text=True, check=False,
+                              env={**os.environ, "TERMDECK_REQUEST_SCENARIO": json.dumps(scenario)})
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+        self.assertEqual(json.loads(done.stdout)["requests"],
+                         [{"stateKey": "stock", "path": "/api/notebook/copies", "method": "POST",
+                           "body": {"text": "copied text", "copied_at_ms": 1234}}])
 
     def test_a_new_note_is_held_until_the_server_has_it(self) -> None:
         # What arriving state does not carry is either a note of ours in flight or a note deleted

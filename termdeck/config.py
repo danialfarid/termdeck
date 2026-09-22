@@ -303,6 +303,7 @@ class TermdeckConfig:
     API_LAN_STATUS_ROUTE = "/api/lan/status"
     API_LAN_ACCESS_ROUTE = "/api/lan/access"
     API_NOTEBOOK_TRASH_ROUTE = "/api/notebook/trash"
+    API_NOTEBOOK_COPIES_ROUTE = "/api/notebook/copies"
     API_NOTEBOOK_NOTES_ROUTE = "/api/notebook/notes"
     API_NOTEBOOK_NOTE_ROUTE = "/api/notebook/notes/{note_id}"
     API_NOTEBOOK_NOTE_HISTORY_ROUTE = "/api/notebook/notes/{note_id}/history"
@@ -409,6 +410,7 @@ class TermdeckConfig:
     # is not trimmed away by a busy repository.
     NOTEBOOK_HISTORY_DATABASE = DATA_DIR / "notebook-history.sqlite3"
     NOTEBOOK_HISTORY_MAX_VERSIONS_PER_NOTE = 50
+    SELECTION_COPY_HISTORY_MAX = 50
     WORKTREES_DIR = DATA_DIR / "worktrees"
     WORKTREE_REGISTRY_FILE = DATA_DIR / "worktrees.json"
     PS_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_PS_BIN, "ps")

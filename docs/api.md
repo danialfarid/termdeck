@@ -299,6 +299,21 @@ curl -sS -X DELETE 'http://127.0.0.1:8530/api/notebook/notes/<note_id>?project=s
 `POST /api/notebook/trash` is separate: it writes a note's text to the OS trash as Markdown, which is what the
 close button in the notebook does before the note is deleted.
 
+## Copied text
+
+The copied-text list beside the notes is written one copy at a time, for the same reason the notes are: a deck
+that has been open for a while holds an older list, and sending that whole list back is how copies made
+elsewhere disappear.
+
+```sh
+curl -sS 'http://127.0.0.1:8530/api/notebook/copies?project=stock'
+curl -sS -X POST 'http://127.0.0.1:8530/api/notebook/copies?project=stock' \
+  -H 'Content-Type: application/json' -d '{"text": "the copied text", "copied_at_ms": 1758500000000}'
+```
+
+The copy goes to the front of the list, a copy of the same text already there moves rather than repeats, and
+the fifty most recent are kept. `copied_at_ms` is when the copy was made; leaving it out stamps it now.
+
 ## Terminal process health and orphan cleanup
 
 `GET /api/terminals/processes` is a local, read-only inventory of processes reachable from TermDeck's own

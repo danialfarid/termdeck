@@ -27,7 +27,7 @@ from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot, ProcTreeUtil
 from termdeck.pty_process import PtyProcess
 from termdeck.file_history_service import FileHistoryService
-from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, NotebookNoteCreateRequest, NotebookNoteSaveRequest, ProjectStatePatch, ProjectUiState, RunTerminalTaskRequest, SessionGroupAssignmentsRequest, StoredValueRequest, SubmitPromptRequest, TermdeckServer, UiSettings
+from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, NotebookNote, NotebookNoteCreateRequest, NotebookNoteSaveRequest, ProjectStatePatch, ProjectUiState, RunTerminalTaskRequest, SelectionCopyRequest, SessionGroupAssignmentsRequest, StoredValueRequest, SubmitPromptRequest, TermdeckServer, UiSettings
 from termdeck.replay_recorder import ReplayRecorder
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
 from termdeck.transcript_turns import TurnBuilder
@@ -588,6 +588,66 @@ class NotebookNoteApiTest(unittest.TestCase):
                                                       worktree_id="root"))
 
         self.assertEqual(raised.exception.status_code, 404)
+
+    def test_a_copy_is_added_one_at_a_time(self) -> None:
+        server = self.server([])
+        state = server.settings_store.payload["project_state"]["stock"]
+        state["selection_copy_history"] = [{"text": "older", "copied_at_ms": 5}]
+
+        asyncio.run(server._record_selection_copy(SelectionCopyRequest(text="newest", copied_at_ms=9),
+                                                  project="stock", worktree_id="root"))
+
+        self.assertEqual([copy["text"] for copy in
+                          server.settings_store.payload["project_state"]["stock"]["selection_copy_history"]],
+                         ["newest", "older"])
+
+    def test_copying_the_same_text_again_moves_it_to_the_front(self) -> None:
+        server = self.server([])
+        server.settings_store.payload["project_state"]["stock"]["selection_copy_history"] = [
+            {"text": "a", "copied_at_ms": 1}, {"text": "b", "copied_at_ms": 2}]
+
+        asyncio.run(server._record_selection_copy(SelectionCopyRequest(text="a", copied_at_ms=9),
+                                                  project="stock", worktree_id="root"))
+        copies = server.settings_store.payload["project_state"]["stock"]["selection_copy_history"]
+
+        self.assertEqual([copy["text"] for copy in copies], ["a", "b"])
+        self.assertEqual(copies[0]["copied_at_ms"], 9)
+
+    def test_a_copy_of_nothing_is_refused(self) -> None:
+        server = self.server([])
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(server._record_selection_copy(SelectionCopyRequest(text="   "), project="stock",
+                                                      worktree_id="root"))
+
+        self.assertEqual(raised.exception.status_code, 422)
+
+    def test_only_the_last_fifty_copies_are_kept(self) -> None:
+        server = self.server([])
+        server.settings_store.payload["project_state"]["stock"]["selection_copy_history"] = [
+            {"text": f"copy {index}", "copied_at_ms": index} for index in range(50)]
+
+        asyncio.run(server._record_selection_copy(SelectionCopyRequest(text="newest", copied_at_ms=99),
+                                                  project="stock", worktree_id="root"))
+        copies = server.settings_store.payload["project_state"]["stock"]["selection_copy_history"]
+
+        self.assertEqual(len(copies), TermdeckConfig.SELECTION_COPY_HISTORY_MAX)
+        self.assertEqual(copies[0]["text"], "newest")
+
+    def test_the_whole_copy_list_cannot_be_written_in_one_call(self) -> None:
+        # Every window collects copies; a window sending its whole list back dropped whatever the
+        # others had copied meanwhile, which is how recent copies went missing.
+        server = self.server([])
+        server.settings_store.payload["project_state"]["stock"]["selection_copy_history"] = [
+            {"text": "kept", "copied_at_ms": 1}]
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(server._patch_terminal_layout(ProjectStatePatch(selection_copy_history=[]),
+                                                      project="stock", worktree_id="root"))
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual([copy["text"] for copy in
+                          server.settings_store.payload["project_state"]["stock"]["selection_copy_history"]], ["kept"])
 
     def test_the_whole_note_list_cannot_be_written_through_project_state(self) -> None:
         # One call, one note. A list written whole by two windows is how notes went missing, and the

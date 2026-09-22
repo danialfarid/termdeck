@@ -6430,9 +6430,11 @@ Object.assign(TermdeckApp.prototype, {
     if (statText?.textContent === "Failed to fetch") statText.textContent = "";
     const notebookState = this.notebookProjectState();
     const previous = this.projectSelectionCopyHistory();
-    notebookState.selection_copy_history = [{ text: copied, copied_at_ms: Date.now() },
-      ...previous.filter((entry) => entry.text !== copied)].slice(0, 50);
-    this.saveProjectSelectionCopyHistory();
+    const entry = { text: copied, copied_at_ms: Date.now() };
+    notebookState.selection_copy_history = [entry, ...previous.filter((item) => item.text !== copied)]
+      .slice(0, SELECTION_COPY_HISTORY_MAX);
+    notebookState.selection_copy_history_initialized = true;
+    this.saveSelectionCopy(entry);
     const panel = this.$("selection-copy-history-panel");
     if (panel && !panel.classList.contains("hidden")) this.renderSelectionCopyHistory();
     if (this.settings.notebook_open) {
@@ -7247,23 +7249,27 @@ Object.assign(TermdeckApp.prototype, {
     if (notebookState.selection_copy_history_initialized === true) return false;
     const legacyHistory = Array.isArray(this.settings.selection_copy_history) ? this.settings.selection_copy_history : [];
     notebookState.selection_copy_history = [...new Set(legacyHistory.map((item) => String(item?.text ?? item ?? "").trim())
-      .filter(Boolean))].map((text) => ({ text, copied_at_ms: 0 })).slice(0, 50);
+      .filter(Boolean))].map((text) => ({ text, copied_at_ms: 0 })).slice(0, SELECTION_COPY_HISTORY_MAX);
     notebookState.selection_copy_history_initialized = true;
     this.settings.selection_copy_history = [];
     return true;
   },
 
 
+  // One copy, one call. The list used to be written back whole by whichever window saved last, so a
+  // copy made in one window disappeared when another saved its own older list -- the same way notes
+  // used to be lost, and with the same answer: the list belongs to the server.
+  saveSelectionCopy(entry) {
+    if (!entry?.text) return;
+    this.queueProjectResourceRequest(this.notebookProjectStateKey(), "/api/notebook/copies", "POST",
+      { text: entry.text, copied_at_ms: entry.copied_at_ms || Date.now() });
+  },
+
+
   saveProjectSelectionCopyHistory() {
-    const stateKey = this.notebookProjectStateKey();
-    const notebookState = this.notebookProjectState();
-    const patch = {
-      selection_copy_history: this.projectSelectionCopyHistory(),
-      selection_copy_history_initialized: true,
-    };
-    notebookState.selection_copy_history_initialized = true;
-    this.applyLocalProjectStatePatch(patch, stateKey);
-    this.queueProjectResourceRequest(stateKey, "/api/terminal-layout", "PATCH", patch, { silent: true });
+    // Only the migration of the old global list writes more than one, oldest first so the newest ends
+    // up at the front; each one is an ordinary add.
+    for (const entry of [...this.projectSelectionCopyHistory()].reverse()) this.saveSelectionCopy(entry);
   },
 
 
@@ -7344,8 +7350,13 @@ Object.assign(TermdeckApp.prototype, {
       const label = document.createElement("button");
       label.type = "button";
       label.className = "notebook-tab-label";
-      label.title = this.notebookTabTitle(note);
-      label.textContent = this.notebookTabTitle(note);
+      // The whole first line, on the tab as well as the label: a tab is clamped to a width with an
+      // ellipsis, and the name it is hiding is the one thing hovering it should say -- including over
+      // the padding either side of the label, which is most of a narrow tab.
+      const title = this.notebookTabTitle(note);
+      tab.title = title;
+      label.title = title;
+      label.textContent = title;
       const close = document.createElement("button");
       close.type = "button";
       close.className = "notebook-tab-close codicon codicon-close";

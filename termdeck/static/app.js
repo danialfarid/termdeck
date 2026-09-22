@@ -183,6 +183,8 @@ const MOBILE_CONNECTION_RETRY_MS = 3000;
 // submissions never come back as a user turn -- a slash command is handled by the CLI rather than
 // recorded as a message -- so the wait is bounded: first the message says it could not be confirmed,
 // and eventually it stops claiming to be in flight at all.
+// As many copies as the server keeps; it does the capping, this is for the list on screen in between.
+const SELECTION_COPY_HISTORY_MAX = 50;
 const PENDING_PROMPT_UNCONFIRMED_MS = 25000;
 const PENDING_PROMPT_DISCARD_MS = 600000;
 // A prompt still waiting to be confirmed is looked for on this clock, rather than only when the
@@ -1642,7 +1644,8 @@ class TermdeckApp {
       const known = entries.get(text);
       if (!known || copiedAt > known.copied_at_ms) entries.set(text, { text, copied_at_ms: copiedAt });
     }
-    const merged = [...entries.values()].sort((left, right) => right.copied_at_ms - left.copied_at_ms).slice(0, 50);
+    const merged = [...entries.values()].sort((left, right) => right.copied_at_ms - left.copied_at_ms)
+      .slice(0, SELECTION_COPY_HISTORY_MAX);
     return { selection_copy_history: merged };
   }
 

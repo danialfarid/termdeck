@@ -256,6 +256,14 @@ class SelectionCopy(BaseModel):
         return {"text": value} if isinstance(value, str) else value
 
 
+class SelectionCopyRequest(BaseModel):
+    """One piece of copied text. Copies are added one at a time, never as a list: every window collects
+    them, and a window sending its whole list back drops whatever the others copied meanwhile."""
+
+    text: str
+    copied_at_ms: int = 0
+
+
 class NotebookNoteSaveRequest(BaseModel):
     text: str = ""
     # Absent means an older client that knows nothing of revisions; its write is taken as before.
@@ -895,6 +903,8 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_LAN_STATUS_ROUTE, response_model=None)(self._lan_status)
         app.put(TermdeckConfig.API_LAN_ACCESS_ROUTE, response_model=None)(self._set_lan_access)
         app.post(TermdeckConfig.API_NOTEBOOK_TRASH_ROUTE, response_model=None)(self._trash_notebook_note)
+        app.get(TermdeckConfig.API_NOTEBOOK_COPIES_ROUTE, response_model=None)(self._list_selection_copies)
+        app.post(TermdeckConfig.API_NOTEBOOK_COPIES_ROUTE, response_model=None)(self._record_selection_copy)
         app.get(TermdeckConfig.API_NOTEBOOK_NOTES_ROUTE, response_model=None)(self._list_notebook_notes)
         app.post(TermdeckConfig.API_NOTEBOOK_NOTES_ROUTE, response_model=None)(self._create_notebook_note)
         app.get(TermdeckConfig.API_NOTEBOOK_NOTE_ROUTE, response_model=None)(self._read_notebook_note)
@@ -2682,7 +2692,7 @@ class TermdeckServer:
     # share, which is how notes went missing. Each has calls of its own that write one entry.
     WRITE_THROUGH_TARGETED_API = {
         "terminal_groups", "session_groups", "terminal_layout", "session_order", "unread_sessions",
-        "recently_opened_terminal_ids", "session_view_modes", "notebook_notes",
+        "recently_opened_terminal_ids", "session_view_modes", "notebook_notes", "selection_copy_history",
     }
 
     def _project_state_field_names(self) -> set[str]:
@@ -2710,7 +2720,8 @@ class TermdeckServer:
 
     async def _patch_terminal_layout(self, patch: ProjectStatePatch, project: str = "", worktree_id: str = "") -> dict[str, object]:
         resource_fields = {"terminal_groups", "session_groups", "terminal_layout", "session_order",
-                           "unread_sessions", "recently_opened_terminal_ids", "session_view_modes", "notebook_notes"}
+                           "unread_sessions", "recently_opened_terminal_ids", "session_view_modes", "notebook_notes",
+                           "selection_copy_history"}
         supplied_resource_fields = resource_fields & patch.model_fields_set
         if supplied_resource_fields:
             raise HTTPException(status_code=409,
@@ -2725,6 +2736,31 @@ class TermdeckServer:
         layout_payload = self._terminal_layout_payload(project, UiSettings(**payload), worktree_id)
         self._broadcast_project_state(layout_payload)
         return layout_payload
+
+    async def _list_selection_copies(self, project: str = "", worktree_id: str = "") -> dict[str, object]:
+        _, _, state = self._project_state_context(project, worktree_id)
+        return {"project": project, "worktree_id": worktree_id or "root",
+                "copies": [copy.model_dump() for copy in state.selection_copy_history]}
+
+    async def _record_selection_copy(self, request: SelectionCopyRequest, project: str = "",
+                                     worktree_id: str = "") -> dict[str, object]:
+        """Add one copy to the front of the list.
+
+        Copies are collected by every window of the deck, and the list used to be written back whole by
+        whichever window saved last -- so a copy made in one window disappeared when another saved its
+        own older list. One call adds one copy; the list itself belongs to the server.
+        """
+        text = request.text
+        if not text.strip():
+            raise HTTPException(status_code=422, detail="text is required")
+        settings, key, state = self._project_state_context(project, worktree_id)
+        copied_at_ms = request.copied_at_ms or int(time.time() * 1000)
+        kept = [copy for copy in state.selection_copy_history if copy.text != text]
+        state.selection_copy_history = [SelectionCopy(text=text, copied_at_ms=copied_at_ms),
+                                        *kept][:TermdeckConfig.SELECTION_COPY_HISTORY_MAX]
+        state.selection_copy_history_initialized = True
+        payload = self._save_project_state(settings, key, state, project, worktree_id)
+        return {**payload, "copy": state.selection_copy_history[0].model_dump()}
 
     async def _list_notebook_notes(self, project: str = "", worktree_id: str = "") -> dict[str, object]:
         _, _, state = self._project_state_context(project, worktree_id)

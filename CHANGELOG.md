@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The copied-text list has calls of its own: `GET /api/notebook/copies` reads it and
+  `POST /api/notebook/copies` records one copy. It rode on the terminal layout before, which meant a
+  deck that had been open for a while sent its whole list back and copies made in another window were
+  lost. The layout call refuses that field now, as it already refuses the notes. See
+  [docs/api.md](docs/api.md#copied-text).
+
+### Changed
+
+- In the paste picker, the time a copy was made moved to the end of its row. In front of the text it
+  pushed the first words of every copy out of line, and the first words are how anyone finds the copy
+  they are looking for.
+
+### Fixed
+
+- A fork keeps the terminal its source was filed under. It inherited the group but not the parent, so
+  forking a child produced a copy at the end of the list, in the group and outside the stack at once.
+- Resting on a notebook tab whose name does not fit shows the whole name.
+
 ## [0.22.0] — 2026-09-22
 
 ### Changed
