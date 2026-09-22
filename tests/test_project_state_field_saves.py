@@ -26,7 +26,10 @@ const app = {
   notebookProjectState: () => state,
   savedNotebookProjectFields: new Map(),
   applyLocalProjectStatePatch() {},
-  queueProjectResourceRequest: (stateKey, path, method, body) => sent.push({ path, method, body }),
+  queueProjectResourceRequest: (stateKey, path, method, body, options) => {
+    sent.push({ path, method, body });
+    if (scenario.fail) options?.onFailed?.(new Error("network"));
+  },
   __METHODS__
 };
 app.saveNotebookProjectState();
@@ -80,6 +83,16 @@ class NotebookStateSaveTest(unittest.TestCase):
         sent = self.save(state=self.state(), next={})
 
         self.assertEqual(len(sent), 3)
+
+    def test_a_save_that_failed_is_tried_again(self) -> None:
+        # Counted as written the moment it went out, a save that never landed looked like one that
+        # had: the next save saw no change and the field -- which note is open -- was never written.
+        sent = self.save(state=self.state(), next={}, fail=True)
+
+        self.assertEqual([request["path"] for request in sent[3:]],
+                         ["/api/project-state/notebook_active_note_id",
+                          "/api/project-state/notebook_notes_initialized",
+                          "/api/project-state/notebook_text"])
 
     def test_the_whole_state_is_never_sent(self) -> None:
         # The call that took every field at once is what a stale window overwrote the deck with.

@@ -2079,33 +2079,69 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  persistOpenFiles() {
-    const groups = {};
+  // The open files belong to the project, and every window of the deck opens and closes its own. A
+  // window that wrote the whole list back wrote the files it knew about over the ones opened
+  // elsewhere, so a file opened in one window was closed again by the next save in another.
+  openFilesByProject() {
+    const groups = new Map();
     for (const entry of this.openFiles.values()) {
-      const key = this.owningProjectKey(entry.root);
-      (groups[key] = groups[key] || []).push({ root: entry.root, path: entry.path,
+      const projectKey = this.owningProjectKey(entry.root);
+      if (!groups.has(projectKey)) groups.set(projectKey, new Map());
+      groups.get(projectKey).set(`${entry.root}|${entry.path}`, { root: entry.root, path: entry.path,
         mtime: String(Math.max(0, Number(entry.mtime) || 0)), git_status: String(entry.git_status || "") });
     }
+    return groups;
+  },
+
+
+  // What this window has already told the server about, so a save writes what it opened and what it
+  // closed -- and never speaks for a file it has not touched.
+  rememberPersistedOpenFiles() {
+    const remembered = new Map();
+    for (const [projectKey, state] of Object.entries(this.settings.project_state || {})) {
+      remembered.set(projectKey, new Map((state.open_files || []).filter((file) => file?.root && file?.path)
+        .map((file) => [`${file.root}|${file.path}`, { root: file.root, path: file.path,
+          mtime: String(file.mtime || 0), git_status: String(file.git_status || "") }])));
+    }
+    this.persistedOpenFiles = remembered;
+  },
+
+
+  persistOpenFiles() {
+    const groups = this.openFilesByProject();
     const states = this.settings.project_state || {};
-    if (this.projectSlug) {
-      for (const [proj, files] of Object.entries(groups)) states[proj] = { ...(states[proj] || {}), open_files: files };
-      const scopedKey = this.projectStateKey();
-      if (!groups[scopedKey]) states[scopedKey] = { ...(states[scopedKey] || {}), open_files: [] };
-    } else {
-      for (const key of new Set([...Object.keys(states), ...Object.keys(groups)])) {
-        states[key] = { ...(states[key] || {}), open_files: groups[key] || [] };
+    const projectKeys = new Set([...groups.keys(), ...this.persistedOpenFiles.keys(),
+      ...(this.projectSlug ? [this.projectStateKey()] : Object.keys(states))]);
+    const changes = [];
+    for (const projectKey of projectKeys) {
+      const files = groups.get(projectKey) || new Map();
+      const known = this.persistedOpenFiles.get(projectKey) || new Map();
+      for (const [key, file] of files) {
+        if (JSON.stringify(known.get(key)) !== JSON.stringify(file)) changes.push({ projectKey, file, open: true });
       }
+      for (const [key, file] of known) {
+        if (!files.has(key)) changes.push({ projectKey, file, open: false });
+      }
+      // The copy here is the project's list with this window's opens and closes applied, not this
+      // window's list: a file another window opened stays open.
+      const shared = new Map((states[projectKey]?.open_files || []).filter((file) => file?.root && file?.path)
+        .map((file) => [`${file.root}|${file.path}`, file]));
+      for (const [key, file] of files) shared.set(key, file);
+      for (const key of known.keys()) if (!files.has(key)) shared.delete(key);
+      states[projectKey] = { ...(states[projectKey] || {}), open_files: [...shared.values()] };
+      this.persistedOpenFiles.set(projectKey, files);
     }
     this.settings.project_state = states;
-    const projectKeys = this.projectSlug ? [this.projectStateKey()]
-      : [...new Set([...Object.keys(states), ...Object.keys(groups)])];
-    const updates = projectKeys.map((projectKey) => ({ projectKey, openFiles: [...(states[projectKey]?.open_files || [])] }));
+    if (!changes.length) return;
     this.openFilesPersistPromise = this.openFilesPersistPromise.then(async () => {
-      for (const update of updates) {
-        const params = this.projectStateSearchParams(update.projectKey);
-        const response = await fetch(`/api/project-state/open_files?${params}`, { method: "PUT", keepalive: true,
-          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ value: update.openFiles }) });
-        if (!response.ok) throw new Error(`server returned ${response.status}`);
+      for (const change of changes) {
+        const params = this.projectStateSearchParams(change.projectKey);
+        const response = await fetch(`/api/open-files?${params}`, { method: change.open ? "POST" : "DELETE",
+          keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify(change.file) });
+        // A file closed somewhere else before this window got to it is closed either way.
+        if (!response.ok && !(response.status === 404 && !change.open)) {
+          throw new Error(`server returned ${response.status}`);
+        }
       }
     }).catch((error) => { this.$("stat-text").textContent = `Could not persist open files: ${error.message}`; });
   },

@@ -3840,6 +3840,10 @@ Object.assign(TermdeckApp.prototype, {
           mtime: Number(f.mtime) || 0, git_status: String(f.git_status || "") });
       if (this.projectSlug && !scopedSavedKeys.has(key)) recoveredMisownedFile = true;
     }
+    // The files restored here are already on the server; from now on this window writes what it opens
+    // and closes. Without this it would never say it closed one of them, and a tab closed here came
+    // back on the next load.
+    this.rememberPersistedOpenFiles();
     if (recoveredMisownedFile) this.persistOpenFiles();
     void this.refreshOpenFileGitStatuses();
   },

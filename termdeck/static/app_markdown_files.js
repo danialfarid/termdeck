@@ -6904,7 +6904,14 @@ Object.assign(TermdeckApp.prototype, {
     this.savedNotebookProjectFields.set(stateKey, values);
     if (!Object.keys(patch).length) return;
     this.applyLocalProjectStatePatch(patch, stateKey);
-    this.queueProjectStatePatch(stateKey, patch);
+    for (const [field, value] of Object.entries(patch)) {
+      this.queueProjectResourceRequest(stateKey, `/api/project-state/${encodeURIComponent(field)}`, "PUT", { value }, {
+        // A field that failed to save is forgotten again, so the next save writes it. Remembered
+        // regardless, a save that never landed looked like one that had, and the field -- which note
+        // is open, for one -- was never written again.
+        onFailed: () => { delete (this.savedNotebookProjectFields.get(stateKey) || {})[field]; },
+      });
+    }
   },
 
 

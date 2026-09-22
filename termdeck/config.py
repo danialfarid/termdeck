@@ -187,6 +187,7 @@ class TermdeckConfig:
     API_SESSION_UNREAD_ROUTE = "/api/session-unread"
     API_RECENTLY_OPENED_TERMINAL_ROUTE = "/api/recently-opened-terminals/{session_id}"
     API_SESSION_VIEW_MODE_ROUTE = "/api/session-view-modes/{session_id}"
+    API_OPEN_FILES_ROUTE = "/api/open-files"
     API_PROJECT_STATE_FIELD_ROUTE = "/api/project-state/{field_name}"
     API_TERMINAL_SEARCH_ROUTE = "/api/terminal-search"
     # Claude Code hook callback. Claude posts its own hook payload here (see docs/configuration.md);

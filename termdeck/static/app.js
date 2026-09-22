@@ -709,6 +709,9 @@ class TermdeckApp {
     this.markdownFileViewRenderTimer = 0;
     this.lspClient = null;
     this.openFilesPersistPromise = Promise.resolve();
+    // Per project, the open files this window has already told the server about: what it opens and
+    // closes is written, and files opened in another window are left alone.
+    this.persistedOpenFiles = new Map();
     this.sidebarSelectedFileKeys = new Set();
     this.sidebarFileSelectionAnchorKey = null;
     this.activeId = null;
@@ -1607,7 +1610,7 @@ class TermdeckApp {
   patchProjectState(patch) {
     const resourceFields = new Set(["terminal_groups", "session_groups", "terminal_layout", "session_order",
       "unread_sessions", "recently_opened_terminal_ids", "session_view_modes", "notebook_notes",
-      "selection_copy_history"]);
+      "selection_copy_history", "open_files"]);
     const invalidFields = Object.keys(patch).filter((field) => resourceFields.has(field));
     if (invalidFields.length) throw new Error(`project resources require targeted APIs: ${invalidFields.join(", ")}`);
     const states = this.settings.project_state || {};

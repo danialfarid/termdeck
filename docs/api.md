@@ -317,12 +317,30 @@ since it loaded.
 
 The fields several windows add to are refused by this call with HTTP 409, because replacing such a
 list is itself the loss: `terminal_groups`, `session_groups`, `terminal_layout`, `session_order`,
-`unread_sessions`, `recently_opened_terminal_ids`, `session_view_modes`, `notebook_notes` and
-`selection_copy_history`. Each has calls of its own that add, move or remove one entry —
-`/api/terminal-groups`, `/api/session-group-assignments`, `/api/terminal-layout/move`,
+`unread_sessions`, `recently_opened_terminal_ids`, `session_view_modes`, `notebook_notes`,
+`selection_copy_history` and `open_files`. Each has calls of its own that add, move or remove one
+entry — `/api/terminal-groups`, `/api/session-group-assignments`, `/api/terminal-layout/move`,
 `/api/session-order/move`, `/api/session-unread`, `/api/recently-opened-terminals/<session_id>`,
-`/api/session-view-modes/<session_id>`, `/api/notebook/notes` and `/api/notebook/copies`. All of them
-can still be read through `/api/project-state/<field>`.
+`/api/session-view-modes/<session_id>`, `/api/notebook/notes`, `/api/notebook/copies` and
+`/api/open-files`. All of them can still be read through `/api/project-state/<field>`.
+
+## Open files
+
+The files a project has open are the project's, not one window's, and every window of the deck opens
+and closes its own. One call opens one file, one closes one:
+
+```sh
+curl -sS 'http://127.0.0.1:8530/api/open-files?project=stock'
+curl -sS -X POST 'http://127.0.0.1:8530/api/open-files?project=stock' \
+  -H 'Content-Type: application/json' \
+  -d '{"root": "/Users/dan/workspace/stock", "path": "trainer/model.py", "mtime": "1758500000"}'
+curl -sS -X DELETE 'http://127.0.0.1:8530/api/open-files?project=stock' \
+  -H 'Content-Type: application/json' \
+  -d '{"root": "/Users/dan/workspace/stock", "path": "trainer/model.py"}'
+```
+
+A file is named by its root and path together. Opening one already open leaves it where it is and
+takes the newer `mtime` and `git_status`; closing one that is not open returns HTTP 404.
 
 ## Copied text
 

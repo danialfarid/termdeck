@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The open files are shared: `POST /api/open-files` opens one and `DELETE /api/open-files` closes
+  one. Each window wrote the whole list back, so two decks open on the same project talked over each
+  other — a file opened in one was closed again by the next save in the other, and a reload came back
+  missing it. A window now writes what it opened and what it closed, and says nothing about files it
+  never had open. See [docs/api.md](docs/api.md#open-files).
 - The copied-text list has calls of its own: `GET /api/notebook/copies` reads it and
   `POST /api/notebook/copies` records one copy. It rode on the terminal layout before, which meant a
   deck that had been open for a while sent its whole list back and copies made in another window were
@@ -30,6 +35,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A notebook save that did not reach the server is written again by the next save. Counted as written
+  the moment it went out, a save that failed looked like one that had, and the field — which note is
+  open, for one — was never written again.
 - A fork keeps the terminal its source was filed under. It inherited the group but not the parent, so
   forking a child produced a copy at the end of the list, in the group and outside the stack at once.
 - Resting on a notebook tab whose name does not fit shows the whole name.

@@ -256,6 +256,16 @@ class SelectionCopy(BaseModel):
         return {"text": value} if isinstance(value, str) else value
 
 
+class OpenFileRequest(BaseModel):
+    """One open file. The list belongs to the project, not to the window that happens to be writing it:
+    a window sending its whole list back closed whatever the others had opened meanwhile."""
+
+    root: str
+    path: str
+    mtime: str = ""
+    git_status: str = ""
+
+
 class SelectionCopyRequest(BaseModel):
     """One piece of copied text. Copies are added one at a time, never as a list: every window collects
     them, and a window sending its whole list back drops whatever the others copied meanwhile."""
@@ -850,6 +860,9 @@ class TermdeckServer:
         app.put(TermdeckConfig.API_SESSION_UNREAD_ROUTE, response_model=None)(self._put_session_unread)
         app.post(TermdeckConfig.API_RECENTLY_OPENED_TERMINAL_ROUTE, response_model=None)(self._record_recently_opened_terminal)
         app.put(TermdeckConfig.API_SESSION_VIEW_MODE_ROUTE, response_model=None)(self._put_session_view_mode)
+        app.get(TermdeckConfig.API_OPEN_FILES_ROUTE, response_model=None)(self._list_open_files)
+        app.post(TermdeckConfig.API_OPEN_FILES_ROUTE, response_model=None)(self._open_project_file)
+        app.delete(TermdeckConfig.API_OPEN_FILES_ROUTE, response_model=None)(self._close_project_file)
         app.get(TermdeckConfig.API_PROJECT_STATE_FIELD_ROUTE, response_model=None)(self._get_project_state_field)
         app.put(TermdeckConfig.API_PROJECT_STATE_FIELD_ROUTE, response_model=None)(self._put_project_state_field)
         app.get(TermdeckConfig.API_TERMINAL_SEARCH_ROUTE, response_model=None)(self._search_terminal_buffers)
@@ -2665,6 +2678,7 @@ class TermdeckServer:
     WRITE_THROUGH_TARGETED_API = {
         "terminal_groups", "session_groups", "terminal_layout", "session_order", "unread_sessions",
         "recently_opened_terminal_ids", "session_view_modes", "notebook_notes", "selection_copy_history",
+        "open_files",
     }
 
     def _project_state_field_names(self) -> set[str]:
@@ -2697,6 +2711,42 @@ class TermdeckServer:
             state = ProjectUiState(**updated)
         except ValidationError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
+        return self._save_project_state(settings, key, state, project, worktree_id)
+
+    async def _list_open_files(self, project: str = "", worktree_id: str = "") -> dict[str, object]:
+        _, _, state = self._project_state_context(project, worktree_id)
+        return {"project": project, "worktree_id": worktree_id or "root", "open_files": state.open_files}
+
+    async def _open_project_file(self, request: OpenFileRequest, project: str = "",
+                                 worktree_id: str = "") -> dict[str, object]:
+        """Open one file for the project.
+
+        The open files are the project's, and every window of the deck opens and closes its own. A
+        window that wrote the whole list back wrote the files it knew about over the ones opened
+        elsewhere, so a file opened in one window was closed by the next save anywhere else. Opening a
+        file already open leaves it where it is and takes its newer mtime and status.
+        """
+        if not request.path.strip():
+            raise HTTPException(status_code=422, detail="path is required")
+        settings, key, state = self._project_state_context(project, worktree_id)
+        opened = {"root": request.root, "path": request.path, "mtime": request.mtime,
+                  "git_status": request.git_status}
+        known = [entry for entry in state.open_files
+                 if (entry.get("root"), entry.get("path")) == (request.root, request.path)]
+        state.open_files = [opened if (entry.get("root"), entry.get("path")) == (request.root, request.path)
+                            else entry for entry in state.open_files] if known else [*state.open_files, opened]
+        payload = self._save_project_state(settings, key, state, project, worktree_id)
+        return {**payload, "opened": opened}
+
+    async def _close_project_file(self, request: OpenFileRequest, project: str = "",
+                                  worktree_id: str = "") -> dict[str, object]:
+        """Close one file, and leave every other window's files alone."""
+        settings, key, state = self._project_state_context(project, worktree_id)
+        remaining = [entry for entry in state.open_files
+                     if (entry.get("root"), entry.get("path")) != (request.root, request.path)]
+        if len(remaining) == len(state.open_files):
+            raise HTTPException(status_code=404, detail=request.path)
+        state.open_files = remaining
         return self._save_project_state(settings, key, state, project, worktree_id)
 
     async def _list_selection_copies(self, project: str = "", worktree_id: str = "") -> dict[str, object]:
