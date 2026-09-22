@@ -6,24 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Fixed
-
-- Restoring an earlier version can no longer take unsaved text with it. The save queued for the text
-  being replaced carries that text rather than whatever the note has become by the time it goes out,
-  waiting on a flush now waits for the write to land, and a version that replaces the text wholesale
-  is kept apart from the one it replaced instead of folding into it seconds later.
-- A page closing writes the note straight out, with keepalive, rather than adding it to a queue that
-  may never reach it.
-
-### Changed
-
-- The versions button moved out of the notebook's row of buttons to just under them, with Restore
-  under it again while a version is being read. It belongs to a
-  note, so it comes and goes with one, and from the row itself that shifted every other button
-  sideways each time. It is a push button now: it opens the versions and puts the note back, so the
-  panel has no × of its own.
-- The description button stays lit while the drawer it opened is open, the way the deck's other push
-  buttons do. Nothing in the bar said whether the drawer below it was open.
+## [0.22.0] — 2026-09-22
 
 ### Changed
 
@@ -31,21 +14,28 @@ All notable changes to this project are documented here. The format follows
   it is behind, and taking such a write is how a stale window overwrote newer text; it is refused now
   unless the note has no version yet. `PUT /api/project-state/notebook_notes` no longer writes the
   whole note list either — one call, one note. See [docs/api.md](docs/api.md#notebook-notes).
-- The versions button is not offered while the copied-text view is up: copies are not a note and have
-  no versions. Opening that view closes the versions view.
+- The versions button moved out of the notebook's row of buttons to just under them, with Restore
+  under it while a version is being read. It belongs to a note, so it comes and goes with one, and
+  from inside the row that shifted every other button sideways each time. It is a push button: it
+  opens the versions and puts the note back, so that panel has no × of its own. It is not offered on
+  the copied-text view, which is not a note and has no versions.
+- The description button stays lit while the drawer it opened is open, the way the deck's other push
+  buttons do. Nothing in the bar said whether the drawer below it was open.
 
 ### Fixed
 
 - Text typed in the moment before a save could be overwritten by state arriving from the server. The
   note was claimed only when the save went out, a fraction of a second later, and anything arriving in
   that gap was taken as newer. Typing claims the note from the keystroke.
-- A page closed, reloaded or sent to the background writes the note it was in the middle of. Settings,
-  files and search history were all written on the way out; the notebook was not, so the last thing
-  typed went with the page.
+- A page closed, reloaded or sent to the background writes the note it was in the middle of, and sends
+  it itself rather than queueing it behind whatever else is waiting. Settings, files and search history
+  were all written on the way out; the notebook was not, so the last thing typed went with the page.
+- Restoring an earlier version can no longer take unsaved text with it. The save queued for the text
+  being replaced carries that text rather than whatever the note has become by the time it goes out,
+  waiting on a flush waits for the write to land, and the history keeps the version a restore
+  replaces: versions fold together only while the text grows, which is someone typing on.
 - A save refused while the deck is not connected keeps what was typed: it goes into a note of its own
   rather than living in a browser that is one reload away from losing it.
-- Restoring an earlier version saves what the note says first, so the paragraph someone was in the
-  middle of becomes a version instead of disappearing under the older text.
 - A delete that never reached the server stops hiding the note; it was filtered out of everything
   arriving afterwards until the page was reloaded.
 - Importing a project brings its notes with it. The merge kept whichever list was not empty, so every
@@ -1242,7 +1232,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/danialfarid/termdeck/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/danialfarid/termdeck/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/danialfarid/termdeck/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/danialfarid/termdeck/compare/v0.19.7...v0.20.0
