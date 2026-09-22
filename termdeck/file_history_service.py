@@ -67,8 +67,13 @@ class FileHistoryService:
         fraction of a second and nobody wants to scroll through them. But a write that replaces the
         text wholesale -- restoring an earlier version, pasting over everything -- is not that, and
         folding it destroyed the version it replaced seconds after it was recorded.
+
+        Only forward: text that grows is someone typing on. Text that shrinks is a restore or a
+        deletion, and the longer version it replaces is exactly what someone would come here for --
+        allowing it in both directions let a restore eat the writing it replaced. Backspacing leaves
+        a version behind as the price, and fifty of them are kept.
         """
-        return content.startswith(previous) or previous.startswith(content)
+        return content.startswith(previous)
 
     def _trim(self, database: sqlite3.Connection, root: str, path: str) -> None:
         database.execute(

@@ -505,6 +505,20 @@ class NotebookNoteApiTest(unittest.TestCase):
 
         self.assertEqual(self.versions(server), ["something else entirely", "a paragraph, extended", "a paragraph"])
 
+    def test_shortening_the_text_keeps_the_longer_version(self) -> None:
+        # Restoring an older version often means going back to text the current version was written on
+        # top of. Treating that as typing -- it is a prefix, after all -- let the restore overwrite the
+        # very writing someone would come to the history for.
+        server = self.server([NotebookNote(note_id="note-1", text="paragraph", revision=1)])
+
+        asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="paragraph\nnew writing",
+                                                                       base_revision=1),
+                                               note_id="note-1", project="stock", worktree_id="root"))
+        asyncio.run(server._save_notebook_note(NotebookNoteSaveRequest(text="paragraph", base_revision=2),
+                                               note_id="note-1", project="stock", worktree_id="root"))
+
+        self.assertIn("paragraph\nnew writing", self.versions(server))
+
     def test_typing_on_still_folds_into_one_version(self) -> None:
         server = self.server([NotebookNote(note_id="note-1", text="a", revision=1)])
 
