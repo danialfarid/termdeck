@@ -517,10 +517,17 @@ class TerminalSessionManager:
             source_worktree = WorktreeMetadata(src.worktree_path, src.worktree_repository, src.worktree_branch,
                                                src.worktree_base_ref, src.worktree_base_commit, src.worktree_managed,
                                                src.worktree_id)
-        return self._create(src.command, Path(src.cwd), title, initial_command=initial,
-                            agent_rename=title if agent.supports_fork else None, project=src.project,
-                            worktree=source_worktree, worktree_id=source_worktree.worktree_id if source_worktree else src.worktree_id,
-                            fork_parent_agent_session_id=src.agent_session_id if agent.fork_tracks_parent else None)
+        forked = self._create(src.command, Path(src.cwd), title, initial_command=initial,
+                              agent_rename=title if agent.supports_fork else None, project=src.project,
+                              worktree=source_worktree, worktree_id=source_worktree.worktree_id if source_worktree else src.worktree_id,
+                              fork_parent_agent_session_id=src.agent_session_id if agent.fork_tracks_parent else None)
+        # A fork belongs where the terminal it came from belongs. Forking one that is filed under
+        # another left the copy at the end of the list on its own, with nothing to say where it came
+        # from, while its group was inherited -- so it was in the group and outside the stack at once.
+        if src.spawned_by_session_id:
+            forked.record.spawned_by_session_id = src.spawned_by_session_id
+            self._persist()
+        return forked
 
     @staticmethod
     def _auto_title(command: str, cwd: Path) -> str:

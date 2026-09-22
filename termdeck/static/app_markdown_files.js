@@ -6484,6 +6484,12 @@ Object.assign(TermdeckApp.prototype, {
       item.setAttribute("role", "option");
       item.setAttribute("aria-selected", String(index === this.selectionCopyHistoryIndex));
       item.title = "Insert into the active prompt";
+      const body = document.createElement("span");
+      body.className = "selection-copy-history-text";
+      body.textContent = text;
+      item.appendChild(body);
+      // At the end of the row, on the right: in front of the text it pushed the first words of every
+      // copy out of line, and the first words are how anyone finds the one they want.
       const when = this.relativeTimeLabel(entry.copied_at_ms);
       if (when) {
         const stamp = document.createElement("span");
@@ -6491,7 +6497,6 @@ Object.assign(TermdeckApp.prototype, {
         stamp.textContent = when;
         item.appendChild(stamp);
       }
-      item.appendChild(document.createTextNode(text));
       item.onclick = () => this.insertSelectionCopyHistory(text, true);
       list.appendChild(item);
     }

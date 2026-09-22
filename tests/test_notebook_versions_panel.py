@@ -187,5 +187,33 @@ class CopiedTextShapeTest(unittest.TestCase):
         self.assertIn("Copy again", self.render)
 
 
+class PastePickerShapeTest(unittest.TestCase):
+    """The ⌘⇧V picker: the copy first, the time it was made at the end of the row."""
+
+    def setUp(self) -> None:
+        source = (STATIC / "app_markdown_files.js").read_text()
+        self.render = re.search(r"renderSelectionCopyHistory\(\) \{(.*?)\n  \},", source, re.S).group(1)
+        self.css = (STATIC / "style.css").read_text()
+
+    def test_the_text_comes_before_the_time(self) -> None:
+        # In front of the text it pushed the first words of every copy out of line, and the first
+        # words are how anyone finds the one they are looking for.
+        self.assertLess(self.render.index("item.appendChild(body)"), self.render.index("item.appendChild(stamp)"))
+
+    def test_the_time_is_pushed_to_the_end_of_the_row(self) -> None:
+        rule = re.search(r"\.selection-copy-history-when \{([^}]*)\}", self.css).group(1)
+
+        self.assertIn("margin-left: auto", rule)
+
+    def test_a_long_copy_still_leaves_the_time_where_it_is(self) -> None:
+        # Four lines of a long copy are shown; clamping the row itself took the time with it.
+        item = re.search(r"history-picker \.selection-copy-history-item \{([^}]*)\}", self.css).group(1)
+        text = re.search(r"history-picker \.selection-copy-history-text \{([^}]*)\}", self.css).group(1)
+
+        self.assertIn("display: flex", item)
+        self.assertNotIn("line-clamp", item)
+        self.assertIn("line-clamp: 4", text)
+
+
 if __name__ == "__main__":
     unittest.main()

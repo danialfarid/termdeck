@@ -1817,7 +1817,10 @@ body.notebook-open #mobile-notebook-toggle { display: none; }
 .selection-copy-history-items { display: flex; flex-direction: column; gap: 10px; max-height: min(540px, calc(100vh - 100px)); overflow-y: auto; padding: 10px; }
 .selection-copy-history-empty { padding: 16px 10px; color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.3 Menlo, monospace; }
 .selection-copy-history-item { display: block; box-sizing: border-box; width: 100%; min-height: 44px; margin: 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--text) 34%, var(--border) 66%); border-radius: 9px; background: color-mix(in srgb, var(--panel) 78%, var(--panel2) 22%); color: var(--text); text-align: left; cursor: pointer; font: calc(var(--code-font-size) - 1px)/1.3 Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; overflow: hidden; box-shadow: 0 2px 0 color-mix(in srgb, var(--accent) 18%, transparent); }
-#selection-actions.history-picker .selection-copy-history-item { display: -webkit-box; box-sizing: border-box; width: 100%; min-width: 0; height: auto; min-height: 44px; max-height: calc(6.5em + 22px); padding: 10px 12px; -webkit-line-clamp: 4; -webkit-box-orient: vertical; line-clamp: 4; text-overflow: ellipsis; }
+/* The row is the copy and the time it was made; the clamp belongs to the copy, so that four lines of
+   text still leave the time where it is, at the end of the row. */
+#selection-actions.history-picker .selection-copy-history-item { display: flex; box-sizing: border-box; width: 100%; min-width: 0; height: auto; min-height: 44px; padding: 10px 12px; }
+#selection-actions.history-picker .selection-copy-history-text { display: -webkit-box; max-height: calc(6.5em + 2px); -webkit-line-clamp: 4; -webkit-box-orient: vertical; line-clamp: 4; overflow: hidden; text-overflow: ellipsis; }
 .selection-copy-history-item[aria-selected="true"], .selection-copy-history-item:hover { border-color: var(--active-border); background: var(--active-bg); }
 #selection-actions.history-picker.keyboard-nav .selection-copy-history-item[aria-selected="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--active-bg) 72%, var(--accent) 28%); }
 #selection-actions.history-picker.keyboard-nav .selection-copy-history-item:hover { border-color: var(--border); background: var(--panel); }
@@ -2492,7 +2495,9 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
 
 /* When a copy was made, in front of the text it holds. Copies from days ago sat beside copies from a
    minute ago with nothing to tell them apart. */
-.selection-copy-history-when { margin-right: 7px; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font: calc(var(--ui-font-size) - 2px)/1.3 Menlo, monospace; white-space: nowrap; }
+.selection-copy-history-item { display: flex; align-items: flex-start; gap: 10px; }
+.selection-copy-history-text { min-width: 0; flex: 1; white-space: pre-wrap; overflow-wrap: anywhere; }
+.selection-copy-history-when { flex: none; align-self: flex-start; margin-left: auto; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font: calc(var(--ui-font-size) - 2px)/1.3 Menlo, monospace; white-space: nowrap; }
 /* Under the copy button, in the column the buttons already occupy. */
 .notebook-recent-copy-actions { flex-direction: column; align-items: flex-end; gap: 3px; }
 .notebook-recent-copy-when { color: var(--dim); font: calc(var(--ui-font-size) - 2px)/1.2 Menlo, monospace; white-space: nowrap; }

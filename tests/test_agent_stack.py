@@ -15,6 +15,41 @@ def record(session_id: str, **overrides) -> SessionRecord:
     return SessionRecord(**fields)
 
 
+class ForkKeepsItsPlaceTest(unittest.TestCase):
+    """A fork belongs where the terminal it came from belongs."""
+
+    def setUp(self) -> None:
+        self.manager = TerminalSessionManager.__new__(TerminalSessionManager)
+        self.manager._sessions = {
+            "parent": SimpleNamespace(record=record("parent")),
+            "child": SimpleNamespace(record=record("child", spawned_by_session_id="parent")),
+            "loner": SimpleNamespace(record=record("loner")),
+        }
+        for method in ("_persist", "_broadcast_status"):
+            patcher = patch.object(TerminalSessionManager, method, lambda *a, **k: None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def fork(self, source: str) -> SessionRecord:
+        created = SimpleNamespace(record=record("forked"))
+        with patch.object(TerminalSessionManager, "_create", return_value=created):
+            return self.manager.fork_session(source, "a fork").record
+
+    def test_forking_a_terminal_filed_under_another_keeps_it_there(self) -> None:
+        # Its group was inherited but its parent was not, so the copy sat in the group and outside the
+        # stack at once -- which on screen means at the end of the list, with nothing saying where it
+        # came from.
+        self.assertEqual(self.fork("child").spawned_by_session_id, "parent")
+
+    def test_forking_a_terminal_that_is_under_nobody_files_it_under_nobody(self) -> None:
+        self.assertIsNone(self.fork("loner").spawned_by_session_id)
+
+    def test_a_fork_is_not_filed_under_the_terminal_it_was_forked_from(self) -> None:
+        # Copying a terminal makes a sibling, not a child: filing it under its source would build a
+        # stack out of every fork anyone ever made.
+        self.assertNotEqual(self.fork("child").spawned_by_session_id, "child")
+
+
 class SpawnedByRecordTest(unittest.TestCase):
     """A spawned agent is filed under the terminal that asked for it, so that link has to outlive the
     request that created it -- the sidebar draws the stack long after the task API has returned."""
