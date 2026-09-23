@@ -154,8 +154,8 @@ class TermdeckConfig:
     API_TERMINALS_BATCH_ROUTE = "/api/terminals/batch"
     API_SESSION_ROUTE = "/api/sessions/{session_id}"
     API_SESSION_TASK_STATUS_ROUTE = "/api/sessions/{session_id}/task"
-    API_SESSION_TASK_RESULT_ROUTE = "/api/sessions/{session_id}/task-result"
-    API_SESSION_LAST_TURN_ROUTE = "/api/sessions/{session_id}/last_turn"
+    # One call for an agent's answers: the last `limit` of them, and the session's status with them.
+    API_SESSION_LAST_TURNS_ROUTE = "/api/sessions/{session_id}/last_turns"
     API_SESSION_PROMPT_ROUTE = "/api/sessions/{session_id}/prompt"
     API_SESSION_INTERRUPT_ROUTE = "/api/sessions/{session_id}/interrupt"
     API_SESSION_STOP_ROUTE = "/api/sessions/{session_id}/stop"
@@ -477,6 +477,10 @@ class TermdeckConfig:
     AGENT_TRANSCRIPT_ACTIVITY_DEBOUNCE_SECONDS = 0.75
     AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS = 20.0
     TASK_RESULT_MAX_WAIT_SECONDS = 300.0
+    # Answers, not turns: most of a transcript is thinking, commands and their output, so pages are
+    # read backwards until enough answers are found. The page count bounds that walk on a long session.
+    LAST_TURNS_MAX = 50
+    LAST_TURNS_MAX_PAGES = 20
     PGREP_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_PGREP_BIN, "pgrep")
     LSOF_BIN = PlatformPaths.resolve_binary(PlatformPaths.ENV_LSOF_BIN, "lsof")
     SUBPROCESS_TIMEOUT_SECONDS = 10.0

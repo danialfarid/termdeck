@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- One call for what an agent answered: `GET /api/sessions/{session_id}/last_turns`, with `limit`
+  counting answers rather than transcript entries (default 1, capped at 50) and `final=true` keeping
+  only the answers a turn ended with. `/last_turn` and `/task-result` are gone — they were two names
+  for the same single turn, and neither could say "the last five things this agent said": a page of
+  transcript is mostly thinking, commands and their output, so ten entries can hold one answer. The
+  whole transcript is still `/history-page`, whose `limit` counts entries.
+  See [docs/api.md](docs/api.md#start-one-terminal-task-create--run-in-one-call).
+
 ## [0.23.0] — 2026-09-22
 
 Reload any deck already open in a browser after upgrading: a page loaded from the previous version

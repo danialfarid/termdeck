@@ -37,7 +37,7 @@ For example, include `"title":"review-parser","description":"Review parser edge 
 JSON alongside the model, prompt, and origin session. No separate description request is needed.
 Creation returns before the agent finishes. Poll `/task` for `processing` and `latest_turn`; confirm the
 answer belongs to your submitted prompt. `running` means the terminal process is alive, not that an answer
-is still being generated. `/task-result.status` currently also describes process lifetime, not turn completion.
+is still being generated. `/last_turns.status` also describes process lifetime, not turn completion.
 
 ## Batch work
 
@@ -48,7 +48,9 @@ Each item also accepts its own optional `description`.
 ## Monitor and follow up
 
 - `GET /api/sessions/{session_id}/task` returns running state, transcript tail, and the latest turn.
-- `GET /api/sessions/{session_id}/task-result` returns `status` and `last_turn`; `/last_turn` is an alias.
+- `GET /api/sessions/{session_id}/last_turns` returns `status` and the agent's answers under `turns`.
+  `limit` counts answers rather than transcript entries (default 1, capped at 50) and `final=true` keeps
+  only the answers a turn ended with, which is what a caller waiting on a result wants.
 - `POST /api/sessions/{session_id}/prompt` sends a prompt with `{"text":"..."}`; the task alias
   `POST /api/terminals/task/{session_id}/prompt` accepts `{"prompt":"..."}`.
 - `GET /api/sessions` lists sessions and `GET /api/sessions/{session_id}` returns one session.

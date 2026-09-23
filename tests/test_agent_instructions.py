@@ -10,7 +10,10 @@ class AgentInstructionServiceTest(unittest.TestCase):
         self.assertIn("POST /api/sessions/{session_id}/prompt", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("/api/terminals/task", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("title, description", AgentInstructionService.INSTRUCTION_TEXT)
-        self.assertIn("processing state and latest_turn", AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertIn("/api/sessions/{session_id}/task for", AgentInstructionService.INSTRUCTION_TEXT)
+        # One call for what an agent answered, and what it takes to ask for more than the latest.
+        self.assertIn("/api/sessions/{session_id}/last_turns", AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertIn("?limit=", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("origin_session to your $TERMDECK_SESSION_ID", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("user-authorized scope", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertLess(len(AgentInstructionService.INSTRUCTION_TEXT), 650)

@@ -835,8 +835,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_SESSION_SPAWNED_BY_ROUTE, response_model=None)(self._set_session_spawned_by)
         app.post(TermdeckConfig.API_SESSION_PROJECT_ROUTE, response_model=None)(self._move_session_to_project)
         app.get(TermdeckConfig.API_SESSION_TASK_STATUS_ROUTE, response_model=None)(self._task_status)
-        app.get(TermdeckConfig.API_SESSION_TASK_RESULT_ROUTE, response_model=None)(self._task_result)
-        app.get(TermdeckConfig.API_SESSION_LAST_TURN_ROUTE, response_model=None)(self._task_result)
+        app.get(TermdeckConfig.API_SESSION_LAST_TURNS_ROUTE, response_model=None)(self._session_last_turns)
         app.post(TermdeckConfig.API_SESSION_PROMPT_ROUTE, response_model=None)(self._submit_prompt)
         app.post(TermdeckConfig.API_SESSION_INTERRUPT_ROUTE, response_model=None)(self._interrupt_session)
         app.post(TermdeckConfig.API_AGENT_HOOK_ROUTE, response_model=None)(self._agent_hook)
@@ -3303,9 +3302,13 @@ class TermdeckServer:
         return self._latest_assistant_turn(transcript.get("turns", []), final_only)
 
     @staticmethod
-    def _latest_assistant_turn(turns: list[dict[str, object]], final_only: bool = False) -> dict[str, object] | None:
-        return next((turn for turn in reversed(turns)
-                     if str(turn.get("role", "")) == "assistant" and (not final_only or bool(turn.get("final")))), None)
+    def _is_assistant_turn(turn: dict[str, object], final_only: bool = False) -> bool:
+        return str(turn.get("role", "")) == "assistant" and (not final_only or bool(turn.get("final")))
+
+    @classmethod
+    def _latest_assistant_turn(cls, turns: list[dict[str, object]],
+                               final_only: bool = False) -> dict[str, object] | None:
+        return next((turn for turn in reversed(turns) if cls._is_assistant_turn(turn, final_only)), None)
 
     @staticmethod
     def _format_task_result(session_id: str, status: str, last_turn: dict[str, object] | None) -> str:
@@ -3340,11 +3343,19 @@ class TermdeckServer:
             },
             "latest_turn": latest_turn,
             "agent_session_id": agent_session_id,
-            "monitoring_url": f"/api/sessions/{session_id}/task-result",
+            "monitoring_url": f"/api/sessions/{session_id}/last_turns",
             **summary,
         }
 
-    async def _task_result(self, session_id: str) -> dict[str, object]:
+    async def _session_last_turns(self, session_id: str, limit: int = 1,
+                                  final: bool = False) -> dict[str, object]:
+        """What an agent has answered, most recent last.
+
+        One call for the whole question: ``limit`` counts answers, not turns, so a caller asking for
+        five gets five things the agent said rather than five entries of which four are thinking and a
+        command. ``final`` keeps only the answers an agent finished a turn with, leaving out what it
+        says on its way through the work.
+        """
         resolved_session_id = session_id if self.manager.has_session(session_id) else None
         if resolved_session_id is None:
             try:
@@ -3353,25 +3364,36 @@ class TermdeckServer:
                 raise HTTPException(status_code=409, detail=str(ambiguous_error)) from ambiguous_error
         if resolved_session_id is None:
             raise HTTPException(status_code=404, detail=session_id)
+        if limit < 1:
+            raise HTTPException(status_code=422, detail="limit must be at least 1")
         summary = self.manager.session_summary_by_id(resolved_session_id)
         agent_kind, cwd, agent_session_id = self.manager.session_history_source(resolved_session_id)
-        transcript = await asyncio.to_thread(
-            self.transcripts.history_page,
-            agent_kind,
-            cwd,
-            agent_session_id,
-            None,
-            1,
-        )
-        turns = transcript.get("turns", [])
+        turns = await asyncio.to_thread(self._recent_assistant_turns, agent_kind, cwd, agent_session_id,
+                                        min(limit, TermdeckConfig.LAST_TURNS_MAX), final)
         running = bool(summary.get(ApiFields.RUNNING))
         exit_code = summary.get(ApiFields.EXIT_CODE)
         status = "running" if running else "error" if exit_code is not None and exit_code != 0 else "completed"
-        return {
-            "session_id": resolved_session_id,
-            "status": status,
-            "last_turn": self._latest_assistant_turn(turns),
-        }
+        return {"session_id": resolved_session_id, "status": status, "turns": turns}
+
+    def _recent_assistant_turns(self, agent_kind: str, cwd: str, agent_session_id: str | None,
+                                limit: int, final_only: bool) -> list[dict[str, object]]:
+        """The last ``limit`` answers from a transcript, oldest first.
+
+        Most of a transcript is not answers -- thinking, commands, their output -- so one page of it
+        can hold a single one. Pages are read backwards from the end until enough answers have been
+        found, the transcript runs out, or the walk hits its bound.
+        """
+        found: list[dict[str, object]] = []
+        before: int | None = None
+        for _ in range(TermdeckConfig.LAST_TURNS_MAX_PAGES):
+            page = self.transcripts.history_page(agent_kind, cwd, agent_session_id, before,
+                                                 TranscriptService.HISTORY_PAGE_TURNS)
+            found = [turn for turn in page.get("turns", [])
+                     if self._is_assistant_turn(turn, final_only)] + found
+            before = page.get("before")
+            if len(found) >= limit or not page.get("has_more") or before is None:
+                break
+        return found[-limit:]
 
     async def _submit_prompt(self, session_id: str, request: SubmitPromptRequest,
                              automatically_queue_when_busy: bool = True) -> dict[str, object]:

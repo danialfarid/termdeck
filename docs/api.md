@@ -7,7 +7,7 @@ calls even after authentication.
 
 These endpoints start real persistent TermDeck terminals. A successful prompt response means the prompt was
 written to the terminal and submitted; it does not mean the agent has finished processing it. Use
-`GET /api/sessions/{session_id}/last_turn` for the minimal status/result poll.
+`GET /api/sessions/{session_id}/last_turns` for the status and for whatever the agent has answered.
 
 ## Projects and worktrees
 
@@ -73,11 +73,12 @@ task_json=$(curl -sS -X POST http://127.0.0.1:8530/api/terminals/task \
 If `project` is omitted and `after` is the unique session/group name in a single project, TermDeck infers that project
 from the anchor before creating the new terminal.
 
-For a minimal result poll, use `GET /api/sessions/{session_id}/last_turn`:
+For the result, use `GET /api/sessions/{session_id}/last_turns`:
 
 ```sh
 session_id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["session_id"])' <<< "$task_json")
-curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/last_turn"
+curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/last_turns"
+curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/last_turns?limit=5&final=true"
 ```
 
 Relative `output_path` values are resolved under `cwd` before writing.
@@ -88,14 +89,23 @@ Response:
 {
   "session_id": "abc123...",
   "status": "completed",
-  "last_turn": {"role": "assistant", "text": "..."}
+  "turns": [{"role": "assistant", "text": "..."}]
 }
 ```
+
+`limit` counts answers, not transcript entries: asking for five gives the five most recent things the agent
+said, oldest first, however much thinking and however many commands ran between them. It defaults to 1 — the
+latest answer — and is capped at 50. `final=true` keeps only the answers an agent ended a turn with, leaving
+out what it says on its way through the work; that is the one to poll when waiting for a result. A session
+can be named by its id or, when the name is unique among open terminals, by its title.
+
+The whole transcript, with the thinking, the commands and their output, is
+`GET /api/sessions/{session_id}/history-page?before=&limit=` — that `limit` counts transcript entries.
 
 `output_path` is where raw terminal bytes are appended. Set a per-project path and include that file in any monitor
 process that needs deterministic logs.
 `model_name` is passed as an explicit `--model` argument to Codex, Claude, or AGY.
-The request is not blocking; it returns after prompt submission. Poll `last_turn` for status and the latest turn.
+The request is not blocking; it returns after prompt submission. Poll `last_turns` for the status and the answers.
 
 Session IDs are globally unique, so agent callers address a terminal only by `/api/sessions/{session_id}`. A
 `worktree_id` is session metadata supplied in the create/task request or used as a list/layout filter; it is not
