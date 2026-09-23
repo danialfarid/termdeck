@@ -60,7 +60,15 @@ const app = {
   stateWorktreeId: () => "root",
   refresh: async () => { sent.push({ url: "refresh" }); },
   titlePresentation: (session) => ({ text: session?.session_id || "" }),
-  removeTerminalGroup: (groupId) => { sent.push({ url: `remove-group ${groupId}` }); },
+  projectStateSavePromise: Promise.resolve(),
+  removeTerminalGroup(groupId) {
+    // The real one queues the delete rather than sending it, and the queue is what the page has to
+    // wait for before following the terminals to the other project.
+    sent.push({ url: `queue remove-group ${groupId}` });
+    this.projectStateSavePromise = this.projectStateSavePromise.then(async () => {
+      sent.push({ url: `sent remove-group ${groupId}` });
+    });
+  },
   newTerminalGroupId: () => "group-new",
   __METHODS__
 };
@@ -163,7 +171,16 @@ class MoveGroupToProjectTest(unittest.TestCase):
         # Left behind, it is an empty group in this project and the id a move back would land on.
         result = self.move(members=["one"], sessions=[session("one")])
 
-        self.assertIn("remove-group group-1", [r["url"] for r in result["sent"]])
+        self.assertIn("queue remove-group group-1", [r["url"] for r in result["sent"]])
+
+    def test_the_delete_leaves_before_the_page_follows_the_terminals(self) -> None:
+        # Queued and not waited for, it never leaves at all: the page navigates to the other project
+        # and an empty group is left behind in this one.
+        result = self.move(members=["one"], sessions=[session("one")])
+        urls = [r["url"] for r in result["sent"]]
+
+        self.assertLess(urls.index("sent remove-group group-1"),
+                        next(i for i, url in enumerate(urls) if url.startswith("navigate ")))
 
     def test_a_half_move_says_what_went_and_keeps_the_rest(self) -> None:
         # All at once, the terminals that moved cannot be told from the ones that did not.
@@ -172,7 +189,7 @@ class MoveGroupToProjectTest(unittest.TestCase):
 
         self.assertEqual(self.moves(result), ["one", "two"])
         self.assertEqual(self.created(result)[0]["body"]["session_ids"], ["one"])
-        self.assertNotIn("remove-group group-1", [r["url"] for r in result["sent"]])
+        self.assertNotIn("queue remove-group group-1", [r["url"] for r in result["sent"]])
         self.assertIn("two", result["alerts"][0])
         self.assertIn("moved 1 of 2", result["alerts"][0])
 

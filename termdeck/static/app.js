@@ -2284,7 +2284,20 @@ class TermdeckApp {
     return order;
   }
 
-  moveSelectedSessionsIntoGroup(sessionIds, groupId, targetId = null, after = false) {
+  // The selected agents that are filed under an agent none of them is taking with them: filing one
+  // into a group its parent is not in is what stops it being that agent's child, and without it the
+  // terminal is in the group by every record and still drawn where it was.
+  async releaseSpawnedFromStacks(sessionIds) {
+    const staying = new Set(sessionIds);
+    const leaving = sessionIds.filter((id) => {
+      const parentId = this.session(id)?.spawned_by_session_id || "";
+      return parentId && !staying.has(parentId);
+    });
+    if (leaving.length) await this.setSpawnedParent(leaving, "");
+  }
+
+  async moveSelectedSessionsIntoGroup(sessionIds, groupId, targetId = null, after = false) {
+    if (groupId) await this.releaseSpawnedFromStacks(sessionIds);
     const selectedWorktreeId = this.stateWorktreeId();
     const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id) &&
       this.worktreeIdForSession(this.session(id)) === selectedWorktreeId);
@@ -2401,8 +2414,13 @@ class TermdeckApp {
       if (!response.ok) void uiAlert(`moved the terminals, but could not group them there (${response.status})`);
     }
     // Nothing left in it here, so the group goes: leaving it behind is what makes moving it back land
-    // on its own id.
-    if (moved.length === sessionIds.length) this.removeTerminalGroup(group.id);
+    // on its own id. Waited for, because the page is about to follow the terminals to the other
+    // project and a request still in the queue when it does never leaves -- which is how an empty
+    // group was left behind in the project the terminals came from.
+    if (moved.length === sessionIds.length) {
+      this.removeTerminalGroup(group.id);
+      await this.projectStateSavePromise;
+    }
     else {
       const name = (id) => this.titlePresentation(this.session(id)).text || id;
       const stayed = sessionIds.filter((id) => !moved.includes(id) && id !== uncertain);
@@ -2741,6 +2759,23 @@ class TermdeckApp {
     this.reorderGroupedSessions(draggedId, targetId, after);
   }
 
+  // Where a row is drawn in the layout, which is not always the row itself: a spawned agent is drawn
+  // inside the agent that spawned it, and its own token is nowhere in the layout -- so a group made
+  // from one landed at the end of the list rather than where the row was.
+  layoutAnchorTokenFor(sessionId) {
+    const groups = this.getProjectState().session_groups || {};
+    const seen = new Set();
+    let id = sessionId;
+    while (id && !seen.has(id)) {
+      seen.add(id);
+      if (groups[id]) return `group:${groups[id]}`;
+      const parentId = this.session(id)?.spawned_by_session_id || "";
+      if (!parentId) return `session:${id}`;
+      id = parentId;
+    }
+    return `session:${sessionId}`;
+  }
+
   createTerminalGroupFromSession(sessionId) {
     this.createTerminalGroupFromSessions([sessionId]);
   }
@@ -2749,6 +2784,14 @@ class TermdeckApp {
     const ids = [...new Set(sessionIds)].filter((id) => !!this.session(id));
     if (!ids.length) return;
     const anchorId = ids.includes(anchorSessionId) ? anchorSessionId : ids[0];
+    // Worked out before anything is unfiled, because where the new group belongs is where the row
+    // that was right-clicked is drawn now.
+    const anchorToken = this.layoutAnchorTokenFor(anchorId);
+    // A spawned agent is drawn under the agent that spawned it, wherever it is filed, so grouping one
+    // whose parent is staying behind put it in the group and left it on screen exactly where it was:
+    // the group looked as though it had taken one terminal of the several that were selected. Filing
+    // it somewhere its parent is not is what stops it being that agent's child.
+    await this.releaseSpawnedFromStacks(ids);
     const firstSession = this.session(anchorId);
     const suggestion = ids.length === 1 ? `${this.effectiveTitle(firstSession)} group`
       : `${this.effectiveTitle(firstSession)} + ${ids.length - 1} group`;
@@ -2759,12 +2802,12 @@ class TermdeckApp {
     const group = { id: this.newTerminalGroupId(), name: name.trim(), collapsed: false };
     const layout = this.terminalLayout();
     const selectedTokens = new Set(ids.map((id) => `session:${id}`));
-    const anchorGroupId = sessionGroups[anchorId] || "";
-    const anchorToken = anchorGroupId ? `group:${anchorGroupId}` : `session:${anchorId}`;
     const anchorIndex = layout.indexOf(anchorToken);
     const nextLayout = layout.filter((entry) => !selectedTokens.has(entry));
     const retainedAnchorIndex = nextLayout.indexOf(anchorToken);
-    const insertAfterAnchor = !!anchorGroupId && retainedAnchorIndex >= 0;
+    // After the thing the row was drawn inside -- its group, or the agent it was filed under -- and in
+    // the row's own place when it was drawn at the top level.
+    const insertAfterAnchor = anchorToken !== `session:${anchorId}` && retainedAnchorIndex >= 0;
     const insertIndex = insertAfterAnchor ? retainedAnchorIndex + 1
       : anchorIndex < 0 ? nextLayout.length : Math.min(anchorIndex, nextLayout.length);
     nextLayout.splice(insertIndex, 0, `group:${group.id}`);

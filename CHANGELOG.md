@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Grouping terminals that include a spawned agent takes the agent with them. It is drawn under the
+  agent that spawned it wherever it is filed, so one whose parent stayed behind went into the group by
+  every record and stayed on screen exactly where it was: the group looked as though it had taken one
+  terminal of the several that were selected. Filing it somewhere its parent is not is what stops it
+  being that agent's child, and that is what happens now.
+- A group made from a spawned agent's row appears beside that row rather than at the end of the list.
+  Its own token is nowhere in the layout to land beside, so the group went to the bottom.
+- Moving a group to another project no longer leaves an empty group behind in the project it came
+  from. The delete was queued and the page followed the terminals to the other project before it went
+  out, so it never left at all.
+
 ## [0.24.0] — 2026-09-23
 
 Reload any deck open in a browser after upgrading, and restart agents that were told how to use the
