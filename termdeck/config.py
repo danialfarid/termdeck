@@ -489,6 +489,10 @@ class TermdeckConfig:
     AGENT_TRANSCRIPT_ACTIVITY_DEBOUNCE_SECONDS = 0.75
     AGENT_DIR_CLAIM_INPUT_WINDOW_SECONDS = 20.0
     TASK_RESULT_MAX_WAIT_SECONDS = 300.0
+    # How many quiet polls make an unmarked message an answer rather than something said on the way
+    # through the work. Only Codex marks which message ended its turn; for the rest, standing still is
+    # the evidence there is.
+    TASK_RESULT_SETTLE_POLLS = 3
     # Answers, not turns: most of a transcript is thinking, commands and their output, so pages are
     # read backwards until enough answers are found. The page count bounds that walk on a long session.
     LAST_TURNS_MAX = 50

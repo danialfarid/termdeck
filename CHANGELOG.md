@@ -23,6 +23,11 @@ All notable changes to this project are documented here. The format follows
   is not processing, nor is one waiting on a person, so the newest response in the transcript could
   belong to the request before. `processing` and `needs_attention` come back with the responses for
   what they do say.
+- A delegated agent's result reaches the agent that asked for it, and is the result. What a child says
+  while it works — "I will inspect the files now" — was delivered as its answer, which ended the job,
+  so the answer that followed was never sent; and before that, a Claude child delivered nothing at all.
+  Delivery now waits for the child's own prompt to have an answer after it, and for that answer to stop
+  changing, since only Codex marks which message ended a turn.
 - `/response/final` no longer hides the responses of every agent but Codex. Only Codex marks which
   message ended a turn, and silence was read as "not final", so a Claude terminal appeared to have no
   responses at all — which is also why a delegated Claude child never reported back to the agent that

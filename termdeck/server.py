@@ -3230,6 +3230,9 @@ class TermdeckServer:
                 except (ValueError, OSError) as placement_error:
                     summary["placement_error"] = str(placement_error)
             self._broadcast_project_state_snapshot(ms.record.project, ms.record.worktree_id)
+            # Taken before the prompt goes in: submitting waits for the terminal to confirm it, which
+            # an answer can beat, and a boundary taken afterwards would leave that answer behind it.
+            since = self._now_stamp()
             await self.manager.submit_prompt(ms.record.session_id, prompt, request.bracketed, request.queue)
             latest = self.manager.session_summary(ms)
             latest["placement"] = summary.get("placement")
@@ -3237,10 +3240,10 @@ class TermdeckServer:
             summary = latest
             summary["prompt_submitted"] = True
             summary["queued"] = request.queue
-            # The instant the prompt went in, so the caller can ask for the answers that came after it.
-            summary["since"] = self._now_stamp()
+            # Where this prompt starts, so the caller can ask for what it answered.
+            summary["since"] = since
             if origin_session_id and request.write_back:
-                self._schedule_task_result_delivery(ms.record.session_id, origin_session_id)
+                self._schedule_task_result_delivery(ms.record.session_id, origin_session_id, since)
             return summary
         except (ValueError, OSError) as task_error:
             if worktree is not None and created_session_id is None:
@@ -3263,22 +3266,42 @@ class TermdeckServer:
             raise ValueError(f"session name is ambiguous: {reference}")
         return str(matches[0]["session_id"]) if matches else None
 
-    def _schedule_task_result_delivery(self, child_session_id: str, origin_session_id: str) -> None:
-        job = asyncio.create_task(self._deliver_task_result(child_session_id, origin_session_id))
+    def _schedule_task_result_delivery(self, child_session_id: str, origin_session_id: str,
+                                       since: str = "") -> None:
+        job = asyncio.create_task(self._deliver_task_result(child_session_id, origin_session_id, since))
         self._task_delivery_jobs.add(job)
         job.add_done_callback(self._forget_task_delivery_job)
 
     def _forget_task_delivery_job(self, job: asyncio.Task) -> None:
         self._task_delivery_jobs.discard(job)
 
-    async def _deliver_task_result(self, child_session_id: str, origin_session_id: str) -> None:
+    async def _deliver_task_result(self, child_session_id: str, origin_session_id: str,
+                                   since: str = "") -> None:
+        """Send the child's result back to the agent that asked for it, once there is a result.
+
+        What the child says while it works is not a result: "I will look at the files now" delivered as
+        one ends the job, and the answer that follows is never sent. The child has answered when the
+        prompt this job was started for has an answer after it in the transcript and the child is not
+        working on anything -- and what the child said before that prompt answers the request before.
+        """
         started_at = time.monotonic()
         last_turn: dict[str, object] | None = None
         status = "error"
+        settled = 0
         while self.manager.has_session(child_session_id):
             summary = self.manager.session_summary_by_id(child_session_id)
-            last_turn = await self._read_last_turn_once(child_session_id, final_only=True)
-            if last_turn is not None:
+            candidate = None if summary.get("processing") else \
+                await self._read_last_turn_once(child_session_id, final_only=True, since=since)
+            if candidate is not None and candidate == last_turn:
+                settled += 1
+            else:
+                settled = 0
+            last_turn = candidate
+            # An agent that says which message ended its turn has said so; one that does not is taken
+            # at its word only once it has stopped adding to it, because "I will look at the files now"
+            # is an assistant message like any other and delivering it ends this job.
+            if candidate is not None and (candidate.get("final") is True or
+                                          settled >= TermdeckConfig.TASK_RESULT_SETTLE_POLLS):
                 status = "error" if summary.get(ApiFields.EXIT_CODE) not in (None, 0) else "completed"
                 break
             if not summary.get(ApiFields.RUNNING):
@@ -3289,7 +3312,7 @@ class TermdeckServer:
         if not self.manager.has_session(origin_session_id):
             return
         if last_turn is None and self.manager.has_session(child_session_id):
-            last_turn = await self._read_last_turn(child_session_id, final_only=True)
+            last_turn = await self._read_last_turn(child_session_id, final_only=True, since=since)
         response_text = self._format_task_result(child_session_id, status, last_turn)
         delivery_locks = getattr(self, "_origin_delivery_locks", {})
         lock = delivery_locks.setdefault(origin_session_id, asyncio.Lock())
@@ -3298,35 +3321,32 @@ class TermdeckServer:
             origin_summary = self.manager.session_summary_by_id(origin_session_id)
             await self.manager.submit_prompt(origin_session_id, response_text, True, bool(origin_summary.get("processing")))
 
-    async def _read_last_turn(self, session_id: str, final_only: bool = False) -> dict[str, object] | None:
+    async def _read_last_turn(self, session_id: str, final_only: bool = False,
+                              since: str = "") -> dict[str, object] | None:
         for attempt in range(12):
-            turn = await self._read_last_turn_once(session_id, final_only)
+            turn = await self._read_last_turn_once(session_id, final_only, since)
             if turn is not None:
                 return turn
             if attempt < 11:
                 await asyncio.sleep(0.25)
         return None
 
-    async def _read_last_turn_once(self, session_id: str, final_only: bool = False) -> dict[str, object] | None:
+    async def _read_last_turn_once(self, session_id: str, final_only: bool = False,
+                                   since: str = "") -> dict[str, object] | None:
         agent_kind, cwd, agent_session_id = self.manager.session_history_source(session_id)
-        transcript = await asyncio.to_thread(self.transcripts.history_page, agent_kind, cwd, agent_session_id, None, 1)
-        return self._latest_assistant_turn(transcript.get("turns", []), final_only)
+        responses = await asyncio.to_thread(self._recent_assistant_turns, agent_kind, cwd, agent_session_id,
+                                            1, final_only, self._parse_since(since))
+        return responses[-1] if responses else None
 
     @staticmethod
-    def _is_assistant_turn(turn: dict[str, object], final_only: bool = False, since: datetime | None = None) -> bool:
-        """Is this an answer, and one the caller asked for?
+    def _is_assistant_turn(turn: dict[str, object], final_only: bool = False) -> bool:
+        """Is this something the agent said, and of the kind asked for?
 
         Only Codex says which of its messages ended a turn, so an agent that says nothing about it has
-        every message taken as an answer: read as "not final", a Claude terminal had no answers at all
-        and a caller waiting on one waited forever.
+        every message taken as a response: read as "not final", a Claude terminal had no responses at
+        all and a caller waiting on one waited forever.
         """
-        if str(turn.get("role", "")) != "assistant" or (final_only and not turn.get("final", True)):
-            return False
-        if since is None:
-            return True
-        stamped = TermdeckServer._turn_time(turn)
-        # No stamp is no proof it is new, and the whole point of asking is to rule out the old answer.
-        return stamped is not None and stamped > since
+        return str(turn.get("role", "")) == "assistant" and (not final_only or bool(turn.get("final", True)))
 
     @staticmethod
     def _turn_time(turn: dict[str, object]) -> datetime | None:
@@ -3462,27 +3482,51 @@ class TermdeckServer:
 
     def _recent_assistant_turns(self, agent_kind: str, cwd: str, agent_session_id: str | None, limit: int,
                                 final_only: bool, since: datetime | None = None) -> list[dict[str, object]]:
-        """The last ``limit`` answers from a transcript, oldest first.
+        """The last ``limit`` responses from a transcript, oldest first.
 
-        Most of a transcript is not answers -- thinking, commands, their output -- so one page of it
-        can hold a single one. Pages are read backwards from the end until enough answers have been
-        found, the transcript runs out, or the walk hits its bound; that bound can return fewer than
-        were asked for while older answers are still there.
+        Most of a transcript is not responses -- thinking, commands, their output -- so one page of it
+        can hold a single one. Pages are read backwards from the end until enough have been found, the
+        transcript runs out, or the walk hits its bound; that bound can return fewer than were asked
+        for while older responses are still there.
+
+        With ``since``, the boundary is the prompt itself rather than the instant it was sent: the
+        first prompt the transcript recorded at or after that instant, and everything the agent said
+        after it. A prompt sent while the agent was busy waits its turn, and the one ahead of it can be
+        answered in between; that answer is before this prompt in the transcript, so it is not this
+        prompt's. Until the transcript has the prompt, nothing has answered it.
         """
-        found: list[dict[str, object]] = []
+        collected: list[dict[str, object]] = []
         before: int | None = None
         for _ in range(TermdeckConfig.LAST_TURNS_MAX_PAGES):
             page = self.transcripts.history_page(agent_kind, cwd, agent_session_id, before,
                                                  TranscriptService.HISTORY_PAGE_TURNS)
             turns = page.get("turns", [])
-            found = [turn for turn in turns if self._is_assistant_turn(turn, final_only, since)] + found
+            collected = [*turns, *collected]
             before = page.get("before")
-            if len(found) >= limit or not page.get("has_more") or before is None:
+            if since is not None:
+                # Reading further back can only find older prompts, and the boundary is the first one
+                # at or after the instant asked about.
+                if self._prompt_index(collected, since) is not None or self._page_precedes(turns, since):
+                    break
+            elif len([turn for turn in collected if self._is_assistant_turn(turn, final_only)]) >= limit:
                 break
-            # Everything older than the page just read is older than what was asked for.
-            if since is not None and self._page_precedes(turns, since):
+            if not page.get("has_more") or before is None:
                 break
-        return found[-limit:]
+        if since is not None:
+            index = self._prompt_index(collected, since)
+            if index is None:
+                return []
+            collected = collected[index + 1:]
+        return [turn for turn in collected if self._is_assistant_turn(turn, final_only)][-limit:]
+
+    @classmethod
+    def _prompt_index(cls, turns: list[dict[str, object]], since: datetime) -> int | None:
+        """Where in these turns the prompt sent at ``since`` was recorded."""
+        for index, turn in enumerate(turns):
+            stamped = cls._turn_time(turn)
+            if str(turn.get("role", "")) == "user" and stamped is not None and stamped >= since:
+                return index
+        return None
 
     @classmethod
     def _page_precedes(cls, turns: list[dict[str, object]], since: datetime) -> bool:
@@ -3503,14 +3547,16 @@ class TermdeckServer:
             # What actually happened, not what was asked for: an agent whose composer has no queue is
             # submitted to instead, and a caller told "queued" about a prompt that was sent has been
             # told the wrong thing.
+            # Taken before the prompt goes in: submitting waits for the terminal to confirm it, which
+            # an answer can beat, and a boundary taken afterwards would leave that answer behind it.
+            since = self._now_stamp()
             queued = await self.manager.submit_prompt(session_id, request.text, request.bracketed, wanted_queue)
         except ValueError as prompt_error:
             raise HTTPException(status_code=409, detail=str(prompt_error)) from prompt_error
-        # The instant the prompt went in. An answer stamped after it is an answer to this prompt, which
-        # is the only thing that ties one to the other: an agent that is not working may simply not
-        # have started, and the answer sitting in the transcript then belongs to the request before.
+        # Where this prompt starts. What answered it is what the agent said after the transcript
+        # recorded the prompt itself, which is the only thing that ties an answer to a request.
         return {"session": self.manager.session_summary_by_id(session_id), "prompt_submitted": True,
-                "queued": queued, "since": self._now_stamp()}
+                "queued": queued, "since": since}
 
     async def _interrupt_session(self, session_id: str) -> dict[str, object]:
         if not self.manager.has_session(session_id):

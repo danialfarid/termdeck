@@ -51,9 +51,11 @@ Each item also accepts its own optional `description`.
 - `GET /api/sessions/{session_id}/response` returns what the agent said back, under `responses`.
   `limit` counts responses rather than transcript entries (default 1, capped at 50).
 - To wait for the response to your own prompt, pass the `since` the prompt call returned:
-  `response?since=<since>`, and poll until `responses` is not empty. Only that ties a response to your
-  prompt: `status` describes the terminal process, which stays open between prompts, and `processing`
-  is false both before an agent starts and while it waits on a person (`needs_attention`).
+  `response?since=<since>`, and poll until `responses` is not empty. It finds your prompt in the
+  transcript and returns what the agent said after it, so a prompt queued behind another does not come
+  back with the other one's answer. Only that ties a response to your prompt: `status` describes the
+  terminal process, which stays open between prompts, and `processing` is false both before an agent
+  starts and while it waits on a person (`needs_attention`).
 - `GET /api/sessions/{session_id}/response/final` is the same with what an agent says on its way
   through the work left out, for the agents that mark which message ended a turn.
 - `POST /api/sessions/{session_id}/prompt` sends a prompt with `{"text":"..."}`.

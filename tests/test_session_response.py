@@ -177,6 +177,7 @@ class FinalResponseTest(unittest.TestCase):
 
     def test_it_takes_the_same_parameters(self) -> None:
         instance = server([page([turn("older", at="2026-09-23T08:00:00Z"),
+                                 turn("the prompt", role="user", at="2026-09-23T08:30:05Z"),
                                  turn("newer", at="2026-09-23T08:31:00Z")])])
 
         result = final_response(instance, limit=5, since="2026-09-23T08:30:00Z")
@@ -193,26 +194,55 @@ class ResponseToThisPromptTest(unittest.TestCase):
     """
 
     def test_a_response_from_before_the_prompt_is_left_out(self) -> None:
-        instance = server([page([turn("the previous response", at="2026-09-23T08:00:00Z")])])
+        instance = server([page([turn("the previous response", at="2026-09-23T08:00:00Z"),
+                                 turn("the prompt", role="user", at="2026-09-23T08:30:05Z")])])
 
         self.assertEqual(response(instance, since="2026-09-23T08:30:00Z")["responses"], [])
 
-    def test_one_from_after_it_is_returned(self) -> None:
+    def test_one_from_after_the_prompt_is_returned(self) -> None:
         instance = server([page([turn("the previous response", at="2026-09-23T08:00:00Z"),
+                                 turn("the prompt", role="user", at="2026-09-23T08:30:05Z"),
                                  turn("the response to this one", at="2026-09-23T08:31:00Z")])])
 
         result = response(instance, since="2026-09-23T08:30:00Z", limit=5)
 
         self.assertEqual([item["text"] for item in result["responses"]], ["the response to this one"])
 
-    def test_one_with_no_time_on_it_is_not_taken_as_new(self) -> None:
-        # No stamp is no proof, and ruling out the earlier response is the whole point of asking.
+    def test_a_prompt_waiting_its_turn_has_no_response_yet(self) -> None:
+        # The API queues a prompt sent while the agent is busy, and the one ahead of it can be answered
+        # in between. That answer is before this prompt in the transcript, so it is not this prompt's.
+        instance = server([page([turn("the prompt ahead", role="user", at="2026-09-23T08:29:00Z"),
+                                 turn("its answer", at="2026-09-23T08:31:00Z")])])
+
+        self.assertEqual(response(instance, since="2026-09-23T08:30:00Z", limit=5)["responses"], [])
+
+    def test_the_queued_prompt_gets_its_own_response_once_it_runs(self) -> None:
+        instance = server([page([turn("the prompt ahead", role="user", at="2026-09-23T08:29:00Z"),
+                                 turn("the answer ahead", at="2026-09-23T08:31:00Z"),
+                                 turn("my prompt", role="user", at="2026-09-23T08:32:00Z"),
+                                 turn("my answer", at="2026-09-23T08:33:00Z")])])
+
+        result = response(instance, since="2026-09-23T08:30:00Z", limit=5)
+
+        self.assertEqual([item["text"] for item in result["responses"]], ["my answer"])
+
+    def test_a_transcript_without_the_prompt_yet_has_nothing_to_give(self) -> None:
+        # Nothing has answered a prompt the transcript has not recorded. Everything here is newer than
+        # the instant asked about and none of it is an answer to this prompt: the agent was still
+        # finishing the request before, and the prompt is waiting in its composer.
+        instance = server([page([turn("still on the last request", at="2026-09-23T08:31:00Z"),
+                                 turn("and the answer to it", at="2026-09-23T08:32:00Z")])])
+
+        self.assertEqual(response(instance, since="2026-09-23T08:30:00Z", limit=5)["responses"], [])
+
+    def test_an_undated_response_is_no_proof_either(self) -> None:
         instance = server([page([turn("undated")])])
 
         self.assertEqual(response(instance, since="2026-09-23T08:30:00Z")["responses"], [])
 
     def test_a_time_with_no_zone_is_read_as_utc_like_the_stamps_are(self) -> None:
-        instance = server([page([turn("after", at="2026-09-23T08:31:00Z")])])
+        instance = server([page([turn("the prompt", role="user", at="2026-09-23T08:30:05Z"),
+                                 turn("after", at="2026-09-23T08:31:00Z")])])
 
         result = response(instance, since="2026-09-23T08:30:00")
 
@@ -237,7 +267,9 @@ class ResponseToThisPromptTest(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 422)
 
     def test_waiting_on_a_person_is_reported_rather_than_read_as_finished(self) -> None:
-        instance = server([page([turn("previous", at="2026-09-23T08:00:00Z")])], running=True, exit_code=None)
+        instance = server([page([turn("previous", at="2026-09-23T08:00:00Z"),
+                                 turn("the prompt", role="user", at="2026-09-23T08:30:05Z")])],
+                          running=True, exit_code=None)
         instance.manager.session_summary_by_id.return_value = {"running": True, "exit_code": None,
                                                                "processing": False, "needs_attention": True}
 
@@ -252,8 +284,15 @@ class ResponseToThisPromptTest(unittest.TestCase):
         source = (Path(__file__).resolve().parent.parent / "termdeck" / "server.py").read_text()
         prompt_return = re.search(r'return \{"session": self\.manager[^}]*\}', source).group(0)
 
-        self.assertIn('"since": self._now_stamp()', prompt_return)
-        self.assertIn('summary["since"] = self._now_stamp()', source)
+        self.assertIn('"since": since', prompt_return)
+        self.assertIn('summary["since"] = since', source)
+        # Taken before the prompt goes in: submitting waits for the terminal to confirm it, and an
+        # answer can beat that, which a boundary taken afterwards would leave behind it.
+        for path in (r"await self\.manager\.submit_prompt\(ms\.record\.session_id",
+                     r"queued = await self\.manager\.submit_prompt\(session_id"):
+            submit = re.search(path, source)
+            stamp = source.rindex("since = self._now_stamp()", 0, submit.start())
+            self.assertLess(stamp, submit.start())
 
     def test_the_stamp_needs_no_escaping_in_a_query_string(self) -> None:
         # A `+00:00` offset has to be escaped; a caller pasting back what it was given should not have

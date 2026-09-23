@@ -2172,6 +2172,37 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.submit_prompt.assert_awaited_once_with(
             "origin-01", "[TermDeck task child-01 completed]\nhello", True, True)
 
+    async def test_child_commentary_is_not_delivered_as_the_result(self) -> None:
+        # "I will inspect the files now" is not a result. Delivered as one it ends the job, and the
+        # answer that follows is never sent -- which is what a parent is waiting for.
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.has_session.return_value = True
+        # The processing marker reads clear between messages, so it alone is not evidence of an answer.
+        server.manager.session_summary_by_id.return_value = {"running": True, "processing": False}
+        server.manager.session_history_source.return_value = ("claude", "/tmp", "child-agent")
+        server.manager.submit_prompt = AsyncMock(return_value=False)
+        server.transcripts = MagicMock()
+        working = {"role": "assistant", "text": "I will inspect the files now",
+                   "timestamp": "2026-09-23T09:00:10Z"}
+        answer = {"role": "assistant", "text": "three risks, in order", "timestamp": "2026-09-23T09:00:30Z"}
+        prompt = {"role": "user", "text": "review", "timestamp": "2026-09-23T09:00:05Z"}
+        server.transcripts.history_page.side_effect = [
+            {"turns": [prompt, working]},
+            {"turns": [prompt, working]},
+            {"turns": [prompt, working, answer]},
+            {"turns": [prompt, working, answer]},
+            {"turns": [prompt, working, answer]},
+            {"turns": [prompt, working, answer]},
+        ]
+        server._origin_delivery_locks = {}
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await server._deliver_task_result("child-01", "origin-01", "2026-09-23T09:00:00Z")
+
+        server.manager.submit_prompt.assert_awaited_once_with(
+            "origin-01", "[TermDeck task child-01 completed]\nthree risks, in order", True, False)
+
     async def test_origin_defaults_child_cwd_project_and_placement(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)
         server.manager = MagicMock()
@@ -2199,7 +2230,11 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.create_session.assert_called_once_with(
             "codex", "/origin", "child", "stock", output_path="", description="", agent_rename="child",
             worktree=None, worktree_id="root")
-        server._schedule_task_result_delivery.assert_called_once_with("child-01", "origin-01")
+        child, origin, since = server._schedule_task_result_delivery.call_args.args
+        self.assertEqual((child, origin), ("child-01", "origin-01"))
+        # The boundary the child's answer is looked for after; without it the answer to the request
+        # before would be delivered as this one's.
+        self.assertTrue(since)
 
     async def test_output_path_defaults_to_absolute_for_session_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

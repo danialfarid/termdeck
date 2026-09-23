@@ -109,7 +109,8 @@ empty merely because an agent says nothing about it.
 
 `since` is what ties a response to a prompt. `POST /api/sessions/{session_id}/prompt` returns the instant the
 prompt went in — `2026-09-23T08:42:54.345Z`, the same ISO-8601 UTC shape the transcript stamps its turns with,
-and one a query string takes as it is — and a response stamped after that instant is a response to it:
+and one a query string takes as it is. The server finds the prompt the transcript recorded at or after that
+instant and returns what the agent said after it:
 
 ```sh
 since=$(curl -sS -X POST "http://127.0.0.1:8530/api/sessions/$session_id/prompt" \
@@ -120,8 +121,13 @@ curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/response?since=$since"
 ```
 
 Poll until `responses` is not empty. `POST /api/sessions/task` returns a `since` of its own for the prompt it
-submits. Nothing else in the response establishes that association, and the other fields are easy to misread on
-their own:
+submits. The boundary is the prompt rather than the bare instant because a prompt sent while the agent is busy
+waits its turn: the one ahead of it can be answered in between, and that answer is before this prompt in the
+transcript, so it is not returned. Until the transcript has the prompt, nothing has answered it and `responses`
+stays empty — which is also the right answer while a queued prompt waits.
+
+Nothing else in the response establishes that association, and the other fields are easy to misread on their
+own:
 
 - `status` is the terminal's process: `running` while the terminal is open, `completed` once it has exited,
   `error` if it exited badly. A terminal stays open between prompts, so this never says a response arrived.
