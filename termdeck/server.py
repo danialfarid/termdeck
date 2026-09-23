@@ -820,6 +820,10 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_PROJECT_EXPORT_ROUTE, response_model=None)(self._export_project)
         app.post(TermdeckConfig.API_PROJECT_IMPORT_ROUTE, response_model=None)(self._import_project)
         app.post(TermdeckConfig.API_ARCHIVE_INSPECT_ROUTE, response_model=None)(self._inspect_import_archive)
+        app.post(TermdeckConfig.API_SESSIONS_TASK_ROUTE, response_model=None)(self._run_terminal_task)
+        app.post(TermdeckConfig.API_SESSIONS_BATCH_ROUTE, response_model=None)(self._launch_terminal_batch)
+        # The names they had when making a session lived under `terminals`. Kept so nothing written
+        # against them breaks; they are the same calls.
         app.post(TermdeckConfig.API_TERMINAL_TASK_ROUTE, response_model=None)(self._run_terminal_task)
         app.post(TermdeckConfig.API_TERMINAL_TASK_PROMPT_ROUTE, response_model=None)(self._follow_up_task_prompt)
         app.post(TermdeckConfig.API_TERMINALS_BATCH_ROUTE, response_model=None)(self._launch_terminal_batch)
@@ -834,9 +838,11 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_SESSION_DESCRIPTION_ROUTE, response_model=None)(self._set_session_description)
         app.post(TermdeckConfig.API_SESSION_SPAWNED_BY_ROUTE, response_model=None)(self._set_session_spawned_by)
         app.post(TermdeckConfig.API_SESSION_PROJECT_ROUTE, response_model=None)(self._move_session_to_project)
-        app.get(TermdeckConfig.API_SESSION_TASK_STATUS_ROUTE, response_model=None)(self._task_status)
+        app.get(TermdeckConfig.API_SESSION_STATUS_ROUTE, response_model=None)(self._session_status)
+        app.get(TermdeckConfig.API_SESSION_TASK_STATUS_ROUTE, response_model=None)(self._session_status)
         app.get(TermdeckConfig.API_SESSION_LAST_TURNS_ROUTE, response_model=None)(self._session_last_turns)
         app.get(TermdeckConfig.API_SESSION_LAST_TURN_ROUTE, response_model=None)(self._session_last_turn)
+        app.get(TermdeckConfig.API_SESSION_TASK_RESULT_ROUTE, response_model=None)(self._session_last_turn)
         app.post(TermdeckConfig.API_SESSION_PROMPT_ROUTE, response_model=None)(self._submit_prompt)
         app.post(TermdeckConfig.API_SESSION_INTERRUPT_ROUTE, response_model=None)(self._interrupt_session)
         app.post(TermdeckConfig.API_AGENT_HOOK_ROUTE, response_model=None)(self._agent_hook)
@@ -3318,7 +3324,8 @@ class TermdeckServer:
         text = str(last_turn.get("text", "")).strip()
         return f"[TermDeck task {session_id} {status}]\n{text}" if text else f"[TermDeck task {session_id} {status}]\n{json.dumps(last_turn, ensure_ascii=False)}"
 
-    async def _task_status(self, session_id: str) -> dict[str, object]:
+    async def _session_status(self, session_id: str) -> dict[str, object]:
+        """Everything about how a session is doing: the process, the agent, and the transcript tail."""
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
         summary = self.manager.session_summary_by_id(session_id)
@@ -3356,6 +3363,12 @@ class TermdeckServer:
         five gets five things the agent said rather than five entries of which four are thinking and a
         command. ``final`` keeps only the answers an agent finished a turn with, leaving out what it
         says on its way through the work.
+
+        Whether the work is done is two questions, so the answer carries both: ``status`` is the
+        terminal's process -- running, finished, or finished badly -- and ``processing`` is whether
+        the agent is still working on a turn. A terminal stays running for as long as it is open, so
+        ``status`` on its own never says an answer has arrived; ``processing`` false with a ``final``
+        answer in hand does.
         """
         resolved_session_id = session_id if self.manager.has_session(session_id) else None
         if resolved_session_id is None:
@@ -3374,7 +3387,8 @@ class TermdeckServer:
         running = bool(summary.get(ApiFields.RUNNING))
         exit_code = summary.get(ApiFields.EXIT_CODE)
         status = "running" if running else "error" if exit_code is not None and exit_code != 0 else "completed"
-        return {"session_id": resolved_session_id, "status": status, "turns": turns}
+        return {"session_id": resolved_session_id, "status": status,
+                "processing": bool(summary.get("processing")), "turns": turns}
 
     async def _session_last_turn(self, session_id: str, final: bool = False) -> dict[str, object]:
         """The latest answer, in the shape the call that used to serve it returned.
@@ -3385,7 +3399,7 @@ class TermdeckServer:
         result = await self._session_last_turns(session_id, limit=1, final=final)
         turns = result["turns"]
         return {"session_id": result["session_id"], "status": result["status"],
-                "last_turn": turns[-1] if turns else None}
+                "processing": result["processing"], "last_turn": turns[-1] if turns else None}
 
     def _recent_assistant_turns(self, agent_kind: str, cwd: str, agent_session_id: str | None,
                                 limit: int, final_only: bool) -> list[dict[str, object]]:

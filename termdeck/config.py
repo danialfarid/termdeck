@@ -149,17 +149,24 @@ class TermdeckConfig:
     PROJECT_BUNDLE_MAX_BYTES = 512_000_000
     PROJECT_BUNDLE_MAX_SESSIONS = 100
     PROJECT_BUNDLE_MAX_WORKTREES = 100
-    API_TERMINAL_TASK_ROUTE = "/api/terminals/task"
-    API_TERMINAL_TASK_PROMPT_ROUTE = "/api/terminals/task/{session_id}/prompt"
-    API_TERMINALS_BATCH_ROUTE = "/api/terminals/batch"
+    # A terminal is a session, so one noun covers both: `sessions` for making and working with them,
+    # `terminals` only for the machinery they all run on -- processes, stale ones, orphans.
+    API_SESSIONS_TASK_ROUTE = "/api/sessions/task"
+    API_SESSIONS_BATCH_ROUTE = "/api/sessions/batch"
     API_SESSION_ROUTE = "/api/sessions/{session_id}"
-    API_SESSION_TASK_STATUS_ROUTE = "/api/sessions/{session_id}/task"
+    API_SESSION_STATUS_ROUTE = "/api/sessions/{session_id}/status"
     # One call for an agent's answers: the last `limit` of them, and the session's status with them.
     # Hyphenated, as every other route here is.
     API_SESSION_LAST_TURNS_ROUTE = "/api/sessions/{session_id}/last-turns"
-    # The call it replaced, kept for scripts written against it and left out of the documentation so
-    # nothing new is written against it. It answers in the old shape: one turn, under `last_turn`.
+    # The names these calls had before, kept so scripts written against them keep working and left out
+    # of the documentation so nothing new is written against them. Each answers exactly as it did:
+    # `last_turn` and `task-result` in the old one-turn shape, the others as their own call does.
+    API_TERMINAL_TASK_ROUTE = "/api/terminals/task"
+    API_TERMINAL_TASK_PROMPT_ROUTE = "/api/terminals/task/{session_id}/prompt"
+    API_TERMINALS_BATCH_ROUTE = "/api/terminals/batch"
+    API_SESSION_TASK_STATUS_ROUTE = "/api/sessions/{session_id}/task"
     API_SESSION_LAST_TURN_ROUTE = "/api/sessions/{session_id}/last_turn"
+    API_SESSION_TASK_RESULT_ROUTE = "/api/sessions/{session_id}/task-result"
     API_SESSION_PROMPT_ROUTE = "/api/sessions/{session_id}/prompt"
     API_SESSION_INTERRUPT_ROUTE = "/api/sessions/{session_id}/interrupt"
     API_SESSION_STOP_ROUTE = "/api/sessions/{session_id}/stop"

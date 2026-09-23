@@ -7,10 +7,10 @@ TermDeck-launched processes receive `TERMDECK_SESSION_ID`, `TERMDECK_SESSION_NAM
 
 ## Start and prompt an agent
 
-`POST /api/terminals/task`
+`POST /api/sessions/task`
 
 ```sh
-curl -sS -X POST http://127.0.0.1:8530/api/terminals/task \
+curl -sS -X POST http://127.0.0.1:8530/api/sessions/task \
   -H 'Content-Type: application/json' \
   -d "{\"model\":\"codex\",\"model_name\":\"gpt-5.6-luna xhigh\",\"permission\":\"full-access\",\"title\":\"agent-reviewer\",\"prompt\":\"Review the current task and report the result.\",\"origin_session\":\"$TERMDECK_SESSION_ID\"}"
 ```
@@ -35,24 +35,25 @@ prompt; it also accepts `description`. Then use `POST /api/sessions/{session_id}
 
 For example, include `"title":"review-parser","description":"Review parser edge cases"` in the creation
 JSON alongside the model, prompt, and origin session. No separate description request is needed.
-Creation returns before the agent finishes. Poll `/task` for `processing` and `latest_turn`; confirm the
+Creation returns before the agent finishes. Poll `/status` for `processing` and `latest_turn`; confirm the
 answer belongs to your submitted prompt. `running` means the terminal process is alive, not that an answer
 is still being generated. `/last-turns.status` also describes process lifetime, not turn completion.
 
 ## Batch work
 
-`POST /api/terminals/batch` accepts a `terminals` list with per-agent `name` and `prompt`; shared launch fields
+`POST /api/sessions/batch` accepts a `terminals` list with per-agent `name` and `prompt`; shared launch fields
 above can be overridden per item. It returns one result per requested agent.
 Each item also accepts its own optional `description`.
 
 ## Monitor and follow up
 
-- `GET /api/sessions/{session_id}/task` returns running state, transcript tail, and the latest turn.
-- `GET /api/sessions/{session_id}/last-turns` returns `status` and the agent's answers under `turns`.
-  `limit` counts answers rather than transcript entries (default 1, capped at 50) and `final=true` keeps
-  only the answers a turn ended with, which is what a caller waiting on a result wants.
-- `POST /api/sessions/{session_id}/prompt` sends a prompt with `{"text":"..."}`; the task alias
-  `POST /api/terminals/task/{session_id}/prompt` accepts `{"prompt":"..."}`.
+- `GET /api/sessions/{session_id}/status` returns running state, transcript tail, and the latest turn.
+- `GET /api/sessions/{session_id}/last-turns` returns the agent's answers under `turns`, with `status`
+  (the terminal's process) and `processing` (whether the agent is still working on a turn). `limit`
+  counts answers rather than transcript entries (default 1, capped at 50) and `final=true` keeps only
+  the answers a turn ended with. An answer has arrived when `processing` is false and the last turn is
+  `final`.
+- `POST /api/sessions/{session_id}/prompt` sends a prompt with `{"text":"..."}`.
 - `GET /api/sessions` lists sessions and `GET /api/sessions/{session_id}` returns one session.
 
 For isolated work, `GET /api/sessions/{session_id}/worktree/review` shows the branch and diff. Finish it with

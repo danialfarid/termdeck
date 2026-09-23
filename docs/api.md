@@ -48,11 +48,11 @@ curl -sS -X DELETE http://127.0.0.1:8530/api/worktrees/wt-abc123 \
 
 ## Start one terminal task (create + run in one call)
 
-`POST /api/terminals/task` creates one terminal, starts it immediately, submits a single prompt, and returns
+`POST /api/sessions/task` creates one terminal, starts it immediately, submits a single prompt, and returns
 the created session summary. Set `origin_session` to have the completed child result sent back to that session.
 
 ```sh
-task_json=$(curl -sS -X POST http://127.0.0.1:8530/api/terminals/task \
+task_json=$(curl -sS -X POST http://127.0.0.1:8530/api/sessions/task \
   -H 'Content-Type: application/json' \
   -d '{
     "title": "reviewer",
@@ -89,7 +89,8 @@ Response:
 {
   "session_id": "abc123...",
   "status": "completed",
-  "turns": [{"role": "assistant", "text": "..."}]
+  "processing": false,
+  "turns": [{"role": "assistant", "text": "...", "final": true}]
 }
 ```
 
@@ -98,6 +99,11 @@ said, oldest first, however much thinking and however many commands ran between 
 latest answer — and is capped at 50. `final=true` keeps only the answers an agent ended a turn with, leaving
 out what it says on its way through the work; that is the one to poll when waiting for a result. A session
 can be named by its id or, when the name is unique among open terminals, by its title.
+
+Whether the work is done is two questions, and the response answers both. `status` is the terminal's process:
+`running` while it is open, `completed` once it has exited, `error` if it exited badly — so on its own it never
+says an answer has arrived. `processing` is whether the agent is still working on a turn. The result is in when
+`processing` is false and the last turn is `final`.
 
 The whole transcript, with the thinking, the commands and their output, is
 `GET /api/sessions/{session_id}/history-page?before=&limit=` — that `limit` counts transcript entries.
@@ -119,7 +125,7 @@ commit. This does not make the request blocking and it does not commit changes f
 
 ## Launch several named terminals
 
-`POST /api/terminals/batch` creates up to 32 terminals and submits their prompts. The top-level `prompt`,
+`POST /api/sessions/batch` creates up to 32 terminals and submits their prompts. The top-level `prompt`,
 `cwd`, `project`, `model`, `permission`, `bracketed`, `queue`, `after`, and `worktree` values are defaults for every item.
 An item can override any of them. `after` accepts an existing session name or group name (case-insensitive),
 or the stable `session:<id>` / `group:<id>` layout token. It inserts each new terminal immediately after that
@@ -132,7 +138,7 @@ The initial prompt is sent only after that rename and the Codex composer are rea
 startup. Resuming an existing Codex session does not rename the resumed thread.
 
 ```sh
-curl -sS -X POST http://127.0.0.1:8530/api/terminals/batch \
+curl -sS -X POST http://127.0.0.1:8530/api/sessions/batch \
   -H 'Content-Type: application/json' \
   -d '{
     "cwd": "/Users/dan/workspace/stock",

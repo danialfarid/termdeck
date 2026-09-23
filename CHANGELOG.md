@@ -8,12 +8,24 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- A terminal is a session, so one noun covers it: `POST /api/sessions/task` and
+  `POST /api/sessions/batch` make them, `GET /api/sessions/{id}/status` says how one is doing. Making
+  a session lived under `terminals` while everything else about it lived under `sessions`, and the
+  call reporting a session's state was named `task`, which is also what the call that starts one is
+  named. `/api/terminals/*` now covers only the machinery they all run on — processes, stale
+  terminals, orphans. The older names keep answering, through the same handlers:
+  `/api/terminals/task`, `/api/terminals/batch`, `/api/terminals/task/{id}/prompt`,
+  `/api/sessions/{id}/task`, `/api/sessions/{id}/task-result` and `/api/sessions/{id}/last_turn`.
+- `last-turns` says whether the work is done, which is two questions: `status` is the terminal's
+  process — running for as long as it is open — and `processing` is whether the agent is still working
+  on a turn. An answer has arrived when `processing` is false and the last turn is `final`; `status`
+  alone never said that.
 - One call for what an agent answered: `GET /api/sessions/{session_id}/last-turns`, with `limit`
   counting answers rather than transcript entries (default 1, capped at 50) and `final=true` keeping
   only the answers a turn ended with. Neither of the calls it replaces could say "the last five things
   this agent said": a page of transcript is mostly thinking, commands and their output, so ten entries
-  can hold one answer. `/task-result`, the second name for the same single turn, is gone; `/last_turn`
-  still answers in its old shape for scripts already written against it, and is no longer documented.
+  can hold one answer. `/last_turn` and `/task-result` were two names for the same single turn; both
+  still answer in that old shape for scripts written against them, and neither is documented now.
   The whole transcript is still `/history-page`, whose `limit` counts entries.
   See [docs/api.md](docs/api.md#start-one-terminal-task-create--run-in-one-call).
 

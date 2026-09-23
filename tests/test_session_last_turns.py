@@ -107,6 +107,25 @@ class LastTurnsTest(unittest.TestCase):
 
         self.assertEqual(last_turns(instance)["status"], "running")
 
+    def test_it_says_whether_the_agent_is_still_working(self) -> None:
+        # A terminal is running for as long as it is open, so `status` alone never says an answer has
+        # arrived. This does: nothing being processed, and a finished answer in hand.
+        instance = server([page([turn("here it is")])], running=True, exit_code=None)
+        instance.manager.session_summary_by_id.return_value = {"running": True, "exit_code": None,
+                                                               "processing": False}
+
+        result = last_turns(instance, final=True)
+
+        self.assertFalse(result["processing"])
+        self.assertTrue(result["turns"][-1]["final"])
+
+    def test_an_agent_mid_turn_says_so(self) -> None:
+        instance = server([page([turn("working on it", final=False)])], running=True, exit_code=None)
+        instance.manager.session_summary_by_id.return_value = {"running": True, "exit_code": None,
+                                                               "processing": True}
+
+        self.assertTrue(last_turns(instance)["processing"])
+
     def test_a_terminal_that_failed_says_so(self) -> None:
         instance = server([page([turn("crashed")])], exit_code=1)
 
@@ -141,8 +160,9 @@ class LastTurnsTest(unittest.TestCase):
 class OneCallForAnswersTest(unittest.TestCase):
     """One call is documented; the one it replaced still answers, in its own old shape."""
 
-    def test_the_second_name_for_it_is_gone(self) -> None:
-        self.assertFalse(hasattr(TermdeckConfig, "API_SESSION_TASK_RESULT_ROUTE"))
+    def test_the_names_it_replaced_still_answer(self) -> None:
+        # Kept for scripts written against them, in the shape they answered in.
+        self.assertEqual(TermdeckConfig.API_SESSION_TASK_RESULT_ROUTE, "/api/sessions/{session_id}/task-result")
         self.assertFalse(hasattr(TermdeckServer, "_task_result"))
 
     def test_the_route_is_hyphenated_like_every_other_one(self) -> None:
@@ -180,7 +200,7 @@ class OldCallKeepsWorkingTest(unittest.TestCase):
 
         result = self.last_turn(instance)
 
-        self.assertEqual(result, {"session_id": "task-01", "status": "completed",
+        self.assertEqual(result, {"session_id": "task-01", "status": "completed", "processing": False,
                                   "last_turn": {"role": "assistant", "text": "done", "final": True}})
 
     def test_a_session_with_nothing_said_yet_reports_no_turn(self) -> None:

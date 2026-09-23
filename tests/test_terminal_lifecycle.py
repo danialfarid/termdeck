@@ -2027,7 +2027,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             worktree_id="root",
         )
 
-    async def test_task_status_marks_done_only_when_terminal_has_exited(self) -> None:
+    async def test_session_status_marks_done_only_when_terminal_has_exited(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)
         server.manager = MagicMock()
         server.manager.has_session.return_value = True
@@ -2038,13 +2038,13 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.transcripts = MagicMock()
         server.transcripts.history_page.return_value = {"turns": [], "before": None, "has_more": False}
 
-        response = await server._task_status("task-02")
+        response = await server._session_status("task-02")
 
         self.assertTrue(response["completed"])
         self.assertEqual(response["session_id"], "task-02")
         self.assertEqual(response["output_path"], "/tmp/task-out.txt")
 
-    async def test_task_status_includes_transcript_tail(self) -> None:
+    async def test_session_status_includes_transcript_tail(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)
         server.manager = MagicMock()
         server.manager.has_session.return_value = True
@@ -2059,7 +2059,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             "has_more": False,
         }
 
-        response = await server._task_status("task-03")
+        response = await server._session_status("task-03")
 
         self.assertTrue(response["completed"])
         self.assertEqual(response["agent_session_id"], "session-xyz")
@@ -2081,7 +2081,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
 
         response = await server._session_last_turns("task-04")
 
-        self.assertEqual(response, {"session_id": "task-04", "status": "completed",
+        self.assertEqual(response, {"session_id": "task-04", "status": "completed", "processing": False,
                                      "turns": [{"role": "assistant", "text": "done"}]})
 
     async def test_last_turns_accepts_unique_session_name(self) -> None:
@@ -2097,7 +2097,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
 
         response = await server._session_last_turns("reviewer")
 
-        self.assertEqual(response, {"session_id": "task-05", "status": "completed",
+        self.assertEqual(response, {"session_id": "task-05", "status": "completed", "processing": False,
                                      "turns": [{"role": "assistant", "text": "done"}]})
         server.manager.session_history_source.assert_called_once_with("task-05")
 

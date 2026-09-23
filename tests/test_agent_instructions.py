@@ -8,9 +8,9 @@ from termdeck.agent_instructions import AgentInstructionService
 class AgentInstructionServiceTest(unittest.TestCase):
     def test_instruction_text_contains_the_local_api_surface(self) -> None:
         self.assertIn("POST /api/sessions/{session_id}/prompt", AgentInstructionService.INSTRUCTION_TEXT)
-        self.assertIn("/api/terminals/task", AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertIn("/api/sessions/task", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("title, description", AgentInstructionService.INSTRUCTION_TEXT)
-        self.assertIn("/api/sessions/{session_id}/task for", AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertIn("/status", AgentInstructionService.INSTRUCTION_TEXT)
         # One call for what an agent answered, and what it takes to ask for more than the latest.
         self.assertIn("/api/sessions/{session_id}/last-turns", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("?limit=", AgentInstructionService.INSTRUCTION_TEXT)
