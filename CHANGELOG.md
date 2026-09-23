@@ -12,12 +12,21 @@ All notable changes to this project are documented here. The format follows
   offers the projects this one is not, and everything in the group goes — including the agents its
   terminals spawned, which are drawn inside their parent's row rather than the group's list. The group
   is made again on the other side, so they arrive together rather than scattered through the list.
+  The id it will have there is settled before anything moves, so a group meeting its own id — a group
+  moved back, say — does not leave its terminals moved and ungrouped; the terminals go one at a time,
+  so a refusal halfway through can name the ones that stayed; and the group here goes once everything
+  in it has.
 
 ### Fixed
 
 - A child agent waiting to be let through has not finished, and its result is not what it said while
   it waited. It stops working to ask for permission and says the same thing all the while, so standing
   still was taken as an answer and the job ended before the answer existed.
+- A response call asked about one prompt answers for that prompt: what an agent said after the next
+  prompt went in answers that one, and was being handed back as this one's.
+- A terminal moved to another project arrives at that project's root. A worktree belongs to the
+  project it was cut from, so its id means nothing in the new one: the terminal landed in a worktree
+  that is not there, missing from the list of the project it had just been moved into.
 - Two prompts sent before either was answered are told apart. The instant alone picked whichever the
   transcript recorded first, which is the other one, so `since` carries a mark of what was said.
 - Reading back for a prompt no longer stops at the first prompt on the newest page, which could be a

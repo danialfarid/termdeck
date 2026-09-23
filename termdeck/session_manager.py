@@ -1951,6 +1951,10 @@ class TerminalSessionManager:
         if ms.record.project == project_name:
             return
         ms.record.project = project_name
+        # A worktree belongs to the project it was cut from, so its id means nothing in the project the
+        # terminal is moving to: left as it was, the terminal lands in a worktree that is not there and
+        # is missing from the list of the project it was moved into.
+        ms.record.worktree_id = "root"
         self._persist()
         self._broadcast_status(ms)
 

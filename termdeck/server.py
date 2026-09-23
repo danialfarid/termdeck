@@ -3535,6 +3535,12 @@ class TermdeckServer:
             if index is None:
                 return []
             collected = collected[index + 1:]
+            # Asked about one prompt, answer for that prompt: what the agent said after the next one
+            # went in answers that one. A bare instant names no prompt, so it keeps everything since.
+            if since[1]:
+                ends = next((at for at, turn in enumerate(collected) if str(turn.get("role", "")) == "user"),
+                            len(collected))
+                collected = collected[:ends]
         return [turn for turn in collected if self._is_assistant_turn(turn, final_only)][-limit:]
 
     @classmethod

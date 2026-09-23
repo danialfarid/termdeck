@@ -2036,10 +2036,14 @@ class TermdeckApp {
     const name = await uiPrompt("Name for the terminal group", "New group");
     if (!name || !name.trim()) return;
     const groups = this.terminalGroups();
-    const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
+    const group = { id: this.newTerminalGroupId(), name: name.trim(), collapsed: false };
     this.applyLocalProjectStatePatch({ terminal_groups: [...groups, group] });
     this.queueTerminalGroupCreate(group);
     this.renderList();
+  }
+
+  newTerminalGroupId() {
+    return `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   }
 
   async renameTerminalGroup(groupId) {
@@ -2352,22 +2356,64 @@ class TermdeckApp {
     const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
     const sessionIds = this.groupSessionIdsWithSpawned(groupId);
     if (!group || !project || !sessionIds.length) return;
-    const moved = await this.moveSelectedSessionsToProject(sessionIds, project, false);
-    if (!moved) return;
+    // Which id the group will have over there, settled before anything moves: the other project may
+    // already have a group under this one's id -- this group's own, if it was moved from there once
+    // before -- and finding that out afterwards leaves the terminals moved and ungrouped.
+    const destinationId = await this.freeTerminalGroupId(project, group.id);
+    if (!destinationId) return;
+    // One at a time, so a refusal halfway through can say which terminals went: all at once, the ones
+    // that moved are left in the other project with no way to tell them from the ones that did not.
+    const moved = [];
+    for (const sessionId of sessionIds) {
+      const response = await fetch(`/api/sessions/${sessionId}/project`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project }),
+      });
+      if (!response.ok) break;
+      moved.push(sessionId);
+    }
     // The group is the project's, not the terminals': moving the terminals alone would scatter them
     // through the list they arrive in. It is made again on the other side, with the same name.
-    const params = new URLSearchParams({ project, worktree_id: "root" });
-    const response = await fetch(`/api/terminal-groups?${params}`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ group_id: group.id, name: group.name, collapsed: !!group.collapsed,
-        session_ids: sessionIds }),
-    });
-    if (!response.ok) void uiAlert(`moved the terminals, but could not group them there (${response.status})`);
-    if (this.projectSlug && this.projectSlug !== project) {
+    if (moved.length) {
+      const params = new URLSearchParams({ project, worktree_id: "root" });
+      const response = await fetch(`/api/terminal-groups?${params}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ group_id: destinationId, name: group.name, collapsed: !!group.collapsed,
+          session_ids: moved }),
+      });
+      if (!response.ok) void uiAlert(`moved the terminals, but could not group them there (${response.status})`);
+    }
+    // Nothing left in it here, so the group goes: leaving it behind is what makes moving it back land
+    // on its own id.
+    if (moved.length === sessionIds.length) this.removeTerminalGroup(group.id);
+    else {
+      const stayed = sessionIds.filter((id) => !moved.includes(id));
+      void uiAlert(`moved ${moved.length} of ${sessionIds.length} to ${project}. Still here: ` +
+        `${stayed.map((id) => this.titlePresentation(this.session(id)).text || id).join(", ")}.` +
+        " Try again to move the rest.");
+    }
+    if (moved.length && this.projectSlug && this.projectSlug !== project) {
       location.href = `/p/${encodeURIComponent(project)}`;
       return;
     }
     await this.refresh();
+  }
+
+  // An id nothing in that project is using: this group's own where it is free, a new one where it is
+  // not. Empty when the project cannot be read, which is its own answer -- moving terminals into a
+  // project whose groups cannot be listed would leave them there ungrouped.
+  async freeTerminalGroupId(project, preferredId) {
+    const params = new URLSearchParams({ project, worktree_id: "root" });
+    let taken = [];
+    try {
+      const response = await fetch(`/api/terminal-groups?${params}`);
+      if (!response.ok) throw new Error(String(response.status));
+      taken = await response.json();
+    } catch (error) {
+      void uiAlert(`could not read the groups of ${project} (${error.message})`);
+      return "";
+    }
+    const used = new Set((Array.isArray(taken) ? taken : []).map((group) => String(group.id || "")));
+    return used.has(preferredId) ? this.newTerminalGroupId() : preferredId;
   }
 
   repositionSelectedSessions(sessionIds, targetId, after = false) {
@@ -2439,7 +2485,7 @@ class TermdeckApp {
     }
     const name = await uiPrompt("Name for the new terminal group", `${this.effectiveTitle(target)} group`);
     if (!name || !name.trim()) return;
-    const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
+    const group = { id: this.newTerminalGroupId(), name: name.trim(), collapsed: false };
     const allIds = [...ids, targetId];
     const allTokens = new Set(allIds.map((id) => `session:${id}`));
     const currentLayout = this.terminalLayout();
@@ -2647,7 +2693,7 @@ class TermdeckApp {
     const suggestion = `${this.effectiveTitle(target)} group`;
     const name = await uiPrompt("Name for the new terminal group", suggestion);
     if (!name || !name.trim()) return;
-    const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
+    const group = { id: this.newTerminalGroupId(), name: name.trim(), collapsed: false };
     const layout = this.terminalLayout().filter((entry) => entry !== `session:${draggedId}` && entry !== `session:${targetId}`);
     const targetIndex = this.terminalLayout().indexOf(`session:${targetId}`);
     layout.splice(targetIndex < 0 ? layout.length : Math.min(targetIndex, layout.length), 0, `group:${group.id}`);
@@ -2674,7 +2720,7 @@ class TermdeckApp {
     if (!name || !name.trim()) return;
     const state = this.getProjectState();
     const sessionGroups = { ...(state.session_groups || {}) };
-    const group = { id: `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: name.trim(), collapsed: false };
+    const group = { id: this.newTerminalGroupId(), name: name.trim(), collapsed: false };
     const layout = this.terminalLayout();
     const selectedTokens = new Set(ids.map((id) => `session:${id}`));
     const anchorGroupId = sessionGroups[anchorId] || "";

@@ -229,6 +229,31 @@ class ResponseToThisPromptTest(unittest.TestCase):
 
         self.assertEqual([item["text"] for item in result["responses"]], ["answer to the second"])
 
+    def test_what_came_after_the_next_prompt_is_that_prompts_answer(self) -> None:
+        # Asked about one prompt, answered for that prompt. The conversation carries on afterwards, and
+        # all of it is newer than the prompt asked about.
+        mark = TermdeckServer._prompt_mark("first thing")
+        instance = server([page([turn("first thing", role="user", at="2026-09-23T08:31:00Z"),
+                                 turn("answer to the first", at="2026-09-23T08:32:00Z"),
+                                 turn("second thing", role="user", at="2026-09-23T08:33:00Z"),
+                                 turn("answer to the second", at="2026-09-23T08:34:00Z")])])
+
+        result = response(instance, since=f"2026-09-23T08:30:00Z~{mark}", limit=5)
+
+        self.assertEqual([item["text"] for item in result["responses"]], ["answer to the first"])
+
+    def test_an_instant_with_no_prompt_named_keeps_everything_since(self) -> None:
+        # Nothing names a prompt in a bare timestamp, so it means what it always meant.
+        instance = server([page([turn("first thing", role="user", at="2026-09-23T08:31:00Z"),
+                                 turn("answer to the first", at="2026-09-23T08:32:00Z"),
+                                 turn("second thing", role="user", at="2026-09-23T08:33:00Z"),
+                                 turn("answer to the second", at="2026-09-23T08:34:00Z")])])
+
+        result = response(instance, since="2026-09-23T08:30:00Z", limit=5)
+
+        self.assertEqual([item["text"] for item in result["responses"]],
+                         ["answer to the first", "answer to the second"])
+
     def test_a_prompt_recorded_but_not_answered_yet_returns_nothing(self) -> None:
         mark = TermdeckServer._prompt_mark("second thing")
         instance = server([page([turn("first thing", role="user", at="2026-09-23T08:31:00Z"),
