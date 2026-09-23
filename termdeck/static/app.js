@@ -2364,6 +2364,7 @@ class TermdeckApp {
     // One at a time, so a refusal halfway through can say which terminals went: all at once, the ones
     // that moved are left in the other project with no way to tell them from the ones that did not.
     const moved = [];
+    let uncertain = "";
     for (const sessionId of sessionIds) {
       // A request that never arrived and one that was refused leave the same question behind -- did
       // this terminal move? -- and both have to leave the ones that did go grouped and named. A
@@ -2379,8 +2380,11 @@ class TermdeckApp {
         landed = false;
       }
       if (!landed) {
-        await this.refresh();
-        if (this.session(sessionId)?.project === project) moved.push(sessionId);
+        // Asked of the terminal itself rather than of this project's list: a terminal that did move
+        // is no longer in that list, and its absence would read as proof it stayed.
+        const settled = await this.sessionProjectFromServer(sessionId);
+        if (settled === project) moved.push(sessionId);
+        else if (!settled) uncertain = sessionId;
         break;
       }
       moved.push(sessionId);
@@ -2400,9 +2404,12 @@ class TermdeckApp {
     // on its own id.
     if (moved.length === sessionIds.length) this.removeTerminalGroup(group.id);
     else {
-      const stayed = sessionIds.filter((id) => !moved.includes(id));
-      void uiAlert(`moved ${moved.length} of ${sessionIds.length} to ${project}. Still here: ` +
-        `${stayed.map((id) => this.titlePresentation(this.session(id)).text || id).join(", ")}.` +
+      const name = (id) => this.titlePresentation(this.session(id)).text || id;
+      const stayed = sessionIds.filter((id) => !moved.includes(id) && id !== uncertain);
+      void uiAlert(`moved ${moved.length} of ${sessionIds.length} to ${project}.` +
+        (stayed.length ? ` Still here: ${stayed.map(name).join(", ")}.` : "") +
+        // Said plainly rather than counted as one or the other: the deck asked and got no answer.
+        (uncertain ? ` Could not tell where ${name(uncertain)} ended up — check both projects.` : "") +
         " Try again to move the rest.");
     }
     if (moved.length && this.projectSlug && this.projectSlug !== project) {
@@ -2410,6 +2417,20 @@ class TermdeckApp {
       return;
     }
     await this.refresh();
+  }
+
+  // What the server says about one terminal, whichever project it is in: session ids are global, so
+  // this answers for a terminal that has just left the project whose list this window is showing.
+  // Empty when the question cannot be put, which is not the same as an answer.
+  async sessionProjectFromServer(sessionId) {
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}`);
+      if (!response.ok) return "";
+      const session = await response.json();
+      return String(session?.project || "");
+    } catch (error) {
+      return "";
+    }
   }
 
   // An id nothing in that project is using: this group's own where it is free, a new one where it is

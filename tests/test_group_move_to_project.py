@@ -16,7 +16,7 @@ from tests.test_terminal_cycle_order import method_source
 
 STATIC = Path(__file__).resolve().parent.parent / "termdeck" / "static"
 
-HARNESS = """
+HARNESS = r"""
 const scenario = JSON.parse(process.env.TERMDECK_GROUP_MOVE_SCENARIO);
 const sent = [];
 const alerts = [];
@@ -27,6 +27,15 @@ globalThis.fetch = async (url, options = {}) => {
   sent.push({ url, method: options.method || "GET", body });
   // Reading the other project's groups: what is already there decides the id the group arrives under.
   const failing = scenario.failing || "";
+  // One terminal, asked of the server rather than of this project's list: a terminal that moved is
+  // gone from that list, and the deck must still be able to ask where it went.
+  const single = url.match(/^\/api\/sessions\/([^/?]+)$/);
+  if (single && !options.method) {
+    if (scenario.verificationFails) return { ok: false, status: 500 };
+    const landed = (scenario.landedAnyway || []).includes(single[1]);
+    return { ok: true, status: 200,
+      json: async () => ({ session_id: single[1], project: landed ? scenario.target : scenario.project }) };
+  }
   if (!options.method) {
     const readable = !(failing && url.includes(failing));
     return { ok: readable, status: readable ? 200 : 500,
@@ -49,14 +58,7 @@ const app = {
   getProjectState: () => ({ session_groups: {} }),
   sessionsForWorktree: () => scenario.sessions,
   stateWorktreeId: () => "root",
-  refresh: async () => {
-    sent.push({ url: "refresh" });
-    // What the deck learns on a refresh: whether the request that dropped had landed after all.
-    for (const id of scenario.landedAnyway || []) {
-      const session = scenario.sessions.find((s) => s.session_id === id);
-      if (session) session.project = scenario.target;
-    }
-  },
+  refresh: async () => { sent.push({ url: "refresh" }); },
   titlePresentation: (session) => ({ text: session?.session_id || "" }),
   removeTerminalGroup: (groupId) => { sent.push({ url: `remove-group ${groupId}` }); },
   newTerminalGroupId: () => "group-new",
@@ -82,6 +84,7 @@ class MoveGroupToProjectTest(unittest.TestCase):
             method_source(source, name).rstrip().rstrip(",") + ","
             for name in ("groupSessionIdsWithSpawned(groupId)",
                          "async moveTerminalGroupToProject(groupId, project)",
+                         "async sessionProjectFromServer(sessionId)",
                          "async freeTerminalGroupId(project, preferredId)")))
 
     def move(self, **scenario: object) -> dict:
@@ -189,6 +192,26 @@ class MoveGroupToProjectTest(unittest.TestCase):
                            landedAnyway=["two"])
 
         self.assertEqual(self.created(result)[0]["body"]["session_ids"], ["one", "two"])
+
+    def test_where_a_terminal_ended_up_is_asked_of_the_terminal(self) -> None:
+        # Not of this project's list: a terminal that did move is gone from it, and its absence would
+        # read as proof it stayed.
+        result = self.move(members=["one", "two"], sessions=[session("one"), session("two")],
+                           failing="/project", failingSession="/two/", dropsConnection=True,
+                           landedAnyway=["two"])
+        asked = [r["url"] for r in result["sent"] if r["url"] == "/api/sessions/two"]
+
+        self.assertEqual(asked, ["/api/sessions/two"])
+        self.assertEqual(self.created(result)[0]["body"]["session_ids"], ["one", "two"])
+
+    def test_an_answer_that_never_comes_is_reported_as_unknown(self) -> None:
+        # Counting it either way is a guess, and the guess that it stayed is the one that loses it.
+        result = self.move(members=["one", "two"], sessions=[session("one"), session("two")],
+                           failing="/project", failingSession="/two/", dropsConnection=True,
+                           verificationFails=True)
+
+        self.assertIn("Could not tell where two ended up", result["alerts"][0])
+        self.assertNotIn("Still here", result["alerts"][0])
 
     def test_nothing_moving_at_all_groups_nothing_there(self) -> None:
         result = self.move(members=["one"], sessions=[session("one")], failing="/project")
