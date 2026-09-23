@@ -16,10 +16,16 @@ All notable changes to this project are documented here. The format follows
   terminals, orphans. The older names keep answering, through the same handlers:
   `/api/terminals/task`, `/api/terminals/batch`, `/api/terminals/task/{id}/prompt`,
   `/api/sessions/{id}/task`, `/api/sessions/{id}/task-result` and `/api/sessions/{id}/last_turn`.
-- `last-turns` says whether the work is done, which is two questions: `status` is the terminal's
-  process — running for as long as it is open — and `processing` is whether the agent is still working
-  on a turn. An answer has arrived when `processing` is false and the last turn is `final`; `status`
-  alone never said that.
+- Waiting for the answer to a prompt has something to wait on. Submitting a prompt — with
+  `/api/sessions/task` or `/api/sessions/{id}/prompt` — hands back `since`, the instant it went in,
+  and `last-turns?since=…` returns only answers stamped after it. Nothing else established that: a
+  terminal runs for as long as it is open, and an agent that has not started is not processing, nor is
+  one waiting on a person, so the newest answer in the transcript could be the answer to the request
+  before. `processing` and `needs_attention` come back with the answers for what they do say.
+- `final=true` no longer hides the answers of every agent but Codex. Only Codex marks which message
+  ended a turn, and silence was read as "not final", so a Claude terminal appeared to have no answers
+  at all — which is also why a delegated Claude child never reported back to the agent that started
+  it. An agent that says nothing about it has each answer taken as one.
 - One call for what an agent answered: `GET /api/sessions/{session_id}/last-turns`, with `limit`
   counting answers rather than transcript entries (default 1, capped at 50) and `final=true` keeping
   only the answers a turn ended with. Neither of the calls it replaces could say "the last five things

@@ -90,6 +90,7 @@ Response:
   "session_id": "abc123...",
   "status": "completed",
   "processing": false,
+  "needs_attention": false,
   "turns": [{"role": "assistant", "text": "...", "final": true}]
 }
 ```
@@ -100,10 +101,33 @@ latest answer — and is capped at 50. `final=true` keeps only the answers an ag
 out what it says on its way through the work; that is the one to poll when waiting for a result. A session
 can be named by its id or, when the name is unique among open terminals, by its title.
 
-Whether the work is done is two questions, and the response answers both. `status` is the terminal's process:
-`running` while it is open, `completed` once it has exited, `error` if it exited badly — so on its own it never
-says an answer has arrived. `processing` is whether the agent is still working on a turn. The result is in when
-`processing` is false and the last turn is `final`.
+### Waiting for the answer to your own prompt
+
+`since` is what ties an answer to a prompt. `POST /api/sessions/{session_id}/prompt` returns the instant the
+prompt went in, and an answer stamped after that instant is an answer to it:
+
+```sh
+since=$(curl -sS -X POST "http://127.0.0.1:8530/api/sessions/$session_id/prompt" \
+  -H 'Content-Type: application/json' -d '{"text":"Summarize the risks."}' |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["since"])')
+
+curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/last-turns?since=$since&final=true"
+```
+
+Poll until `turns` is not empty. Nothing else in the response establishes that association, and the other
+fields are easy to misread on their own:
+
+- `status` is the terminal's process: `running` while the terminal is open, `completed` once it has exited,
+  `error` if it exited badly. A terminal stays open between prompts, so this never says an answer arrived.
+- `processing` is whether the agent is working on a turn. False also means "has not started yet" and "is
+  waiting on a person", and in both cases the newest answer in the transcript belongs to the request before.
+- `needs_attention` is that second case on its own: the agent is asking for permission or input.
+- `final` on a turn means the agent ended its turn with it rather than saying it on the way through. Only
+  Codex reports this; for every other agent each answer is taken as one, so `final=true` never hides the
+  answer of an agent that says nothing about it.
+
+`limit` can return fewer answers than asked for even when older ones exist: one call reads back through a
+bounded number of transcript pages. Ask `history-page` for the transcript itself when you need all of it.
 
 The whole transcript, with the thinking, the commands and their output, is
 `GET /api/sessions/{session_id}/history-page?before=&limit=` — that `limit` counts transcript entries.

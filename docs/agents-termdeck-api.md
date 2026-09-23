@@ -35,9 +35,9 @@ prompt; it also accepts `description`. Then use `POST /api/sessions/{session_id}
 
 For example, include `"title":"review-parser","description":"Review parser edge cases"` in the creation
 JSON alongside the model, prompt, and origin session. No separate description request is needed.
-Creation returns before the agent finishes. Poll `/status` for `processing` and `latest_turn`; confirm the
-answer belongs to your submitted prompt. `running` means the terminal process is alive, not that an answer
-is still being generated. `/last-turns.status` also describes process lifetime, not turn completion.
+Creation returns before the agent finishes, and carries `since`. Poll `last-turns?since=<since>` for the
+answer to that prompt; `/status` has the full session state. `running` means the terminal process is alive,
+not that an answer is still being generated, and `/last-turns.status` says the same thing.
 
 ## Batch work
 
@@ -48,11 +48,12 @@ Each item also accepts its own optional `description`.
 ## Monitor and follow up
 
 - `GET /api/sessions/{session_id}/status` returns running state, transcript tail, and the latest turn.
-- `GET /api/sessions/{session_id}/last-turns` returns the agent's answers under `turns`, with `status`
-  (the terminal's process) and `processing` (whether the agent is still working on a turn). `limit`
-  counts answers rather than transcript entries (default 1, capped at 50) and `final=true` keeps only
-  the answers a turn ended with. An answer has arrived when `processing` is false and the last turn is
-  `final`.
+- `GET /api/sessions/{session_id}/last-turns` returns the agent's answers under `turns`. `limit` counts
+  answers rather than transcript entries (default 1, capped at 50).
+- To wait for the answer to your own prompt, pass the `since` the prompt call returned:
+  `last-turns?since=<since>&final=true`, and poll until `turns` is not empty. Only that ties an answer
+  to your prompt: `status` describes the terminal process, which stays open between prompts, and
+  `processing` is false both before an agent starts and while it waits on a person (`needs_attention`).
 - `POST /api/sessions/{session_id}/prompt` sends a prompt with `{"text":"..."}`.
 - `GET /api/sessions` lists sessions and `GET /api/sessions/{session_id}` returns one session.
 

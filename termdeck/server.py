@@ -8,6 +8,7 @@ import subprocess
 import time
 import uuid
 from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -3235,6 +3236,8 @@ class TermdeckServer:
             summary = latest
             summary["prompt_submitted"] = True
             summary["queued"] = request.queue
+            # The instant the prompt went in, so the caller can ask for the answers that came after it.
+            summary["since"] = datetime.now(timezone.utc).isoformat()
             if origin_session_id and request.write_back:
                 self._schedule_task_result_delivery(ms.record.session_id, origin_session_id)
             return summary
@@ -3309,8 +3312,28 @@ class TermdeckServer:
         return self._latest_assistant_turn(transcript.get("turns", []), final_only)
 
     @staticmethod
-    def _is_assistant_turn(turn: dict[str, object], final_only: bool = False) -> bool:
-        return str(turn.get("role", "")) == "assistant" and (not final_only or bool(turn.get("final")))
+    def _is_assistant_turn(turn: dict[str, object], final_only: bool = False, since: datetime | None = None) -> bool:
+        """Is this an answer, and one the caller asked for?
+
+        Only Codex says which of its messages ended a turn, so an agent that says nothing about it has
+        every message taken as an answer: read as "not final", a Claude terminal had no answers at all
+        and a caller waiting on one waited forever.
+        """
+        if str(turn.get("role", "")) != "assistant" or (final_only and not turn.get("final", True)):
+            return False
+        if since is None:
+            return True
+        stamped = TermdeckServer._turn_time(turn)
+        # No stamp is no proof it is new, and the whole point of asking is to rule out the old answer.
+        return stamped is not None and stamped > since
+
+    @staticmethod
+    def _turn_time(turn: dict[str, object]) -> datetime | None:
+        try:
+            stamped = datetime.fromisoformat(str(turn.get("timestamp", "")).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return stamped if stamped.tzinfo else stamped.replace(tzinfo=timezone.utc)
 
     @classmethod
     def _latest_assistant_turn(cls, turns: list[dict[str, object]],
@@ -3355,20 +3378,21 @@ class TermdeckServer:
             **summary,
         }
 
-    async def _session_last_turns(self, session_id: str, limit: int = 1,
-                                  final: bool = False) -> dict[str, object]:
+    async def _session_last_turns(self, session_id: str, limit: int = 1, final: bool = False,
+                                  since: str = "") -> dict[str, object]:
         """What an agent has answered, most recent last.
 
         One call for the whole question: ``limit`` counts answers, not turns, so a caller asking for
         five gets five things the agent said rather than five entries of which four are thinking and a
         command. ``final`` keeps only the answers an agent finished a turn with, leaving out what it
-        says on its way through the work.
+        says on its way through the work -- for the agents that say which those are.
 
-        Whether the work is done is two questions, so the answer carries both: ``status`` is the
-        terminal's process -- running, finished, or finished badly -- and ``processing`` is whether
-        the agent is still working on a turn. A terminal stays running for as long as it is open, so
-        ``status`` on its own never says an answer has arrived; ``processing`` false with a ``final``
-        answer in hand does.
+        ``since`` is what ties an answer to a prompt, and a caller waiting on one wants it: submitting
+        a prompt hands back the instant it went in, and an answer stamped after that instant is an
+        answer to it. Nothing else establishes that. A terminal runs for as long as it is open, so its
+        status says nothing about answers; an agent that has not started is not processing, and one
+        waiting on a person is not either -- in both cases the newest answer in the transcript belongs
+        to the request before. That answer is the one ``since`` leaves out.
         """
         resolved_session_id = session_id if self.manager.has_session(session_id) else None
         if resolved_session_id is None:
@@ -3380,15 +3404,29 @@ class TermdeckServer:
             raise HTTPException(status_code=404, detail=session_id)
         if limit < 1:
             raise HTTPException(status_code=422, detail="limit must be at least 1")
-        summary = self.manager.session_summary_by_id(resolved_session_id)
+        after = self._parse_since(since)
         agent_kind, cwd, agent_session_id = self.manager.session_history_source(resolved_session_id)
         turns = await asyncio.to_thread(self._recent_assistant_turns, agent_kind, cwd, agent_session_id,
-                                        min(limit, TermdeckConfig.LAST_TURNS_MAX), final)
+                                        min(limit, TermdeckConfig.LAST_TURNS_MAX), final, after)
+        # Read after the transcript, not before it: a summary taken first can say an agent is working
+        # while the answer it produced meanwhile is already in hand, which reads as an answer to come.
+        summary = self.manager.session_summary_by_id(resolved_session_id)
         running = bool(summary.get(ApiFields.RUNNING))
         exit_code = summary.get(ApiFields.EXIT_CODE)
         status = "running" if running else "error" if exit_code is not None and exit_code != 0 else "completed"
         return {"session_id": resolved_session_id, "status": status,
-                "processing": bool(summary.get("processing")), "turns": turns}
+                "processing": bool(summary.get("processing")),
+                "needs_attention": bool(summary.get("needs_attention")), "turns": turns}
+
+    @staticmethod
+    def _parse_since(since: str) -> datetime | None:
+        if not since.strip():
+            return None
+        try:
+            stamped = datetime.fromisoformat(since.strip().replace("Z", "+00:00"))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=f"since must be an ISO-8601 time: {since}") from error
+        return stamped if stamped.tzinfo else stamped.replace(tzinfo=timezone.utc)
 
     async def _session_last_turn(self, session_id: str, final: bool = False) -> dict[str, object]:
         """The latest answer, in the shape the call that used to serve it returned.
@@ -3399,27 +3437,37 @@ class TermdeckServer:
         result = await self._session_last_turns(session_id, limit=1, final=final)
         turns = result["turns"]
         return {"session_id": result["session_id"], "status": result["status"],
-                "processing": result["processing"], "last_turn": turns[-1] if turns else None}
+                "processing": result["processing"], "needs_attention": result["needs_attention"],
+                "last_turn": turns[-1] if turns else None}
 
-    def _recent_assistant_turns(self, agent_kind: str, cwd: str, agent_session_id: str | None,
-                                limit: int, final_only: bool) -> list[dict[str, object]]:
+    def _recent_assistant_turns(self, agent_kind: str, cwd: str, agent_session_id: str | None, limit: int,
+                                final_only: bool, since: datetime | None = None) -> list[dict[str, object]]:
         """The last ``limit`` answers from a transcript, oldest first.
 
         Most of a transcript is not answers -- thinking, commands, their output -- so one page of it
         can hold a single one. Pages are read backwards from the end until enough answers have been
-        found, the transcript runs out, or the walk hits its bound.
+        found, the transcript runs out, or the walk hits its bound; that bound can return fewer than
+        were asked for while older answers are still there.
         """
         found: list[dict[str, object]] = []
         before: int | None = None
         for _ in range(TermdeckConfig.LAST_TURNS_MAX_PAGES):
             page = self.transcripts.history_page(agent_kind, cwd, agent_session_id, before,
                                                  TranscriptService.HISTORY_PAGE_TURNS)
-            found = [turn for turn in page.get("turns", [])
-                     if self._is_assistant_turn(turn, final_only)] + found
+            turns = page.get("turns", [])
+            found = [turn for turn in turns if self._is_assistant_turn(turn, final_only, since)] + found
             before = page.get("before")
             if len(found) >= limit or not page.get("has_more") or before is None:
                 break
+            # Everything older than the page just read is older than what was asked for.
+            if since is not None and self._page_precedes(turns, since):
+                break
         return found[-limit:]
+
+    @classmethod
+    def _page_precedes(cls, turns: list[dict[str, object]], since: datetime) -> bool:
+        stamps = [stamped for stamped in (cls._turn_time(turn) for turn in turns) if stamped is not None]
+        return bool(stamps) and max(stamps) <= since
 
     async def _submit_prompt(self, session_id: str, request: SubmitPromptRequest,
                              automatically_queue_when_busy: bool = True) -> dict[str, object]:
@@ -3438,7 +3486,11 @@ class TermdeckServer:
             queued = await self.manager.submit_prompt(session_id, request.text, request.bracketed, wanted_queue)
         except ValueError as prompt_error:
             raise HTTPException(status_code=409, detail=str(prompt_error)) from prompt_error
-        return {"session": self.manager.session_summary_by_id(session_id), "prompt_submitted": True, "queued": queued}
+        # The instant the prompt went in. An answer stamped after it is an answer to this prompt, which
+        # is the only thing that ties one to the other: an agent that is not working may simply not
+        # have started, and the answer sitting in the transcript then belongs to the request before.
+        return {"session": self.manager.session_summary_by_id(session_id), "prompt_submitted": True,
+                "queued": queued, "since": datetime.now(timezone.utc).isoformat()}
 
     async def _interrupt_session(self, session_id: str) -> dict[str, object]:
         if not self.manager.has_session(session_id):

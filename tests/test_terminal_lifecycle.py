@@ -2082,7 +2082,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         response = await server._session_last_turns("task-04")
 
         self.assertEqual(response, {"session_id": "task-04", "status": "completed", "processing": False,
-                                     "turns": [{"role": "assistant", "text": "done"}]})
+                                     "needs_attention": False, "turns": [{"role": "assistant", "text": "done"}]})
 
     async def test_last_turns_accepts_unique_session_name(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)
@@ -2098,7 +2098,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         response = await server._session_last_turns("reviewer")
 
         self.assertEqual(response, {"session_id": "task-05", "status": "completed", "processing": False,
-                                     "turns": [{"role": "assistant", "text": "done"}]})
+                                     "needs_attention": False, "turns": [{"role": "assistant", "text": "done"}]})
         server.manager.session_history_source.assert_called_once_with("task-05")
 
     async def test_last_turns_rejects_duplicate_session_name(self) -> None:

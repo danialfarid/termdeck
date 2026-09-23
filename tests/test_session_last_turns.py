@@ -17,8 +17,21 @@ from termdeck.config import TermdeckConfig
 from termdeck.server import TermdeckServer
 
 
-def turn(text: str, role: str = "assistant", final: bool = True) -> dict[str, object]:
-    return {"role": role, "text": text, "final": final} if role == "assistant" else {"role": role, "text": text}
+def turn(text: str, role: str = "assistant", final: bool = True, at: str = "") -> dict[str, object]:
+    built: dict[str, object] = {"role": role, "text": text}
+    if role == "assistant":
+        built["final"] = final
+    if at:
+        built["timestamp"] = at
+    return built
+
+
+def unmarked(text: str, at: str = "") -> dict[str, object]:
+    """What every agent but Codex records: an answer that says nothing about ending a turn."""
+    built: dict[str, object] = {"role": "assistant", "text": text}
+    if at:
+        built["timestamp"] = at
+    return built
 
 
 def thinking(text: str = "...") -> dict[str, object]:
@@ -119,6 +132,15 @@ class LastTurnsTest(unittest.TestCase):
         self.assertFalse(result["processing"])
         self.assertTrue(result["turns"][-1]["final"])
 
+    def test_an_answer_from_an_agent_that_marks_nothing_still_counts_as_finished(self) -> None:
+        # Only Codex says which message ended a turn. Reading silence as "not final" left a Claude
+        # terminal with no answers at all, and a caller waiting on one waiting for ever.
+        instance = server([page([unmarked("here it is")])])
+
+        result = last_turns(instance, final=True)
+
+        self.assertEqual([item["text"] for item in result["turns"]], ["here it is"])
+
     def test_an_agent_mid_turn_says_so(self) -> None:
         instance = server([page([turn("working on it", final=False)])], running=True, exit_code=None)
         instance.manager.session_summary_by_id.return_value = {"running": True, "exit_code": None,
@@ -155,6 +177,94 @@ class LastTurnsTest(unittest.TestCase):
 
         self.assertEqual(result["turns"], [])
         self.assertEqual(instance.transcripts.history_page.call_count, TermdeckConfig.LAST_TURNS_MAX_PAGES)
+
+
+class AnswersToThisPromptTest(unittest.TestCase):
+    """`since` is what ties an answer to a prompt. Nothing else does.
+
+    An agent that has not started on a prompt is not processing, and one waiting on a person is not
+    processing either -- so the newest answer in the transcript can be the answer to the request
+    before, and a caller polling for its own result reads it as the one it asked for.
+    """
+
+    def test_an_answer_from_before_the_prompt_is_left_out(self) -> None:
+        instance = server([page([turn("the previous answer", at="2026-09-23T08:00:00Z")])])
+
+        result = last_turns(instance, since="2026-09-23T08:30:00Z")
+
+        self.assertEqual(result["turns"], [])
+
+    def test_an_answer_from_after_it_is_returned(self) -> None:
+        instance = server([page([turn("the previous answer", at="2026-09-23T08:00:00Z"),
+                                 turn("the answer to this one", at="2026-09-23T08:31:00Z")])])
+
+        result = last_turns(instance, since="2026-09-23T08:30:00Z", limit=5)
+
+        self.assertEqual([item["text"] for item in result["turns"]], ["the answer to this one"])
+
+    def test_an_answer_with_no_time_on_it_is_not_taken_as_new(self) -> None:
+        # No stamp is no proof, and the whole point of asking is to rule out the old answer.
+        instance = server([page([turn("undated")])])
+
+        self.assertEqual(last_turns(instance, since="2026-09-23T08:30:00Z")["turns"], [])
+
+    def test_a_local_time_is_read_as_utc_like_the_stamps_are(self) -> None:
+        instance = server([page([turn("after", at="2026-09-23T08:31:00Z")])])
+
+        result = last_turns(instance, since="2026-09-23T08:30:00")
+
+        self.assertEqual([item["text"] for item in result["turns"]], ["after"])
+
+    def test_reading_stops_once_the_pages_are_older_than_the_prompt(self) -> None:
+        # Everything before the prompt is of no interest, so there is nothing to read further back for.
+        instance = server([page([turn("older", at="2026-09-23T07:00:00Z")], before=100),
+                           page([turn("older still", at="2026-09-23T06:00:00Z")], before=50)])
+
+        result = last_turns(instance, since="2026-09-23T08:30:00Z", limit=5)
+
+        self.assertEqual(result["turns"], [])
+        self.assertEqual(instance.transcripts.history_page.call_count, 1)
+
+    def test_a_time_that_is_not_a_time_is_refused(self) -> None:
+        instance = server([page([turn("done")])])
+
+        with self.assertRaises(HTTPException) as raised:
+            last_turns(instance, since="yesterday")
+
+        self.assertEqual(raised.exception.status_code, 422)
+
+    def test_waiting_on_a_person_is_reported_rather_than_read_as_finished(self) -> None:
+        instance = server([page([turn("previous", at="2026-09-23T08:00:00Z")])], running=True, exit_code=None)
+        instance.manager.session_summary_by_id.return_value = {"running": True, "exit_code": None,
+                                                               "processing": False, "needs_attention": True}
+
+        result = last_turns(instance, since="2026-09-23T08:30:00Z")
+
+        self.assertTrue(result["needs_attention"])
+        self.assertEqual(result["turns"], [])
+
+    def test_submitting_a_prompt_hands_back_the_instant_it_went_in(self) -> None:
+        # Without it a caller has nothing to compare an answer against, and the call that starts an
+        # agent and the call that prompts one both have to give it.
+        source = (Path(__file__).resolve().parent.parent / "termdeck" / "server.py").read_text()
+        prompt_return = re.search(r'return \{"session": self\.manager[^}]*\}', source).group(0)
+
+        self.assertIn('"since": datetime.now(timezone.utc).isoformat()', prompt_return)
+        self.assertIn('summary["since"] = datetime.now(timezone.utc).isoformat()', source)
+
+    def test_the_session_state_is_read_after_the_transcript(self) -> None:
+        # Read first, it can say an agent is working while the answer it produced meanwhile is already
+        # in hand -- which reads as an answer still to come.
+        order: list[str] = []
+        instance = server([page([turn("done")])])
+        instance.transcripts.history_page.side_effect = lambda *args, **kwargs: (
+            order.append("transcript"), {"turns": [turn("done")], "before": None, "has_more": False})[1]
+        instance.manager.session_summary_by_id.side_effect = lambda *args: (
+            order.append("summary"), {"running": False, "exit_code": 0})[1]
+
+        last_turns(instance)
+
+        self.assertEqual(order, ["transcript", "summary"])
 
 
 class OneCallForAnswersTest(unittest.TestCase):
@@ -201,6 +311,7 @@ class OldCallKeepsWorkingTest(unittest.TestCase):
         result = self.last_turn(instance)
 
         self.assertEqual(result, {"session_id": "task-01", "status": "completed", "processing": False,
+                                  "needs_attention": False,
                                   "last_turn": {"role": "assistant", "text": "done", "final": True}})
 
     def test_a_session_with_nothing_said_yet_reports_no_turn(self) -> None:
