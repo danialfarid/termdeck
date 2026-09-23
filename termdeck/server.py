@@ -836,6 +836,7 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_SESSION_PROJECT_ROUTE, response_model=None)(self._move_session_to_project)
         app.get(TermdeckConfig.API_SESSION_TASK_STATUS_ROUTE, response_model=None)(self._task_status)
         app.get(TermdeckConfig.API_SESSION_LAST_TURNS_ROUTE, response_model=None)(self._session_last_turns)
+        app.get(TermdeckConfig.API_SESSION_LAST_TURN_ROUTE, response_model=None)(self._session_last_turn)
         app.post(TermdeckConfig.API_SESSION_PROMPT_ROUTE, response_model=None)(self._submit_prompt)
         app.post(TermdeckConfig.API_SESSION_INTERRUPT_ROUTE, response_model=None)(self._interrupt_session)
         app.post(TermdeckConfig.API_AGENT_HOOK_ROUTE, response_model=None)(self._agent_hook)
@@ -3343,7 +3344,7 @@ class TermdeckServer:
             },
             "latest_turn": latest_turn,
             "agent_session_id": agent_session_id,
-            "monitoring_url": f"/api/sessions/{session_id}/last_turns",
+            "monitoring_url": f"/api/sessions/{session_id}/last-turns",
             **summary,
         }
 
@@ -3374,6 +3375,17 @@ class TermdeckServer:
         exit_code = summary.get(ApiFields.EXIT_CODE)
         status = "running" if running else "error" if exit_code is not None and exit_code != 0 else "completed"
         return {"session_id": resolved_session_id, "status": status, "turns": turns}
+
+    async def _session_last_turn(self, session_id: str, final: bool = False) -> dict[str, object]:
+        """The latest answer, in the shape the call that used to serve it returned.
+
+        Undocumented: it is here so a script written against the old call keeps working, not to be
+        written against. New callers ask ``last-turns``, which can say how many answers it wants.
+        """
+        result = await self._session_last_turns(session_id, limit=1, final=final)
+        turns = result["turns"]
+        return {"session_id": result["session_id"], "status": result["status"],
+                "last_turn": turns[-1] if turns else None}
 
     def _recent_assistant_turns(self, agent_kind: str, cwd: str, agent_session_id: str | None,
                                 limit: int, final_only: bool) -> list[dict[str, object]]:

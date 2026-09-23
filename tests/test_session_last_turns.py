@@ -6,7 +6,9 @@ and their output, so asking for ten of those can come back with one answer in it
 """
 
 import asyncio
+import re
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from fastapi import HTTPException
@@ -137,15 +139,61 @@ class LastTurnsTest(unittest.TestCase):
 
 
 class OneCallForAnswersTest(unittest.TestCase):
-    """The calls it replaces are gone: two names for one answer is what made it worth unifying."""
+    """One call is documented; the one it replaced still answers, in its own old shape."""
 
-    def test_the_single_turn_calls_are_gone(self) -> None:
-        self.assertFalse(hasattr(TermdeckConfig, "API_SESSION_LAST_TURN_ROUTE"))
+    def test_the_second_name_for_it_is_gone(self) -> None:
         self.assertFalse(hasattr(TermdeckConfig, "API_SESSION_TASK_RESULT_ROUTE"))
         self.assertFalse(hasattr(TermdeckServer, "_task_result"))
 
-    def test_the_route_is_registered_under_its_own_name(self) -> None:
-        self.assertEqual(TermdeckConfig.API_SESSION_LAST_TURNS_ROUTE, "/api/sessions/{session_id}/last_turns")
+    def test_the_route_is_hyphenated_like_every_other_one(self) -> None:
+        self.assertEqual(TermdeckConfig.API_SESSION_LAST_TURNS_ROUTE, "/api/sessions/{session_id}/last-turns")
+        # The old call keeps the spelling it was written with; that is the whole point of keeping it.
+        self.assertEqual(TermdeckConfig.API_SESSION_LAST_TURN_ROUTE, "/api/sessions/{session_id}/last_turn")
+
+    def test_no_route_of_this_server_uses_an_underscore_but_that_one(self) -> None:
+        # Path parameters are named in code style; the path itself is hyphenated throughout.
+        routes = [value for name, value in vars(TermdeckConfig).items()
+                  if name.startswith("API_") and isinstance(value, str)]
+        underscored = [route for route in routes if "_" in re.sub(r"\{[^}]*\}", "", route)]
+
+        self.assertEqual(underscored, [TermdeckConfig.API_SESSION_LAST_TURN_ROUTE])
+
+    def test_the_documentation_points_at_the_one_call(self) -> None:
+        # The old call is kept for scripts already written against it, not for new ones.
+        docs = Path(__file__).resolve().parent.parent / "docs"
+        for name in ("api.md", "agents-termdeck-api.md"):
+            text = (docs / name).read_text()
+            self.assertIn("last-turns", text, name)
+            self.assertNotIn("/last_turn?", text, name)
+            self.assertNotIn("/last_turn`", text, name)
+            self.assertNotIn("task-result", text, name)
+
+
+class OldCallKeepsWorkingTest(unittest.TestCase):
+    """A script written against the call that was there before still gets its answer."""
+
+    def last_turn(self, instance: TermdeckServer, **query: object) -> dict[str, object]:
+        return asyncio.run(instance._session_last_turn("task-01", **query))
+
+    def test_it_answers_in_the_shape_it_always_did(self) -> None:
+        instance = server([page([turn("older"), turn("asked", role="user"), turn("done")])])
+
+        result = self.last_turn(instance)
+
+        self.assertEqual(result, {"session_id": "task-01", "status": "completed",
+                                  "last_turn": {"role": "assistant", "text": "done", "final": True}})
+
+    def test_a_session_with_nothing_said_yet_reports_no_turn(self) -> None:
+        instance = server([page([turn("asked", role="user"), thinking()])])
+
+        self.assertIsNone(self.last_turn(instance)["last_turn"])
+
+    def test_it_still_takes_the_finished_answers_only_flag(self) -> None:
+        instance = server([page([turn("here it is"), turn("working on it", final=False)])])
+
+        result = self.last_turn(instance, final=True)
+
+        self.assertEqual(result["last_turn"]["text"], "here it is")
 
 
 if __name__ == "__main__":

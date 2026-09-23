@@ -155,7 +155,11 @@ class TermdeckConfig:
     API_SESSION_ROUTE = "/api/sessions/{session_id}"
     API_SESSION_TASK_STATUS_ROUTE = "/api/sessions/{session_id}/task"
     # One call for an agent's answers: the last `limit` of them, and the session's status with them.
-    API_SESSION_LAST_TURNS_ROUTE = "/api/sessions/{session_id}/last_turns"
+    # Hyphenated, as every other route here is.
+    API_SESSION_LAST_TURNS_ROUTE = "/api/sessions/{session_id}/last-turns"
+    # The call it replaced, kept for scripts written against it and left out of the documentation so
+    # nothing new is written against it. It answers in the old shape: one turn, under `last_turn`.
+    API_SESSION_LAST_TURN_ROUTE = "/api/sessions/{session_id}/last_turn"
     API_SESSION_PROMPT_ROUTE = "/api/sessions/{session_id}/prompt"
     API_SESSION_INTERRUPT_ROUTE = "/api/sessions/{session_id}/interrupt"
     API_SESSION_STOP_ROUTE = "/api/sessions/{session_id}/stop"
