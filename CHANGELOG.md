@@ -6,8 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A group can be moved to another project, the way a single terminal already could: its own menu
+  offers the projects this one is not, and everything in the group goes — including the agents its
+  terminals spawned, which are drawn inside their parent's row rather than the group's list. The group
+  is made again on the other side, so they arrive together rather than scattered through the list.
+
 ### Fixed
 
+- A child agent waiting to be let through has not finished, and its result is not what it said while
+  it waited. It stops working to ask for permission and says the same thing all the while, so standing
+  still was taken as an answer and the job ended before the answer existed.
+- Two prompts sent before either was answered are told apart. The instant alone picked whichever the
+  transcript recorded first, which is the other one, so `since` carries a mark of what was said.
+- Reading back for a prompt no longer stops at the first prompt on the newest page, which could be a
+  later one — the responses in between were left out.
 - Dragging a spawned agent around inside the stack it is already in says what the drop would do. Over
   the stack it came from there was no indicator at all; over its parent's row it offered a move that
   could not happen, since a spawned agent's row is drawn under its parent rather than from the layout;

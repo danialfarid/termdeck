@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -3232,7 +3233,7 @@ class TermdeckServer:
             self._broadcast_project_state_snapshot(ms.record.project, ms.record.worktree_id)
             # Taken before the prompt goes in: submitting waits for the terminal to confirm it, which
             # an answer can beat, and a boundary taken afterwards would leave that answer behind it.
-            since = self._now_stamp()
+            since = self._now_stamp(prompt)
             await self.manager.submit_prompt(ms.record.session_id, prompt, request.bracketed, request.queue)
             latest = self.manager.session_summary(ms)
             latest["placement"] = summary.get("placement")
@@ -3290,7 +3291,8 @@ class TermdeckServer:
         settled = 0
         while self.manager.has_session(child_session_id):
             summary = self.manager.session_summary_by_id(child_session_id)
-            candidate = None if summary.get("processing") else \
+            working = summary.get("processing") or summary.get("needs_attention")
+            candidate = None if working else \
                 await self._read_last_turn_once(child_session_id, final_only=True, since=since)
             if candidate is not None and candidate == last_turn:
                 settled += 1
@@ -3299,7 +3301,9 @@ class TermdeckServer:
             last_turn = candidate
             # An agent that says which message ended its turn has said so; one that does not is taken
             # at its word only once it has stopped adding to it, because "I will look at the files now"
-            # is an assistant message like any other and delivering it ends this job.
+            # is an assistant message like any other and delivering it ends this job. An agent waiting
+            # to be let through has stopped for a reason of its own, and says the same thing all the
+            # while, so quiet is not evidence there either.
             if candidate is not None and (candidate.get("final") is True or
                                           settled >= TermdeckConfig.TASK_RESULT_SETTLE_POLLS):
                 status = "error" if summary.get(ApiFields.EXIT_CODE) not in (None, 0) else "completed"
@@ -3450,22 +3454,35 @@ class TermdeckServer:
                 "processing": bool(summary.get("processing")),
                 "needs_attention": bool(summary.get("needs_attention")), "responses": responses}
 
-    @staticmethod
-    def _now_stamp() -> str:
-        """The same shape the transcripts stamp their turns with, and one a URL takes as it is: a
-        `+00:00` offset has to be escaped in a query string, and a caller pasting back what it was
-        given should not have to know that."""
-        return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    @classmethod
+    def _now_stamp(cls, text: str = "") -> str:
+        """What a caller gets back for the prompt it just sent, and hands to ``response?since=``.
+
+        The instant, in the shape the transcripts stamp their turns with and one a query string takes
+        as it is: a `+00:00` offset has to be escaped, and a caller pasting back what it was given
+        should not have to know that. With the prompt comes a mark of what was said, because the
+        instant alone cannot tell two waiting prompts apart -- a second prompt sent while the first
+        still waits is recorded after it, and the first one's answer arrives after the second was sent.
+        """
+        stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        return f"{stamp}~{cls._prompt_mark(text)}" if text.strip() else stamp
 
     @staticmethod
-    def _parse_since(since: str) -> datetime | None:
+    def _prompt_mark(text: str) -> str:
+        """Enough of the prompt to recognise it in the transcript, and nothing anyone has to read."""
+        return hashlib.sha256(" ".join(text.split()).encode("utf-8")).hexdigest()[:12]
+
+    @classmethod
+    def _parse_since(cls, since: str) -> tuple[datetime, str] | None:
         if not since.strip():
             return None
+        stamp, _, mark = since.strip().partition("~")
         try:
-            stamped = datetime.fromisoformat(since.strip().replace("Z", "+00:00"))
+            stamped = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
         except ValueError as error:
-            raise HTTPException(status_code=422, detail=f"since must be an ISO-8601 time: {since}") from error
-        return stamped if stamped.tzinfo else stamped.replace(tzinfo=timezone.utc)
+            raise HTTPException(status_code=422,
+                                detail=f"since must be what the prompt call returned: {since}") from error
+        return (stamped if stamped.tzinfo else stamped.replace(tzinfo=timezone.utc)), mark
 
     async def _session_last_turn(self, session_id: str, final: bool = False) -> dict[str, object]:
         """The latest response, in the shape the call that used to serve it returned.
@@ -3490,10 +3507,10 @@ class TermdeckServer:
         for while older responses are still there.
 
         With ``since``, the boundary is the prompt itself rather than the instant it was sent: the
-        first prompt the transcript recorded at or after that instant, and everything the agent said
-        after it. A prompt sent while the agent was busy waits its turn, and the one ahead of it can be
-        answered in between; that answer is before this prompt in the transcript, so it is not this
-        prompt's. Until the transcript has the prompt, nothing has answered it.
+        prompt the transcript recorded for it, and everything the agent said after that. A prompt sent
+        while the agent was busy waits its turn, and the one ahead of it can be answered in between;
+        that answer is before this prompt in the transcript, so it is not this prompt's. Until the
+        transcript has the prompt, nothing has answered it.
         """
         collected: list[dict[str, object]] = []
         before: int | None = None
@@ -3504,9 +3521,10 @@ class TermdeckServer:
             collected = [*turns, *collected]
             before = page.get("before")
             if since is not None:
-                # Reading further back can only find older prompts, and the boundary is the first one
-                # at or after the instant asked about.
-                if self._prompt_index(collected, since) is not None or self._page_precedes(turns, since):
+                # A page holding the prompt can still begin after it, and the prompt the boundary wants
+                # is the first one -- so reading stops when this page reaches back past the instant
+                # asked about, not at the first prompt that turns up on the newest page.
+                if self._page_precedes(turns, since[0]):
                     break
             elif len([turn for turn in collected if self._is_assistant_turn(turn, final_only)]) >= limit:
                 break
@@ -3520,11 +3538,18 @@ class TermdeckServer:
         return [turn for turn in collected if self._is_assistant_turn(turn, final_only)][-limit:]
 
     @classmethod
-    def _prompt_index(cls, turns: list[dict[str, object]], since: datetime) -> int | None:
-        """Where in these turns the prompt sent at ``since`` was recorded."""
+    def _prompt_index(cls, turns: list[dict[str, object]], since: tuple[datetime, str]) -> int | None:
+        """Where in these turns the prompt this caller sent was recorded.
+
+        The instant narrows it down and what was said settles it: two prompts can be waiting at once,
+        and then the instant alone picks whichever was recorded first, which is the other one.
+        """
+        stamped_after, mark = since
         for index, turn in enumerate(turns):
             stamped = cls._turn_time(turn)
-            if str(turn.get("role", "")) == "user" and stamped is not None and stamped >= since:
+            if str(turn.get("role", "")) != "user" or stamped is None or stamped < stamped_after:
+                continue
+            if not mark or cls._prompt_mark(str(turn.get("text", ""))) == mark:
                 return index
         return None
 
@@ -3549,7 +3574,7 @@ class TermdeckServer:
             # told the wrong thing.
             # Taken before the prompt goes in: submitting waits for the terminal to confirm it, which
             # an answer can beat, and a boundary taken afterwards would leave that answer behind it.
-            since = self._now_stamp()
+            since = self._now_stamp(request.text)
             queued = await self.manager.submit_prompt(session_id, request.text, request.bracketed, wanted_queue)
         except ValueError as prompt_error:
             raise HTTPException(status_code=409, detail=str(prompt_error)) from prompt_error

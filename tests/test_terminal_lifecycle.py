@@ -2203,6 +2203,37 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.submit_prompt.assert_awaited_once_with(
             "origin-01", "[TermDeck task child-01 completed]\nthree risks, in order", True, False)
 
+    async def test_a_child_waiting_to_be_let_through_has_not_finished(self) -> None:
+        # It stops working to ask for permission, and says the same thing all the while, so standing
+        # still is no evidence there: delivering what it said ends the job before the answer exists.
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.has_session.return_value = True
+        polls = {"count": 0}
+
+        def summary(*_args: object) -> dict[str, object]:
+            polls["count"] += 1
+            # Longer than the settle window: standing still while it waits must not count as an answer.
+            return {"running": True, "processing": False, "needs_attention": polls["count"] <= 5}
+
+        server.manager.session_summary_by_id.side_effect = summary
+        server.manager.session_history_source.return_value = ("claude", "/tmp", "child-agent")
+        server.manager.submit_prompt = AsyncMock(return_value=False)
+        server.transcripts = MagicMock()
+        prompt = {"role": "user", "text": "review", "timestamp": "2026-09-23T09:00:05Z"}
+        asking = {"role": "assistant", "text": "may I read the file?", "timestamp": "2026-09-23T09:00:10Z"}
+        answer = {"role": "assistant", "text": "three risks", "timestamp": "2026-09-23T09:00:40Z"}
+        # While it waits, its question is all there is to read, and it does not change.
+        server.transcripts.history_page.side_effect = lambda *args, **kwargs: (
+            {"turns": [prompt, asking]} if polls["count"] <= 5 else {"turns": [prompt, asking, answer]})
+        server._origin_delivery_locks = {}
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await server._deliver_task_result("child-01", "origin-01", "2026-09-23T09:00:00Z")
+
+        server.manager.submit_prompt.assert_awaited_once_with(
+            "origin-01", "[TermDeck task child-01 completed]\nthree risks", True, False)
+
     async def test_origin_defaults_child_cwd_project_and_placement(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)
         server.manager = MagicMock()

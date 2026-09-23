@@ -216,6 +216,51 @@ class ResponseToThisPromptTest(unittest.TestCase):
 
         self.assertEqual(response(instance, since="2026-09-23T08:30:00Z", limit=5)["responses"], [])
 
+    def test_two_prompts_waiting_at_once_are_told_apart(self) -> None:
+        # Both were sent before either was recorded, so the instant alone picks whichever the
+        # transcript took first -- the other one. What was said settles it.
+        mark = TermdeckServer._prompt_mark("second thing")
+        instance = server([page([turn("first thing", role="user", at="2026-09-23T08:31:00Z"),
+                                 turn("answer to the first", at="2026-09-23T08:32:00Z"),
+                                 turn("second thing", role="user", at="2026-09-23T08:33:00Z"),
+                                 turn("answer to the second", at="2026-09-23T08:34:00Z")])])
+
+        result = response(instance, since=f"2026-09-23T08:30:00Z~{mark}", limit=5)
+
+        self.assertEqual([item["text"] for item in result["responses"]], ["answer to the second"])
+
+    def test_a_prompt_recorded_but_not_answered_yet_returns_nothing(self) -> None:
+        mark = TermdeckServer._prompt_mark("second thing")
+        instance = server([page([turn("first thing", role="user", at="2026-09-23T08:31:00Z"),
+                                 turn("answer to the first", at="2026-09-23T08:32:00Z"),
+                                 turn("second thing", role="user", at="2026-09-23T08:33:00Z")])])
+
+        self.assertEqual(response(instance, since=f"2026-09-23T08:30:00Z~{mark}", limit=5)["responses"], [])
+
+    def test_the_prompt_is_recognised_however_it_was_wrapped(self) -> None:
+        # A prompt is pasted into a terminal; what comes back through the transcript is the same words
+        # with the spacing the agent chose to record.
+        mark = TermdeckServer._prompt_mark("review  the\nparser")
+        instance = server([page([turn("review the parser", role="user", at="2026-09-23T08:31:00Z"),
+                                 turn("done", at="2026-09-23T08:32:00Z")])])
+
+        result = response(instance, since=f"2026-09-23T08:30:00Z~{mark}", limit=5)
+
+        self.assertEqual([item["text"] for item in result["responses"]], ["done"])
+
+    def test_the_earliest_prompt_after_the_instant_wins_across_pages(self) -> None:
+        # The page holding the prompt can begin after it. Stopping at the first prompt on the newest
+        # page skips the responses on the page before it.
+        instance = server([page([turn("a later prompt", role="user", at="2026-09-23T08:40:00Z"),
+                                 turn("its answer", at="2026-09-23T08:41:00Z")], before=100),
+                           page([turn("my prompt", role="user", at="2026-09-23T08:31:00Z"),
+                                 turn("my answer", at="2026-09-23T08:32:00Z")])])
+
+        result = response(instance, since="2026-09-23T08:30:00Z", limit=5)
+
+        self.assertEqual([item["text"] for item in result["responses"]],
+                         ["my answer", "its answer"])
+
     def test_the_queued_prompt_gets_its_own_response_once_it_runs(self) -> None:
         instance = server([page([turn("the prompt ahead", role="user", at="2026-09-23T08:29:00Z"),
                                  turn("the answer ahead", at="2026-09-23T08:31:00Z"),
@@ -286,12 +331,15 @@ class ResponseToThisPromptTest(unittest.TestCase):
 
         self.assertIn('"since": since', prompt_return)
         self.assertIn('summary["since"] = since', source)
+        # And it carries what was said, which is how two waiting prompts are told apart.
+        self.assertIn("self._now_stamp(request.text)", source)
+        self.assertIn("self._now_stamp(prompt)", source)
         # Taken before the prompt goes in: submitting waits for the terminal to confirm it, and an
         # answer can beat that, which a boundary taken afterwards would leave behind it.
         for path in (r"await self\.manager\.submit_prompt\(ms\.record\.session_id",
                      r"queued = await self\.manager\.submit_prompt\(session_id"):
             submit = re.search(path, source)
-            stamp = source.rindex("since = self._now_stamp()", 0, submit.start())
+            stamp = source.rindex("since = self._now_stamp(", 0, submit.start())
             self.assertLess(stamp, submit.start())
 
     def test_the_stamp_needs_no_escaping_in_a_query_string(self) -> None:

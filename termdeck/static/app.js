@@ -2305,10 +2305,10 @@ class TermdeckApp {
     this.renderList();
   }
 
-  async moveSelectedSessionsToProject(sessionIds, project) {
+  async moveSelectedSessionsToProject(sessionIds, project, navigate = true) {
     const sessions = [...new Set(sessionIds)].map((id) => this.session(id))
       .filter((session) => !!session && session.project !== project);
-    if (!project || !sessions.length) return;
+    if (!project || !sessions.length) return false;
     const responses = await Promise.all(sessions.map((session) => fetch(`/api/sessions/${session.session_id}/project`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project }),
     })));
@@ -2316,8 +2316,53 @@ class TermdeckApp {
     if (failure) {
       void uiAlert(`move ${sessions.length === 1 ? "terminal" : "terminals"} to project failed (${failure.status})`);
       await this.refresh();
-      return;
+      return false;
     }
+    // A caller with more to do on the other side says so: following the terminals over there now would
+    // reload the page out from under the rest of the move.
+    if (!navigate) return true;
+    if (this.projectSlug && this.projectSlug !== project) {
+      location.href = `/p/${encodeURIComponent(project)}`;
+      return true;
+    }
+    await this.refresh();
+    return true;
+  }
+
+  // Everything in a group, and everything filed under what is in it: a spawned agent is drawn inside
+  // its parent's row rather than the group's list, so moving the group without it would leave it
+  // behind in a project its parent is no longer in.
+  groupSessionIdsWithSpawned(groupId) {
+    const wanted = [];
+    const pending = [...this.groupSessionIds(groupId)];
+    const seen = new Set();
+    while (pending.length) {
+      const sessionId = pending.shift();
+      if (seen.has(sessionId)) continue;
+      seen.add(sessionId);
+      wanted.push(sessionId);
+      for (const child of this.sessions.filter((session) => session.spawned_by_session_id === sessionId)) {
+        pending.push(child.session_id);
+      }
+    }
+    return wanted;
+  }
+
+  async moveTerminalGroupToProject(groupId, project) {
+    const group = this.terminalGroups().find((candidate) => candidate.id === groupId);
+    const sessionIds = this.groupSessionIdsWithSpawned(groupId);
+    if (!group || !project || !sessionIds.length) return;
+    const moved = await this.moveSelectedSessionsToProject(sessionIds, project, false);
+    if (!moved) return;
+    // The group is the project's, not the terminals': moving the terminals alone would scatter them
+    // through the list they arrive in. It is made again on the other side, with the same name.
+    const params = new URLSearchParams({ project, worktree_id: "root" });
+    const response = await fetch(`/api/terminal-groups?${params}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_id: group.id, name: group.name, collapsed: !!group.collapsed,
+        session_ids: sessionIds }),
+    });
+    if (!response.ok) void uiAlert(`moved the terminals, but could not group them there (${response.status})`);
     if (this.projectSlug && this.projectSlug !== project) {
       location.href = `/p/${encodeURIComponent(project)}`;
       return;
@@ -2689,6 +2734,16 @@ class TermdeckApp {
       () => this.markTerminalGroupUnread(group.id), "eye-closed");
     this.addContextItem(menu, this.shortcutLabel("Remove grouping", "create-terminal-group-from-active"),
       () => this.removeTerminalGroup(group.id), "ungroup-by-ref-type");
+    // The same move a single terminal offers, for everything in the group at once: moving them one by
+    // one leaves the group behind and scatters them through the list they arrive in.
+    if (!this.vscodeMode) {
+      const elsewhere = this.projects.filter((project) => project.name && project.name !== this.projectSlug);
+      this.addContextSubmenu(menu, "Move group to project…",
+        elsewhere.length ? elsewhere.map((project) => ({
+          label: project.name, icon: "folder",
+          handler: () => void this.moveTerminalGroupToProject(group.id, project.name),
+        })) : [{ label: "No other registered projects", handler: null, icon: "info" }], "arrow-swap");
+    }
     this.addContextItem(menu, this.shortcutLabel("Close all", "close-item"),
       () => this.closeAllInTerminalGroup(group.id), "close-all");
     this.positionContextMenu(menu, event.clientX, event.clientY);
