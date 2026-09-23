@@ -29,10 +29,13 @@ globalThis.fetch = async (url, options = {}) => {
   const failing = scenario.failing || "";
   if (!options.method) {
     const readable = !(failing && url.includes(failing));
-    return { ok: readable, status: readable ? 200 : 500, json: async () => scenario.destinationGroups || [] };
+    return { ok: readable, status: readable ? 200 : 500,
+      json: async () => ({ project: scenario.target, worktree_id: "root",
+        terminal_groups: scenario.destinationGroups || [] }) };
   }
   const failed = failing && url.includes(failing) &&
     (!scenario.failingSession || url.includes(scenario.failingSession));
+  if (failed && scenario.dropsConnection) throw new TypeError("Failed to fetch");
   return { ok: !failed, status: 500 };
 };
 const app = {
@@ -46,7 +49,14 @@ const app = {
   getProjectState: () => ({ session_groups: {} }),
   sessionsForWorktree: () => scenario.sessions,
   stateWorktreeId: () => "root",
-  refresh: async () => { sent.push({ url: "refresh" }); },
+  refresh: async () => {
+    sent.push({ url: "refresh" });
+    // What the deck learns on a refresh: whether the request that dropped had landed after all.
+    for (const id of scenario.landedAnyway || []) {
+      const session = scenario.sessions.find((s) => s.session_id === id);
+      if (session) session.project = scenario.target;
+    }
+  },
   titlePresentation: (session) => ({ text: session?.session_id || "" }),
   removeTerminalGroup: (groupId) => { sent.push({ url: `remove-group ${groupId}` }); },
   newTerminalGroupId: () => "group-new",
@@ -162,6 +172,23 @@ class MoveGroupToProjectTest(unittest.TestCase):
         self.assertNotIn("remove-group group-1", [r["url"] for r in result["sent"]])
         self.assertIn("two", result["alerts"][0])
         self.assertIn("moved 1 of 2", result["alerts"][0])
+
+    def test_a_connection_lost_halfway_still_groups_what_went(self) -> None:
+        # A request that never arrived and one that was refused leave the same question behind, and
+        # throwing out of the move leaves the terminals that did go ungrouped and unmentioned.
+        result = self.move(members=["one", "two"], sessions=[session("one"), session("two")],
+                           failing="/project", failingSession="/two/", dropsConnection=True)
+
+        self.assertEqual(self.created(result)[0]["body"]["session_ids"], ["one"])
+        self.assertIn("moved 1 of 2", result["alerts"][0])
+
+    def test_a_move_that_landed_after_the_connection_dropped_is_counted(self) -> None:
+        # The answer never came back, so the deck asks again rather than assuming either way.
+        result = self.move(members=["one", "two"], sessions=[session("one"), session("two")],
+                           failing="/project", failingSession="/two/", dropsConnection=True,
+                           landedAnyway=["two"])
+
+        self.assertEqual(self.created(result)[0]["body"]["session_ids"], ["one", "two"])
 
     def test_nothing_moving_at_all_groups_nothing_there(self) -> None:
         result = self.move(members=["one"], sessions=[session("one")], failing="/project")

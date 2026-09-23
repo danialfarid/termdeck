@@ -2365,10 +2365,24 @@ class TermdeckApp {
     // that moved are left in the other project with no way to tell them from the ones that did not.
     const moved = [];
     for (const sessionId of sessionIds) {
-      const response = await fetch(`/api/sessions/${sessionId}/project`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project }),
-      });
-      if (!response.ok) break;
+      // A request that never arrived and one that was refused leave the same question behind -- did
+      // this terminal move? -- and both have to leave the ones that did go grouped and named. A
+      // connection lost mid-move is the case where the answer is genuinely unknown, so it is asked
+      // again below rather than assumed either way.
+      let landed = false;
+      try {
+        const response = await fetch(`/api/sessions/${sessionId}/project`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project }),
+        });
+        landed = response.ok;
+      } catch (error) {
+        landed = false;
+      }
+      if (!landed) {
+        await this.refresh();
+        if (this.session(sessionId)?.project === project) moved.push(sessionId);
+        break;
+      }
       moved.push(sessionId);
     }
     // The group is the project's, not the terminals': moving the terminals alone would scatter them
@@ -2412,7 +2426,8 @@ class TermdeckApp {
       void uiAlert(`could not read the groups of ${project} (${error.message})`);
       return "";
     }
-    const used = new Set((Array.isArray(taken) ? taken : []).map((group) => String(group.id || "")));
+    const groups = Array.isArray(taken?.terminal_groups) ? taken.terminal_groups : [];
+    const used = new Set(groups.map((group) => String(group.id || "")));
     return used.has(preferredId) ? this.newTerminalGroupId() : preferredId;
   }
 
