@@ -5615,6 +5615,9 @@ class TermdeckApp {
 
   setSessionTitleText(title, text) {
     const value = String(text || "");
+    // A name wider than the sidebar is cut off at an ellipsis, and resting on it is the only way to
+    // read the rest of it.
+    title.title = value;
     const row = title.closest(".session-item");
     const base = document.createElement("span");
     base.className = "session-title-base";
@@ -5692,7 +5695,10 @@ class TermdeckApp {
     }
     const suffix = [working ? "working" : "", attentionCount ? `${attentionCount} active or unread` : ""]
       .filter(Boolean).join(" · ");
-    label.title = `Click to collapse/expand · right-click for group actions · drop terminals here${suffix ? ` · ${suffix}` : ""}`;
+    // The name stays at the front of it: this runs whenever a member changes, and without it the
+    // hover would lose the name of a group whose own label is too wide to read.
+    label.title = `${name?.textContent || ""}\nClick to collapse/expand · right-click for group actions` +
+      ` · drop terminals here${suffix ? ` · ${suffix}` : ""}`;
   }
 
   setSessionUnread(id, unread) {

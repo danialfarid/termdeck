@@ -40,7 +40,9 @@ All notable changes to this project are documented here. The format follows
   open, for one — was never written again.
 - A fork keeps the terminal its source was filed under. It inherited the group but not the parent, so
   forking a child produced a copy at the end of the list, in the group and outside the stack at once.
-- Resting on a notebook tab whose name does not fit shows the whole name.
+- Resting on a name too wide for the sidebar — a terminal's or a group's — shows the whole of it. They
+  are cut off at an ellipsis, and two terminals whose names differ only past the cut could not be told
+  apart without opening one. Notebook tabs do the same.
 
 ## [0.22.0] — 2026-09-22
 

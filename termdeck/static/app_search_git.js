@@ -771,7 +771,9 @@ Object.assign(TermdeckApp.prototype, {
     const indicator = document.createElement("span");
     indicator.className = "group-drop-indicator";
     indicator.innerHTML = '<span class="codicon codicon-folder-library"></span><span>group</span>';
-    label.title = "Click to collapse/expand · right-click for group actions · drop terminals here" +
+    // The name first: a group named wider than the sidebar is cut off, and what it says is what
+    // someone hovering it wants, ahead of what the row can do.
+    label.title = `${group.name}\nClick to collapse/expand · right-click for group actions · drop terminals here` +
       (working ? " · working" : "") + (attentionCount ? ` · ${attentionCount} active or unread` : "");
     label.append(chevron, name, attention, indicator);
     if (!this.vscodeMode) {
