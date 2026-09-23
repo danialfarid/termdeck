@@ -13,6 +13,12 @@ All notable changes to this project are documented here. The format follows
   every record and stayed on screen exactly where it was: the group looked as though it had taken one
   terminal of the several that were selected. Filing it somewhere its parent is not is what stops it
   being that agent's child, and that is what happens now.
+- Cancelling the naming dialog for a new group leaves the agents in it where they were. They were let
+  go of their parents before the dialog opened, and cancelling cannot put an agent back in a stack.
+- An agent dragged out of its stack onto a group joins that group. It was released from the stack and
+  then left where it was, so the drag came apart halfway: out of the stack, into nothing. A stack
+  dragged whole is also no longer taken apart on the way — an agent whose parent is being dragged with
+  it is not leaving anything.
 - A group made from a spawned agent's row appears beside that row rather than at the end of the list.
   Its own token is nowhere in the layout to land beside, so the group went to the bottom.
 - Moving a group to another project no longer leaves an empty group behind in the project it came

@@ -2787,16 +2787,15 @@ class TermdeckApp {
     // Worked out before anything is unfiled, because where the new group belongs is where the row
     // that was right-clicked is drawn now.
     const anchorToken = this.layoutAnchorTokenFor(anchorId);
-    // A spawned agent is drawn under the agent that spawned it, wherever it is filed, so grouping one
-    // whose parent is staying behind put it in the group and left it on screen exactly where it was:
-    // the group looked as though it had taken one terminal of the several that were selected. Filing
-    // it somewhere its parent is not is what stops it being that agent's child.
-    await this.releaseSpawnedFromStacks(ids);
     const firstSession = this.session(anchorId);
     const suggestion = ids.length === 1 ? `${this.effectiveTitle(firstSession)} group`
       : `${this.effectiveTitle(firstSession)} + ${ids.length - 1} group`;
     const name = await uiPrompt("Name for the new terminal group", suggestion);
     if (!name || !name.trim()) return;
+    // After the name and not before it: a spawned agent is drawn under the agent that spawned it
+    // wherever it is filed, so one whose parent is staying behind has to leave that stack to appear
+    // in the group -- but a dialog that was cancelled asked for no group and must change nothing.
+    await this.releaseSpawnedFromStacks(ids);
     const state = this.getProjectState();
     const sessionGroups = { ...(state.session_groups || {}) };
     const group = { id: this.newTerminalGroupId(), name: name.trim(), collapsed: false };
@@ -6508,16 +6507,24 @@ class TermdeckApp {
         // treating it as an exit threw the agent out of the group it was being moved within.
         const targetParentId = kind === "session"
           ? (this.session(targetId)?.spawned_by_session_id || targetId) : "";
+        const dragged = new Set(sourceSessionIds);
         const escaping = sourceSessionIds.filter((id) => {
           const parentId = this.session(id)?.spawned_by_session_id;
-          return parentId && parentId !== targetParentId;
+          // An agent whose parent is being dragged with it is not leaving anything: the stack is
+          // moving, and pulling the agent out of it dismantles what was picked up.
+          return parentId && parentId !== targetParentId && !dragged.has(parentId);
         });
         if (escaping.length) {
           const rect = item.getBoundingClientRect();
           const dropAfter = item.classList.contains("drop-after") ||
             (kind === "session" && event.clientY >= rect.top + rect.height / 2);
+          const before = item.classList.contains("drop-before");
           void this.setSpawnedParent(escaping, "").then(() => {
+            // Wherever it was dropped, it still has to land there: released and then left where it
+            // was, an agent dragged onto a group came out of its stack and never joined the group.
             if (kind === "session") this.repositionSelectedSessions(sourceSessionIds, targetId, dropAfter);
+            else if (before || dropAfter) this.repositionSelectedSessionsAroundLayoutToken(sourceSessionIds, token, dropAfter);
+            else void this.moveSelectedSessionsIntoGroup(sourceSessionIds, targetId);
           });
           this.clearDragLandingIndicator();
           this.dragItem = null;

@@ -119,6 +119,12 @@ class WiredIntoTheGroupActionsTest(unittest.TestCase):
     def body(self, name: str) -> str:
         return re.search(rf"\n  (?:async )?{name}\([^)]*\) \{{(.*?)\n  \}}", self.source, re.S).group(1)
 
+    def escape_branch(self) -> str:
+        # Only the branch that releases an agent from its stack, not the ordinary drop handling that
+        # follows it -- which does its own grouping, and would answer for the branch under test.
+        drop = re.search(r"item\.ondrop = \(event\) => \{(.*?)\n    \};", self.source, re.S).group(1)
+        return re.search(r"if \(escaping\.length\) \{(.*?)\n        \}", drop, re.S).group(1)
+
     def test_making_a_group_lets_go_of_the_agents_it_takes(self) -> None:
         self.assertIn("releaseSpawnedFromStacks(ids)", self.body("createTerminalGroupFromSessions"))
 
@@ -130,6 +136,27 @@ class WiredIntoTheGroupActionsTest(unittest.TestCase):
         body = self.body("createTerminalGroupFromSessions")
 
         self.assertLess(body.index("layoutAnchorTokenFor(anchorId)"), body.index("releaseSpawnedFromStacks(ids)"))
+
+    def test_a_cancelled_naming_lets_go_of_nothing(self) -> None:
+        # The dialog is how the group is asked for; cancelled, it asked for nothing, and an agent
+        # pulled out of its stack anyway cannot be put back by cancelling.
+        body = self.body("createTerminalGroupFromSessions")
+
+        self.assertLess(body.index("if (!name || !name.trim()) return;"), body.index("releaseSpawnedFromStacks(ids)"))
+
+    def test_an_agent_dropped_on_a_group_joins_it(self) -> None:
+        # Released from its stack and then left where it was, it came out of the stack and joined
+        # nothing. The drop still has to land.
+        escape = self.escape_branch()
+
+        self.assertIn("moveSelectedSessionsIntoGroup(sourceSessionIds, targetId)", escape)
+        self.assertIn("repositionSelectedSessionsAroundLayoutToken(sourceSessionIds, token", escape)
+
+    def test_a_stack_dragged_whole_is_not_taken_apart(self) -> None:
+        drop = re.search(r"item\.ondrop = \(event\) => \{(.*?)\n    \};", self.source, re.S).group(1)
+        escaping = re.search(r"const escaping = sourceSessionIds\.filter\((.*?)\}\);", drop, re.S).group(1)
+
+        self.assertIn("!dragged.has(parentId)", escaping)
 
 
 if __name__ == "__main__":
