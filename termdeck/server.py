@@ -841,7 +841,8 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_SESSION_PROJECT_ROUTE, response_model=None)(self._move_session_to_project)
         app.get(TermdeckConfig.API_SESSION_STATUS_ROUTE, response_model=None)(self._session_status)
         app.get(TermdeckConfig.API_SESSION_TASK_STATUS_ROUTE, response_model=None)(self._session_status)
-        app.get(TermdeckConfig.API_SESSION_LAST_TURNS_ROUTE, response_model=None)(self._session_last_turns)
+        app.get(TermdeckConfig.API_SESSION_FINAL_RESPONSE_ROUTE, response_model=None)(self._session_final_response)
+        app.get(TermdeckConfig.API_SESSION_RESPONSE_ROUTE, response_model=None)(self._session_response)
         app.get(TermdeckConfig.API_SESSION_LAST_TURN_ROUTE, response_model=None)(self._session_last_turn)
         app.get(TermdeckConfig.API_SESSION_TASK_RESULT_ROUTE, response_model=None)(self._session_last_turn)
         app.post(TermdeckConfig.API_SESSION_PROMPT_ROUTE, response_model=None)(self._submit_prompt)
@@ -3237,7 +3238,7 @@ class TermdeckServer:
             summary["prompt_submitted"] = True
             summary["queued"] = request.queue
             # The instant the prompt went in, so the caller can ask for the answers that came after it.
-            summary["since"] = datetime.now(timezone.utc).isoformat()
+            summary["since"] = self._now_stamp()
             if origin_session_id and request.write_back:
                 self._schedule_task_result_delivery(ms.record.session_id, origin_session_id)
             return summary
@@ -3374,26 +3375,37 @@ class TermdeckServer:
             },
             "latest_turn": latest_turn,
             "agent_session_id": agent_session_id,
-            "monitoring_url": f"/api/sessions/{session_id}/last-turns",
+            "monitoring_url": f"/api/sessions/{session_id}/response",
             **summary,
         }
 
-    async def _session_last_turns(self, session_id: str, limit: int = 1, final: bool = False,
-                                  since: str = "") -> dict[str, object]:
-        """What an agent has answered, most recent last.
+    async def _session_response(self, session_id: str, limit: int = 1, since: str = "") -> dict[str, object]:
+        """What an agent said back, most recent last.
 
-        One call for the whole question: ``limit`` counts answers, not turns, so a caller asking for
-        five gets five things the agent said rather than five entries of which four are thinking and a
-        command. ``final`` keeps only the answers an agent finished a turn with, leaving out what it
-        says on its way through the work -- for the agents that say which those are.
+        ``limit`` counts responses, not transcript entries, so a caller asking for five gets five
+        things the agent said rather than five entries of which four are thinking and a command.
 
-        ``since`` is what ties an answer to a prompt, and a caller waiting on one wants it: submitting
-        a prompt hands back the instant it went in, and an answer stamped after that instant is an
-        answer to it. Nothing else establishes that. A terminal runs for as long as it is open, so its
-        status says nothing about answers; an agent that has not started is not processing, and one
-        waiting on a person is not either -- in both cases the newest answer in the transcript belongs
-        to the request before. That answer is the one ``since`` leaves out.
+        ``since`` is what ties a response to a prompt, and a caller waiting on one wants it: submitting
+        a prompt hands back the instant it went in, and a response stamped after that instant is a
+        response to it. Nothing else establishes that. A terminal runs for as long as it is open, so
+        its status says nothing about responses; an agent that has not started is not processing, and
+        one waiting on a person is not either -- in both cases the newest response in the transcript
+        belongs to the request before. That one is what ``since`` leaves out.
         """
+        return await self._session_responses(session_id, limit, False, since)
+
+    async def _session_final_response(self, session_id: str, limit: int = 1,
+                                      since: str = "") -> dict[str, object]:
+        """The same, with what an agent said on its way through the work left out.
+
+        Only Codex marks which of its messages ended a turn; an agent that marks nothing has every
+        response taken as one, so this never comes back empty merely because an agent says nothing
+        about it.
+        """
+        return await self._session_responses(session_id, limit, True, since)
+
+    async def _session_responses(self, session_id: str, limit: int, final: bool,
+                                 since: str) -> dict[str, object]:
         resolved_session_id = session_id if self.manager.has_session(session_id) else None
         if resolved_session_id is None:
             try:
@@ -3406,17 +3418,24 @@ class TermdeckServer:
             raise HTTPException(status_code=422, detail="limit must be at least 1")
         after = self._parse_since(since)
         agent_kind, cwd, agent_session_id = self.manager.session_history_source(resolved_session_id)
-        turns = await asyncio.to_thread(self._recent_assistant_turns, agent_kind, cwd, agent_session_id,
-                                        min(limit, TermdeckConfig.LAST_TURNS_MAX), final, after)
+        responses = await asyncio.to_thread(self._recent_assistant_turns, agent_kind, cwd, agent_session_id,
+                                            min(limit, TermdeckConfig.LAST_TURNS_MAX), final, after)
         # Read after the transcript, not before it: a summary taken first can say an agent is working
-        # while the answer it produced meanwhile is already in hand, which reads as an answer to come.
+        # while the response it produced meanwhile is already in hand, which reads as one still to come.
         summary = self.manager.session_summary_by_id(resolved_session_id)
         running = bool(summary.get(ApiFields.RUNNING))
         exit_code = summary.get(ApiFields.EXIT_CODE)
         status = "running" if running else "error" if exit_code is not None and exit_code != 0 else "completed"
         return {"session_id": resolved_session_id, "status": status,
                 "processing": bool(summary.get("processing")),
-                "needs_attention": bool(summary.get("needs_attention")), "turns": turns}
+                "needs_attention": bool(summary.get("needs_attention")), "responses": responses}
+
+    @staticmethod
+    def _now_stamp() -> str:
+        """The same shape the transcripts stamp their turns with, and one a URL takes as it is: a
+        `+00:00` offset has to be escaped in a query string, and a caller pasting back what it was
+        given should not have to know that."""
+        return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
     @staticmethod
     def _parse_since(since: str) -> datetime | None:
@@ -3429,16 +3448,17 @@ class TermdeckServer:
         return stamped if stamped.tzinfo else stamped.replace(tzinfo=timezone.utc)
 
     async def _session_last_turn(self, session_id: str, final: bool = False) -> dict[str, object]:
-        """The latest answer, in the shape the call that used to serve it returned.
+        """The latest response, in the shape the call that used to serve it returned.
 
         Undocumented: it is here so a script written against the old call keeps working, not to be
-        written against. New callers ask ``last-turns``, which can say how many answers it wants.
+        written against. New callers ask ``response``, which can say how many it wants and which
+        prompt it is waiting on.
         """
-        result = await self._session_last_turns(session_id, limit=1, final=final)
-        turns = result["turns"]
+        result = await self._session_responses(session_id, 1, final, "")
+        responses = result["responses"]
         return {"session_id": result["session_id"], "status": result["status"],
                 "processing": result["processing"], "needs_attention": result["needs_attention"],
-                "last_turn": turns[-1] if turns else None}
+                "last_turn": responses[-1] if responses else None}
 
     def _recent_assistant_turns(self, agent_kind: str, cwd: str, agent_session_id: str | None, limit: int,
                                 final_only: bool, since: datetime | None = None) -> list[dict[str, object]]:
@@ -3490,7 +3510,7 @@ class TermdeckServer:
         # is the only thing that ties one to the other: an agent that is not working may simply not
         # have started, and the answer sitting in the transcript then belongs to the request before.
         return {"session": self.manager.session_summary_by_id(session_id), "prompt_submitted": True,
-                "queued": queued, "since": datetime.now(timezone.utc).isoformat()}
+                "queued": queued, "since": self._now_stamp()}
 
     async def _interrupt_session(self, session_id: str) -> dict[str, object]:
         if not self.manager.has_session(session_id):

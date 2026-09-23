@@ -11,7 +11,7 @@ class AgentInstructionServiceTest(unittest.TestCase):
         self.assertIn("/api/sessions/task", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("title, description", AgentInstructionService.INSTRUCTION_TEXT)
         # One call for what an agent answered, and the one thing that ties an answer to a prompt.
-        self.assertIn("/api/sessions/{session_id}/last-turns", AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertIn("/api/sessions/{session_id}/response", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("since", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("origin_session to your $TERMDECK_SESSION_ID", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("user-authorized scope", AgentInstructionService.INSTRUCTION_TEXT)

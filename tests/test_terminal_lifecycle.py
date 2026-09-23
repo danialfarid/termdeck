@@ -2066,7 +2066,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["latest_turn"], {"role": "assistant", "text": "second"})
         self.assertEqual(len(response["transcript"]["tail"]), 2)
 
-    async def test_last_turns_returns_the_latest_answer_and_completion_state(self) -> None:
+    async def test_response_returns_the_latest_one_and_completion_state(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)
         server.manager = MagicMock()
         server.manager.has_session.return_value = True
@@ -2079,12 +2079,12 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             {"role": "assistant", "text": "done"},
         ], "has_more": False}
 
-        response = await server._session_last_turns("task-04")
+        response = await server._session_response("task-04")
 
         self.assertEqual(response, {"session_id": "task-04", "status": "completed", "processing": False,
-                                     "needs_attention": False, "turns": [{"role": "assistant", "text": "done"}]})
+                                     "needs_attention": False, "responses": [{"role": "assistant", "text": "done"}]})
 
-    async def test_last_turns_accepts_unique_session_name(self) -> None:
+    async def test_response_accepts_unique_session_name(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)
         server.manager = MagicMock()
         server.manager.has_session.return_value = False
@@ -2095,13 +2095,13 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.transcripts.history_page.return_value = {"turns": [{"role": "assistant", "text": "done"}],
                                                         "has_more": False}
 
-        response = await server._session_last_turns("reviewer")
+        response = await server._session_response("reviewer")
 
         self.assertEqual(response, {"session_id": "task-05", "status": "completed", "processing": False,
-                                     "needs_attention": False, "turns": [{"role": "assistant", "text": "done"}]})
+                                     "needs_attention": False, "responses": [{"role": "assistant", "text": "done"}]})
         server.manager.session_history_source.assert_called_once_with("task-05")
 
-    async def test_last_turns_rejects_duplicate_session_name(self) -> None:
+    async def test_response_rejects_duplicate_session_name(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)
         server.manager = MagicMock()
         server.manager.has_session.return_value = False
@@ -2111,7 +2111,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         ]
 
         with self.assertRaises(HTTPException) as raised:
-            await server._session_last_turns("reviewer")
+            await server._session_response("reviewer")
 
         self.assertEqual(raised.exception.status_code, 409)
 

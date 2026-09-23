@@ -7,7 +7,7 @@ calls even after authentication.
 
 These endpoints start real persistent TermDeck terminals. A successful prompt response means the prompt was
 written to the terminal and submitted; it does not mean the agent has finished processing it. Use
-`GET /api/sessions/{session_id}/last-turns` for the status and for whatever the agent has answered.
+`GET /api/sessions/{session_id}/response` for the status and for whatever the agent has said back.
 
 ## Projects and worktrees
 
@@ -73,12 +73,12 @@ task_json=$(curl -sS -X POST http://127.0.0.1:8530/api/sessions/task \
 If `project` is omitted and `after` is the unique session/group name in a single project, TermDeck infers that project
 from the anchor before creating the new terminal.
 
-For the result, use `GET /api/sessions/{session_id}/last-turns`:
+For the result, use `GET /api/sessions/{session_id}/response`:
 
 ```sh
 session_id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["session_id"])' <<< "$task_json")
-curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/last-turns"
-curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/last-turns?limit=5&final=true"
+curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/response"
+curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/response?limit=5"
 ```
 
 Relative `output_path` values are resolved under `cwd` before writing.
@@ -91,43 +91,48 @@ Response:
   "status": "completed",
   "processing": false,
   "needs_attention": false,
-  "turns": [{"role": "assistant", "text": "...", "final": true}]
+  "responses": [{"role": "assistant", "text": "...", "final": true}]
 }
 ```
 
-`limit` counts answers, not transcript entries: asking for five gives the five most recent things the agent
+`limit` counts responses, not transcript entries: asking for five gives the five most recent things the agent
 said, oldest first, however much thinking and however many commands ran between them. It defaults to 1 — the
-latest answer — and is capped at 50. `final=true` keeps only the answers an agent ended a turn with, leaving
-out what it says on its way through the work; that is the one to poll when waiting for a result. A session
-can be named by its id or, when the name is unique among open terminals, by its title.
+latest response — and is capped at 50. A session can be named by its id or, when the name is unique among open
+terminals, by its title.
+
+`GET /api/sessions/{session_id}/response/final` takes the same parameters and leaves out what an agent says on
+its way through the work — "I'll check the config first" — keeping the responses it ended a turn with. Only
+Codex marks which those are; for every other agent each response is taken as one, so this never comes back
+empty merely because an agent says nothing about it.
 
 ### Waiting for the answer to your own prompt
 
-`since` is what ties an answer to a prompt. `POST /api/sessions/{session_id}/prompt` returns the instant the
-prompt went in, and an answer stamped after that instant is an answer to it:
+`since` is what ties a response to a prompt. `POST /api/sessions/{session_id}/prompt` returns the instant the
+prompt went in — `2026-09-23T08:42:54.345Z`, the same ISO-8601 UTC shape the transcript stamps its turns with,
+and one a query string takes as it is — and a response stamped after that instant is a response to it:
 
 ```sh
 since=$(curl -sS -X POST "http://127.0.0.1:8530/api/sessions/$session_id/prompt" \
   -H 'Content-Type: application/json' -d '{"text":"Summarize the risks."}' |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["since"])')
 
-curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/last-turns?since=$since&final=true"
+curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/response?since=$since"
 ```
 
-Poll until `turns` is not empty. Nothing else in the response establishes that association, and the other
-fields are easy to misread on their own:
+Poll until `responses` is not empty. `POST /api/sessions/task` returns a `since` of its own for the prompt it
+submits. Nothing else in the response establishes that association, and the other fields are easy to misread on
+their own:
 
 - `status` is the terminal's process: `running` while the terminal is open, `completed` once it has exited,
-  `error` if it exited badly. A terminal stays open between prompts, so this never says an answer arrived.
+  `error` if it exited badly. A terminal stays open between prompts, so this never says a response arrived.
 - `processing` is whether the agent is working on a turn. False also means "has not started yet" and "is
-  waiting on a person", and in both cases the newest answer in the transcript belongs to the request before.
+  waiting on a person", and in both cases the newest response in the transcript belongs to the request before.
 - `needs_attention` is that second case on its own: the agent is asking for permission or input.
-- `final` on a turn means the agent ended its turn with it rather than saying it on the way through. Only
-  Codex reports this; for every other agent each answer is taken as one, so `final=true` never hides the
-  answer of an agent that says nothing about it.
 
-`limit` can return fewer answers than asked for even when older ones exist: one call reads back through a
-bounded number of transcript pages. Ask `history-page` for the transcript itself when you need all of it.
+A response with no timestamp on it is never returned under `since`: no stamp is no proof it is new, and ruling
+out the earlier response is the whole point of asking. `limit` can also return fewer responses than asked for
+even when older ones exist, because one call reads back through a bounded number of transcript pages. Ask
+`history-page` for the transcript itself when you need all of it.
 
 The whole transcript, with the thinking, the commands and their output, is
 `GET /api/sessions/{session_id}/history-page?before=&limit=` — that `limit` counts transcript entries.
@@ -135,7 +140,7 @@ The whole transcript, with the thinking, the commands and their output, is
 `output_path` is where raw terminal bytes are appended. Set a per-project path and include that file in any monitor
 process that needs deterministic logs.
 `model_name` is passed as an explicit `--model` argument to Codex, Claude, or AGY.
-The request is not blocking; it returns after prompt submission. Poll `last-turns` for the status and the answers.
+The request is not blocking; it returns after prompt submission. Poll `response` for the status and what the agent said back.
 
 Session IDs are globally unique, so agent callers address a terminal only by `/api/sessions/{session_id}`. A
 `worktree_id` is session metadata supplied in the create/task request or used as a list/layout filter; it is not

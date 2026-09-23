@@ -41,8 +41,10 @@ class SessionRouteNamesTest(unittest.TestCase):
     def test_how_a_session_is_doing_is_its_status(self) -> None:
         self.assertEqual(self.handler("/api/sessions/{session_id}/status", "GET"), "_session_status")
 
-    def test_what_it_answered_is_its_last_turns(self) -> None:
-        self.assertEqual(self.handler("/api/sessions/{session_id}/last-turns", "GET"), "_session_last_turns")
+    def test_what_it_said_back_is_its_response(self) -> None:
+        self.assertEqual(self.handler("/api/sessions/{session_id}/response", "GET"), "_session_response")
+        self.assertEqual(self.handler("/api/sessions/{session_id}/response/final", "GET"),
+                         "_session_final_response")
 
     def test_the_older_names_answer_with_the_same_handlers(self) -> None:
         # Scripts, and agent instructions written months ago, and anything copied out of either.
@@ -65,6 +67,7 @@ class SessionRouteNamesTest(unittest.TestCase):
         for name in ("api.md", "agents-termdeck-api.md"):
             text = (DOCS / name).read_text()
             self.assertIn("/api/sessions/task", text, name)
+            self.assertIn("/response", text, name)
             self.assertNotIn("/api/terminals/task", text, name)
             self.assertNotIn("/api/terminals/batch", text, name)
             self.assertNotIn("task-result", text, name)

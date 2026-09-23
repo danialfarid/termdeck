@@ -155,9 +155,10 @@ class TermdeckConfig:
     API_SESSIONS_BATCH_ROUTE = "/api/sessions/batch"
     API_SESSION_ROUTE = "/api/sessions/{session_id}"
     API_SESSION_STATUS_ROUTE = "/api/sessions/{session_id}/status"
-    # One call for an agent's answers: the last `limit` of them, and the session's status with them.
-    # Hyphenated, as every other route here is.
-    API_SESSION_LAST_TURNS_ROUTE = "/api/sessions/{session_id}/last-turns"
+    # What an agent said back, which is what a caller is waiting for. `/response/final` is the same
+    # answers with the ones an agent said on its way through the work left out.
+    API_SESSION_RESPONSE_ROUTE = "/api/sessions/{session_id}/response"
+    API_SESSION_FINAL_RESPONSE_ROUTE = "/api/sessions/{session_id}/response/final"
     # The names these calls had before, kept so scripts written against them keep working and left out
     # of the documentation so nothing new is written against them. Each answers exactly as it did:
     # `last_turn` and `task-result` in the old one-turn shape, the others as their own call does.
