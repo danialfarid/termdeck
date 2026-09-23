@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Dragging a spawned agent around inside the stack it is already in says what the drop would do. Over
+  the stack it came from there was no indicator at all; over its parent's row it offered a move that
+  could not happen, since a spawned agent's row is drawn under its parent rather than from the layout;
+  and over a sibling it offered to make a group of two agents that already share one. The parent and
+  its stack say the agent is already there, a sibling offers the reorder it means, and dropping on the
+  parent does what it says: nothing.
+
 ### Changed
 
 - A terminal is a session, so one noun covers it: `POST /api/sessions/task` and

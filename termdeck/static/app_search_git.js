@@ -1027,7 +1027,18 @@ Object.assign(TermdeckApp.prototype, {
     indicator.innerHTML = '<span class="codicon codicon-type-hierarchy-sub"></span><span>file under</span>';
     stack.appendChild(indicator);
     stack.ondragover = (event) => {
-      if (!this.droppableUnderAgentStack(parent.session_id).length) return;
+      if (!this.droppableUnderAgentStack(parent.session_id).length) {
+        // Nothing to do here, which is worth saying: dragging an agent around inside its own stack
+        // showed no indicator at all over the stack it came from, and a drag with no feedback reads
+        // as a deck that has stopped responding.
+        const dragged = this.sessionIdsFromDragItem(this.dragItem);
+        if (this.stackParentAlreadyHolding(parent.session_id, dragged)) {
+          this.clearDragLandingIndicator();
+          this.setDragLandingMode(stack, "drop-group",
+            `already under ${this.titlePresentation(parent).text || parent.session_id}`);
+        }
+        return;
+      }
       event.preventDefault();
       event.dataTransfer.dropEffect = "move";
       this.clearDragLandingIndicator();

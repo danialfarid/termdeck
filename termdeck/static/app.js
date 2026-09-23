@@ -6161,6 +6161,19 @@ class TermdeckApp {
     return parentId;
   }
 
+  // The parent the dragged terminals are already filed under, when the row they are over belongs to
+  // that same stack -- the parent itself, or one of its other children. A drop there does not change
+  // whose stack they are in, so the row has to say what it would do instead of offering to file them
+  // where they already are or to make a group out of terminals that are already in one.
+  stackParentAlreadyHolding(targetId, sourceSessionIds) {
+    if (!targetId || !sourceSessionIds.length) return "";
+    const parents = new Set(sourceSessionIds.map((id) => this.session(id)?.spawned_by_session_id || ""));
+    const parentId = parents.size === 1 ? [...parents][0] : "";
+    if (!parentId) return "";
+    const targetParentId = targetId === parentId ? parentId : (this.session(targetId)?.spawned_by_session_id || "");
+    return targetParentId === parentId ? parentId : "";
+  }
+
   setDragLandingMode(item, mode, label) {
     item.classList.remove("drop-before", "drop-after", "drop-group", "group-drop-pending", "group-drop-target");
     if (mode) item.classList.add(mode);
@@ -6229,13 +6242,25 @@ class TermdeckApp {
           `file under ${this.titlePresentation(parent).text || spawnParentId}`);
         return;
       }
+      // Dragging a terminal around inside the stack it is already in: over its parent there is nothing
+      // to do, and over a sibling the thing to do is reorder them, not offer to file one under the
+      // other or make a group of two agents that already share one.
+      const settledParentId = kind === "session" ? this.stackParentAlreadyHolding(targetId, sourceSessionIds) : "";
+      if (settledParentId && settledParentId === targetId) {
+        event.stopPropagation();
+        this.clearDragLandingIndicator();
+        const parent = this.session(settledParentId);
+        this.setDragLandingMode(item, "drop-group",
+          `already under ${this.titlePresentation(parent).text || settledParentId}`);
+        return;
+      }
       const sessionGroups = this.getProjectState().session_groups || {};
       const sourceGroupIds = [...new Set(sourceSessionIds.map((id) => sessionGroups[id]).filter(Boolean))];
       const targetGroup = targetId ? sessionGroups[targetId] : null;
       const rect = item.getBoundingClientRect();
-      const holdToFile = source.kind === "session" && kind === "session" && !!targetId &&
+      const holdToFile = source.kind === "session" && kind === "session" && !!targetId && !settledParentId &&
         this.canFileUnderSession(targetId, sourceSessionIds);
-      const holdToCreate = source.kind === "session" && kind === "session" &&
+      const holdToCreate = source.kind === "session" && kind === "session" && !settledParentId &&
         !sourceGroupIds.length && !targetGroup;
       const centerDrop = (holdToCreate || holdToFile) && event.clientY >= rect.top + rect.height * 0.25 &&
         event.clientY <= rect.top + rect.height * 0.75;
@@ -6243,6 +6268,10 @@ class TermdeckApp {
         this.holdOverSessionRow(item, token, targetId, source.token, holdToCreate);
         return;
       }
+      // A sibling inside the same stack is the stack's own child, and the stack is a drop target too:
+      // without this the event bubbles into it, it clears what this row drew and highlights the whole
+      // stack, so the row being pointed at shows a label with no indicator under it.
+      if (settledParentId) event.stopPropagation();
       this.clearDragLandingIndicator();
       const after = event.clientY >= rect.top + rect.height / 2;
       const moveLabel = source.kind === "group" ? "move group" : "move";
@@ -6260,6 +6289,15 @@ class TermdeckApp {
         const sourceSessionIds = this.sessionIdsFromDragItem(source);
         const targetId = token.slice(token.indexOf(":") + 1);
         if (kind === "session" && sourceSessionIds.includes(targetId)) {
+          this.clearDragLandingIndicator();
+          this.dragItem = null;
+          return;
+        }
+        // Dropped on the row of the parent they are already filed under, which is what the indicator
+        // said it would do: nothing. Reordering them against it moves them in a layout their rows are
+        // not drawn from, so the list would look exactly as it did and the order underneath would not.
+        if (kind === "session" && this.stackParentAlreadyHolding(targetId, sourceSessionIds) === targetId) {
+          event.stopPropagation();
           this.clearDragLandingIndicator();
           this.dragItem = null;
           return;
