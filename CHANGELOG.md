@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-09-22
+
+Reload any deck already open in a browser after upgrading: a page loaded from the previous version
+writes its project state the old way, and those writes are refused until it is reloaded. Nothing
+stored is lost either way.
+
 ### Added
 
 - The open files are shared: `POST /api/open-files` opens one and `DELETE /api/open-files` closes
@@ -1270,7 +1276,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/danialfarid/termdeck/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/danialfarid/termdeck/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/danialfarid/termdeck/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/danialfarid/termdeck/compare/v0.20.0...v0.20.1
