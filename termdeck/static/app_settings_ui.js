@@ -2100,34 +2100,54 @@ Object.assign(TermdeckApp.prototype, {
   // file saved under any other one would read as closed here and be deleted on the next save.
   rememberPersistedOpenFiles() {
     this.persistedOpenFiles = this.openFilesByProject();
+    this.pendingOpenFileChanges = [];
   },
 
 
-  // A file this window failed to tell the server about is forgotten again, so the next save says it
-  // once more: an open it never reported is opened again, a close it never reported is closed again.
-  forgetPersistedOpenFile(change) {
-    const known = this.persistedOpenFiles.get(change.projectKey) || new Map();
-    const key = `${change.file.root}|${change.file.path}`;
-    if (change.open) known.delete(key);
-    else known.set(key, change.file);
-    this.persistedOpenFiles.set(change.projectKey, known);
+  // What the server has, as far as this window has been told, with the writes it has sent and not
+  // heard back about laid over the top. A save is worked out against both: opening a file and then
+  // loading it saves twice in a row, and with only the acknowledged files to go on the second save
+  // repeats the first, while a failure of the first would throw away what the second had saved.
+  projectedOpenFiles() {
+    const projected = new Map();
+    for (const [projectKey, files] of this.persistedOpenFiles) projected.set(projectKey, new Map(files));
+    for (const change of this.pendingOpenFileChanges) {
+      if (!projected.has(change.projectKey)) projected.set(change.projectKey, new Map());
+      const files = projected.get(change.projectKey);
+      if (change.open) files.set(change.key, change.file);
+      else files.delete(change.key);
+    }
+    return projected;
+  },
+
+
+  // A write the server took becomes what this window knows it has; one that failed is simply no longer
+  // pending, so the next save works it out again from what was acknowledged.
+  settleOpenFileChange(change, saved) {
+    this.pendingOpenFileChanges = this.pendingOpenFileChanges.filter((pending) => pending !== change);
+    if (!saved) return;
+    const files = this.persistedOpenFiles.get(change.projectKey) || new Map();
+    if (change.open) files.set(change.key, change.file);
+    else files.delete(change.key);
+    this.persistedOpenFiles.set(change.projectKey, files);
   },
 
 
   persistOpenFiles() {
     const groups = this.openFilesByProject();
+    const projected = this.projectedOpenFiles();
     const states = this.settings.project_state || {};
-    const projectKeys = new Set([...groups.keys(), ...this.persistedOpenFiles.keys(),
+    const projectKeys = new Set([...groups.keys(), ...projected.keys(),
       ...(this.projectSlug ? [this.projectStateKey()] : Object.keys(states))]);
     const changes = [];
     for (const projectKey of projectKeys) {
       const files = groups.get(projectKey) || new Map();
-      const known = this.persistedOpenFiles.get(projectKey) || new Map();
+      const known = projected.get(projectKey) || new Map();
       for (const [key, file] of files) {
-        if (JSON.stringify(known.get(key)) !== JSON.stringify(file)) changes.push({ projectKey, file, open: true });
+        if (JSON.stringify(known.get(key)) !== JSON.stringify(file)) changes.push({ projectKey, key, file, open: true });
       }
       for (const [key, file] of known) {
-        if (!files.has(key)) changes.push({ projectKey, file, open: false });
+        if (!files.has(key)) changes.push({ projectKey, key, file, open: false });
       }
       // The copy here is the project's list with this window's opens and closes applied, not this
       // window's list: a file another window opened stays open.
@@ -2136,10 +2156,10 @@ Object.assign(TermdeckApp.prototype, {
       for (const [key, file] of files) shared.set(key, file);
       for (const key of known.keys()) if (!files.has(key)) shared.delete(key);
       states[projectKey] = { ...(states[projectKey] || {}), open_files: [...shared.values()] };
-      this.persistedOpenFiles.set(projectKey, files);
     }
     this.settings.project_state = states;
     if (!changes.length) return;
+    this.pendingOpenFileChanges = [...this.pendingOpenFileChanges, ...changes];
     this.openFilesPersistPromise = this.openFilesPersistPromise.then(async () => {
       for (const [index, change] of changes.entries()) {
         try {
@@ -2150,9 +2170,10 @@ Object.assign(TermdeckApp.prototype, {
           if (!response.ok && !(response.status === 404 && !change.open)) {
             throw new Error(`server returned ${response.status}`);
           }
+          this.settleOpenFileChange(change, true);
         } catch (error) {
           // This one failed and the ones behind it were never sent, so none of them are written yet.
-          for (const pending of changes.slice(index)) this.forgetPersistedOpenFile(pending);
+          for (const pending of changes.slice(index)) this.settleOpenFileChange(pending, false);
           throw error;
         }
       }

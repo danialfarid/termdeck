@@ -712,6 +712,9 @@ class TermdeckApp {
     // Per project, the open files this window has already told the server about: what it opens and
     // closes is written, and files opened in another window are left alone.
     this.persistedOpenFiles = new Map();
+    // The opens and closes it has sent and not heard back about, so a second save in the same breath
+    // knows what the first one already said.
+    this.pendingOpenFileChanges = [];
     this.sidebarSelectedFileKeys = new Set();
     this.sidebarFileSelectionAnchorKey = null;
     this.activeId = null;

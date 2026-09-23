@@ -32,6 +32,7 @@ const app = {
   settings: { project_state: scenario.state },
   openFiles: openFilesOf(scenario.restored),
   persistedOpenFiles: new Map(),
+  pendingOpenFileChanges: [],
   openFilesPersistPromise: Promise.resolve(),
   owningProjectKey: (root) => (scenario.projects || {})[root] || "stock",
   projectStateKey: () => "stock",
@@ -41,11 +42,18 @@ const app = {
 };
 // What the window restored is what the server already has; from here it writes what it opens and closes.
 app.rememberPersistedOpenFiles();
-for (const state of scenario.then || []) {
+for (const pass of scenario.then || []) {
+  const state = pass.files === undefined ? pass : pass.files;
+  // A pass that does not wait leaves its requests in flight, the way opening a file and then loading
+  // its metadata saves twice before the first save has been answered. One that waits starts from
+  // everything the window has been told so far.
+  const wait = pass.files === undefined || pass.wait !== false;
+  if (wait) await app.openFilesPersistPromise;
   app.openFiles = openFilesOf(state);
   app.persistOpenFiles();
-  await app.openFilesPersistPromise;
+  if (wait) await app.openFilesPersistPromise;
 }
+await app.openFilesPersistPromise;
 process.stdout.write(JSON.stringify({ sent, state: app.settings.project_state }));
 """
 
@@ -67,8 +75,8 @@ class PersistOpenFilesTest(unittest.TestCase):
         source = (STATIC / "app_settings_ui.js").read_text()
         cls.harness = HARNESS.replace("__METHODS__", "\n  ".join(
             method_source(source, name) for name in
-            ("openFilesByProject()", "rememberPersistedOpenFiles()", "forgetPersistedOpenFile(change)",
-             "persistOpenFiles()")))
+            ("openFilesByProject()", "rememberPersistedOpenFiles()", "projectedOpenFiles()",
+             "settleOpenFileChange(change, saved)", "persistOpenFiles()")))
 
     def run_scenario(self, scenario: dict) -> dict:
         done = subprocess.run([self.node, "--input-type=module", "-e", self.harness],
@@ -161,6 +169,25 @@ class PersistOpenFilesTest(unittest.TestCase):
 
         self.assertEqual(len(attempted), 1, "the run stops at the failure")
         self.assertEqual(sorted(retried), ["b.py", "c.py"])
+
+    def test_two_saves_in_the_same_breath_do_not_repeat_each_other(self) -> None:
+        # Opening a file saves it, and loading its contents saves it again a moment later with the
+        # mtime filled in -- before the first save has been answered.
+        result = self.window(files(), [], [{"files": files("a.py"), "wait": False},
+                                           {"files": files("a.py", mtime=9), "wait": False}])
+
+        self.assertEqual([(request["method"], request["body"]["mtime"]) for request in result["sent"]],
+                         [("POST", "0"), ("POST", "9")])
+
+    def test_a_failed_save_does_not_undo_the_one_behind_it_that_worked(self) -> None:
+        # The first save failed and the second saved the same file; rolling the first one back took
+        # the second one's file with it, and closing that file afterwards sent nothing at all -- the
+        # tab came back on the next load.
+        result = self.window(files(), [], [{"files": files("a.py"), "wait": False},
+                                           {"files": files("a.py", mtime=9), "wait": False},
+                                           files()], failUntil=1)
+
+        self.assertEqual(self.written(result), [("POST", "a.py"), ("POST", "a.py"), ("DELETE", "a.py")])
 
     def test_the_whole_list_is_never_written(self) -> None:
         result = self.window(files("a.py"), [entry("/repo", "a.py")], [files("a.py", "b.py")])
