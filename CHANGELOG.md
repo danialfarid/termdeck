@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-09-23
+
+Reload any deck open in a browser after upgrading, and restart agents that were told how to use the
+API so they pick up the new calls; the names they were given still answer either way.
+
 ### Added
 
 - A group can be moved to another project, the way a single terminal already could: its own menu
@@ -1344,7 +1349,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/danialfarid/termdeck/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/danialfarid/termdeck/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/danialfarid/termdeck/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/danialfarid/termdeck/compare/v0.20.1...v0.21.0
