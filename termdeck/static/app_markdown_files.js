@@ -7206,7 +7206,17 @@ Object.assign(TermdeckApp.prototype, {
     if (!typedHere.trim() || typedHere === serverText) return null;
     if (this.rescuedNotebookText.get(noteId) === typedHere) return null;
     this.rescuedNotebookText.set(noteId, typedHere);
+    this.rescuedNotebookNoteIds ||= new Map();
+    const existingId = this.rescuedNotebookNoteIds.get(noteId);
+    const existing = this.notebookProjectState().notebook_notes.find((entry) => entry.note_id === existingId);
+    if (existing) {
+      existing.text = typedHere;
+      this.saveNotebookNote(existing);
+      this.renderNotebookTabs();
+      return existing;
+    }
     const rescued = { note_id: this.createNotebookNoteId(), text: typedHere };
+    this.rescuedNotebookNoteIds.set(noteId, rescued.note_id);
     this.notebookProjectState().notebook_notes.push(rescued);
     this.createNotebookNoteRecord(rescued);
     this.renderNotebookTabs();
@@ -7347,8 +7357,9 @@ Object.assign(TermdeckApp.prototype, {
       seen.add(noteId);
       // The version this copy came from travels with it. Rebuilding the note without it meant every
       // write claimed to be from no particular version, and a write from a stale copy was taken.
-      notes.push({ note_id: noteId, text: String(raw?.text || ""),
-        ...(Number.isInteger(raw?.revision) ? { revision: raw.revision } : {}) });
+      raw.note_id = noteId;
+      raw.text = String(raw.text || "");
+      notes.push(raw);
     }
     if (!notes.length && (!scopedInitialized || hasLegacyNotebook)) {
       notes.push({ note_id: this.createNotebookNoteId(), text: String(sourceNotebookText || "") });

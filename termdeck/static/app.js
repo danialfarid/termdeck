@@ -1673,7 +1673,14 @@ class TermdeckApp {
     // A note deleted here is gone both ways: state that still carries it was written before the delete
     // landed, and taking it whole put the note back -- its tab returned, and only the next thing to
     // redraw the strip took it away again, which read as a delete that did not take.
-    const arriving = patch.notebook_notes.filter((note) => !this.deletedNotebookNoteIds.has(String(note?.note_id || "")));
+    const localNotes = new Map(current.notebook_notes.map((note) => [String(note?.note_id || ""), note]));
+    const arriving = patch.notebook_notes
+      .filter((note) => !this.deletedNotebookNoteIds.has(String(note?.note_id || "")))
+      .map((note) => {
+        const id = String(note?.note_id || "");
+        const local = localNotes.get(id);
+        return local && (this.dirtyNotebookNoteIds?.has(id) || this.unsavedNotebookNoteIds.has(id)) ? local : note;
+      });
     const arrivingIds = new Set(arriving.map((note) => String(note?.note_id || "")));
     // Only a note the server has not acknowledged yet is held back from what arrives. Holding every
     // note this page happens to have meant a note deleted in another window could never go: its
@@ -1683,7 +1690,7 @@ class TermdeckApp {
       return noteId && !arrivingIds.has(noteId) && this.unsavedNotebookNoteIds.has(noteId);
     });
     const notes = [...arriving, ...kept];
-    const merged = kept.length || arriving.length !== patch.notebook_notes.length ? { notebook_notes: notes } : {};
+    const merged = { notebook_notes: notes };
     // Which note a window is looking at is that window's business. Two windows on the same project
     // each write their own, so following whatever arrived made the tabs jump to the other window's
     // note and back again on every save -- one tap read as two. This page keeps its own choice for as
