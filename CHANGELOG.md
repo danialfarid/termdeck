@@ -6,16 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-09-24
+
 ### Changed
 
 - Making a terminal is one call. `POST /api/sessions` takes an optional `prompt`, and with one it starts
   the terminal on it and returns the `since` for that prompt — which is all the separate task call ever
   added. `/api/sessions/task` and `/api/terminals/task` still answer and are no longer documented.
-
-### Changed
-
-- The group header gives its width to the name. The chevron is smaller and sits a pixel from the name
-  it opens, the search and new-terminal buttons sit together at the end instead of one each side of a
+- The group header gives its width to the name. The chevron is smaller — it had been taking the 16px
+  the icon font ships with, since the rule meant to shrink it was no more specific than the vendor's —
+  and both it and the name start nearer the edge; the search and new-terminal buttons sit together at the end instead of one each side of a
   gap, and the dot beside the unread count is gone: the count says how many terminals want you, and
   says it in the accent colour. A terminal waiting to be let through is counted, which is what the dot
   used to be there for.
@@ -1398,7 +1398,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.24.1...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/danialfarid/termdeck/compare/v0.24.1...v0.25.0
 [0.24.1]: https://github.com/danialfarid/termdeck/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/danialfarid/termdeck/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/danialfarid/termdeck/compare/v0.22.0...v0.23.0
