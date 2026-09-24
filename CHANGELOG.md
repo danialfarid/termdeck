@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.26.2] — 2026-09-24
+
+### Fixed
+
+- The Markdown view of a file keeps the reader's place. The rendered document follows the file so it
+  stays true while an agent writes it, but it was rebuilt on every change, including the changes that
+  change nothing — an autosave, or the same text written back. Every few seconds the reader was
+  returned to the top of the page and to the left of whatever wide table they were reading. A render
+  that would produce the same document is skipped, and a real change carries over the positions inside
+  the document as well as the page's own.
+
 ## [0.26.1] — 2026-09-24
 
 ### Fixed
@@ -1431,7 +1442,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.26.1...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.26.2...HEAD
+[0.26.2]: https://github.com/danialfarid/termdeck/compare/v0.26.1...v0.26.2
 [0.26.1]: https://github.com/danialfarid/termdeck/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/danialfarid/termdeck/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/danialfarid/termdeck/compare/v0.24.1...v0.25.0
