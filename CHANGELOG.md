@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.26.1] — 2026-09-24
+
+### Fixed
+
+- A Codex terminal's subagent count says what is running now. The roster a session holds is only as
+  fresh as the last time it asked its agents how they were doing, and it stops asking once it has
+  finished, so a terminal whose three agents ended hours ago kept wearing three dots. A spawned agent
+  writes its own rollout, naming the thread it was forked from, and it is running for exactly as long
+  as that rollout is still being written.
+- Background terminals are no longer counted. The cells 0.26.0 read belong to one codex build; the
+  next keeps its shells in numbered sessions and never records their ending, so a terminal running a
+  background command showed nothing while terminals that had finished one showed a dot. Codex reports
+  them in the footer it redraws, which is patched in place with cursor moves and cannot be read back
+  without emulating the screen.
+
 ## [0.26.0] — 2026-09-24
 
 ### Added
@@ -1416,7 +1431,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.26.1...HEAD
+[0.26.1]: https://github.com/danialfarid/termdeck/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/danialfarid/termdeck/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/danialfarid/termdeck/compare/v0.24.1...v0.25.0
 [0.24.1]: https://github.com/danialfarid/termdeck/compare/v0.24.0...v0.24.1
