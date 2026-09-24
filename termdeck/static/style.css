@@ -960,19 +960,21 @@ body.vscode-native-mode #project-terminal-search-btn { display: none !important;
 /* No indent: the rule beside them is what marks them as this terminal's, and every pixel taken off a
    row's left is a pixel off the title it has to fit. */
 .agent-stack.expanded > .agent-stack-children { margin-left: 0; }
-.terminal-group-label { display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; border: 0; border-bottom: 1px solid var(--border); background: var(--panel2); color: var(--text); padding: 8px 9px 7px; font-weight: 650; letter-spacing: 0.04em; text-transform: none; }
-.group-unread-dot { display: none; position: relative; width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--accent); }
+.terminal-group-label { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; border: 0; border-bottom: 1px solid var(--border); background: var(--panel2); color: var(--text); padding: 8px 9px 7px 4px; font-weight: 650; letter-spacing: 0.04em; text-transform: none; }
+.group-unread-dot { display: none; position: relative; width: 5px; height: 5px; flex: none; border-radius: 50%; background: var(--accent); }
 .group-unread-dot.on { display: inline-block; }
-.group-attention { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; color: var(--sidebar-text-color); font-size: calc(var(--sidebar-font-size) - 4px); letter-spacing: 0; }
+.group-attention { display: inline-flex; flex-direction: column-reverse; align-items: center; gap: 1px; margin-left: auto; line-height: 1; color: var(--sidebar-text-color); font-size: calc(var(--sidebar-font-size) - 4px); letter-spacing: 0; }
 .group-unread-count:empty { display: none; }
 .terminal-group-label:hover { color: var(--text); background: var(--panel2); }
 .terminal-group-label.drop-group { color: var(--accent); background: var(--active-bg); border-bottom-color: var(--accent); }
 .terminal-group-label .codicon { font-size: 11px; flex: none; }
+.terminal-group-chevron.codicon { width: 9px; font-size: 9px; opacity: 0.7; }
+.terminal-group-chevron.codicon { width: calc(9px * var(--ui-scale)); font-size: calc(9px * var(--ui-scale)); }
 .terminal-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(var(--sidebar-font-size) - 3px); }
 body:not(.vscode-mode) .terminal-group-name { color: var(--accent); }
 .terminal-group-add { display: grid; place-items: center; flex: none; width: 19px; height: 19px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: none; color: var(--dim); font-size: 0; line-height: 1; cursor: pointer; }
 .terminal-group-add:hover { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
-.terminal-group-search { flex: none; width: 18px; height: 18px; margin-left: auto; padding: 0; border: 1px solid transparent; border-radius: 4px; background: none; color: var(--dim); cursor: pointer; opacity: 0.38; }
+.terminal-group-search { flex: none; width: 18px; height: 18px; margin-left: auto; margin-right: -3px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: none; color: var(--dim); cursor: pointer; opacity: 0.38; }
 body:not(.vscode-mode) .terminal-group-label .group-attention { margin-left: 0; }
 .terminal-group-search:hover, .terminal-group-search.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); opacity: 1; }
 .terminal-group-search .codicon { font-size: 10px; }
@@ -2194,7 +2196,7 @@ body.notebook-open #mobile-notebook-toggle { display: none; }
 .session-item { padding: calc(5px * var(--ui-scale)) calc(8px * var(--ui-scale)) calc(5px * var(--ui-scale)) calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); }
 .session-item.terminal-icons-hidden { padding-left: calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); }
 .status-dot { left: calc(var(--terminal-status-dot-left, 6px) * var(--ui-scale)); width: calc(var(--terminal-status-dot-size, 6px) * var(--ui-scale)); height: calc(var(--terminal-status-dot-size, 6px) * var(--ui-scale)); margin-top: calc(var(--terminal-status-dot-size, 6px) * var(--ui-scale) * -0.5); }
-.group-unread-dot { width: calc(6px * var(--ui-scale)); height: calc(6px * var(--ui-scale)); }
+.group-unread-dot { width: calc(5px * var(--ui-scale)); height: calc(5px * var(--ui-scale)); }
 .group-unread-dot.attention::after { border-width: calc(1.5px * var(--ui-scale)); }
 .session-spinner { left: calc(7px * var(--ui-scale)); width: calc(8px * var(--ui-scale)); height: calc(8px * var(--ui-scale)); margin-top: calc(-4px * var(--ui-scale)); }
 .terminal-type-icon { left: calc(2px * var(--ui-scale)); width: calc(var(--terminal-icon-size, 14px) * var(--ui-scale)); height: calc(var(--terminal-icon-size, 14px) * var(--ui-scale)); margin: 0; }
@@ -2207,9 +2209,9 @@ body:not(.vscode-mode) .terminal-type-icon { margin: 0; }
 .item-close { padding: 0 calc(2px * var(--ui-scale)); font-size: calc(12px * var(--ui-scale)); }
 .terminal-group { margin: calc(5px * var(--ui-scale)) calc(4px * var(--ui-scale)) calc(8px * var(--ui-scale)); border-radius: calc(8px * var(--ui-scale)); }
 .terminal-group-members-inner { padding-bottom: calc(4px * var(--ui-scale)); }
-.terminal-group-label { gap: calc(5px * var(--ui-scale)); padding: calc(8px * var(--ui-scale)) calc(9px * var(--ui-scale)) calc(7px * var(--ui-scale)); }
-.terminal-group-add { width: calc(26px * var(--ui-scale)); height: calc(26px * var(--ui-scale)); font-size: 0; line-height: 1; }
-.terminal-group-search { display: grid; place-items: center; width: calc(26px * var(--ui-scale)); height: calc(26px * var(--ui-scale)); }
+.terminal-group-label { gap: calc(4px * var(--ui-scale)); padding: calc(8px * var(--ui-scale)) calc(9px * var(--ui-scale)) calc(7px * var(--ui-scale)) calc(4px * var(--ui-scale)); }
+.terminal-group-add { width: calc(21px * var(--ui-scale)); height: calc(21px * var(--ui-scale)); font-size: 0; line-height: 1; }
+.terminal-group-search { display: grid; place-items: center; width: calc(21px * var(--ui-scale)); height: calc(21px * var(--ui-scale)); margin-right: calc(-2px * var(--ui-scale)); }
 .terminal-group-search .codicon { font-size: calc(10px * var(--ui-scale)); }
 .terminal-group-members .session-item { padding-left: calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); }
 .terminal-group-members .session-item > .status-dot { left: calc(6px * var(--ui-scale)); }

@@ -753,7 +753,8 @@ Object.assign(TermdeckApp.prototype, {
     label.className = "side-section-label terminal-group-label";
     label.dataset.worktreeId = this.stateWorktreeId();
     const chevron = document.createElement("span");
-    chevron.className = "codicon " + (group.collapsed ? "codicon-chevron-right" : "codicon-chevron-down");
+    chevron.className = "codicon terminal-group-chevron " +
+      (group.collapsed ? "codicon-chevron-right" : "codicon-chevron-down");
     const name = document.createElement("span");
     name.className = "terminal-group-name";
     name.textContent = group.name;

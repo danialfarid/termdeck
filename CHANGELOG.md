@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The group header gives its width to the name. The chevron is smaller and starts at the edge, the
+  unread count sits above its dot rather than beside it, and the search and new-terminal buttons sit
+  together at the end instead of one each side of a gap.
+
 ### Fixed
 
 - A restarted server refreshes the whole deck, not only the terminals. Everything the page was holding
