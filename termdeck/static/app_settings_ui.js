@@ -1593,8 +1593,7 @@ Object.assign(TermdeckApp.prototype, {
 
 
   async reloadTree(rootOverride) {
-    const s = this.session(this.activeId);
-    this.treeRoot = rootOverride || (s ? s.cwd : (this.worktreeRoot() || "~"));
+    this.treeRoot = rootOverride || this.activeFileRoot();
     this.connectFileTreeWatch(this.treeRoot);
     this.treeDirs.clear();
     this.expandedDirs = new Set(this.treeSearchFilter?.expandedDirs || []);

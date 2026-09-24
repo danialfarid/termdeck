@@ -16,6 +16,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A project shows its own files. The file tree followed whichever terminal was being looked at, and a
+  terminal can run in a directory belonging to another project — moved here, or started there — so a
+  project created on one directory listed another project's files under its own name. A terminal
+  working inside the project still roots the tree where it is.
 - A restarted server refreshes the whole deck, not only the terminals. Everything the page was holding
   came from the server that is gone — the settings, the projects and their worktrees, the state of the
   panel beside the terminals — and all of it went on showing the old answers until the page was loaded

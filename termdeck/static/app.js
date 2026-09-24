@@ -3817,6 +3817,19 @@ class TermdeckApp {
     return p ? p.root : null;
   }
 
+  // The directory the file views belong in: the terminal being looked at when it sits inside the
+  // project being looked at, and the project's own root otherwise. A terminal can run in a directory
+  // belonging to another project -- moved here, or started there -- and following it showed that
+  // project's files under this project's name.
+  activeFileRoot() {
+    const root = this.worktreeRoot() || "~";
+    const cwd = this.session(this.activeId)?.cwd || "";
+    if (!cwd) return root;
+    const inside = this.normalizedFileSystemPath(cwd);
+    const within = this.normalizedFileSystemPath(root);
+    return within && (inside === within || inside.startsWith(`${within}/`)) ? cwd : root;
+  }
+
   worktreeRoot() {
     const selectedId = this.worktreeId === ALL_WORKTREES_ID ? this.interactionWorktreeId : (this.worktreeId || "root");
     const selected = this.worktrees.find((worktree) => worktree.id === selectedId && worktree.available);

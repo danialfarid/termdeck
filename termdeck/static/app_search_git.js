@@ -1532,8 +1532,7 @@ Object.assign(TermdeckApp.prototype, {
     this.applySideLayout();
     this.updateProblemsAvailability();
     if (view === "project" || view === "search") {
-      const session = this.session(this.activeId);
-      const expectedRoot = session ? session.cwd : (this.worktreeRoot() || "~");
+      const expectedRoot = this.activeFileRoot();
       if (this.treeRoot !== expectedRoot || !this.treeDirs.has("")) {
         this.treeReloadPromise = this.reloadTree(expectedRoot);
       } else {
