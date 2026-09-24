@@ -96,8 +96,8 @@ class CodexCli(AgentCli):
         self._rollout_paths: dict[str, Path] = {}
         self._runtime_settings_cache: dict[str, tuple[int, int, dict[str, str]]] = {}
         self._subagent_counts: dict[str, tuple[float, int]] = {}
-        # Per terminal: the buffer length that was read, when, and what the screen said.
-        self._background_counts: dict[str, tuple[int, float, int]] = {}
+        # Per terminal: when its screen was last replayed, and what it said.
+        self._background_counts: dict[str, tuple[float, int]] = {}
         self._forked_from_cache: dict[Path, str] = {}
 
     def model_arguments(self, model_name: str) -> tuple[str, ...]:
@@ -476,17 +476,20 @@ class CodexCli(AgentCli):
     _BACKGROUND_TERMINALS_RE = re.compile(r"(\d+)\s+background terminals?\s+running")
 
     def background_terminal_count(self, ms) -> int:
-        size = len(ms.buffer)
         session_id = ms.record.session_id
         cached = self._background_counts.get(session_id)
         now = time.monotonic()
-        # A terminal that has written nothing since the last look cannot have changed what it says, and
-        # replaying one is dear enough that a busy one is read at most every few seconds.
-        if cached is not None and (cached[0] == size or now - cached[1] < self.BACKGROUND_SCREEN_TTL_SECONDS):
-            return cached[2]
-        count = self.background_terminals_on_screen(bytes(ms.buffer[-self.BACKGROUND_SCREEN_TAIL_BYTES:]),
+        # Replaying a terminal is dear, so a busy one is read at most every few seconds. It is read
+        # again even when nothing has been written since: the first read of a restored terminal can
+        # happen before its buffer is back, and an idle one would then never be looked at again.
+        if cached is not None and now - cached[0] < self.BACKGROUND_SCREEN_TTL_SECONDS:
+            return cached[1]
+        # The raw replay is what codex actually wrote, escapes and all; a codex terminal keeps its
+        # stream there rather than in the scrollback the client is served.
+        stream = ms.raw_replay_buffer or ms.buffer
+        count = self.background_terminals_on_screen(bytes(stream[-self.BACKGROUND_SCREEN_TAIL_BYTES:]),
                                                     ms.record.cols, ms.record.rows)
-        self._background_counts[session_id] = (size, now, count)
+        self._background_counts[session_id] = (now, count)
         return count
 
     @classmethod

@@ -147,6 +147,7 @@ class ActivityDetailTest(unittest.TestCase):
 
         Session.running = running
         Session.buffer = bytearray()
+        Session.raw_replay_buffer = bytearray()
         Session.record.agent_session_id = agent_session_id
         Session.record.session_id = "term1"
         Session.record.cols = 112
@@ -158,19 +159,20 @@ class ActivityDetailTest(unittest.TestCase):
             cli = CodexCli()
             cli._recent_day_dirs = staticmethod(lambda: [Path(directory)])
             session = self.session()
-            session.buffer = bytearray(footer("  2 background terminals running · /ps to view",
-                                              "› Ask Codex to do anything"))
+            # What codex wrote, where a codex terminal keeps it.
+            session.raw_replay_buffer = bytearray(footer("  2 background terminals running · /ps to view",
+                                                         "› Ask Codex to do anything"))
 
             self.assertEqual(cli.activity_detail(session)["background_jobs"], 2)
 
-    def test_a_terminal_that_has_written_nothing_new_is_not_read_again(self) -> None:
-        # Replaying a terminal is dear, and a terminal that has said nothing cannot have changed what
-        # it says, so the answer stands until its buffer grows.
+    def test_a_terminal_is_not_replayed_for_every_status_build(self) -> None:
+        # Replaying a terminal is dear, and status is built far more often than a background command
+        # starts or ends, so a recent answer stands.
         with TemporaryDirectory() as directory:
             cli = CodexCli()
             cli._recent_day_dirs = staticmethod(lambda: [Path(directory)])
             session = self.session()
-            session.buffer = bytearray(footer("  1 background terminal running · /ps to view"))
+            session.raw_replay_buffer = bytearray(footer("  1 background terminal running · /ps to view"))
             self.assertEqual(cli.background_terminal_count(session), 1)
             reads = []
             with patch.object(CodexCli, "background_terminals_on_screen",
