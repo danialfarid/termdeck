@@ -30,12 +30,20 @@ class GroupHeaderLayoutTest(unittest.TestCase):
     def test_the_chevron_is_smaller_than_the_row_s_other_icons(self) -> None:
         # It is a hinge, not a label: the name is what the row is for.
         self.assertIn("terminal-group-chevron", self.js)
-        chevron = self.rule(".terminal-group-chevron.codicon")
+        chevron = self.rule(".terminal-group-label .terminal-group-chevron.codicon")
 
-        self.assertLess(self.scaled(chevron, "font-size"), 8)
-        # And a pixel further out than the row would put it, toward the edge rather than the name.
-        self.assertRegex(chevron, r"margin-left:\s*calc\(-[\d.]+px")
-        self.assertNotIn("margin-right", chevron)
+        self.assertLess(self.scaled(chevron, "font-size"), 11)
+
+    def test_the_chevron_rule_outranks_the_icon_font_it_comes_with(self) -> None:
+        # The vendor sheet sizes every icon with a `font` shorthand, at the specificity of a two-class
+        # rule: anything less specific than this left the chevron at the 16px that came with it.
+        self.assertNotRegex(self.css, r"\n\.terminal-group-chevron\.codicon \{")
+        self.assertIn(".terminal-group-label .terminal-group-chevron.codicon {", self.css)
+
+    def test_the_chevron_keeps_its_distance_from_the_name(self) -> None:
+        chevron = self.rule(".terminal-group-label .terminal-group-chevron.codicon")
+
+        self.assertRegex(chevron, r"margin-right:\s*calc\([\d.]+px")
 
     def test_the_name_starts_near_the_edge(self) -> None:
         label = self.rule(".terminal-group-label")

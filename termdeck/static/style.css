@@ -966,8 +966,8 @@ body.vscode-native-mode #project-terminal-search-btn { display: none !important;
 .terminal-group-label:hover { color: var(--text); background: var(--panel2); }
 .terminal-group-label.drop-group { color: var(--accent); background: var(--active-bg); border-bottom-color: var(--accent); }
 .terminal-group-label .codicon { font-size: 11px; flex: none; }
-.terminal-group-chevron.codicon { width: 7px; font-size: 7px; opacity: 0.7; }
-.terminal-group-chevron.codicon { width: calc(7px * var(--ui-scale)); font-size: calc(7px * var(--ui-scale)); margin-left: calc(-1px * var(--ui-scale)); }
+.terminal-group-label .terminal-group-chevron.codicon { width: 9px; font-size: 9px; opacity: 0.6; }
+.terminal-group-label .terminal-group-chevron.codicon { width: calc(9px * var(--ui-scale)); font-size: calc(9px * var(--ui-scale)); margin-left: calc(2px * var(--ui-scale)); margin-right: calc(2px * var(--ui-scale)); }
 .terminal-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(var(--sidebar-font-size) - 3px); }
 body:not(.vscode-mode) .terminal-group-name { color: var(--accent); }
 .terminal-group-add { display: grid; place-items: center; flex: none; width: 19px; height: 19px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: none; color: var(--dim); font-size: 0; line-height: 1; cursor: pointer; }
