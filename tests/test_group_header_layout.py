@@ -32,7 +32,10 @@ class GroupHeaderLayoutTest(unittest.TestCase):
         self.assertIn("terminal-group-chevron", self.js)
         chevron = self.rule(".terminal-group-chevron.codicon")
 
-        self.assertLess(self.scaled(chevron, "font-size"), 11)
+        self.assertLess(self.scaled(chevron, "font-size"), 8)
+        # And a pixel further out than the row would put it, toward the edge rather than the name.
+        self.assertRegex(chevron, r"margin-left:\s*calc\(-[\d.]+px")
+        self.assertNotIn("margin-right", chevron)
 
     def test_the_name_starts_near_the_edge(self) -> None:
         label = self.rule(".terminal-group-label")
@@ -42,11 +45,20 @@ class GroupHeaderLayoutTest(unittest.TestCase):
         self.assertEqual(len(sides), 4, "a left of its own, smaller than the right")
         self.assertLess(float(sides[3]), float(sides[1]))
 
-    def test_the_count_sits_above_the_dot_rather_than_beside_it(self) -> None:
-        # Side by side they cost the name twice the width; stacked they cost it the wider of the two.
+    def test_the_count_stands_alone_and_says_what_it_is_by_its_colour(self) -> None:
+        # The number says how many terminals want you; a dot beside it said the same thing again, in
+        # the width the name wanted.
         attention = self.rule(".group-attention")
 
-        self.assertIn("flex-direction: column-reverse", attention)
+        self.assertIn("color: var(--accent)", attention)
+        self.assertNotIn("group-unread-dot", self.css)
+        self.assertNotIn("group-unread-dot", self.js)
+
+    def test_a_terminal_waiting_to_be_let_through_is_counted(self) -> None:
+        # It was what lit the dot, and with the dot gone it would go unmentioned on a shut group.
+        counted = re.search(r"const attentionCount = members\.filter\((.*?)\)\.length;", self.js, re.S).group(1)
+
+        self.assertIn("attentionSessions.has(session.session_id)", counted)
 
     def test_the_two_buttons_of_the_row_sit_together(self) -> None:
         search = self.rule(".terminal-group-search")

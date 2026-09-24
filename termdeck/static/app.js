@@ -5884,17 +5884,15 @@ class TermdeckApp {
     if (!label) return;
     const memberIds = this.groupSessionIds(groupId);
     const working = memberIds.some((id) => this.processingStates.get(id));
-    const attentionCount = memberIds.filter((id) => this.processingStates.get(id) || this.unreadSessions.has(id)).length;
+    const attentionCount = memberIds.filter((id) => this.processingStates.get(id) ||
+      this.unreadSessions.has(id) || this.attentionSessions.has(id)).length;
     label.classList.remove("group-working", "group-unread");
-    const unreadDot = label.querySelector(".group-unread-dot");
-    if (unreadDot) {
-      const groupNeedsAttention = memberIds.some((id) => this.attentionSessions.has(id));
-      unreadDot.classList.toggle("on", attentionCount > 0 || groupNeedsAttention);
-      unreadDot.classList.remove("attention");
-      unreadDot.title = attentionCount ? `${attentionCount} active or unread terminal${attentionCount === 1 ? "" : "s"}` : "";
-    }
     const attentionNumber = label.querySelector(".group-unread-count");
-    if (attentionNumber) attentionNumber.textContent = attentionCount ? String(attentionCount) : "";
+    if (attentionNumber) {
+      attentionNumber.textContent = attentionCount ? String(attentionCount) : "";
+      attentionNumber.title = attentionCount
+        ? `${attentionCount} terminal${attentionCount === 1 ? "" : "s"} working, unread, or waiting on you` : "";
+    }
     const name = label.querySelector(".terminal-group-name");
     if (name && !this.vscodeMode) {
       const members = memberIds.map((id) => this.session(id)).filter(Boolean);

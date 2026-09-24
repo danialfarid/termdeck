@@ -759,16 +759,14 @@ Object.assign(TermdeckApp.prototype, {
     name.className = "terminal-group-name";
     name.textContent = group.name;
     if (!this.vscodeMode) name.style.color = this.terminalGroupAgeColor(members);
-    const unreadDot = document.createElement("span");
-    const groupNeedsAttention = members.some((session) => this.attentionSessions.has(session.session_id));
-    unreadDot.className = "group-unread-dot" + (attentionCount || groupNeedsAttention ? " on" : "");
-    unreadDot.title = attentionCount ? `${attentionCount} active or unread terminal${attentionCount === 1 ? "" : "s"}` : "";
     const attentionNumber = document.createElement("span");
     attentionNumber.className = "group-unread-count";
     attentionNumber.textContent = attentionCount ? String(attentionCount) : "";
+    attentionNumber.title = attentionCount
+      ? `${attentionCount} terminal${attentionCount === 1 ? "" : "s"} working, unread, or waiting on you` : "";
     const attention = document.createElement("span");
     attention.className = "group-attention";
-    attention.append(unreadDot, attentionNumber);
+    attention.append(attentionNumber);
     const indicator = document.createElement("span");
     indicator.className = "group-drop-indicator";
     indicator.innerHTML = '<span class="codicon codicon-folder-library"></span><span>group</span>';
@@ -1194,7 +1192,7 @@ Object.assign(TermdeckApp.prototype, {
     groupBox.dataset.groupId = group.id;
     groupBox.dataset.worktreeId = this.stateWorktreeId();
     const attentionCount = members.filter((session) => this.processingStates.get(session.session_id) ||
-      this.unreadSessions.has(session.session_id)).length;
+      this.unreadSessions.has(session.session_id) || this.attentionSessions.has(session.session_id)).length;
     const working = members.some((session) => this.processingStates.get(session.session_id));
     groupBox.appendChild(this.terminalGroupLabel(group, attentionCount, working, members));
     const membersBox = document.createElement("div");

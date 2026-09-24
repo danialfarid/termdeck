@@ -8,9 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- The group header gives its width to the name. The chevron is smaller and starts at the edge, the
-  unread count sits above its dot rather than beside it, and the search and new-terminal buttons sit
-  together at the end instead of one each side of a gap.
+- The group header gives its width to the name. The chevron is smaller and sits a pixel from the name
+  it opens, the search and new-terminal buttons sit together at the end instead of one each side of a
+  gap, and the dot beside the unread count is gone: the count says how many terminals want you, and
+  says it in the accent colour. A terminal waiting to be let through is counted, which is what the dot
+  used to be there for.
 
 ### Fixed
 
