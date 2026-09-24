@@ -1018,6 +1018,7 @@ class TermdeckApp {
     this.statusWsReconnectTimer = 0;
     this.mobileConnectionWarningTimer = 0;
     this.serverInstanceId = "";
+    this.serverVersion = "";
     this.remoteIdleTimeoutMs = 0;
     this.remoteIdleLastInteractionAt = 0;
     this.remoteIdleTimer = 0;
@@ -5124,6 +5125,21 @@ class TermdeckApp {
     return img;
   }
 
+  // A restarted server has reread everything from disk, and what this page holds came from the one
+  // that is gone: the settings, the projects and their worktrees, the state of the panel beside the
+  // terminals. Refreshing the terminals alone left the rest of the deck showing the old server's
+  // answers until the page was loaded again by hand.
+  async reloadDeckAfterRestart() {
+    await Promise.all([this.loadSettings(), this.loadAgentSpecs()]);
+    this.applySettings();
+    await this.loadProjects();
+    if (this.projectSlug) await this.loadWorktrees();
+    await this.refresh();
+    await this.refreshCurrentProjectState();
+    this.renderTopbar();
+    this.renderList();
+  }
+
   async refresh() {
     if (!this.initialLoadComplete) this.showInitialLoadingState();
     let sessions, closed;
@@ -5255,13 +5271,25 @@ class TermdeckApp {
           const instanceId = String(message.instance_id || "");
           if (!instanceId) return;
           const serverRestarted = !!this.serverInstanceId && this.serverInstanceId !== instanceId;
+          const version = String(message.version || "");
+          const upgraded = serverRestarted && !!version && !!this.serverVersion && version !== this.serverVersion;
           this.serverInstanceId = instanceId;
+          this.serverVersion = version || this.serverVersion;
           if (serverRestarted) {
+            // An upgraded server is serving a page this one has never seen: everything here -- the
+            // code as much as the state -- came from the server that is gone. Only loading it again
+            // brings the new one's.
+            if (upgraded) {
+              this.flushPendingSettingsSave();
+              this.flushNotebookOnPageExit();
+              location.reload();
+              return;
+            }
             this.scheduleMobileConnectionWarning();
             // Every terminal's buffer was built from the old server's recording; rebuild rather
             // than let the new one repaint into it. See connect().
             for (const view of this.views.values()) view.replayFromScratchOnNextConnect = true;
-            void this.refresh();
+            void this.reloadDeckAfterRestart();
             this.reconnectFocusedConnections();
           }
           return;

@@ -113,6 +113,7 @@ class WsMessageFields:
     PROJECT_STATE = "project_state"
     SERVER_INSTANCE = "server_instance"
     INSTANCE_ID = "instance_id"
+    VERSION = "version"
     SESSION_ID = "session_id"
     PROJECT = "project"
     WORKTREE_ID = "worktree_id"

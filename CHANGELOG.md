@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A restarted server refreshes the whole deck, not only the terminals. Everything the page was holding
+  came from the server that is gone — the settings, the projects and their worktrees, the state of the
+  panel beside the terminals — and all of it went on showing the old answers until the page was loaded
+  again by hand.
+- A server that was upgraded underneath an open page loads that page again. The page is the old
+  server's, its code as much as its state, so no refresh could replace it; what was being typed is
+  written first. The restart message carries the version, which is how the two are told apart.
+
 ## [0.24.1] — 2026-09-23
 
 ### Fixed

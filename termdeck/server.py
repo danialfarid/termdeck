@@ -4252,8 +4252,13 @@ class TermdeckServer:
         await websocket.accept()
         queue = self.manager.attach_status_client()
         try:
+            # The version with the instance, so a page can tell a server that restarted from one that
+            # was upgraded underneath it: after an upgrade the page itself is the old server's, and
+            # only loading it again brings the new one's.
+            from termdeck import __version__
             await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.SERVER_INSTANCE,
-                                                  WsMessageFields.INSTANCE_ID: self.server_instance_id}))
+                                                  WsMessageFields.INSTANCE_ID: self.server_instance_id,
+                                                  WsMessageFields.VERSION: __version__}))
             for status in self.manager.status_snapshot():
                 await websocket.send_text(json.dumps(status))
             while True:
