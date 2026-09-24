@@ -704,6 +704,8 @@ class TermdeckApp {
     this.openFiles = new Map();
     this.markdownFileViews = new Set();
     this.markdownFileViewScroll = new Map();
+    // What the rendered document was made from, so a file rewritten with the same text is left alone.
+    this.markdownFileViewRendered = { key: "", source: null };
     this.markdownFileViewListener = null;
     this.markdownFileViewModel = null;
     this.markdownFileViewRenderTimer = 0;

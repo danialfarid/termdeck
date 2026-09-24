@@ -4821,6 +4821,7 @@ Object.assign(TermdeckApp.prototype, {
       this.disposeMarkdownFileViewListener();
       host.textContent = "";
       host.dataset.fileKey = "";
+      this.markdownFileViewRendered = { key: "", source: null };
       return;
     }
     this.renderMarkdownFileView(entry);
@@ -4862,13 +4863,39 @@ Object.assign(TermdeckApp.prototype, {
   renderMarkdownFileView(entry) {
     const host = this.$("markdown-file-view");
     if (!host || !entry?.model) return;
-    this.rememberMarkdownFileViewScroll();
     const key = `${entry.root}|${entry.path}`;
-    host.innerHTML = this.renderMarkdown(entry.model.getValue());
+    const source = entry.model.getValue();
+    // A file saved with the text it already had -- an autosave, an agent rewriting it, a disk refresh --
+    // would otherwise replace the document with an identical one and send the reader back to the top.
+    if (host.dataset.fileKey === key && this.markdownFileViewRendered.key === key
+        && this.markdownFileViewRendered.source === source) return;
+    this.rememberMarkdownFileViewScroll();
+    const within = this.markdownFileViewInnerScroll(host);
+    host.innerHTML = this.renderMarkdown(source);
     host.dataset.fileKey = key;
+    this.markdownFileViewRendered = { key, source };
     this.markLocalMarkdownImages(host, entry);
     this.linkHistoryFileReferences(host, { skipCode: true });
     host.scrollTop = this.markdownFileViewScroll.get(key) || 0;
+    this.restoreMarkdownFileViewInnerScroll(host, within);
+  },
+
+
+  // A wide table scrolls inside itself, and so does a long code block, so the document's own scrollTop
+  // is not the whole of where the reader was. The elements come back in the same order from the same
+  // source, which is what they are matched by.
+  markdownFileViewInnerScroll(host) {
+    return [...host.querySelectorAll("table, pre")].map((element) => [element.scrollLeft, element.scrollTop]);
+  },
+
+
+  restoreMarkdownFileViewInnerScroll(host, within) {
+    if (!within?.length) return;
+    const elements = [...host.querySelectorAll("table, pre")];
+    if (elements.length !== within.length) return;
+    elements.forEach((element, index) => {
+      [element.scrollLeft, element.scrollTop] = within[index];
+    });
   },
 
 
