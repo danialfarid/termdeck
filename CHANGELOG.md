@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-09-24
+
+### Added
+
+- A Codex terminal shows its background terminals again, counted the way codex itself counts them: on
+  the line it keeps above its composer. Nothing in the transcript can say it — one codex build runs
+  background work as cells, the next as numbered shell sessions, and neither records the ending — and
+  that line is a fact about the screen rather than the byte stream, since codex patches its footer in
+  place with cursor moves. The deck now replays a tail of the terminal through an emulator and reads
+  the footer off the result, which is also what the person looking at the terminal sees. A terminal is
+  replayed only once it has written something new, and at most every ten seconds.
+
 ## [0.26.2] — 2026-09-24
 
 ### Fixed
@@ -1442,7 +1454,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.26.2...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/danialfarid/termdeck/compare/v0.26.2...v0.27.0
 [0.26.2]: https://github.com/danialfarid/termdeck/compare/v0.26.1...v0.26.2
 [0.26.1]: https://github.com/danialfarid/termdeck/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/danialfarid/termdeck/compare/v0.25.0...v0.26.0
