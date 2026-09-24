@@ -88,6 +88,15 @@ class CreateSessionRequest(BaseModel):
     worktree_branch: str = ""
     worktree_base: str = ""
     worktree_id: str = "root"
+    # What the session is being made to do. Given one, this call makes the terminal and sends it, which
+    # is the whole of what a separate "task" call was for.
+    prompt: str = ""
+    output_path: str = ""
+    origin_session: str = ""
+    fork: bool = False
+    write_back: bool = False
+    bracketed: bool = True
+    queue: bool = False
 
 
 class RunTerminalTaskRequest(BaseModel):
@@ -3115,6 +3124,15 @@ class TermdeckServer:
         return project_name, self.worktree_registry.get(project_name, root, selected_id)
 
     async def _create_session(self, request: CreateSessionRequest) -> dict[str, object]:
+        """Make a terminal, and start it on a prompt when one is given.
+
+        A prompt is the only thing the older task call added, so it is a field here rather than a
+        route of its own: one call makes a session, whatever the session is for.
+        """
+        if request.prompt.strip():
+            return await self._run_terminal_task(RunTerminalTaskRequest(
+                **{field: getattr(request, field) for field in RunTerminalTaskRequest.model_fields
+                   if hasattr(request, field)}))
         worktree: WorktreeMetadata | None = None
         worktree_id = request.worktree_id.strip() or "root"
         try:

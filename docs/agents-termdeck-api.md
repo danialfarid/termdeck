@@ -7,10 +7,10 @@ TermDeck-launched processes receive `TERMDECK_SESSION_ID`, `TERMDECK_SESSION_NAM
 
 ## Start and prompt an agent
 
-`POST /api/sessions/task`
+`POST /api/sessions`
 
 ```sh
-curl -sS -X POST http://127.0.0.1:8530/api/sessions/task \
+curl -sS -X POST http://127.0.0.1:8530/api/sessions \
   -H 'Content-Type: application/json' \
   -d "{\"model\":\"codex\",\"model_name\":\"gpt-5.6-luna xhigh\",\"permission\":\"full-access\",\"title\":\"agent-reviewer\",\"prompt\":\"Review the current task and report the result.\",\"origin_session\":\"$TERMDECK_SESSION_ID\"}"
 ```
@@ -30,8 +30,8 @@ curl -sS -X POST http://127.0.0.1:8530/api/sessions/task \
 | `fork` | Fork the `origin_session` instead of starting a fresh agent. |
 | `output_path`, `write_back`, `queue`, `bracketed` | Optional output file, parent result delivery, prompt queueing, and bracketed prompt input. |
 
-The response contains `session_id`. `POST /api/sessions` creates the same kind of session without an initial
-prompt; it also accepts `description`. Then use `POST /api/sessions/{session_id}/prompt` with `{"text":"..."}`.
+The response contains `session_id`. Leave `prompt` out to create the terminal without starting it on
+anything, and send one later with `POST /api/sessions/{session_id}/prompt` and `{"text":"..."}`.
 
 For example, include `"title":"review-parser","description":"Review parser edge cases"` in the creation
 JSON alongside the model, prompt, and origin session. No separate description request is needed.

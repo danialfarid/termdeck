@@ -46,13 +46,13 @@ curl -sS -X DELETE http://127.0.0.1:8530/api/worktrees/wt-abc123 \
   -d '{"project":"stock","move_to_trash":true}'
 ```
 
-## Start one terminal task (create + run in one call)
+## Start one terminal (create, and run a prompt in the same call)
 
-`POST /api/sessions/task` creates one terminal, starts it immediately, submits a single prompt, and returns
-the created session summary. Set `origin_session` to have the completed child result sent back to that session.
+`POST /api/sessions` creates one terminal. Give it a `prompt` and it starts immediately, submits that
+prompt, and returns the created session summary; leave the prompt out and it just makes the terminal. Set `origin_session` to have the completed child result sent back to that session.
 
 ```sh
-task_json=$(curl -sS -X POST http://127.0.0.1:8530/api/sessions/task \
+task_json=$(curl -sS -X POST http://127.0.0.1:8530/api/sessions \
   -H 'Content-Type: application/json' \
   -d '{
     "title": "reviewer",
@@ -120,7 +120,7 @@ since=$(curl -sS -X POST "http://127.0.0.1:8530/api/sessions/$session_id/prompt"
 curl -sS "http://127.0.0.1:8530/api/sessions/$session_id/response?since=$since"
 ```
 
-Poll until `responses` is not empty. `POST /api/sessions/task` returns a `since` of its own for the prompt it
+Poll until `responses` is not empty. `POST /api/sessions` returns a `since` of its own for the prompt it
 submits. The boundary is the prompt rather than the bare instant because a prompt sent while the agent is busy
 waits its turn: the one ahead of it can be answered in between, and that answer is before this prompt in the
 transcript, so it is not returned. Until the transcript has the prompt, nothing has answered it and `responses`
@@ -223,8 +223,8 @@ after the CLI creates its session file.
 
 ## Create one terminal, then submit a prompt
 
-For callers that want individual control, use the existing session-create endpoint followed by the prompt
-endpoint. It also accepts the optional `after` field, using the same session/group name or stable layout token
+The same call without a `prompt` creates the terminal and leaves it waiting; the prompt endpoint sends to it
+later. It also accepts the optional `after` field, using the same session/group name or stable layout token
 rules as the batch endpoint.
 
 ```sh

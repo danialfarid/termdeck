@@ -5,11 +5,16 @@ under `sessions` -- and the call reporting how a session is doing was named `tas
 call that starts one. The names people already use keep working, answered by the same handlers.
 """
 
+import asyncio
 import re
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+from fastapi import HTTPException
 
 from termdeck.config import TermdeckConfig
+from termdeck.server import CreateSessionRequest, RunTerminalTaskRequest, TermdeckServer
 
 SERVER = Path(__file__).resolve().parent.parent / "termdeck" / "server.py"
 DOCS = Path(__file__).resolve().parent.parent / "docs"
@@ -25,6 +30,38 @@ def registrations() -> dict[tuple[str, str], str]:
     return found
 
 
+class OneCreatorTest(unittest.TestCase):
+    """Making a terminal and starting it on something are one call, because they were one thought."""
+
+    def server(self) -> TermdeckServer:
+        instance = TermdeckServer.__new__(TermdeckServer)
+        instance._run_terminal_task = AsyncMock(return_value={"session_id": "abc123"})
+        instance.manager = MagicMock()
+        instance.manager.create_session.side_effect = ValueError("create path reached")
+        return instance
+
+    def test_a_prompt_starts_the_terminal_it_makes(self) -> None:
+        instance = self.server()
+
+        asyncio.run(instance._create_session(CreateSessionRequest(
+            title="reviewer", model="codex", prompt="review this", origin_session="parent-1")))
+        sent = instance._run_terminal_task.await_args.args[0]
+
+        self.assertIsInstance(sent, RunTerminalTaskRequest)
+        self.assertEqual(sent.prompt, "review this")
+        self.assertEqual(sent.title, "reviewer")
+        self.assertEqual(sent.origin_session, "parent-1")
+
+    def test_without_a_prompt_it_only_makes_the_terminal(self) -> None:
+        instance = self.server()
+
+        # The create path is reached instead, which this stub refuses so it goes no further.
+        with self.assertRaises(HTTPException):
+            asyncio.run(instance._create_session(CreateSessionRequest(title="plain", model="codex")))
+
+        instance._run_terminal_task.assert_not_awaited()
+
+
 class SessionRouteNamesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -34,8 +71,9 @@ class SessionRouteNamesTest(unittest.TestCase):
         self.assertIn((path, method), self.routes, path)
         return self.routes[(path, method)]
 
-    def test_making_a_session_lives_under_sessions(self) -> None:
-        self.assertEqual(self.handler("/api/sessions/task", "POST"), "_run_terminal_task")
+    def test_making_a_session_is_one_call(self) -> None:
+        # A prompt is a field of it rather than a route of its own: the task call added nothing else.
+        self.assertEqual(self.handler("/api/sessions", "POST"), "_create_session")
         self.assertEqual(self.handler("/api/sessions/batch", "POST"), "_launch_terminal_batch")
 
     def test_how_a_session_is_doing_is_its_status(self) -> None:
@@ -49,6 +87,7 @@ class SessionRouteNamesTest(unittest.TestCase):
     def test_the_older_names_answer_with_the_same_handlers(self) -> None:
         # Scripts, and agent instructions written months ago, and anything copied out of either.
         for path, method, handler in (
+                ("/api/sessions/task", "POST", "_run_terminal_task"),
                 ("/api/terminals/task", "POST", "_run_terminal_task"),
                 ("/api/terminals/batch", "POST", "_launch_terminal_batch"),
                 ("/api/terminals/task/{session_id}/prompt", "POST", "_follow_up_task_prompt"),
@@ -64,10 +103,12 @@ class SessionRouteNamesTest(unittest.TestCase):
             self.assertTrue(any(route == path for route, _ in self.routes), path)
 
     def test_the_documented_names_are_the_new_ones(self) -> None:
+        # The kept names answer, and are named nowhere: what is written down is what to write against.
         for name in ("api.md", "agents-termdeck-api.md"):
             text = (DOCS / name).read_text()
-            self.assertIn("/api/sessions/task", text, name)
+            self.assertIn("POST /api/sessions", text, name)
             self.assertIn("/response", text, name)
+            self.assertNotIn("/api/sessions/task", text, name)
             self.assertNotIn("/api/terminals/task", text, name)
             self.assertNotIn("/api/terminals/batch", text, name)
             self.assertNotIn("task-result", text, name)

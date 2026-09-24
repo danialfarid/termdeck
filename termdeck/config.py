@@ -150,8 +150,9 @@ class TermdeckConfig:
     PROJECT_BUNDLE_MAX_SESSIONS = 100
     PROJECT_BUNDLE_MAX_WORKTREES = 100
     # A terminal is a session, so one noun covers both: `sessions` for making and working with them,
-    # `terminals` only for the machinery they all run on -- processes, stale ones, orphans.
-    API_SESSIONS_TASK_ROUTE = "/api/sessions/task"
+    # `terminals` only for the machinery they all run on -- processes, stale ones, orphans. Making one
+    # is `POST /api/sessions`, with the prompt it starts on if it has one; the older name for that with
+    # a prompt is kept below.
     API_SESSIONS_BATCH_ROUTE = "/api/sessions/batch"
     API_SESSION_ROUTE = "/api/sessions/{session_id}"
     API_SESSION_STATUS_ROUTE = "/api/sessions/{session_id}/status"
@@ -162,6 +163,7 @@ class TermdeckConfig:
     # The names these calls had before, kept so scripts written against them keep working and left out
     # of the documentation so nothing new is written against them. Each answers exactly as it did:
     # `last_turn` and `task-result` in the old one-turn shape, the others as their own call does.
+    API_SESSIONS_TASK_ROUTE = "/api/sessions/task"
     API_TERMINAL_TASK_ROUTE = "/api/terminals/task"
     API_TERMINAL_TASK_PROMPT_ROUTE = "/api/terminals/task/{session_id}/prompt"
     API_TERMINALS_BATCH_ROUTE = "/api/terminals/batch"

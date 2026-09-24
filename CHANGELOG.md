@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Making a terminal is one call. `POST /api/sessions` takes an optional `prompt`, and with one it starts
+  the terminal on it and returns the `since` for that prompt — which is all the separate task call ever
+  added. `/api/sessions/task` and `/api/terminals/task` still answer and are no longer documented.
+
+### Changed
+
 - The group header gives its width to the name. The chevron is smaller and sits a pixel from the name
   it opens, the search and new-terminal buttons sit together at the end instead of one each side of a
   gap, and the dot beside the unread count is gone: the count says how many terminals want you, and

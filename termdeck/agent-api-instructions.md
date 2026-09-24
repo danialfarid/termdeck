@@ -1,4 +1,4 @@
-TermDeck delegation API: http://127.0.0.1:8530 (default). POST JSON to /api/sessions/task
+TermDeck delegation API: http://127.0.0.1:8530 (default). POST JSON to /api/sessions
 with {model, model_name, permission, title, description, prompt, origin_session};
 use a short name and description; set origin_session to your $TERMDECK_SESSION_ID.
 Returns session_id and since; execution is asynchronous. Poll

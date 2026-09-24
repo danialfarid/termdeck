@@ -8,7 +8,7 @@ from termdeck.agent_instructions import AgentInstructionService
 class AgentInstructionServiceTest(unittest.TestCase):
     def test_instruction_text_contains_the_local_api_surface(self) -> None:
         self.assertIn("POST /api/sessions/{session_id}/prompt", AgentInstructionService.INSTRUCTION_TEXT)
-        self.assertIn("/api/sessions/task", AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertIn("/api/sessions\nwith {model", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("title, description", AgentInstructionService.INSTRUCTION_TEXT)
         # One call for what an agent answered, and the one thing that ties an answer to a prompt.
         self.assertIn("/api/sessions/{session_id}/response", AgentInstructionService.INSTRUCTION_TEXT)
