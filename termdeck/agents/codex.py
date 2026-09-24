@@ -2,7 +2,7 @@ import json
 import re
 import shlex
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
@@ -14,10 +14,11 @@ from termdeck.util import TimeUtil
 class CodexSessionState(AgentSessionState):
     def __init__(self) -> None:
         self.transcript_active = False
-        # Cells left running in the background, and the agents this one spawned. Both are read from
-        # the rollout the transcript watcher is already watching, never polled.
-        self.background_cells: dict[str, str] = {}
-        self.subagents: tuple[str, ...] = ()
+        # Cells left running in the background, and the agents this one spawned, each against the
+        # moment it was last seen alive. Both are read from the rollout the transcript watcher is
+        # already watching, never polled.
+        self.background_cells: dict[str, float] = {}
+        self.subagents: dict[str, float] = {}
         self.background_scan_offset = 0
         self.background_scan_file: tuple[int, int] | None = None
         self.activity_checked_monotonic = 0.0
@@ -459,16 +460,36 @@ class CodexCli(AgentCli):
             return None
         state = ms.agent_state
         return {"main": self.is_processing(ms),
-                "subagents": len(state.subagents),
-                "background_jobs": len(state.background_cells)}
+                "subagents": self._live_count(ms, state.subagents, self.SUBAGENT_STALE_SECONDS),
+                "background_jobs": self._live_count(ms, state.background_cells, self.BACKGROUND_CELL_STALE_SECONDS)}
+
+    @staticmethod
+    def _live_count(ms, seen: dict[str, float], window: float) -> int:
+        # Both a cell and a spawned agent die with the codex that owns them, so a terminal that is not
+        # running has neither, whatever its rollout last said.
+        if not ms.running:
+            return 0
+        cutoff = time.time() - window
+        return sum(1 for when in seen.values() if when >= cutoff)
 
     # A command Codex leaves running says so once -- "Script running with cell ID 196" -- and the wait
     # that collects it comes back "Script completed". Between those two lines the terminal is working on
     # something the main thread is not, which is the whole of what the dots under a title report.
     _CELL_OPEN_RE = re.compile(r"Script running with cell ID (\d+)")
     _CELL_ID_RE = re.compile(r'"cell_id"\s*:\s*"?(\d+)')
-    _CELL_DONE_RE = re.compile(r"Script (?:completed|failed)")
-    _SUBAGENT_RE = re.compile(r'<agent name="([^"]+)"')
+    # A wait answers with one of these when its cell is over; only "aborted by user" comes without the
+    # "Script" prefix, from an interrupt.
+    _CELL_DONE_RE = re.compile(r"Script (?:completed|failed|terminated)|aborted by user")
+    # Not every ending reaches the rollout: a cell the agent never waits on again, and an agent whose
+    # parent stops asking after it, stay open in the transcript forever. Both are kept on their own
+    # clock instead, wide enough to cover what these transcripts actually show -- of 12,471 collected
+    # cells, 99.9% were collected within 4.5 minutes, while the longest spawned agent ran 9.6 hours.
+    BACKGROUND_CELL_STALE_SECONDS = 30 * 60
+    SUBAGENT_STALE_SECONDS = 12 * 60 * 60
+    # `list_agents` answers with the whole roster, the session itself first, each child either
+    # "running" or an object holding what it finished with.
+    _AGENT_TOOLS = ("spawn_agent", "list_agents")
+    _AGENT_RUNNING = "running"
 
     def scan_background_activity(self, state, path: Path) -> bool:
         """Track this session's background cells and spawned agents; returns True on change.
@@ -491,9 +512,9 @@ class CodexCli(AgentCli):
         full_scan = (state.background_scan_offset == 0 or state.background_scan_offset > size
                      or state.background_scan_file != identity)
         state.background_scan_file = identity
-        before = (dict(state.background_cells), state.subagents)
-        cells: dict[str, str] = {} if full_scan else dict(state.background_cells)
-        subagents = () if full_scan else state.subagents
+        before = (dict(state.background_cells), dict(state.subagents))
+        cells: dict[str, float] = {} if full_scan else dict(state.background_cells)
+        subagents: dict[str, float] = {} if full_scan else dict(state.subagents)
         try:
             with path.open("rb") as handle:
                 handle.seek(0 if full_scan else state.background_scan_offset)
@@ -501,41 +522,75 @@ class CodexCli(AgentCli):
         except OSError:
             return False
         state.background_scan_offset = size
-        waiting_on = ""
+        waiting_on, asked_by, when = "", "", time.time()
         for raw in data.decode("utf-8", "replace").splitlines():
             try:
                 entry = json.loads(raw)
             except ValueError:
                 continue
-            body = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
-            if entry.get("type") == "world_state":
-                environments = (body.get("state") or {}).get("environments")
-                roster = (environments or {}).get("subagents") if isinstance(environments, dict) else None
-                if isinstance(roster, str):
-                    subagents = tuple(self._SUBAGENT_RE.findall(roster))
-                elif body.get("full"):
-                    # A whole state that names no agents is a session with none; a partial one that
-                    # leaves them out is saying nothing about them.
-                    subagents = ()
-                continue
             if entry.get("type") != "response_item":
                 continue
+            body = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
             kind = body.get("type")
+            when = self._entry_time(entry, when)
             if kind in ("function_call", "custom_tool_call"):
+                asked_by = str(body.get("name") or "")
                 asked = self._CELL_ID_RE.search(str(body.get("arguments") or body.get("input") or ""))
                 waiting_on = asked.group(1) if asked else waiting_on
                 continue
             if kind not in ("function_call_output", "custom_tool_call_output"):
                 continue
-            output = str(body.get("output") or "")
-            opened = self._CELL_OPEN_RE.search(output)
-            if opened:
-                cells[opened.group(1)] = "running"
-            elif waiting_on and self._CELL_DONE_RE.search(output):
+            output = self._output_text(body.get("output"))
+            if asked_by in self._AGENT_TOOLS:
+                self._read_agent_answer(asked_by, output, subagents, when)
+                continue
+            opened = {match.group(1) for match in self._CELL_OPEN_RE.finditer(output)}
+            for cell in opened:
+                cells[cell] = when
+            if waiting_on and waiting_on not in opened and self._CELL_DONE_RE.search(output):
                 cells.pop(waiting_on, None)
                 waiting_on = ""
         state.background_cells, state.subagents = cells, subagents
         return before != (cells, subagents)
+
+    def _read_agent_answer(self, tool: str, output: str, subagents: dict[str, float], when: float) -> None:
+        answer = TurnBuilder.loads(output)
+        if not isinstance(answer, dict):
+            return
+        if tool == "spawn_agent":
+            name = str(answer.get("task_name") or "")
+            if name:
+                subagents[name] = when
+            return
+        roster = answer.get("agents")
+        if not isinstance(roster, list):
+            return
+        # The first entry is the session asking; the rest are the agents it holds.
+        for agent in roster[1:]:
+            name = str(agent.get("agent_name") or "") if isinstance(agent, dict) else ""
+            if not name:
+                continue
+            if isinstance(agent, dict) and agent.get("agent_status") == self._AGENT_RUNNING:
+                subagents[name] = when
+            else:
+                subagents.pop(name, None)
+
+    @staticmethod
+    def _output_text(output: object) -> str:
+        # A tool answer is a string on some codex builds and a list of content parts on others.
+        if isinstance(output, str):
+            return output
+        if isinstance(output, list):
+            return TurnBuilder.join_text(output, ("input_text", "output_text", "text"))
+        return json.dumps(output)
+
+    @staticmethod
+    def _entry_time(entry: dict[str, object], fallback: float) -> float:
+        raw = str(entry.get("timestamp") or "")
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return fallback
 
     def activity_signature(self, manager, ms) -> tuple[int | None, int, int] | None:
         if not ms.record.agent_session_id:
@@ -549,9 +604,14 @@ class CodexCli(AgentCli):
             return None
         return getattr(stat, "st_ino", None), stat.st_size, stat.st_mtime_ns
 
+    def _scan_rollout(self, ms) -> bool:
+        path = self.transcript_path(None, ms.record.agent_session_id) if ms.record.agent_session_id else None
+        return self.scan_background_activity(ms.agent_state, path) if path is not None else False
+
     def refresh_persisted_activity(self, manager, ms) -> None:
         ms.agent_state.transcript_active = manager._tracker.codex_session_is_active(ms.record.agent_session_id)
         ms.agent_state.activity_signature = self.activity_signature(manager, ms)
+        self._scan_rollout(ms)
 
     def refresh_activity_for_status(self, manager, ms) -> None:
         # Fallback poll: FSEvents can drop appends to a rollout Codex keeps open, so a signature
@@ -571,9 +631,7 @@ class CodexCli(AgentCli):
         ms.agent_state.transcript_active = manager._tracker.codex_session_is_active(ms.record.agent_session_id)
         # The same appended bytes carry what is running in the background, and a status build is the
         # one moment the answer is about to be read.
-        path = self.transcript_path(None, ms.record.agent_session_id)
-        if path is not None:
-            self.scan_background_activity(ms.agent_state, path)
+        self._scan_rollout(ms)
         manager._sync_processing_started(ms)
 
     def on_transcript_event(self, manager, ms, path: Path) -> None:
@@ -655,6 +713,7 @@ class CodexCli(AgentCli):
             ms.cli_title = manager._tracker.codex_session_title(ms.record.agent_session_id)
         ms.agent_state.transcript_active = manager._tracker.codex_session_is_active(ms.record.agent_session_id)
         ms.agent_state.activity_signature = self.activity_signature(manager, ms)
+        self._scan_rollout(ms)
 
     def _ensure_searchable_scrollback(self, parts: list[str]) -> list[str]:
         # The alternate screen keeps output out of scrollback; TermDeck needs it searchable.
