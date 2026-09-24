@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.27.1] — 2026-09-24
+
+### Fixed
+
+- The background-terminal count reaches the sidebar. A codex terminal keeps its output in the raw
+  replay rather than the scrollback served to the client, so the screen being replayed was empty, and
+  the answer was then held for as long as the terminal wrote nothing — which on a terminal restored at
+  startup meant the one read taken before its buffer was back was the only read it ever got.
+
 ## [0.27.0] — 2026-09-24
 
 ### Added
@@ -1454,7 +1463,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.27.1...HEAD
+[0.27.1]: https://github.com/danialfarid/termdeck/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/danialfarid/termdeck/compare/v0.26.2...v0.27.0
 [0.26.2]: https://github.com/danialfarid/termdeck/compare/v0.26.1...v0.26.2
 [0.26.1]: https://github.com/danialfarid/termdeck/compare/v0.26.0...v0.26.1
