@@ -13,8 +13,8 @@
 
 Found a bug or have a feature request? [Open an issue](https://github.com/danialfarid/termdeck/issues) — feedback is welcome!
 
-Puppeteer all your coding agents from one local browser workspace. TermDeck keeps Codex, Claude Code, Aider,
-AGY, OpenCode, and shell sessions organized across projects and worktrees — showing what is running, finished,
+Puppeteer all your coding agents from one local browser workspace. TermDeck keeps Codex, Claude Code, Muse,
+Aider, AGY, OpenCode, and shell sessions organized across projects and worktrees — showing what is running, finished,
 unread, or waiting for you.
 
 Sessions survive browser and server restarts. Read clean transcripts, hand work between agents, search every
@@ -121,7 +121,7 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
   your workspace.
 - **Review and edit alongside your agents** — open referenced files, search code, inspect changes, and use Git
   and language-server tools without leaving the workspace.
-- **Any agent CLI** — Codex, Claude Code, AGY, Aider, OpenCode, and plain shells, side by side. Teaching it a
+- **Any agent CLI** — Codex, Claude Code, Muse, AGY, Aider, OpenCode, and plain shells, side by side. Teaching it a
   new CLI is one [declarative profile](docs/agent-profiles.md), with Python adapters reserved for unusual formats.
 - **Portable workspaces** — export one terminal with its resume profile, draft, transcript, and available replay,
   or export a whole project with its tabs, groups, notes, colors, and layout; restore it elsewhere after cloning
@@ -215,7 +215,7 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 
 **Terminals and agents**
 
-- Codex, Claude Code, AGY, Aider, OpenCode, or a plain shell, launched with the CLI's own permission mode
+- Codex, Claude Code, Muse, AGY, Aider, OpenCode, or a plain shell, launched with the CLI's own permission mode
   (read-only, workspace-write, accept-edits, full access, …).
 - Every terminal runs under `dtach`: closing the tab or restarting the server leaves the process running.
 - Claude, Codex, and OpenCode sessions are tracked continuously — through `/clear` and in-TUI session switches —
@@ -230,7 +230,7 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 - File paths and `path:line` references printed in any terminal are clickable.
 - Drop a file or paste an image into a terminal and its path lands at the cursor.
 - Per-agent icons in the terminal list, each toggleable; working state animates, unread stays until you look.
-- Choose an explicit model at launch for Codex, Claude, AGY, Aider, or OpenCode. Aider and OpenCode accept
+- Choose an explicit model at launch for Codex, Claude, Muse, AGY, Aider, or OpenCode. Aider and OpenCode accept
   OpenRouter model IDs while retaining their own terminal icon, activity signal, permissions, and resume rules.
 - Add another CLI through `agent-profiles.json`: launch/model arguments, permission presets, resume, fork,
   rename, generic JSONL transcripts, event-driven activity, attention markers, and a brand icon are declarative.

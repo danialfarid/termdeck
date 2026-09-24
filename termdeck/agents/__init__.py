@@ -12,12 +12,13 @@ from termdeck.agents.base import AgentCli, ShellCli
 from termdeck.agents.claude import ClaudeCli
 from termdeck.agents.codex import CodexCli
 from termdeck.agents.declarative import DeclarativeAgentCli
+from termdeck.agents.muse import MuseCli
 from termdeck.agents.opencode import OpencodeCli
 from termdeck.agents.profile_schema import AgentProfileLoader
 from termdeck.config import TermdeckConfig
 
 # Detection priority follows this order (shell is the fallback, never matched by token).
-_BUILTIN_AGENT_CLIS = (ShellCli(), ClaudeCli(), CodexCli(), AgyCli(), AiderCli(), OpencodeCli(),
+_BUILTIN_AGENT_CLIS = (ShellCli(), ClaudeCli(), CodexCli(), AgyCli(), MuseCli(), AiderCli(), OpencodeCli(),
                        ArchivedTranscriptCli())
 _DECLARATIVE_AGENT_CLIS = tuple(DeclarativeAgentCli(profile)
                                 for profile in AgentProfileLoader.load(TermdeckConfig.AGENT_PROFILES_FILE))

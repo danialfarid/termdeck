@@ -208,6 +208,14 @@ Explicit dict, no metaclass/auto-registration magic — debuggable, and one obvi
   conversation and bottom-anchors the composer, leaving the visible window on the blank gap
   between them). Its session database also restores processing state after a TermDeck refresh without
   starting or attaching to the terminal.
+- **MuseCli** (`muse`): Meta's agent, and the directory-per-session archetype. Its store is
+  `<XDG_DATA_HOME | ~/.local/share>/muse/sessions/<yyyy>/<mm>/<dd>/<session>/session.jsonl`, so the
+  session id is the name of the directory holding the log rather than anything in the file's own
+  name, and `session_id_from_path` reads the parent directory. Resume is `muse resume <id>`, which
+  also takes a session name. A trailing effort word on the model (`some-model xhigh`) becomes
+  `--reasoning-effort`, as it does for codex. Its session log is not parsed: `muse schema` exports
+  the MSP wire surface rather than the log format, so the shape is unknown and the transcript view
+  stays empty rather than guessing; activity comes from terminal output.
 - **GeminiCli was built and then retired** (`termdeck/agents/_/gemini.py`): Google deprecated
   gemini-cli outright in favor of the Antigravity suite, which AgyCli already covers ("gemini"
   stays an agy model alias). The retired adapter remains a worked example of a foreign format —
