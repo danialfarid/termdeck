@@ -6,10 +6,10 @@ command showed nothing, because a newer codex keeps its shells in numbered sessi
 cells the older one printed, and a terminal whose agents had long finished kept three dots, because
 the roster its transcript holds says nothing after the last time it asked.
 
-A spawned agent is counted from something that is true now: it is running for exactly as long as its
-own rollout is still being written. Background terminals are not counted at all -- codex reports them
-only in the footer it redraws, which cannot be read back from the byte stream without emulating the
-screen, and every cheaper reading of the transcript was wrong for one codex build or the other.
+Both answers are taken from something that is true now. A spawned agent is running for exactly as long
+as its own rollout is still being written. A background terminal is whatever codex itself says it has,
+on the line it keeps above its composer -- and because codex patches that footer in place with cursor
+moves, the bytes are replayed through a terminal to be read back rather than searched.
 """
 
 import json
@@ -18,8 +18,57 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from termdeck.agents.codex import CodexCli, CodexSessionState
+
+
+# The footer codex draws under a transcript: its own line above the composer, addressed absolutely and
+# rewritten in place, which is why the last mention of it in the byte stream says nothing about now.
+FOOTER_ROW = 44
+
+
+def footer(*lines: str, row: int = FOOTER_ROW) -> bytes:
+    painted = "".join(f"\x1b[{row + index};1H\x1b[K{line}" for index, line in enumerate(lines))
+    return painted.encode()
+
+
+class BackgroundTerminalScreenTest(unittest.TestCase):
+    """What codex says it is running, read off the screen it drew."""
+
+    def count(self, stream: bytes, cols: int = 112, rows: int = 48) -> int:
+        return CodexCli.background_terminals_on_screen(stream, cols, rows)
+
+    def test_the_line_codex_keeps_above_its_composer(self) -> None:
+        # Idle, with a command still running: the count is on a line of its own.
+        self.assertEqual(self.count(footer("  1 background terminal running · /ps to view · /stop to close",
+                                           "› Ask Codex to do anything",
+                                           "  GPT-6-Astra low · Context 33% used")), 1)
+
+    def test_several(self) -> None:
+        self.assertEqual(self.count(footer("  3 background terminals running · /ps to view",
+                                           "› Ask Codex to do anything")), 3)
+
+    def test_while_it_is_working(self) -> None:
+        self.assertEqual(self.count(footer("• Working (48s • esc to interrupt) · 2 background terminals running")), 2)
+
+    def test_a_terminal_with_none(self) -> None:
+        self.assertEqual(self.count(footer("› Ask Codex to do anything", "  GPT-6-Astra low")), 0)
+
+    def test_the_row_being_repainted_without_it(self) -> None:
+        # The bytes still carry the line that said one was running; the screen does not, because codex
+        # drew over it. Reading the stream instead of the screen is what got this wrong.
+        self.assertEqual(self.count(footer("  1 background terminal running · /ps to view")
+                                    + footer("› Ask Codex to do anything")), 0)
+
+    def test_what_a_command_printed_is_not_the_footer(self) -> None:
+        # A terminal reading this file back, or grepping a log, puts the words in the transcript above --
+        # nowhere near the rows codex keeps for itself.
+        printed = b"\x1b[1;1H  self.assertEqual(self.count(footer(\"1 background terminal running\")), 1)\r\n"
+        self.assertEqual(self.count(printed + footer("› Ask Codex to do anything")), 0)
+
+    def test_a_terminal_that_has_drawn_nothing(self) -> None:
+        self.assertEqual(self.count(b""), 0)
 
 
 class LiveSubagentsTest(unittest.TestCase):
@@ -97,8 +146,38 @@ class ActivityDetailTest(unittest.TestCase):
                 pass
 
         Session.running = running
+        Session.buffer = bytearray()
         Session.record.agent_session_id = agent_session_id
+        Session.record.session_id = "term1"
+        Session.record.cols = 112
+        Session.record.rows = 48
         return Session()
+
+    def test_it_reports_what_the_screen_says_is_running(self) -> None:
+        with TemporaryDirectory() as directory:
+            cli = CodexCli()
+            cli._recent_day_dirs = staticmethod(lambda: [Path(directory)])
+            session = self.session()
+            session.buffer = bytearray(footer("  2 background terminals running · /ps to view",
+                                              "› Ask Codex to do anything"))
+
+            self.assertEqual(cli.activity_detail(session)["background_jobs"], 2)
+
+    def test_a_terminal_that_has_written_nothing_new_is_not_read_again(self) -> None:
+        # Replaying a terminal is dear, and a terminal that has said nothing cannot have changed what
+        # it says, so the answer stands until its buffer grows.
+        with TemporaryDirectory() as directory:
+            cli = CodexCli()
+            cli._recent_day_dirs = staticmethod(lambda: [Path(directory)])
+            session = self.session()
+            session.buffer = bytearray(footer("  1 background terminal running · /ps to view"))
+            self.assertEqual(cli.background_terminal_count(session), 1)
+            reads = []
+            with patch.object(CodexCli, "background_terminals_on_screen",
+                              staticmethod(lambda *arguments: reads.append(arguments) or 0)):
+                self.assertEqual(cli.background_terminal_count(session), 1)
+
+            self.assertEqual(reads, [])
 
     def test_it_reports_the_agents_this_session_is_holding(self) -> None:
         with TemporaryDirectory() as directory:

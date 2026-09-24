@@ -37,6 +37,9 @@ dependencies = [
     "setproctitle>=1.3",
     "python-multipart>=0.0.9",
     "watchdog>=4.0",
+    # Codex reports its background terminals on screen only, so reading them back means replaying
+    # the terminal: a pure-Python VT emulator, fed a tail of a session's output.
+    "pyte>=0.8",
 ]
 
 [project.urls]

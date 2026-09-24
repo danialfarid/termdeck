@@ -96,6 +96,8 @@ class CodexCli(AgentCli):
         self._rollout_paths: dict[str, Path] = {}
         self._runtime_settings_cache: dict[str, tuple[int, int, dict[str, str]]] = {}
         self._subagent_counts: dict[str, tuple[float, int]] = {}
+        # Per terminal: the buffer length that was read, when, and what the screen said.
+        self._background_counts: dict[str, tuple[int, float, int]] = {}
         self._forked_from_cache: dict[Path, str] = {}
 
     def model_arguments(self, model_name: str) -> tuple[str, ...]:
@@ -453,11 +455,51 @@ class CodexCli(AgentCli):
     def activity_detail(self, ms) -> dict[str, object] | None:
         if not ms.record.agent_session_id:
             return None
-        # A spawned agent dies with the codex that owns it.
+        # A background terminal and a spawned agent both die with the codex that owns them.
         if not ms.running:
-            return {"main": self.is_processing(ms), "subagents": 0}
+            return {"main": self.is_processing(ms), "subagents": 0, "background_jobs": 0}
         return {"main": self.is_processing(ms),
-                "subagents": self.live_subagent_count(ms.record.agent_session_id)}
+                "subagents": self.live_subagent_count(ms.record.agent_session_id),
+                "background_jobs": self.background_terminal_count(ms)}
+
+    # Codex counts its own background terminals on the line above its composer -- "1 background
+    # terminal running · /ps to view · /stop to close" -- which is the same answer the person reading
+    # the terminal gets, and it does not depend on which shell tools a codex build uses: the transcript
+    # calls them cells in one build and numbered shell sessions in the next, and records the end of
+    # neither. That line is a fact about the screen, not about the stream: codex patches its footer in
+    # place with absolute cursor moves, so the bytes have to be replayed through a terminal to be read.
+    # A tail is enough, because the footer is redrawn far more often than it changes -- across the
+    # running codex terminals here, 64K gives the same answer as 256K on every one of them.
+    BACKGROUND_SCREEN_TAIL_BYTES = 64 * 1024
+    BACKGROUND_SCREEN_TTL_SECONDS = 10.0
+    BACKGROUND_SCREEN_FOOTER_ROWS = 8
+    _BACKGROUND_TERMINALS_RE = re.compile(r"(\d+)\s+background terminals?\s+running")
+
+    def background_terminal_count(self, ms) -> int:
+        size = len(ms.buffer)
+        session_id = ms.record.session_id
+        cached = self._background_counts.get(session_id)
+        now = time.monotonic()
+        # A terminal that has written nothing since the last look cannot have changed what it says, and
+        # replaying one is dear enough that a busy one is read at most every few seconds.
+        if cached is not None and (cached[0] == size or now - cached[1] < self.BACKGROUND_SCREEN_TTL_SECONDS):
+            return cached[2]
+        count = self.background_terminals_on_screen(bytes(ms.buffer[-self.BACKGROUND_SCREEN_TAIL_BYTES:]),
+                                                    ms.record.cols, ms.record.rows)
+        self._background_counts[session_id] = (size, now, count)
+        return count
+
+    @classmethod
+    def background_terminals_on_screen(cls, tail: bytes, cols: int, rows: int) -> int:
+        try:
+            import pyte
+        except ImportError:
+            return 0
+        screen = pyte.Screen(max(int(cols) or 0, 20), max(int(rows) or 0, 24))
+        pyte.Stream(screen).feed(tail.decode("utf-8", "replace"))
+        footer = "\n".join(screen.display[-cls.BACKGROUND_SCREEN_FOOTER_ROWS:])
+        found = cls._BACKGROUND_TERMINALS_RE.search(footer)
+        return int(found.group(1)) if found else 0
 
     # A spawned agent writes its own rollout, naming the thread it was forked from, and it is running
     # for exactly as long as that rollout is still being written -- the same thing the deck already
