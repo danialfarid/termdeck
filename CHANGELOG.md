@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-09-24
+
+### Added
+
+- Muse, Meta's terminal coding agent, can be started like any other. Its sessions are directories
+  rather than files, so the id a terminal binds to is the name of the directory holding the log;
+  resume takes that id or a session name, approval modes come from its own `--approval-mode` with
+  `--yolo` for full access, and a trailing effort word on the model becomes `--reasoning-effort`. Its
+  session log is not parsed — the format is not described by `muse schema`, which exports the wire
+  surface instead — so the transcript view stays empty and activity comes from terminal output.
+
+### Fixed
+
+- Typing in notes no longer conflicts with the same window's earlier saves and resets the editor to an older version.
+- Repeated note-conflict recovery in one window reuses its recovery tab instead of creating a tab for every edit.
+
 ## [0.27.1] — 2026-09-24
 
 ### Fixed
@@ -1463,7 +1479,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.27.1...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/danialfarid/termdeck/compare/v0.27.1...v0.28.0
 [0.27.1]: https://github.com/danialfarid/termdeck/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/danialfarid/termdeck/compare/v0.26.2...v0.27.0
 [0.26.2]: https://github.com/danialfarid/termdeck/compare/v0.26.1...v0.26.2
