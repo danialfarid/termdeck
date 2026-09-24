@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-09-24
+
+### Added
+
+- A Codex terminal shows what it has running besides its answer. The dots under a title reported
+  Claude's background shells and subagents and nothing for Codex, so a Codex terminal waiting on a long
+  command, or holding agents it spawned, looked idle. A command is running between the answer that
+  opens it and the wait that comes back "Script completed", "Script failed", "Script terminated" or
+  "aborted by user"; agents come from `spawn_agent` and the `list_agents` roster, which says which of
+  them are still running. Both are read from the rollout the deck already watches, in the bytes
+  appended since the last look, and a terminal picked up again after a restart is read on sight rather
+  than waiting for its agent's next line.
+- Work whose ending never reaches the rollout stops being counted. A command the agent walked away
+  from, and an agent whose parent stopped asking after it, would otherwise wear a dot forever — 14
+  terminals here wore one for commands abandoned up to 39 days ago. Neither outlives the codex that
+  owns it, so a terminal that is not running reports nothing, and what is left is kept on its own
+  clock: 30 minutes for a command, 12 hours for an agent.
+
 ## [0.25.0] — 2026-09-24
 
 ### Changed
@@ -1398,7 +1416,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/danialfarid/termdeck/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/danialfarid/termdeck/compare/v0.24.1...v0.25.0
 [0.24.1]: https://github.com/danialfarid/termdeck/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/danialfarid/termdeck/compare/v0.23.0...v0.24.0
