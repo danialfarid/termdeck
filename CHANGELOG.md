@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-09-25
+
 ### Added
 
 - A Muse terminal's model can be changed from the transcript view, like Claude's: the model badge
@@ -1524,7 +1526,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/danialfarid/termdeck/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/danialfarid/termdeck/compare/v0.27.1...v0.28.0
 [0.27.1]: https://github.com/danialfarid/termdeck/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/danialfarid/termdeck/compare/v0.26.2...v0.27.0
