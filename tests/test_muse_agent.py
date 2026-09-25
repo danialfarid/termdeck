@@ -643,7 +643,10 @@ class ModelCatalogTest(unittest.TestCase):
             def communicate(self, *args: object, **kwargs: object) -> tuple[str, str]:
                 return answer, ""
 
-        with patch("termdeck.agents.muse.subprocess.Popen", lambda *args, **kwargs: FakeServe()):
+        # resolve_binary is pinned: without a muse on PATH it shells out to a login shell,
+        # which the Popen fake below cannot serve (and CI has no muse at all).
+        with patch("termdeck.agents.muse.subprocess.Popen", lambda *args, **kwargs: FakeServe()), \
+             patch("termdeck.agents.muse.PlatformPaths.resolve_binary", return_value="muse"):
             rows = MuseCli()._live_catalog()
 
         self.assertEqual(rows, [{"id": "muse-spark-1.3", "label": "Muse Spark", "description": "",
