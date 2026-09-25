@@ -445,21 +445,32 @@ class ReplayRecorder:
             return await asyncio.to_thread(self._remove_orphaned_replays)
 
     def _remove_orphaned_replays(self) -> tuple[int, int]:
-        """Reconcile the directory against every session termdeck still holds, dormant ones included.
+        """Reconcile the directory against every session termdeck still holds.
 
-        Reconciling is what makes this a reliable owner: it does not need to have witnessed the close.
-        It replaces walking the closed-session list, which CLOSED_HISTORY_MAX caps at 100 rows, so a
-        session that scrolled off could never be matched to its file again -- which is how 1,143 of
-        1,227 files here came to have no owner.
+        Open sessions, dormant ones, and closed ones with a reopen entry all own their files:
+        reopening restores the recording from disk, so sweeping a closed session's file would
+        blank its history. Only sessions in NEITHER list are orphans -- one that scrolled off
+        the capped closed list still loses its file, which is what keeps this from stranding.
         """
         removed_files = removed_bytes = 0
         if not TermdeckConfig.SCROLLBACK_DIR.is_dir():
             return 0, 0
+        keep = set(self._manager._sessions)
+        closed_store = getattr(self._manager, "_closed_store", None)
+        if closed_store is not None:
+            try:
+                closed = closed_store.load_all()
+            except (OSError, ValueError):
+                closed = []
+            for item in closed if isinstance(closed, list) else []:
+                session_id = item.get("session_id") if isinstance(item, dict) else None
+                if isinstance(session_id, str) and session_id:
+                    keep.add(session_id)
         for target in TermdeckConfig.SCROLLBACK_DIR.iterdir():
             if not target.is_file():
                 continue
             session_id = self._owning_session_id(target.name)
-            if not session_id or session_id in self._manager._sessions:
+            if not session_id or session_id in keep:
                 continue
             # Per file, because one unreadable entry must not cost the rest of the sweep. A recording
             # can also vanish between the listing and the unlink -- a checkpoint replacing it, a second

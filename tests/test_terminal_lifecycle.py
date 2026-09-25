@@ -1821,6 +1821,39 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
             b"\r",
         ])
 
+class ReopenReplayTest(unittest.TestCase):
+    """Reopening a closed terminal brings its recording back, not just a fresh respawn."""
+
+    def test_reopening_restores_the_recording_from_disk(self) -> None:
+        manager = TerminalSessionManager()
+        saved = record("reopened")
+        saved.agent_kind = "codex"
+        manager._closed_store.push(saved, "2026-09-25T00:00:00", "", "")
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "reopened.replay.bin"
+            checkpoint.write_bytes(b"earlier conversation")
+            with patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)), \
+                 patch.object(manager, "_spawn", return_value=None), \
+                 patch.object(manager, "_persist", return_value=None):
+                reopened = manager.reopen_closed_session("reopened")
+
+        self.assertEqual(bytes(reopened.raw_replay_buffer), b"earlier conversation")
+
+    def test_reopening_without_a_recording_still_respawns(self) -> None:
+        manager = TerminalSessionManager()
+        saved = record("bare")
+        saved.agent_kind = "codex"
+        manager._closed_store.push(saved, "2026-09-25T00:00:00", "", "")
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)), \
+             patch.object(manager, "_spawn", return_value=None) as spawned, \
+             patch.object(manager, "_persist", return_value=None):
+            reopened = manager.reopen_closed_session("bare")
+
+        spawned.assert_called_once()
+        self.assertEqual(bytes(reopened.raw_replay_buffer), b"")
+
+
 class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         # These tests mock the whole manager; the model-dependency probe is the one place a
@@ -2436,11 +2469,21 @@ class ClaudeBackgroundTaskScanTest(unittest.TestCase):
         self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
         self.assertEqual(self.state.background_tasks, {})
 
-    def _monitor_launch(self, task_id):
-        text = (f"Monitor started (task {task_id}, persistent — runs until TaskStop or session end). "
-                "You will be notified on each event.")
-        return json.dumps({"type": "user", "message": {"role": "user", "content": [
-            {"tool_use_id": "t2", "type": "tool_result", "content": text}]}})
+    def _monitor_launch(self, task_id, persistent=True, ttl=None, launched=None):
+        if ttl is not None:
+            text = (f"Monitor started (task {task_id}, expires in {ttl} unless the source ends first). "
+                    "You will be notified on each event.")
+            result = {"taskId": task_id, "persistent": False}
+        else:
+            text = (f"Monitor started (task {task_id}, persistent — runs until TaskStop or session end). "
+                    "You will be notified on each event.")
+            result = {"taskId": task_id, "persistent": persistent}
+        event = {"type": "user", "message": {"role": "user", "content": [
+            {"tool_use_id": "t2", "type": "tool_result", "content": text}]},
+            "toolUseResult": result}
+        if launched is not None:
+            event["timestamp"] = launched
+        return json.dumps(event)
 
     def test_monitor_tracked_until_output_end_marker(self) -> None:
         from unittest.mock import patch
@@ -2476,6 +2519,55 @@ class ClaudeBackgroundTaskScanTest(unittest.TestCase):
         parent = Path("/Users/x/.claude/projects/-Users-x-proj/abcd-1234.jsonl")
         self.assertEqual(self.claude._task_output_path(parent, "tid9"),
                          Path(f"/tmp/claude-{os.getuid()}/-Users-x-proj/abcd-1234/tasks/tid9.output"))
+
+    def test_monitor_without_output_file_stays_tracked(self) -> None:
+        # A monitor's output file appears on its first event, not at launch: a monitor that
+        # hasn't fired yet has no file, and must not read as finished for that.
+        from unittest.mock import patch
+        tasks_dir = Path(self.dir.name) / "tasks"
+        tasks_dir.mkdir()
+        output = tasks_dir / "mon3.output"
+        with patch.object(type(self.claude), "_task_output_path", staticmethod(lambda parent, task_id: output)):
+            self._append(self._monitor_launch("mon3"))
+            self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
+            self.assertEqual(set(self.state.monitor_tasks), {"mon3"})
+
+    def test_monitor_dropped_when_tasks_dir_is_cleaned(self) -> None:
+        # ...but when the whole tasks dir is gone the session's outputs were cleaned and the
+        # monitor with them, which is how a dead monitor reads after downtime.
+        from unittest.mock import patch
+        output = Path(self.dir.name) / "cleaned-tasks" / "mon4.output"
+        with patch.object(type(self.claude), "_task_output_path", staticmethod(lambda parent, task_id: output)):
+            self._append(self._monitor_launch("mon4"))
+            self.claude.scan_background_tasks(self.state, self.parent)
+            self.assertEqual(self.state.monitor_tasks, {})
+
+    def test_expired_monitor_is_dropped_without_output_file(self) -> None:
+        # Expiry notices don't reliably land (compaction drops them), so a 30-minute monitor
+        # launched days ago is dead even though no end record says so.
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import patch
+        tasks_dir = Path(self.dir.name) / "tasks"
+        tasks_dir.mkdir()
+        output = tasks_dir / "mon5.output"
+        launched = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        with patch.object(type(self.claude), "_task_output_path", staticmethod(lambda parent, task_id: output)):
+            self._append(self._monitor_launch("mon5", ttl="30m", launched=launched))
+            self.claude.scan_background_tasks(self.state, self.parent)
+            self.assertEqual(self.state.monitor_tasks, {})
+
+    def test_unexpired_monitor_without_output_file_is_kept(self) -> None:
+        # ...while one launched minutes ago simply hasn't fired yet.
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+        tasks_dir = Path(self.dir.name) / "tasks"
+        tasks_dir.mkdir()
+        output = tasks_dir / "mon6.output"
+        launched = datetime.now(timezone.utc).isoformat()
+        with patch.object(type(self.claude), "_task_output_path", staticmethod(lambda parent, task_id: output)):
+            self._append(self._monitor_launch("mon6", ttl="30m", launched=launched))
+            self.assertTrue(self.claude.scan_background_tasks(self.state, self.parent))
+            self.assertEqual(set(self.state.monitor_tasks), {"mon6"})
 
 
 class ClaudeAttentionFromOutputTest(unittest.TestCase):

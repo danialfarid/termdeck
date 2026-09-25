@@ -213,9 +213,22 @@ Explicit dict, no metaclass/auto-registration magic — debuggable, and one obvi
   session id is the name of the directory holding the log rather than anything in the file's own
   name, and `session_id_from_path` reads the parent directory. Resume is `muse resume <id>`, which
   also takes a session name. A trailing effort word on the model (`some-model xhigh`) becomes
-  `--reasoning-effort`, as it does for codex. Its session log is not parsed: `muse schema` exports
-  the MSP wire surface rather than the log format, so the shape is unknown and the transcript view
-  stays empty rather than guessing; activity comes from terminal output.
+  `--reasoning-effort`, as it does for codex. Each log line is an event envelope; the transcript
+  reads prompts, answers, tool calls, results, token usage, and the session name off the run
+  events inside it, while reasoning lines (encrypted content only) and machinery stay out.
+  `muse schema` exports the MSP wire surface rather than the log format, so anything not yet
+  seen on a real log stays unparsed rather than guessed at. The model badge sends the picked
+  model through muse's own `/model` command, and the model catalog reads the authenticated
+  provider catalog the TUI keeps on disk next to the sessions tree — the same rows `/models`
+  offers — with a throwaway `muse serve` host's `model/list` and recent logs as fallbacks, each
+  row carrying its own reasoning tiers when named. Attention is structural: every tool
+  approval is bracketed by `approval_wait.effect.started` and `.terminal` records for the same
+  pending action, and questions put to the user bracket the same way with
+  `user_input_prompt_requested`/`settled` per prompt id, so the badge rises and clears off the
+  log; screen text only covers the workspace-trust question, and stops matching once the first
+  run settles it. Activity likewise
+  reads the log: a run with `started` but no `terminal` is working, which survives the log's
+  own compaction rewrites; terminal output stays the signal only until the first scan lands.
 - **GeminiCli was built and then retired** (`termdeck/agents/_/gemini.py`): Google deprecated
   gemini-cli outright in favor of the Antigravity suite, which AgyCli already covers ("gemini"
   stays an agy model alias). The retired adapter remains a worked example of a foreign format —

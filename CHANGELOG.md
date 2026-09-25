@@ -6,6 +6,51 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A Muse terminal's model can be changed from the transcript view, like Claude's: the model badge
+  is now clickable and sends the picked model through Muse's own `/model` command, and `/model`
+  is offered in the transcript prompt's slash menu.
+- Muse terminals now show their transcript: prompts, answers, tool calls and results are read off
+  the session log's run events, with token usage and the session name alongside them. Reasoning
+  lines stay out — they carry encrypted content only.
+- The transcript model picker and the spawn dialogs now list what Muse's own `/model` picker
+  offers: the authenticated provider catalog the TUI keeps on disk (all four Muse Spark rows),
+  each with the reasoning tiers its own row names. The serve host's bundled list and ids recent
+  sessions resolved stay as fallbacks for a missing cache. `TERMDECK_MUSE_BIN` overrides the
+  binary it asks, as with the other agents.
+
+### Fixed
+
+- Muse no longer degrades to a plain shell terminal when the agents list fails to load at boot;
+  the client's fallback specs now include it.
+- The Muse attention badge no longer trips on conversation: the picker hint and the approval
+  footer matched ordinary text, re-raising the badge at every turn end. Tool approvals now drive
+  the badge structurally off the log's approval-wait records — rising when one starts, clearing
+  when it resolves — and the workspace-trust question stops matching once the first run settles it.
+- Swapping a Muse terminal's permission mode now also drops its `--permission-profile`: keeping
+  the named profile alongside the new mode silently kept the old one.
+- Restarting a terminal saved as `muse exec …` no longer eats a `resume` word that belongs to
+  the headless prompt; only the resume subcommand's own session ref is stripped.
+- A stray `session.jsonl` — filed beside the day directories, or a subagent log nested under
+  its parent session — no longer binds as a session of its own.
+- The Muse terminal icon is now Meta's own AI mark instead of a placeholder lyre.
+- The Muse icon flips around its vertical axis like a coin while working instead of tumbling flat.
+- Claude monitors that haven't fired yet count as running again: their output file only appears
+  on the first event, so a missing file no longer reads as finished. Expiring monitors still
+  drop at their deadline even when the expiry notice never lands.
+- A Muse terminal's working indicator now follows the session log's run brackets instead of
+  terminal output: it no longer sticks on at idle over TUI redraws, no longer clears while you
+  type, and the title dot stops its one-second flicker. Output flow stays the signal only until
+  the log is first scanned. The scan also survives the log's own rewrites: compaction can replace
+  the file without shrinking it, which used to strand the indicator on past the turn's end.
+- Reopening a closed terminal brings its recorded history back instead of a blank tab, and the
+  replay sweep no longer deletes a closed terminal's recording while it still holds a reopen
+  entry. Sessions that scrolled off the capped closed list still lose their files.
+- A Muse question waiting on your answer now raises the attention badge: input prompts bracket
+  with requested/settled records per prompt id, the same structural shape as tool approvals,
+  so either one open owns the badge until it resolves.
+
 ## [0.28.0] — 2026-09-24
 
 ### Added

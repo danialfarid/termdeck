@@ -10,8 +10,10 @@ from termdeck.replay_recorder import ReplayRecorder
 
 
 class FakeManager:
-    def __init__(self, live_ids: list[str]) -> None:
+    def __init__(self, live_ids: list[str], closed_ids: list[str] | None = None) -> None:
         self._sessions = {session_id: object() for session_id in live_ids}
+        self._closed_store = SimpleNamespace(
+            load_all=lambda: [{"session_id": session_id} for session_id in (closed_ids or [])])
 
 
 def managed_session(session_id: str, agent_kind: str):
@@ -41,8 +43,9 @@ class ReplayCleanupTest(unittest.TestCase):
         patched.start()
         self.addCleanup(patched.stop)
 
-    def _recorder(self, live_ids: list[str] | None = None) -> ReplayRecorder:
-        return ReplayRecorder(FakeManager(live_ids or []))
+    def _recorder(self, live_ids: list[str] | None = None,
+                  closed_ids: list[str] | None = None) -> ReplayRecorder:
+        return ReplayRecorder(FakeManager(live_ids or [], closed_ids))
 
     def _write_pair(self, session_id: str, legacy: bool = False) -> tuple[Path, Path]:
         suffix = TermdeckConfig.LEGACY_RAW_REPLAY_SUFFIX if legacy else TermdeckConfig.RAW_REPLAY_SUFFIX
@@ -90,10 +93,10 @@ class ReplayCleanupTest(unittest.TestCase):
         self.assertFalse(dead_raw.exists())
         self.assertFalse(dead_shell.exists())
 
-    def test_the_sweeper_does_not_depend_on_the_capped_closed_session_list(self) -> None:
-        # The old sweeper walked closed_sessions.json, which CLOSED_HISTORY_MAX caps at 100 rows. A
-        # session that scrolled off that list could never be matched to its file again, so anything the
-        # delete-time path missed was stranded for good.
+    def test_the_sweep_still_collects_files_beyond_the_closed_list_cap(self) -> None:
+        # Closed sessions keep their files, but only while they hold a reopen entry: the closed list
+        # is capped at CLOSED_HISTORY_MAX rows, and a session that scrolled off it owns nothing, so
+        # anything the delete-time path missed is still collected rather than stranded for good.
         for ordinal in range(TermdeckConfig.CLOSED_HISTORY_MAX + 50):
             self._write_pair(f"gone{ordinal:04d}")
 
@@ -101,6 +104,21 @@ class ReplayCleanupTest(unittest.TestCase):
 
         self.assertEqual(removed_files, (TermdeckConfig.CLOSED_HISTORY_MAX + 50) * 2)
         self.assertEqual(list(self.scrollback.iterdir()), [])
+
+    def test_the_sweep_spares_recordings_of_reopenable_closed_sessions(self) -> None:
+        # A closed terminal is still the deck's: reopening restores its recording, so the sweep
+        # must not eat the file in between. Only sessions in NEITHER list are orphans — one that
+        # scrolled off the capped closed list still loses its file.
+        closed_raw, closed_shell = self._write_pair("closed")
+        dead_raw, dead_shell = self._write_pair("orphan")
+
+        removed_files, _ = self._recorder([], ["closed"])._remove_orphaned_replays()
+
+        self.assertEqual(removed_files, 2)
+        self.assertTrue(closed_raw.exists())
+        self.assertTrue(closed_shell.exists())
+        self.assertFalse(dead_raw.exists())
+        self.assertFalse(dead_shell.exists())
 
     def test_in_flight_checkpoint_temporaries_are_left_alone(self) -> None:
         # Checkpoints are written to a hidden temporary and renamed into place. Deleting one mid-write

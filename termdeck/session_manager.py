@@ -2033,6 +2033,10 @@ class TerminalSessionManager:
             raise KeyError(session_id)
         ms = ManagedSession(record)
         self._sessions[record.session_id] = ms
+        # The recording survived on disk (the sweep spares closed sessions); without this the
+        # reopened tab attaches with empty buffers and shows only whatever the respawn paints.
+        self.replay.restore_saved_buffers(ms)
+        self.replay.enforce_total_limit()
         self._spawn(ms, resume=True)
         self._persist()
         return ms
