@@ -30,6 +30,9 @@ termdeck service install
 
 The tap pulls in `dtach` and `ripgrep` automatically, and installs TermDeck's Python dependencies from
 prebuilt CPython 3.13 wheels, so nothing compiles at install time. Works on Apple Silicon and Intel.
+Homebrew itself needs a Command Line Tools install that matches your macOS — if `brew install` refuses
+with a CLT error, update it from System Settings → Software Update (or reinstall with
+`sudo rm -rf /Library/Developer/CommandLineTools` then `sudo xcode-select --install`) and retry.
 
 Upgrade later with:
 
