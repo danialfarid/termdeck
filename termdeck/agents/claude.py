@@ -4,6 +4,7 @@ import os
 import re
 import shlex
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -24,6 +25,7 @@ class ClaudeSessionState(AgentSessionState):
         self.interrupted_at = 0.0                   # wall clock, compared against transcript mtime
         self.background_tasks: dict[str, str] = {}  # task id -> output file path
         self.monitor_tasks: dict[str, str] = {}     # monitor task id -> output file path
+        self.monitor_deadlines: dict[str, float | None] = {}  # monitor id -> expiry epoch, if it has one
         self.background_scan_offset = 0             # transcript bytes already scanned
 
 
@@ -320,10 +322,15 @@ class ClaudeCli(AgentCli):
         if not ms.record.agent_session_id:
             return None
         state = ms.agent_state
+        now = time.time()
+        # Deadlines apply here too, not just at scan time: an expiry passing between transcript
+        # appends would otherwise linger on the dots until the next write. Pure time math, no IO.
+        monitors = sum(1 for task_id in state.monitor_tasks
+                       if (deadline := state.monitor_deadlines.get(task_id)) is None or deadline > now)
         return {"main": bool(state.main_active and not ms.record.claude_interrupted),
                 "subagents": sum(1 for active in state.subagent_states.values() if active),
                 "background_jobs": len(state.background_tasks),
-                "monitors": len(state.monitor_tasks)}
+                "monitors": monitors}
 
     _BACKGROUND_LAUNCH_PREFIX = "Command running in background with ID:"
     _BACKGROUND_LAUNCH_RE = re.compile(r"Command running in background with ID: (\w+)")
@@ -347,6 +354,7 @@ class ClaudeCli(AgentCli):
             changed = bool(state.background_tasks or state.monitor_tasks)
             state.background_tasks = {}
             state.monitor_tasks = {}
+            state.monitor_deadlines = {}
             state.background_scan_offset = 0
             return changed
         full_scan = state.background_scan_offset == 0 or state.background_scan_offset > size
@@ -354,6 +362,7 @@ class ClaudeCli(AgentCli):
         before = (dict(state.background_tasks), dict(state.monitor_tasks))
         tasks: dict[str, str] = {} if full_scan else dict(state.background_tasks)
         monitors: dict[str, str] = {} if full_scan else dict(state.monitor_tasks)
+        deadlines: dict[str, float | None] = {} if full_scan else dict(state.monitor_deadlines)
         try:
             with parent.open("rb") as fh:
                 fh.seek(offset)
@@ -369,7 +378,7 @@ class ClaudeCli(AgentCli):
             if b"Command running in background with ID" in raw:
                 self._record_background_launch(raw, tasks)
             if b"Monitor started (task " in raw:
-                self._record_monitor_launch(raw, monitors, parent)
+                self._record_monitor_launch(raw, monitors, deadlines, parent)
             if b"<task-notification>" in raw:
                 self._remove_notified_background_tasks(raw, tasks, monitors)
             # TaskStop kills a task without a completion notification; its tool_use lives in
@@ -384,10 +393,31 @@ class ClaudeCli(AgentCli):
             if not full_scan and task_id not in known_before_scan:
                 return True
             return bool(output) and not self._background_task_finished(Path(output))
+
+        def monitor_running(task_id: str, output: str) -> bool:
+            # Expiry notices don't reliably land (compaction drops them), so a passed
+            # deadline ends the monitor even when no end record says so.
+            deadline = deadlines.get(task_id)
+            if deadline is not None and time.time() >= deadline:
+                return False
+            if not full_scan and task_id not in known_before_scan:
+                return True
+            if not output:
+                return True
+            path = Path(output)
+            if not path.exists():
+                # A monitor's output file appears on its first event, not at launch, so a
+                # missing file means it hasn't fired yet -- unless the whole tasks dir is
+                # gone, which means the session's outputs were cleaned and it with them.
+                return path.parent.is_dir()
+            return not self._background_task_finished(path)
+
         state.background_tasks = {task_id: output for task_id, output in tasks.items()
                                   if still_running(task_id, output)}
         state.monitor_tasks = {task_id: output for task_id, output in monitors.items()
-                               if still_running(task_id, output)}
+                               if monitor_running(task_id, output)}
+        state.monitor_deadlines = {task_id: deadlines.get(task_id)
+                                   for task_id in state.monitor_tasks}
         return (state.background_tasks, state.monitor_tasks) != before
 
     @staticmethod
@@ -418,11 +448,23 @@ class ClaudeCli(AgentCli):
             if match:
                 tasks[match.group(1)] = output.group(1) if output else ""
 
-    def _record_monitor_launch(self, raw: bytes, monitors: dict[str, str], parent: Path) -> None:
+    # A monitor that names no TTL gets the only one ever observed; persistent monitors
+    # (and launches with no readable timestamp) carry no deadline at all.
+    _MONITOR_DEFAULT_TTL_SECONDS = 30 * 60
+    _MONITOR_TTL_RE = re.compile(r"expires in (\d+)\s*(s|sec|m|min|h|hr|d|day)\b")
+
+    def _record_monitor_launch(self, raw: bytes, monitors: dict[str, str],
+                               deadlines: dict[str, float | None], parent: Path) -> None:
         # The Monitor launch result names no output file; its path follows the task-output
         # convention (same tasks dir every other task of this agent session uses), derived
         # from the transcript path's project dir + session id.
-        content = self._user_event_content(raw)
+        try:
+            event = json.loads(raw)
+        except ValueError:
+            return
+        if not isinstance(event, dict):
+            return
+        content = (event.get("message") or {}).get("content")
         for part in content if isinstance(content, list) else []:
             if not isinstance(part, dict) or part.get("type") != "tool_result":
                 continue
@@ -433,7 +475,26 @@ class ClaudeCli(AgentCli):
                 continue
             match = self._MONITOR_LAUNCH_RE.search(text)
             if match:
-                monitors[match.group(1)] = str(self._task_output_path(parent, match.group(1)))
+                task_id = match.group(1)
+                monitors[task_id] = str(self._task_output_path(parent, task_id))
+                deadlines[task_id] = self._monitor_deadline(event, text)
+
+    @classmethod
+    def _monitor_deadline(cls, event: dict, text: str) -> float | None:
+        tool_result = event.get("toolUseResult")
+        if isinstance(tool_result, dict) and tool_result.get("persistent") is True:
+            return None
+        try:
+            launched = datetime.fromisoformat(str(event.get("timestamp")).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return None
+        match = cls._MONITOR_TTL_RE.search(text)
+        if match:
+            amount, unit = int(match.group(1)), match.group(2)[0]
+            ttl = amount * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+        else:
+            ttl = cls._MONITOR_DEFAULT_TTL_SECONDS
+        return launched + ttl
 
     @staticmethod
     def _task_output_path(parent: Path, task_id: str) -> Path:

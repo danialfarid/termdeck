@@ -246,6 +246,8 @@ body:not(.vscode-mode) .session-item:has(.terminal-type-icon.on) .status-dot.att
 }
 .session-item:has(.status-dot.processing) .terminal-type-icon.on svg,
 .session-item:has(.status-dot.processing) .terminal-type-icon.on img { will-change: transform; animation: termdeck-agent-icon-rotate 1.7s linear infinite; }
+/* The Muse mark spins like a coin around its vertical axis instead of tumbling flat. */
+.session-item:has(.status-dot.processing) .terminal-type-icon.on.muse-terminal-icon svg { animation: termdeck-agent-icon-flip 3.4s linear infinite; }
 .session-item:has(.terminal-type-icon.on) .session-spinner.on { opacity: 0; }
 .session-item:has(.terminal-type-icon.on) .session-spinner.on .session-spinner-orbit,
 .session-item:has(.terminal-type-icon.on) .session-spinner.on .session-spinner-rect-tail { animation: none; }
@@ -311,6 +313,10 @@ body:not(.vscode-mode) .session-item:has(.status-dot.attention) .terminal-type-i
 @keyframes termdeck-agent-icon-rotate {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+@keyframes termdeck-agent-icon-flip {
+  from { transform: rotateY(0deg); }
+  to { transform: rotateY(360deg); }
 }
 @keyframes termdeck-agent-icon-pulse {
   0%, 29.41%, 70.59%, 100% { transform: scale(1.14); }
