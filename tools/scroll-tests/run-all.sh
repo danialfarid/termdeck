@@ -76,6 +76,8 @@ TESTS=(
   parked_under_chunks
   follow_survives_growth
   returns_to_bottom
+  draft_pen
+  file_tab_state
 )
 
 # A crashed fixture leaks its sessions (and their dtach shells), and the leftovers slow every

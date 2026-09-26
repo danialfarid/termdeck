@@ -712,6 +712,14 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  resetTerminalForScratchReplay(view) {
+    if (!view?.pendingScratchReset) return;
+    view.pendingScratchReset = false;
+    view.term.reset();
+    this.tallResetScrollState(view);
+  },
+
+
   connect(id, view) {
     if (view.closed) return;
     if (view.outputWriteInFlight || view.outputQueue.length) {
@@ -735,10 +743,15 @@ Object.assign(TermdeckApp.prototype, {
     // than make the user do it.
     if (view.replayFromScratchOnNextConnect) {
       view.replayFromScratchOnNextConnect = false;
-      view.term.reset();
-      this.tallResetScrollState(view);
+      // The reset used to happen here, blanking the pane for the whole reconnect round-trip plus the
+      // replay that follows it. The old content is still the best thing to look at until the new
+      // content starts arriving, and nothing writes to the buffer in between, so defer the reset to
+      // the first replay bytes (see ws.onmessage) or the blank-repaint check if none ever arrive.
+      // The replay parameters must still be the from-scratch ones, hence the forced false below.
+      view.pendingScratchReset = true;
     }
-    const hasPopulatedBuffer = view.everConnected && !view.closed && view.term?.buffer?.active?.baseY > 0;
+    const hasPopulatedBuffer = !view.pendingScratchReset && view.everConnected && !view.closed &&
+      view.term?.buffer?.active?.baseY > 0;
     // A fresh client has no trustworthy terminal screen after a server restart. Ask the live agent to
     // repaint it; a reconnect that already has a populated xterm buffer can skip the SIGWINCH nudge.
     const agentKindForReplay = this.session(id)?.agent_kind;
@@ -818,9 +831,12 @@ Object.assign(TermdeckApp.prototype, {
         this.touchSessionActivity(id);
       }
       if (view.awaitingSnapshot) {
-        if (view.reconnectReset && e.data.byteLength > 0 && !view.preserveBufferOnReconnect) {
-          view.term.reset();
-          this.tallResetScrollState(view);
+        if (e.data.byteLength > 0 && !view.preserveBufferOnReconnect) {
+          if (view.reconnectReset) {
+            view.term.reset();
+            this.tallResetScrollState(view);
+          }
+          this.resetTerminalForScratchReplay(view);
         }
         const snapshotScrollGeneration = view.manualScrollGeneration;
         const v2 = this.isTerminalScrollV2();
@@ -1096,6 +1112,7 @@ Object.assign(TermdeckApp.prototype, {
       if (!view.promptEditing) {
         view.promptDraft = incomingDraft;
         this.showPromptDraft(view);
+        this.updateSessionDraftPen(view.sessionId);
       }
       return;
     } else if (msg.type === "prompt_submitted") {
@@ -1113,6 +1130,7 @@ Object.assign(TermdeckApp.prototype, {
       clearTimeout(view.promptSubmitTimer);
       if (submissionIsCurrent) {
         this.showPromptDraft(view);
+        this.updateSessionDraftPen(view.sessionId);
         if (this.historyOpen && id === this.activeId && !this.touchMobileLayoutEnabled()) this.$("history-prompt").focus();
       }
       return;
@@ -3850,6 +3868,7 @@ Object.assign(TermdeckApp.prototype, {
 
 
   closeOpenFileEntry(key, entry, recordRecent = true) {
+    if (key === this.activeFileKey) this.saveActiveFileViewState();
     clearTimeout(entry.autosaveTimer);
     entry.autosaveTimer = 0;
     if (entry.model) {

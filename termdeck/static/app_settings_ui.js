@@ -183,6 +183,8 @@ Object.assign(TermdeckApp.prototype, {
         this.lspClient.registerProviders();
         monaco.editor.onDidChangeMarkers(() => this.scheduleProblemsRefresh());
         this.editor.onMouseMove((event) => this.updateFileBlameGutterHover(event));
+        this.editor.onDidScrollChange(() => this.scheduleActiveFileViewStatePersist());
+        this.editor.onDidChangeCursorPosition(() => this.scheduleActiveFileViewStatePersist());
         this.editor.onContextMenu((event) => this.openFileEditorContextMenu(event.event.browserEvent, event.target.position));
         this.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => this.saveActiveFile());
         this.editor.addAction({
@@ -1234,6 +1236,11 @@ Object.assign(TermdeckApp.prototype, {
   // server restart is exactly the case where the answer is "nothing".
   requestRepaintIfBlank(view) {
     if (!view || view.closed || !view.ws || view.ws.readyState !== WebSocket.OPEN) return false;
+    // A restart rebuild that has not received a byte yet still shows the old server's buffer: the
+    // blank check below would see stale content and stay silent, freezing the pane on it. Drop the
+    // deferred reset first so the check (and the repaint it may trigger) sees the empty buffer the
+    // replay would have built.
+    this.resetTerminalForScratchReplay(view);
     // A reconnect clears the buffer before replaying it, so "empty" during that window means "not filled
     // yet", not "nothing to show". Asking then forces a redraw of content that was about to arrive
     // anyway, which is the flicker on switching to an already-loaded tab. Try again once it has landed.
@@ -2246,6 +2253,85 @@ Object.assign(TermdeckApp.prototype, {
     const entry = this.openFiles.get(this.activeFileKey);
     if (!entry?.model || this.editor.getModel() !== entry.model) return;
     entry.viewState = this.editor.saveViewState();
+    this.captureFileFindState(entry);
+    this.persistFileViewState(this.activeFileKey, entry);
+  },
+
+
+  captureFileFindState(entry) {
+    if (!entry || !this.editor) return;
+    try {
+      const widget = this.$("monaco-host")?.querySelector(".find-widget");
+      entry.findOpen = !!widget && getComputedStyle(widget).display !== "none";
+      entry.findQuery = String(this.editor.getContribution("editor.contrib.findController")?.getState()?.searchString || "");
+    } catch (_error) {
+      // Find-controller internals; a miss here must never break tab switches.
+    }
+  },
+
+
+  async restoreFileFindState(entry, key) {
+    if (!entry || !this.editor) return;
+    if (entry.findQuery === undefined && entry.findOpen === undefined) {
+      const persisted = key ? this.readPersistedFileViewState(key) : null;
+      if (!persisted) return;
+      entry.findQuery = persisted.findQuery || "";
+      entry.findOpen = !!persisted.findOpen;
+    }
+    try {
+      const findController = this.editor.getContribution("editor.contrib.findController");
+      if (!findController?.getState) return;
+      if (entry.findOpen) {
+        const widget = this.$("monaco-host")?.querySelector(".find-widget");
+        // Opening seeds the query from the selection, so the saved query goes in after.
+        if (!widget || getComputedStyle(widget).display === "none") {
+          await this.editor.getAction("actions.find")?.run();
+          // A tab switch during the open must not paint this tab's query onto the next one.
+          if (this.activeFileKey !== key || this.editor.getModel() !== entry.model) return;
+        }
+      }
+      if (entry.findQuery !== undefined) findController.getState().change({ searchString: entry.findQuery }, false);
+    } catch (_error) {
+      // Find-controller internals; a miss here must never break tab switches.
+    }
+  },
+
+
+  persistFileViewState(key, entry) {
+    if (!key || !entry) return;
+    try {
+      const store = JSON.parse(localStorage.getItem(FILE_VIEW_STATE_LOCAL_KEY) || "{}");
+      store[key] = { viewState: entry.viewState || null, findQuery: entry.findQuery || "",
+        findOpen: !!entry.findOpen, savedAt: Date.now() };
+      const keys = Object.keys(store);
+      if (keys.length > FILE_VIEW_STATE_MAX_ENTRIES) {
+        keys.sort((a, b) => (store[a].savedAt || 0) - (store[b].savedAt || 0));
+        for (const drop of keys.slice(0, keys.length - FILE_VIEW_STATE_MAX_ENTRIES)) delete store[drop];
+      }
+      localStorage.setItem(FILE_VIEW_STATE_LOCAL_KEY, JSON.stringify(store));
+    } catch (_error) {
+      // Private mode or quota: the in-memory entry state still covers the session.
+    }
+  },
+
+
+  readPersistedFileViewState(key) {
+    if (!key) return null;
+    try {
+      const store = JSON.parse(localStorage.getItem(FILE_VIEW_STATE_LOCAL_KEY) || "{}");
+      return store[key] || null;
+    } catch (_error) {
+      return null;
+    }
+  },
+
+
+  scheduleActiveFileViewStatePersist() {
+    clearTimeout(this.fileViewStatePersistTimer);
+    this.fileViewStatePersistTimer = setTimeout(() => {
+      this.fileViewStatePersistTimer = 0;
+      this.saveActiveFileViewState();
+    }, 1000);
   },
 
 
@@ -2579,7 +2665,16 @@ Object.assign(TermdeckApp.prototype, {
     if (line) {
       this.editor.revealLineInCenter(line);
       this.editor.setPosition({ lineNumber: line, column: 1 });
-    } else if (entry.viewState) this.editor.restoreViewState(entry.viewState);
+    } else {
+      // A reopened tab (fresh entry after a reload or an eviction) has no in-memory view state;
+      // the persisted one is what keeps its scroll and cursor where the last session left them.
+      if (!entry.viewState) {
+        const persisted = this.readPersistedFileViewState(key);
+        if (persisted?.viewState) entry.viewState = persisted.viewState;
+      }
+      if (entry.viewState) this.editor.restoreViewState(entry.viewState);
+    }
+    await this.restoreFileFindState(entry, key);
     this.editor.focus();
     void this.loadActiveFileGitHunks();
     this.renderList();
@@ -2680,7 +2775,14 @@ Object.assign(TermdeckApp.prototype, {
     if (this.fileBlameActiveKey === `${entry.root}|${entry.path}`) this.clearFileBlameAnnotations();
     entry.applyingDiskContent = true;
     try {
-      entry.model.setValue(data.content);
+      // pushEditOperations, not setValue: a disk sync that wipes the undo stack makes Ctrl+Z forget
+      // everything typed before an external change landed. One full-range edit keeps history (the sync
+      // itself becomes a single undo stop) with identical resulting content. The bracketing stack
+      // elements are load-bearing: typing leaves the top undo element open, and without them the sync
+      // merges into the neighbouring stops -- measured as an undo that silently dropped a space.
+      entry.model.pushStackElement();
+      entry.model.pushEditOperations([], [{ range: entry.model.getFullModelRange(), text: data.content }], () => null);
+      entry.model.pushStackElement();
     } finally {
       entry.applyingDiskContent = false;
     }

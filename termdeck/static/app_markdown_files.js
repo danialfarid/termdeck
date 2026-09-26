@@ -1491,6 +1491,7 @@ Object.assign(TermdeckApp.prototype, {
     const text = String(item?.text || this.$("history-prompt")?.value || "");
     if (!text.trim()) return;
     view.promptDraft = text;
+    this.updateSessionDraftPen(view.sessionId);
     view.retryTerminalEnterText = text;
     view.retryTerminalEnterPendingId = item?.pending_id || pendingId || "";
     view.retryTerminalEnterPending = true;
@@ -3273,6 +3274,7 @@ Object.assign(TermdeckApp.prototype, {
       this.sendPromptDraftSync(view, "");
       this.showPromptDraft(view);
     }
+    this.updateSessionDraftPen(view.sessionId);
   },
 
 
@@ -3372,6 +3374,17 @@ Object.assign(TermdeckApp.prototype, {
           let end = i + 2;
           while (end < stream.length && (stream.charCodeAt(end) < 0x40 || stream.charCodeAt(end) > 0x7e)) end += 1;
           if (end >= stream.length) { view.promptEscape = stream.slice(i); break; }
+          // Legacy X10 mouse reports (ESC [ M + 3 payload bytes, usually >= 0x20) travel through
+          // onData like everything else xterm emits, and the scan above stops at the M. Without this
+          // skip a scroll wheel over a mouse-mode terminal lands in the draft as phantom spaces that
+          // no backspace accounts for. SGR (\x1b[<...M) and URXVT (\x1b[...M) reports carry no trailing
+          // payload, so only a bare \x1b[M takes three more bytes; in the input direction xterm never
+          // emits CSI M as Delete Lines, so there is no ambiguity with the output-side meaning.
+          if (stream[end] === "M" && end === i + 2) {
+            if (end + 4 > stream.length) { view.promptEscape = stream.slice(i); break; }
+            i = end + 4;
+            continue;
+          }
           i = end + 1;
           continue;
         }

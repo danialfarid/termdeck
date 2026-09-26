@@ -175,6 +175,8 @@ const EXPANDED_AGENT_STACKS_KEY = "termdeck.expanded_agent_stacks";
 const AGENT_STACK_SUMMARY_NAMES = 2;
 const BROWSER_TALL_WEBGL_KEY = "termdeck.browser_tall_webgl";
 const TRANSCRIPT_DRAFT_LOCAL_PREFIX = "termdeck.transcript-draft.v1";
+const FILE_VIEW_STATE_LOCAL_KEY = "termdeck.file-view-states.v1";
+const FILE_VIEW_STATE_MAX_ENTRIES = 200;
 const ADDRESS_RECOVERY_KEY = "termdeck.address-recovery";
 // Where an installed app reopens. Its launch address is fixed by the manifest, so the deck records
 // its own as it moves and the boot script in index.html sends a cold launch back to it. Keep the
@@ -913,6 +915,7 @@ class TermdeckApp {
     this.sessionDescriptionEls = new Map();
     this.sessionSpinnerEls = new Map();
     this.sessionActivityEls = new Map();
+    this.sessionDraftPenEls = new Map();
     // Activity detail arrives only over the status websocket; /api/sessions doesn't carry it,
     // so it must survive refresh() replacing the session objects (same reason processingStates
     // and sessionModelById are maps, not session fields).
@@ -4056,10 +4059,12 @@ class TermdeckApp {
       this.flushPendingFileSavesOnPageExit();
       this.flushPendingSearchHistoryRecord();
       this.flushNotebookOnPageExit();
+      this.saveActiveFileViewState();
     });
     window.addEventListener("beforeunload", () => {
       this.flushPendingSettingsSave();
       this.flushPendingFileSavesOnPageExit();
+      this.saveActiveFileViewState();
       this.flushPendingSearchHistoryRecord();
       // The note is saved on a timer while it is typed into; a page closed inside that window took
       // the last thing written with it.
@@ -5199,6 +5204,7 @@ class TermdeckApp {
       if (view && !view.promptEditing && !view.promptSubmitting && !view.promptDraftSyncPending &&
           view.pendingDraftSync === null && view.pendingTerminalDraft === null && view.promptDraft !== (s.draft || "")) {
         view.promptDraft = s.draft || "";
+        this.updateSessionDraftPen(s.session_id);
         if (s.session_id === this.activeId && this.historyOpen) this.showPromptDraft(view);
       }
       // The session list already carries the server's authoritative working
@@ -5833,6 +5839,28 @@ class TermdeckApp {
     host.closest(".session-item")?.classList.toggle("has-activity", entries.length > 0);
   }
 
+  updateSessionDraftPen(sessionId) {
+    const pen = this.sessionDraftPenEls.get(sessionId);
+    if (!pen) return;
+    const view = this.sessionInteractionState(sessionId, false);
+    const terminalInput = (view?.promptDraft || "").trim();
+    const composerDraft = this.markdownPromptDraftForSession(sessionId).trim();
+    pen.classList.toggle("hidden", !terminalInput && !composerDraft);
+    pen.title = terminalInput && composerDraft ? "Unsent composer draft and unsubmitted terminal input — click to open"
+      : composerDraft ? "Unsent composer draft — click to open"
+      : terminalInput ? "Unsubmitted terminal input" : "";
+  }
+
+  revealSessionDraft(sessionId) {
+    this.activate(sessionId);
+    // Terminal-only input lives in the terminal view: opening the transcript over it would hide the
+    // very thing the pen points at behind an empty composer. Only switch modes for a composer draft.
+    if (!this.markdownPromptDraftForSession(sessionId).trim()) return;
+    if (!this.sessionSupportsTranscript(this.session(sessionId))) return;
+    this.setHistoryMode(true);
+    if (this.historyOpen) this.$("history-prompt")?.focus();
+  }
+
   updateSessionTextStatus(id, spinning = !!this.processingStates.get(id)) {
     const title = this.sessionTitleEls.get(id);
     if (!title) return;
@@ -6170,6 +6198,7 @@ class TermdeckApp {
     view.markdownPromptDraft = normalized;
     if (options.immediate) this.saveSettingsImmediately();
     else this.saveSettings();
+    this.updateSessionDraftPen(view.sessionId);
   }
 
   persistMarkdownPromptQueue(view) {
