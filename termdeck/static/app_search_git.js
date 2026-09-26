@@ -909,6 +909,16 @@ Object.assign(TermdeckApp.prototype, {
     this.setSessionTitleText(title, presentation.text, useTextStatusIndicator && presentation.spinning);
     if (!this.vscodeMode && !presentation.spinning) title.style.color = this.terminalAgeColor(s);
     this.sessionTitleEls.set(s.session_id, title);
+    const draftPen = document.createElement("button");
+    draftPen.className = "session-draft-pen hidden";
+    draftPen.type = "button";
+    draftPen.innerHTML = '<span class="codicon codicon-pencil"></span>';
+    draftPen.onclick = (event) => { event.stopPropagation(); this.revealSessionDraft(s.session_id); };
+    this.sessionDraftPenEls.set(s.session_id, draftPen);
+    const titleRow = document.createElement("span");
+    titleRow.className = "session-title-row";
+    titleRow.append(title, draftPen);
+    this.updateSessionDraftPen(s.session_id);
     const titleStack = document.createElement("span");
     titleStack.className = "session-title-stack";
     const description = document.createElement("span");
@@ -917,7 +927,7 @@ Object.assign(TermdeckApp.prototype, {
     description.title = description.textContent;
     description.classList.toggle("hidden", !description.textContent);
     this.sessionDescriptionEls.set(s.session_id, description);
-    titleStack.append(title, description);
+    titleStack.append(titleRow, description);
     const typeIcon = this.terminalTypeIcon(s);
     const iconStatusActive = showDesktopBrandIndicator &&
       (presentation.spinning || this.unreadSessions.has(s.session_id));
@@ -1363,6 +1373,7 @@ Object.assign(TermdeckApp.prototype, {
     this.sessionDescriptionEls.clear();
     this.sessionSpinnerEls.clear();
     this.sessionActivityEls.clear();
+    this.sessionDraftPenEls.clear();
     this.sessionStatusEls.clear();
     this.sessionRowEls.clear();
     if (this.worktreeId === ALL_WORKTREES_ID) this.renderAllWorktreesInto(list);

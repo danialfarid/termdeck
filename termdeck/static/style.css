@@ -389,6 +389,11 @@ body:not(.vscode-mode) .session-item:has(.status-dot.attention) .terminal-type-i
 }
 .session-title-stack { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 1px; overflow: hidden; }
 .session-title { position: relative; min-width: 0; font-size: var(--sidebar-font-size); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.session-title-row { display: flex; min-width: 0; flex: 1; align-items: center; }
+.session-draft-pen { flex: none; margin-left: 6px; margin-right: 3px; padding: 0; border: none; background: none; color: var(--accent); line-height: 1; cursor: pointer; }
+.session-draft-pen:hover { filter: brightness(1.2); }
+.session-draft-pen.hidden { display: none; }
+.session-item .session-draft-pen .codicon { font-size: 13px; }
 .session-title-base { display: block; overflow: hidden; text-overflow: ellipsis; }
 /* Four points under the row's own font: on the row the description is context for the name above it,
    not a second line to read. The drawer's copy is styled separately and is unaffected. */

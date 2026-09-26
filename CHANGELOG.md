@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-09-25
+
+### Changed
+
+- Server restarts no longer blank terminal panes up front: the previous content stays visible
+  until the rebuilt buffer starts streaming in, instead of clearing the moment the reconnect
+  begins. The sidebar draft pen is also smaller.
+
+### Added
+
+- Sidebar terminal rows show a pen icon to the right of the title, in the accent color,
+  whenever that tab holds an unsent composer draft or unsubmitted terminal input; clicking
+  the pen opens the tab's composer with the draft. It disappears when the text is cleared
+  or submitted.
+
+- Open file tabs now keep IDE-grade editor state: scroll position, cursor, selections, folds,
+  and the find widget's query survive tab switches, browser back/forward, and page reloads
+  (view state persists to local storage). External disk changes apply as one undo stop instead
+  of wiping the stack, so Ctrl+Z keeps working across them.
+
 ## [0.29.0] — 2026-09-25
 
 ### Added
@@ -1526,7 +1546,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/danialfarid/termdeck/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/danialfarid/termdeck/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/danialfarid/termdeck/compare/v0.27.1...v0.28.0
 [0.27.1]: https://github.com/danialfarid/termdeck/compare/v0.27.0...v0.27.1
