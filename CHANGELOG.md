@@ -19,6 +19,12 @@ All notable changes to this project are documented here. The format follows
   animation, the summary no longer repeats the group name, and the group's unread
   count moved to the right, beside its search button.
 
+### Changed
+
+- The browser tab title now reads project · branch · tab (for example
+  `termdeck · main · trade-live`) so windows are distinguishable at a glance;
+  empty segments drop out instead of leaving gaps.
+
 ### Fixed
 
 - The sidebar draft pen no longer sticks on after Escape: pressing Esc and then clicking away

@@ -91,11 +91,19 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  topbarPageTitle(tabTitle) {
+    const project = this.projectSlug || "All projects";
+    const branch = this.worktreeId === ALL_WORKTREES_ID ? "All worktrees"
+      : (this.worktrees.find((worktree) => worktree.id === (this.worktreeId || "root"))?.branch || "");
+    return [project, branch, tabTitle].filter(Boolean).join(" · ") || "TermDeck";
+  },
+
+
   renderTopbar() {
     const s = this.session(this.activeId);
     const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
     const tabTitle = this.activePageTabTitle(entry, s);
-    const pageTitle = this.vscodeMode ? "TermDeck" : (tabTitle ? `${tabTitle} — TermDeck` : "TermDeck");
+    const pageTitle = this.vscodeMode ? "TermDeck" : this.topbarPageTitle(tabTitle);
     const terminalPage = !entry && this.sideView === "terminals";
     const processing = terminalPage && !!s && this.titlePresentation(s).spinning;
     const unread = terminalPage && !!s && !processing && this.unreadSessions.has(s.session_id);

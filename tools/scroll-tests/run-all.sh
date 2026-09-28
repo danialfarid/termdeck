@@ -81,6 +81,7 @@ TESTS=(
   file_editor_copy
   terminal_search_scope
   muse_shift_enter_newline
+  page_title_segments
 )
 
 # A crashed fixture leaks its sessions (and their dtach shells), and the leftovers slow every
