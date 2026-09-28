@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Reordering tabs inside an expanded spawned-agents stack no longer throws them out
+  of the stack to the end of the group: a drop on a sibling now only moves the tab
+  within the stack instead of un-filing it first.
+
 ## [0.31.0] — 2026-09-27
 
 ### Added

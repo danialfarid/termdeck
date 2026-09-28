@@ -6585,6 +6585,25 @@ class TermdeckApp {
           this.dragItem = null;
           return;
         }
+        // Reordering inside the stack they are already in: the stack draws its children in
+        // session order, so that is the only thing that moves -- neither the filing nor the
+        // group changes. Falling through would release them from the stack (the group move
+        // un-files first) and land them as plain members at the group's end.
+        if (kind === "session" && this.stackParentAlreadyHolding(targetId, sourceSessionIds)) {
+          event.stopPropagation();
+          const rowRect = item.getBoundingClientRect();
+          const reorderAfter = item.classList.contains("drop-after") ||
+            event.clientY >= rowRect.top + rowRect.height / 2;
+          this.applyLocalProjectStatePatch({
+            session_order: this.sessionOrderWithSelectedIdsAroundTarget(
+              sourceSessionIds.filter((id) => id !== targetId), targetId, reorderAfter),
+          });
+          this.sessions = this.applySessionOrder(this.sessions);
+          this.renderList();
+          this.clearDragLandingIndicator();
+          this.dragItem = null;
+          return;
+        }
         // Dragged out of the group it was filed under. Dropping a spawned agent back into the list is
         // how that relationship is undone, mirroring the drop onto a stack that made it. The move
         // happens after, because un-filing puts the terminal back in the layout it is being moved in.
