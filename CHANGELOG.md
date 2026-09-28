@@ -6,6 +6,61 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-09-27
+
+### Added
+
+- Codex's live Action Required terminal title drives needs-attention independently of its working indicator, clearing when Codex removes that title marker.
+- Terminal search has a push-button scope icon (speech bubble for conversation-only,
+  list for all output including tool calls) on the right of the input; the summary
+  line always names the active scope. The panel's outer border box and close button
+  are gone (the input field itself carries the border, the summary is a plain line
+  below it, and search toggle or Esc closes it), the panel drops in with a short
+  animation, the summary no longer repeats the group name, and the group's unread
+  count moved to the right, beside its search button.
+
+### Changed
+
+- The browser tab title now reads project · branch · tab (for example
+  `termdeck · main · trade-live`) so windows are distinguishable at a glance;
+  empty segments drop out instead of leaving gaps.
+
+### Fixed
+
+- The sidebar draft pen no longer sticks on after Escape: pressing Esc and then clicking away
+  used to leave a phantom `[O` draft behind (the focus-out report glued onto the stale Escape),
+  and function keys, Ctrl-C, and terminal color-query replies could pollute the tracked draft
+  the same way. The tracker now only counts text that was actually typed.
+- Codex transcripts no longer show the final response twice: the duplicate copy carried a
+  memory-citation metadata block that defeated dedupe, and the raw XML leaked into the
+  transcript with it. Citation blocks are now stripped from assistant turns.
+- Holding space to switch Gboard languages in the mobile terminal no longer dismisses the
+  keyboard: the helper-textarea cleanup now lands before any hold-gesture can be in flight
+  instead of racing it.
+- File-mode copy works again: right-clicking the editor no longer wipes the selection, only
+  one context menu opens (TermDeck's, with a working Copy selected text item), and Cmd+C
+  copies are recorded in copy history. The editor selection was misread as always-empty,
+  which hid the Copy item, broke history recording, and collapsed the selection on every
+  right-click; the editor's own second menu is now disabled in favor of TermDeck's.
+- Shift+Enter now inserts a newline in Muse's composer instead of submitting: Muse
+  reads Meta+Enter as submit, so TermDeck sends it the same line-feed byte Ctrl+J
+  produces. Other agents keep the Meta+Enter sequence.
+- The spawned-agents connector line is straight again: the half drawn by the parent
+  row sat 1px right of the half running through the children (the row's transparent
+  border shifts absolutely-positioned offsets), so the two halves visibly jogged.
+- History search no longer drops matching terminals for popular terms: the result cap used
+  to slice matching text chunks before grouping them into transcripts, so a session whose
+  chunks lost the cut vanished even though it matched (a filename spread across a whole
+  project's transcripts could hide the active session itself). The cap now applies to
+  transcripts, newest first, and wide searches run faster by skipping non-matching lines
+  before parsing them.
+
+### Removed
+
+- The terminal cursor no longer blinks, and the Terminal cursor blink setting is gone with
+  it: a blinking cursor on top of an agent composer's constant redraws read as flickering,
+  so the steady cursor is now permanent. Settings files saved with the old switch still load.
+
 ## [0.30.0] — 2026-09-25
 
 ### Changed

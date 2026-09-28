@@ -42,7 +42,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_fo
   ignored_dirs: [], hide_excluded: true, hide_dot_folders: true, file_tree_sort: "name", side_split: 0.55, side_full: false, side_split_user_set: false, show_stats: true,
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_model_names: {}, last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
-  recent_terminal_hours: 24, terminal_cursor_blink: true, disable_agent_effects: false,
+  recent_terminal_hours: 24, disable_agent_effects: false,
   show_terminal_icons: false, terminal_icon_agents: {}, terminal_icon_size: 14, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
@@ -6841,14 +6841,40 @@ class TermdeckApp {
     const input = this.$("terminal-search-input");
     if (input) input.placeholder = this.terminalSearchPlaceholder();
     const summary = this.$("terminal-search-summary");
-    if (summary && !this.terminalSearchText.trim()) summary.textContent = this.terminalSearchGroupName();
+    if (summary && !this.terminalSearchText.trim()) summary.textContent = "";
+    this.updateTerminalSearchScopeLabel();
+  }
+
+  updateTerminalSearchScopeLabel(element = null) {
+    const scope = element || this.$("terminal-search-scope");
+    const glyph = scope?.querySelector(".codicon");
+    if (!scope || !glyph) return;
+    const operations = this.historySearchOperations;
+    glyph.className = `codicon ${operations ? "codicon-list-unordered" : "codicon-comment"}`;
+    scope.title = operations
+      ? "Transcript scope: all output, including tool calls. Click for conversation only."
+      : "Transcript scope: conversation only. Click to include tool calls (all output).";
+    scope.setAttribute("aria-label", scope.title);
+    scope.setAttribute("aria-pressed", String(operations));
+    scope.classList.toggle("on", operations);
   }
 
   createTerminalSearchEditor() {
     const bar = document.createElement("div");
     bar.id = "terminal-search-inline";
-    const icon = document.createElement("span");
-    icon.className = "codicon codicon-search terminal-search-inline-icon";
+    const scope = document.createElement("button");
+    scope.id = "terminal-search-scope";
+    scope.type = "button";
+    scope.className = "section-toggle terminal-search-scope";
+    scope.innerHTML = '<span class="codicon codicon-comment"></span>';
+    scope.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.historySearchOperations = !this.historySearchOperations;
+      this.updateTerminalSearchScopeLabel(scope);
+      clearTimeout(this.terminalSearchTimer);
+      this.runTerminalSearch();
+    };
     const input = document.createElement("input");
     input.id = "terminal-search-input";
     input.type = "text";
@@ -6861,12 +6887,6 @@ class TermdeckApp {
     const summary = document.createElement("span");
     summary.id = "terminal-search-summary";
     summary.setAttribute("aria-live", "polite");
-    const close = document.createElement("button");
-    close.id = "terminal-search-inline-close";
-    close.className = "section-toggle";
-    close.innerHTML = '<span class="codicon codicon-close"></span>';
-    close.title = "Close terminal search";
-    close.setAttribute("aria-label", close.title);
     input.oninput = () => {
       this.terminalSearchText = input.value;
       this.terminalSearchFocusIndex = -1;
@@ -6889,12 +6909,11 @@ class TermdeckApp {
       }
     };
     input.onclick = (event) => event.stopPropagation();
-    close.onclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      this.closeTerminalSearchEditor();
-    };
-    bar.append(icon, input, close, summary);
+    const row = document.createElement("div");
+    row.className = "terminal-search-row";
+    row.append(input, scope);
+    bar.append(row, summary);
+    this.updateTerminalSearchScopeLabel(scope);
     return bar;
   }
 

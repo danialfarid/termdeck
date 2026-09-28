@@ -597,9 +597,6 @@ class UiSettings(BaseModel):
     show_mtime: bool = True
     show_git_status: bool = True
     editor_no_wrap: bool = False
-    # The block cursor in a terminal. Off is for agents whose composer redraws itself constantly: every
-    # redraw walks the cursor across the line and back, and a blinking cursor makes that flicker.
-    terminal_cursor_blink: bool = True
     # What the visual-effects checkbox in the new-terminal and restart dialogs starts on. Remembered
     # like the model and the permission: turning an agent's effects off means off, not off once.
     disable_agent_effects: bool = False
