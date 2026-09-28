@@ -103,16 +103,17 @@ body:not(.vscode-mode) #sidebar { color: var(--sidebar-text-color); --text: var(
 #project-select { color: var(--accent); font-family: inherit; font-size: var(--project-font-size); font-weight: 400; letter-spacing: 0.02em; line-height: 1.2; padding: 1px 0 1px 4px; text-decoration: none; }
 #new-session-btn { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; width: 26px; height: 26px; font-size: 16px; line-height: 1; cursor: pointer; }
 #new-session-btn:hover { border-color: var(--accent); color: var(--accent); }
-#terminal-search-inline { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 5px; margin: 0 4px 5px; padding: 4px 5px; border: 1px solid var(--active-border); border-radius: 6px; background: color-mix(in srgb, var(--panel2) 88%, var(--accent) 12%); }
-.terminal-search-inline-icon { color: var(--accent); flex: none; }
+#terminal-search-inline { margin: 0 4px 6px; animation: td-search-drop .14s ease-out; }
+#terminal-search-inline .terminal-search-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px; }
+@keyframes td-search-drop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+#terminal-search-inline .terminal-search-scope { border-color: var(--border); background: var(--panel2); color: var(--text); }
+#terminal-search-inline .terminal-search-scope:hover { border-color: var(--active-border); background: var(--active-bg); color: var(--accent); }
 #terminal-search-input { flex: 1; min-width: 0; height: 26px; margin: 0; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 5px 8px; font-size: var(--tree-font-size); font-family: Menlo, monospace; outline: none; }
 #terminal-search-input::placeholder { color: var(--dim); opacity: 1; }
 #terminal-search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--active-border); }
-#terminal-search-inline-close { flex: none; color: var(--dim); }
-#terminal-search-inline-close:hover { color: var(--text); border-color: var(--active-border); background: var(--active-bg); }
-#terminal-search-summary { grid-column: 1 / -1; min-width: 0; padding: 0 2px 1px; color: var(--dim); font: calc(var(--tree-font-size) - 2px)/1.2 Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#terminal-search-summary { display: block; margin: 3px 2px 0; color: var(--dim); font: calc(var(--tree-font-size) - 2px)/1.2 Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .terminal-search-spinner { display: inline-block; box-sizing: border-box; width: 14px; height: 14px; margin-right: 6px; border: 2px solid var(--dim); border-top-color: var(--accent); border-right-color: var(--accent); border-radius: 50%; vertical-align: -2px; animation: termdeck-report-spin 0.8s linear infinite; }
-@media (prefers-reduced-motion: reduce) { .terminal-search-spinner { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .terminal-search-spinner, #terminal-search-inline { animation: none; } }
 .terminal-history-title-matches { display: flex; flex-direction: column; gap: 2px; padding: 3px 4px 6px; border-bottom: 1px solid var(--border); }
 .terminal-history-title-match { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 5px 6px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text); cursor: pointer; text-align: left; font: var(--tree-font-size)/1.2 Menlo, monospace; }
 .terminal-history-title-match:hover, .terminal-history-title-match:focus { border-color: var(--active-border); background: var(--active-bg); outline: none; }
@@ -953,7 +954,7 @@ body.vscode-native-mode #project-terminal-search-btn { display: none !important;
    to. It starts where that row's own status dot sits: the middle of the title, which the activity band
    shifts up by half its height. */
 .session-item:has(+ .agent-stack)::after {
-  content: ""; position: absolute; left: 3px; width: 2px; bottom: 0;
+  content: ""; position: absolute; left: 2px; width: 2px; bottom: 0;
   top: calc(50% - var(--activity-band, 0px) / 2);
   border-radius: 1px; background: color-mix(in srgb, var(--accent) 30%, var(--border));
 }
@@ -984,7 +985,7 @@ body:not(.vscode-mode) .terminal-group-name { color: var(--accent); }
 .terminal-group-add { display: grid; place-items: center; flex: none; width: 19px; height: 19px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: none; color: var(--dim); font-size: 0; line-height: 1; cursor: pointer; }
 .terminal-group-add:hover { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 .terminal-group-search { flex: none; width: 18px; height: 18px; margin-left: auto; margin-right: -3px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: none; color: var(--dim); cursor: pointer; opacity: 0.38; }
-body:not(.vscode-mode) .terminal-group-label .group-attention { margin-left: 0; }
+body:not(.vscode-mode) .terminal-group-search { margin-left: 0; }
 .terminal-group-search:hover, .terminal-group-search.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); opacity: 1; }
 .terminal-group-search .codicon { font-size: 10px; }
 .terminal-group > #terminal-search-inline { margin: 5px 6px 6px; }
@@ -2199,7 +2200,7 @@ body.notebook-open #mobile-notebook-toggle { display: none; }
 #active-toggle { width: calc(20px * var(--ui-scale)); min-width: calc(20px * var(--ui-scale)); font-size: calc(12px * var(--ui-scale)); }
 #active-toggle .codicon { font-size: calc(12px * var(--ui-scale)); }
 #new-session-btn.terminal-new-toggle { width: calc(20px * var(--ui-scale)); min-width: calc(20px * var(--ui-scale)); height: calc(18px * var(--ui-scale)); font-size: 0; line-height: calc(16px * var(--ui-scale)); }
-.terminal-search-inline-icon { font-size: calc(12px * var(--ui-scale)); }
+
 .panel-actions { gap: calc(6px * var(--ui-scale)); }
 .panel-actions button { min-width: calc(26px * var(--ui-scale)); height: calc(26px * var(--ui-scale)); }
 .session-item { padding: calc(5px * var(--ui-scale)) calc(8px * var(--ui-scale)) calc(5px * var(--ui-scale)) calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); }

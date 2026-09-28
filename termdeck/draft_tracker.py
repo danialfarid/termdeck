@@ -10,6 +10,7 @@ class DraftInputTracker:
 
     ESC = "\x1b"
     CSI_OPENER = "["
+    SS3_OPENER = "O"
     OSC_OPENER = "]"
     DCS_OPENER = "P"
     BEL = "\x07"
@@ -36,8 +37,18 @@ class DraftInputTracker:
         return "".join(self._chars)
 
     def feed(self, text: str) -> None:
-        stream = self._escape_pending + text
+        pending = self._escape_pending
         self._escape_pending = ""
+        # A bare ESC is the complete Escape key, not a split sequence start: only glue it onto
+        # input that continues an escape. Otherwise Esc followed by the next chunk misparses -- a
+        # focus-out report "\x1b[O" became literal "[O" text, sticking the draft pen on.
+        if (
+            pending == self.ESC
+            and text
+            and text[0] not in (self.CSI_OPENER, self.SS3_OPENER, self.OSC_OPENER, self.DCS_OPENER)
+        ):
+            pending = ""
+        stream = pending + text
         i = 0
         while i < len(stream):
             ch = stream[i]
@@ -94,12 +105,20 @@ class DraftInputTracker:
                 return 0
             end, terminator_len = min(ends)
             return end + terminator_len - start
+        if following == self.SS3_OPENER:
+            # SS3 (application cursor/keypad: arrows in smkx mode, F1-F4): ESC O + one final byte.
+            return 0 if start + 2 >= len(stream) else 3
         if following != self.CSI_OPENER:
             return 2
         j = start + 2
         while j < len(stream):
             if self.CSI_FINAL_MIN <= ord(stream[j]) <= self.CSI_FINAL_MAX:
-                sequence = stream[start:j + 1]
+                if stream[j] == "M" and j == start + 2:
+                    # Legacy X10 mouse report: ESC [ M + 3 payload bytes. The input direction never
+                    # carries CSI M Delete Lines, so there is no ambiguity; hold the fragment when
+                    # the payload is split across chunks.
+                    return 0 if j + 4 > len(stream) else 6
+                sequence = stream[start : j + 1]
                 if sequence == self.PASTE_START_SEQ:
                     self._in_paste = True
                 elif sequence == self.PASTE_END_SEQ:

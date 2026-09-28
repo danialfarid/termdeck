@@ -69,10 +69,9 @@ Object.assign(TermdeckApp.prototype, {
     document.documentElement.style.setProperty("--tree-scale",
       String(this.normalizeUiScale(treeFontSize / SETTINGS_DEFAULTS.tree_font_size)));
     this.applyThemeVariables();
-    const cursorBlink = this.terminalCursorBlinkEnabled();
     for (const view of this.views.values()) {
       if (view.term.options.fontSize !== terminalFontSize) view.term.options.fontSize = terminalFontSize;
-      if (view.term.options.cursorBlink !== cursorBlink) view.term.options.cursorBlink = cursorBlink;
+      if (view.term.options.cursorBlink) view.term.options.cursorBlink = false;
       this.refreshTerminalAppearance(view);
     }
     if (this.editor) {
@@ -173,6 +172,9 @@ Object.assign(TermdeckApp.prototype, {
         this.defineMonacoTheme();
         this.editor = monaco.editor.create(this.$("monaco-host"), {
           readOnly: false, theme: this.monacoThemeName(),
+          // The file menu is TermDeck's own (#context-menu via the document handler below);
+          // Monaco's shadow-DOM menu would stack a second, Copy-bearing menu on top of it.
+          contextmenu: false,
           automaticLayout: true, minimap: { enabled: false },
           scrollBeyondLastLine: false, fontSize: this.scaledSettingSize("code_font_size"),
           lineNumbersMinChars: EDITOR_LINE_NUMBER_MIN_CHARS, lineDecorationsWidth: EDITOR_LINE_DECORATIONS_WIDTH,
@@ -185,7 +187,9 @@ Object.assign(TermdeckApp.prototype, {
         this.editor.onMouseMove((event) => this.updateFileBlameGutterHover(event));
         this.editor.onDidScrollChange(() => this.scheduleActiveFileViewStatePersist());
         this.editor.onDidChangeCursorPosition(() => this.scheduleActiveFileViewStatePersist());
-        this.editor.onContextMenu((event) => this.openFileEditorContextMenu(event.event.browserEvent, event.target.position));
+        // No editor.onContextMenu subscriber: with contextmenu off Monaco no longer stops the
+        // event's propagation, so the document contextmenu listener is the single opener of ours.
+        // (A subscriber here would open the same menu a second time on every right-click.)
         this.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => this.saveActiveFile());
         this.editor.addAction({
           id: "termdeck-save", label: "Save (⌘S)", contextMenuGroupId: "1_modification", contextMenuOrder: 0.5,
@@ -234,6 +238,8 @@ Object.assign(TermdeckApp.prototype, {
           notebookHost.textContent = "";
           this.notebookEditor = monaco.editor.create(notebookHost, {
             readOnly: false, theme: this.monacoThemeName(),
+            // Same as the file editor: TermDeck's own menu only, no stacked Monaco menu.
+            contextmenu: false,
             automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
             fontSize: this.scaledSettingSize("code_font_size"), lineNumbersMinChars: 2, lineDecorationsWidth: 8, glyphMargin: false,
             renderLineHighlight: "all", folding: true, wordWrap: this.settings.editor_no_wrap ? "off" : "on",
@@ -845,11 +851,6 @@ Object.assign(TermdeckApp.prototype, {
         this.settings.notify_agent_idle = next;
         if (next) this.maybeRequestNotificationPermission();
       }));
-    // Off is worth having for an agent whose composer redraws itself while it works: each redraw walks
-    // the cursor across the line and back, and the blink on top of that is what reads as flickering.
-    pop.appendChild(this.buildToggleRow("Terminal cursor blink",
-      () => (this.terminalCursorBlinkEnabled() ? "on" : "off"),
-      () => { this.settings.terminal_cursor_blink = !this.terminalCursorBlinkEnabled(); }));
     pop.appendChild(this.buildToggleRow("TermDeck API guidance for spawned agents",
       () => (this.settings.agent_api_instructions_enabled !== false ? "on" : "off"),
       () => { this.settings.agent_api_instructions_enabled = this.settings.agent_api_instructions_enabled === false; }));
@@ -899,20 +900,13 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  terminalCursorBlinkEnabled() {
-    return this.settings.terminal_cursor_blink !== false;
-  },
-
-
-  // The setting alone is not enough: a TUI asks for its own cursor with DECSCUSR (CSI Ps SP q), and
-  // xterm obeys by writing cursorStyle AND cursorBlink out of that parameter -- so codex, which asks for
-  // a blinking one, turned the blink straight back on and the switch looked broken. Taking the sequence
-  // here keeps the SHAPE it asked for (block, underline, bar) and drops only the blink, which is the
-  // part the setting is about. With blinking on, the sequence is left to xterm untouched.
+  // A TUI asks for its own cursor with DECSCUSR (CSI Ps SP q), and xterm obeys by writing
+  // cursorStyle AND cursorBlink out of that parameter -- so codex, which asks for a blinking one,
+  // would turn the blink straight back on. Taking the sequence here keeps the SHAPE it asked for
+  // (block, underline, bar) and drops only the blink. The terminal cursor never blinks.
   holdCursorBlinkOff(term) {
     const shapes = { 0: "block", 1: "block", 2: "block", 3: "underline", 4: "underline", 5: "bar", 6: "bar" };
     term.parser.registerCsiHandler({ intermediates: " ", final: "q" }, (params) => {
-      if (this.terminalCursorBlinkEnabled()) return false;
       term.options.cursorStyle = shapes[Number(params[0]) || 1] || "block";
       term.options.cursorBlink = false;
       return true;

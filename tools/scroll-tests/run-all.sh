@@ -78,6 +78,9 @@ TESTS=(
   returns_to_bottom
   draft_pen
   file_tab_state
+  file_editor_copy
+  terminal_search_scope
+  muse_shift_enter_newline
 )
 
 # A crashed fixture leaks its sessions (and their dtach shells), and the leftovers slow every

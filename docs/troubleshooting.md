@@ -202,6 +202,28 @@ The variable is copied into the unit's environment block.
 
 ---
 
+## Sidebar draft pen
+
+### The pen stays on though the composer looks empty
+
+The pen tracks unsubmitted terminal input on both the client and the server. One fixed
+cause (2026-09-26): pressing Esc and then clicking away glued the focus-out report onto
+the stale Escape, leaving a phantom `[O` draft. If your pen is stuck on something else:
+
+- Press Enter in the terminal once. On an empty composer this submits nothing and clears
+  the tracked draft, which takes the pen with it.
+- One unresolved report (2026-09-26, codex tab): a 10-line paste that was never submitted
+  (absent from the codex rollout) stayed in the tracked draft after the composer went
+  empty, with no submit and no tracked clear in between. Ruled out as the clear mechanism:
+  Ctrl+U, Esc, Ctrl+K, Ctrl+Z/X/G/D, Alt+R, Alt+Backspace, Cmd+A+Delete, Shift+selection
+  (each probed live against codex — the tracker matched or both sides ignored it),
+  typed-while-busy text dropped at turn end (kept — probed), mid-run auto-compaction and
+  the question dialog (both predate the paste), mouse selection (never enabled), API /
+  history / Tab-queue / rename submits (all clear the tracker through `write_input`),
+  Ctrl+C (the server clears on it), respawn replay, and disconnect windows.
+- If it recurs, note the exact keys used to clear the composer and the time: input bytes
+  are not logged, so that is the one fact forensics cannot recover.
+
 ## Still stuck
 
 Open an issue at <https://github.com/danialfarid/termdeck/issues> with:

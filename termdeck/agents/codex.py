@@ -32,6 +32,7 @@ class CodexCli(AgentCli):
     THREAD_LOCK_DIR = Path.home() / ".codex" / "thread-writer-locks"
     THREAD_LOCK_SUFFIX = ".lock"
     UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+    MEM_CITATION_RE = re.compile(r"<oai-mem-citation>.*?</oai-mem-citation>", re.DOTALL)
     NO_ALT_SCREEN_FLAG = "--no-alt-screen"
     DAY_DIR_LOOKAROUND_DAYS = (-1, 0, 1)
     history_indexed = True
@@ -98,6 +99,7 @@ class CodexCli(AgentCli):
         self._subagent_counts: dict[str, tuple[float, int]] = {}
         # Per terminal: when its screen was last replayed, and what it said.
         self._background_counts: dict[str, tuple[float, int]] = {}
+        self._terminal_footers: dict[str, tuple[float, str]] = {}
         self._forked_from_cache: dict[Path, str] = {}
 
     def model_arguments(self, model_name: str) -> tuple[str, ...]:
@@ -229,8 +231,12 @@ class CodexCli(AgentCli):
             model = current_model
             timestamp = TurnBuilder.extract_turn_timestamp(payload)
             if entry_type == "event_msg" and body_type == "agent_message":
-                candidate = TurnBuilder.turn(TurnBuilder.ROLE_ASSISTANT, str(body.get("message", "")), model=model,
-                                             timestamp=timestamp)
+                candidate = TurnBuilder.turn(
+                    TurnBuilder.ROLE_ASSISTANT,
+                    self._strip_mem_citations(str(body.get("message", ""))),
+                    model=model,
+                    timestamp=timestamp,
+                )
                 phase = str(body.get("phase", ""))
                 if phase:
                     candidate["phase"] = phase
@@ -239,7 +245,9 @@ class CodexCli(AgentCli):
             elif entry_type == "event_msg" and body_type == "item_completed":
                 item = body.get("item")
                 if isinstance(item, dict) and item.get("type") == "AgentMessage":
-                    text = TurnBuilder.join_text(item.get("content"), ("Text", "text", "output_text"))
+                    text = self._strip_mem_citations(
+                        TurnBuilder.join_text(item.get("content"), ("Text", "text", "output_text"))
+                    )
                     candidate = TurnBuilder.turn(TurnBuilder.ROLE_ASSISTANT, text, model=model, timestamp=timestamp)
                     phase = str(item.get("phase", ""))
                     if phase:
@@ -249,6 +257,8 @@ class CodexCli(AgentCli):
             elif entry_type == "response_item" and body_type == "message" and body.get("role") in ("user", "assistant"):
                 text_keys = ("input_text", "text") if body.get("role") == "user" else ("output_text", "text")
                 text = TurnBuilder.join_text(body.get("content"), text_keys)
+                if body.get("role") == "assistant":
+                    text = self._strip_mem_citations(text)
                 if text and not self._is_boilerplate(text):
                     candidate = TurnBuilder.turn(str(body["role"]), text, model=model, timestamp=timestamp)
                     if body.get("role") == "assistant":
@@ -321,6 +331,13 @@ class CodexCli(AgentCli):
     def _is_boilerplate(text: str) -> bool:
         head = text.lstrip()[:40]
         return head.startswith("# AGENTS.md") or head.startswith("<INSTRUCTIONS>") or head.startswith("<environment_context>")
+
+    @classmethod
+    def _strip_mem_citations(cls, text: str) -> str:
+        # Memory citations are retrieval metadata codex appends to the response_item copy of a
+        # message only. Besides leaking XML into the transcript, the suffix defeats the
+        # exact-text dedupe against the event_msg copy and shows the message twice.
+        return cls.MEM_CITATION_RE.sub("", text).strip()
 
     def is_user_payload(self, payload: dict[str, object]) -> bool:
         body = payload.get("payload")
@@ -452,6 +469,21 @@ class CodexCli(AgentCli):
     def is_processing(self, ms) -> bool:
         return bool(ms.processing or ms.agent_state.transcript_active)
 
+    ACTION_REQUIRED_TITLE_RE = re.compile(r"^\[\s*!\s*\]\s*Action Required(?:\s*\||$)")
+
+    def has_pending_question(self, ms) -> bool:
+        return bool(ms.running and self.ACTION_REQUIRED_TITLE_RE.match(ms.cli_title or ""))
+
+    def cached_terminal_footer(self, ms) -> str:
+        now = time.monotonic()
+        cached = self._terminal_footers.get(ms.record.session_id)
+        if cached is not None and now - cached[0] < self.BACKGROUND_SCREEN_TTL_SECONDS:
+            return cached[1]
+        stream = ms.raw_replay_buffer or ms.buffer
+        footer = self.terminal_footer_on_screen(bytes(stream[-self.BACKGROUND_SCREEN_TAIL_BYTES:]), ms.record.cols, ms.record.rows)
+        self._terminal_footers[ms.record.session_id] = (now, footer)
+        return footer
+
     def activity_detail(self, ms) -> dict[str, object] | None:
         if not ms.record.agent_session_id:
             return None
@@ -486,23 +518,25 @@ class CodexCli(AgentCli):
             return cached[1]
         # The raw replay is what codex actually wrote, escapes and all; a codex terminal keeps its
         # stream there rather than in the scrollback the client is served.
-        stream = ms.raw_replay_buffer or ms.buffer
-        count = self.background_terminals_on_screen(bytes(stream[-self.BACKGROUND_SCREEN_TAIL_BYTES:]),
-                                                    ms.record.cols, ms.record.rows)
+        found = self._BACKGROUND_TERMINALS_RE.search(self.cached_terminal_footer(ms))
+        count = int(found.group(1)) if found else 0
         self._background_counts[session_id] = (now, count)
         return count
 
     @classmethod
     def background_terminals_on_screen(cls, tail: bytes, cols: int, rows: int) -> int:
+        found = cls._BACKGROUND_TERMINALS_RE.search(cls.terminal_footer_on_screen(tail, cols, rows))
+        return int(found.group(1)) if found else 0
+
+    @classmethod
+    def terminal_footer_on_screen(cls, tail: bytes, cols: int, rows: int) -> str:
         try:
             import pyte
         except ImportError:
-            return 0
+            return ""
         screen = pyte.Screen(max(int(cols) or 0, 20), max(int(rows) or 0, 24))
         pyte.Stream(screen).feed(tail.decode("utf-8", "replace"))
-        footer = "\n".join(screen.display[-cls.BACKGROUND_SCREEN_FOOTER_ROWS:])
-        found = cls._BACKGROUND_TERMINALS_RE.search(footer)
-        return int(found.group(1)) if found else 0
+        return "\n".join(screen.display[-cls.BACKGROUND_SCREEN_FOOTER_ROWS:])
 
     # A spawned agent writes its own rollout, naming the thread it was forked from, and it is running
     # for exactly as long as that rollout is still being written -- the same thing the deck already

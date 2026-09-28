@@ -214,7 +214,7 @@ Object.assign(TermdeckApp.prototype, {
       // frames painted, a visible jitter on every key press whenever any scrollback existed. The typing
       // key handler resumes following through the container instead, which is the surface that scrolls.
       scrollOnUserInput: false,
-      scrollback: 20000, cursorBlink: this.terminalCursorBlinkEnabled(), macOptionIsMeta: true, allowProposedApi: true,
+      scrollback: 20000, cursorBlink: false, macOptionIsMeta: true, allowProposedApi: true,
       linkHandler: { activate: (_event, uri) => { void this.openTerminalHyperlink(uri); } },
     });
     const fit = new FitAddon.FitAddon();
@@ -1002,7 +1002,9 @@ Object.assign(TermdeckApp.prototype, {
     if (this.tryAppShortcut(e)) return false;
     if (e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
-      this.sendTrackedInput(view, "\x1b\r");
+      // Muse's composer reads Meta+Enter as submit; a bare line feed (what Ctrl+J
+      // sends) is its newline. Every other composer keeps Meta+Enter.
+      this.sendTrackedInput(view, this.session(view.sessionId)?.agent_kind === "muse" ? "\n" : "\x1b\r");
       return false;
     }
     if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "v") {

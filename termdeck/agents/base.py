@@ -383,6 +383,9 @@ class AgentCli:
     def transcript_requires_attention(self, manager, ms) -> bool:
         return False
 
+    def has_pending_question(self, ms) -> bool:
+        return False
+
     def update_attention_from_title(self, manager, ms, title: str | None) -> bool:
         return False
 

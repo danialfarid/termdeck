@@ -253,7 +253,7 @@ Object.assign(TermdeckApp.prototype, {
     this.terminalSearchMatches.clear();
     this.terminalSearchClosedMatches.clear();
     const summary = this.$("terminal-search-summary");
-    if (summary) summary.textContent = this.terminalSearchGroupName();
+    if (summary) summary.textContent = "";
     this.renderList();
     if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
   },
@@ -378,13 +378,11 @@ Object.assign(TermdeckApp.prototype, {
         .reduce((sum, result) => sum + Number(result.count || 0), 0);
       const indexing = historyPayload.indexing ? " · indexing history" : "";
       const scope = this.historySearchOperations ? "all output" : "conversation";
-      const groupScope = this.terminalSearchGroupName();
-      const summaryPrefix = groupScope ? `${groupScope} · ` : "";
       this.renderList();
       const summary = this.$("terminal-search-summary");
       if (summary) summary.textContent = terminalCount
-        ? `${summaryPrefix}${scope} · ${terminalCount} terminal${terminalCount === 1 ? "" : "s"} · ${matchCount} match${matchCount === 1 ? "" : "es"}${indexing}`
-        : `${summaryPrefix}no ${scope} matches${indexing}`;
+        ? `${scope} · ${terminalCount} terminal${terminalCount === 1 ? "" : "s"} · ${matchCount} match${matchCount === 1 ? "" : "es"}${indexing}`
+        : `no ${scope} matches${indexing}`;
       if (preserveInputFocus) requestAnimationFrame(() => this.$("terminal-search-input")?.focus());
     } catch (error) {
       if (error.name === "AbortError") return;
@@ -4711,7 +4709,7 @@ Object.assign(TermdeckApp.prototype, {
     event.stopPropagation();
     const target = targetPosition ? { position: targetPosition } : this.editor.getTargetAtClientPoint?.(event.clientX, event.clientY);
     const selection = this.editor.getSelection();
-    if (target?.position && (!selection || selection.isEmpty)) {
+    if (target?.position && (!selection || selection.isEmpty())) {
       this.editor.setPosition(target.position);
       this.editor.revealPositionInCenterIfOutsideViewport(target.position);
     }

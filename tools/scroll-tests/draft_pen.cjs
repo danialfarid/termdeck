@@ -77,6 +77,31 @@ const PEN = (i) => {
   });
   console.log('x10 mouse:     ', JSON.stringify(x10));
 
+  // A bare Escape is a complete keypress, not the start of a split sequence: Esc followed by a
+  // focus-out report, text, or Enter must not glue into Alt+... or literal "[O" text. SS3 (F-keys,
+  // arrows in application mode), OSC/DCS replies, and Ctrl-C clear likewise leave no phantom draft.
+  const reports = await p.evaluate(() => {
+    const td = window.__td;
+    const scratch = () => ({ promptDraft: '', promptEscape: '', promptPaste: false });
+    const fed = (...chunks) => {
+      const v = scratch();
+      for (const c of chunks) td.updatePromptDraftFromTerminal(v, c);
+      return v.promptDraft;
+    };
+    return {
+      escFocus: fed('\x1b', '\x1b[O'),
+      escText: fed('\x1b', 'hi'),
+      escEnter: fed('ab', '\x1b', '\r'),
+      splitCsi: fed('\x1b', '[O'),
+      ss3: fed('\x1bOP'),
+      ss3Arrow: fed('ab', '\x1bOA'),
+      ctrlC: fed('ab', '\x03'),
+      osc: fed('\x1b]11;rgb:0000/0000/0000\x07'),
+      dcs: fed('\x1bP1$r0;0\x1b\\'),
+    };
+  });
+  console.log('input reports: ', JSON.stringify(reports));
+
   // Composer input reaches the pen even where the composer itself is hidden (shell tabs).
   await p.evaluate(() => {
     const prompt = document.getElementById('history-prompt');
@@ -118,6 +143,11 @@ const PEN = (i) => {
       (typed.title || '').includes('terminal')],
     ['submitting clears the pen', submitted.hidden === true && submitted.terminalDraft === ''],
     ['x10 mouse reports leave no draft', x10.whole === '' && x10.split === ''],
+    ['esc-then-report/text/enter keeps no phantom text',
+      reports.escFocus === '' && reports.escText === 'hi' && reports.escEnter === '' && reports.splitCsi === ''],
+    ['ss3, osc/dcs replies and ctrl-c leave no draft',
+      reports.ss3 === '' && reports.ss3Arrow === 'ab' && reports.ctrlC === '' &&
+      reports.osc === '' && reports.dcs === ''],
     ['composer draft shows the pen', seeded.hidden === false && seeded.composerDraft === 'composer seed' &&
       (seeded.title || '').includes('composer')],
     ['clearing the composer hides the pen', cleared.hidden === true && cleared.composerDraft === ''],

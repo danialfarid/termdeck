@@ -3323,9 +3323,14 @@ Object.assign(TermdeckApp.prototype, {
       textarea.value = "";
       textarea.setSelectionRange(0, 0);
     };
-    const scheduleTextareaClear = () => {
+    // Committed text clears on a 0ms timer: after every same-task read (xterm's listeners
+    // registered first) but ~300ms ahead of any IME hold-gesture decision. A 40ms delay
+    // pushed the mutation into the gesture -- holding space to switch Gboard languages
+    // showed the switcher for an instant, then the clear restarted the input connection
+    // and the keyboard bailed out.
+    const scheduleTextareaClear = (delayMs = 0) => {
       if (composing || view.mobileTextareaCleanupTimer) return;
-      view.mobileTextareaCleanupTimer = window.setTimeout(clearTextarea, 40);
+      view.mobileTextareaCleanupTimer = window.setTimeout(clearTextarea, delayMs);
     };
     const handleKeyDown = (event) => {
       if ((event.keyCode || event.which) !== 229 || event.isComposing || composing) return;
@@ -3339,7 +3344,12 @@ Object.assign(TermdeckApp.prototype, {
     };
     const handleCompositionEnd = () => {
       composing = false;
-      scheduleTextareaClear();
+      // Not the 0ms path: this capture listener queues ahead of xterm's bubble finalize,
+      // so an immediate clear would eat the composed text before xterm reads it. The commit
+      // input skips its own schedule (this timer is pending), xterm's 0ms finalize read lands
+      // first by deadline, and this clears after it -- exactly today's behavior, kept because
+      // no hold-gesture starts within 40ms of a composition end.
+      scheduleTextareaClear(40);
     };
     const handleInput = (event) => {
       if (!event.isComposing) scheduleTextareaClear();
@@ -3359,8 +3369,13 @@ Object.assign(TermdeckApp.prototype, {
 
 
   updatePromptDraftFromTerminal(view, data) {
-    let stream = (view.promptEscape || "") + data;
+    let carry = view.promptEscape || "";
     view.promptEscape = "";
+    // A bare ESC is the complete Escape key, not a split sequence start: only glue it onto input
+    // that continues an escape. Otherwise Esc followed by the next chunk misparses -- a focus-out
+    // report "\x1b[O" became literal "[O" text, sticking the draft pen on. Mirrors DraftInputTracker.
+    if (carry === "\x1b" && data && "[O]P".indexOf(data[0]) === -1) carry = "";
+    let stream = carry + data;
     let i = 0;
     while (i < stream.length) {
       if (stream.startsWith("\x1b[200~", i)) { view.promptPaste = true; i += 6; continue; }
@@ -3370,6 +3385,23 @@ Object.assign(TermdeckApp.prototype, {
         if (i + 1 >= stream.length) { view.promptEscape = stream.slice(i); break; }
         if (stream[i + 1] === "\r") { view.promptDraft += "\n"; i += 2; continue; }
         if (stream[i + 1] === "\x7f") { view.promptDraft = view.promptDraft.replace(/\S+\s*$/, ""); i += 2; continue; }
+        if (stream[i + 1] === "O") {
+          // SS3 (application cursor/keypad: arrows in smkx mode, F1-F4): ESC O + one final byte.
+          if (i + 2 >= stream.length) { view.promptEscape = stream.slice(i); break; }
+          i += 3;
+          continue;
+        }
+        if (stream[i + 1] === "]" || stream[i + 1] === "P") {
+          // OSC/DCS replies (color queries and the like) end at BEL or ST; hold the fragment
+          // when the reply is split across chunks. Mirrors DraftInputTracker._consume_escape.
+          const belEnd = stream.indexOf("\x07", i + 2);
+          const stEnd = stream.indexOf("\x1b\\", i + 2);
+          let oscEnd = belEnd === -1 ? -1 : belEnd + 1;
+          if (stEnd !== -1 && (oscEnd === -1 || stEnd + 2 < oscEnd)) oscEnd = stEnd + 2;
+          if (oscEnd === -1) { view.promptEscape = stream.slice(i); break; }
+          i = oscEnd;
+          continue;
+        }
         if (stream[i + 1] === "[") {
           let end = i + 2;
           while (end < stream.length && (stream.charCodeAt(end) < 0x40 || stream.charCodeAt(end) > 0x7e)) end += 1;
@@ -3394,6 +3426,10 @@ Object.assign(TermdeckApp.prototype, {
       if (ch === "\r" || ch === "\n") {
         if (view.promptPaste) view.promptDraft += "\n";
         else view.promptDraft = "";
+      } else if (ch === "\x03") {
+        // Ctrl-C submits-or-cancels the line just like Enter: the draft is gone either way.
+        // Mirrors DraftInputTracker, which already cleared here while the client held the text.
+        view.promptDraft = "";
       } else if (ch === "\x7f") {
         view.promptDraft = view.promptDraft.slice(0, -1);
       } else if (ch === "\x15") {
@@ -6076,7 +6112,7 @@ Object.assign(TermdeckApp.prototype, {
       const editor = this.editor;
       const selection = editor?.getSelection();
       const model = editor?.getModel();
-      if (!selection || selection.isEmpty || !model) return null;
+      if (!selection || selection.isEmpty() || !model) return null;
       const text = this.normalizeSelectionText(model.getValueInRange(selection));
       const rect = this.monacoSelectionRect(editor, selection);
       return text && rect ? { kind: "file", fileKey: this.activeFileKey, text, rawText: text, rect } : null;
@@ -6087,7 +6123,7 @@ Object.assign(TermdeckApp.prototype, {
       if ((!sourceElement && focusedInNotebook) || (sourceElement && editorHost?.contains(sourceElement))) {
         const selection = this.notebookEditor.getSelection();
         const model = this.notebookEditor.getModel();
-        if (selection && !selection.isEmpty && model) {
+        if (selection && !selection.isEmpty() && model) {
           const text = this.normalizeSelectionText(model.getValueInRange(selection));
           const rect = this.monacoSelectionRect(this.notebookEditor, selection);
           return text && rect ? { kind: "notebook", text, rawText: text, rect } : null;
@@ -7794,7 +7830,7 @@ Object.assign(TermdeckApp.prototype, {
 
   collapseNotebookEditorSelection() {
     const selection = this.notebookEditor?.getSelection();
-    if (!selection || selection.isEmpty) return;
+    if (!selection || selection.isEmpty()) return;
     this.notebookEditor.setPosition({ lineNumber: selection.endLineNumber, column: selection.endColumn });
   },
 

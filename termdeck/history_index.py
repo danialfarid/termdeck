@@ -1,4 +1,5 @@
 import json
+import functools
 import hashlib
 import queue
 import re
@@ -15,7 +16,17 @@ from termdeck.config import TermdeckConfig
 
 class HistorySearchIndex:
     _CODEX_UUID_RE = re.compile(r"-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
+    # Query terms safe to pre-filter on raw JSONL bytes: ASCII printable without whitespace,
+    # quotes, or backslashes. JSON encoders emit these bytes literally (escapes only cover
+    # quotes, backslashes, and control/non-ASCII characters), and whitespace-collapsing can only
+    # merge across whitespace, never synthesize such a token -- so a line whose raw bytes lack
+    # one can never yield it after parsing. Skips decode/parse/extract for the vast non-matching
+    # majority; some transcript lines run to megabytes.
+    _RAW_TERM_RE = re.compile(r"[\x21\x23-\x5b\x5d-\x7e]+")
     _MAX_RESULTS = 300
+    # Matching chunks verified per transcript. Excerpts keep six matches per source; the headroom
+    # covers chunks whose file bytes moved on since indexing and fail verification.
+    _MAX_ROWS_PER_SOURCE = 10
     _MAX_CONTEXT_LINES = 15
     _INDEX_VERSION = 7
     _CHUNK_LINES = 32
@@ -97,13 +108,32 @@ class HistorySearchIndex:
         fts_table = "history_fts" if include_operations else "history_fts_conversation"
         try:
             with self._connect(0.5) as database:
-                rows = database.execute(
-                    "SELECT d.source_path, d.agent_kind, d.agent_session_id, d.cwd, d.title, d.line_no, d.line_end, "
-                    "d.byte_start, d.byte_end, s.mtime_ns "
+                # Sources first, newest first. Capping ROWS here drops whole sessions for popular
+                # terms: 12k matching chunks collapse to an arbitrary 300 before grouping, so a
+                # session whose rows lose the cut vanishes even though it matches. The cap now
+                # applies to transcripts, and truncation keeps the most recently active ones --
+                # the same newest-first order the results are sorted into below.
+                source_rows = database.execute(
+                    "SELECT s.source_path "
                     f"FROM {fts_table} f JOIN history_documents d ON d.rowid = f.rowid "
                     "JOIN history_sources s ON s.source_path = d.source_path "
-                    f"WHERE {fts_table} MATCH ? LIMIT ?",
+                    f"WHERE {fts_table} MATCH ? GROUP BY s.source_path ORDER BY s.mtime_ns DESC LIMIT ?",
                     (expression, self._MAX_RESULTS),
+                ).fetchall()
+                if not source_rows:
+                    return []
+                placeholders = ",".join("?" for _ in source_rows)
+                rows = database.execute(
+                    "SELECT source_path, agent_kind, agent_session_id, cwd, title, line_no, line_end, "
+                    "byte_start, byte_end, mtime_ns FROM ("
+                    "SELECT d.source_path, d.agent_kind, d.agent_session_id, d.cwd, d.title, d.line_no, "
+                    "d.line_end, d.byte_start, d.byte_end, s.mtime_ns, "
+                    "ROW_NUMBER() OVER (PARTITION BY s.source_path ORDER BY d.line_no DESC) AS rn "
+                    f"FROM {fts_table} f JOIN history_documents d ON d.rowid = f.rowid "
+                    "JOIN history_sources s ON s.source_path = d.source_path "
+                    f"WHERE {fts_table} MATCH ? AND s.source_path IN ({placeholders})) "
+                    "WHERE rn <= ?",
+                    (expression, *[row[0] for row in source_rows], self._MAX_ROWS_PER_SOURCE),
                 ).fetchall()
         except sqlite3.OperationalError as search_error:
             if "locked" in str(search_error).lower():
@@ -131,6 +161,11 @@ class HistorySearchIndex:
                     raise
         chunk_cache: dict[tuple[str, int, int], list[dict[str, object]]] = {}
         for source_path, agent_kind, session_id, cwd, title, line_no, _line_end, byte_start, byte_end, mtime_ns in rows:
+            existing_matches = grouped.get(source_path, {}).get("matches")
+            if isinstance(existing_matches, list) and len(existing_matches) >= 6:
+                # Excerpts are capped at six per transcript below; further chunks for this source
+                # only cost file reads. Rows arrive newest-first, so these are the freshest matches.
+                continue
             source = Path(source_path)
             cache_key = (source_path, int(byte_start), int(byte_end))
             if cache_key not in chunk_cache:
@@ -181,21 +216,29 @@ class HistorySearchIndex:
         terms = [term.casefold() for term in query.split()]
         if not terms:
             return []
+        raw_terms = [term.encode() for term in terms if cls._RAW_TERM_RE.fullmatch(term)]
         try:
             with path.open("rb") as source:
                 source.seek(byte_start)
                 raw_lines = source.read(max(0, byte_end - byte_start)).splitlines()
         except OSError:
             return []
-        decoded: list[tuple[int, str, str | int | float | None]] = []
+        matching: list[tuple[int, str, str | int | float | None]] = []
         for offset, raw in enumerate(raw_lines):
+            if raw_terms and not all(term in raw.lower() for term in raw_terms):
+                continue
             raw_line = raw.decode(errors="replace")
-            text = cls._line_text(path, raw_line, conversation_only=not include_operations)
-            text = re.sub(r"\s+", " ", text).strip()
-            if text:
-                decoded.append((line_start + offset, text, cls._line_timestamp(raw_line)))
-        matching = [(line_no, text, timestamp) for line_no, text, timestamp in decoded
-                    if all(term in text.casefold() for term in terms)]
+            text = cls._line_text(path, raw_line, conversation_only=not include_operations).strip()
+            if not text:
+                continue
+            # Checked unnormalized on purpose: terms never contain whitespace (query.split()),
+            # and collapsing only touches whitespace runs, so a term matches collapsed text
+            # exactly when it matches here -- while collapsing megabyte tool-output lines
+            # first costs milliseconds each. The excerpt normalizes its own small window.
+            folded = text.casefold()
+            if not all(term in folded for term in terms):
+                continue
+            matching.append((line_start + offset, text, cls._line_timestamp(raw_line)))
         return [{"line_no": line_no, "line_end": line_no, "text": cls._matching_text_excerpt(text, terms),
                  "timestamp": timestamp}
                 for line_no, text, timestamp in matching[:6]]
@@ -205,12 +248,12 @@ class HistorySearchIndex:
         folded = text.casefold()
         positions = [position for term in terms if (position := folded.find(term)) >= 0]
         if not positions or len(text) <= max_chars:
-            return text
+            return re.sub(r"\s+", " ", text).strip()
         match_start = min(positions)
         start = max(0, match_start - max_chars // 3)
         end = min(len(text), start + max_chars)
         start = max(0, end - max_chars)
-        excerpt = text[start:end].strip()
+        excerpt = re.sub(r"\s+", " ", text[start:end]).strip()
         return f"{'…' if start else ''}{excerpt}{'…' if end < len(text) else ''}"
 
     @staticmethod
@@ -723,9 +766,11 @@ class HistorySearchIndex:
                      if agent.history_indexed and agent.sessions_root is not None)
 
     @staticmethod
+    @functools.lru_cache(maxsize=2048)
     def _agent_for_path(path: Path) -> AgentCli:
         # Only Claude and Codex trees are indexed; anything else in the roots reads as Codex,
-        # matching the sources the scanner enqueues.
+        # matching the sources the scanner enqueues. Cached: the registry is static, and
+        # verification resolves this per line (half its CPU uncached on wide matches).
         return agents.agent_for_transcript_path(path) or agents.agent_cli("codex")
 
     @classmethod

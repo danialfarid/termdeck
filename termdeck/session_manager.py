@@ -957,7 +957,7 @@ class TerminalSessionManager:
             ApiFields.DORMANT: ms.dormant,
             ApiFields.DETACHED: ms.detached_live and not ms.attached,
             WsMessageFields.PROCESSING: processing,
-            ApiFields.NEEDS_ATTENTION: ms.attention_required,
+            ApiFields.NEEDS_ATTENTION: ms.attention_required or agents.agent_cli(ms.record.agent_kind).has_pending_question(ms),
             ApiFields.ACTIVITY: agents.agent_cli(ms.record.agent_kind).activity_detail(ms),
             "processing_since": ms.processing_started_at,
             "last_completed_at": ms.last_completed_at,
@@ -2274,7 +2274,7 @@ class TerminalSessionManager:
         summary[ApiFields.TERMDECK_URL] = self._termdeck_session_url(ms.record)
         summary[ApiFields.TERMDECK_URL_PATH] = self._termdeck_session_url_path(ms.record)
         summary["processing"] = processing
-        summary[ApiFields.NEEDS_ATTENTION] = ms.attention_required
+        summary[ApiFields.NEEDS_ATTENTION] = ms.attention_required or agents.agent_cli(ms.record.agent_kind).has_pending_question(ms)
         summary["processing_since"] = ms.processing_started_at
         summary["last_completed_at"] = ms.last_completed_at
         summary["last_activity_at"] = ms.last_activity_at
