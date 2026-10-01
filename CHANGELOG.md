@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-10-01
+
 ### Added
 
 - `GET /api/sessions/{session_id}/children/status` returns one status per session
