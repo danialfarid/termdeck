@@ -63,8 +63,8 @@ class SubmitPromptSteerTest(unittest.TestCase):
     def test_steer_wins_over_legacy_queue(self) -> None:
         self.assertFalse(self.submit(False, steer=True, queue=True))
 
-    def test_busy_session_still_queues_by_default(self) -> None:
-        self.assertTrue(self.submit(True))
+    def test_busy_session_still_steers_by_default(self) -> None:
+        self.assertFalse(self.submit(True))
 
-    def test_explicit_steer_overrides_the_busy_default(self) -> None:
-        self.assertFalse(self.submit(True, steer=True, automatically_queue_when_busy=False))
+    def test_steer_false_queues_when_busy(self) -> None:
+        self.assertTrue(self.submit(True, steer=False))

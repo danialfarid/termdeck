@@ -1283,7 +1283,7 @@ Object.assign(TermdeckApp.prototype, {
   async sendHistoryCommand(session, text) {
     const response = await fetch(`/api/sessions/${encodeURIComponent(session.session_id)}/prompt`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, bracketed: false, steer: true, automatically_queue_when_busy: false }),
+      body: JSON.stringify({ text, bracketed: false, steer: true }),
     });
     if (!response.ok) {
       const failure = await response.json().catch(() => ({}));
@@ -2223,7 +2223,7 @@ Object.assign(TermdeckApp.prototype, {
       const fastStatusBefore = item.command === "/fast" ? await this.historySessionUsage(view.sessionId).catch(() => ({})) : {};
       const response = await fetch(`/api/sessions/${encodeURIComponent(view.sessionId)}/prompt`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: String(text), bracketed: false, steer: true, automatically_queue_when_busy: false }),
+        body: JSON.stringify({ text: String(text), bracketed: false, steer: true }),
       });
       if (!response.ok) {
         const failure = await response.json().catch(() => ({}));
@@ -2904,8 +2904,7 @@ Object.assign(TermdeckApp.prototype, {
       const response = await fetch(`/api/sessions/${encodeURIComponent(view.sessionId)}/prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: String(text), bracketed: true, steer: true,
-          automatically_queue_when_busy: false }),
+        body: JSON.stringify({ text: String(text), bracketed: true, steer: true }),
         signal: controller.signal,
       });
       if (!response.ok) {

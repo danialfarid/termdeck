@@ -1902,7 +1902,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.submit_prompt = AsyncMock(return_value=False)
 
         response = await server._submit_prompt("busy-01", SubmitPromptRequest(
-            text="run this next", automatically_queue_when_busy=False))
+            text="run this next"))
 
         server.manager.submit_prompt.assert_awaited_once_with("busy-01", "run this next", True, False)
         self.assertTrue(response["prompt_submitted"])

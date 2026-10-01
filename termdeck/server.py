@@ -150,7 +150,6 @@ class SubmitPromptRequest(BaseModel):
     # The name steer had before; still honored. steer wins when both are sent.
     queue: bool = False
     steer: bool | None = None
-    automatically_queue_when_busy: bool = True
 
 
 class FollowUpTaskPromptRequest(BaseModel):
@@ -603,7 +602,7 @@ class UiSettings(BaseModel):
     code_font_size: int = 12
     diff_font_size: int = 13
     bottom_font_size: int = 14
-    terminal_icon_size: int = 14
+    terminal_icon_size: int = 12
     active_session_id: str = ""
     open_files: list[dict[str, str]] = []
     project_state: dict[str, ProjectUiState] = {}
@@ -3626,18 +3625,15 @@ class TermdeckServer:
         stamps = [stamped for stamped in (cls._turn_time(turn) for turn in turns) if stamped is not None]
         return bool(stamps) and max(stamps) <= since
 
-    async def _submit_prompt(self, session_id: str, request: SubmitPromptRequest,
-                             automatically_queue_when_busy: bool = True) -> dict[str, object]:
+    async def _submit_prompt(self, session_id: str, request: SubmitPromptRequest) -> dict[str, object]:
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
         if not request.text.strip():
             raise HTTPException(status_code=400, detail="prompt text cannot be empty")
         try:
             self.manager.ensure_session_running(session_id)
-            processing = bool(self.manager.session_summary_by_id(session_id).get("processing"))
             steer = _steer_wanted(request.steer, request.queue)
-            wanted_queue = not steer or (automatically_queue_when_busy and
-                                         request.automatically_queue_when_busy and processing)
+            wanted_queue = not steer
             # What actually happened, not what was asked for: an agent whose composer has no queue is
             # submitted to instead, and a caller told "queued" about a prompt that was sent has been
             # told the wrong thing.
@@ -3682,7 +3678,7 @@ class TermdeckServer:
 
     async def _follow_up_task_prompt(self, session_id: str, request: FollowUpTaskPromptRequest) -> dict[str, object]:
         return await self._submit_prompt(session_id, SubmitPromptRequest(
-            text=request.prompt, bracketed=request.bracketed), automatically_queue_when_busy=False)
+            text=request.prompt, bracketed=request.bracketed))
 
     async def _launch_terminal_batch(self, request: BatchTerminalsRequest) -> dict[str, object]:
         if not request.terminals:

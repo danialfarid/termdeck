@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The sidebar agent-provider icons default to 12px instead of 14px. The size stays
+  adjustable per user under Settings → Font sizes → Terminal icons.
+- A prompt posted to a busy session steers by default (submitted now with Enter,
+  like the transcript composer always did) instead of dropping into the agent's
+  queue. Pass `steer: false` to queue behind the current turn.
+
+### Removed
+
+- The `automatically_queue_when_busy` prompt field: with steer the default in every
+  state there is nothing left for it to opt out of. Senders that still pass it are
+  unaffected — unknown fields are ignored.
+
 ## [0.32.0] — 2026-10-01
 
 ### Added
