@@ -170,6 +170,7 @@ Object.assign(TermdeckApp.prototype, {
       require.config({ paths: { vs: "/static/vendor/monaco/vs" } });
       require(["vs/editor/editor.main"], () => {
         this.defineMonacoTheme();
+        if (typeof registerUnicornLanguage === "function") registerUnicornLanguage();
         this.editor = monaco.editor.create(this.$("monaco-host"), {
           readOnly: false, theme: this.monacoThemeName(),
           // The file menu is TermDeck's own (#context-menu via the document handler below);
@@ -1243,9 +1244,30 @@ Object.assign(TermdeckApp.prototype, {
       view.blankRepaintTimer = setTimeout(() => this.requestRepaintIfBlank(view), TALL_BLANK_REPAINT_MS);
       return false;
     }
+    if (!this.terminalBlankScreenNeedsRepaint(view)) return false;
+    // One repaint per blank episode, shared with the activation-time check: a preserved-buffer
+    // reconnect delivers an empty snapshot frame AND the attach timer, which would otherwise ask
+    // twice for the same missing screen (the server dedups concurrent nudges, but the second ask
+    // is still noise), and a redraw takes seconds to land, so anything inside the window is.
+    if (Date.now() - (view.blankRecoverySentAt || 0) < TERMINAL_BLANK_RECOVERY_COOLDOWN_MS) return false;
+    view.blankRecoverySentAt = Date.now();
+    view.ws.send(JSON.stringify({ type: "repaint" }));
+    return true;
+  },
+
+
+  // Whether this terminal's screen is missing in a way only the agent can fix: content above, but
+  // none of the agent's own chrome on the screen itself. A healthy agent screen always carries its
+  // chrome (status bar, composer, turn summaries); a cleared one carries nothing, and an idle agent
+  // sends nothing further -- without this the tab sits blank until something resizes it.
+  terminalBlankScreenNeedsRepaint(view) {
+    if (!view || view.closed || !view.term) return false;
+    const behavior = this.agentBehavior(this.session(view.sessionId)?.agent_kind);
+    const blankDespiteScrollback = !!behavior?.blankRepaintDespiteScrollback;
     const buffer = view.term.buffer.active;
-    const blankDespiteScrollback = !!this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.blankRepaintDespiteScrollback;
     if (!blankDespiteScrollback && Number(buffer.baseY || 0) > 0) return false;
+    if (blankDespiteScrollback && behavior?.blankRepaintRequiresScrollback &&
+        Number(buffer.baseY || 0) <= 0) return false;
     const visibleLines = [];
     const start = Number(buffer.baseY || 0);
     const end = Math.min(buffer.length, start + Math.max(1, Number(view.term.rows || 1)));
@@ -1254,8 +1276,33 @@ Object.assign(TermdeckApp.prototype, {
       if (line) visibleLines.push(line);
     }
     if (!blankDespiteScrollback && visibleLines.length) return false;
-    if (blankDespiteScrollback && /OpenAI Codex|Ask Codex|Context \d+% used|view transcript|q to quit|Press enter to continue/i.test(
-      visibleLines.join("\n"))) return false;
+    if (blankDespiteScrollback && behavior?.blankScreenMarkers?.test(visibleLines.join("\n"))) return false;
+    return true;
+  },
+
+
+  // Activation-time counterpart to the attach-time blank check above. A tab whose websocket never
+  // dropped gets no replay on its return, so nothing else ever looks at whether its screen is
+  // still there. Fires once per blank episode (the cooldown), only for settled idle tabs.
+  scheduleBlankScreenRecovery(view) {
+    if (!view || view.closed || view.blankRecoveryTimer) return;
+    view.blankRecoveryTimer = setTimeout(() => {
+      view.blankRecoveryTimer = 0;
+      this.maybeRecoverBlankScreen(view);
+    }, TERMINAL_BLANK_RECOVERY_DELAY_MS);
+  },
+
+
+  maybeRecoverBlankScreen(view) {
+    if (!view || view.closed || !view.container.classList.contains("visible")) return false;
+    if (!view.ws || view.ws.readyState !== WebSocket.OPEN) return false;
+    if (view.outputWriteInFlight || view.outputQueue.length) return false;
+    if (view.replaying || view.awaitingSnapshot) return false;
+    if (Date.now() - (view.lastTerminalOutputAt || 0) < TERMINAL_BLANK_RECOVERY_IDLE_MS) return false;
+    if (Date.now() - (view.blankRecoverySentAt || 0) < TERMINAL_BLANK_RECOVERY_COOLDOWN_MS) return false;
+    if (Number(view.term.buffer.active.baseY || 0) <= 0) return false;
+    if (!this.terminalBlankScreenNeedsRepaint(view)) return false;
+    view.blankRecoverySentAt = Date.now();
     view.ws.send(JSON.stringify({ type: "repaint" }));
     return true;
   },

@@ -8291,6 +8291,7 @@ Object.assign(TermdeckApp.prototype, {
     if (view?.term && !this.historyOpen) {
       this.drainTerminalWrites(view);
       this.scheduleV2ViewportSync(view);
+      this.scheduleBlankScreenRecovery(view);
       this.prepareTerminalForFirstPaint(view);
       this.scheduleClaudeWebglColdPrimeCompletion(view);
       if (this.isTerminalScrollV2() && !view.userScrollIntent) view.scrollMode = "follow";

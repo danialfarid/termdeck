@@ -68,6 +68,8 @@ class LanguageServerRegistry:
                            (("vscode-html-language-server", "--stdio"),), "npm install -g vscode-langservers-extracted"),
         LanguageServerSpec("CSS Language Server", ("css", "scss", "less"), "TERMDECK_LSP_CSS",
                            (("vscode-css-language-server", "--stdio"),), "npm install -g vscode-langservers-extracted"),
+        LanguageServerSpec("Unicorn", ("unicorn",), "TERMDECK_LSP_UNICORN", (("uni", "lsp"),),
+                           "go build -o uni ./cmd/uni  # in the unicorn repo, then put uni on PATH"),
     )
 
     @classmethod

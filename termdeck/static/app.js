@@ -65,11 +65,19 @@ const AGENT_CLIENT_BEHAVIORS = {
     repaintRestoreScroll: true,         // restore scroll target itself after a full repaint
     commandCollapse: true,              // watch for command-fold byte sequences and re-anchor
     blankRepaintDespiteScrollback: true, // codex can present a blank screen even with scrollback
+    blankScreenMarkers: /OpenAI Codex|Ask Codex|Context \d+% used|view transcript|q to quit|Press enter to continue/i,
     commandTranscriptShortcut: true,    // ctrl+t opens codex's own transcript overlay
   },
   claude: {
     attentionScreenDetection: true,     // scan the visible screen for permission-prompt markers
     statusRowRefresh: true,             // periodic bottom status-row repaint while following
+  },
+  muse: {
+    blankRepaintDespiteScrollback: true, // muse can sit idle with a cleared screen over old scrollback
+    blankRepaintRequiresScrollback: true, // ...but a fresh session with no history yet is just starting
+    // Chrome that is always on a healthy muse screen: the status bar (model, cwd, approval mode),
+    // the composer (voice hint, prompt marker), and turn summaries. Read off four live sessions.
+    blankScreenMarkers: /muse-spark|muse code|voice input|worked for|recap|◆|❯|ctrl\+o|YOLO|~\/|esc to|approv|interrup/i,
   },
 };
 // Fallback snapshot of /api/agents, used only when the boot-time fetch fails (transient hiccup on a
@@ -278,6 +286,15 @@ const CODEX_INITIAL_REPAINT_MAX_MS = 700;
 // How long to wait after attaching before deciding the terminal really has nothing to show. Long enough
 // for a replay to arrive and paint, short enough that a genuinely blank pane is not left sitting there.
 const TALL_BLANK_REPAINT_MS = 900;
+// A tab that is already connected shows whatever its buffer holds the moment it becomes visible --
+// including, for an agent whose screen went missing while it sat in the background, nothing at all.
+// There is no attach replay to trigger the blank check above, so activation schedules its own: after
+// a beat for post-activate output to land, an idle settled tab whose screen is missing despite
+// scrollback asks the agent to repaint it. The idle gate keeps a mid-redraw clear gap from reading
+// as a missing screen, and the cooldown keeps an agent that cannot repaint from being asked forever.
+const TERMINAL_BLANK_RECOVERY_DELAY_MS = 1000;
+const TERMINAL_BLANK_RECOVERY_IDLE_MS = 2000;
+const TERMINAL_BLANK_RECOVERY_COOLDOWN_MS = 30000;
 // A freshly attached tab is not one paint but several: the saved recording replays, then the agent
 // redraws its own screen over the tail of it (a lazily respawned codex reprints its whole conversation),
 // and every frame in between is a position this view can be left at if the last one lands wrong -- the

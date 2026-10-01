@@ -5,7 +5,7 @@ class TermdeckLspClient {
     this.conversions = new TermdeckLspConversions();
     this.supportedLanguages = new Set(["python", "javascript", "javascriptreact", "typescript", "typescriptreact", "go",
       "rust", "c", "cpp", "objective-c", "objective-cpp", "cuda-cpp", "java", "ruby", "php", "shell", "yaml",
-      "json", "jsonc", "html", "css", "scss", "less"]);
+      "json", "jsonc", "html", "css", "scss", "less", "unicorn"]);
     this.entry = null;
     this.model = null;
     this.uri = "";

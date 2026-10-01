@@ -754,6 +754,15 @@ class CommandTest(unittest.TestCase):
                          ["muse", "exec", "resume"])
         self.assertEqual(self.cli.fresh_session_command("muse exec resume"), "muse exec resume")
 
+    def test_the_repaint_nudge_holds_past_muse_s_resize_debounce(self) -> None:
+        # An 80ms hold coalesces into a no-op on muse (a cursor re-park, never a
+        # redraw); 500ms and 3s holds both produce a full frame.
+        from termdeck.config import TermdeckConfig
+        self.assertEqual(self.cli.repaint_nudge_hold_seconds(),
+                         TermdeckConfig.SCREEN_REPAINT_NUDGE_HOLD_MUSE_SECONDS)
+        self.assertGreater(TermdeckConfig.SCREEN_REPAINT_NUDGE_HOLD_MUSE_SECONDS,
+                           TermdeckConfig.SCREEN_REPAINT_NUDGE_HOLD_SECONDS)
+
 
 class SessionStoreTest(unittest.TestCase):
     """A session is a directory; the log inside it is what the deck watches."""

@@ -475,6 +475,14 @@ class AgentCli:
         """Delay before nudging a repaint after a non-reattach resume, or None for no nudge."""
         return None
 
+    def repaint_nudge_hold_seconds(self) -> float:
+        """How long the repaint nudge holds the off-by-one size before restoring it.
+
+        The hold must outlast the CLI's SIGWINCH debounce or the two resizes
+        coalesce into a no-op and the agent never redraws.
+        """
+        return TermdeckConfig.SCREEN_REPAINT_NUDGE_HOLD_SECONDS
+
     def restart_permission(self, manager, ms) -> str:
         """Permission to re-apply on restart when the caller did not specify one."""
         return ""

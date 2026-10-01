@@ -11,6 +11,15 @@ All notable changes to this project are documented here. The format follows
 - Reordering tabs inside an expanded spawned-agents stack no longer throws them out
   of the stack to the end of the group: a drop on a sibling now only moves the tab
   within the stack instead of un-filing it first.
+- Returning to a Muse tab whose screen went missing while it sat in the background
+  no longer leaves an empty pane with the cursor at the bottom and the conversation
+  pages up: the tab now notices the missing screen and asks Muse to repaint it,
+  both on return and on reconnect. The repaint itself now holds past Muse's
+  resize debounce, which used to swallow it into a no-op.
+- A terminal no longer goes black when a big final batch lands at the end of a
+  turn: the follow-up scroll that catches up with the laid-out height now brings
+  the rendered window along with it instead of leaving the view past what is
+  painted (any scroll used to fix it by re-syncing).
 
 ## [0.31.0] — 2026-09-27
 

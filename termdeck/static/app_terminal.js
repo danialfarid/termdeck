@@ -302,7 +302,7 @@ Object.assign(TermdeckApp.prototype, {
                    forceResizeAfterFit: true, initialSnapshotPainted: false,
                    suppressResizeToServer: false, resyncResizeRepairPending: false,
                    hiddenAt: 0, lastShownAt: 0,
-                   tailRepairTimer: 0, tailRepairConfirmTimer: 0,
+                   tailRepairTimer: 0, tailRepairConfirmTimer: 0, blankRecoveryTimer: 0,
                    activationRepairFrame: 0, tailRepairSignature: "", lastRenderRepairAt: 0,
                    renderedRows: [], renderedViewportY: null, renderedCols: 0, renderedTermRows: 0,
                    renderRepairArmed: true, renderObserver: null,
@@ -1734,7 +1734,10 @@ Object.assign(TermdeckApp.prototype, {
       // no longer the surface being scrolled, so on its own this button did nothing at all here.
       view.tallFollowing = true;
       if (view.tallMaxScrollTop != null) this.scrollTallContainerToCursor(view);
-      else this.tallSetScrollTop(view, view.container.scrollHeight);
+      else {
+        this.tallSetScrollTop(view, view.container.scrollHeight);
+        this.tallSyncBufferToScroll(view);
+      }
       this.scheduleV2Fit(view);
       view.term.focus();
       return;
@@ -2998,6 +3001,12 @@ Object.assign(TermdeckApp.prototype, {
       if (view.closed || view.tallFollowing === false) return;
       if (view.tallClampedScrollTarget !== target || view.container.scrollTop >= target - 1) return;
       this.tallSetScrollTop(view, target);
+      // The move above lands a frame after the caller synced, and its own scroll event is
+      // swallowed as an echo, so without this the rendered window stays behind wherever the
+      // clamped landing put it. When the retried jump is the stream's last one -- a big final
+      // batch whose layout had not caught up -- that desync freezes with the visible span past
+      // the window: a black pane until the next scroll or write re-syncs it.
+      this.tallSyncBufferToScroll(view);
     });
   },
 
@@ -3539,6 +3548,7 @@ Object.assign(TermdeckApp.prototype, {
     clearTimeout(view.resizeRepairTimer);
     clearTimeout(view.tailRepairTimer);
     clearTimeout(view.tailRepairConfirmTimer);
+    clearTimeout(view.blankRecoveryTimer);
     clearTimeout(view.claudeInitialReplayCheckTimer);
     clearTimeout(view.initialCodexRepaintTimer);
     clearTimeout(view.initialCodexRepaintWatchdogTimer);

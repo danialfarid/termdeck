@@ -639,7 +639,8 @@ class TerminalSessionManager:
         cols, rows = max(2, ms.cols), max(2, ms.rows)
         nudge = cols - 1 if cols > TermdeckConfig.SCREEN_REPAINT_NUDGE_MIN_COLS else cols + 1
         proc.resize(nudge, rows)
-        await asyncio.sleep(TermdeckConfig.SCREEN_REPAINT_NUDGE_HOLD_SECONDS)
+        hold = agents.agent_cli(ms.record.agent_kind).repaint_nudge_hold_seconds()
+        await asyncio.sleep(hold)
         if ms.proc is proc and proc.alive:
             proc.resize(max(2, ms.cols), max(2, ms.rows))
 

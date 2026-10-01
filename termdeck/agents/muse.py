@@ -296,6 +296,9 @@ class MuseCli(AgentCli):
         # transcript's model badge sends the picked model through it, like claude's.
         return "/model"
 
+    def repaint_nudge_hold_seconds(self) -> float:
+        return TermdeckConfig.SCREEN_REPAINT_NUDGE_HOLD_MUSE_SECONDS
+
     def new_session_resume_arguments(self, session_ref: str, tracker) -> tuple[str, ...]:
         return ("resume", session_ref)
 

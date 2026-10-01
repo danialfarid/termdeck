@@ -479,6 +479,11 @@ class TermdeckConfig:
     SCREEN_REPAINT_REATTACH_DELAY_SECONDS = 0.2
     SCREEN_REPAINT_CLIENT_ATTACH_DELAY_SECONDS = 0.35
     SCREEN_REPAINT_NUDGE_HOLD_SECONDS = 0.08
+    # Muse debounces SIGWINCH: an 80ms nudge is coalesced into a no-op (a cursor
+    # re-park, never a redraw), while 500ms and 3s holds both produce a full
+    # frame. Measured live against an idle session: 81 bytes out for the short
+    # hold, ~350KB for the 500ms one. 1s is twice the proven hold.
+    SCREEN_REPAINT_NUDGE_HOLD_MUSE_SECONDS = 1.0
     SCREEN_REPAINT_ACTIVITY_SUPPRESSION_SECONDS = 1.5
     SCREEN_REPAINT_NUDGE_MIN_COLS = 20
     PTY_READ_CHUNK = 65536
