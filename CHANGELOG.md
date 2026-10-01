@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The "Terminal icons" size preview shows the real agent provider marks instead
+  of generic placeholder icons, so the size being adjusted is the size those
+  marks get.
+- Sidebar rows showing provider icons indent from the icon size, so shrinking
+  the icons shifts the session title left and gives it more room.
+- On rows with a session description, the provider icon stays centered on the
+  title line instead of floating between the title and the description.
+- The expanded update notice pins its dismiss button to the top-right corner
+  and gives the Run update button breathing room from the panels around it.
+
 ## [0.32.1] — 2026-10-01
 
 ### Changed

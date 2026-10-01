@@ -46,7 +46,8 @@ Object.assign(TermdeckApp.prototype, {
     const terminalIconSize = Math.max(FONT_MIN, Math.min(FONT_MAX * this.displayScale(), this.scaledSettingSize("terminal_icon_size")));
     const terminalStatusDotSize = Math.max(5, Math.min(10, terminalIconSize * 0.43));
     const terminalStatusDotLeft = 2 + (terminalIconSize - terminalStatusDotSize) / 2;
-    const terminalRowLeftPadding = Math.max(20, terminalIconSize + 7);
+    // Hidden-icon rows align with icon rows at the default size while still clearing the spinner.
+    const terminalRowLeftPadding = Math.max(19, terminalIconSize + 7);
     document.documentElement.style.setProperty("--terminal-icon-size", `${terminalIconSize}px`);
     document.documentElement.style.setProperty("--terminal-status-dot-size", `${terminalStatusDotSize}px`);
     document.documentElement.style.setProperty("--terminal-status-dot-left", `${terminalStatusDotLeft}px`);
@@ -529,10 +530,14 @@ Object.assign(TermdeckApp.prototype, {
 
   renderSelectedFontSamplePreview(key) {
     const preview = this.$("font-samples-preview");
+    if (key === "terminal_icon_size") {
+      preview.textContent = "";
+      preview.appendChild(this.terminalIconSampleStage());
+      return;
+    }
     const samples = {
       sidebar_font_size: '<section class="font-sample-stage font-sample-terminal-list"><div class="font-sample-terminal-group"><span class="codicon codicon-chevron-down"></span><strong>RESEARCH</strong><span class="font-sample-count">2 active</span></div><div class="font-sample-terminal-row"><span class="font-sample-dot"></span><span>feat-model-review</span><span class="font-sample-age">4m</span></div></section>',
       project_font_size: '<section class="font-sample-stage"><div class="font-sample-project">stock-intraday <span>main · ~/workspace</span></div></section>',
-      terminal_icon_size: '<section class="font-sample-stage font-sample-icons"><span class="codicon codicon-terminal"></span><span class="codicon codicon-sparkle"></span><span class="codicon codicon-hubot"></span></section>',
       terminal_font_size: '<section class="font-sample-stage font-sample-terminal"><pre><span class="prompt">›</span> review the current feature cache\n\n<span class="assistant">•</span> Working through the source files…</pre></section>',
       ui_font_size: '<section class="font-sample-stage font-sample-status"><div class="font-sample-status-row"><span>agent-session · ~/workspace/project</span><span>12m</span></div><div class="font-sample-status-row"><span>project › src › main.py</span><span>model · 41% context</span></div></section>',
       system_font_size: '<section class="font-sample-stage font-sample-menu"><div><span class="codicon codicon-go-to-file"></span>Open</div><div><span class="codicon codicon-edit"></span>Rename</div><div><span class="codicon codicon-arrow-swap"></span>Move to</div></section>',
@@ -543,6 +548,19 @@ Object.assign(TermdeckApp.prototype, {
       tree_font_size: '<section class="font-sample-stage font-sample-tree"><div class="folder"><span class="codicon codicon-folder-opened"></span>trainer</div><div class="child"><span class="codicon codicon-file-code"></span><span class="match">model_<mark>config</mark>.py</span></div><div class="child"><span class="codicon codicon-file"></span>features.py</div></section>',
     };
     preview.innerHTML = samples[key] || "";
+  },
+
+
+  terminalIconSampleStage() {
+    // The preview shows the real provider marks, built by the same renderer as the
+    // sidebar rows, so the size being adjusted is the size those marks get.
+    const stage = document.createElement("section");
+    stage.className = "font-sample-stage font-sample-icons";
+    const kinds = Object.keys(this.agentSpecs || {}).filter((kind) => kind !== "none");
+    for (const kind of [...kinds, "none"]) {
+      stage.appendChild(this.terminalTypeIcon({ agent_kind: kind }));
+    }
+    return stage;
   },
 
 

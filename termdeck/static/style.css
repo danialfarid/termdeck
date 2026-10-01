@@ -138,7 +138,7 @@ body:not(.vscode-mode) #sidebar { color: var(--sidebar-text-color); --text: var(
 
 /* The close button used to sit 22px in from the row's edge, which is dead space on the one side of the
    row that holds its controls. Pulled in so the controls can have room between them instead. */
-.session-item { position: relative; padding: 5px 8px 5px var(--terminal-row-left-padding, 20px); border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 0; border: 1px solid transparent; margin-bottom: 1px; min-width: 0; }
+.session-item { position: relative; padding: 5px 8px 5px calc(var(--terminal-icon-size, 12px) + 7px); border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 0; border: 1px solid transparent; margin-bottom: 1px; min-width: 0; }
 .session-item.terminal-icons-hidden { padding-left: var(--terminal-row-left-padding, 20px); }
 .session-item.dragging-tab, .file-item.dragging-tab { opacity: 0.45; }
 .session-item.drop-before, .file-item.drop-before, .terminal-group-label.drop-before { box-shadow: inset 0 3px var(--accent); }
@@ -223,8 +223,13 @@ body:not(.vscode-mode) .session-item:has(.terminal-type-icon.on) .status-dot.att
 .session-item.has-activity .status-dot,
 .session-item.has-activity .session-spinner,
 .session-item.has-activity .terminal-type-icon { top: calc(50% - var(--activity-band) / 2); }
+/* A description makes the row two lines tall; the icon stays centered on the title line
+   instead of floating between the two. The title's measured line box is 22px at the
+   18px sidebar size, and it starts exactly at the row's top padding. */
+.session-item:has(.session-description:not(.hidden)) .terminal-type-icon { top: calc(5px * var(--ui-scale) + var(--sidebar-font-size) * 11 / 18); }
 .session-activity-dots { display: none; }
 .session-item.has-activity .session-activity-dots { position: absolute; left: calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); bottom: calc(3px * var(--ui-scale)); display: flex; align-items: center; gap: 10px; font-size: calc(var(--sidebar-font-size) * 0.72); line-height: 1; color: var(--dim); }
+.session-item:not(.terminal-icons-hidden).has-activity .session-activity-dots { left: calc((var(--terminal-icon-size, 12px) + 7px) * var(--ui-scale)); }
 .session-activity-chip { display: inline-flex; align-items: center; gap: 4px; cursor: default; }
 .session-activity-count { font-variant-numeric: tabular-nums; }
 .session-activity-dot { width: 0.5em; height: 0.5em; border-radius: 50%; background: currentColor; will-change: opacity, transform; animation: termdeck-status-beacon 1.8s ease-in-out infinite; }
@@ -526,7 +531,7 @@ body.dragging { user-select: none; cursor: col-resize; }
 body.termdeck-read-only #history-prompt { color: var(--dim); cursor: not-allowed; }
 #update-notice { position: fixed; z-index: 120; top: max(10px, env(safe-area-inset-top)); right: 12px; display: flex; align-items: center; gap: 7px; max-width: min(430px, calc(100vw - 24px)); padding: 7px 8px 7px 10px; border: 1px solid var(--active-border); border-radius: 8px; background: var(--panel2); box-shadow: 0 10px 30px rgba(0,0,0,.4); color: var(--accent); font: var(--ui-font-size)/1.2 Menlo, monospace; }
 #update-notice.hidden { display: none; }
-#update-notice a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); text-decoration: none; }
+#update-notice a { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); text-decoration: none; }
 #update-notice a:hover { color: var(--accent); text-decoration: underline; }
 #update-notice button { flex: none; width: 22px; height: 22px; padding: 0; border: 0; background: transparent; color: var(--dim); cursor: pointer; }
 #update-notice button:hover { color: var(--text); }
@@ -538,6 +543,7 @@ body.termdeck-read-only #history-prompt { color: var(--dim); cursor: not-allowed
 #update-install-output { max-height: min(320px, 40vh); }
 #update-install-output:empty { display: none; }
 #update-install-panel button { width: auto; height: auto; padding: 6px 10px; background: var(--panel); border: 1px solid var(--active-border); color: var(--text); border-radius: 5px; }
+#update-install-run { margin: 10px 0; }
 #update-install-panel button:disabled { opacity: .6; cursor: default; }
 #update-install-state { margin-left: 8px; }
 #lsp-status { flex: none; max-width: 180px; overflow: hidden; color: var(--green); font-family: Menlo, monospace; font-size: var(--ui-font-size); text-overflow: ellipsis; white-space: nowrap; opacity: 0.82; }
@@ -1002,7 +1008,7 @@ body:not(.vscode-mode) .terminal-group-search { margin-left: 0; }
 .terminal-group-search:hover, .terminal-group-search.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); opacity: 1; }
 .terminal-group-search .codicon { font-size: 10px; }
 .terminal-group > #terminal-search-inline { margin: 5px 6px 6px; }
-.terminal-group-members .session-item { padding-left: var(--terminal-row-left-padding, 20px); }
+.terminal-group-members .session-item { padding-left: calc(var(--terminal-icon-size, 12px) + 7px); }
 .terminal-group-members .session-item > .status-dot { left: 6px; }
 .terminal-group-members .session-item .session-spinner { left: 7px; }
 .terminal-group-members .session-item.terminal-icons-hidden { padding-left: var(--terminal-row-left-padding, 20px); }
@@ -1978,7 +1984,12 @@ body.notebook-open #mobile-notebook-toggle { display: none; }
 .font-sample-project { padding: 0.8em 1em; color: var(--accent); font-family: -apple-system, sans-serif; font-weight: 650; }
 .font-sample-project span { margin-left: 0.45em; color: var(--dim); font-size: 0.72em; font-weight: 500; }
 .font-sample-icons { display: flex; align-items: center; gap: 0.7em; padding: 1em; }
-.font-sample-icons span { display: grid; width: var(--font-sample-size); height: var(--font-sample-size); place-items: center; color: var(--accent); font-size: var(--font-sample-size); }
+.font-sample-icons span.terminal-type-icon { position: static; display: inline-flex; align-items: center; justify-content: center; width: var(--font-sample-size); height: var(--font-sample-size); margin: 0; transform: none; }
+.font-sample-icons .terminal-type-icon svg { width: calc(var(--font-sample-size) - 1px); height: calc(var(--font-sample-size) - 1px); }
+.font-sample-icons .codex-terminal-icon svg { width: calc(var(--font-sample-size) - 2px); height: calc(var(--font-sample-size) - 2px); }
+.font-sample-icons .claude-terminal-icon svg { width: var(--font-sample-size); height: var(--font-sample-size); }
+.font-sample-icons .terminal-type-icon img { width: var(--font-sample-size); height: var(--font-sample-size); }
+.font-sample-icons .terminal-type-icon .codicon { font-size: calc(var(--font-sample-size) - 1px); }
 .font-sample-terminal { padding: 1em; background: var(--term-bg); color: var(--term-text); font-family: Menlo, monospace; line-height: 1.45; }
 .font-sample-terminal .prompt { color: var(--accent); }
 .font-sample-terminal .assistant { color: var(--green); }
@@ -2216,7 +2227,7 @@ body.notebook-open #mobile-notebook-toggle { display: none; }
 
 .panel-actions { gap: calc(6px * var(--ui-scale)); }
 .panel-actions button { min-width: calc(26px * var(--ui-scale)); height: calc(26px * var(--ui-scale)); }
-.session-item { padding: calc(5px * var(--ui-scale)) calc(8px * var(--ui-scale)) calc(5px * var(--ui-scale)) calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); }
+.session-item { padding: calc(5px * var(--ui-scale)) calc(8px * var(--ui-scale)) calc(5px * var(--ui-scale)) calc((var(--terminal-icon-size, 12px) + 7px) * var(--ui-scale)); }
 .session-item.terminal-icons-hidden { padding-left: calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); }
 .status-dot { left: calc(var(--terminal-status-dot-left, 6px) * var(--ui-scale)); width: calc(var(--terminal-status-dot-size, 6px) * var(--ui-scale)); height: calc(var(--terminal-status-dot-size, 6px) * var(--ui-scale)); margin-top: calc(var(--terminal-status-dot-size, 6px) * var(--ui-scale) * -0.5); }
 .session-spinner { left: calc(7px * var(--ui-scale)); width: calc(8px * var(--ui-scale)); height: calc(8px * var(--ui-scale)); margin-top: calc(-4px * var(--ui-scale)); }
@@ -2234,7 +2245,7 @@ body:not(.vscode-mode) .terminal-type-icon { margin: 0; }
 .terminal-group-add { width: calc(21px * var(--ui-scale)); height: calc(21px * var(--ui-scale)); font-size: 0; line-height: 1; }
 .terminal-group-search { display: grid; place-items: center; width: calc(21px * var(--ui-scale)); height: calc(21px * var(--ui-scale)); margin-right: calc(-2px * var(--ui-scale)); }
 .terminal-group-search .codicon { font-size: calc(10px * var(--ui-scale)); }
-.terminal-group-members .session-item { padding-left: calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); }
+.terminal-group-members .session-item { padding-left: calc((var(--terminal-icon-size, 12px) + 7px) * var(--ui-scale)); }
 .terminal-group-members .session-item > .status-dot { left: calc(6px * var(--ui-scale)); }
 .terminal-group-members .session-item .session-spinner { left: calc(7px * var(--ui-scale)); }
 .terminal-group-members .session-item.terminal-icons-hidden { padding-left: calc(var(--terminal-row-left-padding, 20px) * var(--ui-scale)); }
