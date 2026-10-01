@@ -1,9 +1,13 @@
-"""Two things the transcript owes a phone.
+"""Three things the transcript owes a phone.
 
-A message held under a finger selects whole, because dragging two handles through text that scrolls
-away is not a way to copy an answer. And a prompt waiting to be confirmed is looked for on a clock,
-rather than only when the transcript happens to say something -- an agent that has taken the prompt
-and gone quiet left the message reading as one that was never sent.
+A finger holding transcript text gets the platform's own menu: iOS and Android select natively
+and offer Copy there, while the scripted whole-message selection the hold used to trigger kept
+being blown away as the platform's own handling ran. A prompt waiting to be confirmed is looked
+for on a clock, rather than only when the transcript happens to say something -- an agent that
+has taken the prompt and gone quiet left the message reading as one that was never sent. And
+the keyboard shift happens once: Android's keyboard shrinks both viewports and pans nothing, so
+the transcript shifts itself, while iPhone Safari pans to the field on its own and a shift on
+top of that moves everything twice.
 
 The client has no JS harness; as in test_terminal_cycle_order the methods are lifted out of the
 shipped source and run under node against stubs.
@@ -14,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import unittest
 from pathlib import Path
 
@@ -21,66 +26,106 @@ from tests.test_terminal_cycle_order import method_source
 
 STATIC = Path(__file__).resolve().parent.parent / "termdeck" / "static"
 
-SELECTION_HARNESS = """
+NATIVE_MENU_HARNESS = """
 const scenario = JSON.parse(process.env.TERMDECK_TOUCH_SCENARIO);
-
-// Enough of a document for closest()/querySelector(":scope > .turn-text") to mean what they mean.
-class Node {
-  constructor(classes, parent = null) {
-    this.classes = new Set(classes);
-    this.parent = parent;
-    this.children = [];
-    if (parent) parent.children.push(this);
-  }
-  matchesSelector(selector) {
-    return selector.split(",").map((part) => part.trim()).some((part) => {
-      if (part.startsWith(".")) return this.classes.has(part.slice(1));
-      return this.tag === part;
-    });
-  }
-  closest(selector) {
-    let node = this;
-    while (node) {
-      if (node.matchesSelector(selector)) return node;
-      node = node.parent;
-    }
-    return null;
-  }
-  querySelector(selector) {
-    const wanted = selector.replace(":scope > ", "");
-    const direct = selector.startsWith(":scope > ");
-    const search = (node) => {
-      for (const child of node.children) {
-        if (child.matchesSelector(wanted)) return child;
-        if (!direct) {
-          const found = search(child);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-    return search(this);
-  }
-}
-
-const build = (spec, parent = null) => {
-  const node = new Node(spec.classes || [], parent);
-  node.tag = spec.tag || "div";
-  node.name = spec.name || "";
-  for (const child of spec.children || []) build(child, node);
-  return node;
+const app = {
+  touchMobileLayoutEnabled: () => scenario.touch,
+  __METHODS__
 };
+const source = scenario.source === null ? null : { id: scenario.source };
+process.stdout.write(JSON.stringify({ native: app.transcriptTouchMenuIsNative(source) }));
+"""
 
-const root = build(scenario.tree);
-const find = (node, name) => node.name === name ? node
-  : node.children.reduce((found, child) => found || find(child, name), null);
+MAIN_SCROLL_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_SCROLL_SCENARIO);
+let frame = null;
+global.requestAnimationFrame = (cb) => { frame = cb; return 1; };
+const main = scenario.missing ? null : { scrollTop: 50, scrollLeft: 30 };
+const app = {
+  $(id) { return id === "main" ? main : null; },
+  __METHODS__
+};
+app.resetMainScrollAfterKeyboard();
+frame();
+process.stdout.write(JSON.stringify(
+  main === null ? { missing: true } : { top: main.scrollTop, left: main.scrollLeft }));
+"""
 
+KEYBOARD_SHIFT_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_KEYBOARD_SCENARIO);
+const KEYBOARD_NATIVE_PAN_SLACK_PX = 24;
+const frames = [];
+global.requestAnimationFrame = (cb) => { frames.push(cb); return frames.length; };
+global.window = {
+  innerHeight: scenario.layout,
+  visualViewport: scenario.visual === null ? null : { height: scenario.visual },
+};
+const body = { scrollTop: 0, scrollHeight: 1000, clientHeight: 300 };
+const app = {
+  $(id) { return id === "history-body" ? body : null; },
+  __METHODS__
+};
+const native = app.keyboardShiftIsNative();
+app.keepHistoryPinnedToBottom(scenario.wasAtBottom !== false);
+while (frames.length) frames.shift()();
+process.stdout.write(JSON.stringify({ native, scrollTop: body.scrollTop }));
+"""
+
+MERGE_HARNESS = r"""
+const scenario = JSON.parse(process.env.TERMDECK_MERGE_SCENARIO);
+const PENDING_PROMPT_DISCARD_MS = 600000;
+const PENDING_PROMPT_UNCONFIRMED_MS = 25000;
+const app = {
+  historyPendingPrompts: new Map([["s1", scenario.pending]]),
+  historyPendingPromptSequence: 100,
+  processingStates: new Map(scenario.processing ? [["s1", true]] : []),
+  session() { return { session_id: "s1", processing: !!scenario.sessionProcessing }; },
+  persistedHistoryPendingPrompts(sessionId) {
+    return this.historyPendingPrompts.get(sessionId) || [];
+  },
+  persistHistoryPendingPrompts() {},
+  syncPendingPromptRecheck() {},
+  __METHODS__
+};
+const merged = app.mergePendingHistoryPrompts("s1", scenario.turns || []);
+process.stdout.write(JSON.stringify({
+  states: merged.map((turn) => turn.pending_id ? turn.pending_delivery_state : "authoritative"),
+}));
+"""
+
+STALLED_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_STALL_SCENARIO);
+const STREAM_CONNECT_TIMEOUT_MS = 10000;
+global.WebSocket = { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 };
 const app = {
   __METHODS__
 };
-const target = find(root, scenario.target);
-const section = app.transcriptSectionForSelection(target);
-process.stdout.write(JSON.stringify({ selected: section ? section.name : null }));
+const socket = scenario.state === null ? null : { readyState: global.WebSocket[scenario.state] };
+const startedAt = scenario.age === null ? scenario.startedAt : Date.now() - scenario.age;
+process.stdout.write(JSON.stringify({ stalled: app.streamSocketConnectStalled(socket, startedAt) }));
+"""
+
+RETRY_HARNESS = """
+const scenario = JSON.parse(process.env.TERMDECK_RETRY_SCENARIO);
+global.WebSocket = { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 };
+global.window = { setTimeout: () => 99 };
+const calls = [];
+const statusNode = { textContent: "" };
+const app = {
+  activeId: "s1",
+  historyOpen: true,
+  activeFileKey: null,
+  $(id) { return id === "status-name" ? statusNode : { value: scenario.promptValue || "" }; },
+  writePromptDraftToTerminal(view, text) { calls.push(["write", text]); },
+  sendTrackedInput(view, text) { calls.push(["send", text]); },
+  setHistoryPendingPromptDeliveryState(sessionId, pendingId, state) { calls.push(["state", state]); },
+  __METHODS__
+};
+const view = { sessionId: "s1", closed: false, awaitingSnapshot: false, replaying: false,
+  retryTerminalEnterTimer: 0, ...scenario.view };
+app.maybeSendRetryTerminalEnter(view);
+process.stdout.write(JSON.stringify({ status: statusNode.textContent, calls,
+  pending: !!view.retryTerminalEnterPending }));
 """
 
 RECHECK_HARNESS = """
@@ -121,111 +166,111 @@ def run_node(harness: str, env_name: str, scenario: dict, node: str) -> dict:
     return json.loads(done.stdout)
 
 
-def turn_tree() -> dict:
-    return {"name": "body", "classes": ["history-body"], "children": [
-        {"name": "user-turn", "classes": ["turn", "user"], "children": [
-            {"name": "user-role", "classes": ["turn-role"]},
-            {"name": "user-text", "classes": ["turn-text", "markdown"], "children": [
-                {"name": "paragraph", "tag": "p"},
-            ]},
-            {"name": "delivery", "classes": ["history-pending-delivery"], "children": [
-                {"name": "retry", "tag": "button", "classes": ["history-pending-action"]},
-            ]},
-        ]},
-        {"name": "tool-event", "classes": ["history-event", "edit"], "children": [
-            {"name": "event-summary", "tag": "summary"},
-            {"name": "event-diff", "classes": ["history-diff"]},
-        ]},
-        {"name": "composer", "tag": "textarea", "classes": ["history-composer"]},
-    ]}
-
-
-class TranscriptLongPressSelectionTest(unittest.TestCase):
+class NativeTouchMenuTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.node = shutil.which("node")
         if not cls.node:
             raise unittest.SkipTest("node is not installed")
         source = (STATIC / "app_markdown_files.js").read_text()
-        cls.harness = SELECTION_HARNESS.replace(
-            "__METHODS__", method_source(source, "transcriptSectionForSelection(target)"))
+        cls.harness = NATIVE_MENU_HARNESS.replace(
+            "__METHODS__", method_source(source, "transcriptTouchMenuIsNative(source)"))
 
-    def selected(self, target: str) -> str | None:
+    def native(self, source: str | None, touch: bool) -> bool:
         return run_node(self.harness, "TERMDECK_TOUCH_SCENARIO",
-                        {"tree": turn_tree(), "target": target}, self.node)["selected"]
+                        {"source": source, "touch": touch}, self.node)["native"]
 
-    def test_holding_a_message_selects_what_was_said(self) -> None:
-        # Not the "You" label above it, nor the delivery note below it: those are the transcript
-        # talking about the message, and copying them with it is noise.
-        self.assertEqual(self.selected("paragraph"), "user-text")
+    def test_transcript_hold_on_a_phone_is_native(self) -> None:
+        self.assertTrue(self.native("history-body", True))
 
-    def test_holding_the_role_label_selects_the_same_message(self) -> None:
-        self.assertEqual(self.selected("user-role"), "user-text")
+    def test_transcript_right_click_on_desktop_keeps_the_custom_menu(self) -> None:
+        self.assertFalse(self.native("history-body", False))
 
-    def test_holding_a_tool_call_selects_the_whole_call(self) -> None:
-        # An operation has no message text; what is on screen is the summary and whatever it has open.
-        self.assertEqual(self.selected("event-diff"), "tool-event")
+    def test_terminal_and_notebook_keep_the_custom_menu_on_touch(self) -> None:
+        # The terminal is a canvas and the notebook an editor: neither selects natively.
+        self.assertFalse(self.native("terminal", True))
+        self.assertFalse(self.native("notebook-editor-host", True))
 
-    def test_a_button_inside_a_message_is_still_a_button(self) -> None:
-        self.assertIsNone(self.selected("retry"))
-
-    def test_holding_outside_a_message_selects_nothing(self) -> None:
-        self.assertIsNone(self.selected("composer"))
+    def test_no_source_is_never_native(self) -> None:
+        self.assertFalse(self.native(None, True))
 
 
-SELECT_HARNESS = """
-const scenario = JSON.parse(process.env.TERMDECK_SELECT_SCENARIO);
-const opened = [];
-let selectedNode = null;
-let ranges = 0;
-global.document = { createRange: () => ({ selectNodeContents: (node) => { selectedNode = node; } }) };
-global.navigator = { vibrate: () => { opened.push("vibrate"); } };
-global.window = {
-  getSelection: () => scenario.noSelection ? null : {
-    removeAllRanges: () => { ranges = 0; selectedNode = null; },
-    addRange: () => { ranges += 1; },
-    toString: () => (ranges ? scenario.text : ""),
-  },
-};
-const app = {
-  readSelectionActionState: () => ({ kind: "history", text: scenario.text }),
-  openSelectionContextMenu: (state, point, kind) => opened.push({ state, point, kind }),
-  __METHODS__
-};
-const result = app.selectTranscriptSection({ name: "section" }, { x: 12, y: 40 });
-process.stdout.write(JSON.stringify({ result, opened, selected: !!selectedNode }));
-"""
-
-
-class SelectTranscriptSectionTest(unittest.TestCase):
+class MainScrollResetTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.node = shutil.which("node")
         if not cls.node:
             raise unittest.SkipTest("node is not installed")
-        source = (STATIC / "app_markdown_files.js").read_text()
-        cls.harness = SELECT_HARNESS.replace(
-            "__METHODS__", method_source(source, "selectTranscriptSection(section, point)"))
+        source = (STATIC / "app.js").read_text()
+        cls.harness = MAIN_SCROLL_HARNESS.replace(
+            "__METHODS__", method_source(source, "resetMainScrollAfterKeyboard()"))
 
-    def select(self, **scenario: object) -> dict:
-        return run_node(self.harness, "TERMDECK_SELECT_SCENARIO", {"text": "what the agent said", **scenario}, self.node)
+    def test_keyboard_resize_zeroes_the_main_pan(self) -> None:
+        result = run_node(self.harness, "TERMDECK_SCROLL_SCENARIO", {}, self.node)
 
-    def test_the_hold_opens_the_menu_at_the_finger(self) -> None:
-        # Selecting text leaves nothing to press. The menu a right-click opens on a desktop is what
-        # the hold opens here -- Copy, New note, Search in files, Ask an agent.
-        result = self.select()
+        self.assertEqual(result, {"top": 0, "left": 0})
 
-        self.assertTrue(result["result"])
-        menu = next(entry for entry in result["opened"] if isinstance(entry, dict))
-        self.assertEqual(menu["point"], {"x": 12, "y": 40})
-        self.assertEqual(menu["kind"], "history")
-        self.assertEqual(menu["state"]["text"], "what the agent said")
+    def test_missing_main_is_not_an_error(self) -> None:
+        result = run_node(self.harness, "TERMDECK_SCROLL_SCENARIO", {"missing": True}, self.node)
 
-    def test_a_section_with_no_text_selects_nothing_and_opens_nothing(self) -> None:
-        result = self.select(text="   ")
+        self.assertEqual(result, {"missing": True})
 
-        self.assertFalse(result["result"])
-        self.assertEqual([entry for entry in result["opened"] if isinstance(entry, dict)], [])
+
+class KeyboardShiftTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app.js").read_text()
+        cls.harness = KEYBOARD_SHIFT_HARNESS.replace(
+            "__METHODS__",
+            "\n  ".join(method_source(source, name) for name in (
+                "keyboardShiftIsNative()", "keepHistoryPinnedToBottom(wasAtBottom)")))
+
+    def shifted(self, visual: int | None, layout: int, **scenario: object) -> dict:
+        return run_node(self.harness, "TERMDECK_KEYBOARD_SCENARIO",
+                        {"visual": visual, "layout": layout, **scenario}, self.node)
+
+    def test_iphone_safari_pans_so_the_transcript_stays_put(self) -> None:
+        # The visual viewport shrank while the layout viewport stayed: Safari is moving the
+        # content itself, and pinning the transcript on top of that shifts everything twice.
+        result = self.shifted(visual=400, layout=844)
+
+        self.assertTrue(result["native"])
+        self.assertEqual(result["scrollTop"], 0)
+
+    def test_android_shrinks_both_so_the_transcript_shifts_itself(self) -> None:
+        # Both viewports shrank together: the browser panned nothing, and without the pin the
+        # newest lines end up behind the keyboard.
+        result = self.shifted(visual=400, layout=400)
+
+        self.assertFalse(result["native"])
+        self.assertEqual(result["scrollTop"], 1000)
+
+    def test_no_keyboard_means_no_native_pan(self) -> None:
+        result = self.shifted(visual=844, layout=844)
+
+        self.assertFalse(result["native"])
+        self.assertEqual(result["scrollTop"], 1000)
+
+    def test_a_few_pixels_of_noise_is_not_a_keyboard(self) -> None:
+        # Rounding and URL-bar settle can leave the two heights a hair apart.
+        result = self.shifted(visual=840, layout=844)
+
+        self.assertFalse(result["native"])
+        self.assertEqual(result["scrollTop"], 1000)
+
+    def test_no_visual_viewport_means_no_native_pan(self) -> None:
+        result = self.shifted(visual=None, layout=844)
+
+        self.assertFalse(result["native"])
+        self.assertEqual(result["scrollTop"], 1000)
+
+    def test_a_reader_up_in_history_is_never_pinned(self) -> None:
+        result = self.shifted(visual=400, layout=400, wasAtBottom=False)
+
+        self.assertEqual(result["scrollTop"], 0)
 
 
 class PendingPromptRecheckTest(unittest.TestCase):
@@ -258,6 +303,14 @@ class PendingPromptRecheckTest(unittest.TestCase):
         self.assertEqual(result["reloadedSession"], "s1")
         self.assertTrue(result["reloadOptions"]["preserveScroll"])
 
+    def test_the_tick_never_steals_the_scroll(self) -> None:
+        # followLatest nulls the scroll snapshot, so passing it here yanked a reader mid-transcript
+        # to the bottom every four seconds for as long as any prompt sat unconfirmed. The recheck
+        # is a quiet background ask: it preserves the scroll and follows nothing.
+        result = self.run_scenario(fireTicks=1)
+
+        self.assertFalse(result["reloadOptions"].get("followLatest", False))
+
     def test_the_clock_stops_once_nothing_is_waiting(self) -> None:
         result = self.run_scenario(fireTicks=1, clearPendingBeforeTick=True)
 
@@ -287,6 +340,153 @@ class PendingPromptRecheckTest(unittest.TestCase):
         self.assertEqual(result["setInterval"], 0)
 
 
+class PendingPromptBusyStateTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_markdown_files.js").read_text()
+        cls.harness = MERGE_HARNESS.replace(
+            "__METHODS__",
+            "\n  ".join(method_source(source, name) for name in (
+                "mergePendingHistoryPrompts(sessionId, turns)",
+                "historyAuthoritativePromptMatchesPending(authoritativeText, pendingText)",
+                "historyPromptComparisonText(text)", "historyPromptLooseMatchText(text)",
+                "historyTurnTimestampMillis(turn)")))
+
+    def merge(self, pending: list, busy: bool, turns: list | None = None) -> list:
+        done = subprocess.run(
+            [self.node, "-e", self.harness], capture_output=True, text=True, check=False,
+            env={**os.environ, "TERMDECK_MERGE_SCENARIO": json.dumps(
+                {"pending": pending, "processing": busy, "sessionProcessing": busy,
+                 "turns": turns or []})})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)["states"]
+
+    def entry(self, **overrides: object) -> dict:
+        # Aged a minute: past the 25s "unconfirmed" line, far short of the 10min discard.
+        base = {"text": "do the thing", "beforeCount": 0, "pending_id": "p1",
+                "timestamp": int(time.time() * 1000) - 60000,
+                "delivery_state": "awaiting_transcript",
+                "busy_at_submit": False, "idle_since": 0}
+        return {**base, **overrides}
+
+    def test_a_working_agent_means_queued_even_when_submit_thought_otherwise(self) -> None:
+        # busy_at_submit froze what the tab knew at send time; a tab that sent during a stale
+        # moment aged a delivered, queued prompt to "unconfirmed" with a retry button that would
+        # have sent it a second time. What matters is whether the agent is working now.
+        states = self.merge([self.entry()], busy=True)
+
+        self.assertEqual(states, ["queued"])
+
+    def test_a_working_agent_means_queued(self) -> None:
+        states = self.merge([self.entry(busy_at_submit=True)], busy=True)
+
+        self.assertEqual(states, ["queued"])
+
+    def test_an_idle_agent_means_unconfirmed(self) -> None:
+        states = self.merge([self.entry()], busy=False)
+
+        self.assertEqual(states, ["unconfirmed"])
+
+    def test_a_matching_turn_confirms_and_removes_the_entry(self) -> None:
+        item = self.entry()
+        states = self.merge(
+            [item], busy=False,
+            turns=[{"role": "user", "text": "do the thing",
+                    "timestamp": item["timestamp"] + 1000}])
+
+        self.assertEqual(states, ["authoritative"])
+
+
+class StreamConnectStallTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app.js").read_text()
+        cls.harness = STALLED_HARNESS.replace(
+            "__METHODS__", method_source(source, "streamSocketConnectStalled(socket, startedAt)"))
+
+    def stalled(self, state: str | None, age: int | None, started_at: int = 0) -> bool:
+        return run_node(self.harness, "TERMDECK_STALL_SCENARIO",
+                        {"state": state, "age": age, "startedAt": started_at},
+                        self.node)["stalled"]
+
+    def test_an_open_socket_is_never_stalled(self) -> None:
+        self.assertFalse(self.stalled("OPEN", 60000))
+
+    def test_a_fresh_connect_is_not_stalled(self) -> None:
+        self.assertFalse(self.stalled("CONNECTING", 1000))
+
+    def test_a_connect_hung_past_the_deadline_is_stalled(self) -> None:
+        # The reconnect loop used to wait on a CONNECTING socket forever: a handshake the relay
+        # held open without answering kept the tab on "Reconnecting…" until a reload.
+        self.assertTrue(self.stalled("CONNECTING", 60000))
+
+    def test_a_closed_socket_is_not_stalled(self) -> None:
+        # Closed is the reconnect path's ordinary business, not this predicate's.
+        self.assertFalse(self.stalled("CLOSED", 60000))
+
+    def test_no_socket_is_not_stalled(self) -> None:
+        self.assertFalse(self.stalled(None, 60000))
+
+    def test_an_unknown_start_is_not_stalled(self) -> None:
+        # Fail open: never kill a socket whose age cannot be proven.
+        self.assertFalse(self.stalled("CONNECTING", None, 0))
+
+
+class RetryExpiryTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_markdown_files.js").read_text()
+        cls.harness = RETRY_HARNESS.replace(
+            "__METHODS__", method_source(source, "maybeSendRetryTerminalEnter(view)"))
+
+    def run_view(self, view: dict, prompt_value: str = "") -> dict:
+        return run_node(self.harness, "TERMDECK_RETRY_SCENARIO",
+                        {"view": view, "promptValue": prompt_value}, self.node)
+
+    def test_an_expired_retry_says_so(self) -> None:
+        # The wait used to end in silence: fifteen seconds of nothing, then the request was gone
+        # with no word on the status line about why the button had done nothing.
+        result = self.run_view({"retryTerminalEnterPending": True,
+                                "retryTerminalEnterExpiresAt": int(time.time() * 1000) - 1,
+                                "retryTerminalEnterText": "do the thing",
+                                "ws": None})
+
+        self.assertFalse(result["pending"])
+        self.assertIn("retry", result["status"].lower())
+        self.assertEqual(result["calls"], [])
+
+    def test_navigating_away_dismisses_without_announcing(self) -> None:
+        view = {"sessionId": "s2", "retryTerminalEnterPending": True,
+                "retryTerminalEnterExpiresAt": int(time.time() * 1000) + 15000,
+                "retryTerminalEnterText": "do the thing", "ws": None}
+        result = self.run_view(view)
+
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["status"], "")
+        self.assertEqual(result["calls"], [])
+
+    def test_an_open_terminal_sends_the_retry(self) -> None:
+        result = self.run_view({"retryTerminalEnterPending": True,
+                                "retryTerminalEnterExpiresAt": int(time.time() * 1000) + 15000,
+                                "retryTerminalEnterText": "do the thing",
+                                "retryTerminalEnterPendingId": "p1",
+                                "ws": {"readyState": 1}},
+                               prompt_value="something else")
+
+        self.assertEqual(result["calls"], [["write", "do the thing"], ["send", "\r"],
+                                           ["state", "awaiting_transcript"]])
+        self.assertEqual(result["status"], "retry Enter sent to terminal")
+
+
 class ShippedSourceTest(unittest.TestCase):
     def test_the_recheck_interval_is_seconds_not_minutes(self) -> None:
         # A prompt that has landed should stop looking undelivered while the person is still looking
@@ -296,6 +496,24 @@ class ShippedSourceTest(unittest.TestCase):
 
         self.assertLessEqual(interval, 10000)
         self.assertGreaterEqual(interval, 1000)
+
+    def test_the_native_pan_gap_is_noise_not_keyboard(self) -> None:
+        # The gap that tells an iPhone keyboard (visual shrank, layout stayed) from rounding
+        # and URL-bar settle has to sit between the two: above a few pixels, far below ~300.
+        source = (STATIC / "app.js").read_text()
+        slack = int(re.search(r"KEYBOARD_NATIVE_PAN_SLACK_PX = (\d+)", source).group(1))
+
+        self.assertGreaterEqual(slack, 8)
+        self.assertLessEqual(slack, 100)
+
+    def test_the_connect_deadline_is_patient_but_bounded(self) -> None:
+        # A handshake takes well under a second; the reconnect loop ticks every few. Past ten
+        # seconds a CONNECTING socket is one the relay is holding open without answering.
+        source = (STATIC / "app.js").read_text()
+        deadline = int(re.search(r"STREAM_CONNECT_TIMEOUT_MS = (\d+)", source).group(1))
+
+        self.assertGreaterEqual(deadline, 5000)
+        self.assertLessEqual(deadline, 30000)
 
 
 if __name__ == "__main__":

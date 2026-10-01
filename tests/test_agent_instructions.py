@@ -7,15 +7,18 @@ from termdeck.agent_instructions import AgentInstructionService
 
 class AgentInstructionServiceTest(unittest.TestCase):
     def test_instruction_text_contains_the_local_api_surface(self) -> None:
-        self.assertIn("POST /api/sessions/{session_id}/prompt", AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertIn("Base: /api/sessions/{session_id}", AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertIn("POST /prompt", AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertIn("POST /interrupt stops the turn", AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertIn("GET /children/status shows each child's status", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("/api/sessions\nwith {model", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("title, description", AgentInstructionService.INSTRUCTION_TEXT)
         # One call for what an agent answered, and the one thing that ties an answer to a prompt.
-        self.assertIn("/api/sessions/{session_id}/response", AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertIn("GET /response?since=", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("since", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("origin_session to your $TERMDECK_SESSION_ID", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("user-authorized scope", AgentInstructionService.INSTRUCTION_TEXT)
-        self.assertLess(len(AgentInstructionService.INSTRUCTION_TEXT), 650)
+        self.assertLess(len(AgentInstructionService.INSTRUCTION_TEXT), 700)
         self.assertNotIn("github.com", AgentInstructionService.INSTRUCTION_TEXT)
 
     def test_ensures_one_termdeck_owned_instruction_file(self) -> None:

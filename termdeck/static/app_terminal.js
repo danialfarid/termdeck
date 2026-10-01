@@ -311,7 +311,8 @@ Object.assign(TermdeckApp.prototype, {
                    tallGeometrySettleTimer: 0, tallGeometrySettleAt: 0,
                    attachSettleTimer: 0, attachSettleDeadline: 0, userScrolledSinceAttach: false,
                    preserveRowsFromBottom: 0, reconnectReset: false,
-                   promptDraft: this.session(id)?.draft || "", markdownPromptDraft: this.markdownPromptDraftForSession(id),
+                   promptDraft: this.session(id)?.draft || "", promptDraftRevision: this.session(id)?.draft_revision || 0,
+                   markdownPromptDraft: this.markdownPromptDraftForSession(id),
                    promptPaste: false, promptEscape: "", promptEditing: false,
                    promptSubmitting: false, promptSubmitEntered: false, promptSubmitTimer: 0,
                    promptApiSubmitting: false, promptApiInterrupting: false,
@@ -324,6 +325,7 @@ Object.assign(TermdeckApp.prototype, {
                    codexFocusRefreshFrame: 0, claudeActivationRefreshFrame: 0,
                    promptQueue: this.markdownPromptQueueForSession(id), promptQueueEditIndex: null, promptQueueDispatching: false,
                    promptDraftSyncPending: false, promptDraftSyncTimer: 0, promptDraftSyncDebounceTimer: 0,
+                   promptDraftSyncSent: "",
                    pendingDraftSync: null, pendingTerminalDraft: null, pendingAgentPaste: "", pendingAgentPasteTimer: 0,
                    pendingAgentPasteStartedAt: 0, pendingAgentPasteReadyAt: 0, pendingAgentPasteExpectedTitle: "",
                    pendingAgentPasteRequireComposer: false, lastTerminalOutputAt: 0,
@@ -1044,6 +1046,33 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  trackDraftRevision(view, msg) {
+    const revision = Number(msg.draft_revision);
+    if (Number.isInteger(revision) && revision > (view.promptDraftRevision || 0)) view.promptDraftRevision = revision;
+  },
+
+
+  handleDraftConflict(view, msg) {
+    // Our push was refused: another window moved the draft first, and the message carries the
+    // current text to catch up from. Nothing typed since the refused push means this was a stale
+    // resync, so it is adopted; typing since means this window is live, so its text is pushed again
+    // from the current revision and wins, with the other text kept in the draft's history.
+    this.trackDraftRevision(view, msg);
+    const incomingDraft = String(msg.draft || "");
+    view.promptDraftSyncPending = false;
+    clearTimeout(view.promptDraftSyncTimer);
+    view.promptDraftSyncTimer = 0;
+    if (view.promptDraft === view.promptDraftSyncSent) {
+      view.promptDraft = incomingDraft;
+      view.promptDraftSyncSent = incomingDraft;
+      this.showPromptDraft(view);
+      this.updateSessionDraftPen(view.sessionId);
+      return;
+    }
+    this.sendPromptDraftSync(view, view.promptDraft);
+  },
+
+
   handleControl(id, view, msg) {
     if (msg.type === "terminal_reset") {
       view.scrollMode = "follow";
@@ -1103,7 +1132,12 @@ Object.assign(TermdeckApp.prototype, {
         view.pinBottomUntil = Date.now() + 5000;
       }
     } else if (msg.type === "draft") {
+      if (msg.draft_conflict === true && view.promptDraftSyncPending) {
+        this.handleDraftConflict(view, msg);
+        return;
+      }
       const incomingDraft = String(msg.draft || "");
+      this.trackDraftRevision(view, msg);
       if (view.promptDraftSyncPending && incomingDraft !== view.promptDraft) return;
       view.promptDraftSyncPending = false;
       clearTimeout(view.promptDraftSyncTimer);
@@ -1118,6 +1152,7 @@ Object.assign(TermdeckApp.prototype, {
       }
       return;
     } else if (msg.type === "prompt_submitted") {
+      this.trackDraftRevision(view, msg);
       const submissionIsCurrent = view.promptSubmitVersion === view.promptEditVersion;
       if (submissionIsCurrent) {
         view.promptDraft = "";

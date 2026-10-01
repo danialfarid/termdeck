@@ -72,6 +72,8 @@ TESTS=(
   missing_file_tab
   markdown_view_toggle
   hidden_class_coverage
+  mobile_transcript_layout
+  thinking_block_density
   media_file_preview
   scroll_round_trip
   short_session_scrollback

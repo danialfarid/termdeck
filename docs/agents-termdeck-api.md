@@ -28,7 +28,7 @@ curl -sS -X POST http://127.0.0.1:8530/api/sessions \
 | `cwd`, `project`, `after` | Directory, project, and optional placement anchor. |
 | `worktree`, `worktree_id` | Start in a new isolated worktree or an existing project worktree. |
 | `fork` | Fork the `origin_session` instead of starting a fresh agent. |
-| `output_path`, `write_back`, `queue`, `bracketed` | Optional output file, parent result delivery, prompt queueing, and bracketed prompt input. |
+| `output_path`, `write_back`, `steer`, `bracketed` | Optional output file, parent result delivery, prompt steering (`steer: false` queues), and bracketed prompt input. |
 
 The response contains `session_id`. Leave `prompt` out to create the terminal without starting it on
 anything, and send one later with `POST /api/sessions/{session_id}/prompt` and `{"text":"..."}`.
@@ -48,6 +48,7 @@ Each item also accepts its own optional `description`.
 ## Monitor and follow up
 
 - `GET /api/sessions/{session_id}/status` returns running state, transcript tail, and the latest turn.
+- `GET /api/sessions/{session_id}/children/status` returns each spawned child's status.
 - `GET /api/sessions/{session_id}/response` returns what the agent said back, under `responses`.
   `limit` counts responses rather than transcript entries (default 1, capped at 50).
 - To wait for the response to your own prompt, pass the `since` the prompt call returned:
@@ -59,6 +60,7 @@ Each item also accepts its own optional `description`.
 - `GET /api/sessions/{session_id}/response/final` is the same with what an agent says on its way
   through the work left out, for the agents that mark which message ended a turn.
 - `POST /api/sessions/{session_id}/prompt` sends a prompt with `{"text":"..."}`.
+- `POST /api/sessions/{session_id}/interrupt` stops the turn.
 - `GET /api/sessions` lists sessions and `GET /api/sessions/{session_id}` returns one session.
 
 For isolated work, `GET /api/sessions/{session_id}/worktree/review` shows the branch and diff. Finish it with

@@ -6,11 +6,42 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `GET /api/sessions/{session_id}/children/status` returns one status per session
+  filed under it, so a parent can check all of its spawned agents in one call.
+
+### Changed
+
+- The project and worktree switchers list the last opened first (per browser, with the
+  "All ..." rows still pinned at the top), so switching back and forth stops meaning
+  scrolling to wherever the server happened to list them.
+- A thinking block's over-long operations keep their "N more lines" control at the end
+  of the fourth line instead of on a full-width row of its own, and the block's header,
+  labels, results and footer are tightened so more of each block fits on screen.
+- The transcript model badge on Muse sessions shows the exact model (e.g. muse-spark-1.3)
+  instead of the bare "Muse" label, matching the other providers.
+- The prompt-submission parameter `queue` is now `steer` (default `true`): posting a
+  prompt steers the agent's direction immediately, and `steer: false` queues behind
+  the current turn instead. The old `queue` name is still honored.
+- Interrupting a session (`POST /api/sessions/{id}/interrupt`, the transcript stop
+  button) now presses the agent's stop key 3 times 750ms apart instead of once --
+  one press is often swallowed, two quick ones read as a double-press.
+  The terminal keeps running.
+
 ### Fixed
 
 - Reordering tabs inside an expanded spawned-agents stack no longer throws them out
   of the stack to the end of the group: a drop on a sibling now only moves the tab
   within the stack instead of un-filing it first.
+- Typed-but-unsent terminal input can no longer be silently overwritten by another
+  window holding an older copy: a stale sync is refused, the newer text survives,
+  and the refused text is kept in the draft's history instead of lost.
+  A session's draft history is served at
+  `/api/sessions/{session_id}/draft/history` for recovery.
+- A prompt submitted through the API or Markdown composer whose Enter was absorbed
+  (never confirmed in the agent's transcript) is put back as the session's draft
+  instead of discarded, so a restart replays what the composer still holds.
 - Returning to a Muse tab whose screen went missing while it sat in the background
   no longer leaves an empty pane with the cursor at the bottom and the conversation
   pages up: the tab now notices the missing screen and asks Muse to repaint it,
@@ -20,6 +51,27 @@ All notable changes to this project are documented here. The format follows
   turn: the follow-up scroll that catches up with the laid-out height now brings
   the rendered window along with it instead of leaving the view past what is
   painted (any scroll used to fix it by re-syncing).
+- On a phone, opening the keyboard in the transcript no longer shoves the whole
+  page up and sideways out of view: the page itself can't be panned anymore, and
+  any pan still in flight is reset when the keyboard resizes the screen.
+- The keyboard shift in the transcript now happens once per platform: iPhone
+  Safari pans to the focused field on its own, so the transcript leaves that
+  shift to the browser instead of moving everything a second time, while Android
+  (which pans nothing) keeps the transcript's own shift.
+- Holding transcript text on a phone now gets the platform's own touch menu
+  instead of the scripted whole-message selection, which iOS kept deselecting
+  as its own callout appeared.
+- The transcript no longer yanks a reader to the bottom every few seconds while a
+  prompt sits unconfirmed: the background recheck that looks for its confirmation
+  preserves the scroll instead of following the latest turn.
+- A prompt sent while the agent is working reads as "queued" whenever the agent is
+  known to be working, instead of aging to "unconfirmed" because the tab happened
+  to be stale at send time.
+- A reconnect whose handshake never answers is replaced after ten seconds instead
+  of being waited on forever: a tab stuck on "Reconnecting…" recovers on its own
+  rather than needing a reload.
+- A transcript retry that runs out of terminal to send through says so on the
+  status line instead of dying silently after its fifteen-second wait.
 
 ## [0.31.0] — 2026-09-27
 

@@ -198,6 +198,10 @@ const DECK_COLOR_PALETTE = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#14b8a6
 const MOBILE_CONNECTION_WARNING_DELAY_MS = 1200;
 // How long to wait before trying again once a reconnect attempt has not landed.
 const MOBILE_CONNECTION_RETRY_MS = 3000;
+// How long a stream socket may sit in CONNECTING before it is replaced. A handshake takes well
+// under a second; past this the relay is holding the upgrade open without answering, and waiting
+// on it kept the tab on "Reconnecting…" until a reload.
+const STREAM_CONNECT_TIMEOUT_MS = 10000;
 // A submitted prompt shows as Submitting until the agent's own transcript carries it back. Some
 // submissions never come back as a user turn -- a slash command is handled by the CLI rather than
 // recorded as a message -- so the wait is bounded: first the message says it could not be confirmed,
@@ -220,6 +224,12 @@ const MOBILE_DISPLAY_SCALE_MAX = 1.6;
 const MOBILE_DISPLAY_SCALE_STEP = 0.1;
 // How near the end of the transcript still counts as reading the end, matching captureHistoryScroll.
 const HISTORY_BOTTOM_SLACK_PX = 80;
+// Telling an iPhone keyboard from an Android one: iPhone Safari pans to the focused field itself,
+// so its keyboard shrinks the visual viewport while the layout viewport stays put; Android shrinks
+// both together and pans nothing. A gap between the two heights bigger than this means the browser
+// is doing the shifting and ours would land on top of it. Small enough to catch any keyboard
+// (~300px), big enough to ignore rounding and URL-bar noise.
+const KEYBOARD_NATIVE_PAN_SLACK_PX = 24;
 // Tall-terminal row budget. WebGL backs the terminal with one drawing buffer sized to the FULL terminal
 // in DEVICE pixels, so the real ceiling is MAX_TEXTURE_SIZE / (cellHeight * devicePixelRatio). That dpr
 // term is why a row count measured safe on one machine is wrong on another: a retina display needs twice
@@ -362,6 +372,11 @@ const TERMINAL_V2_FIT_RETRY_DELAY_MS = 140;
 const TERMINAL_ACTIVE_SETTLE_DELAYS_MS = [150, 800, 2000];
 const TERMINAL_DEBUG_SNAPSHOT_LIMIT = 50;
 const HEADER_PICKER_RESULT_LIMIT = 50;
+// The project and worktree pickers list the last opened first. Per-browser recency, most recent
+// first, like the expanded stacks: projects in one list, each project's worktrees in its own.
+const HEADER_PICKER_RECENT_PROJECTS_KEY = "termdeck.recent_projects.v1";
+const HEADER_PICKER_RECENT_WORKTREES_KEY_PREFIX = "termdeck.recent_worktrees.v1.";
+const HEADER_PICKER_RECENT_MAX = 30;
 const SELECTION_SEARCH_MAX_CHARS = 1000;
 const SELECTION_ACTION_DELAY_MS = 500;
 const IMAGE_ATTACHMENT_MIME_RE = /^image\//i;
@@ -1087,6 +1102,9 @@ class TermdeckApp {
       ? projectMatch[3].split("/").map((segment) => decodeURIComponent(segment)).join("/") : "";
     const urlParams = new URLSearchParams(location.search);
     this.worktreeId = String(urlParams.get("wt") || "root").trim() || "root";
+    // Every project page load is a visit: the pickers list the last opened first.
+    if (this.projectSlug) this.recordHeaderPickerVisit("project", this.projectSlug);
+    if (this.worktreeId !== ALL_WORKTREES_ID) this.recordHeaderPickerVisit("worktree", this.worktreeId);
     const requestedFileView = gitModeRoute ? "git"
       : ["project", "search", "git"].includes(urlParams.get("view")) ? urlParams.get("view") : "project";
     if (urlParams.get("t")) this.initialNav = { kind: "term", id: urlParams.get("t") };
@@ -1260,8 +1278,16 @@ class TermdeckApp {
       this.keepHistoryPinnedToBottom(wasAtBottom);
       return;
     }
+    if (this.keyboardShiftIsNative()) {
+      // Safari already shifted the page for its keyboard; shrinking the body to the visual height
+      // and pinning the transcript on top of that moves everything twice. Leave the layout alone --
+      // the full-height body is what the native pan moves over.
+      this.resetMainScrollAfterKeyboard();
+      return;
+    }
     document.documentElement.style.setProperty("--mobile-visual-height", `${Math.round(viewport.height)}px`);
     this.keepHistoryPinnedToBottom(wasAtBottom);
+    this.resetMainScrollAfterKeyboard();
   }
 
   historyBodyAtBottom() {
@@ -1277,14 +1303,36 @@ class TermdeckApp {
     this.historyReaderAtBottom = this.historyBodyAtBottom();
   }
 
+  resetMainScrollAfterKeyboard() {
+    // overflow: clip already forbids this pan where supported; this is for browsers that fall back
+    // to hidden, and for any pan already in flight. #main never scrolls on purpose -- the terminal
+    // and the transcript have their own scrollers -- so zeroing it after a keyboard resize is safe.
+    requestAnimationFrame(() => {
+      const main = this.$("main");
+      if (main) { main.scrollTop = 0; main.scrollLeft = 0; }
+    });
+  }
+
+
+  keyboardShiftIsNative() {
+    // True when the browser is moving the content for its keyboard itself -- iPhone Safari pans to
+    // the focused field, which shrinks the visual viewport while the layout viewport stays put.
+    // Shifting the transcript ourselves then moves everything twice; Android shrinks both viewports
+    // together and pans nothing, which is what our own shift is for.
+    const viewport = window.visualViewport;
+    if (!viewport || !Number.isFinite(viewport.height)) return false;
+    return window.innerHeight - viewport.height > KEYBOARD_NATIVE_PAN_SLACK_PX;
+  }
+
   keepHistoryPinnedToBottom(wasAtBottom) {
     // The keyboard takes half the screen, the transcript keeps its scrollTop, and the newest lines --
     // the ones being replied to -- end up below the fold behind the keyboard. #history-body sets
     // overflow-anchor: none, so the browser will not hold the bottom for us either.
     //
     // Only when the reader was already at the bottom: someone who had scrolled up to read something
-    // is not asking to be thrown back to the end because a keyboard appeared.
-    if (!wasAtBottom) return;
+    // is not asking to be thrown back to the end because a keyboard appeared. And never when the
+    // browser pans natively: Safari already shifted the page, and pinning here shifts it twice.
+    if (!wasAtBottom || this.keyboardShiftIsNative()) return;
     const body = this.$("history-body");
     if (!body) return;
     // After the reflow the variable triggers, and again on the frame after that, because the keyboard
@@ -3054,6 +3102,7 @@ class TermdeckApp {
       this.worktreeId = selected.id;
     }
     this.interactionWorktreeId = this.worktreeId === ALL_WORKTREES_ID ? this.interactionWorktreeId : this.worktreeId;
+    if (this.worktreeId !== ALL_WORKTREES_ID) this.recordHeaderPickerVisit("worktree", this.worktreeId);
     this.updateHeaderPickerDisplay("worktree");
     this.disconnectRecentFilesWatch();
     this.unreadSessions = this.unreadSessionIdsForCurrentWorktreeView();
@@ -3167,18 +3216,66 @@ class TermdeckApp {
 
   headerPickerOptions(kind) {
     if (kind === "project") {
-      return [{ value: "", label: "All projects", detail: "", disabled: false }, ...this.projects.map((project) => ({
-        value: project.name, label: project.name, detail: this.compactProjectPath(project.root), disabled: false,
-      }))];
+      return this.sortHeaderPickerOptionsByRecency(kind,
+        [{ value: "", label: "All projects", detail: "", disabled: false }, ...this.projects.map((project) => ({
+          value: project.name, label: project.name, detail: this.compactProjectPath(project.root), disabled: false,
+        }))]);
     }
     const available = this.worktrees.filter((worktree) => worktree.available);
     const options = available.length > 1
       ? [{ value: ALL_WORKTREES_ID, label: "All worktrees", detail: "Every worktree", disabled: false }]
       : [];
-    return [...options, ...this.worktrees.map((worktree) => ({
+    return this.sortHeaderPickerOptionsByRecency(kind, [...options, ...this.worktrees.map((worktree) => ({
       value: worktree.id, label: `${worktree.branch || worktree.name || worktree.path}${worktree.available ? "" : " (missing)"}`,
       detail: this.compactProjectPath(worktree.path), disabled: !worktree.available,
-    }))];
+    }))]);
+  }
+
+  headerPickerRecentKey(kind) {
+    if (kind === "project") return HEADER_PICKER_RECENT_PROJECTS_KEY;
+    if (kind === "worktree" && this.projectSlug) return `${HEADER_PICKER_RECENT_WORKTREES_KEY_PREFIX}${this.projectSlug}`;
+    return "";
+  }
+
+  headerPickerRecentValues(kind) {
+    const key = this.headerPickerRecentKey(kind);
+    if (!key) return [];
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key) || "[]");
+      return Array.isArray(parsed) ? parsed.filter((value) => typeof value === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  recordHeaderPickerVisit(kind, value) {
+    const key = this.headerPickerRecentKey(kind);
+    const slug = String(value || "");
+    if (!key || !slug) return;
+    const recent = this.headerPickerRecentValues(kind).filter((entry) => entry !== slug);
+    recent.unshift(slug);
+    try {
+      localStorage.setItem(key, JSON.stringify(recent.slice(0, HEADER_PICKER_RECENT_MAX)));
+    } catch (_error) {
+      // a private window or blocked storage just loses the memory, not the deck
+    }
+  }
+
+  sortHeaderPickerOptionsByRecency(kind, options) {
+    // The "All ..." rows stay pinned at the top; visited entries follow in recency order, and
+    // anything never visited keeps its server order after them. A copy: the server order of the
+    // underlying lists is left alone for everything else that reads them.
+    const rank = new Map(this.headerPickerRecentValues(kind).map((value, index) => [value, index]));
+    const pinned = [];
+    const visited = [];
+    const rest = [];
+    for (const option of options) {
+      if (option.value === "" || option.value === ALL_WORKTREES_ID) pinned.push(option);
+      else if (rank.has(option.value)) visited.push(option);
+      else rest.push(option);
+    }
+    visited.sort((a, b) => rank.get(a.value) - rank.get(b.value));
+    return [...pinned, ...visited, ...rest];
   }
 
   currentHeaderPickerValue(kind) {
@@ -4851,7 +4948,10 @@ class TermdeckApp {
       // and never pin it -- the very state being corrected.
       const wasAtBottom = this.historyReaderAtBottom;
       scheduleLayoutFit();
-      if (this.touchMobileLayoutEnabled()) this.keepHistoryPinnedToBottom(wasAtBottom);
+      if (this.touchMobileLayoutEnabled()) {
+        this.keepHistoryPinnedToBottom(wasAtBottom);
+        this.resetMainScrollAfterKeyboard();
+      }
     });
     this.syncMobileVisualViewport();
     window.visualViewport?.addEventListener("resize", this.mobileViewportResizeHandler);
@@ -5193,6 +5293,18 @@ class TermdeckApp {
     this.renderList();
   }
 
+  adoptSessionDraftFromList(view, s) {
+    // The list is polled, so it can be older than a broadcast already adopted here; only a list
+    // newer than the copy held may move the text, or a stale refresh wipes newer typing back.
+    const listRevision = Number(s.draft_revision);
+    if (!Number.isInteger(listRevision) || listRevision <= (view.promptDraftRevision || 0)) return false;
+    if (view.promptDraft === (s.draft || "")) return false;
+    view.promptDraft = s.draft || "";
+    this.updateSessionDraftPen(s.session_id);
+    if (s.session_id === this.activeId && this.historyOpen) this.showPromptDraft(view);
+    return true;
+  }
+
   async refresh() {
     if (!this.initialLoadComplete) this.showInitialLoadingState();
     let sessions, closed;
@@ -5218,12 +5330,12 @@ class TermdeckApp {
     for (const s of this.sessions) {
       this.cacheSessionModel(s);
       const view = this.sessionInteractionState(s.session_id, false);
-      if (view && !view.promptEditing && !view.promptSubmitting && !view.promptDraftSyncPending &&
-          view.pendingDraftSync === null && view.pendingTerminalDraft === null && view.promptDraft !== (s.draft || "")) {
-        view.promptDraft = s.draft || "";
-        this.updateSessionDraftPen(s.session_id);
-        if (s.session_id === this.activeId && this.historyOpen) this.showPromptDraft(view);
-      }
+      const viewIdleForDraft = view && !view.promptEditing && !view.promptSubmitting && !view.promptDraftSyncPending &&
+        view.pendingDraftSync === null && view.pendingTerminalDraft === null;
+      // The revision is learned even when the text matches: pushing from an older copy than the
+      // server holds would be refused, and the push that follows typing here must not be.
+      if (viewIdleForDraft) this.trackDraftRevision(view, s);
+      if (viewIdleForDraft) this.adoptSessionDraftFromList(view, s);
       // The session list already carries the server's authoritative working
       // state. Do not infer it from the CLI title marker: that marker can be
       // restored only after a terminal websocket is opened, which made a
@@ -5306,6 +5418,7 @@ class TermdeckApp {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws/status`);
     this.statusWs = ws;
+    this.statusWsConnectStartedAt = Date.now();
     ws.onopen = () => {
       const reconnect = this.statusWsHasConnected;
       this.statusWsHasConnected = true;
@@ -5377,20 +5490,35 @@ class TermdeckApp {
     if (!navigator.onLine) this.setMobileConnectionWarning(true, "offline");
   }
 
+  streamSocketConnectStalled(socket, startedAt) {
+    if (!socket || socket.readyState !== WebSocket.CONNECTING) return false;
+    const started = Number(startedAt) || 0;
+    if (!started) return false;
+    return Date.now() - started > STREAM_CONNECT_TIMEOUT_MS;
+  }
+
   reconnectFocusedConnections(retryDelay = MOBILE_CONNECTION_WARNING_DELAY_MS) {
     if (document.hidden || !navigator.onLine) {
       if (!navigator.onLine) this.setMobileConnectionWarning(true, "offline");
       return;
     }
     let reconnecting = false;
-    if (!this.statusWs || ![WebSocket.OPEN, WebSocket.CONNECTING].includes(this.statusWs.readyState)) {
+    const statusStalled = this.streamSocketConnectStalled(this.statusWs, this.statusWsConnectStartedAt);
+    if (!this.statusWs || ![WebSocket.OPEN, WebSocket.CONNECTING].includes(this.statusWs.readyState) || statusStalled) {
+      if (statusStalled) {
+        const stale = this.statusWs;
+        this.statusWs = null;
+        stale.close();
+      }
       clearTimeout(this.statusWsReconnectTimer);
       this.statusWsReconnectTimer = 0;
       this.connectStatusStream();
       reconnecting = true;
     } else if (this.statusWs.readyState === WebSocket.CONNECTING) reconnecting = true;
     if (this.historyOpen && this.activeId && this.activeFileKey === null) {
-      const historyConnected = this.historyStreamSessionId === this.activeId && this.historyWs &&
+      const historyStalled = this.historyStreamSessionId === this.activeId &&
+        this.streamSocketConnectStalled(this.historyWs, this.historyWsConnectStartedAt);
+      const historyConnected = !historyStalled && this.historyStreamSessionId === this.activeId && this.historyWs &&
         [WebSocket.OPEN, WebSocket.CONNECTING].includes(this.historyWs.readyState);
       if (!historyConnected) {
         clearTimeout(this.historyWsReconnectTimer);
@@ -6149,6 +6277,7 @@ class TermdeckApp {
       promptApiSubmitting: false, promptApiInterrupting: false, promptSubmitting: false, promptSubmitEntered: false,
       promptSubmitTimer: 0, promptEditing: false, promptEditVersion: 0, promptSubmitVersion: -1,
       promptDraft: this.session(sessionId)?.draft || "",
+      promptDraftRevision: this.session(sessionId)?.draft_revision || 0,
     };
     this.transcriptSessionStates.set(sessionId, state);
     return state;
@@ -6165,7 +6294,7 @@ class TermdeckApp {
     for (const key of ["markdownPromptDraft", "promptQueue", "promptQueueEditIndex", "promptQueueDispatching",
       "promptQueueHold", "promptQueueCollapsed", "promptApiSubmitting", "promptSubmitting",
       "promptApiInterrupting", "promptSubmitEntered", "promptSubmitTimer", "promptEditing", "promptEditVersion", "promptSubmitVersion",
-      "promptDraft"]) {
+      "promptDraft", "promptDraftRevision"]) {
       if (Object.hasOwn(state, key)) view[key] = state[key];
     }
     this.transcriptSessionStates.delete(view.sessionId);

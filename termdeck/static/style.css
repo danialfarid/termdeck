@@ -506,7 +506,10 @@ body.vscode-mode .vscode-only { display: inline-flex !important; align-items: ce
 #sidebar-resizer:hover::after, body.dragging #sidebar-resizer::after { background: var(--accent); }
 body.dragging { user-select: none; cursor: col-resize; }
 
-#main { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+/* clip, not just hidden: hidden still lets the browser pan #main to reveal a focused field, which is
+   how a keyboard shifted the whole page on phones. Nothing ever scrolls #main on purpose. hidden stays
+   for browsers without clip, where the keyboard-resize handlers reset the scroll instead. */
+#main { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; overflow: clip; }
 #bottombar { position: relative; z-index: 2; display: flex; align-items: center; gap: 9px; padding: 3px 2px 3px 12px; border-top: 1px solid var(--border); background: var(--panel); min-height: max(29px, calc(var(--bottom-font-size) + 15px)); flex: none; }
 /* The usage readout is also the handle for the maintenance menu, so it carries a button's affordances. */
 #bottombar-stats { display: flex; flex: none; align-items: center; gap: 2px; margin-left: auto; padding: 2px 4px; border: 1px solid transparent; border-radius: 5px; cursor: pointer; }
@@ -762,15 +765,23 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 }
 .history-event pre { margin: 0; padding: 8px 10px; border-top: 1px solid var(--border); overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--text); font: var(--diff-font-size)/1.45 Menlo, monospace; }
 .history-thinking { border-top: 1px solid var(--border); }
-.history-thinking-label { padding: 6px 10px 2px; color: var(--dim); font: 600 calc(var(--ui-font-size) - 1px) Menlo, monospace; text-transform: uppercase; letter-spacing: 0.05em; }
-.history-thinking pre { margin: 0; border-top: 0; border-bottom: 1px solid var(--border); }
+.history-thinking-label { padding: 4px 10px 1px; color: var(--dim); font: 600 calc(var(--ui-font-size) - 1px) Menlo, monospace; text-transform: uppercase; letter-spacing: 0.05em; }
+.history-thinking pre { margin: 0; padding: 5px 10px; border-top: 0; border-bottom: 1px solid var(--border); }
 .history-thinking pre:last-child { border-bottom: 0; }
 /* Four lines of a long operation, then a control to open the rest; the fade says there is more. */
-.history-thinking-item.clamped { max-height: calc(4 * 1.45em + 16px); overflow: hidden; border-bottom: 0; -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 1.6em), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 1.6em), transparent); }
-.history-thinking-more { display: block; width: 100%; padding: 3px 10px 6px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--accent); cursor: pointer; text-align: left; font: 600 calc(var(--ui-font-size) - 1px)/1.4 Menlo, monospace; }
-.history-thinking-more:hover { background: var(--active-bg); }
-.history-thinking-more:last-child { border-bottom: 0; }
-.history-thinking-footer { display: flex; justify-content: flex-end; padding: 7px 9px; border-top: 1px solid var(--border); background: rgba(0, 0, 0, 0.08); }
+.history-thinking-item.clamped { max-height: calc(4 * 1.45em + 10px); overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 1.6em), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 1.6em), transparent); }
+/* The "N more lines" control rides at the end of the fourth line rather than taking a row of its
+   own: translated up over the clamped preview by its own height (self-relative, so it lands on
+   the last line at any font size) with the row it rode from collapsed behind it. Only the
+   collapse margin guesses at the height, and a miss there only moves the gap below by a pixel.
+   Expanded, the same control is a compact row under the full text. */
+.history-thinking-more { display: block; width: fit-content; padding: 2px 9px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel); color: var(--accent); cursor: pointer; text-align: left; font: 600 calc(var(--ui-font-size) - 1px)/1.4 Menlo, monospace; }
+.history-thinking-item.clamped + .history-thinking-more { position: relative; z-index: 1; margin: 0 6px calc(-1.4em - 8px) auto; transform: translateY(calc(-100% - 2px)); }
+.history-thinking-item:not(.clamped) + .history-thinking-more { margin: 3px 6px 5px auto; }
+.history-thinking-more:hover { background: var(--active-bg); border-color: var(--active-border); }
+.history-thinking-more:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.history-event.thinking summary { padding-top: 4px; padding-bottom: 4px; }
+.history-thinking-footer { display: flex; justify-content: flex-end; padding: 5px 9px; border-top: 1px solid var(--border); background: rgba(0, 0, 0, 0.08); }
 .history-thinking-collapse { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--dim); cursor: pointer; font: 600 calc(var(--ui-font-size) - 1px) Menlo, monospace; }
 .history-thinking-collapse:hover { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 .history-thinking-collapse .codicon { font-size: 13px; }
@@ -857,7 +868,9 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 #history-area.transcript-first .history-event { margin-bottom: 15px; border-color: color-mix(in srgb, var(--term-magenta) 16%, var(--border)); background: color-mix(in srgb, var(--panel) 58%, var(--term-bg)); }
 #history-area.transcript-first .history-event summary { padding: 8px 10px; font-size: calc(var(--terminal-font-size) - 2px); }
 #history-area.transcript-first .history-event pre { padding: 13px 12px; }
-#history-area.transcript-first .history-thinking-label { padding: 8px 10px 5px; }
+#history-area.transcript-first .history-thinking-label { padding: 5px 10px 2px; }
+#history-area.transcript-first .history-thinking pre { padding: 8px 12px; }
+#history-area.transcript-first .history-thinking-item.clamped { max-height: calc(4 * 1.45em + 16px); }
 #history-area.transcript-first #history-composer { padding: 7px 9px 8px; background: color-mix(in srgb, var(--panel) 78%, var(--term-bg)); }
 #history-area.transcript-first #history-prompt { color: var(--term-text); background: var(--term-bg); font: var(--terminal-font-size)/1.34 "SF Mono", Menlo, monospace; }
 #sidebar-footer { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-top: 1px solid var(--border); flex: none; }

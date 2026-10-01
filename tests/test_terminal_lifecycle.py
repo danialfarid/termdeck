@@ -1915,10 +1915,12 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.session_summary_by_id.return_value = {
             "processing": False, "session_id": "busy-01", "agent_kind": "codex"}
 
-        response = await server._interrupt_session("busy-01")
+        with patch("termdeck.server.asyncio.sleep", new=AsyncMock()):
+            response = await server._interrupt_session("busy-01")
 
         server.manager.ensure_session_running.assert_called_once_with("busy-01")
-        server.manager.write_input.assert_called_once_with("busy-01", "\x1b")
+        self.assertEqual(server.manager.write_input.call_args_list,
+                         [call("busy-01", "\x1b")] * 3)
         server.manager.stop_session.assert_not_called()
         self.assertFalse(response["processing"])
 

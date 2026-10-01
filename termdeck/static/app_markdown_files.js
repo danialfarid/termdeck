@@ -974,7 +974,10 @@ Object.assign(TermdeckApp.prototype, {
   historyModelFromValue(raw) {
     const value = this.normalizeModelText(raw).replace(/^["']|["']$/g, "");
     if (!value) return "";
-    const modelPattern = /\b(gpt-[a-z0-9.+-]+(?:-[a-z0-9.+-]+)*(?:\s+(?:x)?(?:high|medium|low|standard|mini|turbo))?)\b/gi;
+    // One branch per id family, each with its own effort words: gpt-* takes the OpenAI levels,
+    // muse-spark-* the muse ones (agents/muse.py REASONING_EFFORTS). Sharing the effort list would
+    // read "gpt-5 max" or "muse-spark-1.3 turbo" as ids with levels neither family offers.
+    const modelPattern = /\b((?:gpt-[a-z0-9.+-]+(?:-[a-z0-9.+-]+)*(?:\s+(?:x)?(?:high|medium|low|standard|mini|turbo))?|muse-spark(?:-[a-z0-9.+-]+)*(?:\s+(?:none|minimal|low|medium|high|xhigh|max|ultra))?))\b/gi;
     const match = value.match(modelPattern);
     if (!match) return "";
     return match[0];
@@ -1280,7 +1283,7 @@ Object.assign(TermdeckApp.prototype, {
   async sendHistoryCommand(session, text) {
     const response = await fetch(`/api/sessions/${encodeURIComponent(session.session_id)}/prompt`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, bracketed: false, queue: false, automatically_queue_when_busy: false }),
+      body: JSON.stringify({ text, bracketed: false, steer: true, automatically_queue_when_busy: false }),
     });
     if (!response.ok) {
       const failure = await response.json().catch(() => ({}));
@@ -1523,7 +1526,8 @@ Object.assign(TermdeckApp.prototype, {
 
   maybeSendRetryTerminalEnter(view) {
     if (!view?.retryTerminalEnterPending) return;
-    if (Date.now() > Number(view.retryTerminalEnterExpiresAt || 0) ||
+    const waitExpired = Date.now() > Number(view.retryTerminalEnterExpiresAt || 0);
+    if (waitExpired ||
         view.closed || this.activeId !== view.sessionId || !this.historyOpen || this.activeFileKey !== null) {
       clearTimeout(view.retryTerminalEnterTimer);
       view.retryTerminalEnterTimer = 0;
@@ -1531,6 +1535,9 @@ Object.assign(TermdeckApp.prototype, {
       view.retryTerminalEnterExpiresAt = 0;
       view.retryTerminalEnterText = "";
       view.retryTerminalEnterPendingId = "";
+      // Fifteen seconds of nothing and then the request was simply gone. Say why the button did
+      // nothing; navigating away needs no announcement.
+      if (waitExpired) this.$("status-name").textContent = "terminal not connected; retry dismissed";
       return;
     }
     if (!view.ws || view.ws.readyState !== WebSocket.OPEN || view.awaitingSnapshot || view.replaying) {
@@ -1985,6 +1992,7 @@ Object.assign(TermdeckApp.prototype, {
     const ws = new WebSocket(`${proto}://${location.host}/ws/transcript/${encodeURIComponent(sessionId)}`);
     this.historyWs = ws;
     this.historyStreamSessionId = sessionId;
+    this.historyWsConnectStartedAt = Date.now();
     ws.onopen = () => {
       if (this.touchMobileLayoutEnabled()) {
         clearTimeout(this.mobileConnectionWarningTimer);
@@ -2215,7 +2223,7 @@ Object.assign(TermdeckApp.prototype, {
       const fastStatusBefore = item.command === "/fast" ? await this.historySessionUsage(view.sessionId).catch(() => ({})) : {};
       const response = await fetch(`/api/sessions/${encodeURIComponent(view.sessionId)}/prompt`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: String(text), bracketed: false, queue: false, automatically_queue_when_busy: false }),
+        body: JSON.stringify({ text: String(text), bracketed: false, steer: true, automatically_queue_when_busy: false }),
       });
       if (!response.ok) {
         const failure = await response.json().catch(() => ({}));
@@ -2608,9 +2616,12 @@ Object.assign(TermdeckApp.prototype, {
       // and the transcript cannot show it until that turn ends -- minutes, not seconds. Aging it to
       // "not confirmed" meanwhile read as a failed send, and the natural reply was to send it again;
       // Claude then delivered both copies as one message. So while the agent is still working the
-      // entry says "queued", and the confirmation clock only starts once the agent goes idle.
+      // entry says "queued", and the confirmation clock only starts once the agent goes idle. Judged
+      // on whether the agent is working now, not on what the tab knew at send time: a prompt sent
+      // during a stale moment otherwise sat at "unconfirmed" for the whole of the turn it was
+      // queued behind.
       const agentBusy = this.processingStates.get(sessionId) === true || this.session(sessionId)?.processing === true;
-      if (item.busy_at_submit && agentBusy && item.delivery_state !== "sending") {
+      if (agentBusy && item.delivery_state !== "sending") {
         item.delivery_state = "queued";
         item.idle_since = 0;
       } else if (item.delivery_state === "queued") {
@@ -2658,7 +2669,7 @@ Object.assign(TermdeckApp.prototype, {
         this.syncPendingPromptRecheck(active, 0);
         return;
       }
-      void this.loadHistory(active, { preserveScroll: true, followLatest: true });
+      void this.loadHistory(active, { preserveScroll: true });
     }, PENDING_PROMPT_RECHECK_MS);
   },
 
@@ -2893,7 +2904,7 @@ Object.assign(TermdeckApp.prototype, {
       const response = await fetch(`/api/sessions/${encodeURIComponent(view.sessionId)}/prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: String(text), bracketed: true, queue: false,
+        body: JSON.stringify({ text: String(text), bracketed: true, steer: true,
           automatically_queue_when_busy: false }),
         signal: controller.signal,
       });
@@ -3096,12 +3107,13 @@ Object.assign(TermdeckApp.prototype, {
     }
     view.pendingDraftSync = null;
     view.promptDraftSyncPending = true;
+    view.promptDraftSyncSent = text;
     clearTimeout(view.promptDraftSyncTimer);
     view.promptDraftSyncTimer = setTimeout(() => {
       view.promptDraftSyncPending = false;
       view.promptDraftSyncTimer = 0;
     }, 3000);
-    view.ws.send(JSON.stringify({ type: "draft_sync", draft: text }));
+    view.ws.send(JSON.stringify({ type: "draft_sync", draft: text, base_revision: view.promptDraftRevision || 0 }));
   },
 
 
@@ -3962,8 +3974,9 @@ Object.assign(TermdeckApp.prototype, {
 
 
   // One operation inside an expanded thinking block. Anything longer than a few lines shows its
-  // first four with a "N more lines" control under it: a block of twenty tool calls used to be twenty
-  // full outputs end to end, and the one the reader wanted was somewhere in the middle of them.
+  // first four with a "N more lines" control riding at the end of the fourth line: a block of twenty
+  // tool calls used to be twenty full outputs end to end, and the one the reader wanted was somewhere
+  // in the middle of them.
   HISTORY_THINKING_PREVIEW_LINES: 4,
   HISTORY_THINKING_PREVIEW_CHARS: 320,
 
@@ -4416,6 +4429,7 @@ Object.assign(TermdeckApp.prototype, {
     document.addEventListener("contextmenu", (event) => {
       const source = event.target.closest?.(".xterm, #history-body, #monaco-host, #notebook-editor-host");
       if (!source) return;
+      if (this.transcriptTouchMenuIsNative(source)) return;
       if (source.id === "monaco-host" && this.activeFileKey !== null) {
         this.openFileEditorContextMenu(event);
         return;
@@ -4433,7 +4447,6 @@ Object.assign(TermdeckApp.prototype, {
       this.openSelectionContextMenu(state, { x: event.clientX, y: event.clientY }, contextKind);
     });
     document.addEventListener("auxclick", (event) => this.handleDetectedFileLinkAuxClick(event));
-    this.installTranscriptLongPressSelection();
     document.addEventListener("selectionchange", () => this.scheduleSelectionActions());
     document.addEventListener("mouseup", () => this.scheduleSelectionActions());
     document.addEventListener("copy", () => this.recordDocumentSelectionCopy());
@@ -5968,80 +5981,11 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  // What a finger can select in a transcript is one word, then two handles dragged through text that
-  // scrolls away under them. The unit people actually want is the message: a prompt, or an answer.
-  // Holding a finger on one selects that message whole, and the selection bar that already carries
-  // Copy, New note and Ask an agent opens on top of it.
-  transcriptSectionForSelection(target) {
-    if (target?.closest?.("button, input, textarea, .history-pending-action, .history-queued-item")) return null;
-    const section = target?.closest?.(".turn, .history-event, .history-repetition-group");
-    if (!section) return null;
-    // For a message, the text alone: the "You"/"Assistant" label above it and the delivery note below
-    // it are the transcript talking about the message, not part of what was said.
-    return section.querySelector(":scope > .turn-text") || section;
-  },
-
-
-  selectTranscriptSection(section, point) {
-    const selection = window.getSelection();
-    if (!selection) return false;
-    const range = document.createRange();
-    range.selectNodeContents(section);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    if (!String(selection).trim()) {
-      selection.removeAllRanges();
-      return false;
-    }
-    navigator.vibrate?.(8);
-    // Selecting text on its own leaves nothing to press. The menu a right-click opens on a desktop --
-    // Copy, New note, Search in files, Ask an agent -- is what the hold opens here, at the finger.
-    this.openSelectionContextMenu(this.readSelectionActionState(section), point, "history");
-    return true;
-  },
-
-
-  installTranscriptLongPressSelection() {
-    const body = this.$("history-body");
-    if (!body) return;
-    let press = null;
-    let suppressUntil = 0;
-    const cancelPress = () => {
-      if (press?.timer) window.clearTimeout(press.timer);
-      press = null;
-    };
-    body.addEventListener("pointerdown", (event) => {
-      cancelPress();
-      // Asked at the time of the press, not when the listener was wired: a window becomes a phone
-      // layout by being resized or by the setting changing, without a reload.
-      if (event.pointerType !== "touch" || !event.isPrimary || !this.touchMobileLayoutEnabled()) return;
-      const section = this.transcriptSectionForSelection(event.target);
-      if (!section) return;
-      press = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, section, timer: 0 };
-      const started = press;
-      started.timer = window.setTimeout(() => {
-        if (press !== started) return;
-        started.timer = 0;
-        if (this.selectTranscriptSection(started.section, { x: started.x, y: started.y })) {
-          suppressUntil = performance.now() + 800;
-        }
-        press = null;
-      }, MOBILE_TERMINAL_LONG_PRESS_MS);
-    }, { passive: true });
-    body.addEventListener("pointermove", (event) => {
-      if (!press || press.pointerId !== event.pointerId) return;
-      // Scrolling is a finger moving, so a hold that turns into a scroll is not a hold.
-      if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > MOBILE_TERMINAL_SELECTION_MOVE_TOLERANCE) cancelPress();
-    }, { passive: true });
-    body.addEventListener("pointerup", cancelPress, { passive: true });
-    body.addEventListener("pointercancel", cancelPress, { passive: true });
-    body.addEventListener("contextmenu", (event) => {
-      // The hold has already said what it selected; the menu the platform wants to open on top of it
-      // would only cover the selection bar.
-      if (performance.now() >= suppressUntil) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-    }, true);
+  transcriptTouchMenuIsNative(source) {
+    // A finger holding transcript text gets the platform's own menu -- iOS and Android both select
+    // natively and offer Copy there. The custom menu and programmatic whole-message selection used to
+    // replace that, and the platform kept blowing the scripted selection away as its own handling ran.
+    return !!source && source.id === "history-body" && this.touchMobileLayoutEnabled();
   },
 
 

@@ -50,6 +50,10 @@ class SessionRecord:
     # TermDeck's session that issued the request, and it is what lets the sidebar file a spawned agent
     # under the agent that spawned it.
     spawned_by_session_id: str | None = None
+    # Bumped on every accepted draft change. A client sends back the revision its copy came from, and
+    # a push from an older copy is refused rather than allowed to overwrite what it never saw -- the
+    # same answer notes got for the same corruption.
+    draft_revision: int = 0
 
     def to_dict(self) -> dict[str, str | bool | int | float | None]:
         return asdict(self)
@@ -82,7 +86,8 @@ class SessionRecord:
                              if payload.get("imported_transcript_id") else None,
                              description=str(payload.get("description") or ""),
                              spawned_by_session_id=str(payload["spawned_by_session_id"])
-                             if payload.get("spawned_by_session_id") else None)
+                             if payload.get("spawned_by_session_id") else None,
+                             draft_revision=int(payload.get("draft_revision") or 0))
 
 
 class WsMessageFields:
@@ -104,6 +109,9 @@ class WsMessageFields:
     DORMANT = "dormant"
     DRAFT = "draft"
     DRAFT_SYNC = "draft_sync"
+    DRAFT_REVISION = "draft_revision"
+    BASE_REVISION = "base_revision"
+    DRAFT_CONFLICT = "draft_conflict"
     SUBMIT = "submit"
     QUEUE_EDIT = "queue_edit"
     QUEUE_MUTATION = "queue_mutation"

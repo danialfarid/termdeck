@@ -97,6 +97,7 @@ class CreateSessionRequest(BaseModel):
     write_back: bool = False
     bracketed: bool = True
     queue: bool = False
+    steer: bool | None = None
 
 
 class RunTerminalTaskRequest(BaseModel):
@@ -118,6 +119,7 @@ class RunTerminalTaskRequest(BaseModel):
     write_back: bool = False
     bracketed: bool = True
     queue: bool = False
+    steer: bool | None = None
     worktree: bool = False
     worktree_branch: str = ""
     worktree_base: str = ""
@@ -145,7 +147,9 @@ class WorktreeDeleteRequest(BaseModel):
 class SubmitPromptRequest(BaseModel):
     text: str
     bracketed: bool = True
+    # The name steer had before; still honored. steer wins when both are sent.
     queue: bool = False
+    steer: bool | None = None
     automatically_queue_when_busy: bool = True
 
 
@@ -167,6 +171,7 @@ class BatchTerminalSpec(BaseModel):
     session_ref: str | None = None
     bracketed: bool | None = None
     queue: bool | None = None
+    steer: bool | None = None
     after: str | None = None
     worktree: bool | None = None
     worktree_branch: str | None = None
@@ -185,6 +190,7 @@ class BatchTerminalsRequest(BaseModel):
     permission: str = "default"
     bracketed: bool = True
     queue: bool = False
+    steer: bool | None = None
     after: str | None = None
     worktree: bool = False
     worktree_branch: str = ""
@@ -199,6 +205,20 @@ class RenameSessionRequest(BaseModel):
 class SessionDescriptionRequest(BaseModel):
     description: str
     append: bool = False
+
+
+def _steer_wanted(steer: bool | None, queue: bool | None) -> bool:
+    """Whether a submitted prompt should change the agent's direction now.
+
+    steer is the name callers use: true submits immediately, false queues behind the current turn
+    where the agent has a queue, and the default steers. queue is the name steer had before; it is
+    still honored, with steer winning when both are sent.
+    """
+    if steer is not None:
+        return steer
+    if queue is not None:
+        return not queue
+    return True
 
 
 class SessionSpawnedByRequest(BaseModel):
@@ -847,6 +867,9 @@ class TermdeckServer:
         app.post(TermdeckConfig.API_SESSION_SPAWNED_BY_ROUTE, response_model=None)(self._set_session_spawned_by)
         app.post(TermdeckConfig.API_SESSION_PROJECT_ROUTE, response_model=None)(self._move_session_to_project)
         app.get(TermdeckConfig.API_SESSION_STATUS_ROUTE, response_model=None)(self._session_status)
+        app.get(TermdeckConfig.API_SESSION_CHILDREN_STATUS_ROUTE, response_model=None)(self._session_children_status)
+        app.get(TermdeckConfig.API_SESSION_DRAFT_HISTORY_ROUTE, response_model=None)(self._draft_history)
+        app.get(TermdeckConfig.API_SESSION_DRAFT_VERSION_ROUTE, response_model=None)(self._draft_version)
         app.get(TermdeckConfig.API_SESSION_TASK_STATUS_ROUTE, response_model=None)(self._session_status)
         app.get(TermdeckConfig.API_SESSION_FINAL_RESPONSE_ROUTE, response_model=None)(self._session_final_response)
         app.get(TermdeckConfig.API_SESSION_RESPONSE_ROUTE, response_model=None)(self._session_response)
@@ -2905,6 +2928,21 @@ class TermdeckServer:
             raise HTTPException(status_code=404, detail=f"unknown version for {note_id}: {version_id}")
         return self.notebook_history.get_version(version_id)
 
+    async def _draft_history(self, session_id: str) -> dict[str, object]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        versions = self.manager.draft_history.list_versions("/drafts", f"{session_id}.md")
+        for version in versions:
+            version["captured_at_ms"] = int(TimeUtil.est_naive_iso_timestamp(str(version["captured_at_est"])) * 1000)
+        return {"session_id": session_id, "versions": versions}
+
+    async def _draft_version(self, session_id: str, version_id: int) -> dict[str, object]:
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        if not self.manager.draft_history.version_belongs_to_file(version_id, "/drafts", f"{session_id}.md"):
+            raise HTTPException(status_code=404, detail=f"unknown version for {session_id}: {version_id}")
+        return self.manager.draft_history.get_version(version_id)
+
     async def _delete_notebook_note(self, note_id: str, project: str = "", worktree_id: str = "") -> dict[str, object]:
         settings, key, state = self._project_state_context(project, worktree_id)
         if all(note.note_id != note_id for note in state.notebook_notes):
@@ -3249,13 +3287,14 @@ class TermdeckServer:
             # Taken before the prompt goes in: submitting waits for the terminal to confirm it, which
             # an answer can beat, and a boundary taken afterwards would leave that answer behind it.
             since = self._now_stamp(prompt)
-            await self.manager.submit_prompt(ms.record.session_id, prompt, request.bracketed, request.queue)
+            wanted_queue = not _steer_wanted(request.steer, request.queue)
+            await self.manager.submit_prompt(ms.record.session_id, prompt, request.bracketed, wanted_queue)
             latest = self.manager.session_summary(ms)
             latest["placement"] = summary.get("placement")
             latest["placement_error"] = summary.get("placement_error")
             summary = latest
             summary["prompt_submitted"] = True
-            summary["queued"] = request.queue
+            summary["queued"] = wanted_queue
             # Where this prompt starts, so the caller can ask for what it answered.
             summary["since"] = since
             if origin_session_id and request.write_back:
@@ -3386,6 +3425,14 @@ class TermdeckServer:
             return f"[TermDeck task {session_id} {status}] No agent response was produced."
         text = str(last_turn.get("text", "")).strip()
         return f"[TermDeck task {session_id} {status}]\n{text}" if text else f"[TermDeck task {session_id} {status}]\n{json.dumps(last_turn, ensure_ascii=False)}"
+
+    async def _session_children_status(self, session_id: str) -> dict[str, object]:
+        """How every child of a session is doing, each in the shape of its own status call."""
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        children = self.manager.child_session_ids(session_id)
+        return {"session_id": session_id,
+                "children": [await self._session_status(child) for child in children]}
 
     async def _session_status(self, session_id: str) -> dict[str, object]:
         """Everything about how a session is doing: the process, the agent, and the transcript tail."""
@@ -3588,8 +3635,9 @@ class TermdeckServer:
         try:
             self.manager.ensure_session_running(session_id)
             processing = bool(self.manager.session_summary_by_id(session_id).get("processing"))
-            wanted_queue = request.queue or (automatically_queue_when_busy and
-                                             request.automatically_queue_when_busy and processing)
+            steer = _steer_wanted(request.steer, request.queue)
+            wanted_queue = not steer or (automatically_queue_when_busy and
+                                         request.automatically_queue_when_busy and processing)
             # What actually happened, not what was asked for: an agent whose composer has no queue is
             # submitted to instead, and a caller told "queued" about a prompt that was sent has been
             # told the wrong thing.
@@ -3605,11 +3653,17 @@ class TermdeckServer:
                 "queued": queued, "since": since}
 
     async def _interrupt_session(self, session_id: str) -> dict[str, object]:
+        # One Escape is often swallowed; two in quick succession read as a double-press with its own
+        # meaning. Three spaced presses stop reliably without either failure.
         if not self.manager.has_session(session_id):
             raise HTTPException(status_code=404, detail=session_id)
         self.manager.ensure_session_running(session_id)
         summary = self.manager.session_summary_by_id(session_id)
-        self.manager.write_input(session_id, agents.agent_cli(str(summary.get("agent_kind", "none"))).interrupt_input)
+        key = agents.agent_cli(str(summary.get("agent_kind", "none"))).interrupt_input
+        for press in range(3):
+            self.manager.write_input(session_id, key)
+            if press < 2:
+                await asyncio.sleep(0.75)
         return self.manager.session_summary_by_id(session_id)
 
     async def _agent_hook(self, request: AgentHookRequest, state: str = "") -> dict[str, object]:
@@ -3659,7 +3713,9 @@ class TermdeckServer:
                 project = request.project if item.project is None else item.project
                 session_ref = item.session_ref or ""
                 bracketed = request.bracketed if item.bracketed is None else item.bracketed
-                queue = request.queue if item.queue is None else item.queue
+                steer = item.steer if item.steer is not None else request.steer
+                item_queue = item.queue if item.queue is not None else request.queue
+                queue = not _steer_wanted(steer, item_queue)
                 placement_after = request.after if item.after is None else item.after
                 worktree_enabled = request.worktree if item.worktree is None else item.worktree
                 worktree_branch = request.worktree_branch if item.worktree_branch is None else item.worktree_branch
@@ -4144,7 +4200,9 @@ class TermdeckServer:
         try:
             await websocket.send_bytes(scrollback)
             await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.DRAFT,
-                                                   WsMessageFields.DRAFT: self.manager.session_draft(session_id)}))
+                                                   WsMessageFields.DRAFT: self.manager.session_draft(session_id),
+                                                   WsMessageFields.DRAFT_REVISION:
+                                                       self.manager.session_draft_revision(session_id)}))
             if read_only:
                 await websocket.send_text(json.dumps({WsMessageFields.TYPE: "access_mode", "read_only": True}))
             client_pump = asyncio.create_task(self._pump_client_to_pty(websocket, session_id, read_only))
@@ -4445,11 +4503,15 @@ class TermdeckServer:
             elif message_type == WsMessageFields.REPAINT:
                 self.manager.request_screen_repaint(session_id)
             elif message_type == WsMessageFields.DRAFT_SYNC:
-                self.manager.set_draft(session_id, message.get(WsMessageFields.DRAFT, ""))
+                self.manager.set_draft(session_id, message.get(WsMessageFields.DRAFT, ""),
+                                       message.get(WsMessageFields.BASE_REVISION))
             elif message_type == WsMessageFields.SUBMIT:
-                await self.manager.submit_prompt(session_id, message.get(WsMessageFields.TEXT, ""),
-                                                 bool(message.get("bracketed", False)),
-                                                 bool(message.get("queue", False)))
+                steer = message.get("steer", None)
+                queue = message.get("queue", None)
+                await self.manager.submit_prompt(
+                    session_id, message.get(WsMessageFields.TEXT, ""), bool(message.get("bracketed", False)),
+                    not _steer_wanted(None if steer is None else bool(steer),
+                                      None if queue is None else bool(queue)))
             elif message_type == WsMessageFields.QUEUE_EDIT:
                 await self.manager.edit_queued_prompt(
                     session_id,

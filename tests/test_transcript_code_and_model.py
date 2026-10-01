@@ -240,6 +240,62 @@ class TranscriptModelPickerTest(unittest.TestCase):
         self.assertEqual(self.pick(["gpt-6-astra", None])["applied"], [])
 
 
+MODEL_VALUE_HARNESS = r"""
+const scenario = JSON.parse(process.env.TERMDECK_MODEL_VALUE_SCENARIO);
+const app = {
+  __METHODS__
+};
+const out = { value: app.historyModelFromValue(scenario.raw) };
+if (scenario.turns) out.transcript = app.historyModelFromTranscript(scenario.turns);
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+class TranscriptModelValueTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app_markdown_files.js").read_text()
+        cls.harness = MODEL_VALUE_HARNESS.replace("__METHODS__", "\n  ".join(
+            method_source(source, name) for name in
+            ("historyModelFromValue(raw)", "normalizeModelText(raw)",
+             "historyModelFromTranscript(turns = [])")))
+
+    def parse(self, raw: str, turns: list | None = None) -> dict:
+        scenario = {"raw": raw}
+        if turns is not None:
+            scenario["turns"] = turns
+        done = subprocess.run([self.node, "-e", self.harness], capture_output=True, text=True,
+                              check=False,
+                              env={**os.environ, "TERMDECK_MODEL_VALUE_SCENARIO": json.dumps(scenario)})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_gpt_ids_still_parse(self) -> None:
+        self.assertEqual(self.parse("gpt-5.6-sol")["value"], "gpt-5.6-sol")
+
+    def test_muse_ids_parse(self) -> None:
+        # The transcript badge fell back to the bare "Muse" label: the only ids the parser knew
+        # were gpt-*, so a muse-spark turn model matched nothing.
+        self.assertEqual(self.parse("muse-spark-1.3")["value"], "muse-spark-1.3")
+
+    def test_muse_effort_suffix_parses(self) -> None:
+        self.assertEqual(self.parse("muse-spark-1.3 max")["value"], "muse-spark-1.3 max")
+
+    def test_bare_muse_kind_is_not_a_model(self) -> None:
+        self.assertEqual(self.parse("muse")["value"], "")
+
+    def test_prose_without_an_id_parses_to_nothing(self) -> None:
+        self.assertEqual(self.parse("hello world")["value"], "")
+
+    def test_transcript_turn_model_is_found(self) -> None:
+        result = self.parse("", turns=[{"role": "assistant", "model": "muse-spark-1.3"}])
+
+        self.assertEqual(result["transcript"], "muse-spark-1.3")
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -298,7 +354,7 @@ class AgentWithItsOwnModelCommandTest(unittest.TestCase):
 
         self.assertEqual(result["applied"][0],
                          {"url": "/api/sessions/s1/prompt",
-                          "body": {"text": "/model opus", "bracketed": False, "queue": False,
+                          "body": {"text": "/model opus", "bracketed": False, "steer": True,
                                    "automatically_queue_when_busy": False}})
 
     def test_a_model_with_no_levels_needs_no_second_question(self) -> None:

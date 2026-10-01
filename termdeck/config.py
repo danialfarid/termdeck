@@ -156,6 +156,9 @@ class TermdeckConfig:
     API_SESSIONS_BATCH_ROUTE = "/api/sessions/batch"
     API_SESSION_ROUTE = "/api/sessions/{session_id}"
     API_SESSION_STATUS_ROUTE = "/api/sessions/{session_id}/status"
+    API_SESSION_CHILDREN_STATUS_ROUTE = "/api/sessions/{session_id}/children/status"
+    API_SESSION_DRAFT_HISTORY_ROUTE = "/api/sessions/{session_id}/draft/history"
+    API_SESSION_DRAFT_VERSION_ROUTE = "/api/sessions/{session_id}/draft/history/{version_id}"
     # What an agent said back, which is what a caller is waiting for. `/response/final` is the same
     # answers with the ones an agent said on its way through the work left out.
     API_SESSION_RESPONSE_ROUTE = "/api/sessions/{session_id}/response"
@@ -425,6 +428,10 @@ class TermdeckConfig:
     # is not trimmed away by a busy repository.
     NOTEBOOK_HISTORY_DATABASE = DATA_DIR / "notebook-history.sqlite3"
     NOTEBOOK_HISTORY_MAX_VERSIONS_PER_NOTE = 50
+    # Every version of every session draft, kept apart for the same reason: a draft's past is what a
+    # refused push is recovered from.
+    DRAFT_HISTORY_DATABASE = DATA_DIR / "draft-history.sqlite3"
+    DRAFT_HISTORY_MAX_VERSIONS_PER_DRAFT = 50
     SELECTION_COPY_HISTORY_MAX = 50
     WORKTREES_DIR = DATA_DIR / "worktrees"
     WORKTREE_REGISTRY_FILE = DATA_DIR / "worktrees.json"

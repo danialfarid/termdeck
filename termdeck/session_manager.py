@@ -17,6 +17,7 @@ from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.claude_activity_watcher import ClaudeActivityWatcher
 from termdeck.compaction_rescue import build_rescue_payload, extract_recent_bytes
 from termdeck.config import TermdeckConfig
+from termdeck.file_history_service import FileHistoryService
 from termdeck.proc_tree import ProcTreeSnapshot
 from termdeck.draft_tracker import DraftInputTracker
 from termdeck.models import ApiFields, SessionRecord, WsMessageFields
@@ -183,6 +184,8 @@ class TerminalSessionManager:
         self._transcript_service = None
         self._history_index = None
         self.notifier = None
+        self.draft_history = FileHistoryService(TermdeckConfig.DRAFT_HISTORY_DATABASE,
+                                                TermdeckConfig.DRAFT_HISTORY_MAX_VERSIONS_PER_DRAFT)
         self.replay = ReplayRecorder(self)
         self.agent_instructions = AgentInstructionService(TermdeckConfig.AGENT_INSTRUCTIONS_FILE)
         self._claude_activity_watcher = ClaudeActivityWatcher(
@@ -1547,22 +1550,65 @@ class TerminalSessionManager:
             new_draft = ""
             ms.draft_tracker = DraftInputTracker("")
         if new_draft != ms.record.draft:
-            ms.record.draft = new_draft
-            self._schedule_draft_persist()
-            self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT, WsMessageFields.DRAFT: new_draft})
+            self._apply_draft_change(ms, new_draft, rebuild_tracker=False)
 
-    def set_draft(self, session_id: str, draft: str) -> None:
+    def _draft_history_service(self) -> FileHistoryService:
+        # Built in __init__; made on demand for the partial managers tests hold, so draft paths keep
+        # their history whichever way the manager was constructed.
+        service = getattr(self, "draft_history", None)
+        if service is None:
+            service = FileHistoryService(TermdeckConfig.DRAFT_HISTORY_DATABASE,
+                                         TermdeckConfig.DRAFT_HISTORY_MAX_VERSIONS_PER_DRAFT)
+            self.draft_history = service
+        return service
+
+    def _apply_draft_change(self, ms: ManagedSession, new_draft: str, rebuild_tracker: bool) -> None:
+        """One accepted draft change: move the revision, persist, keep the version, tell every window.
+
+        The tracker's own path leaves the tracker alone -- rebuilding it from its output would drop a
+        half-received escape sequence -- while a push from a window replaces what the tracker holds.
+        """
+        previous = ms.record.draft
+        ms.record.draft = new_draft
+        ms.record.draft_revision += 1
+        if rebuild_tracker:
+            ms.draft_tracker = DraftInputTracker(new_draft)
+        self._schedule_draft_persist()
+        self._draft_history_service().record_write("/drafts", f"{ms.record.session_id}.md", previous, new_draft)
+        self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT,
+                                     WsMessageFields.DRAFT: new_draft,
+                                     WsMessageFields.DRAFT_REVISION: ms.record.draft_revision})
+
+    def set_draft(self, session_id: str, draft: str, base_revision: int | None = None) -> None:
         ms = self._sessions[session_id]
         normalized = str(draft or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
-        if normalized != ms.record.draft:
-            ms.record.draft = normalized
-            ms.draft_tracker = DraftInputTracker(normalized)
-            self._schedule_draft_persist()
-        # Always echo draft_sync, including when the value is unchanged. This
-        # acknowledges the client update without racing the terminal websocket
-        # or the periodic session refresh.
-        self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT,
-                                     WsMessageFields.DRAFT: normalized})
+        if normalized == ms.record.draft:
+            # A resync of the text already here: acknowledge it with the current revision without
+            # moving anything, however old the copy it was made from claims to be.
+            self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT,
+                                         WsMessageFields.DRAFT: normalized,
+                                         WsMessageFields.DRAFT_REVISION: ms.record.draft_revision})
+            return
+        try:
+            base = int(base_revision) if base_revision is not None else None
+        except (TypeError, ValueError):
+            base = None
+        if base is not None and ms.record.draft_revision != 0 and base != ms.record.draft_revision:
+            # A window pushing from a copy the draft has moved past -- one left open while the text
+            # was typed somewhere else. Taking it would overwrite what it never saw, so it is refused
+            # instead, and the window is told the current text to catch up from. The refused text is
+            # kept in the history, because it exists nowhere else.
+            self._draft_history_service().record_snapshot("/drafts", f"{ms.record.session_id}.md",
+                                                           normalized, "refused")
+            self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT,
+                                         WsMessageFields.DRAFT: ms.record.draft,
+                                         WsMessageFields.DRAFT_REVISION: ms.record.draft_revision,
+                                         WsMessageFields.DRAFT_CONFLICT: True})
+            return
+        # A push that says nothing about its copy is a client from before revisions; its write lands
+        # as before, with what it replaced kept in the history. Refusing it would silently unsync a
+        # cached client's live typing, which is the loss this refuses to cause.
+        self._apply_draft_change(ms, normalized, rebuild_tracker=True)
 
     async def submit_prompt(self, session_id: str, text: str, bracketed: bool, queue: bool = False) -> bool:
         """Paste a Markdown prompt, then send Enter or Tab after the agent TUI has consumed it.
@@ -1585,18 +1631,22 @@ class TerminalSessionManager:
         self.write_input(session_id, payload)
         await self._wait_for_paste_to_settle(ms)
         self.write_input(session_id, "\t" if queue else "\r")
-        if not queue:
-            await self._press_enter_until_prompt_lands(ms, normalized)
         if queue:
-            ms.record.draft = ""
-            ms.draft_tracker = DraftInputTracker("")
-            self._schedule_draft_persist()
-            self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT,
-                                         WsMessageFields.DRAFT: ""})
+            self._apply_draft_change(ms, "", rebuild_tracker=True)
+        if not queue:
+            confirmed = await self._press_enter_until_prompt_lands(ms, normalized)
+            if not confirmed and self._submit_source_exists(ms):
+                # The transcript never showed the prompt: the Enter was absorbed and the text is
+                # still sitting in the composer, while the tracker cleared on the first Enter. Put
+                # the draft back so a restart replays what the composer holds instead of nothing --
+                # unless someone typed meanwhile, whose text is live and must not be touched.
+                self._restore_unconfirmed_submit(ms, normalized)
         # A submitted prompt must not be resurrected from the debounce window
         # if the browser is refreshed immediately afterward.
         self._persist()
-        self._broadcast_control(self._sessions[session_id], {WsMessageFields.TYPE: WsMessageFields.PROMPT_SUBMITTED})
+        self._broadcast_control(self._sessions[session_id],
+                                {WsMessageFields.TYPE: WsMessageFields.PROMPT_SUBMITTED,
+                                 WsMessageFields.DRAFT_REVISION: self._sessions[session_id].record.draft_revision})
         return queue
 
     async def _wait_for_paste_to_settle(self, ms: ManagedSession) -> None:
@@ -1614,30 +1664,51 @@ class TerminalSessionManager:
                 return
             await asyncio.sleep(min(TermdeckConfig.PROMPT_SUBMIT_SETTLE_QUIET_SECONDS - quiet_for, 0.1))
 
-    async def _press_enter_until_prompt_lands(self, ms: ManagedSession, text: str) -> None:
+    async def _press_enter_until_prompt_lands(self, ms: ManagedSession, text: str) -> bool:
         """Keep pressing Enter until the prompt shows up in the agent's transcript, or time runs out.
 
         An absorbed Enter leaves the prompt sitting in the composer looking sent, and nothing notices.
         The transcript is the authority on whether the agent has it -- the same signal the transcript
-        view waits for before it stops calling a prompt unconfirmed.
+        view waits for before it stops calling a prompt unconfirmed. Returns whether the prompt was
+        confirmed; anything without a transcript to check against counts as landed.
         """
         if not text.strip() or self._transcript_service is None:
-            return
+            return True
         agent = agents.agent_cli(ms.record.agent_kind)
         if not agent.is_agent:
-            return
+            return True
         deadline = time.monotonic() + TermdeckConfig.PROMPT_SUBMIT_CONFIRM_SECONDS
         presses = 0
         while time.monotonic() < deadline:
             await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_CONFIRM_POLL_SECONDS)
             if not ms.running:
-                return
+                return True
             if await asyncio.to_thread(self._transcript_has_prompt, ms, text):
-                return
+                return True
             self.write_input(ms.record.session_id, "\r")
             presses += 1
         print(f"termdeck prompt for {ms.record.session_id} was not confirmed in the transcript after "
               f"{int(TermdeckConfig.PROMPT_SUBMIT_CONFIRM_SECONDS)}s and {presses} further Enter(s)", flush=True)
+        return False
+
+    def _submit_source_exists(self, ms: ManagedSession) -> bool:
+        """Whether a transcript exists that an unconfirmed prompt could be checked against.
+
+        Without one -- no service, a session that went away mid-submit, an agent with no transcript
+        of its own -- an unconfirmed prompt is indistinguishable from a submitted one, so there is
+        nothing to restore from.
+        """
+        if self._transcript_service is None:
+            return False
+        try:
+            kind, cwd, agent_session_id = self.session_history_source(ms.record.session_id)
+            return self._transcript_service.source_path(kind, cwd, agent_session_id) is not None
+        except (KeyError, OSError, ValueError):
+            return False
+
+    def _restore_unconfirmed_submit(self, ms: ManagedSession, text: str) -> None:
+        if text.strip() and not ms.record.draft:
+            self._apply_draft_change(ms, text, rebuild_tracker=True)
 
     def _transcript_has_prompt(self, ms: ManagedSession, text: str) -> bool:
         """Whether the tail of the agent's transcript already carries this prompt as a user turn."""
@@ -1715,12 +1786,8 @@ class TerminalSessionManager:
             for newer_text in texts[index + 1:]:
                 await self._queue_prompt_text(session_id, newer_text, bracketed)
 
-            ms.record.draft = ""
-            ms.draft_tracker = DraftInputTracker("")
-            self._schedule_draft_persist()
+            self._apply_draft_change(ms, "", rebuild_tracker=True)
             self._persist()
-            self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.DRAFT,
-                                         WsMessageFields.DRAFT: ""})
             self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.QUEUE_MUTATION,
                                          WsMessageFields.OK: True,
                                          WsMessageFields.QUEUE: resulting_queue})
@@ -1914,6 +1981,10 @@ class TerminalSessionManager:
         ms.record.spawned_by_session_id = None
         self._persist()
         self._broadcast_status(ms)
+
+    def child_session_ids(self, session_id: str) -> list[str]:
+        """The sessions filed directly under this one -- its spawned-agents stack, in creation order."""
+        return [sid for sid, ms in self._sessions.items() if ms.record.spawned_by_session_id == session_id]
 
     def would_cycle_spawned_by(self, session_id: str, parent_session_id: str) -> bool:
         """Whether filing session_id under parent_session_id closes a loop.
@@ -2306,6 +2377,9 @@ class TerminalSessionManager:
 
     def session_draft(self, session_id: str) -> str:
         return self._sessions[session_id].record.draft
+
+    def session_draft_revision(self, session_id: str) -> int:
+        return self._sessions[session_id].record.draft_revision
 
     def _persist(self) -> None:
         self._store.save_all([ms.record for ms in self._sessions.values()])
