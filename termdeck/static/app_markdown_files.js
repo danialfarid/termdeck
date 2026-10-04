@@ -1431,7 +1431,6 @@ Object.assign(TermdeckApp.prototype, {
       if (this.fileHistoryDiffEditor) this.fileHistoryDiffEditor.layout();
       else this.fileHistoryCurrentEditor?.layout();
     });
-    this.renderInlineSizeControls();
   },
 
 
@@ -1450,7 +1449,7 @@ Object.assign(TermdeckApp.prototype, {
         ? (this.processingSince.get(this.activeId) || (sessionSince > 0 ? sessionSince * 1000 : 0))
         : this.historyPendingProcessing.get(this.activeId);
       const seconds = since ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0;
-      duration.textContent = spinning ? this.formatElapsed(seconds) : "";
+      duration.textContent = spinning ? `Thinking ${this.formatElapsed(seconds)}` : "";
     }
     if (spinning && !this.processingTimer) {
       this.processingTimer = setInterval(() => this.updateHistoryThinkingIndicator(), 1000);
@@ -1916,7 +1915,7 @@ Object.assign(TermdeckApp.prototype, {
       this.showPromptDraft(view);
       const cached = this.historyTurnsBySession.get(sessionId);
       if (cached) this.applyHistoryTurns(sessionId, cached, { preserveScroll: false });
-      this.connectHistoryStream(sessionId, { fresh: true });
+      this.connectHistoryStream(sessionId, { fresh: true, restoreScroll: true });
     } else {
       view = this.ensureView(this.activeId);
       if (view) {
@@ -1988,6 +1987,7 @@ Object.assign(TermdeckApp.prototype, {
     this.disconnectHistoryStream();
     const fresh = options.fresh === true;
     this.historyStreamFresh = fresh;
+    this.historyStreamRestoreScroll = options.restoreScroll === true;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws/transcript/${encodeURIComponent(sessionId)}`);
     this.historyWs = ws;
@@ -2051,6 +2051,16 @@ Object.assign(TermdeckApp.prototype, {
     const normalized = String(text || "").trim();
     if (!normalized.startsWith("/") || !Array.isArray(commands)) return null;
     return commands.find((item) => normalized === item.command || normalized.startsWith(`${item.command} `)) || null;
+  },
+
+
+  // A "/" line no transcript command claims is still a command: the agent runs it without
+  // writing it back as a user turn, so transcript matching can never confirm it. These
+  // confirm on the send instead. A path is not a command: one bare word after the slash.
+  historyTextIsUntrackedSlashCommand(text, sessionId = this.activeId) {
+    if (this.historySlashCommandForText(text, sessionId)) return false;
+    const token = String(text || "").trim().split(/\s+/)[0] || "";
+    return /^\/[^/\s.]+$/.test(token);
   },
 
 
@@ -2353,6 +2363,7 @@ Object.assign(TermdeckApp.prototype, {
     if (type === "transcript_snapshot_start") {
       this.historySnapshotBuffers.set(sessionId, { revision: Number(message.revision || 0), turns: [],
         chunks: [], latestFirst: message.latest_first === true, rendered: false,
+        restoreScroll: this.historyStreamRestoreScroll === true,
         before: message.before == null ? null : Number(message.before), hasMore: !!message.has_more });
       return;
     }
@@ -2373,9 +2384,12 @@ Object.assign(TermdeckApp.prototype, {
       this.historySnapshotBuffers.delete(sessionId);
       const turns = this.mergePendingHistoryPrompts(sessionId, buffer.turns);
       this.historyRevisions.set(sessionId, Number(message.revision || buffer.revision || 0));
+      // A restore the progress paints could not settle -- the anchor arrived in a later
+      // chunk than the paint that looked for it -- retries here against the full window.
+      const restorePending = buffer.restoreScroll === true;
       this.applyHistoryWindow(sessionId, turns, { before: buffer.before, hasMore: buffer.hasMore },
         { resetOlder: this.historyStreamFresh && this.historyManualRefreshSessionId !== sessionId,
-          preserveScroll: this.historyLoaded && this.historyTurns.length > 0 });
+          preserveScroll: !restorePending && this.historyLoaded && this.historyTurns.length > 0 });
       if (this.historyManualRefreshSessionId === sessionId) {
         this.historyManualRefreshSessionId = "";
         this.$("status-name").textContent = "transcript refreshed";
@@ -2437,11 +2451,22 @@ Object.assign(TermdeckApp.prototype, {
     this.historyBeforeBySession.set(sessionId, buffer.before);
     this.historyHasMoreBySession.set(sessionId, buffer.hasMore);
     const combined = this.combineHistoryWindow(sessionId, buffer.turns);
+    // Returning to a tab restores where the reader was instead of jumping to the bottom.
+    // The saved anchor may sit in a chunk that has not arrived yet; then this paint leaves
+    // the scroll alone and the completed snapshot below retries against the full window.
+    const firstPaint = !buffer.rendered;
+    const savedScroll = firstPaint && buffer.restoreScroll ? this.historyScrollBySession.get(sessionId) : null;
     this.applyHistoryTurns(sessionId, combined, {
       preserveScroll: buffer.rendered || (this.historyLoaded && this.historyTurns.length > 0),
-      followLatest: !buffer.rendered,
+      followLatest: firstPaint && !savedScroll,
+      leaveScroll: firstPaint && !!savedScroll,
     });
     buffer.rendered = true;
+    const body = this.$("history-body");
+    if (savedScroll && body && this.historyScrollAnchorPresent(body, savedScroll)) {
+      this.restoreHistoryScroll(body, savedScroll, combined);
+      buffer.restoreScroll = false;
+    }
   },
 
 
@@ -2609,6 +2634,12 @@ Object.assign(TermdeckApp.prototype, {
         this.historyTurnTimestampMillis(turn) >= item.timestamp - 5000);
       const optimisticIndex = merged.findIndex((turn) => turn.pending_id === pendingId);
       if (timestampConfirmed || authoritativeCount > item.beforeCount) {
+        if (optimisticIndex >= 0) merged.splice(optimisticIndex, 1);
+        continue;
+      }
+      if (this.historyTextIsUntrackedSlashCommand(item.text, sessionId) && item.delivery_state !== "sending") {
+        // Sent under the old rules, which waited on a transcript match that never comes.
+        // Anything past "sending" reached the terminal, so it confirms here instead.
         if (optimisticIndex >= 0) merged.splice(optimisticIndex, 1);
         continue;
       }
@@ -2912,6 +2943,20 @@ Object.assign(TermdeckApp.prototype, {
         throw new Error(String(failure.detail || `prompt submission failed (${response.status})`));
       }
       const result = await response.json();
+      if (this.historyTextIsUntrackedSlashCommand(text, view.sessionId)) {
+        // The transcript will never show this line, so the send succeeding is the
+        // confirmation. Waiting on a match instead left it unconfirmed until it aged out.
+        this.dismissHistoryPendingPrompt(view.sessionId, pendingId);
+        if (!options.fromQueue) this.recordPromptHistory(view.sessionId, text);
+        const commandLine = String(text).trim();
+        const command = commandLine.split(/\s+/)[0];
+        this.showHistorySlashCommandResult(view, command,
+          `${commandLine} was sent to the agent terminal. It does not create a transcript message, ` +
+          "so delivery is confirmed here instead.");
+        if (result.session) this.applySessionStatus({ ...result.session, session_id: view.sessionId });
+        this.$("status-name").textContent = `${command} sent`;
+        return true;
+      }
       this.setHistoryPendingPromptDeliveryState(view.sessionId, pendingId, "awaiting_transcript");
       const submitted = this.submitHistoryPromptText(view, text, { ...options, pendingId });
       if (result.session) this.applySessionStatus({ ...result.session, session_id: view.sessionId });
@@ -3964,7 +4009,16 @@ Object.assign(TermdeckApp.prototype, {
           };
           delivery.append(retryTerminal, dismiss);
         }
-        block.append(delivery);
+        if (deliveryState === "unconfirmed" && this.touchMobileLayoutEnabled()) {
+          // The failure cluster rides the message's own last line instead of a row
+          // beneath it. Only when the tail is a plain paragraph (or bare text); a code
+          // block or list keeps its layout and the cluster drops below as before.
+          const tail = text.lastElementChild;
+          if (!tail || tail.tagName === "P") text.classList.add("history-pending-inline");
+          text.append(delivery);
+        } else {
+          block.append(delivery);
+        }
       }
       body.appendChild(block);
     }
@@ -4016,6 +4070,18 @@ Object.assign(TermdeckApp.prototype, {
 
   historyScrollElementKey(element) {
     return element.dataset?.outlineKey || this.historyElementPreserveKey(element);
+  },
+
+
+  historyScrollAnchorPresent(body, snapshot) {
+    if (!snapshot || snapshot.atBottom) return true;
+    if (!snapshot.anchorKey) return false;
+    let occurrence = 0;
+    for (const child of body.children) {
+      if (this.historyScrollElementKey(child) !== snapshot.anchorKey) continue;
+      if (occurrence++ === snapshot.anchorOccurrence) return true;
+    }
+    return false;
   },
 
 
@@ -4234,7 +4300,7 @@ Object.assign(TermdeckApp.prototype, {
     this.renderHistoryMeta();
     this.updateHistoryEditToggle();
     this.updateActiveThinkingBlock();
-    this.restoreHistoryScroll(body, scrollSnapshot, turns);
+    if (!options.leaveScroll) this.restoreHistoryScroll(body, scrollSnapshot, turns);
     this.observeHistoryTopForPaging();
     this.schedulePendingHistorySearchReveal();
     requestAnimationFrame(() => this.scheduleFilteredHistoryContinuation(sessionId));
@@ -4940,7 +5006,18 @@ Object.assign(TermdeckApp.prototype, {
         && this.markdownFileViewRendered.source === source) return;
     this.rememberMarkdownFileViewScroll();
     const within = this.markdownFileViewInnerScroll(host);
-    host.innerHTML = this.renderMarkdown(source);
+    // The parse runs on the main thread, so a huge document is clipped to a bounded head: without
+    // this a 2 MB slice froze the page for seconds. The unchanged check above still compares the
+    // whole source, so an edit past the clip re-renders rather than going stale.
+    const clipped = source.length > MARKDOWN_FILE_VIEW_MAX_CHARS;
+    const head = clipped ? source.slice(0, MARKDOWN_FILE_VIEW_MAX_CHARS) : source;
+    host.innerHTML = this.renderMarkdown(head);
+    if (clipped) {
+      const banner = document.createElement("div");
+      banner.className = "markdown-file-view-clipped";
+      banner.textContent = `Showing the first ${this.formatByteSize(head.length)} of ${this.formatByteSize(source.length)} — the rest of the document is not rendered.`;
+      host.prepend(banner);
+    }
     host.dataset.fileKey = key;
     this.markdownFileViewRendered = { key, source };
     this.markLocalMarkdownImages(host, entry);
@@ -5272,6 +5349,24 @@ Object.assign(TermdeckApp.prototype, {
       }
       container.appendChild(crumb);
     }
+    // A truncated file is a slice the server cut at the read cap: name the cut where the file is
+    // named, or the head of an 81 MB export reads as the whole thing.
+    if (entry.truncated) {
+      const note = document.createElement("span");
+      note.className = "file-breadcrumb-truncated";
+      note.textContent = `showing first ${this.formatByteSize(entry.shownBytes)} of ${this.formatByteSize(entry.size)}`;
+      note.title = container.title;
+      container.appendChild(note);
+    }
+  },
+
+
+  formatByteSize(bytes) {
+    const value = Number(bytes) || 0;
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    if (value < 1024 * 1024 * 1024) return `${(value / 1048576).toFixed(1)} MB`;
+    return `${(value / 1073741824).toFixed(1)} GB`;
   },
 
 
@@ -5713,7 +5808,7 @@ Object.assign(TermdeckApp.prototype, {
       this.secondaryDiffEditor = monaco.editor.createDiffEditor(host, { ...options, readOnly: true, renderSideBySide: false });
       this.secondaryDiffEditor.setModel({ original: activeEntry.model, modified: secondaryEntry.model });
     } else {
-      this.secondaryEditor = monaco.editor.create(host, { ...options, readOnly: false, model: secondaryEntry.model });
+      this.secondaryEditor = monaco.editor.create(host, { ...options, readOnly: !!secondaryEntry.truncated, model: secondaryEntry.model });
     }
   },
 
@@ -8098,7 +8193,9 @@ Object.assign(TermdeckApp.prototype, {
 
   clearUnreadForSelection(previousId, id) {
     let unreadChanged = false;
-    if (previousId && previousId !== id) {
+    // Switching away does not serve a manual reminder: the point of marking the tab you are on
+    // is for the badge to still be there after you leave. Coming back to a tab serves it.
+    if (previousId && previousId !== id && !this.unreadManualHolds.has(previousId)) {
       unreadChanged = this.unreadSessions.delete(previousId) || unreadChanged;
       this.updateUnreadIndicator(previousId);
     }
@@ -8107,6 +8204,7 @@ Object.assign(TermdeckApp.prototype, {
     // the background marks it, and so does another window or a phone. Clicking the row it is on was
     // then the obvious thing to do and did nothing at all: this is what clears a badge, and with no
     // switch to trigger it the badge stayed on the terminal the user was looking at.
+    this.unreadManualHolds.delete(id);
     unreadChanged = this.unreadSessions.delete(id) || unreadChanged;
     this.updateUnreadIndicator(id);
     if (unreadChanged) this.persistUnreadSessionDelta([...new Set([previousId, id].filter(Boolean))], false);
@@ -8229,7 +8327,7 @@ Object.assign(TermdeckApp.prototype, {
       } else if (cachedHistory.length) {
         this.applyHistoryTurns(historyId, cachedHistory, { preserveScroll: false });
       }
-      this.connectHistoryStream(historyId, { fresh: previousId !== id });
+      this.connectHistoryStream(historyId, { fresh: previousId !== id, restoreScroll: previousId !== id });
     }
     if (view?.term && !this.historyOpen) {
       this.drainTerminalWrites(view);

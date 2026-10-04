@@ -1420,6 +1420,7 @@ Object.assign(TermdeckApp.prototype, {
       (!this.vscodeMode && this.openFiles.size) ? "none" : "flex";
     this.sessionListSignature = this.sessionListSignatureFor();
     this.updateSidebarAnimationVisibilityObserver();
+    this.updateAttentionBell();
     if (terminalSearchHadFocus && terminalSearchInput) requestAnimationFrame(() => {
       terminalSearchInput.focus({ preventScroll: true });
       if (Number.isInteger(terminalSearchSelectionStart) && Number.isInteger(terminalSearchSelectionEnd)) {

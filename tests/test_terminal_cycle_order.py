@@ -52,9 +52,11 @@ process.stdout.write(JSON.stringify({ activated: app.activated }));
 
 
 def method_source(source: str, signature: str) -> str:
+    # Count from the body's own opening brace: a default like `options = {}`
+    # inside the signature would otherwise close the count before the body starts.
     start = source.index(f"\n  {signature} {{")
     depth = 0
-    for index in range(start, len(source)):
+    for index in range(start + len(signature) + 3, len(source)):
         if source[index] == "{":
             depth += 1
         elif source[index] == "}":

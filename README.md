@@ -256,6 +256,7 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 
 - Desktop notifications when an agent needs attention or finishes a run longer than five seconds, unless you
   are looking at that terminal.
+- An attention bell in the sidebar header with a count; each click opens the next terminal that needs attention.
 - Installed as a browser app, they carry TermDeck's name and icon.
 - A Claude Code hook endpoint drives the attention badge from real permission prompts.
 

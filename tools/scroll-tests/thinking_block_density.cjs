@@ -4,7 +4,9 @@
 //
 // It used to be a full-width bar under the clamped preview: a row that held a few words while the
 // reader scrolled past twenty tool calls. The control now overlays the last visible line (the clamp
-// and its fade are unchanged), and opening it parks a compact "show less" under the full text.
+// and its fade are unchanged), and opening it rides "show less" in the empty right of the next
+// item's title row instead of a row of its own (only the last item, with no next title, keeps a
+// row under its text).
 //
 // Driven through the real renderer (appendHistoryThinkingItem) into a real .history-event so the
 // scoped stylesheet rules apply; no session needed.
@@ -75,17 +77,36 @@ const fail = (msg) => { throw new Error(msg); };
     const expanded = await p.evaluate(() => {
       const pre = document.querySelector('pre.history-thinking-item');
       const toggle = document.querySelector('button.history-thinking-more');
+      const nextLabel = toggle.nextElementSibling;
       return {
         clamped: pre.classList.contains('clamped'),
         toggleText: toggle?.textContent,
         preBottom: pre.getBoundingClientRect().bottom,
-        toggleTop: toggle.getBoundingClientRect().top,
+        toggleRect: toggle.getBoundingClientRect().toJSON(),
+        nextLabelRect: nextLabel.getBoundingClientRect().toJSON(),
+        nextLabelClass: nextLabel.className,
       };
     });
     if (expanded.clamped) fail('click did not expand');
     if (expanded.toggleText !== 'show less') fail(`expanded toggle reads ${JSON.stringify(expanded.toggleText)}`);
-    if (expanded.toggleTop < expanded.preBottom - 2) {
-      fail(`expanded toggle overlaps the text: toggle top ${expanded.toggleTop}, pre bottom ${expanded.preBottom}`);
+    if (expanded.toggleRect.top < expanded.preBottom - 2) {
+      fail(`expanded toggle overlaps the text: toggle top ${expanded.toggleRect.top}, pre bottom ${expanded.preBottom}`);
+    }
+    if (!String(expanded.nextLabelClass).includes('history-thinking-label')) {
+      fail(`fixture has no next title row: next sibling is ${JSON.stringify(expanded.nextLabelClass)}`);
+    }
+    if (!(expanded.toggleRect.top < expanded.nextLabelRect.bottom - 2 &&
+        expanded.toggleRect.bottom > expanded.nextLabelRect.top + 2)) {
+      fail(`show less is not riding the next title row: toggle top ${expanded.toggleRect.top} bottom ` +
+        `${expanded.toggleRect.bottom}, title top ${expanded.nextLabelRect.top} bottom ${expanded.nextLabelRect.bottom}`);
+    }
+    if (expanded.nextLabelRect.top - expanded.preBottom > 4) {
+      fail(`show less takes a row of its own: next title starts ` +
+        `${expanded.nextLabelRect.top - expanded.preBottom}px below the text`);
+    }
+    if (expanded.nextLabelRect.right - expanded.toggleRect.right > 12) {
+      fail(`show less is not right-aligned: toggle right ${expanded.toggleRect.right}, ` +
+        `title right ${expanded.nextLabelRect.right}`);
     }
     await p.click('button.history-thinking-more');
     const collapsed = await p.evaluate(() => ({

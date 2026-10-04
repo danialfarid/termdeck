@@ -14,10 +14,12 @@ from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from termdeck import agents
+from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.agents.muse import MuseCli
+from termdeck.proc_tree import ProcTreeSnapshot
 from termdeck.util import TimeUtil
 
 
@@ -851,6 +853,185 @@ class SessionStoreTest(unittest.TestCase):
                                     "payload": {"new_name": "cerulean-draco"}}) + "\n")
 
         self.assertEqual(self.cli.session_title(None, Path("/work"), "01a0-one"), "cerulean-draco")
+
+
+class ResumeRefParsingTest(unittest.TestCase):
+    def test_a_resume_uuid_is_the_ref(self) -> None:
+        self.assertEqual(
+            MuseCli.resume_ref_from_parts(["muse", "resume", "01a0-one"]), "01a0-one")
+
+    def test_a_versioned_binary_name_counts_as_muse(self) -> None:
+        self.assertEqual(
+            MuseCli.resume_ref_from_parts(
+                ["/Users/dan/.local/bin/muse-bin-1.4.2-R4684.1", "resume", "01a0-one"]),
+            "01a0-one")
+
+    def test_a_name_ref_passes_through_unresolved(self) -> None:
+        self.assertEqual(
+            MuseCli.resume_ref_from_parts(["muse", "resume", "green-heliosphere"]),
+            "green-heliosphere")
+
+    def test_root_flags_before_the_subcommand_are_skipped(self) -> None:
+        self.assertEqual(
+            MuseCli.resume_ref_from_parts(
+                ["muse", "--model", "spark", "--reasoning-effort", "high",
+                 "resume", "01a0-one"]),
+            "01a0-one")
+
+    def test_a_resume_word_after_another_subcommand_is_not_a_ref(self) -> None:
+        self.assertIsNone(MuseCli.resume_ref_from_parts(["muse", "exec", "resume"]))
+
+    def test_a_bare_muse_has_no_ref(self) -> None:
+        self.assertIsNone(MuseCli.resume_ref_from_parts(["muse"]))
+
+    def test_last_is_not_a_static_ref(self) -> None:
+        self.assertIsNone(MuseCli.resume_ref_from_parts(["muse", "resume", "--last"]))
+
+    def test_a_non_muse_command_has_no_ref(self) -> None:
+        self.assertIsNone(MuseCli.resume_ref_from_parts(["codex", "resume", "01a0-one"]))
+
+
+class ResumeBindingGuardTest(unittest.TestCase):
+    EXISTING = "01a0-old"
+    FOUND = "01a0-new"
+
+    def setUp(self) -> None:
+        self.directory = TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name) / "muse" / "sessions"
+        patched = patch.object(MuseCli, "sessions_root", self.root)
+        patched.start()
+        self.addCleanup(patched.stop)
+        self.cli = MuseCli()
+
+    def session(self, session_id: str, age_seconds: float = 0) -> Path:
+        day = TimeUtil.today_est()
+        path = self.root / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}" / \
+            session_id / MuseCli.SESSION_LOG_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n")
+        moment = time.time() - age_seconds
+        os.utime(path, (moment, moment))
+        return path
+
+    def verify(self, existing: str | None, found: str | None, argv_ref: str | None) -> str | None:
+        tracker = SimpleNamespace(
+            muse_resume_ref_from_process_arguments=lambda socket, tree: argv_ref)
+        manager = SimpleNamespace(_tracker=tracker)
+        ms = SimpleNamespace(record=SimpleNamespace(agent_session_id=existing, cwd="/work"))
+        socket = Path("/tmp/fake.sock")
+        with patch("termdeck.agents.muse.ProcTreeSnapshot") as snapshot_cls:
+            snapshot_cls.capture = AsyncMock(return_value=SimpleNamespace())
+            return asyncio.run(self.cli.verify_detected_session_id(manager, ms, found, socket))
+
+    def test_an_unbound_terminal_binds_whatever_was_found(self) -> None:
+        self.assertEqual(self.verify(None, self.FOUND, None), self.FOUND)
+
+    def test_nothing_found_binds_nothing(self) -> None:
+        self.assertIsNone(self.verify(self.EXISTING, None, None))
+
+    def test_the_current_binding_is_kept(self) -> None:
+        self.assertEqual(self.verify(self.EXISTING, self.EXISTING, None), self.EXISTING)
+
+    def test_process_arguments_confirming_the_new_id_rebind(self) -> None:
+        self.assertEqual(self.verify(self.EXISTING, self.FOUND, self.FOUND), self.FOUND)
+
+    def test_a_stale_listing_never_moves_the_binding(self) -> None:
+        self.session(self.FOUND, age_seconds=86400)
+        self.assertIsNone(self.verify(self.EXISTING, self.FOUND, self.EXISTING))
+
+    def test_a_fresh_log_rebinds_past_stale_arguments(self) -> None:
+        self.session(self.FOUND, age_seconds=5)
+        self.assertEqual(self.verify(self.EXISTING, self.FOUND, self.EXISTING), self.FOUND)
+
+    def test_a_missing_log_is_not_fresh(self) -> None:
+        self.assertIsNone(self.verify(self.EXISTING, self.FOUND, self.EXISTING))
+
+
+class ReconcileBindingTest(unittest.TestCase):
+    OLD = "01a0dcd4-99e2-75b0-ada7-7cbf141fc190"
+    NEW = "01a0ff0a-3771-7c63-8529-c6b6f6083bf7"
+
+    def setUp(self) -> None:
+        self.directory = TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name) / "muse" / "sessions"
+        patched = patch.object(MuseCli, "sessions_root", self.root)
+        patched.start()
+        self.addCleanup(patched.stop)
+        self.cli = MuseCli()
+        self.bound: list[str] = []
+        self.claimed: set[str] = set()
+        self.manager = SimpleNamespace(
+            _tracker=AgentSessionTracker(),
+            _dtach_socket=lambda session_id: Path("sock"),
+            _claimed_agent_ids=lambda ms: self.claimed,
+            _set_agent_session_binding=lambda ms, cid: (
+                setattr(ms.record, "agent_session_id", cid), self.bound.append(cid)))
+
+    def session(self, session_id: str, age_seconds: float = 0) -> None:
+        day = TimeUtil.today_est()
+        path = self.root / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}" / \
+            session_id / MuseCli.SESSION_LOG_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n")
+        moment = time.time() - age_seconds
+        os.utime(path, (moment, moment))
+
+    def tree(self, *commands: str) -> ProcTreeSnapshot:
+        processes = [{"pid": 100, "ppid": 1, "command": "dtach"}]
+        for index, command in enumerate(commands):
+            processes.append({"pid": 110 + index, "ppid": 100, "command": command})
+        return ProcTreeSnapshot({"sock": [100]}, processes)
+
+    def reconcile(self, binding: str, live: bool, *commands: str) -> str:
+        ms = SimpleNamespace(
+            detached_live=live,
+            record=SimpleNamespace(session_id="tab1", agent_session_id=binding, cwd="/work"))
+        asyncio.run(self.cli.reconcile_bindings(self.manager, ms, self.tree(*commands)))
+        return ms.record.agent_session_id
+
+    def test_argv_naming_a_newer_session_rebinds(self) -> None:
+        self.session(self.OLD, age_seconds=86400)
+        self.session(self.NEW, age_seconds=5)
+        self.assertEqual(
+            self.reconcile(self.OLD, True, f"muse-bin-1.4.2 resume {self.NEW}"), self.NEW)
+        self.assertEqual(self.bound, [self.NEW])
+
+    def test_argv_naming_the_same_session_keeps_it(self) -> None:
+        self.session(self.OLD, age_seconds=86400)
+        self.session(self.NEW, age_seconds=5)
+        self.assertEqual(
+            self.reconcile(self.NEW, True, f"muse resume {self.NEW}"), self.NEW)
+        self.assertEqual(self.bound, [])
+
+    def test_argv_naming_an_older_session_keeps_the_binding(self) -> None:
+        self.session(self.OLD, age_seconds=5)
+        self.session(self.NEW, age_seconds=86400)
+        self.assertEqual(
+            self.reconcile(self.OLD, True, f"muse resume {self.NEW}"), self.OLD)
+        self.assertEqual(self.bound, [])
+
+    def test_a_name_ref_cannot_rebind(self) -> None:
+        self.session(self.OLD, age_seconds=86400)
+        self.assertEqual(
+            self.reconcile(self.OLD, True, "muse resume green-heliosphere"), self.OLD)
+        self.assertEqual(self.bound, [])
+
+    def test_a_dead_terminal_keeps_its_binding(self) -> None:
+        self.session(self.OLD, age_seconds=86400)
+        self.session(self.NEW, age_seconds=5)
+        self.assertEqual(
+            self.reconcile(self.OLD, False, f"muse resume {self.NEW}"), self.OLD)
+        self.assertEqual(self.bound, [])
+
+    def test_a_session_owned_elsewhere_is_not_taken(self) -> None:
+        self.session(self.OLD, age_seconds=86400)
+        self.session(self.NEW, age_seconds=5)
+        self.claimed.add(self.NEW)
+        self.assertEqual(
+            self.reconcile(self.OLD, True, f"muse resume {self.NEW}"), self.OLD)
+        self.assertEqual(self.bound, [])
 
 
 if __name__ == "__main__":

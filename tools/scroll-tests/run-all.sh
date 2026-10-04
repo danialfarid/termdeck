@@ -84,6 +84,9 @@ TESTS=(
   file_tab_state
   file_editor_copy
   terminal_search_scope
+  search_close_reveals_tab
+  attention_bell
+  mark_unread_sticky
   muse_shift_enter_newline
   page_title_segments
   stack_child_reorder

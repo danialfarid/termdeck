@@ -79,13 +79,13 @@ class ProjectFileService:
             observer.join(timeout=2)
 
     def resolve_confined(self, root: str, rel_or_abs: str) -> Path:
+        # The root is only a default base now, not a boundary: any absolute path
+        # resolves, and `..` collapses the way the OS resolves it. Reads stay
+        # capped by size (see read_file) and the media route by content type.
         base = Path(root).expanduser()
         raw = Path(rel_or_abs).expanduser() if rel_or_abs else base
         target = raw if raw.is_absolute() else base / raw
-        resolved = target.resolve()
-        if not resolved.is_relative_to(TermdeckConfig.FILE_ACCESS_ROOT):
-            raise ValueError(f"path outside allowed root: {resolved}")
-        return resolved
+        return target.resolve()
 
     def list_dir(self, root: str, rel: str) -> list[dict[str, object]]:
         directory = self.resolve_confined(root, rel)
@@ -532,15 +532,11 @@ class ProjectFileService:
     }
 
     def media_file(self, root: str, rel: str) -> tuple[Path, str]:
-        """Resolve a media file to (path, content type), confined the same way every other read is.
+        """Resolve a media file to (path, content type).
 
-        The two refusals are kept apart so the route can answer them apart: a path outside the allowed
-        root is forbidden, a type off the allowlist is an unsupported media type.
+        Any path resolves; only the content-type allowlist can refuse.
         """
-        try:
-            target = self.resolve_confined(root, rel)
-        except ValueError as outside_root:
-            raise PermissionError(str(outside_root)) from outside_root
+        target = self.resolve_confined(root, rel)
         if not target.is_file():
             raise FileNotFoundError(str(target))
         content_type = self.MEDIA_CONTENT_TYPES.get(target.suffix.lower())

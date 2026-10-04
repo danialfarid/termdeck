@@ -83,6 +83,12 @@ body:not(.vscode-mode) #sidebar { color: var(--sidebar-text-color); --text: var(
 #project-add-btn, #project-terminal-search-btn { display: grid; place-items: center; flex: none; width: calc(26px * var(--ui-scale)); height: calc(26px * var(--ui-scale)); padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--dim); cursor: pointer; }
 #project-add-btn:hover, #project-terminal-search-btn:hover, #project-terminal-search-btn.on { border-color: var(--active-border); background: var(--active-bg); color: var(--accent); }
 #project-terminal-search-btn .codicon { font-size: calc(12px * var(--ui-scale)); }
+#attention-bell-btn { display: inline-flex; align-items: center; justify-content: center; gap: 3px; flex: none; min-width: calc(26px * var(--ui-scale)); height: calc(26px * var(--ui-scale)); padding: 0 5px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--accent); cursor: pointer; }
+#attention-bell-btn.hidden { display: none; }
+#attention-bell-btn:hover { border-color: var(--active-border); background: var(--active-bg); color: var(--accent); }
+#attention-bell-btn .codicon { font-size: calc(12px * var(--ui-scale)); }
+.attention-bell-count { font-size: calc(11px * var(--ui-scale)); line-height: 1; }
+.attention-bell-count:empty { display: none; }
 #git-new-branch, #notebook-new { display: grid; place-items: center; }
 #project-add-btn .codicon-add, #git-new-branch .codicon-add, #notebook-new .codicon-add { display: none; }
 #project-add-btn::before, #git-new-branch::before, #notebook-new::before, #new-session-btn.terminal-new-toggle::before, .terminal-group-add::before { content: ""; display: block; background: linear-gradient(currentColor, currentColor) center / 1px 100% no-repeat, linear-gradient(currentColor, currentColor) center / 100% 1px no-repeat; }
@@ -632,7 +638,7 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 #history-model.selectable:hover, #history-model.selectable:focus-visible {
   border-color: var(--accent); background: var(--active-bg); outline: none;
 }
-#history-thinking-banner { display: flex; align-items: center; gap: 8px; padding: 5px 12px 4px; border-top: 1px solid var(--border); color: var(--accent); font: 600 calc(var(--ui-font-size) - 1px) Menlo, monospace; letter-spacing: 0.04em; text-transform: uppercase; }
+#history-thinking-banner { display: flex; align-items: center; gap: 8px; padding: 5px 12px 4px; border-top: 1px solid var(--border); color: var(--accent); font: 600 calc(var(--ui-font-size) - 1px) Menlo, monospace; letter-spacing: 0.04em; }
 #history-thinking-banner.hidden { display: none; }
 #history-thinking-banner #history-thinking-duration { min-width: 30px; opacity: 0.82; will-change: opacity; animation: history-thinking-duration-pulse var(--thinking-blink-interval) ease-in-out infinite; }
 @keyframes history-thinking-duration-pulse {
@@ -784,6 +790,10 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 .history-thinking-more { display: block; width: fit-content; padding: 2px 9px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel); color: var(--accent); cursor: pointer; text-align: left; font: 600 calc(var(--ui-font-size) - 1px)/1.4 Menlo, monospace; }
 .history-thinking-item.clamped + .history-thinking-more { position: relative; z-index: 1; margin: 0 6px calc(-1.4em - 8px) auto; transform: translateY(calc(-100% - 2px)); }
 .history-thinking-item:not(.clamped) + .history-thinking-more { margin: 3px 6px 5px auto; }
+/* With a next title below, "show less" rides the empty right of its row instead of a row of its
+   own: the negative margin collapses the row to nothing and the control paints over the title it
+   now overlaps. The last item has no next title, so it keeps the row above. */
+.history-thinking-item:not(.clamped) + .history-thinking-more:has(+ .history-thinking-label) { position: relative; z-index: 1; margin: 0 6px 0 auto; margin-bottom: calc(-1 * (1.4em + 6px)); }
 .history-thinking-more:hover { background: var(--active-bg); border-color: var(--active-border); }
 .history-thinking-more:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 .history-event.thinking summary { padding-top: 4px; padding-bottom: 4px; }
@@ -1556,6 +1566,11 @@ body.mobile-touch-layout .file-editor-tab-pin, body.mobile-touch-layout .file-ed
 .file-breadcrumb:hover { color: var(--accent); }
 .file-breadcrumb:not(:last-child)::after { content: "›"; padding: 0 5px; color: var(--border); }
 .file-breadcrumb:last-child { color: var(--text); cursor: default; }
+.file-breadcrumb-truncated { margin-left: 8px; color: var(--term-yellow, #d8ae00); font: var(--ui-font-size)/1 Menlo, monospace; white-space: nowrap; }
+/* The cut note sits after the last crumb, so the crumb keeps its current-file look explicitly. */
+.file-breadcrumb:has(+ .file-breadcrumb-truncated) { color: var(--text); cursor: default; }
+.file-breadcrumb:has(+ .file-breadcrumb-truncated)::after { content: ""; padding: 0; }
+.markdown-file-view-clipped { margin: 0 0 14px; padding: 8px 12px; border: 1px solid var(--term-yellow, #d8ae00); border-radius: 6px; color: var(--term-yellow, #d8ae00); }
 #file-inspector-head button, #secondary-editor-head button { width: 23px; height: 22px; border: 1px solid transparent; border-radius: 4px; background: none; color: var(--dim); cursor: pointer; }
 #file-inspector-head button:hover, #secondary-editor-head button:hover, #secondary-editor-head button.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 #file-editor-workspace { position: relative; min-height: 0; flex: 1; overflow: hidden; }
@@ -1920,8 +1935,8 @@ body.notebook-open #mobile-notebook-toggle { display: none; }
 .lsp-settings-install-row button:hover, .lsp-settings-actions button:hover { border-color: var(--accent); color: var(--accent); }
 .lsp-settings-install-row button:disabled, .lsp-settings-actions button:disabled { cursor: default; opacity: 0.45; }
 .lsp-settings-actions { justify-content: flex-end; }
-.settings-font-size-mode-controls { display: flex; align-items: center; gap: 5px; }
-.settings-font-size-mode-controls .theme-toggle { min-width: 64px; padding: 0 7px; }
+.settings-font-size-controls { display: flex; align-items: center; gap: 5px; }
+.settings-font-size-controls .theme-toggle { min-width: 64px; padding: 0 7px; }
 .settings-font-size-reset { width: 22px !important; min-width: 22px !important; padding: 0 !important; }
 .settings-row input[type="color"] { width: 32px; height: 22px; padding: 2px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
 .settings-row input[type="color"]:hover, .settings-row input[type="color"]:focus { border-color: var(--accent); }
@@ -2276,20 +2291,6 @@ body:not(.vscode-mode) .terminal-type-icon { margin: 0; }
 #settings-popover { padding: calc(10px * var(--ui-scale)) calc(12px * var(--ui-scale)); }
 #settings-popover .settings-row { gap: calc(10px * var(--ui-scale)); }
 #settings-popover .settings-row button { width: calc(22px * var(--ui-scale)); height: calc(22px * var(--ui-scale)); }
-#inline-size-controls, .inline-size-controls { position: fixed; z-index: 45; display: flex; align-items: center; min-width: 320px; padding: 6px; background: color-mix(in srgb, var(--panel) 28%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 7px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18); backdrop-filter: blur(1px); box-sizing: border-box; cursor: grab; }
-#inline-size-controls.dragging, .inline-size-controls.dragging { cursor: grabbing; }
-#inline-size-controls.hidden, .inline-size-controls.hidden { display: none; }
-#inline-size-done { position: fixed; right: 16px; bottom: calc(38px * var(--ui-scale)); z-index: 46; display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 4px 9px; border: 1px solid color-mix(in srgb, var(--accent) 48%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--panel) 34%, transparent); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18); backdrop-filter: blur(2px); color: var(--text); cursor: pointer; font: var(--system-font-size)/1.1 -apple-system, sans-serif; opacity: 0.8; }
-#inline-size-done.hidden { display: none; }
-#inline-size-done:hover, #inline-size-done:focus { border-color: var(--accent); background: color-mix(in srgb, var(--active-bg) 62%, transparent); color: var(--accent); opacity: 1; outline: none; }
-#inline-size-done .codicon { font-size: calc(13px * var(--ui-scale)); }
-.inline-size-control-row { display: flex; align-items: center; gap: 7px; width: 100%; }
-.inline-size-control-label { flex: none; min-width: 78px; overflow: hidden; color: var(--text); font: 11px/22px Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.inline-size-control-range { flex: 1; width: 112px; min-width: 92px; accent-color: var(--accent); cursor: pointer; }
-.inline-size-control-value { min-width: 34px; color: var(--accent); text-align: right; font: 13px/22px Menlo, monospace; }
-.inline-size-control-step, .inline-size-control-reset { flex: none; width: 24px; height: 22px; padding: 0; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); border-radius: 5px; background: color-mix(in srgb, var(--panel2) 28%, transparent); color: var(--dim); cursor: pointer; font: 14px/20px Menlo, monospace; }
-.inline-size-control-step:hover, .inline-size-control-reset:hover { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--active-bg) 45%, transparent); }
-.inline-size-control-reset:hover { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--active-bg) 55%, transparent); }
 
 /* The resync control doubles as the warning that another window owns this terminal's size: a status-bar
    message alone is overwritten by other activity within moments, so it could never be read. */
@@ -2381,6 +2382,20 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   #mobile-sidebar-toggle .codicon { font-size: 21px; }
   body.mobile-sidebar-collapsed #sidebar, body.mobile-sidebar-collapsed #sidebar-resizer { display: none; }
   body.mobile-sidebar-collapsed #mobile-sidebar-toggle { display: inline-flex; }
+  /* The open sidebar floats over the transcript instead of pushing it aside, and lets it
+     show through: a translucent panel over a blurred backdrop, with its own text fully
+     opaque. The transcript underneath never reflows, so closing comes back to the same
+     place; tapping it still folds the sidebar away. */
+  body.mobile-touch-layout:not(.mobile-sidebar-collapsed) #sidebar {
+    position: fixed; z-index: 80; top: 0; bottom: 0; left: 0;
+    background: color-mix(in srgb, var(--panel) 80%, transparent);
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+    box-shadow: 12px 0 30px rgba(0, 0, 0, 0.35);
+  }
+  body.mobile-touch-layout:not(.mobile-sidebar-collapsed) #sidebar-resizer { display: none; }
+  body.mobile-touch-layout:not(.mobile-sidebar-collapsed) #sidebar .terminal-group-label {
+    background: color-mix(in srgb, var(--panel2) 80%, transparent);
+  }
   body.mobile-sidebar-collapsed.mobile-history-surface #mobile-history-controls {
     position: fixed; z-index: 90; top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right));
     display: flex; align-items: center; gap: 3px;
@@ -2468,7 +2483,7 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
     padding-left: max(3px, env(safe-area-inset-left));
   }
   /* The ›/• marker column is a single narrow glyph; on a phone its 26px gutter is worth more as text. */
-  #history-area.transcript-first .turn { grid-template-columns: 10px minmax(0, 1fr); column-gap: 4px; margin: 0 0 12px; }
+  #history-area.transcript-first .turn { grid-template-columns: 10px minmax(0, 1fr); column-gap: 4px; margin: 0 0 10px; }
   #history-area.transcript-first .turn.user .turn-text { padding: 6px 7px; }
   #history-area.transcript-first .markdown p { margin: 0 0 8px; }
   #history-area.transcript-first .markdown ul { margin: 1px 0 8px; }
@@ -2478,15 +2493,31 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   #history-area.transcript-first .markdown li > ul,
   #history-area.transcript-first .markdown li > ol { margin-bottom: 2px; }
   #history-area.transcript-first .markdown pre { padding: 7px 8px; margin: 0 0 8px; }
+  /* A phone keeps one more line of the conversation: the scroll area's bottom air, the
+     thinking banner, and the composer all tighten up. */
+  body.mobile-touch-layout.mobile-history-surface #history-body { padding-bottom: 12px; }
+  body.mobile-touch-layout.mobile-history-surface #history-area.transcript-first #history-body { padding-bottom: 12px; }
+  body.mobile-touch-layout.mobile-history-surface #history-thinking-banner { padding: 2px 9px; }
+  body.mobile-touch-layout.mobile-history-surface #history-composer { padding: 8px 10px 9px; }
+  body.mobile-touch-layout.mobile-history-surface #history-area.transcript-first #history-composer { padding: 5px 9px 6px; }
+  body.mobile-touch-layout.mobile-history-surface #history-area.transcript-first .history-event { margin-bottom: 12px; }
+  /* A sent message sits greyed until the transcript confirms it, instead of a status
+     row with a cloud icon beneath it. A failed send stays readable: its warning and
+     retry/dismiss ride the message's own last line. Desktop keeps the labeled row in
+     both cases. */
+  body.mobile-touch-layout.mobile-history-surface .turn.user.pending-delivery:not(:has(.history-pending-delivery.unconfirmed)) .turn-text { opacity: 0.55; }
+  body.mobile-touch-layout.mobile-history-surface .turn.user.pending-delivery:not(:has(.history-pending-delivery.unconfirmed)) .history-pending-delivery { display: none; }
+  body.mobile-touch-layout.mobile-history-surface .turn.user.pending-delivery .turn-text > .history-pending-delivery.unconfirmed { display: inline-flex; margin: 0 0 0 6px; vertical-align: middle; }
+  body.mobile-touch-layout.mobile-history-surface .turn.user.pending-delivery .turn-text > .history-pending-delivery.unconfirmed .history-pending-label { display: none; }
+  body.mobile-touch-layout.mobile-history-surface .turn.user.pending-delivery .turn-text.history-pending-inline > p:last-of-type { display: inline; }
 }
 
 @media (max-width: 900px) and (orientation: portrait), (hover: none) and (pointer: coarse) and (orientation: portrait) {
-  /* A full viewport wide whether the sidebar is open or not, so opening it PUSHES this aside rather
-     than squeezing it. Letting the sidebar take its 250px out of the width reflowed every wrapped
-     line in the transcript, and a reflow throws away where you were reading: closing the sidebar
-     came back to a different place in the conversation. The page is wider than the screen while the
-     sidebar is open, which is what leaves the strip of transcript beside it -- tapping that strip
-     closes the sidebar. */
+  /* A full viewport wide whether the sidebar is open or not. The sidebar floats above this
+     as a translucent drawer instead of taking its 250px out of the width, so opening it never
+     reflows a wrapped line -- a reflow throws away where you were reading, and closing the
+     sidebar used to come back to a different place. Tapping the transcript beside the drawer
+     closes it. */
   body.mobile-touch-layout { overflow-x: hidden; }
   body.mobile-touch-layout #main {
     flex: 0 0 100dvw;

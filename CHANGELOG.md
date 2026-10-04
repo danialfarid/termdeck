@@ -4,6 +4,68 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- An attention bell in the sidebar header: it appears with a count whenever
+  any terminal needs attention, and each click opens the next one in sidebar
+  order, wrapping around.
+
+### Removed
+
+- The file browser's allowed-root restriction: any path on the machine now
+  opens, including /tmp. Large reads stay capped at 2MB with a truncation
+  flag, and media previews keep their content-type allowlist.
+
+- The "visualize" in-place font-size overlay: the Font sizes row now has a
+  single "adjust" editor with per-size +/-, slider, per-size reset, and the
+  existing reset-all, which covered everything the overlay did.
+
+### Changed
+
+- On the mobile transcript, a sent message sits greyed until the transcript
+  confirms it instead of showing a cloud status row beneath it. A failed send
+  stays readable with its warning and retry/dismiss riding the message's last
+  line.
+- The mobile transcript tightens the scroll-area bottom air, the thinking
+  banner, the composer, and turn spacing so more conversation fits on screen.
+- The thinking banner names its counter ("Thinking 1m 5s") instead of showing
+  a bare duration.
+- On mobile, the open sidebar floats over the transcript as a translucent
+  drawer instead of pushing it aside, so the conversation shows through
+  behind it and never reflows.
+- In an expanded thinking block, "show less" rides the empty right end of
+  the next item's title row instead of pushing it down with a row of its
+  own (only the last item, with no next title, keeps a row under its text).
+
+### Fixed
+
+- Slash commands the transcript never echoes back (like "/goal resume") no
+  longer sit stuck as "not confirmed": the send succeeding confirms them,
+  leaving a "sent to the agent terminal" record, and only a send that fails
+  still offers a retry.
+- While a terminal search is open, the header magnifier turns into an X that
+  clears the search and closes it, so its click target reads as "close".
+- A tab's transcript reopens where the reader left it instead of jumping to
+  the bottom when switching tabs.
+- A Muse tab no longer gets rebound to whatever session its resume picker
+  happened to be listing: a different agent session is only trusted when the
+  terminal's own process arguments name it or its log was just written. The
+  startup sweep applies the same rule, so a mistargeted tab snaps back to the
+  session its terminal is actually running.
+- Closing the sidebar terminal search now scrolls the clicked terminal into
+  view, like the reveal button, instead of leaving the full list parked where
+  the short filtered list had it.
+- Marking the current tab as unread sticks: merely looking at it, the state
+  echo, or switching away no longer clears the badge. It clears when the tab
+  is switched back into, typed in, or explicitly marked read.
+- A file too large to load fully opens as an honest read-only preview: the
+  breadcrumbs name the cut ("showing first 1.9 MB of 81.2 MB"), the editor
+  locks so the slice can never be saved back over the whole file, and the
+  Markdown reading view renders a bounded head instead of freezing the page
+  parsing megabytes.
+
 ## [0.32.2] — 2026-10-01
 
 ### Changed

@@ -43,7 +43,7 @@ const SETTINGS_DEFAULTS = { sidebar_width: 250, files_panel_width: 0, sidebar_fo
   show_mtime: true, show_git_status: true, word_wrap: false, search_glob: "!*.json, !*.csv, !*.log", tree_file_glob: "", search_file_glob: "", excluded_file_glob: "!.*, !*.json, !*.csv, !*.log", keybindings: {},
   last_command: "codex", last_model: "codex", last_model_names: {}, last_permissions: { codex: "default", claude: "default", agy: "default", none: "default" },
   recent_terminal_hours: 24, disable_agent_effects: false,
-  show_terminal_icons: false, terminal_icon_agents: {}, terminal_icon_size: 12, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, inline_size_controls: false, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
+  show_terminal_icons: false, terminal_icon_agents: {}, terminal_icon_size: 12, history_mode: false, transcript_first_surface: "terminal", tall_webgl: true, notebook_open: false, notebook_left: -1, notebook_text: "", prompt_history: {}, md_prompt_queues: {}, selection_copy_history: [],
   notebook_notes: [], notebook_active_note_id: "", notebook_notes_initialized: false, md_prompt_drafts: {},
   show_terminal_age: true, sidebar_text_color: "#d5dbe5", vscode_keybindings: {},
   notify_attention: true, notify_agent_idle: true,
@@ -430,6 +430,9 @@ const MEDIA_FILE_KINDS = {
 };
 const MARKDOWN_FILE_EXTENSIONS = [".md", ".markdown", ".mdown", ".mkd", ".mdx"];
 const MARKDOWN_FILE_VIEW_RENDER_DEBOUNCE_MS = 150;
+// The reading view parses on the main thread: a 2 MB slice froze the page for ~7 s, so only a
+// bounded prefix is ever rendered. The editor still gets the whole slice.
+const MARKDOWN_FILE_VIEW_MAX_CHARS = 200000;
 const CLIENT_PLATFORM = String(globalThis.navigator?.userAgentData?.platform || globalThis.navigator?.platform || globalThis.navigator?.userAgent || "").toLowerCase();
 const IS_MAC_KEYBOARD_PLATFORM = /mac|iphone|ipad|ipod/.test(CLIENT_PLATFORM);
 const PRIMARY_MODIFIER_DISPLAY = IS_MAC_KEYBOARD_PLATFORM ? "⌘" : "Ctrl";
@@ -529,7 +532,7 @@ const ALWAYS_EXCLUDED = TermDeckFileBrowser.alwaysExcluded;
 const STATS_POLL_MS = 5000;
 const STAT_HISTORY_MAX = 48;
 const FONT_MIN = 8, FONT_MAX = 32;
-const INLINE_SIZE_SETTING_DEFINITIONS = [
+const FONT_SIZE_SETTING_DEFINITIONS = [
   { key: "sidebar_font_size", label: "Terminal list" }, { key: "project_font_size", label: "Project title" },
   { key: "terminal_icon_size", label: "Terminal icons" }, { key: "terminal_font_size", label: "Terminal" },
   { key: "ui_font_size", label: "Status line" }, { key: "system_font_size", label: "Menus / lists" }, { key: "code_font_size", label: "Code" },
@@ -791,6 +794,7 @@ class TermdeckApp {
     this.historyWs = null;
     this.historyWsReconnectTimer = 0;
     this.historyStreamSessionId = null;
+    this.historyStreamRestoreScroll = false;
     this.historyManualRefreshSessionId = "";
     this.historySnapshotBuffers = new Map();
     this.historyTurnsBySession = new Map();
@@ -973,6 +977,7 @@ class TermdeckApp {
     this.attentionSessions = new Set();
     this.attentionTimers = new Map();
     this.attentionServerStates = new Map();
+    this.attentionBellSignature = null;
     // A prompt can be accepted by the PTY before the agent reports
     // processing=true. Keep that hand-off visible in Markdown mode.
     this.historyPendingProcessing = new Map();
@@ -987,6 +992,7 @@ class TermdeckApp {
     // so a re-render while streaming does not fold them back.
     this.historyThinkingExpandedItems = new Set();
     this.unreadSessions = new Set();
+    this.unreadManualHolds = new Set();
     this.statHistory = [];
     this.editor = null;
     this.secondaryEditor = null;
@@ -4155,16 +4161,14 @@ class TermdeckApp {
   }
 
   async init() {
-    this.initInlineSizeControls();
     this.initFontSampleEditor();
     window.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       const fontSampleEditorOpen = !this.$("font-samples-backdrop").classList.contains("hidden");
-      if (!this.settings.inline_size_controls && !fontSampleEditorOpen) return;
+      if (!fontSampleEditorOpen) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      if (fontSampleEditorOpen) this.closeFontSampleEditor();
-      else this.exitInlineSizeControls();
+      this.closeFontSampleEditor();
     }, true);
     window.addEventListener("message", this.handleHostMessageBound, false);
     window.addEventListener("pagehide", () => {
@@ -4280,7 +4284,8 @@ class TermdeckApp {
     this.$("project-terminal-search-btn").onclick = (event) => {
       event.stopPropagation();
       if (this.sideView !== "terminals") this.setSideView("terminals", false);
-      this.toggleTerminalSearchEditor();
+      if (this.terminalSearchEditorOpen) this.closeTerminalSearchEditor();
+      else this.openTerminalSearchEditor();
     };
     this.$("header-add-project").onclick = () => this.runHeaderAddAction("project");
     this.$("header-add-worktree").onclick = () => this.runHeaderAddAction("worktree");
@@ -4402,7 +4407,7 @@ class TermdeckApp {
     document.addEventListener("mousedown", (e) => {
       // A dialog belongs to whatever opened it, so answering one is not a click outside that thing:
       // confirming "Move note to Trash" used to close Quick Notes along with the note's tab.
-      if (e.target.closest?.(".inline-size-controls, #inline-size-done, #font-samples-backdrop, .td-modal-backdrop")) return;
+      if (e.target.closest?.("#font-samples-backdrop, .td-modal-backdrop")) return;
       for (const id of ["settings-popover", "context-menu"]) {
         const pop = this.$(id);
         if (pop.classList.contains("hidden") || pop.contains(e.target)) continue;
@@ -4753,6 +4758,7 @@ class TermdeckApp {
       if (this.activeFileKey !== null) void this.revealActiveFile();
       else this.revealAndFocusActiveTerminalInSidebar();
     };
+    this.$("attention-bell-btn").onclick = () => this.openNextAttentionSession();
     for (const id of ["scroll-bottom-btn", "vscode-scroll-bottom-btn"]) {
       const button = this.$(id);
       if (button) {
@@ -4880,11 +4886,6 @@ class TermdeckApp {
         e.preventDefault();
         e.stopPropagation();
         this.closeContextMenu();
-        return;
-      }
-      if (e.key === "Escape" && this.exitInlineSizeControls()) {
-        e.preventDefault();
-        e.stopPropagation();
         return;
       }
       if (!this.vscodeMode && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f" &&
@@ -5325,6 +5326,7 @@ class TermdeckApp {
     const staleUnreadSessionIds = [...this.unreadSessions].filter((sessionId) => !currentSessionIds.has(sessionId));
     if (staleUnreadSessionIds.length) {
       for (const sessionId of staleUnreadSessionIds) this.unreadSessions.delete(sessionId);
+      for (const sessionId of staleUnreadSessionIds) this.unreadManualHolds.delete(sessionId);
       this.persistUnreadSessionDelta(staleUnreadSessionIds, false);
     }
     for (const s of this.sessions) {
@@ -6143,6 +6145,10 @@ class TermdeckApp {
     // clearing the badge there would take it away before it had been seen.
     if (document.hidden || !document.hasFocus() || !id || !this.session(id)) return;
     if (!this.processingStates.get(id)) this.viewedCompletedSessions.add(id);
+    // A manual mark is a reminder, not a sighting: merely looking at the tab (or the state
+    // echo of the mark itself) must not clear it. It clears when the session is switched
+    // into, typed in, or explicitly marked read.
+    if (this.unreadManualHolds.has(id)) return;
     if (!this.unreadSessions.delete(id)) return;
     this.updateUnreadIndicator(id);
     this.persistUnreadSessionDelta([id], false);
@@ -6154,9 +6160,11 @@ class TermdeckApp {
     for (const id of ids) {
       if (unread) {
         this.unreadSessions.add(id);
+        this.unreadManualHolds.add(id);
         this.viewedCompletedSessions.delete(id);
       } else {
         this.unreadSessions.delete(id);
+        this.unreadManualHolds.delete(id);
         if (!this.processingStates.get(id)) this.viewedCompletedSessions.add(id);
       }
       this.updateUnreadIndicator(id);
@@ -6197,6 +6205,7 @@ class TermdeckApp {
       this.attentionTimers.set(id, setTimeout(() => this.clearSessionAttention(id), TERMINAL_ATTENTION_ANIMATION_MS));
     }
     this.updateUnreadIndicator(id);
+    this.updateAttentionBell();
   }
 
   clearSessionAttention(id) {
@@ -6204,11 +6213,45 @@ class TermdeckApp {
     this.attentionTimers.delete(id);
     if (!this.attentionSessions.delete(id)) return;
     this.updateUnreadIndicator(id);
+    this.updateAttentionBell();
   }
 
   sessionNeedsAttention(id) {
     if (this.attentionServerStates.has(id)) return this.attentionServerStates.get(id) === true;
     return this.session(id)?.needs_attention === true || this.attentionSessions.has(id);
+  }
+
+  attentionSessionIds() {
+    return this.sessions.filter((s) => s &&
+      (s.needs_attention === true || this.attentionSessions.has(s.session_id))).map((s) => s.session_id);
+  }
+
+  updateAttentionBell() {
+    const ids = this.attentionSessionIds();
+    const signature = ids.join(",");
+    if (signature === this.attentionBellSignature) return;
+    this.attentionBellSignature = signature;
+    const button = this.$("attention-bell-btn");
+    if (!button) return;
+    button.classList.toggle("hidden", ids.length === 0);
+    const count = this.$("attention-bell-count");
+    if (count) count.textContent = ids.length ? String(ids.length) : "";
+    const label = !ids.length ? "No terminal needs attention"
+      : ids.length === 1 ? "1 terminal needs attention — open it"
+      : `${ids.length} terminals need attention — open the next one`;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+  }
+
+  openNextAttentionSession() {
+    const wanted = new Set(this.attentionSessionIds());
+    if (!wanted.size) return;
+    const ordered = this.sidebarSessionIdsInRenderOrder().filter((id) => wanted.has(id));
+    // Render order can lag the data (a filtered list or a non-terminal side view), so fall
+    // back to session order rather than dead-ending while the count says otherwise.
+    const queue = ordered.length ? ordered : this.attentionSessionIds();
+    const next = queue[(queue.indexOf(this.activeId) + 1) % queue.length];
+    this.activate(next, { reveal: true });
   }
 
   // Drop the badge without answering the prompt: the terminal still wants a human eventually, so it
@@ -6226,6 +6269,7 @@ class TermdeckApp {
     for (const id of ids) this.updateSessionRows(id);
     await Promise.all(ids.map((id) =>
       fetch(`/api/sessions/${encodeURIComponent(id)}/attention`, { method: "POST" }).catch(() => null)));
+    this.updateAttentionBell();
   }
 
   updateProcessingState(id, spinning) {
@@ -6985,9 +7029,18 @@ class TermdeckApp {
       header.after(terminalSearchEditor || this.createTerminalSearchEditor());
     }
     const searchButton = this.$("project-terminal-search-btn");
-    const globalTerminalSearchOpen = this.terminalSearchEditorOpen && !this.terminalSearchGroupId;
-    searchButton?.classList.toggle("on", globalTerminalSearchOpen);
-    searchButton?.setAttribute("aria-pressed", String(globalTerminalSearchOpen));
+    const terminalSearchOpen = this.terminalSearchEditorOpen;
+    searchButton?.classList.toggle("on", terminalSearchOpen);
+    searchButton?.setAttribute("aria-pressed", String(terminalSearchOpen));
+    const glyph = searchButton?.querySelector(".codicon");
+    if (glyph) glyph.className = `codicon ${terminalSearchOpen ? "codicon-close" : "codicon-search"}`;
+    if (searchButton) {
+      const searchLabel = terminalSearchOpen ? "Close terminal search" :
+        (this.touchMobileLayoutEnabled() ? "Search terminal names and output" :
+          this.shortcutTitle("Search terminal names and output", "open-terminal-search"));
+      searchButton.title = searchLabel;
+      searchButton.setAttribute("aria-label", searchLabel);
+    }
   }
 
   terminalSearchGroupName() {
@@ -7117,6 +7170,7 @@ class TermdeckApp {
     this.hideTerminalSearchHoverPopup();
     if (this.terminalSearchAbort) this.terminalSearchAbort.abort();
     this.terminalSearchAbort = null;
+    const hadFilter = this.terminalSearchText.trim() !== "";
     this.terminalSearchText = "";
     this.terminalSearchEditorOpen = false;
     this.terminalSearchGroupId = null;
@@ -7127,6 +7181,10 @@ class TermdeckApp {
     this.terminalTitleSearchResults = [];
     this.historySearchResults = [];
     this.renderList();
+    // A filtered search leaves the sidebar scrolled to the short match list; once the full
+    // list is back, scroll the clicked (active) terminal into view like the focus button.
+    // No focus steal and no view switch: the terminal keeps the keyboard.
+    if (hadFilter) this.revealActiveTerminalInSidebar();
     requestAnimationFrame(() => this.focusActiveEditor());
   }
 

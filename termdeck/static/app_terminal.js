@@ -1214,6 +1214,13 @@ Object.assign(TermdeckApp.prototype, {
       this.attentionServerStates.set(view.sessionId, false);
       this.clearSessionAttention(view.sessionId);
     }
+    // Typing in a manually-marked tab answers the reminder; a mark with nothing typed stays.
+    if (this.inputIsFromPerson(data) && this.unreadManualHolds.delete(view.sessionId)) {
+      if (this.unreadSessions.delete(view.sessionId)) {
+        this.updateUnreadIndicator(view.sessionId);
+        this.persistUnreadSessionDelta([view.sessionId], false);
+      }
+    }
     if (data) this.touchSessionActivity(view.sessionId);
     if (view.replaying && QUERY_RESPONSE_RE.test(data)) return;
     // Sending input means the composer is where you are looking, so a parked view goes back to it.

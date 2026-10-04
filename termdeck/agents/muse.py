@@ -9,9 +9,10 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Iterable
 
-from termdeck.agents.base import AgentCli, OutputActivityState
+from termdeck.agents.base import UUID_RE, AgentCli, OutputActivityState
 from termdeck.config import TermdeckConfig
 from termdeck.platform_paths import PlatformPaths
+from termdeck.proc_tree import ProcTreeSnapshot
 from termdeck.transcript_turns import TurnBuilder
 from termdeck.util import TimeUtil
 
@@ -73,6 +74,9 @@ class MuseCli(AgentCli):
     activity_source = "session-log+terminal-output"
     DAY_DIR_LOOKAROUND_DAYS = (-1, 0, 1)
     SESSION_LOG_NAME = "session.jsonl"
+    # A rebind past stale process arguments is only trusted this long after the new
+    # session's log was written: attaching writes records, the resume picker only reads.
+    REBIND_FRESH_LOG_SECONDS = 600.0
 
     install_hint = "Install Muse from Meta, then sign in with `muse login`."
     model_placeholder = "model id, optionally with a reasoning effort (for example high)"
@@ -361,6 +365,92 @@ class MuseCli(AgentCli):
                 continue
             return token
         return None
+
+    @staticmethod
+    def _is_muse_executable(token: str) -> bool:
+        # argv[0] is the versioned binary once the `muse` wrapper has exec'd it.
+        name = Path(token).name
+        return name == "muse" or name.startswith("muse-bin-")
+
+    @classmethod
+    def resume_ref_from_parts(cls, parts: list[str]) -> str | None:
+        """The session ref a muse command line asks for, or None when it names none.
+
+        Only `resume` carries a ref; after any other subcommand the word is that
+        command's own (`muse exec resume` is a headless prompt, not a resume).
+        `--last` and a bare picker invocation resolve dynamically, so neither is
+        a static ref.
+        """
+        try:
+            command_index = next(index for index, token in enumerate(parts)
+                                 if cls._is_muse_executable(token))
+        except StopIteration:
+            return None
+        positionals: list[str] = []
+        skip_value = False
+        for token in parts[command_index + 1:]:
+            if skip_value:
+                skip_value = False
+                continue
+            if token == "--":
+                continue
+            if token.startswith("-") and "=" not in token:
+                skip_value = token in cls._VALUE_FLAGS
+                continue
+            positionals.append(token)
+            if len(positionals) == 2:
+                break
+        if len(positionals) < 2 or positionals[0] != "resume" or positionals[1].startswith("-"):
+            return None
+        return positionals[1]
+
+    async def verify_detected_session_id(self, manager, ms, found: str | None, socket: Path) -> str | None:
+        # The resume picker OPENS every session it lists; without this check a sample
+        # taken while it is on screen rebinds the tab to whichever listed session the
+        # newest-mtime rule prefers. Trust a different id than the current binding only
+        # when the process arguments name it, or its log was just written -- attaching
+        # writes records, listing only reads.
+        existing = ms.record.agent_session_id
+        if not existing or found in {None, existing}:
+            return found
+        resumed = manager._tracker.muse_resume_ref_from_process_arguments(
+            socket, await ProcTreeSnapshot.capture())
+        if resumed == found:
+            return found
+        if self._session_log_is_fresh(ms, found):
+            return found
+        return None
+
+    def _session_log_is_fresh(self, ms, session_id: str) -> bool:
+        try:
+            path = self.transcript_path(Path(ms.record.cwd), session_id)
+            if path is None:
+                return False
+            return time.time() - path.stat().st_mtime < self.REBIND_FRESH_LOG_SECONDS
+        except OSError:
+            return False
+
+    async def reconcile_bindings(self, manager, ms, proc_tree) -> None:
+        # The startup sweep's version of the verify step above: rebind a live
+        # terminal only to the session id its own process arguments name, and only
+        # when that session is newer than the current binding. A name ref cannot
+        # bind directly, and a bare `muse` names nothing; detection owns both cases.
+        if not ms.detached_live:
+            return
+        candidate = manager._tracker.muse_resume_ref_from_process_arguments(
+            manager._dtach_socket(ms.record.session_id), proc_tree)
+        if not candidate or candidate == ms.record.agent_session_id or \
+                candidate in manager._claimed_agent_ids(ms):
+            return
+        if not UUID_RE.fullmatch(candidate):
+            return
+        cwd = Path(ms.record.cwd)
+        candidate_activity = manager._tracker.session_activity_timestamp(self.kind, cwd, candidate)
+        current_activity = manager._tracker.session_activity_timestamp(
+            self.kind, cwd, ms.record.agent_session_id)
+        if candidate_activity <= current_activity:
+            return
+        manager._set_agent_session_binding(ms, candidate)
 
     # -- sessions on disk --------------------------------------------------
 

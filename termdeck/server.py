@@ -633,7 +633,6 @@ class UiSettings(BaseModel):
     last_permissions: dict[str, str] = {}
     show_terminal_icons: bool = False
     terminal_icon_agents: dict[str, bool] = {}
-    inline_size_controls: bool = False
     prompt_wrap_guard: bool = False
     history_mode: bool = False
     transcript_first_surface: str = "terminal"

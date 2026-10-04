@@ -108,7 +108,6 @@ Object.assign(TermdeckApp.prototype, {
       editorWrapToggle.setAttribute("aria-pressed", String(editorNoWrapEnabled));
       editorWrapToggle.title = `Editor no wrap: ${editorNoWrapEnabled ? "on" : "off"}`;
     }
-    this.renderInlineSizeControls();
     if (fitTerminals) this.fitActive();
   },
 
@@ -413,7 +412,7 @@ Object.assign(TermdeckApp.prototype, {
       }
       if (event.key === "Home" || event.key === "End") {
         event.preventDefault();
-        this.selectFontSample(event.key === "Home" ? 0 : INLINE_SIZE_SETTING_DEFINITIONS.length - 1, true);
+        this.selectFontSample(event.key === "Home" ? 0 : FONT_SIZE_SETTING_DEFINITIONS.length - 1, true);
         return;
       }
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
@@ -447,7 +446,7 @@ Object.assign(TermdeckApp.prototype, {
 
 
   selectedFontSampleDefinition() {
-    return INLINE_SIZE_SETTING_DEFINITIONS[this.fontSampleSelectionIndex] || INLINE_SIZE_SETTING_DEFINITIONS[0];
+    return FONT_SIZE_SETTING_DEFINITIONS[this.fontSampleSelectionIndex] || FONT_SIZE_SETTING_DEFINITIONS[0];
   },
 
 
@@ -455,7 +454,7 @@ Object.assign(TermdeckApp.prototype, {
     const list = this.$("font-samples-list");
     if (!list) return;
     list.textContent = "";
-    INLINE_SIZE_SETTING_DEFINITIONS.forEach((definition, index) => {
+    FONT_SIZE_SETTING_DEFINITIONS.forEach((definition, index) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "font-samples-list-item";
@@ -475,7 +474,7 @@ Object.assign(TermdeckApp.prototype, {
 
 
   selectFontSample(index, focus = false) {
-    const count = INLINE_SIZE_SETTING_DEFINITIONS.length;
+    const count = FONT_SIZE_SETTING_DEFINITIONS.length;
     this.fontSampleSelectionIndex = (Number(index) + count) % count;
     this.refreshFontSampleEditor();
     if (focus) this.$("font-samples-list")?.querySelector(".font-samples-list-item.selected")?.focus();
@@ -520,7 +519,7 @@ Object.assign(TermdeckApp.prototype, {
       row.tabIndex = selected ? 0 : -1;
       const rowValue = row.querySelector(".font-samples-list-value");
       if (rowValue) {
-        const rowDefinition = INLINE_SIZE_SETTING_DEFINITIONS[Number(row.dataset.index)];
+        const rowDefinition = FONT_SIZE_SETTING_DEFINITIONS[Number(row.dataset.index)];
         rowValue.textContent = `${Math.round(Number(this.settings[rowDefinition.key]) || SETTINGS_DEFAULTS[rowDefinition.key])}px`;
       }
       if (selected) row.scrollIntoView({ block: "nearest" });
@@ -564,277 +563,15 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  initInlineSizeControls() {
-    this.inlineSizeControlRoots = new Map();
-    const done = document.createElement("button");
-    done.id = "inline-size-done";
-    done.type = "button";
-    done.className = "hidden";
-    done.innerHTML = '<span class="codicon codicon-save"></span><span>Save</span>';
-    done.title = "Save font sizes and close Visualize";
-    done.setAttribute("aria-label", done.title);
-    done.onclick = () => this.exitInlineSizeControls();
-    document.body.appendChild(done);
-    for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) {
-      const root = document.createElement("div");
-      root.id = `inline-size-control-${definition.key}`;
-      root.className = "inline-size-controls hidden";
-      root.setAttribute("role", "toolbar");
-      root.setAttribute("aria-label", `${definition.label} size`);
-      root.title = `${definition.label} size`;
-      const row = document.createElement("div");
-      row.className = "inline-size-control-row";
-      const label = document.createElement("span");
-      label.className = "inline-size-control-label";
-      label.textContent = definition.label;
-      const minus = document.createElement("button");
-      minus.type = "button";
-      minus.className = "inline-size-control-step";
-      minus.textContent = "−";
-      minus.title = `Decrease ${definition.label.toLowerCase()} size`;
-      minus.setAttribute("aria-label", minus.title);
-      const range = document.createElement("input");
-      range.type = "range";
-      range.className = "inline-size-control-range";
-      range.min = String(FONT_MIN);
-      range.max = String(FONT_MAX);
-      range.step = "1";
-      range.title = `Adjust ${definition.label.toLowerCase()} size`;
-      range.setAttribute("aria-label", range.title);
-      const value = document.createElement("span");
-      value.className = "inline-size-control-value";
-      const plus = document.createElement("button");
-      plus.type = "button";
-      plus.className = "inline-size-control-step";
-      plus.textContent = "+";
-      plus.title = `Increase ${definition.label.toLowerCase()} size`;
-      plus.setAttribute("aria-label", plus.title);
-      const reset = document.createElement("button");
-      reset.type = "button";
-      reset.className = "inline-size-control-reset";
-      reset.textContent = "↺";
-      reset.title = `Reset ${definition.label.toLowerCase()} size to default`;
-      reset.setAttribute("aria-label", reset.title);
-      minus.onclick = () => this.setInlineSize(definition.key, Number(range.value) - 1);
-      plus.onclick = () => this.setInlineSize(definition.key, Number(range.value) + 1);
-      range.oninput = () => this.setInlineSize(definition.key, Number(range.value));
-      reset.onclick = () => this.resetInlineSize(definition.key);
-      row.append(label, minus, range, value, plus, reset);
-      root.appendChild(row);
-      root.addEventListener("pointerdown", (event) => {
-        this.startInlineSizeControlDrag(event, this.inlineSizeControlRoots.get(definition.key));
-        event.stopPropagation();
-      });
-      root.addEventListener("click", (event) => event.stopPropagation());
-      document.body.appendChild(root);
-      this.inlineSizeControlRoots.set(definition.key, { root, range, value, position: null });
-    }
-    document.addEventListener("pointerover", (event) => {
-      if (!this.settings.inline_size_controls || !(event.target instanceof Element)) return;
-      if ([...this.inlineSizeControlRoots.values()].some((controls) => !controls.root.classList.contains("hidden"))) return;
-      if (this.inlineSizeTargetForElement(event.target)) this.renderInlineSizeControls();
-    });
-    document.addEventListener("pointerdown", (event) => {
-      if (![...this.inlineSizeControlRoots.values()].some((controls) => controls.root.contains(event.target))) {
-        this.hideInlineSizeControls();
-      }
-    }, true);
-    document.addEventListener("pointermove", (event) => this.dragInlineSizeControl(event));
-    document.addEventListener("pointerup", () => this.finishInlineSizeControlDrag());
-    window.addEventListener("resize", () => this.renderInlineSizeControls());
-  },
-
-
-  startInlineSizeControlDrag(event, controls) {
-    if (event.button !== 0 || event.target instanceof HTMLInputElement || event.target instanceof HTMLButtonElement || !controls) return;
-    const rect = controls.root.getBoundingClientRect();
-    controls.position = { left: rect.left, top: rect.top };
-    this.inlineSizeDrag = { controls, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
-    controls.root.classList.add("dragging");
-    event.preventDefault();
-  },
-
-
-  dragInlineSizeControl(event) {
-    if (!this.inlineSizeDrag) return;
-    const { controls, offsetX, offsetY } = this.inlineSizeDrag;
-    const width = controls.root.offsetWidth;
-    const height = controls.root.offsetHeight;
-    const left = Math.max(8, Math.min(window.innerWidth - width - 8, event.clientX - offsetX));
-    const top = Math.max(8, Math.min(window.innerHeight - height - 8, event.clientY - offsetY));
-    controls.position = { left, top };
-    controls.root.style.left = `${left}px`;
-    controls.root.style.top = `${top}px`;
-  },
-
-
-  finishInlineSizeControlDrag() {
-    if (!this.inlineSizeDrag) return;
-    this.inlineSizeDrag.controls.root.classList.remove("dragging");
-    this.inlineSizeDrag = null;
-  },
-
-
-  inlineSizeTargetForElement(element) {
-    if (element.closest(".inline-size-controls, #settings-popover, #keys-backdrop")) return null;
-    const targets = [
-      { selectors: "#project-select", key: "project_font_size" },
-      { selectors: "#file-breadcrumbs, .file-breadcrumb, #status-name, #lsp-status, #terminal-age, #history-meta, #stat-text", key: "ui_font_size" },
-      { selectors: ".collapsible-section-header, .closed-header, .file-item, .closed-item, #context-menu, #settings-popover, #keys-modal", key: "system_font_size" },
-      { selectors: "#bottombar, #sidebar-footer, #terminal-actions, #files-section-header", key: "bottom_font_size" },
-      { selectors: ".history-event pre, .history-diff, .markdown pre code", key: "diff_font_size" },
-      { selectors: "#terminal-area, .term-container, .xterm", key: "terminal_font_size" },
-      { selectors: "#file-tabs-bar", key: "files_tab_font_size" },
-      { selectors: "#editor-area, #history-area, #notebook-panel, #file-history-editor-host, #file-history-preview", key: "code_font_size" },
-      { selectors: ".terminal-type-icon", key: "terminal_icon_size" },
-      { selectors: ".tree-row, .search-file, .search-hit, .git-commit, .terminal-history-title-match, #files-section, #terminal-search-inline", key: "tree_font_size" },
-      { selectors: ".session-item, .terminal-group, .closed-item, #sidebar-header, #session-list, #closed-section", key: "sidebar_font_size" },
-      { selectors: "#main", key: "ui_font_size" },
-    ];
-    for (const target of targets) {
-      const matched = element.closest(target.selectors);
-      if (matched) return { element: matched, key: target.key };
-    }
-    return null;
-  },
-
-
-  inlineSizeTargetForKey(key) {
-    const selectors = {
-      sidebar_font_size: "#session-list, #closed-section",
-      project_font_size: "#project-select",
-      terminal_icon_size: ".terminal-type-icon",
-      terminal_font_size: "#terminal-area",
-      ui_font_size: "#file-breadcrumbs, #status-name, #lsp-status, #terminal-age, #history-meta, #stat-text",
-      system_font_size: "#sidebar",
-      code_font_size: "#editor-area, #history-area, #notebook-panel, #file-history-diff-pane",
-      files_tab_font_size: "#file-tabs-bar",
-      bottom_font_size: "#sidebar-footer",
-      diff_font_size: ".history-diff, .history-event pre, #file-history-preview",
-      tree_font_size: "#files-tree, #search-results, #name-results, #git-results, #terminal-search-inline",
-    }[key];
-    if (!selectors) return null;
-    for (const element of document.querySelectorAll(selectors)) {
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      if (style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" &&
-          rect.width > 1 && rect.height > 1 && rect.bottom > 0 && rect.right > 0 &&
-          rect.top < window.innerHeight && rect.left < window.innerWidth) return element;
-    }
-    return null;
-  },
-
-
-  renderInlineSizeControls() {
-    if (!this.inlineSizeControlRoots) return;
-    const done = this.$("inline-size-done");
-    if (!this.settings.inline_size_controls) {
-      this.hideInlineSizeControls();
-      done?.classList.add("hidden");
-      return;
-    }
-    done?.classList.remove("hidden");
-    const visibleTargets = new Map();
-    const placedControls = [];
-    for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) {
-      const controls = this.inlineSizeControlRoots.get(definition.key);
-      const target = this.inlineSizeTargetForKey(definition.key);
-      if (!target) {
-        controls.root.classList.add("hidden");
-        continue;
-      }
-      controls.range.value = String(Math.round(Number(this.settings[definition.key]) || 0));
-      controls.value.textContent = `${Math.round(Number(this.settings[definition.key]) || 0)}px`;
-      controls.root.classList.remove("hidden");
-      visibleTargets.set(definition.key, target);
-      if (controls.position) {
-        const width = controls.root.offsetWidth;
-        const height = controls.root.offsetHeight;
-        const left = Math.max(8, Math.min(window.innerWidth - width - 8, controls.position.left));
-        const top = Math.max(8, Math.min(window.innerHeight - height - 8, controls.position.top));
-        controls.position = { left, top };
-        placedControls.push({ left, top, right: left + width, bottom: top + height });
-      }
-    }
-    for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) {
-      const controls = this.inlineSizeControlRoots.get(definition.key);
-      const target = visibleTargets.get(definition.key);
-      if (!target || controls.position) continue;
-      const rect = target.getBoundingClientRect();
-      const width = controls.root.offsetWidth;
-      const height = controls.root.offsetHeight;
-      const maxLeft = Math.max(8, window.innerWidth - width - 8);
-      const maxTop = Math.max(8, window.innerHeight - height - 8);
-      const left = Math.min(Math.max(8, rect.right - width - 8), maxLeft);
-      let top = Math.min(Math.max(8, rect.top + 8), maxTop);
-      for (let attempt = 0; attempt <= placedControls.length; attempt += 1) {
-        const overlap = placedControls.find((placed) => left < placed.right && left + width > placed.left &&
-          top < placed.bottom && top + height > placed.top);
-        if (!overlap) break;
-        top = overlap.bottom + 8;
-        if (top > maxTop) top = Math.max(8, overlap.top - height - 8);
-      }
-      controls.root.style.left = `${left}px`;
-      controls.root.style.top = `${top}px`;
-      controls.position = { left, top };
-      placedControls.push({ left, top, right: left + width, bottom: top + height });
-    }
-  },
-
-
-  hideInlineSizeControls() {
-    if (!this.inlineSizeControlRoots) return;
-    for (const controls of this.inlineSizeControlRoots.values()) controls.root.classList.add("hidden");
-  },
-
-
-  setInlineSize(key, value) {
-    if (!this.inlineSizeControlRoots?.has(key)) return;
-    this.settings[key] = Math.max(FONT_MIN, Math.min(FONT_MAX, Number(value) || FONT_MIN));
-    this.applySettings({ fitTerminals: false });
-    this.saveSettings();
-    this.renderInlineSizeControls();
-  },
-
-
-  resetInlineSize(key) {
-    if (!this.inlineSizeControlRoots?.has(key) || typeof SETTINGS_DEFAULTS[key] !== "number") return;
-    this.setInlineSize(key, SETTINGS_DEFAULTS[key]);
-  },
-
-
   resetAllFontSizes() {
-    for (const definition of INLINE_SIZE_SETTING_DEFINITIONS) this.settings[definition.key] = SETTINGS_DEFAULTS[definition.key];
+    for (const definition of FONT_SIZE_SETTING_DEFINITIONS) this.settings[definition.key] = SETTINGS_DEFAULTS[definition.key];
     this.applySettings({ fitTerminals: false });
     this.saveSettings();
-    this.renderInlineSizeControls();
   },
 
 
   async resetAllFontSizesWithConfirmation() {
     if (await uiConfirm("Reset all font sizes to their defaults?")) this.resetAllFontSizes();
-  },
-
-
-  openInlineSizeEditor() {
-    this.settings.inline_size_controls = true;
-    this.applySettings({ fitTerminals: false });
-    this.saveSettings();
-    this.$("settings-popover").classList.add("hidden");
-    this.renderInlineSizeControls();
-  },
-
-
-  exitInlineSizeControls() {
-    if (!this.settings.inline_size_controls) return false;
-    this.settings.inline_size_controls = false;
-    this.hideInlineSizeControls();
-    this.$("inline-size-done")?.classList.add("hidden");
-    this.saveSettings();
-    this.flushPendingSettingsSave();
-    this.$("settings-popover").classList.add("hidden");
-    requestAnimationFrame(() => this.focusActiveEditor());
-    return true;
   },
 
 
@@ -950,32 +687,26 @@ Object.assign(TermdeckApp.prototype, {
 
   buildFontSizeEditRow() {
     const row = document.createElement("div");
-    row.className = "settings-row settings-font-size-mode-row";
+    row.className = "settings-row settings-font-size-row";
     const label = document.createElement("span");
     label.className = "settings-label";
     label.textContent = "Font sizes";
     const controls = document.createElement("span");
-    controls.className = "settings-font-size-mode-controls";
-    const visualize = document.createElement("button");
-    visualize.type = "button";
-    visualize.className = "theme-toggle";
-    visualize.textContent = "visualize";
-    visualize.title = "Edit font sizes in place on their UI elements";
+    controls.className = "settings-font-size-controls";
     const samples = document.createElement("button");
     samples.type = "button";
     samples.className = "theme-toggle";
-    samples.textContent = "samples";
-    samples.title = "Edit font sizes with representative UI samples";
+    samples.textContent = "adjust";
+    samples.title = "Adjust font sizes with live previews";
     const reset = document.createElement("button");
     reset.type = "button";
     reset.className = "settings-font-size-reset";
     reset.innerHTML = '<span class="codicon codicon-refresh"></span>';
     reset.title = "Reset all font sizes to defaults";
     reset.setAttribute("aria-label", reset.title);
-    visualize.onclick = () => this.openInlineSizeEditor();
     samples.onclick = () => this.openFontSampleEditor(samples);
     reset.onclick = () => this.resetAllFontSizesWithConfirmation();
-    controls.append(visualize, samples, reset);
+    controls.append(samples, reset);
     row.append(label, controls);
     return row;
   },
@@ -2720,6 +2451,7 @@ Object.assign(TermdeckApp.prototype, {
     if (this.activeFileKey !== key) return;
     this.hideFileUnavailable();
     this.editor.setModel(entry.model);
+    this.syncFileEditorReadOnly(entry);
     void this.lspClient?.activate(entry, entry.model);
     if (line) {
       this.editor.revealLineInCenter(line);
@@ -2798,6 +2530,8 @@ Object.assign(TermdeckApp.prototype, {
     entry.loadError = "";
     entry.fullPath = data.path;
     entry.truncated = data.truncated;
+    entry.size = Number(data.size) || 0;
+    entry.shownBytes = (data.content || "").length;
     const previousMtime = Number(entry.mtime) || 0;
     entry.mtime = Number(data.mtime) || 0;
     if (entry.mtime !== previousMtime) this.persistOpenFiles();
@@ -2884,6 +2618,14 @@ Object.assign(TermdeckApp.prototype, {
 
   async saveFileEntry(entry, showFailureAlert) {
     if (!entry?.model) return false;
+    // The model holds a slice, not the file: writing it back would amputate everything past the
+    // read cap. The editor is locked for these files, so this is the belt to those braces.
+    if (entry.truncated) {
+      const message = `${entry.path} — showing the first ${this.formatByteSize(entry.shownBytes)} of ${this.formatByteSize(entry.size)}; too large to save`;
+      this.$("stat-text").textContent = message;
+      if (showFailureAlert) void uiAlert(message);
+      return false;
+    }
     clearTimeout(entry.autosaveTimer);
     entry.autosaveTimer = 0;
     if (entry.savePromise) {
@@ -2941,6 +2683,13 @@ Object.assign(TermdeckApp.prototype, {
   async saveActiveFile() {
     const entry = this.activeFileKey !== null ? this.openFiles.get(this.activeFileKey) : null;
     if (entry) await this.saveFileEntry(entry, true);
+  },
+
+
+  // A truncated file is a look, not an edit: the model only holds the head of the file, so typing
+  // into it could never be saved back. Runs on every activation because the editor is shared.
+  syncFileEditorReadOnly(entry) {
+    this.editor?.updateOptions({ readOnly: !!entry?.truncated });
   },
 
 

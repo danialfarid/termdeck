@@ -10,6 +10,7 @@ from pathlib import Path
 from termdeck import agents
 from termdeck.agents.claude import ClaudeCli
 from termdeck.agents.codex import CodexCli
+from termdeck.agents.muse import MuseCli
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot
 
@@ -727,6 +728,16 @@ class AgentSessionTracker:
                     part.removeprefix(f"{ClaudeCli.RESUME_FLAG}=") if part.startswith(f"{ClaudeCli.RESUME_FLAG}=") else ""
                 if self._UUID_RE.fullmatch(candidate):
                     found.add(candidate)
+        return next(iter(found)) if len(found) == 1 else None
+
+    def muse_resume_ref_from_process_arguments(self, socket_path: Path,
+                                                     proc_tree: ProcTreeSnapshot) -> str | None:
+        tree_pids = proc_tree.tree_pids_for_socket(str(socket_path))
+        found: set[str] = set()
+        for process in proc_tree.process_details(tree_pids):
+            ref = MuseCli.resume_ref_from_parts(self._command_parts(str(process["command"])))
+            if ref is not None:
+                found.add(ref)
         return next(iter(found)) if len(found) == 1 else None
 
     def claude_session_id_from_recent_file_activity(self, cwd: Path, after_timestamp: float,

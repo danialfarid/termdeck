@@ -23,6 +23,7 @@ METHODS = ("renderMarkdownFileView(entry)", "markdownFileViewInnerScroll(host)",
 
 HARNESS = """
 const scenario = JSON.parse(process.env.TERMDECK_MARKDOWN_SCENARIO);
+const MARKDOWN_FILE_VIEW_MAX_CHARS = 200000;
 let renders = 0;
 
 // Each table in the rendered document scrolls inside itself; the stub gives one back per table in the

@@ -858,6 +858,38 @@ class AgentCliResumeCommandTest(unittest.TestCase):
         self.assertEqual([entry["title"] for entry in sessions], ["termdeck-fix", "older-name"])
         self.assertEqual(sessions[0]["session_id"], "22222222-2222-4222-8222-222222222222")
 
+    @staticmethod
+    def muse_tree(*commands: str) -> ProcTreeSnapshot:
+        holders = [100]
+        processes = [{"pid": 100, "ppid": 1, "command": "dtach"}]
+        for index, command in enumerate(commands):
+            pid = 110 + index
+            processes.append({"pid": pid, "ppid": 100, "command": command})
+        return ProcTreeSnapshot({"sock": holders}, processes)
+
+    def test_muse_resume_ref_comes_from_the_tree(self) -> None:
+        tracker = AgentSessionTracker()
+        tree = self.muse_tree("muse-bin-1.4.2 resume 01a0-one")
+        self.assertEqual(
+            tracker.muse_resume_ref_from_process_arguments(Path("sock"), tree), "01a0-one")
+
+    def test_wrapper_and_binary_agreeing_is_one_ref(self) -> None:
+        tracker = AgentSessionTracker()
+        tree = self.muse_tree("/bin/zsh -ilc muse resume 01a0-one",
+                              "muse-bin-1.4.2 resume 01a0-one")
+        self.assertEqual(
+            tracker.muse_resume_ref_from_process_arguments(Path("sock"), tree), "01a0-one")
+
+    def test_two_different_refs_resolve_to_nothing(self) -> None:
+        tracker = AgentSessionTracker()
+        tree = self.muse_tree("muse resume 01a0-one", "muse resume 01a0-two")
+        self.assertIsNone(tracker.muse_resume_ref_from_process_arguments(Path("sock"), tree))
+
+    def test_exec_resume_is_not_a_session_ref(self) -> None:
+        tracker = AgentSessionTracker()
+        tree = self.muse_tree("muse exec resume")
+        self.assertIsNone(tracker.muse_resume_ref_from_process_arguments(Path("sock"), tree))
+
 
 class TerminalRestartIdentityTest(unittest.TestCase):
     @staticmethod

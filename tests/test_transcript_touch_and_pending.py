@@ -80,6 +80,7 @@ const app = {
   historyPendingPromptSequence: 100,
   processingStates: new Map(scenario.processing ? [["s1", true]] : []),
   session() { return { session_id: "s1", processing: !!scenario.sessionProcessing }; },
+  agentSpec() { return { transcript_commands: [] }; },
   persistedHistoryPendingPrompts(sessionId) {
     return this.historyPendingPrompts.get(sessionId) || [];
   },
@@ -353,7 +354,9 @@ class PendingPromptBusyStateTest(unittest.TestCase):
                 "mergePendingHistoryPrompts(sessionId, turns)",
                 "historyAuthoritativePromptMatchesPending(authoritativeText, pendingText)",
                 "historyPromptComparisonText(text)", "historyPromptLooseMatchText(text)",
-                "historyTurnTimestampMillis(turn)")))
+                "historyTurnTimestampMillis(turn)",
+                "historyTextIsUntrackedSlashCommand(text, sessionId = this.activeId)",
+                "historySlashCommandForText(text, sessionId = this.activeId)")))
 
     def merge(self, pending: list, busy: bool, turns: list | None = None) -> list:
         done = subprocess.run(

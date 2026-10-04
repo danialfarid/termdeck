@@ -18,7 +18,7 @@ class SupportBundleBuilder:
     SAFE_SETTING_KEYS = (
         "bottom_font_size", "code_font_size", "diff_font_size", "file_tab_max_visible", "file_tab_order",
         "files_panel_width", "files_tab_font_size", "history_mode", "hide_dot_folders", "hide_excluded",
-        "inline_size_controls", "lsp_enabled", "recent_terminal_hours", "search_scope", "show_git_status",
+        "lsp_enabled", "recent_terminal_hours", "search_scope", "show_git_status",
         "show_mtime", "show_stats", "show_terminal_age", "show_terminal_icons", "side_full", "side_split",
         "sidebar_font_size", "sidebar_width", "system_font_size", "tall_webgl", "terminal_font_size",
         "terminal_icon_size", "theme", "transcript_first_surface", "tree_font_size", "ui_font_size", "word_wrap",

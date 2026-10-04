@@ -19,9 +19,7 @@ class MediaFileServiceTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        # Under the home directory on purpose: file access is confined to it, so a fixture in /tmp would
-        # be refused by the guard before any of these cases were reached.
-        self.directory = Path(tempfile.mkdtemp(prefix=".termdeck-media-test-", dir=Path.home()))
+        self.directory = Path(tempfile.mkdtemp(prefix="termdeck-media-test-"))
         self.addCleanup(shutil.rmtree, self.directory, True)
         self.service = ProjectFileService()
         (self.directory / "shot.png").write_bytes(PNG_BYTES)
@@ -51,15 +49,15 @@ class MediaFileServiceTest(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             self.service.media_file(str(self.directory), "images")
 
-    def test_path_escape_is_refused(self) -> None:
-        """Same confinement as every other read: nothing outside the allowed root, traversal included.
-
-        Raised as PermissionError, not ValueError, so the route answers 403 rather than reporting an
-        escape attempt as an unsupported file type.
-        """
-        for escape in ("../../../../etc/hosts", "/etc/hosts"):
-            with self.assertRaises(PermissionError, msg=escape):
-                self.service.media_file(str(self.directory), escape)
+    def test_outside_paths_resolve_and_answer_as_media_or_not(self) -> None:
+        """No allowed root anymore: traversal and absolute paths resolve, and only the
+        content-type allowlist can refuse."""
+        (self.directory / "outside.png").write_bytes(PNG_BYTES)
+        path, content_type = self.service.media_file(str(self.directory), "../" +
+                                                     self.directory.name + "/outside.png")
+        self.assertEqual(content_type, "image/png")
+        with self.assertRaises(ValueError, msg="hosts is not a media type"):
+            self.service.media_file(str(self.directory), "/etc/hosts")
 
     def test_extension_matching_ignores_case(self) -> None:
         (self.directory / "SHOT.PNG").write_bytes(PNG_BYTES)
