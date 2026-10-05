@@ -7711,13 +7711,25 @@ Object.assign(TermdeckApp.prototype, {
         this.notebookExpandedCopy = expanded ? null : text;
         this.renderNotebookRecentCopies();
       };
+      // The first click of a double-click is an ordinary click when it lands, and toggling on it
+      // re-rendered the row before the second click could select the word -- so a click waits out the
+      // double-click interval, and only then, with no text selected in the row, opens or closes it.
+      const doubleClickSettleMs = 300;
+      const clickToToggle = (event) => {
+        clearTimeout(this.copyRowToggleTimer);
+        if (event.detail > 1) return;
+        this.copyRowToggleTimer = setTimeout(() => {
+          this.copyRowToggleTimer = 0;
+          if (!this.copyRowSelectingText(row)) toggleExpanded();
+        }, doubleClickSettleMs);
+      };
       row.onclick = (event) => {
         if (event.target.closest("button")) return;
-        toggleExpanded();
+        clickToToggle(event);
       };
       content.onclick = (event) => {
         event.stopPropagation();
-        toggleExpanded();
+        clickToToggle(event);
       };
       content.onkeydown = (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -7746,6 +7758,17 @@ Object.assign(TermdeckApp.prototype, {
       row.append(content, actions);
       items.appendChild(row);
     }
+  },
+
+
+  // A drag across an expanded copy, or a double-click on a word in it, ends in a click like any
+  // other -- and that click collapsed the row, re-rendering it and taking the selection with it, so
+  // nothing in a copy could be selected at all. A plain click clears any selection on the way down,
+  // so text still selected inside the row when the click lands means it was a selecting gesture.
+  copyRowSelectingText(row) {
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
+    return row.contains(selection.anchorNode) || row.contains(selection.focusNode);
   },
 
 
