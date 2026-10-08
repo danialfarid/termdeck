@@ -533,6 +533,9 @@ class TermdeckConfig:
     # rather than pressing forever at a terminal that is never going to take it.
     PROMPT_SUBMIT_CONFIRM_SECONDS = 15.0
     PROMPT_SUBMIT_CONFIRM_POLL_SECONDS = 1.5
+    # How long a person's typing waits while a prompt goes in, if the prompt has not been seen to
+    # land by then: long enough for a paste and its Enter, short of the whole confirmation wait.
+    PROMPT_SUBMIT_INPUT_HOLD_SECONDS = 3.0
     PROMPT_AGENT_STARTUP_DELAY_SECONDS = 2.0
     PROMPT_AGENT_READY_TIMEOUT_SECONDS = 12.0
     FORK_RENAME_READY_DELAY_SECONDS = 1.5

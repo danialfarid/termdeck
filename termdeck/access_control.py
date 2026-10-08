@@ -1,8 +1,10 @@
 import hashlib
 import hmac
 import html
+import os
+import socket
 from http.cookies import CookieError, SimpleCookie
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -22,8 +24,31 @@ class DirectAccessPolicy:
     def __init__(self, bearer_token: str, read_only: bool) -> None:
         self.bearer_token = bearer_token.strip()
         self.read_only = read_only
+        self.allowed_hosts = {"localhost", "127.0.0.1", "::1", socket.gethostname().lower()}
+        self.allowed_hosts.update(value.strip().lower() for value in os.environ.get("TERMDECK_ALLOWED_HOSTS", "").split(",") if value.strip())
         self.browser_session = hmac.new(self.bearer_token.encode(), self.COOKIE_CONTEXT, hashlib.sha256).hexdigest() \
             if self.bearer_token else ""
+
+    def browser_request_allowed(self, scope: Scope) -> bool:
+        host = self._scope_header(scope, b"host")
+        try:
+            authority = urlsplit("//" + host)
+            hostname = authority.hostname
+            server = scope.get("server")
+            allowed = self.allowed_hosts | ({str(server[0]).lower()} if server else set())
+            if not hostname or hostname.lower() not in allowed or authority.username is not None:
+                return False
+            origin = self._scope_header(scope, b"origin")
+            if not origin:
+                return True
+            parsed = urlsplit(origin)
+            scheme = "https" if scope.get("scheme") in {"https", "wss"} else "http"
+            default_port = 443 if scheme == "https" else 80
+            return (parsed.scheme == scheme and parsed.hostname == hostname and
+                    (parsed.port or default_port) == (authority.port or default_port) and
+                    parsed.username is None and not parsed.path and not parsed.query and not parsed.fragment)
+        except ValueError:
+            return False
 
     @property
     def authentication_enabled(self) -> bool:
@@ -89,6 +114,12 @@ class DirectAccessMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in {"http", "websocket"}:
             await self.app(scope, receive, send)
+            return
+        if not self.policy.browser_request_allowed(scope):
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 4403, "reason": "Host or Origin not allowed"})
+            else:
+                await JSONResponse({"detail": "Host or Origin not allowed"}, status_code=403)(scope, receive, send)
             return
         path = str(scope.get("path") or "")
         exempt = path in self.policy.EXEMPT_PATHS

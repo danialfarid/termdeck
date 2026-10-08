@@ -856,7 +856,20 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  canForkSession(s) {
+    // Shell terminals duplicate their launch command; agent terminals need a CLI that can
+    // branch the live session (muse forks through /fork in its own terminal).
+    const spec = this.agentSpec(s?.agent_kind);
+    return !!s && (!spec?.is_agent || !!spec.supports_fork);
+  },
+
+
   async forkSession(s) {
+    if (!this.canForkSession(s)) {
+      const label = this.agentLabel(s?.agent_kind, "agent");
+      void uiAlert(`${label} sessions cannot be forked; start a new terminal instead.`);
+      return;
+    }
     const baseTitle = this.stripTitleStatusPrefixes(this.effectiveTitle(s)) || "terminal";
     const rawValue = await uiPrompt(`Fork "${baseTitle}": enter a number from 1 to ${MAX_FORK_COUNT}, or enter a name for one fork.`, "1");
     if (rawValue === null || !rawValue.trim()) return;
@@ -877,6 +890,7 @@ Object.assign(TermdeckApp.prototype, {
   async createForkedSessions(s, titles, options = {}) {
     const created = [];
     let failedAt = 0;
+    let forkError = "";
     for (let index = 0; index < titles.length; index += 1) {
       const res = await fetch(`/api/sessions/${s.session_id}/fork`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -884,12 +898,14 @@ Object.assign(TermdeckApp.prototype, {
       });
       if (!res.ok) {
         failedAt = index + 1;
+        const err = await res.json().catch(() => ({}));
+        if (typeof err.detail === "string" && err.detail.trim()) forkError = err.detail.trim();
         break;
       }
       created.push(await res.json());
     }
     if (!created.length) {
-      void uiAlert("fork failed");
+      void uiAlert(forkError || "fork failed");
       return;
     }
     if (this.nativeVscodeMode) {
@@ -905,7 +921,7 @@ Object.assign(TermdeckApp.prototype, {
     this.$("status-name").textContent = failedAt
       ? `forked ${created.length} of ${titles.length}`
       : `forked ${created.length}`;
-    if (failedAt) void uiAlert(`Forked ${created.length} of ${titles.length}; fork ${failedAt} failed.`);
+    if (failedAt) void uiAlert(forkError || `Forked ${created.length} of ${titles.length}; fork ${failedAt} failed.`);
   },
 
 

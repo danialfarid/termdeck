@@ -11,6 +11,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from termdeck.models import PromptDelivery, PromptOutcome
 from termdeck.server import SubmitPromptRequest, TermdeckServer, _steer_wanted
 
 
@@ -40,7 +41,7 @@ class SteerResolutionTest(unittest.TestCase):
 class SubmitPromptSteerTest(unittest.TestCase):
     def submit(self, processing: bool, **fields: object) -> bool:
         server = TermdeckServer.__new__(TermdeckServer)
-        submit = AsyncMock(return_value=False)
+        submit = AsyncMock(return_value=PromptDelivery(False, PromptOutcome.CONFIRMED))
         server.manager = SimpleNamespace(
             has_session=lambda session_id: True,
             ensure_session_running=lambda session_id: None,

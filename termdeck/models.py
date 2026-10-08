@@ -90,6 +90,31 @@ class SessionRecord:
                              draft_revision=int(payload.get("draft_revision") or 0))
 
 
+class PromptOutcome:
+    """What became of a prompt sent to a terminal, as the API reports it.
+
+    CONFIRMED: the agent recorded it as submitted. FAILED: it did not go in -- a dialog on screen would
+    have taken its keys as an answer, or the terminal exited before taking it -- so sending it again is
+    safe. UNCONFIRMED: it went in and nothing has shown whether the agent took it; sending it again
+    risks a duplicate, so what to watch for is the agent's response.
+    """
+
+    CONFIRMED = "confirmed"
+    UNCONFIRMED = "unconfirmed"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class PromptDelivery:
+    queued: bool
+    outcome: str
+    detail: str = ""
+
+    @property
+    def submitted(self) -> bool:
+        return self.outcome != PromptOutcome.FAILED
+
+
 class WsMessageFields:
     """Websocket JSON protocol field names and message-type values, mirrored by static/app.js."""
 

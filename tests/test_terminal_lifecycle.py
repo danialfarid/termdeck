@@ -21,7 +21,7 @@ from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.agents.claude import ClaudeCli
 from termdeck.codex_model_catalog import CodexModelCatalog
 from termdeck.file_service import ProjectFileService
-from termdeck.models import SessionRecord
+from termdeck.models import PromptDelivery, PromptOutcome, SessionRecord
 from termdeck.session_store import ClosedSessionStore
 from termdeck.config import TermdeckConfig
 from termdeck.proc_tree import ProcTreeSnapshot, ProcTreeUtil
@@ -31,6 +31,9 @@ from termdeck.server import FollowUpTaskPromptRequest, ForkSessionRequest, Noteb
 from termdeck.replay_recorder import ReplayRecorder
 from termdeck.session_manager import ManagedSession, TerminalSessionManager
 from termdeck.transcript_turns import TurnBuilder
+
+# A prompt the agent recorded, submitted rather than queued.
+SENT = PromptDelivery(False, PromptOutcome.CONFIRMED)
 
 
 def record(session_id: str = "abc123") -> SessionRecord:
@@ -156,12 +159,12 @@ class PlacementNameTest(unittest.TestCase):
         forked.record.project = "stock"
         forked.record.session_id = "fork-id"
         forked.record.worktree_id = "root"
-        server.manager.fork_session.return_value = forked
+        server.manager.afork_session = AsyncMock(return_value=forked)
         server.manager.session_summary_by_id.return_value = {"session_id": "termde-id", "project": "stock"}
         server.manager.session_summary.return_value = {"session_id": "fork-id"}
         with patch.object(server, "_place_session_after", return_value={"position": "after"}) as place:
             result = asyncio.run(server._fork_session("termde-id", ForkSessionRequest(title="termde fork")))
-        server.manager.fork_session.assert_called_once_with("termde-id", "termde fork", None)
+        server.manager.afork_session.assert_called_once_with("termde-id", "termde fork", None)
         place.assert_called_once_with("stock", "fork-id", "session:termde-id", worktree_id="root")
         self.assertEqual(result["placement"], {"position": "after"})
 
@@ -808,6 +811,111 @@ class AgentCliRegistryTest(unittest.TestCase):
             "agy --model gemini")
         self.assertEqual(len(agents.agent_cli("agy").termdeck_global_instruction_files()), 1)
         self.assertEqual(len(agents.agent_cli("opencode").termdeck_global_instruction_files()), 1)
+
+
+class ForkUnsupportedAgentTest(unittest.TestCase):
+    """Forking a live agent session the CLI cannot branch must refuse instead of
+    attaching a second terminal to that same session (muse answers with its resume
+    picker there, without the original session in it)."""
+
+    @staticmethod
+    def manager_with(source: ManagedSession) -> TerminalSessionManager:
+        manager = TerminalSessionManager.__new__(TerminalSessionManager)
+        manager._sessions = {source.record.session_id: source}
+        return manager
+
+    @staticmethod
+    def live_session(agent_kind: str, agent_session_id: str | None, command: str) -> ManagedSession:
+        session_record = record("source-tab")
+        session_record.agent_kind = agent_kind
+        session_record.agent_session_id = agent_session_id
+        session_record.command = command
+        return ManagedSession(session_record)
+
+    def test_fork_bound_agy_session_refuses(self) -> None:
+        manager = self.manager_with(self.live_session("agy", "agent-uuid", "agy --conversation agent-uuid"))
+
+        with patch.object(TerminalSessionManager, "_create") as create:
+            with self.assertRaises(ValueError):
+                manager.fork_session("source-tab", "a fork")
+
+        create.assert_not_called()
+
+    async def _afork(self, manager: TerminalSessionManager) -> ManagedSession:
+        return await manager.afork_session("source-tab", "a fork")
+
+    def test_afork_bound_agy_session_refuses(self) -> None:
+        manager = self.manager_with(self.live_session("agy", "agent-uuid", "agy --conversation agent-uuid"))
+
+        with patch.object(TerminalSessionManager, "_create") as create:
+            with self.assertRaises(ValueError):
+                asyncio.run(self._afork(manager))
+
+        create.assert_not_called()
+
+    def test_fork_bound_muse_session_needs_live_dispatch(self) -> None:
+        # The sync path cannot send /fork and wait for the branch; afork_session owns muse.
+        manager = self.manager_with(self.live_session("muse", "01a0-parent", "muse resume 01a0-parent"))
+
+        with patch.object(TerminalSessionManager, "_create") as create:
+            with self.assertRaisesRegex(ValueError, "live terminal"):
+                manager.fork_session("source-tab", "a fork")
+
+        create.assert_not_called()
+        self.assertEqual(len(manager._sessions), 1)
+
+    def test_afork_muse_dispatches_and_binds_the_branch(self) -> None:
+        manager = self.manager_with(self.live_session("muse", "01a0-parent", "muse --yolo resume 01a0-parent"))
+        manager._persist = MagicMock()
+        forked_record = record("forked-tab")
+        forked_record.agent_kind = "muse"
+        forked_record.command = "muse --yolo resume 01a0-parent"
+        captured: dict[str, object] = {}
+
+        def fake_create(self, clean_command: str, cwd_path, title: str, **kwargs):
+            captured.update(kwargs)
+            return ManagedSession(forked_record)
+
+        async def fake_dispatch(dispatch_manager, ms) -> str:
+            self.assertIs(dispatch_manager, manager)
+            return "01a0-branch"
+
+        with patch.object(TerminalSessionManager, "_create", fake_create), \
+                patch.object(agents.agent_cli("muse"), "fork_through_source", fake_dispatch):
+            forked = asyncio.run(self._afork(manager))
+
+        self.assertEqual(captured.get("initial_command"), "muse --yolo resume 01a0-branch")
+        self.assertEqual(captured.get("fork_parent_agent_session_id"), "01a0-parent")
+        self.assertEqual(forked.record.agent_session_id, "01a0-branch")
+        self.assertEqual(forked.record.command, "muse --yolo resume 01a0-branch")
+
+    def test_fork_unbound_muse_session_duplicates_its_launch(self) -> None:
+        manager = self.manager_with(self.live_session("muse", None, "muse --yolo"))
+        forked_record = record("forked-tab")
+        captured: dict[str, object] = {}
+
+        def fake_create(self, clean_command: str, cwd_path, title: str, **kwargs):
+            captured.update(kwargs)
+            return ManagedSession(forked_record)
+
+        with patch.object(TerminalSessionManager, "_create", fake_create):
+            manager.fork_session("source-tab", "a fork")
+
+        self.assertIsNone(captured.get("initial_command"))
+
+    def test_fork_bound_claude_session_branches(self) -> None:
+        manager = self.manager_with(self.live_session("claude", "bb22", "claude --resume bb22"))
+        forked_record = record("forked-tab")
+        captured: dict[str, object] = {}
+
+        def fake_create(self, clean_command: str, cwd_path, title: str, **kwargs):
+            captured.update(kwargs)
+            return ManagedSession(forked_record)
+
+        with patch.object(TerminalSessionManager, "_create", fake_create):
+            manager.fork_session("source-tab", "a fork")
+
+        self.assertEqual(captured.get("initial_command"), "claude --resume bb22 --fork-session --name 'a fork'")
 
 
 class AgentCliResumeCommandTest(unittest.TestCase):
@@ -1815,7 +1923,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
         session = ManagedSession(record())
         manager._append_collapsing_repaints(session, b"before\n" + TermdeckConfig.SYNC_UPDATE_START + b"\rstatus")
         self.assertEqual(bytes(session.buffer), b"before\n")
-        self.assertTrue(session.scrollback_sync_carry)
+        self.assertTrue(session.scrollback_inside_sync)
 
         manager._append_collapsing_repaints(session, b" redraw" + TermdeckConfig.SYNC_UPDATE_END + b"\r\nafter\n")
         self.assertEqual(bytes(session.buffer), b"before\nafter\n")
@@ -1911,13 +2019,29 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
 
         server.manager.request_screen_repaint.assert_called_once_with("codex-session")
 
+    async def test_terminal_websocket_submit_does_not_hold_up_typing(self) -> None:
+        # The same loop reads the person's keys; waiting there for the transcript to show the prompt
+        # left them unread for as long as fifteen seconds.
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.deliver_prompt = AsyncMock(return_value=False)
+        websocket = MagicMock()
+        websocket.receive_text = AsyncMock(side_effect=[
+            json.dumps({"type": "submit", "text": "run the checks", "bracketed": True}),
+            json.dumps({"type": "input", "data": "x"}), WebSocketDisconnect()])
+
+        await server._pump_client_to_pty(websocket, "codex-session")
+
+        server.manager.deliver_prompt.assert_awaited_once_with("codex-session", "run the checks", True, False)
+        server.manager.submit_prompt.assert_not_called()
+
     async def test_follow_up_prompt_directly_steers_busy_task_session(self) -> None:
         server = TermdeckServer.__new__(TermdeckServer)
         server.manager = MagicMock()
         server.manager.has_session.return_value = True
         server.manager.session_summary_by_id.return_value = {"processing": True, "session_id": "child-01"}
         server.manager.ensure_session_running.return_value = None
-        server.manager.submit_prompt = AsyncMock(return_value=False)
+        server.manager.submit_prompt = AsyncMock(return_value=SENT)
 
         response = await server._follow_up_task_prompt(
             "child-01", FollowUpTaskPromptRequest(prompt="summarize the result"))
@@ -1931,7 +2055,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager = MagicMock()
         server.manager.has_session.return_value = True
         server.manager.session_summary_by_id.return_value = {"processing": True, "session_id": "busy-01"}
-        server.manager.submit_prompt = AsyncMock(return_value=False)
+        server.manager.submit_prompt = AsyncMock(return_value=SENT)
 
         response = await server._submit_prompt("busy-01", SubmitPromptRequest(
             text="run this next"))
@@ -1969,7 +2093,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             {"session_id": "task-model", "project": "stock", "running": True},
         ]
         server.manager.ensure_session_running.return_value = None
-        server.manager.submit_prompt = AsyncMock(return_value=False)
+        server.manager.submit_prompt = AsyncMock(return_value=SENT)
         request = RunTerminalTaskRequest(command="run checks", model_name="gpt-5.6-luna xhigh",
                                          additional_args="--config custom")
         await server._run_terminal_task(request)
@@ -1989,13 +2113,13 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         child = MagicMock()
         child.record.session_id = "fork-01"
         child.record.project = "stock"
-        server.manager.fork_session.return_value = child
+        server.manager.afork_session = AsyncMock(return_value=child)
         server.manager.session_summary.side_effect = [
             {"session_id": "fork-01", "project": "stock"},
             {"session_id": "fork-01", "project": "stock", "running": True},
         ]
         server.manager.ensure_session_running.return_value = None
-        server.manager.submit_prompt = AsyncMock(return_value=False)
+        server.manager.submit_prompt = AsyncMock(return_value=SENT)
         server._schedule_task_result_delivery = MagicMock()
 
         with patch.object(server, "_place_session_after", return_value={"position": "after"}) as place:
@@ -2003,7 +2127,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
                 prompt="inspect this", title="reviewer", origin_session="origin-01", fork=True,
                 model="claude", model_name="opus", permission="full-access"))
 
-        server.manager.fork_session.assert_called_once_with("origin-01", "reviewer", None)
+        server.manager.afork_session.assert_called_once_with("origin-01", "reviewer", None)
         server.manager.command_for_new_session.assert_not_called()
         server.manager.create_session.assert_not_called()
         place.assert_called_once_with("stock", "fork-01", "session:origin-01", worktree_id=child.record.worktree_id)
@@ -2026,7 +2150,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             {"session_id": "task-01", "project": "stock", "running": True},
         ]
         server.manager.ensure_session_running.return_value = None
-        server.manager.submit_prompt = AsyncMock(return_value=False)
+        server.manager.submit_prompt = AsyncMock(return_value=SENT)
 
         request = RunTerminalTaskRequest(command="run checks", cwd="/tmp", project="stock", output_path="/tmp/task-out.txt", description="Run checks")
         response = await server._run_terminal_task(request)
@@ -2065,7 +2189,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             {"session_id": "task-02", "project": "stock", "running": True},
         ]
         server.manager.ensure_session_running.return_value = None
-        server.manager.submit_prompt = AsyncMock(return_value=False)
+        server.manager.submit_prompt = AsyncMock(return_value=SENT)
 
         class Store:
             def __init__(self) -> None:
@@ -2192,7 +2316,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             {"processing": False},
         ]
         server.manager.session_history_source.return_value = ("codex", "/tmp", "child-agent")
-        server.manager.submit_prompt = AsyncMock(return_value=False)
+        server.manager.submit_prompt = AsyncMock(return_value=SENT)
         server.transcripts = MagicMock()
         server.transcripts.history_page.return_value = {"turns": [{"role": "assistant", "text": "finished", "final": True}]}
         server._origin_delivery_locks = {}
@@ -2226,7 +2350,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             {"processing": True},
         ]
         server.manager.session_history_source.return_value = ("codex", "/tmp", "child-agent")
-        server.manager.submit_prompt = AsyncMock(return_value=False)
+        server.manager.submit_prompt = AsyncMock(return_value=SENT)
         server.transcripts = MagicMock()
         server.transcripts.history_page.side_effect = [
             {"turns": [{"role": "user", "text": "hi"}]},
@@ -2248,7 +2372,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         # The processing marker reads clear between messages, so it alone is not evidence of an answer.
         server.manager.session_summary_by_id.return_value = {"running": True, "processing": False}
         server.manager.session_history_source.return_value = ("claude", "/tmp", "child-agent")
-        server.manager.submit_prompt = AsyncMock(return_value=False)
+        server.manager.submit_prompt = AsyncMock(return_value=SENT)
         server.transcripts = MagicMock()
         working = {"role": "assistant", "text": "I will inspect the files now",
                    "timestamp": "2026-09-23T09:00:10Z"}
@@ -2285,7 +2409,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
 
         server.manager.session_summary_by_id.side_effect = summary
         server.manager.session_history_source.return_value = ("claude", "/tmp", "child-agent")
-        server.manager.submit_prompt = AsyncMock(return_value=False)
+        server.manager.submit_prompt = AsyncMock(return_value=SENT)
         server.transcripts = MagicMock()
         prompt = {"role": "user", "text": "review", "timestamp": "2026-09-23T09:00:05Z"}
         asking = {"role": "assistant", "text": "may I read the file?", "timestamp": "2026-09-23T09:00:10Z"}
@@ -2318,7 +2442,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.create_session.return_value = child
         server.manager.session_summary.side_effect = [{"session_id": "child-01"}, {"session_id": "child-01"}]
         server.manager.ensure_session_running.return_value = None
-        server.manager.submit_prompt = AsyncMock(return_value=False)
+        server.manager.submit_prompt = AsyncMock(return_value=SENT)
         server._schedule_task_result_delivery = MagicMock()
 
         with patch.object(server, "_place_session_after", return_value={"position": "after"}):

@@ -28,6 +28,15 @@ class CodexCli(AgentCli):
 
     sessions_root = Path.home() / ".codex" / "sessions"
     SESSION_INDEX_FILE = Path.home() / ".codex" / "session_index.jsonl"
+    # Every message submitted from the composer, as it is submitted -- mid-turn ones included -- with the
+    # thread it went to and the second it was sent.
+    PROMPT_HISTORY_FILE = Path.home() / ".codex" / "history.jsonl"
+    # Codex's offer to update, drawn over the composer a moment after it first shows: its first choice
+    # is "Update now", which ends the session to run the update. It clears itself once answered.
+    PROMPT_BLOCKING_DIALOGS = (
+        ("Codex is asking whether to update; answer it in that terminal, then send the prompt again",
+         ("Update available", "Update now", "Skip until next version")),
+    )
     # One file per thread that a running codex holds open, named for the thread it writes.
     THREAD_LOCK_DIR = Path.home() / ".codex" / "thread-writer-locks"
     THREAD_LOCK_SUFFIX = ".lock"
@@ -469,7 +478,9 @@ class CodexCli(AgentCli):
     def is_processing(self, ms) -> bool:
         return bool(ms.processing or ms.agent_state.transcript_active)
 
-    ACTION_REQUIRED_TITLE_RE = re.compile(r"^\[\s*!\s*\]\s*Action Required(?:\s*\||$)")
+    # Codex blinks the bracket glyph while a question waits ("[ ! ]" lit, "[ . ]" dim), about
+    # once a second; both phases are the same unanswered question, so both match.
+    ACTION_REQUIRED_TITLE_RE = re.compile(r"^\[\s*[!.]\s*\]\s*Action Required(?:\s*\||$)")
 
     def has_pending_question(self, ms) -> bool:
         return bool(ms.running and self.ACTION_REQUIRED_TITLE_RE.match(ms.cli_title or ""))
@@ -665,6 +676,32 @@ class CodexCli(AgentCli):
             ms.agent_state.activity_signature = self.activity_signature(manager, ms)
             ms.agent_state.activity_checked_monotonic = time.monotonic()
             manager._broadcast_status(ms)
+
+    def prompt_taken(self, manager, ms, text: str, sent_at: float) -> bool:
+        # The rollout takes a message sent mid-turn only at codex's next model step, which can be minutes
+        # after it was submitted; the prompt history has it the moment it is.
+        thread = ms.record.agent_session_id
+        needle = self.prompt_needle(text)
+        if not needle:
+            return False
+        # Codex writes a new thread down only with its first message, so a new terminal is tied to no
+        # thread yet while that message goes in. Its prompt is then the one with these words since, on a
+        # thread no other terminal has.
+        elsewhere = manager.agent_session_ids_in_use(except_session=ms) if thread is None else set()
+        # Stamped with the whole second codex took it in, which is no earlier than the one it was sent in.
+        earliest = int(sent_at)
+        for line in self.tail_lines(self.PROMPT_HISTORY_FILE, self.PROMPT_RECORD_TAIL_BYTES):
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or not isinstance(entry.get("ts"), int) or entry["ts"] < earliest:
+                continue
+            on = entry.get("session_id")
+            if (on == thread if thread is not None else bool(on) and on not in elsewhere) \
+                    and needle in str(entry.get("text") or ""):
+                return True
+        return False
 
     def _before_send_rename(self, ms, title: str) -> None:
         ms.agent_state.pending_rename = title

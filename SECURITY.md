@@ -65,3 +65,13 @@ Please give a reasonable window to ship a fix before publishing details.
 ## Supported versions
 
 Fixes land on the latest released version. There are no maintained backport branches.
+
+## Browser request validation
+
+Direct HTTP and WebSocket requests validate Host and, when supplied, require a same-origin
+browser Origin. Localhost, the machine hostname, and the connection's local address are allowed.
+For a reverse proxy or custom DNS name, list exact hostnames (without schemes or ports) in
+`TERMDECK_ALLOWED_HOSTS`, separated by commas. Preserve Host and the original HTTPS scheme at
+trusted proxies. This allowlist does not replace authentication or make public exposure safe.
+The authenticated remote connector validates forwarded browser origins against its configured
+relay URL before translating requests to the local server.

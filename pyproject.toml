@@ -40,6 +40,7 @@ dependencies = [
     # Codex reports its background terminals on screen only, so reading them back means replaying
     # the terminal: a pure-Python VT emulator, fed a tail of a session's output.
     "pyte>=0.8",
+    "mcp>=2",
 ]
 
 [project.urls]

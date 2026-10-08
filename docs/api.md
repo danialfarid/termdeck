@@ -257,6 +257,29 @@ for Codex to place the prompt in its queue with Tab instead. If a requested plac
 or ambiguous, that terminal is still created and its prompt is still submitted; the item reports
 `placement_error` and the response increments `placement_failed`.
 
+### Did the prompt go in
+
+Sending a prompt — `POST /api/sessions/{session_id}/prompt`, `POST /api/sessions` with a `prompt`, and each
+item of a batch — waits until the agent has recorded it, or about fifteen seconds without that, and says
+which:
+
+| `delivery` | `prompt_submitted` | Meaning | Send it again? |
+|---|---|---|---|
+| `confirmed` | `true` | The agent recorded it as submitted. | No |
+| `unconfirmed` | `true` | It went in; nothing showed whether the agent took it. `delivery_detail` says what is known. | No — watch `/response` |
+| `failed` | `false` | It did not go in. `delivery_detail` says why. There is no `since`. | Yes |
+
+A prompt fails when a dialog in the terminal would take its keys as an answer — Codex's offer to update,
+whose first choice ends the session to run the update, or Claude asking whether to trust a folder — in
+which case nothing is typed and the dialog is left for a person to answer, or when the terminal exits
+before taking it. A new terminal whose prompt failed still exists; its `session_id` is in the response.
+
+The confirmation reads what each agent writes the moment a prompt is submitted, because a transcript can
+hold a prompt sent mid-turn back until the agent's next step: Codex's prompt history
+(`~/.codex/history.jsonl`) and the queued-message records in Claude's transcript; other agents go by
+their transcript. `unconfirmed` is never reported as a failure, since sending again would give the agent
+the same prompt twice.
+
 ## Review an isolated worktree
 
 Every session created with `worktree: true` exposes its branch and worktree folder in the terminal list. Review the
@@ -383,6 +406,26 @@ entry — `/api/terminal-groups`, `/api/session-group-assignments`, `/api/termin
 `/api/session-order/move`, `/api/session-unread`, `/api/recently-opened-terminals/<session_id>`,
 `/api/session-view-modes/<session_id>`, `/api/notebook/notes`, `/api/notebook/copies` and
 `/api/open-files`. All of them can still be read through `/api/project-state/<field>`.
+
+A full settings replace (`PUT /api/settings?replace=true`) saves the settings and leaves every
+project's state exactly as the server has it, whatever the request carries.
+
+Moving one item in the side panel is one call naming the item and where it lands. `token` is
+`session:<id>` or `group:<id>`; moving a terminal four places up is a move before the terminal that
+is now four above it:
+
+```sh
+# before another terminal (after: true lands it below instead)
+curl -sS -X PATCH 'http://127.0.0.1:8530/api/terminal-layout/move?project=stock' \
+  -H 'Content-Type: application/json' \
+  -d '{"token": "session:abc123", "target_token": "session:def456", "after": false}'
+# to the top of the panel
+curl -sS -X PATCH 'http://127.0.0.1:8530/api/terminal-layout/move?project=stock' \
+  -H 'Content-Type: application/json' -d '{"token": "group:g1", "to_top": true}'
+```
+
+Terminals inside a parent's agent stack are ordered by `PATCH /api/session-order/move`
+(`{"session_ids": [...], "target_session_id": "...", "after": false}`).
 
 ## Open files
 

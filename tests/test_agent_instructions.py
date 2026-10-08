@@ -18,7 +18,11 @@ class AgentInstructionServiceTest(unittest.TestCase):
         self.assertIn("since", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("origin_session to your $TERMDECK_SESSION_ID", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("user-authorized scope", AgentInstructionService.INSTRUCTION_TEXT)
-        self.assertLess(len(AgentInstructionService.INSTRUCTION_TEXT), 700)
+        # Whether a prompt went in, and whether to send it again, is what keeps an agent from sending
+        # the same one over and over; it is worth the room.
+        self.assertIn("prompt_submitted false", AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertIn("never resend", AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertLess(len(AgentInstructionService.INSTRUCTION_TEXT), 820)
         self.assertNotIn("github.com", AgentInstructionService.INSTRUCTION_TEXT)
 
     def test_ensures_one_termdeck_owned_instruction_file(self) -> None:

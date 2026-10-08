@@ -70,6 +70,8 @@ class LspWorkspaceEditService:
             raise ValueError(f"language server edit is outside project root: {absolute_path}")
         relative_path = absolute_path.relative_to(root_path).as_posix()
         file_data = self._files.read_file(root, relative_path)
+        if file_data["truncated"]:
+            raise ValueError(f"language server edit refused for truncated file: {relative_path}")
         current_content = str(file_data["content"])
         replacements: list[tuple[int, int, str]] = []
         for edit in edits:

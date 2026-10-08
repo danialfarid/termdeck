@@ -952,6 +952,12 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  historyModelEffortFromCommand(command) {
+    const match = String(command || "").match(/(?:^|\s)-c\s+['"]?model_reasoning_effort=(?:['"]?)([a-z0-9_-]+)/i);
+    return String(match?.[1] || "").toLowerCase();
+  },
+
+
   historyModelFromCommandFlags(text) {
     const rawTokens = text.match(/"([^"\\]|\\.)*"|'([^'\\]|\\.)*'|[^\s]+/g);
     const tokens = rawTokens === null ? [] : rawTokens;
@@ -1037,7 +1043,8 @@ Object.assign(TermdeckApp.prototype, {
 
   historyModelFromTranscript(turns = []) {
     if (!Array.isArray(turns)) return "";
-    for (const turn of turns) {
+    for (let index = turns.length - 1; index >= 0; index--) {
+      const turn = turns[index];
       const candidates = [
         this.historyModelFromValue(this.normalizeModelText(turn?.model)),
         this.historyModelFromValue(this.normalizeModelText(turn?.model_name)),
@@ -1127,6 +1134,101 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  historyModelUsage(session) {
+    if (session?.agent_kind !== "codex" || !session.session_id || !session.agent_session_id) return null;
+    const sessionId = session.session_id;
+    const agentSessionId = String(session.agent_session_id);
+    const cached = this.historyModelUsageBySession.get(sessionId);
+    const cachedForSession = cached?.agentSessionId === agentSessionId;
+    if ((!cachedForSession || Date.now() - cached.checkedAt >= 60000) &&
+        !this.historyModelUsageRequests.has(sessionId)) {
+      const requestedAt = Date.now();
+      this.historyModelUsageRequests.add(sessionId);
+      this.historyModelUsageBySession.set(sessionId, {
+        agentSessionId,
+        model: cachedForSession ? cached.model : "",
+        reasoningEffort: cachedForSession ? cached.reasoningEffort : "",
+        checkedAt: requestedAt,
+        requestedAt,
+      });
+      void this.refreshHistoryModelUsage(sessionId, agentSessionId, requestedAt);
+    }
+    return cachedForSession ? cached : null;
+  },
+
+
+  async refreshHistoryModelUsage(sessionId, agentSessionId, requestedAt) {
+    try {
+      const usage = await this.historySessionUsage(sessionId);
+      const session = this.session(sessionId);
+      const cached = this.historyModelUsageBySession.get(sessionId);
+      if (session?.agent_session_id !== agentSessionId || cached?.requestedAt !== requestedAt) return;
+      this.historyModelUsageBySession.set(sessionId, {
+        agentSessionId,
+        model: this.normalizeModelText(usage.model),
+        reasoningEffort: this.normalizeModelText(usage.reasoning_effort),
+        checkedAt: Date.now(),
+        requestedAt,
+      });
+      if (this.activeId === sessionId) this.syncMobileSidebarIdentity(session);
+      if (this.activeId === sessionId && this.historyOpen && this.activeFileKey === null) {
+        this.renderHistoryModel(session, this.historyTurnsBySession.get(sessionId) || []);
+      }
+    } catch {
+      const cached = this.historyModelUsageBySession.get(sessionId);
+      if (cached?.agentSessionId === agentSessionId && cached.requestedAt === requestedAt) {
+        this.historyModelUsageBySession.set(sessionId, { ...cached, checkedAt: Date.now() });
+      }
+    } finally {
+      this.historyModelUsageRequests.delete(sessionId);
+    }
+  },
+
+
+  rememberHistoryModelUsage(session, model, reasoningEffort) {
+    if (!session?.session_id || !session.agent_session_id) return;
+    const now = Date.now();
+    this.historyModelUsageBySession.set(session.session_id, {
+      agentSessionId: String(session.agent_session_id),
+      model: this.normalizeModelText(model),
+      reasoningEffort: this.normalizeModelText(reasoningEffort),
+      checkedAt: now,
+      requestedAt: now,
+    });
+  },
+
+
+  historyModelWithEffort(model, effort) {
+    const modelName = this.normalizeModelText(model);
+    const reasoningEffort = this.normalizeModelText(effort);
+    if (!modelName || !reasoningEffort || this.historyModelIsGeneric(modelName)) return modelName;
+    const finalWord = modelName.split(/\s+/).at(-1);
+    return finalWord?.toLowerCase() === reasoningEffort.toLowerCase()
+      ? modelName : `${modelName} ${reasoningEffort}`;
+  },
+
+
+  historyModelDisplayForCurrentSession(session, turns, statusModel, usage) {
+    const usageModel = this.historyModelFromValue(usage?.model);
+    const commandModel = this.historyModelFromCommand(session?.command);
+    const transcriptModel = this.historyModelDisplay(session, turns);
+    const statusModelId = this.historyModelFromValue(statusModel).split(/\s+/)[0]?.toLowerCase() || "";
+    const usageModelId = usageModel.split(/\s+/)[0]?.toLowerCase() || "";
+    const commandModelId = this.historyModelFromValue(commandModel).split(/\s+/)[0]?.toLowerCase() || "";
+    const statusHasEffort = /\s+(?:xhigh|high|medium|low|minimal|max|ultra)$/i.test(statusModel);
+    if (statusHasEffort) return statusModel;
+    const usageMatchesStatus = !statusModelId || !usageModelId || statusModelId === usageModelId;
+    if (usageModel && usageMatchesStatus) {
+      return this.historyModelWithEffort(usageModel, usage?.reasoningEffort);
+    }
+    const fallbackModel = statusModel || transcriptModel || commandModel;
+    const fallbackModelId = this.historyModelFromValue(fallbackModel).split(/\s+/)[0]?.toLowerCase() || "";
+    const commandMatchesFallback = !!commandModelId && (!fallbackModelId || commandModelId === fallbackModelId);
+    const effort = commandMatchesFallback ? this.historyModelEffortFromCommand(session?.command) : "";
+    return this.historyModelWithEffort(fallbackModel, effort);
+  },
+
+
   renderHistoryModel(session, turns = []) {
     const modelEl = this.$("history-model");
     if (!modelEl) return;
@@ -1135,9 +1237,11 @@ Object.assign(TermdeckApp.prototype, {
       modelEl.classList.add("hidden");
       return;
     }
-    const model = (session?.agent_kind === "claude" ? "" : this.terminalStatusModel(this.views.get(session?.session_id || this.activeId))) ||
-      this.historyModelDisplay(session, turns);
-    if (!model) {
+    const usage = this.historyModelUsage(session);
+    const statusModel = session?.agent_kind === "claude" ? "" :
+      this.terminalStatusModel(this.views.get(session?.session_id || this.activeId));
+    const model = this.historyModelDisplayForCurrentSession(session, turns, statusModel, usage);
+    if (!model || (session?.agent_kind === "codex" && this.historyModelIsGeneric(model))) {
       modelEl.textContent = "";
       modelEl.classList.add("hidden");
       return;
@@ -1152,10 +1256,14 @@ Object.assign(TermdeckApp.prototype, {
     modelEl.setAttribute("role", selectable ? "button" : "note");
     if (selectable) modelEl.tabIndex = 0;
     else modelEl.removeAttribute("tabindex");
-    modelEl.onclick = selectable ? () => void this.chooseHistoryModel() : null;
+    modelEl.onclick = selectable ? () => {
+      if (this.$("history-send-menu")?.contains(modelEl)) this.closeHistorySendMenu();
+      void this.chooseHistoryModel();
+    } : null;
     modelEl.onkeydown = selectable ? (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
+      if (this.$("history-send-menu")?.contains(modelEl)) this.closeHistorySendMenu();
       void this.chooseHistoryModel();
     } : null;
   },
@@ -1308,6 +1416,7 @@ Object.assign(TermdeckApp.prototype, {
       const updated = await response.json();
       if (updated.session) this.applySessionStatus({ ...updated.session, session_id: session.session_id });
       this.sessionModelById.set(session.session_id, [modelId, effort].filter(Boolean).join(" "));
+      this.rememberHistoryModelUsage(session, modelId, effort);
       if (view) this.renderHistoryMeta();
       this.$("status-name").textContent = `model: ${[modelId, effort].filter(Boolean).join(" ")}`;
     } catch (error) {
@@ -1483,6 +1592,34 @@ Object.assign(TermdeckApp.prototype, {
     const hasPrompt = !!prompt?.value.trim();
     queue.classList.toggle("hidden", !this.historyOpen || (spinning && !hasPrompt));
     stop.classList.toggle("hidden", !this.historyOpen || !spinning);
+  },
+
+
+  positionHistoryComposerControls() {
+    const model = this.$("history-model");
+    const promptHistory = this.$("history-prompt-history-btn");
+    const controls = this.$("history-send-extra-controls");
+    const footer = this.$("history-prompt-footer");
+    const help = this.$("history-prompt-help");
+    if (!model || !promptHistory || !controls || !footer || !help) return;
+    const mobile = this.touchMobileLayoutEnabled();
+    controls.classList.toggle("hidden", !mobile);
+    if (mobile) {
+      if (model.parentElement !== controls) controls.append(model);
+      if (promptHistory.parentElement !== controls) controls.append(promptHistory);
+      return;
+    }
+    if (model.parentElement !== help) help.append(model);
+    if (promptHistory.parentElement !== footer) footer.append(promptHistory);
+  },
+
+
+  updateHistoryPromptHelpText() {
+    const helpText = this.$("history-prompt-help-text");
+    if (!helpText) return;
+    helpText.textContent = this.touchMobileLayoutEnabled() ? "" :
+      `${PRIMARY_MODIFIER_DISPLAY}+Enter submit · ${PRIMARY_MODIFIER_DISPLAY}+Shift+Enter queue · ` +
+      `Enter or Shift+Enter newline · ↑↓ edit queued`;
   },
 
 
@@ -2195,6 +2332,7 @@ Object.assign(TermdeckApp.prototype, {
       const updated = await response.json();
       if (updated.session) this.applySessionStatus({ ...updated.session, session_id: view.sessionId });
       this.sessionModelById.set(view.sessionId, `${modelId} ${reasoningEffort}`);
+      this.rememberHistoryModelUsage(session, modelId, reasoningEffort);
       this.showHistorySlashCommandResult(view, "/model", `Model changed to ${modelId} ${reasoningEffort}.`);
       this.finishHistorySlashCommand(view, text, options);
       this.$("status-name").textContent = `model: ${modelId} ${reasoningEffort}`;
@@ -2930,7 +3068,7 @@ Object.assign(TermdeckApp.prototype, {
     view.promptApiSubmitting = true;
     this.$("status-name").textContent = "sending prompt…";
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 15000);
+    const timeout = window.setTimeout(() => controller.abort(), PROMPT_SEND_TIMEOUT_MS);
     try {
       const response = await fetch(`/api/sessions/${encodeURIComponent(view.sessionId)}/prompt`, {
         method: "POST",
@@ -2943,6 +3081,11 @@ Object.assign(TermdeckApp.prototype, {
         throw new Error(String(failure.detail || `prompt submission failed (${response.status})`));
       }
       const result = await response.json();
+      // Said only when it did not go in -- a dialog in the terminal would have taken it as an answer, or
+      // the terminal exited -- and so the one case where the message must be kept to send again.
+      if (result.prompt_submitted === false) {
+        throw new Error(`prompt not sent: ${result.delivery_detail || "it did not go in"} · message kept`);
+      }
       if (this.historyTextIsUntrackedSlashCommand(text, view.sessionId)) {
         // The transcript will never show this line, so the send succeeding is the
         // confirmation. Waiting on a match instead left it unconfirmed until it aged out.
@@ -3953,10 +4096,12 @@ Object.assign(TermdeckApp.prototype, {
       block.className = "turn " + turn.role;
       if (turn.pending_id) block.classList.add("pending-delivery");
       block.dataset.outlineKey = this.conversationOutlineTurnKey(turn);
+      const turnContent = String(turn.text || "");
       const text = document.createElement("div");
       text.className = "turn-text markdown";
       text.innerHTML = this.renderMarkdown(turn.text);
       this.linkHistoryFileReferences(text);
+      const promptClampable = turn.role === "user" && (turnContent.split(/\r?\n/).length > 5 || turnContent.length > 320);
       if (["user", "assistant"].includes(turn.role)) {
         const role = document.createElement("div");
         role.className = "turn-role";
@@ -3964,6 +4109,62 @@ Object.assign(TermdeckApp.prototype, {
         block.append(role);
       }
       block.append(text);
+      if (["user", "assistant"].includes(turn.role)) {
+        const copyTurnKey = `${this.activeId}|${this.conversationOutlineTurnKey(turn)}`;
+        const copy = this.keepTranscriptFocus(document.createElement("button"));
+        copy.type = "button";
+        copy.className = "history-turn-copy";
+        copy.title = "Copy turn";
+        copy.setAttribute("aria-label", `Copy ${turn.role === "user" ? "prompt" : "response"}`);
+        copy.innerHTML = '<span class="codicon codicon-copy"></span>';
+        copy.onclick = (eventClick) => {
+          eventClick.preventDefault();
+          eventClick.stopPropagation();
+          if (this.touchMobileLayoutEnabled()) {
+            const selection = window.getSelection();
+            selection?.removeAllRanges();
+            selection?.selectAllChildren(text);
+            void this.copyTextToClipboard(turnContent, "turn copied");
+            return;
+          }
+          void this.copyTextToClipboard(turnContent, "turn copied");
+        };
+        block.append(copy);
+        if (this.touchMobileLayoutEnabled()) {
+          if (this.historyCopyActionTurnKey === copyTurnKey) block.classList.add("copy-actions-visible");
+          block.addEventListener("click", (eventClick) => {
+            if (eventClick.target.closest?.(".history-turn-copy")) return;
+            const wasVisible = block.classList.contains("copy-actions-visible");
+            body.querySelectorAll(".turn.copy-actions-visible").forEach((shownTurn) => {
+              shownTurn.classList.remove("copy-actions-visible");
+            });
+            this.historyCopyActionTurnKey = wasVisible ? "" : copyTurnKey;
+            if (!wasVisible) block.classList.add("copy-actions-visible");
+          });
+        }
+      }
+      if (promptClampable) {
+        const promptKey = `${this.activeId}|${this.conversationOutlineTurnKey(turn)}`;
+        const toggle = this.keepTranscriptFocus(document.createElement("button"));
+        toggle.type = "button";
+        toggle.className = "history-prompt-more";
+        const apply = (expanded) => {
+          block.classList.toggle("prompt-collapsed", !expanded);
+          toggle.textContent = expanded ? "… show less" : "… show more";
+          toggle.title = expanded ? "Show the first five lines" : "Show the full prompt";
+          toggle.setAttribute("aria-expanded", String(expanded));
+        };
+        apply(this.historyPromptExpandedTurns.has(promptKey));
+        toggle.onclick = (eventClick) => {
+          eventClick.preventDefault();
+          eventClick.stopPropagation();
+          const expanded = !this.historyPromptExpandedTurns.has(promptKey);
+          if (expanded) this.historyPromptExpandedTurns.add(promptKey);
+          else this.historyPromptExpandedTurns.delete(promptKey);
+          apply(expanded);
+        };
+        block.append(toggle);
+      }
       if (turn.pending_id) {
         const delivery = document.createElement("div");
         delivery.className = `history-pending-delivery ${turn.pending_delivery_state || "awaiting_transcript"}`;
@@ -4009,7 +4210,7 @@ Object.assign(TermdeckApp.prototype, {
           };
           delivery.append(retryTerminal, dismiss);
         }
-        if (deliveryState === "unconfirmed" && this.touchMobileLayoutEnabled()) {
+        if (deliveryState === "unconfirmed" && this.touchMobileLayoutEnabled() && !promptClampable) {
           // The failure cluster rides the message's own last line instead of a row
           // beneath it. Only when the tail is a plain paragraph (or bare text); a code
           // block or list keeps its layout and the cluster drops below as before.
@@ -4243,7 +4444,8 @@ Object.assign(TermdeckApp.prototype, {
     this.historyFingerprint = fingerprint;
     this.historyLoaded = true;
     const s = this.sessionOrClosed(sessionId);
-    this.$("history-title").textContent = s ? this.effectiveTitle(s) : "";
+    this.$("history-title").textContent = s ? this.titlePresentation(s).text : "";
+    this.syncMobileSidebarIdentity(s);
     this.renderHistoryModel(s, turns);
     if (canPatchTail) {
       // Keep the unchanged transcript nodes in place so browser-find selection
@@ -8277,6 +8479,7 @@ Object.assign(TermdeckApp.prototype, {
     this.historyLoaded = cachedHistory.length > 0;
     const previousView = previousId ? this.views.get(previousId) : null;
     this.activeId = id;
+    this.syncMobileSidebarIdentity(selected);
     this.updateEventlyDemoFeatureBanner();
     this.updateRecentFilesWatch();
     this.historyOpen = this.selectedHistoryMode(selected);
@@ -8356,6 +8559,7 @@ Object.assign(TermdeckApp.prototype, {
       this.drainTerminalWrites(view);
       this.scheduleV2ViewportSync(view);
       this.scheduleBlankScreenRecovery(view);
+      this.scheduleTerminalHoleCheck(view);
       this.prepareTerminalForFirstPaint(view);
       this.scheduleClaudeWebglColdPrimeCompletion(view);
       if (this.isTerminalScrollV2() && !view.userScrollIntent) view.scrollMode = "follow";

@@ -65,6 +65,7 @@ class AgentCli:
     supports_resume = False             # a dead terminal can respawn onto its old agent session
     supports_fork = False               # an agent session can be forked into a new terminal
     fork_tracks_parent = False          # forked records remember the parent agent session id
+    fork_via_live_source = False        # forking sends a command to the live source terminal (muse's /fork)
     canonical_resume_command = False    # the saved command is kept rewritten as a resume of the bound session
     records_raw_replay = False          # raw pty output is recorded and replayed on reconnect
     has_prompt_queue = False            # Tab queues the composer draft instead of completing
@@ -159,6 +160,10 @@ class AgentCli:
         Used when the agent refuses the session it was pointed at, which leaves nothing to resume.
         """
         return original_command
+
+    async def fork_through_source(self, manager, ms) -> str:
+        """Branch ms's live session through its own terminal; return the new agent session id."""
+        raise ValueError(f"a {self.kind} terminal cannot fork through its live session")
 
     def termdeck_instruction_arguments(self, instruction_file: Path) -> tuple[str, ...]:
         return ()
@@ -422,6 +427,71 @@ class AgentCli:
 
     def on_api_prompt_submitted(self, manager, ms, queue: bool) -> None:
         """A prompt is about to be pasted through the API/Markdown path."""
+
+    # -- prompt delivery -----------------------------------------------------
+
+    # Only the last few seconds of the agent's own records and of the terminal stream matter to a prompt
+    # that has just gone in.
+    PROMPT_RECORD_TAIL_BYTES = 256 * 1024
+    PROMPT_SCREEN_TAIL_BYTES = 64 * 1024
+    PROMPT_SCREEN_ROWS_CHECKED = 24
+    # A dialog whose Enter answers it: a pasted prompt is thrown away by it and the Enter after the paste
+    # picks its first choice. Each is the reason given, and phrases all of which are on screen while it is.
+    PROMPT_BLOCKING_DIALOGS: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+    def prompt_taken(self, manager, ms, text: str, sent_at: float) -> bool:
+        """Whether a record the agent writes the moment a prompt is submitted shows this one.
+
+        The transcript is not that record for every agent: one sent mid-turn can be written there only
+        at the agent's next step, minutes later. `sent_at` is the wall-clock time it was sent.
+        """
+        return False
+
+    def prompt_blocked_by(self, ms) -> str:
+        """The reason a prompt cannot go in now -- a dialog on screen that would take its keys -- or ""."""
+        if not self.PROMPT_BLOCKING_DIALOGS:
+            return ""
+        screen = self.screen_bottom_text(ms)
+        return next((reason for reason, phrases in self.PROMPT_BLOCKING_DIALOGS
+                     if all(phrase in screen for phrase in phrases)), "")
+
+    def screen_bottom_text(self, ms) -> str:
+        """The lowest rows of the terminal with anything on them, as it shows them now.
+
+        Replayed through a terminal, because a TUI patches its screen in place with cursor moves and the
+        raw bytes do not read as what is shown. Blank rows are skipped: a tall terminal is mostly empty
+        below an agent that draws at the top.
+        """
+        try:
+            import pyte
+        except ImportError:
+            return ""
+        stream = ms.raw_replay_buffer or ms.buffer
+        screen = pyte.Screen(max(int(ms.record.cols or 0), 20), max(int(ms.record.rows or 0), 24))
+        pyte.Stream(screen).feed(bytes(stream[-self.PROMPT_SCREEN_TAIL_BYTES:]).decode("utf-8", "replace"))
+        filled = [row.rstrip() for row in screen.display if row.strip()]
+        return "\n".join(filled[-self.PROMPT_SCREEN_ROWS_CHECKED:])
+
+    @staticmethod
+    def prompt_needle(text: str) -> str:
+        """The part of a prompt to look for: its first line, which survives an agent reformatting a long
+        pasted prompt."""
+        return next((line.strip() for line in text.splitlines() if line.strip()), "")[:120]
+
+    @staticmethod
+    def tail_lines(path: Path | None, max_bytes: int) -> list[str]:
+        """The whole lines in the last `max_bytes` of a file, oldest first."""
+        if path is None:
+            return []
+        try:
+            with path.open("rb") as handle:
+                size = handle.seek(0, 2)
+                handle.seek(max(0, size - max_bytes))
+                lines = handle.read().decode("utf-8", "replace").splitlines()
+        except OSError:
+            return []
+        # Reading from the middle of the file starts partway through a line.
+        return lines[1:] if size > max_bytes else lines
 
     @staticmethod
     def submitted_command(text: str, draft_before: str) -> str:

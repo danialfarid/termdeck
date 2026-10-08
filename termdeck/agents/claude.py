@@ -58,6 +58,14 @@ class ClaudeCli(AgentCli):
                            ("/usage", "Show plan usage and session cost"))
     SETTINGS_FILE = Path.home() / ".claude" / "settings.json"
     STATE_FILE = Path.home() / ".claude.json"
+    # Claude's questions before a session starts, both with "No, exit" among the answers: a prompt's
+    # Enter picks one, and in a folder not yet trusted it picked "No, exit".
+    PROMPT_BLOCKING_DIALOGS = (
+        ("Claude is asking whether to trust this folder; answer it in that terminal, then send the prompt again",
+         ("Yes, I trust this folder", "No, exit")),
+        ("Claude is asking to accept running without permission prompts; answer it in that terminal, "
+         "then send the prompt again", ("Yes, I accept", "No, exit")),
+    )
     # Claude's own help is the authority on both: it names the aliases it takes and lists the levels.
     MODEL_ALIAS_HELP_RE = re.compile(r"--model <model>(.*?)(?=\n\s*-{1,2}\w)", re.S)
     EFFORT_HELP_RE = re.compile(r"--effort <level>(.*?)(?=\n\s*-{1,2}\w)", re.S)
@@ -106,6 +114,30 @@ class ClaudeCli(AgentCli):
             return None
         path = self.project_dir(cwd) / f"{agent_session_id}.jsonl"
         return path if path.exists() else None
+
+    def prompt_taken(self, manager, ms, text: str, sent_at: float) -> bool:
+        # A prompt sent while Claude is working is queued, and Claude records it as queued at once; it
+        # becomes a user turn only when Claude gets to it, after whatever it is doing now.
+        needle = self.prompt_needle(text)
+        if not ms.record.agent_session_id or not needle:
+            return False
+        path = self.transcript_path(Path(ms.record.cwd), ms.record.agent_session_id)
+        for line in self.tail_lines(path, self.PROMPT_RECORD_TAIL_BYTES):
+            if '"queue-operation"' not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or entry.get("type") != "queue-operation" or entry.get("operation") != "enqueue":
+                continue
+            try:
+                queued_at = datetime.fromisoformat(str(entry.get("timestamp")).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            if queued_at >= sent_at - 1 and needle in str(entry.get("content") or ""):
+                return True
+        return False
 
     def candidate_session_files(self, cwd: Path) -> list[tuple[Path, str]]:
         project_dir = self.project_dir(cwd)

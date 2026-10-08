@@ -137,7 +137,9 @@ work:
 | Claude | `<original command> --resume <id>` |
 | Codex | `codex resume <id>` |
 
-Fork uses `--fork-session` / `codex fork` to branch a copy into a new terminal.
+Fork uses `--fork-session` / `codex fork` to branch a copy into a new terminal; Muse
+branches by sending `/fork` to the live source terminal and opening the new terminal on the
+detached branch it creates.
 
 ---
 

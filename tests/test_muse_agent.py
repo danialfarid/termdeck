@@ -91,6 +91,18 @@ class TranscriptParsingTest(unittest.TestCase):
 
         self.assertEqual([(turn["role"], turn["text"]) for turn in turns], [("assistant", "done")])
 
+    def test_a_forked_turn_is_prompt_and_answer(self) -> None:
+        line = json.dumps({"payload_type": "session.fork.turn",
+                           "payload": {"turn": {"prompt": "remember this", "answer": "echo: remember this",
+                                                "source": {"started_recorded_at": 1790290923224584,
+                                                           "answer_recorded_at": 1790290924224584}}}})
+        turns = self.cli.parse_transcript_lines([line])
+
+        self.assertEqual([(turn["role"], turn["text"]) for turn in turns],
+                         [("user", "remember this"), ("assistant", "echo: remember this")])
+        self.assertEqual(turns[0]["timestamp"], 1790290923224584 / 1_000_000)
+        self.assertEqual(turns[1]["timestamp"], 1790290924224584 / 1_000_000)
+
     def test_tool_calls_and_results_are_events(self) -> None:
         lines = [self.run_line({"kind": "assistant_tool_calls_committed", "message_id": "m",
                                 "tool_calls": [{"name": "search", "args": '{"pattern": "x"}'}]}),
@@ -384,7 +396,14 @@ class RunStateTest(unittest.TestCase):
 
     def ms(self, session_id: str | None) -> SimpleNamespace:
         return SimpleNamespace(record=SimpleNamespace(agent_session_id=session_id, cwd="/work"),
-                               attention_required=False, processing=False, agent_state=self.state)
+                               attention_required=False, processing=False, running=True,
+                               agent_state=self.state)
+
+    def subagent_log(self, session_id: str, subagent_id: str) -> Path:
+        path = self.session(session_id).parent / "subagent" / subagent_id / MuseCli.SESSION_LOG_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+        return path
 
     def test_an_open_run_is_processing(self) -> None:
         path = self.session("01a0-one")
@@ -543,6 +562,92 @@ class RunStateTest(unittest.TestCase):
 
         self.assertFalse(self.state.run_state_known)
         self.assertTrue(self.cli.is_processing(ms))
+
+    def test_an_open_subagent_run_marks_processing_and_dot(self) -> None:
+        # The main run closes while its workflow's children are still working.
+        self.subagent_log("01a0-one", "sub-1").write_text(self.run_line("started", "run-9") + "\n")
+        self.session("01a0-one").write_text(self.run_line("started", "run-1") + "\n" +
+                                            self.run_line("terminal", "run-1") + "\n")
+        ms = self.ms("01a0-one")
+
+        self.cli.refresh_activity_for_status(self.manager, ms)
+
+        self.assertTrue(self.cli.is_processing(ms))
+        self.assertEqual(self.cli.activity_detail(ms), {"main": False, "subagents": 1})
+
+    def test_a_closed_subagent_run_clears(self) -> None:
+        self.session("01a0-one").write_text("")
+        sub = self.subagent_log("01a0-one", "sub-1")
+        sub.write_text(self.run_line("started", "run-9") + "\n")
+        ms = self.ms("01a0-one")
+        self.cli.refresh_activity_for_status(self.manager, ms)
+        sub.write_text(sub.read_text() + self.run_line("terminal", "run-9") + "\n")
+
+        self.cli.refresh_activity_for_status(self.manager, ms)
+
+        self.assertFalse(self.cli.is_processing(ms))
+        self.assertEqual(self.cli.activity_detail(ms), {"main": False, "subagents": 0})
+
+    def test_a_pruned_subagent_log_drops_its_cursor(self) -> None:
+        self.session("01a0-one").write_text("")
+        sub = self.subagent_log("01a0-one", "sub-1")
+        sub.write_text(self.run_line("started", "run-9") + "\n")
+        ms = self.ms("01a0-one")
+        self.cli.refresh_activity_for_status(self.manager, ms)
+        self.assertTrue(self.cli.is_processing(ms))
+        sub.unlink()
+        sub.parent.rmdir()
+
+        self.cli.refresh_activity_for_status(self.manager, ms)
+
+        self.assertFalse(self.cli.is_processing(ms))
+        self.assertEqual(self.state.subagent_scans, {})
+
+    def test_main_and_subagent_dots_report_separately(self) -> None:
+        self.subagent_log("01a0-one", "sub-1").write_text(self.run_line("started", "run-9") + "\n")
+        self.subagent_log("01a0-one", "sub-2").write_text(self.run_line("started", "run-8") + "\n" +
+                                                         self.run_line("terminal", "run-8") + "\n")
+        self.session("01a0-one").write_text(self.run_line("started", "run-1") + "\n")
+        ms = self.ms("01a0-one")
+
+        self.cli.refresh_activity_for_status(self.manager, ms)
+
+        self.assertEqual(self.cli.activity_detail(ms), {"main": True, "subagents": 1})
+
+    def test_a_dead_terminal_reports_no_activity(self) -> None:
+        self.session("01a0-one").write_text("")
+        self.subagent_log("01a0-one", "sub-1").write_text(self.run_line("started", "run-9") + "\n")
+        ms = self.ms("01a0-one")
+        self.cli.refresh_activity_for_status(self.manager, ms)
+        ms.running = False
+
+        self.assertEqual(self.cli.activity_detail(ms), {"main": False, "subagents": 0})
+
+    def test_subagent_run_edges_broadcast(self) -> None:
+        sub = self.subagent_log("01a0-one", "sub-1")
+        self.session("01a0-one").write_text(self.run_line("started", "run-1") + "\n" +
+                                            self.run_line("terminal", "run-1") + "\n")
+        ms = self.ms("01a0-one")
+        self.cli.refresh_activity_for_status(self.manager, ms)
+        sub.write_text(self.run_line("started", "run-9") + "\n")
+        self.cli.on_transcript_event(self.manager, ms, sub)
+
+        self.assertEqual(self.processing_broadcasts, [True])
+        sub.write_text(sub.read_text() + self.run_line("terminal", "run-9") + "\n")
+        self.cli.on_transcript_event(self.manager, ms, sub)
+
+        self.assertEqual(self.processing_broadcasts, [True, False])
+
+    def test_a_foreign_nested_log_is_ignored(self) -> None:
+        self.session("01a0-one").write_text("")
+        foreign = self.subagent_log("01a0-two", "sub-1")
+        foreign.write_text(self.run_line("started", "run-9") + "\n")
+        ms = self.ms("01a0-one")
+
+        self.cli.on_transcript_event(self.manager, ms, foreign)
+
+        self.assertEqual(self.processing_broadcasts, [])
+        self.assertEqual(self.state.subagent_scans, {})
 
 
 class ModelCatalogTest(unittest.TestCase):
@@ -1032,6 +1137,101 @@ class ReconcileBindingTest(unittest.TestCase):
         self.assertEqual(
             self.reconcile(self.OLD, True, f"muse resume {self.NEW}"), self.OLD)
         self.assertEqual(self.bound, [])
+
+
+class ForkTest(unittest.TestCase):
+    """/fork branches the live session into a detached session: the source terminal stays on
+    the parent, and the new log opens with session.fork.created naming it."""
+
+    def setUp(self) -> None:
+        self.cli = MuseCli()
+        self.directory = TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name) / "muse" / "sessions"
+        patched = patch.object(MuseCli, "sessions_root", self.root)
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def session(self, session_id: str, first_line: str = "{}\n") -> Path:
+        day = TimeUtil.today_est()
+        path = self.root / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}" / session_id / \
+            MuseCli.SESSION_LOG_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(first_line)
+        return path
+
+    @staticmethod
+    def v7_id(unix_ms: int) -> str:
+        head = f"{unix_ms:012x}"
+        return f"{head[:8]}-{head[8:12]}-7abc-8def-123456789012"
+
+    @staticmethod
+    def fork_created_line(fork_id: str, source_id: str) -> str:
+        # The real record carries no timestamp; recency reads off the fork id's UUIDv7 mint.
+        return json.dumps({"record_type": "session.fork.created",
+                           "payload": {"fork_session_id": fork_id, "source_session_id": source_id}}) + "\n"
+
+    def test_finding_the_branch_ignores_other_sources_and_stale_forks(self) -> None:
+        now_ms = int(time.time() * 1000)
+        branch = self.v7_id(now_ms)
+        elsewhere = self.v7_id(now_ms - 1000)
+        stale = self.v7_id(now_ms - 3_600_000)
+        since = time.time() - 60
+        self.session("01a0-parent", "{}\n")
+        self.session("01a0-branch", self.fork_created_line(branch, "01a0-parent"))
+        self.session("01a0-elsewhere", self.fork_created_line(elsewhere, "01a0-other"))
+        self.session("01a0-stale", self.fork_created_line(stale, "01a0-parent"))
+
+        self.assertEqual(self.cli.latest_fork_of("01a0-parent", since), branch)
+
+    def test_a_branch_without_a_v7_id_falls_back_to_freshness(self) -> None:
+        self.session("01a0-parent", "{}\n")
+        self.session("01a0-branch", self.fork_created_line("not-a-uuid", "01a0-parent"))
+
+        self.assertEqual(self.cli.latest_fork_of("01a0-parent", time.time() - 60), "not-a-uuid")
+
+    def test_no_branch_yet_is_none(self) -> None:
+        self.session("01a0-parent", "{}\n")
+
+        self.assertIsNone(self.cli.latest_fork_of("01a0-parent", time.time() - 60))
+
+    def ms(self, **overrides) -> SimpleNamespace:
+        fields = dict(running=True, proc=SimpleNamespace(alive=True),
+                      record=SimpleNamespace(session_id="tab-1", agent_session_id="01a0-parent", draft=""))
+        fields.update(overrides)
+        return SimpleNamespace(**fields)
+
+    def test_fork_sends_slash_fork_and_returns_the_branch(self) -> None:
+        writes: list[tuple[str, str]] = []
+        manager = SimpleNamespace(write_input=lambda session_id, text: writes.append((session_id, text)))
+        with patch.object(self.cli, "is_processing", return_value=False), \
+                patch.object(self.cli, "latest_fork_of", side_effect=[None, "01a0-branch"]) as discovered:
+            fork_id = asyncio.run(self.cli.fork_through_source(manager, self.ms()))
+
+        self.assertEqual(fork_id, "01a0-branch")
+        self.assertEqual(len(writes), 2)
+        self.assertTrue(writes[0][1].endswith("\x1b[200~/fork\x1b[201~"))
+        self.assertEqual(writes[1], ("tab-1", "\r"))
+        self.assertEqual(discovered.call_args[0][0], "01a0-parent")
+
+    def test_fork_refuses_a_busy_terminal(self) -> None:
+        manager = SimpleNamespace(write_input=AsyncMock())
+        with patch.object(self.cli, "is_processing", return_value=True):
+            with self.assertRaisesRegex(ValueError, "still working"):
+                asyncio.run(self.cli.fork_through_source(manager, self.ms()))
+
+        manager.write_input.assert_not_called()
+
+    def test_fork_refuses_a_draft_and_a_dead_terminal(self) -> None:
+        manager = SimpleNamespace(write_input=AsyncMock())
+        with self.assertRaisesRegex(ValueError, "draft"):
+            asyncio.run(self.cli.fork_through_source(manager, self.ms(
+                record=SimpleNamespace(session_id="tab-1", agent_session_id="01a0-parent",
+                                       draft="half typed"))))
+        with self.assertRaisesRegex(ValueError, "not running"):
+            asyncio.run(self.cli.fork_through_source(manager, self.ms(running=False)))
+
+        manager.write_input.assert_not_called()
 
 
 if __name__ == "__main__":

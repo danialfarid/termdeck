@@ -26,6 +26,7 @@ HARNESS = """
 const scenario = JSON.parse(process.env.TERMDECK_SLASH_SCENARIO);
 const PENDING_PROMPT_UNCONFIRMED_MS = __UNCONFIRMED__;
 const PENDING_PROMPT_DISCARD_MS = __DISCARD__;
+const PROMPT_SEND_TIMEOUT_MS = __SEND_TIMEOUT__;
 global.window = { setTimeout: (...args) => setTimeout(...args),
   clearTimeout: (...args) => clearTimeout(...args), setInterval: () => 0, clearInterval: () => {} };
 global.fetch = async () => ({ ok: scenario.fetchOk !== false, json: async () => scenario.fetchBody || {} });
@@ -125,7 +126,8 @@ class SlashCommandDeliveryTest(unittest.TestCase):
         harness = HARNESS.replace(
             "__METHODS__", "\n  ".join(method_source(source, name) for name in METHODS))
         for placeholder, name in (("__UNCONFIRMED__", "PENDING_PROMPT_UNCONFIRMED_MS"),
-                                  ("__DISCARD__", "PENDING_PROMPT_DISCARD_MS")):
+                                  ("__DISCARD__", "PENDING_PROMPT_DISCARD_MS"),
+                                  ("__SEND_TIMEOUT__", "PROMPT_SEND_TIMEOUT_MS")):
             match = re.search(rf"const {name} = (\d+);", app_source)
             assert match, f"{name} not found in app.js"
             harness = harness.replace(placeholder, match.group(1))
@@ -165,6 +167,24 @@ class SlashCommandDeliveryTest(unittest.TestCase):
         self.assertEqual(output["pending"],
                          [{"text": "/goal resume", "delivery_state": "unconfirmed"}])
         self.assertEqual(output["commandResults"], [])
+
+    def test_a_prompt_that_did_not_go_in_is_kept(self) -> None:
+        # The server says so when a dialog in the terminal would have taken it, or the terminal exited:
+        # the message stays to be sent again, and why is shown.
+        output = self.run_scenario({"mode": "submit", "text": "hello there", "fromQueue": True, "fetchBody": {
+            "prompt_submitted": False, "delivery": "failed",
+            "delivery_detail": "Codex is asking whether to update"}})
+        self.assertFalse(output["sent"])
+        self.assertEqual(output["pending"], [{"text": "hello there", "delivery_state": "unconfirmed"}])
+        self.assertIn("Codex is asking whether to update", output["status"])
+        self.assertEqual(output["submitTextCalls"], 0)
+
+    def test_a_prompt_that_went_in_unseen_counts_as_sent(self) -> None:
+        # Not seen to arrive is not the same as not sent: keeping it would have it sent twice.
+        output = self.run_scenario({"mode": "submit", "text": "hello there", "fetchBody": {
+            "prompt_submitted": True, "delivery": "unconfirmed", "delivery_detail": "not recorded"}})
+        self.assertTrue(output["sent"])
+        self.assertEqual(output["submitTextCalls"], 1)
 
     def test_normal_prompt_still_waits_on_transcript(self) -> None:
         output = self.run_scenario({"mode": "submit", "text": "hello there"})

@@ -1335,7 +1335,8 @@ Object.assign(TermdeckApp.prototype, {
         const body = document.createElement("div");
         body.className = "worktree-section-body";
         this.renderTerminalEntries(sessions, body, worktreeId);
-        if (!this.hideInactiveTerminals) this.renderClosedInto(body, closed, worktreeId);
+        // The eye toggle filters the live list, not history: closed terminals stay visible.
+        this.renderClosedInto(body, closed, worktreeId);
         section.appendChild(body);
       }
       list.appendChild(section);
@@ -1415,7 +1416,8 @@ Object.assign(TermdeckApp.prototype, {
       }
     }
     if (!this.vscodeMode) this.renderRecentFilesInto(list);
-    if (this.worktreeId !== ALL_WORKTREES_ID && !this.hideInactiveTerminals) this.renderClosedInto(list);
+    // The eye toggle filters the live list, not history: closed terminals stay visible.
+    if (this.worktreeId !== ALL_WORKTREES_ID) this.renderClosedInto(list);
     this.$("empty-state").style.display = this.sessions.length || this.closedSessions.length ||
       (!this.vscodeMode && this.openFiles.size) ? "none" : "flex";
     this.sessionListSignature = this.sessionListSignatureFor();
@@ -4401,8 +4403,10 @@ Object.assign(TermdeckApp.prototype, {
     const state = this.getProjectState();
     const assignedGroupId = state.session_groups?.[session.session_id] || "";
     if (!multiple) {
-      this.addContextItem(menu, this.shortcutLabel("Fork", "fork-terminal"),
-        () => this.forkSession(session), "repo-forked");
+      if (this.canForkSession(session)) {
+        this.addContextItem(menu, this.shortcutLabel("Fork", "fork-terminal"),
+          () => this.forkSession(session), "repo-forked");
+      }
       this.addContextItem(menu, "New terminal after this",
         () => this.openModal(null, session.session_id), "add");
       this.addContextItem(menu, this.shortcutLabel("Restart", "restart-terminal"),

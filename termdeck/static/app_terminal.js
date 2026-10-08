@@ -870,6 +870,7 @@ Object.assign(TermdeckApp.prototype, {
           // stay blank. Asking only here keeps the attach-time repaint off in the common case, where the
           // buffer already holds the screen and repainting is what causes the flicker.
           const initialRepaintRequested = this.requestRepaintIfBlank(view);
+          this.scheduleTerminalHoleCheck(view);
           if (initialRepaintRequested) {
             clearTimeout(view.initialCodexRepaintTimer);
             clearTimeout(view.initialCodexRepaintWatchdogTimer);

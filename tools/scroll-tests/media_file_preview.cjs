@@ -86,7 +86,7 @@ const snap = () => {
       return { html: await ask('README.md'), escape: await ask('../../../../etc/hosts'), missing: await ask('nope.png') };
     }, { root: ROOT });
     check('the endpoint refuses a document type', statuses.html === 415, String(statuses.html));
-    check('the endpoint refuses a path outside the root', statuses.escape === 403, String(statuses.escape));
+    check('the endpoint refuses a non-media file outside the project root', statuses.escape === 415, String(statuses.escape));
     check('and reports a missing file as missing', statuses.missing === 404, String(statuses.missing));
   } finally {
     fs.rmSync(imagePath, { force: true });

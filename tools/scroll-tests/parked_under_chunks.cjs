@@ -54,6 +54,9 @@ const READ = (i) => {
   }
   await p.waitForTimeout(3000);
 
+  await send('for i in $(seq 1 30); do seq 1 400 | sed "s/^/chunk /"; sleep 0.6; done\n');
+  await p.waitForTimeout(1000);
+
   const box = await p.evaluate((i) => {
     const r = window.__td.views.get(i).container.getBoundingClientRect();
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
@@ -66,11 +69,9 @@ const READ = (i) => {
   console.log('parked at:', JSON.stringify(parked));
   if (parked.following !== false) { console.log('\nDID NOT PARK -- nothing to measure.'); await br.close(); process.exit(2); }
 
-  // Big chunks: whole blocks land in single writes, the way an agent repaints. Deliberately far fewer
-  // lines than the scrollback holds, so the reader's own line is never legitimately trimmed away -- if it
-  // moves, it moved because of us.
-  await send('for i in $(seq 1 10); do seq 1 400 | sed "s/^/chunk /"; sleep 0.6; done\n');
-
+  // Big chunks: whole blocks land in single writes, the way an agent repaints. The command was started
+  // before parking because person input deliberately returns a parked terminal to its composer.
+  // Deliberately fewer lines than the scrollback holds, so the reader's own line is not trimmed away.
   const samples = [];
   const started = Date.now();
   while (Date.now() - started < 14000) {

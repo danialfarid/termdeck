@@ -38,8 +38,9 @@ from termdeck.history_index import HistorySearchIndex
 from termdeck.lan_access import LanAccessManager
 from termdeck.lsp_protocol import LanguageServerConnection, LanguageServerProtocolError, LanguageServerRequestError
 from termdeck.lsp_service import LanguageServerManager, LanguageServerRegistry, LanguageServerUnavailableError
+from termdeck.terminal_client_queue import TerminalClientQueue
 from termdeck.lsp_workspace_edit import LspWorkspaceEditService
-from termdeck.models import ApiFields, WsMessageFields
+from termdeck.models import ApiFields, PromptDelivery, WsMessageFields
 from termdeck.notifier import AgentNotifier
 from termdeck.platform_paths import PlatformPaths
 from termdeck.project_bundle import ProjectBundleService, ProjectBundleSession
@@ -354,6 +355,17 @@ class TerminalLayoutMoveRequest(BaseModel):
     target_token: str = ""
     after: bool = False
     to_top: bool = False
+
+    # A page built before the client stopped doing it sends `null` for a drop before a group label --
+    # a boolean OR over a rect that a group has none of. Refusing it made the page reload the order it
+    # had just changed, so the group moved and snapped back a second later, and every tab left open
+    # since then -- a phone, a second window -- keeps doing that until it is reloaded. Null means before.
+    @model_validator(mode="before")
+    @classmethod
+    def _null_means_before(cls, data: object) -> object:
+        if isinstance(data, dict):
+            data = {**data, **{key: False for key in ("after", "to_top") if data.get(key, False) is None}}
+        return data
 
 
 class SessionOrderMoveRequest(BaseModel):
@@ -1215,48 +1227,12 @@ class TermdeckServer:
         incoming_settings = UiSettings(**incoming_payload)
         incoming_settings.lsp_enabled = current_settings.lsp_enabled
         incoming_settings.lsp_command_overrides = current_settings.lsp_command_overrides
-        active_sessions = self.manager.list_sessions(None)
-        active_session_ids_by_project: dict[str, set[str]] = {}
-        for session in active_sessions:
-            project = str(session.get("project", "") or "")
-            active_session_ids_by_project.setdefault(project or "__all__", set()).add(str(session["session_id"]))
-        for project_key, current_state in current_settings.project_state.items():
-            incoming_state = incoming_settings.project_state.get(project_key)
-            if incoming_state is None:
-                incoming_settings.project_state[project_key] = current_state
-                continue
-            incoming_state.open_files = current_state.open_files
-            active_ids = active_session_ids_by_project.get(project_key, set())
-            incoming_state.terminal_layout = self._preserve_missing_ordered_values(
-                current_state.terminal_layout,
-                incoming_state.terminal_layout,
-                {f"session:{session_id}" for session_id in active_ids},
-            )
-            incoming_state.session_order = self._preserve_missing_ordered_values(
-                current_state.session_order,
-                incoming_state.session_order,
-                active_ids,
-            )
+        # The side panel is written one change at a time -- a move, a pin, an unread mark, each its own
+        # request -- and never by a save of the whole settings. Taking the panel from one put back
+        # whatever the sending page held: it kept the incoming order and only re-added what it lacked,
+        # so a page with an older copy moved terminals back where they had been a moment before.
+        incoming_settings.project_state = current_settings.project_state
         return incoming_settings.model_dump()
-
-    @staticmethod
-    def _preserve_missing_ordered_values(current_values: list[str], incoming_values: list[str],
-                                         allowed_values: set[str]) -> list[str]:
-        merged_values = list(incoming_values)
-        for value in current_values:
-            if value not in allowed_values or value in merged_values:
-                continue
-            current_index = current_values.index(value)
-            next_values = current_values[current_index + 1:]
-            next_index = next((merged_values.index(candidate) for candidate in next_values if candidate in merged_values), None)
-            if next_index is not None:
-                merged_values.insert(next_index, value)
-                continue
-            previous_values = current_values[:current_index]
-            previous_index = next((len(merged_values) - 1 - merged_values[::-1].index(candidate)
-                                   for candidate in previous_values if candidate in merged_values), None)
-            merged_values.insert(previous_index + 1 if previous_index is not None else len(merged_values), value)
-        return merged_values
 
     async def _trash_notebook_note(self, request: NotebookTrashRequest) -> dict[str, str]:
         try:
@@ -3235,7 +3211,7 @@ class TermdeckServer:
                     if root is None:
                         raise ValueError(f"unknown project: {project}")
                     worktree = self.worktree_registry.get(project, root, request.worktree_id).metadata()
-                ms = self.manager.fork_session(origin_session_id, request.title, worktree)
+                ms = await self.manager.afork_session(origin_session_id, request.title, worktree)
                 if request.description.strip():
                     self.manager.set_session_description(ms.record.session_id, request.description)
             else:
@@ -3282,20 +3258,17 @@ class TermdeckServer:
                 except (ValueError, OSError) as placement_error:
                     summary["placement_error"] = str(placement_error)
             self._broadcast_project_state_snapshot(ms.record.project, ms.record.worktree_id)
-            # Taken before the prompt goes in: submitting waits for the terminal to confirm it, which
-            # an answer can beat, and a boundary taken afterwards would leave that answer behind it.
+            # Taken before the prompt goes in: an answer can beat the reply to this call, and a boundary
+            # taken afterwards would leave that answer behind it.
             since = self._now_stamp(prompt)
             wanted_queue = not _steer_wanted(request.steer, request.queue)
-            await self.manager.submit_prompt(ms.record.session_id, prompt, request.bracketed, wanted_queue)
+            delivery = await self.manager.submit_prompt(ms.record.session_id, prompt, request.bracketed, wanted_queue)
             latest = self.manager.session_summary(ms)
             latest["placement"] = summary.get("placement")
             latest["placement_error"] = summary.get("placement_error")
             summary = latest
-            summary["prompt_submitted"] = True
-            summary["queued"] = wanted_queue
-            # Where this prompt starts, so the caller can ask for what it answered.
-            summary["since"] = since
-            if origin_session_id and request.write_back:
+            summary.update(self._delivery_fields(delivery, since))
+            if delivery.submitted and origin_session_id and request.write_back:
                 self._schedule_task_result_delivery(ms.record.session_id, origin_session_id, since)
             return summary
         except (ValueError, OSError) as task_error:
@@ -3375,7 +3348,11 @@ class TermdeckServer:
         self._origin_delivery_locks = delivery_locks
         async with lock:
             origin_summary = self.manager.session_summary_by_id(origin_session_id)
-            await self.manager.submit_prompt(origin_session_id, response_text, True, bool(origin_summary.get("processing")))
+            delivery = await self.manager.submit_prompt(origin_session_id, response_text, True,
+                                                        bool(origin_summary.get("processing")))
+            if not delivery.submitted:
+                print(f"termdeck could not hand {child_session_id}'s result to {origin_session_id}: "
+                      f"{delivery.detail}", flush=True)
 
     async def _read_last_turn(self, session_id: str, final_only: bool = False,
                               since: str = "") -> dict[str, object] | None:
@@ -3636,16 +3613,30 @@ class TermdeckServer:
             # What actually happened, not what was asked for: an agent whose composer has no queue is
             # submitted to instead, and a caller told "queued" about a prompt that was sent has been
             # told the wrong thing.
-            # Taken before the prompt goes in: submitting waits for the terminal to confirm it, which
-            # an answer can beat, and a boundary taken afterwards would leave that answer behind it.
+            # Taken before the prompt goes in: an answer can beat the reply to this call, and a boundary
+            # taken afterwards would leave that answer behind it.
             since = self._now_stamp(request.text)
-            queued = await self.manager.submit_prompt(session_id, request.text, request.bracketed, wanted_queue)
+            delivery = await self.manager.submit_prompt(session_id, request.text, request.bracketed, wanted_queue)
         except ValueError as prompt_error:
             raise HTTPException(status_code=409, detail=str(prompt_error)) from prompt_error
-        # Where this prompt starts. What answered it is what the agent said after the transcript
-        # recorded the prompt itself, which is the only thing that ties an answer to a request.
-        return {"session": self.manager.session_summary_by_id(session_id), "prompt_submitted": True,
-                "queued": queued, "since": since}
+        return {"session": self.manager.session_summary_by_id(session_id), **self._delivery_fields(delivery, since)}
+
+    @staticmethod
+    def _delivery_fields(delivery: PromptDelivery, since: str) -> dict[str, object]:
+        """What a caller is told about a prompt it sent: whether it went in, and where its answer starts.
+
+        `delivery` says what is known. Only a prompt that did not go in is reported as not submitted,
+        since that is the one it is safe to send again; one that went in unseen may well have arrived,
+        and sending it again would give the agent it twice. A prompt that did not go in has no answer
+        coming, so it has no `since` to wait from.
+        """
+        fields: dict[str, object] = {"prompt_submitted": delivery.submitted, "queued": delivery.queued,
+                                     "delivery": delivery.outcome, "delivery_detail": delivery.detail}
+        if delivery.submitted:
+            # Where this prompt starts. What answered it is what the agent said after the transcript
+            # recorded the prompt itself, which is the only thing that ties an answer to a request.
+            fields["since"] = since
+        return fields
 
     async def _interrupt_session(self, session_id: str) -> dict[str, object]:
         # One Escape is often swallowed; two in quick succession read as a double-press with its own
@@ -3758,9 +3749,9 @@ class TermdeckServer:
 
                 self._broadcast_project_state_snapshot(ms.record.project, ms.record.worktree_id)
                 self.manager.ensure_session_running(ms.record.session_id)
-                await self.manager.submit_prompt(ms.record.session_id, prompt, bracketed, queue)
-                result["prompt_submitted"] = True
-                result["queued"] = queue
+                since = self._now_stamp(prompt)
+                delivery = await self.manager.submit_prompt(ms.record.session_id, prompt, bracketed, queue)
+                result.update(self._delivery_fields(delivery, since))
                 result["session"] = self.manager.session_summary(ms)
             except (ValueError, OSError) as batch_error:
                 if worktree is not None and "session" not in result:
@@ -3939,7 +3930,7 @@ class TermdeckServer:
                 if root is None:
                     raise ValueError(f"unknown project: {project}")
                 worktree = self.worktree_registry.get(project, root, request.worktree_id).metadata()
-            forked = self.manager.fork_session(session_id, request.title, worktree)
+            forked = await self.manager.afork_session(session_id, request.title, worktree)
         except (ValueError, OSError) as fork_error:
             if worktree is not None:
                 self.worktrees.finish(worktree, "discard")
@@ -4193,7 +4184,7 @@ class TermdeckServer:
         scrollback, queue = self.manager.attach_client(
             session_id, screen_repaint, have_buffer, repaint_preserved_buffer, full_claude_raw_replay)
         try:
-            await websocket.send_bytes(scrollback)
+            await asyncio.wait_for(websocket.send_bytes(scrollback), TerminalClientQueue.SEND_TIMEOUT_SECONDS)
             await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.DRAFT,
                                                    WsMessageFields.DRAFT: self.manager.session_draft(session_id),
                                                    WsMessageFields.DRAFT_REVISION:
@@ -4486,7 +4477,7 @@ class TermdeckServer:
                 continue
             message_type = message[WsMessageFields.TYPE]
             if message_type == WsMessageFields.INPUT:
-                self.manager.write_input(session_id, message[WsMessageFields.DATA])
+                self.manager.write_user_input(session_id, message[WsMessageFields.DATA])
             elif message_type == WsMessageFields.RESIZE:
                 applied, live_cols, live_rows = self.manager.resize(
                     session_id, int(message[WsMessageFields.COLS]), int(message[WsMessageFields.ROWS]),
@@ -4503,7 +4494,9 @@ class TermdeckServer:
             elif message_type == WsMessageFields.SUBMIT:
                 steer = message.get("steer", None)
                 queue = message.get("queue", None)
-                await self.manager.submit_prompt(
+                # Delivered, not confirmed: this loop also reads the person's typing, which waiting out
+                # the confirmation held back for as long as fifteen seconds.
+                await self.manager.deliver_prompt(
                     session_id, message.get(WsMessageFields.TEXT, ""), bool(message.get("bracketed", False)),
                     not _steer_wanted(None if steer is None else bool(steer),
                                       None if queue is None else bool(queue)))
@@ -4520,10 +4513,17 @@ class TermdeckServer:
     async def _pump_queue_to_client(self, websocket: WebSocket, queue: asyncio.Queue) -> None:
         while True:
             item = await queue.get()
-            if isinstance(item, bytes):
-                await websocket.send_bytes(item)
-            else:
-                await websocket.send_text(json.dumps(item))
+            if item is None:
+                await websocket.close(code=1013, reason="Client output backlog exceeded; reconnect to resync")
+                return
+            try:
+                if isinstance(item, bytes):
+                    await asyncio.wait_for(websocket.send_bytes(item), TerminalClientQueue.SEND_TIMEOUT_SECONDS)
+                else:
+                    await asyncio.wait_for(websocket.send_text(json.dumps(item)), TerminalClientQueue.SEND_TIMEOUT_SECONDS)
+            except TimeoutError:
+                await websocket.close(code=1013, reason="Client output stalled; reconnect to resync")
+                return
 
     def run(self) -> None:
         TermdeckConfig.DATA_DIR.mkdir(parents=True, exist_ok=True)

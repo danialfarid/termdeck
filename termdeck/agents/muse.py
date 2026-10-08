@@ -37,6 +37,22 @@ class MuseSessionState(OutputActivityState):
         self.run_scan_sig_start = 0
         self.run_scan_sig = b""
         self.run_state_known = False
+        # One incremental cursor per nested subagent log, by subagent id: the main run
+        # closes while its workflow's children are still working, so without these the
+        # terminal reads idle through the whole delegation.
+        self.subagent_scans: dict[str, MuseSubagentScanState] = {}
+
+
+class MuseSubagentScanState:
+    """Incremental cursor for one nested subagent log; the shape _scan_run_state reads."""
+
+    def __init__(self) -> None:
+        self.open_runs: set[str] = set()
+        self.run_scan_offset = 0
+        self.run_scan_inode: int | None = None
+        self.run_scan_sig_start = 0
+        self.run_scan_sig = b""
+        self.run_state_known = False
 
 
 class MuseCli(AgentCli):
@@ -67,6 +83,9 @@ class MuseCli(AgentCli):
     supports_resume = True
     canonical_resume_command = True
     accepts_session_ref = True
+    supports_fork = True
+    fork_tracks_parent = True
+    fork_via_live_source = True
     records_raw_replay = True
     # The session log brackets every run with started/terminal records, so processing reads
     # off the log once bound; terminal output stays the fallback until the first scan lands.
@@ -129,6 +148,9 @@ class MuseCli(AgentCli):
 
     def __init__(self) -> None:
         self._session_logs: dict[str, Path] = {}
+        # The startup sweep's one reading of which process holds which session lock, by the
+        # process sample it was taken against.
+        self._session_locks: tuple[object, dict[int, str]] | None = None
 
     def new_session_state(self) -> MuseSessionState:
         return MuseSessionState()
@@ -315,6 +337,104 @@ class MuseCli(AgentCli):
         cleaned = self.strip_session_arguments(self.command_parts(original_command)) or [self.executable]
         return shlex.join(cleaned)
 
+    FORK_COMMAND = "/fork"
+    FORK_DISCOVERY_TIMEOUT_SECONDS = 30.0
+    FORK_DISCOVERY_POLL_SECONDS = 0.25
+    FORK_RESUBMIT_AFTER_SECONDS = 4.0
+    FORK_RESUBMIT_EVERY_SECONDS = 3.0
+
+    async def fork_through_source(self, manager, ms) -> str:
+        """Branch the live session by sending /fork to its own terminal.
+
+        The fork is a detached branch: the source terminal stays on the parent, and the new
+        session's log opens with session.fork.created naming the parent, which is what this
+        waits for. Returns the fork's agent session id.
+        """
+        parent_id = ms.record.agent_session_id or ""
+        if not ms.running or ms.proc is None or not ms.proc.alive:
+            raise ValueError("that Muse terminal is not running; open it and fork again")
+        if (ms.record.draft or "").strip():
+            raise ValueError("clear the Muse composer's draft first, so /fork is not pasted into it")
+        if self.is_processing(ms):
+            raise ValueError("that Muse session is still working; fork once it finishes")
+        since = time.time()
+        # One atomic paste, like a rename: the TUI takes it as a unit however far behind it is.
+        payload = ((b"\x15" + TermdeckConfig.BRACKETED_PASTE_START + self.FORK_COMMAND.encode() +
+                    TermdeckConfig.BRACKETED_PASTE_END).decode())
+        manager.write_input(ms.record.session_id, payload)
+        await asyncio.sleep(TermdeckConfig.FORK_RENAME_SUBMIT_DELAY_SECONDS)
+        manager.write_input(ms.record.session_id, "\r")
+        # A swallowed Enter leaves /fork sitting composed, so press again while nothing branched --
+        # but the branch's own record stops this the instant it exists, since an Enter past the
+        # switch would fork the fork.
+        deadline = time.monotonic() + self.FORK_DISCOVERY_TIMEOUT_SECONDS
+        next_resubmit = time.monotonic() + self.FORK_RESUBMIT_AFTER_SECONDS
+        while time.monotonic() < deadline:
+            fork_id = await asyncio.to_thread(self.latest_fork_of, parent_id, since)
+            if fork_id:
+                return fork_id
+            if time.monotonic() >= next_resubmit:
+                manager.write_input(ms.record.session_id, "\r")
+                next_resubmit = time.monotonic() + self.FORK_RESUBMIT_EVERY_SECONDS
+            await asyncio.sleep(self.FORK_DISCOVERY_POLL_SECONDS)
+        raise ValueError("Muse did not answer /fork; fork again from its terminal")
+
+    @staticmethod
+    def _uuid7_epoch(session_id: str) -> float | None:
+        """The UUIDv7 mint instant embedded in a session id, or None when it is not one."""
+        compact = session_id.replace("-", "")
+        if len(compact) != 32 or compact[12] != "7":
+            return None
+        try:
+            return int(compact[:12], 16) / 1000
+        except ValueError:
+            return None
+
+    def latest_fork_of(self, source_session_id: str, since_epoch: float) -> str | None:
+        """Newest session forked from source since since_epoch, or None.
+
+        A fork's log opens with session.fork.created naming its parent, so only each
+        candidate's first line is read. The record carries no timestamp, so branches order
+        by their session id's UUIDv7 mint instant (a log's mtime only prefilters: an
+        older branch that is still chatting stays freshly touched).
+        """
+        best: tuple[float, str] | None = None
+        for day_dir in self._recent_day_dirs():
+            try:
+                entries = list(day_dir.iterdir())
+            except OSError:
+                continue
+            for session_dir in entries:
+                log = session_dir / self.SESSION_LOG_NAME
+                try:
+                    mtime = log.stat().st_mtime
+                    if mtime < since_epoch:
+                        continue
+                    with log.open("r", encoding="utf-8") as handle:
+                        first = handle.readline()
+                except OSError:
+                    continue
+                try:
+                    envelope = json.loads(first)
+                except ValueError:
+                    continue
+                if not isinstance(envelope, dict) or envelope.get("record_type") != "session.fork.created":
+                    continue
+                payload = envelope.get("payload")
+                if not isinstance(payload, dict) or payload.get("source_session_id") != source_session_id:
+                    continue
+                fork_id = payload.get("fork_session_id")
+                if not isinstance(fork_id, str) or not fork_id:
+                    continue
+                stamp = self._uuid7_epoch(fork_id)
+                if stamp is None:
+                    stamp = mtime
+                if stamp < since_epoch - 5.0:
+                    continue
+                if best is None or stamp > best[0]:
+                    best = (stamp, fork_id)
+        return best[1] if best else None
+
     # Flags taking a value, so the first positional read below skips what belongs to them.
     # `--worktree` is left out on purpose: bare it takes no value, and guessing wrong would eat
     # the subcommand the check below exists to see.
@@ -437,6 +557,17 @@ class MuseCli(AgentCli):
         # bind directly, and a bare `muse` names nothing; detection owns both cases.
         if not ms.detached_live:
             return
+        # Before any of that: the session whose lock this terminal's own muse holds is the one it is
+        # running, whatever it was bound to. Terminals bound by the newest-new-log fallback, started
+        # seconds apart, each held the next one's session -- their titles over another agent's report.
+        # A lock has exactly one holder, so a terminal sitting on another's session is moved off it by
+        # the same sweep, and no claimed-elsewhere check is needed.
+        owned = self.lock_owned_session(manager._dtach_socket(ms.record.session_id), proc_tree,
+                                        await self._session_locks_by_pid(manager, proc_tree))
+        if owned is not None:
+            if owned != ms.record.agent_session_id:
+                manager._set_agent_session_binding(ms, owned)
+            return
         candidate = manager._tracker.muse_resume_ref_from_process_arguments(
             manager._dtach_socket(ms.record.session_id), proc_tree)
         if not candidate or candidate == ms.record.agent_session_id or \
@@ -487,8 +618,48 @@ class MuseCli(AgentCli):
         except OSError:
             return False
 
+    # A running muse holds this open in its own session's directory and in no other: it is the one
+    # file that says which session a process owns. The log itself is not held open, so a lookup of a
+    # terminal's open files that only knew the log found nothing, and binding fell back to the newest
+    # new log -- which, with terminals started a few seconds apart, was the next terminal's.
+    SESSION_LOCK_NAME = ".session.lock"
+
+    async def _session_locks_by_pid(self, manager, proc_tree) -> dict[int, str]:
+        """Which session's lock each process holds -- one lsof for the whole startup sweep."""
+        if self._session_locks is not None and self._session_locks[0] is proc_tree:
+            return self._session_locks[1]
+        try:
+            locks = [str(path) for path in self.sessions_root.rglob(self.SESSION_LOCK_NAME)]
+        except OSError:
+            locks = []
+        holders: dict[int, str] = {}
+        if locks:
+            output = await manager._tracker._run_capture(TermdeckConfig.LSOF_BIN, "-Fpn", *locks)
+            holders = self.session_locks_from_lsof(output)
+        self._session_locks = (proc_tree, holders)
+        return holders
+
+    def session_locks_from_lsof(self, output: str) -> dict[int, str]:
+        holders: dict[int, str] = {}
+        pid = None
+        for line in output.splitlines():
+            if line.startswith("p") and line[1:].isdigit():
+                pid = int(line[1:])
+            elif line.startswith("n") and pid is not None:
+                path = Path(line[1:])
+                session_id = self.session_id_from_path(path) if path.name == self.SESSION_LOCK_NAME else None
+                if session_id:
+                    holders[pid] = session_id
+        return holders
+
+    @staticmethod
+    def lock_owned_session(socket: Path, proc_tree, locks_by_pid: dict[int, str]) -> str | None:
+        """The one session whose lock a process under this terminal holds, or None."""
+        owned = {locks_by_pid[pid] for pid in proc_tree.tree_pids_for_socket(str(socket)) if pid in locks_by_pid}
+        return next(iter(owned)) if len(owned) == 1 else None
+
     def session_id_from_path(self, path: Path) -> str | None:
-        if path.name != self.SESSION_LOG_NAME or not self.owns_transcript_path(path):
+        if path.name not in (self.SESSION_LOG_NAME, self.SESSION_LOCK_NAME) or not self.owns_transcript_path(path):
             return None
         for root in (self.sessions_root, self.sessions_root.resolve()):
             try:
@@ -568,6 +739,22 @@ class MuseCli(AgentCli):
                 model = self._record_model(payload_type, payload)
                 if model:
                     current_model = model
+                    continue
+                if payload_type == "session.fork.turn":
+                    # A branch folds its parent's turns in as data, not run events.
+                    turn = payload.get("turn")
+                    if isinstance(turn, dict):
+                        source = turn.get("source") if isinstance(turn.get("source"), dict) else {}
+                        prompt = turn.get("prompt")
+                        if isinstance(prompt, str) and prompt.strip():
+                            turns.append(TurnBuilder.turn(
+                                TurnBuilder.ROLE_USER, prompt, model=current_model,
+                                timestamp=self._record_timestamp(source.get("started_recorded_at"))))
+                        answer = turn.get("answer")
+                        if isinstance(answer, str) and answer.strip():
+                            turns.append(TurnBuilder.turn(
+                                TurnBuilder.ROLE_ASSISTANT, answer, model=current_model,
+                                timestamp=self._record_timestamp(source.get("answer_recorded_at"))))
                     continue
                 if payload.get("kind") != "run":
                     continue
@@ -741,8 +928,25 @@ class MuseCli(AgentCli):
         """
         state = getattr(ms, "agent_state", None)
         if state is not None and getattr(state, "run_state_known", False):
-            return bool(ms.processing) or bool(state.open_runs)
+            return bool(ms.processing) or bool(state.open_runs) or self._subagents_working(state)
         return super().is_processing(ms)
+
+    @staticmethod
+    def _subagents_working(state) -> bool:
+        scans = getattr(state, "subagent_scans", None)
+        return bool(scans) and any(scan.open_runs for scan in scans.values())
+
+    def activity_detail(self, ms) -> dict[str, object] | None:
+        if not ms.record.agent_session_id:
+            return None
+        state = getattr(ms, "agent_state", None)
+        if state is None or not getattr(state, "run_state_known", False):
+            return super().activity_detail(ms)
+        if not ms.running:
+            return {"main": False, "subagents": 0}
+        scans = getattr(state, "subagent_scans", None) or {}
+        return {"main": bool(ms.processing) or bool(state.open_runs),
+                "subagents": sum(1 for scan in scans.values() if scan.open_runs)}
 
     def refresh_activity_for_status(self, manager, ms) -> None:
         record = getattr(ms, "record", None)
@@ -755,6 +959,26 @@ class MuseCli(AgentCli):
         if path is None:
             return
         self._scan_run_state(path, state)
+        self._scan_subagent_runs(path.parent, state)
+
+    def _scan_subagent_runs(self, session_dir: Path, state: MuseSessionState) -> None:
+        """Fold every nested subagent log's new bytes into its own cursor, dropping pruned ones."""
+        try:
+            entries = list((session_dir / "subagent").iterdir())
+        except OSError:
+            entries = []
+        seen: set[str] = set()
+        for entry in entries:
+            log = entry / self.SESSION_LOG_NAME
+            if not entry.is_dir() or not log.is_file():
+                continue
+            seen.add(entry.name)
+            scan = state.subagent_scans.get(entry.name)
+            if scan is None:
+                scan = state.subagent_scans[entry.name] = MuseSubagentScanState()
+            self._scan_run_state(log, scan)
+        for stale in set(state.subagent_scans) - seen:
+            del state.subagent_scans[stale]
 
     def refresh_persisted_activity(self, manager, ms) -> None:
         self.refresh_activity_for_status(manager, ms)
@@ -764,7 +988,7 @@ class MuseCli(AgentCli):
     # no longer sit where the offset says they do.
     _RUN_SCAN_SIG_BYTES = 4096
 
-    def _scan_run_state(self, path: Path, state: MuseSessionState) -> bool:
+    def _scan_run_state(self, path: Path, state: MuseSessionState | MuseSubagentScanState) -> bool:
         """Fold new log bytes into the open-run set; True when the set changed."""
         before = set(state.open_runs)
         offset = state.run_scan_offset
@@ -835,7 +1059,19 @@ class MuseCli(AgentCli):
         record = getattr(ms, "record", None)
         session_id = getattr(record, "agent_session_id", None)
         state = getattr(ms, "agent_state", None)
-        if not session_id or state is None or self.session_id_from_path(path) != session_id:
+        if not session_id or state is None:
+            return
+        subagent_id = self._nested_subagent_id(path, session_id)
+        if self.session_id_from_path(path) != session_id and subagent_id is None:
+            return
+        if subagent_id is not None:
+            scan = state.subagent_scans.get(subagent_id)
+            if scan is None:
+                scan = state.subagent_scans[subagent_id] = MuseSubagentScanState()
+            if self._scan_run_state(path, scan):
+                processing = manager._processing_state(ms)
+                manager._broadcast_processing(ms, processing)
+                manager._broadcast_status(ms)
             return
         cwd = getattr(record, "cwd", None)
         pending, saw_run = self._attention_signals(Path(cwd) if cwd else None, session_id)
@@ -858,6 +1094,15 @@ class MuseCli(AgentCli):
             processing = manager._processing_state(ms)
             manager._broadcast_processing(ms, processing)
             manager._broadcast_status(ms)
+
+    def _nested_subagent_id(self, path: Path, session_id: str) -> str | None:
+        """The subagent id when path is that session's nested subagent log, else None."""
+        if path.name != self.SESSION_LOG_NAME or not self.owns_transcript_path(path):
+            return None
+        parent = path.parent
+        if parent.parent.name != "subagent" or parent.parent.parent.name != session_id:
+            return None
+        return parent.name
 
     def _attention_signals(self, cwd: Path | None,
                            agent_session_id: str) -> tuple[set[str], bool]:

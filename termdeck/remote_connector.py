@@ -179,6 +179,10 @@ class RemoteConnector:
 
     async def _proxy_http_request(self, message: RemoteMessage) -> None:
         request_id = message["request_id"]
+        if not self._browser_origin_allowed(message.get("headers", [])):
+            await self._send({"type": RemoteMessageType.HTTP_RESPONSE, "request_id": request_id, "status": 403,
+                              "headers": [], "body": b"Origin not allowed"})
+            return
         try:
             response = await self._http_client.request(
                 method=message["method"], url=self._local_http_url(message["path"], message.get("query", "")),
@@ -193,6 +197,10 @@ class RemoteConnector:
 
     async def _open_local_websocket(self, message: RemoteMessage) -> None:
         channel_id = message["channel_id"]
+        if not self._browser_origin_allowed(message.get("headers", [])):
+            await self._send({"type": RemoteMessageType.ERROR, "channel_id": channel_id, "status": 403,
+                              "text": "Origin not allowed"})
+            return
         try:
             local_websocket = await connect(self._local_websocket_url(message["path"], message.get("query", "")),
                                             additional_headers=self._local_websocket_headers(message.get("headers", [])),
@@ -287,8 +295,12 @@ class RemoteConnector:
         return [(name, value) for name, value in self._filtered_request_headers(headers)
                 if not name.lower().startswith(self.WEBSOCKET_HEADER_PREFIX) and name.lower() != "origin"]
 
+    def _browser_origin_allowed(self, headers: list[tuple[str, str]]) -> bool:
+        origins = [value for name, value in headers if name.lower() == "origin"]
+        return not origins or (len(origins) == 1 and origins[0] == self.relay_url)
+
     def _local_request_headers(self, headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
-        filtered = self._filtered_request_headers(headers)
+        filtered = [(name, value) for name, value in self._filtered_request_headers(headers) if name.lower() != "origin"]
         if not self.local_access_token:
             return filtered
         return [(name, value) for name, value in filtered if name.lower() != "authorization"] + \

@@ -79,7 +79,10 @@ const GROUP_NAME = 'ScopeGroup';
 
   // Title search is client-side, so the summary proves a real search ran either way.
   await p.fill('#terminal-search-input', TOKEN);
-  await p.waitForFunction(() => document.querySelector('#terminal-search-summary')?.textContent.includes('conversation'),
+  await p.waitForFunction(() => {
+    const summary = document.querySelector('#terminal-search-summary')?.textContent || '';
+    return summary.includes('conversation') && summary.includes('1 terminal');
+  },
     null, { timeout: 15000 });
   const convSummary = await p.evaluate(() => {
     const summary = document.querySelector('#terminal-search-summary');
@@ -104,7 +107,10 @@ const GROUP_NAME = 'ScopeGroup';
   console.log('all:', JSON.stringify(allState));
 
   await p.click('#terminal-search-scope');
-  await p.waitForFunction(() => document.querySelector('#terminal-search-summary')?.textContent.includes('conversation'),
+  await p.waitForFunction(() => {
+    const summary = document.querySelector('#terminal-search-summary')?.textContent || '';
+    return summary.includes('conversation') && summary.includes('1 terminal');
+  },
     null, { timeout: 15000 });
   const backGlyph = await p.evaluate(glyphOf);
   console.log('back glyph:', backGlyph);

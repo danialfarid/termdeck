@@ -53,17 +53,19 @@ const candidateIds = () => {
       if (!el) { absent.push(id); continue; }
       const original = el.getAttribute('class');
       el.classList.add('hidden');
-      const display = getComputedStyle(el).display;
+      const style = getComputedStyle(el);
+      const display = style.display;
+      const visibility = style.visibility;
       if (original === null) el.removeAttribute('class');
       else el.setAttribute('class', original);
-      if (display !== 'none') missing.push({ id, display });
+      if (display !== 'none' && visibility !== 'hidden') missing.push({ id, display, visibility });
     }
     return { missing, absent };
   }, ids);
 
   console.log(`  checked ${ids.length} ids that the class is used on`);
   if (report.absent.length) console.log(`  not in the page right now (skipped): ${report.absent.join(', ')}`);
-  for (const entry of report.missing) console.log(`  FAIL  #${entry.id} keeps display:${entry.display} with .hidden`);
+  for (const entry of report.missing) console.log(`  FAIL  #${entry.id} keeps display:${entry.display} and visibility:${entry.visibility} with .hidden`);
   const ok = report.missing.length === 0 && !errors.length;
   console.log(`\n  every .hidden actually hides: ${ok ? 'PASS' : `FAIL (${report.missing.length})`}`);
   if (errors.length) console.log('  errors:', errors);

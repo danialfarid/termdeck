@@ -23,6 +23,7 @@ class ReplayRecorder:
 
     SCROLLBACK_KIND = "scrollback"
     RAW_KIND = "raw-replay"
+    MAX_TITLE_BYTES = 4096
     TITLE_PREFIXES = (b"\x1b]0;", b"\x1b]1;", b"\x1b]2;")
     BEL = b"\x07"
     ST = b"\x1b\\"
@@ -294,10 +295,16 @@ class ReplayRecorder:
             if st_index >= 0:
                 title_end_candidates.append(st_index + len(cls.ST))
             if not title_end_candidates:
-                ms.raw_replay_title_carry = combined[title_start:]
+                carry = combined[title_start:]
+                if len(carry) > cls.MAX_TITLE_BYTES:
+                    ms.raw_replay_discard_title = True
+                    carry = cls.TITLE_PREFIXES[0] + (b"\x1b" if carry.endswith(b"\x1b") else b"")
+                ms.raw_replay_title_carry = carry
                 break
             title_end = min(title_end_candidates)
-            ms.raw_replay_last_title = combined[title_start:title_end]
+            if not ms.raw_replay_discard_title and title_end - title_start <= cls.MAX_TITLE_BYTES:
+                ms.raw_replay_last_title = combined[title_start:title_end]
+            ms.raw_replay_discard_title = False
             position = title_end
         return bytes(output)
 
@@ -611,7 +618,9 @@ class ReplayRecorder:
         ms.title_carry = b""
         ms.osc_query_carry = b""
         ms.scrollback_sync_carry = b""
+        ms.scrollback_inside_sync = False
         ms.raw_replay_title_carry = b""
+        ms.raw_replay_discard_title = False
         ms.screen_lives_only_in_stripped_sync_frames = False
         ms.last_repaint_offset = None
         ms.output_missed_while_detached = False

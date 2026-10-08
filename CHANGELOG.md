@@ -6,11 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.33.0] — 2026-10-08
+
 ### Added
+
+- Sending a prompt through the API says what became of it: `delivery` is `confirmed`, `unconfirmed`, or
+  `failed`, with the reason in `delivery_detail`, and `prompt_submitted` is false only when it did not go
+  in and is safe to send again. Nothing is typed while a dialog would take the prompt's keys as an
+  answer — Codex's offer to update, whose Enter ran the update and ended the terminal, or Claude asking
+  to trust a folder — and a terminal that exits before taking the prompt is reported. Confirmation reads
+  Codex's prompt history and Claude's queued-message records, which have a prompt sent mid-turn at
+  once, where the transcript held it back until the agent's next step.
 
 - An attention bell in the sidebar header: it appears with a count whenever
   any terminal needs attention, and each click opens the next one in sidebar
   order, wrapping around.
+- A built-in MCP server (`termdeck mcp`): the agent delegation API — spawning
+  agents, sending prompts, reading responses, and worktree review/finish — as
+  installable typed tools for MCP-capable models, including a bounded
+  wait-for-response so agents need not hand-roll polling loops.
 
 ### Removed
 
@@ -38,9 +52,28 @@ All notable changes to this project are documented here. The format follows
 - In an expanded thinking block, "show less" rides the empty right end of
   the next item's title row instead of pushing it down with a row of its
   own (only the last item, with no next title, keeps a row under its text).
+- The "show active terminals only" eye toggle no longer hides recently
+  closed terminals: the closed section stays below the filtered live list.
+- The open-files, recently-modified, and closed section headers sit their
+  collapse arrow further left with a gap to the label text instead of
+  packing the two together, and expanding one rotates the same arrow
+  instead of swapping glyphs, so it no longer jumps sideways. The closed
+  header shares the same gap and its opened arrow holds its center.
+- Dragging a spawned child tab into a gap between list entries releases it
+  from its parent instead of visibly doing nothing.
+- Reordering a full group by dropping it above another group sticks: the
+  save used to go out malformed, fail, and snap the group back seconds
+  later.
 
 ### Fixed
 
+- "Send now" on a queued transcript prompt takes it out of the queue: the browser gave up after fifteen
+  seconds and kept a prompt the server went on to deliver.
+- A prompt sent from the terminal's own composer no longer holds up that window's typing while
+  TermDeck waits to see it land.
+- The attention bell no longer flashes while a Codex question waits: Codex
+  blinks its own title glyph, and both blink phases now count as the same
+  unanswered question.
 - Slash commands the transcript never echoes back (like "/goal resume") no
   longer sit stuck as "not confirmed": the send succeeding confirms them,
   leaving a "sent to the agent terminal" record, and only a send that fails
@@ -65,6 +98,17 @@ All notable changes to this project are documented here. The format follows
   locks so the slice can never be saved back over the whole file, and the
   Markdown reading view renders a bounded head instead of freezing the page
   parsing megabytes.
+- Forking a Muse terminal now branches the live session through its own
+  /fork command and opens the new terminal on the branch, with the source
+  terminal staying on the parent and the branch's transcript showing the
+  forked history. Forking a terminal whose agent cannot branch a live
+  session (AGY) refuses with a plain message instead of opening a second
+  terminal on that same session, and the Fork menu item only shows where
+  forking can work.
+- A Muse terminal with working subagents now shows as active, with a
+  subagent count dot: previously the main run closed while its workflow's
+  children were still going, so the terminal read idle through the whole
+  delegation.
 
 ## [0.32.2] — 2026-10-01
 
@@ -1760,7 +1804,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.33.0...HEAD
+[0.33.0]: https://github.com/danialfarid/termdeck/compare/v0.32.2...v0.33.0
 [0.30.0]: https://github.com/danialfarid/termdeck/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/danialfarid/termdeck/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/danialfarid/termdeck/compare/v0.27.1...v0.28.0

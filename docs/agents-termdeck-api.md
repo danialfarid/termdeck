@@ -5,6 +5,29 @@ TermDeck-launched processes receive `TERMDECK_SESSION_ID`, `TERMDECK_SESSION_NAM
 `TERMDECK_CWD`, and `TERMDECK_SESSION_URL`. Always keep `$TERMDECK_SESSION_ID` and pass it unchanged as
 `origin_session` for every delegated child task; this is how TermDeck knows where to add the child.
 
+## MCP server
+
+MCP-capable models can use the same API as typed tools instead of curl. `termdeck mcp` serves
+them over stdio against the local deck (honoring `--host`/`--port`); point the model's MCP
+configuration at it:
+
+```json
+{
+  "mcpServers": {
+    "termdeck": { "command": "termdeck", "args": ["mcp"] }
+  }
+}
+```
+
+The tools mirror the calls below one for one: `spawn_agent`, `spawn_batch`, `send_prompt`,
+`get_response`, `session_status`, `children_status`, `interrupt`, `list_sessions`,
+`get_session`, `close_session`, `set_description`, `worktree_review`, `worktree_finish`, and
+`session_history`. Two conveniences over raw HTTP: `spawn_agent` defaults `origin_session` to
+the caller's own `$TERMDECK_SESSION_ID`, and `wait_for_response` polls `get_response` with the
+prompt's `since` stamp until the agent answers or a bounded timeout runs out, so models need
+not hand-roll polling loops. The `since` contract is unchanged: only responses stamped after
+a prompt's own stamp answer that prompt.
+
 ## Start and prompt an agent
 
 `POST /api/sessions`
@@ -60,6 +83,12 @@ Each item also accepts its own optional `description`.
 - `GET /api/sessions/{session_id}/response/final` is the same with what an agent says on its way
   through the work left out, for the agents that mark which message ended a turn.
 - `POST /api/sessions/{session_id}/prompt` sends a prompt with `{"text":"..."}`.
+- Every call that sends a prompt waits until the agent has recorded it and says what happened.
+  `prompt_submitted: false` (`delivery: "failed"`, the reason in `delivery_detail`, and no `since`) means
+  it did not go in, for example because Codex was asking whether to update or the terminal exited:
+  send it again, or start another terminal. `delivery: "unconfirmed"` means it went in and may well
+  have arrived: never send it again, wait for the response instead. See
+  [Did the prompt go in](api.md#did-the-prompt-go-in).
 - `POST /api/sessions/{session_id}/interrupt` stops the turn.
 - `GET /api/sessions` lists sessions and `GET /api/sessions/{session_id}` returns one session.
 

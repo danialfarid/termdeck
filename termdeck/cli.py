@@ -14,12 +14,14 @@ class TermdeckCli:
     what lets `termdeck --port 9000 service install` bake the same port into the generated service unit.
 
     Subcommands: (none) runs the server, `doctor` reports external dependencies, `service` manages the
-    always-on launchd/systemd unit and the freeze watchdog installed beside it."""
+    always-on launchd/systemd unit and the freeze watchdog installed beside it, `mcp` serves the
+    agent delegation API to MCP-capable models over stdio."""
 
     PROGRAM_NAME = "termdeck"
     DESCRIPTION = "Browser terminal deck with persistent sessions and claude/codex resume."
     SERVICE_COMMAND = "service"
     DOCTOR_COMMAND = "doctor"
+    MCP_COMMAND = "mcp"
     SERVICE_ACTION_DEST = "service_action"
     SERVICE_INSTALL = "install"
     SERVICE_UNINSTALL = "uninstall"
@@ -48,6 +50,8 @@ class TermdeckCli:
             return TermdeckCli.run_doctor()
         if args.command == TermdeckCli.SERVICE_COMMAND:
             return TermdeckCli.run_service_action(getattr(args, TermdeckCli.SERVICE_ACTION_DEST))
+        if args.command == TermdeckCli.MCP_COMMAND:
+            return TermdeckCli.run_mcp()
         return TermdeckCli.run_server(args.open_browser)
 
     @staticmethod
@@ -66,6 +70,8 @@ class TermdeckCli:
         parser.add_argument("--open", dest="open_browser", action="store_true", help="open the UI in a browser once the server is up")
         subparsers = parser.add_subparsers(dest=TermdeckCli.COMMAND_DEST)
         subparsers.add_parser(TermdeckCli.DOCTOR_COMMAND, help="report which external programs termdeck found")
+        subparsers.add_parser(TermdeckCli.MCP_COMMAND,
+                              help="serve the agent delegation API to MCP clients over stdio")
         service_parser = subparsers.add_parser(TermdeckCli.SERVICE_COMMAND, help="manage the always-on background service")
         service_parser.add_argument(TermdeckCli.SERVICE_ACTION_DEST,
                                     choices=(TermdeckCli.SERVICE_INSTALL, TermdeckCli.SERVICE_UNINSTALL,
@@ -126,6 +132,13 @@ class TermdeckCli:
         missing = EnvironmentCheck.missing_required(reports)
         print("\nall required programs present" if not missing else f"\n{len(missing)} required program(s) missing")
         return TermdeckCli.EXIT_OK if not missing else TermdeckCli.EXIT_FAILURE
+
+    @staticmethod
+    def run_mcp() -> int:
+        from termdeck.mcp_server import run_mcp_server
+
+        run_mcp_server()
+        return TermdeckCli.EXIT_OK
 
     @staticmethod
     def run_service_action(action: str) -> int:

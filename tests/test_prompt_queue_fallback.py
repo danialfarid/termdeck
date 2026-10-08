@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 from termdeck import agents
 from termdeck.models import SessionRecord
-from termdeck.session_manager import TerminalSessionManager
+from termdeck.session_manager import PromptLanding, TerminalSessionManager
 
 
 def record(session_id: str, agent_kind: str) -> SessionRecord:
@@ -26,7 +26,10 @@ class PromptQueueFallbackTest(unittest.IsolatedAsyncioTestCase):
         self.written: list[str] = []
         self.manager._sessions = {}
         for kind in ("claude", "codex"):
-            self.manager._sessions[kind] = SimpleNamespace(record=record(kind, kind), draft_tracker=None)
+            self.manager._sessions[kind] = SimpleNamespace(record=record(kind, kind), draft_tracker=None,
+                                                           prompt_going_in=False, held_user_input=[],
+                                                           prompt_submit_lock=None, raw_replay_buffer=bytearray(),
+                                                           buffer=bytearray())
         # Each adapter marks its own activity when a prompt is submitted, over a good deal of live
         # session state. What is under test is which key is sent, so that hook is stubbed out.
         for agent in (agents.agent_cli("claude"), agents.agent_cli("codex")):
@@ -41,7 +44,7 @@ class PromptQueueFallbackTest(unittest.IsolatedAsyncioTestCase):
             patcher = patch.object(TerminalSessionManager, method, AsyncMock())
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.confirm = AsyncMock()
+        self.confirm = AsyncMock(return_value=PromptLanding.CONFIRMED)
         confirm = patch.object(TerminalSessionManager, "_press_enter_until_prompt_lands", self.confirm)
         confirm.start()
         self.addCleanup(confirm.stop)
@@ -52,7 +55,7 @@ class PromptQueueFallbackTest(unittest.IsolatedAsyncioTestCase):
 
     async def submit(self, kind: str, queue: bool) -> bool:
         self.written.clear()
-        return await self.manager.submit_prompt(kind, "run the checks", False, queue)
+        return (await self.manager.submit_prompt(kind, "run the checks", False, queue)).queued
 
     def last_key(self) -> str:
         return self.written[-1]

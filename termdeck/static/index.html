@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" href="/static/termdeck-192.png">
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <link rel="stylesheet" href="/static/vendor/codicons/codicon.css">
-<link rel="stylesheet" href="/static/style.css?v=20260917-mobile-dialog">
+<link rel="stylesheet" href="/static/style.css?v=20261008-prompt-show-less-overlay">
 <link rel="stylesheet" href="/filebrowser/static/file_browser_shared.css">
 <script>
 // An installed app always launches at the manifest's start_url, which is the all-projects page, so
@@ -57,7 +57,7 @@
       <div id="project-header-row">
         <div id="project-select-field" class="header-picker-field">
           <button id="project-select" type="button" role="combobox" aria-expanded="false" aria-controls="project-select-list" title="Switch project">
-            <span id="project-select-label" class="header-picker-label">All projects</span><span class="codicon codicon-chevron-down"></span>
+            <span id="project-select-label" class="header-picker-label">Loading…</span><span class="codicon codicon-chevron-down"></span>
           </button>
           <div id="project-select-menu" class="header-picker-menu hidden">
             <div class="header-picker-search"><span class="codicon codicon-search"></span><input id="project-select-input" autocomplete="off" spellcheck="false" placeholder="Find project"></div>
@@ -67,7 +67,6 @@
           </div>
         </div>
         <button id="project-terminal-search-btn" title="Search terminal names and output" aria-label="Search terminal names and output" aria-pressed="false"><span class="codicon codicon-search"></span></button>
-        <button id="attention-bell-btn" class="hidden" title="No terminal needs attention" aria-label="No terminal needs attention"><span class="codicon codicon-bell"></span><span id="attention-bell-count" class="attention-bell-count"></span></button>
         <button id="project-add-btn" title="Create or open a project, worktree, group, or terminal" aria-label="Create or open a project, worktree, group, or terminal"><span class="codicon codicon-add"></span></button>
       </div>
       <div id="worktree-header-row" class="hidden">
@@ -87,6 +86,7 @@
           <button id="tree-sort-toggle" title="Sort files alphabetically"><span class="codicon codicon-sort-precedence"></span></button>
           <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-filter"></span></button>
         </div>
+        <button id="attention-bell-btn" class="hidden" title="No terminal needs attention" aria-label="No terminal needs attention"><span class="codicon codicon-bell"></span><span id="attention-bell-count" class="attention-bell-count"></span></button>
       </div>
     </div>
     <div id="header-add-menu" class="hidden" role="menu" aria-label="Create or open">
@@ -99,8 +99,6 @@
     </div>
     <input id="session-import-input" class="hidden" type="file" accept=".termdeck-session,.termdeck-project,.zip,application/zip">
     <span class="panel-actions">
-      <button id="mobile-sidebar-pin" title="Keep sidebar open after selection" aria-label="Keep sidebar open after selection" aria-pressed="false"><span class="codicon codicon-pin"></span></button>
-      <button id="mobile-sidebar-collapse" title="Collapse sidebar" aria-label="Collapse sidebar"><span class="codicon codicon-layout-sidebar-left-off"></span></button>
       <button id="vscode-refresh-btn" class="vscode-only" title="Refresh TermDeck" aria-label="Refresh TermDeck"><span class="codicon codicon-refresh"></span></button>
     </span>
   </div>
@@ -180,7 +178,12 @@
     <button id="settings-gear" title="Settings"><span class="codicon codicon-settings-gear"></span></button>
   </div>
 </div>
-<button id="mobile-sidebar-toggle" title="Show sidebar" aria-label="Show sidebar"><span class="codicon codicon-layout-sidebar-left"></span></button>
+<button id="mobile-sidebar-toggle" title="Show sidebar" aria-label="Show sidebar">
+  <span class="codicon codicon-layout-sidebar-left mobile-sidebar-drawer-icon" aria-hidden="true"></span>
+  <span id="mobile-sidebar-agent-icon" aria-hidden="true"></span>
+  <span id="mobile-sidebar-title"></span>
+  <span id="mobile-sidebar-model" class="hidden"></span>
+</button>
 <div id="mobile-history-controls" aria-label="Mobile transcript controls">
   <button id="mobile-display-smaller" title="Make mobile text and controls smaller" aria-label="Make mobile text and controls smaller">−</button>
   <button id="mobile-display-larger" title="Make mobile text and controls larger" aria-label="Make mobile text and controls larger">+</button>
@@ -375,13 +378,16 @@
             <div id="history-send-menu" class="hidden" role="menu">
               <button id="history-stop" class="hidden" type="button" role="menuitem"><span class="codicon codicon-debug-stop"></span><span>Stop response</span></button>
               <button id="history-queue" type="button" role="menuitem"><span class="codicon codicon-list-ordered"></span><span>Send to queue</span></button>
+              <div id="history-send-extra-controls" role="group" aria-label="Transcript controls">
+                <span id="history-model" class="hidden"></span>
+                <button id="history-prompt-history-btn" type="button" title="Recent prompts" aria-label="Recent prompts" aria-expanded="false"><span class="codicon codicon-history"></span><span class="history-prompt-history-label">Prompt history</span></button>
+              </div>
             </div>
           </div>
         </div>
         <div id="history-slash-menu" class="hidden" role="listbox" aria-label="Agent commands"></div>
         <div id="history-prompt-footer">
-          <div id="history-prompt-help"><span id="history-prompt-help-text"></span><span id="history-model" class="hidden"></span></div>
-          <button id="history-prompt-history-btn" type="button" title="Recent prompts" aria-label="Recent prompts" aria-expanded="false"><span class="codicon codicon-history"></span></button>
+          <div id="history-prompt-help"><span id="history-prompt-help-text"></span></div>
         </div>
       </div>
     </div>
@@ -672,9 +678,9 @@
 <script src="/static/unicorn_lang.js"></script>
 <!-- One class, split across files: app.js declares TermdeckApp (constants, constructor, core);
      the app_*.js files attach method groups to its prototype; app_boot.js instantiates. Order matters. -->
-<script src="/static/app.js?v=20260917-project-state-sync"></script>
+<script src="/static/app.js?v=20261008-element-lookup-first"></script>
 <script src="/static/app_search_git.js?v=20260917-info-copy"></script>
-<script src="/static/app_markdown_files.js?v=20260917-mobile-dialog"></script>
+<script src="/static/app_markdown_files.js?v=20261008-prompt-show-less-single-line"></script>
 <script src="/static/app_terminal.js?v=20260917-info-copy"></script>
 <script src="/static/app_settings_ui.js?v=20260917-resume-agent-id"></script>
 <script src="/static/app_misc_ui.js?v=20260917-info-copy"></script>

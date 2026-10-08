@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 from fastapi import HTTPException
 
 from termdeck.config import TermdeckConfig
+from termdeck.models import PromptDelivery, PromptOutcome
 from termdeck.server import TermdeckServer
 
 
@@ -354,15 +355,18 @@ class ResponseToThisPromptTest(unittest.TestCase):
         source = (Path(__file__).resolve().parent.parent / "termdeck" / "server.py").read_text()
         prompt_return = re.search(r'return \{"session": self\.manager[^}]*\}', source).group(0)
 
-        self.assertIn('"since": since', prompt_return)
-        self.assertIn('summary["since"] = since', source)
+        self.assertIn("self._delivery_fields(delivery, since)", prompt_return)
+        self.assertIn("summary.update(self._delivery_fields(delivery, since))", source)
+        self.assertEqual(TermdeckServer._delivery_fields(
+            PromptDelivery(False, PromptOutcome.UNCONFIRMED), "2026-10-06T13:00:00.000Z")["since"],
+            "2026-10-06T13:00:00.000Z")
         # And it carries what was said, which is how two waiting prompts are told apart.
         self.assertIn("self._now_stamp(request.text)", source)
         self.assertIn("self._now_stamp(prompt)", source)
-        # Taken before the prompt goes in: submitting waits for the terminal to confirm it, and an
-        # answer can beat that, which a boundary taken afterwards would leave behind it.
-        for path in (r"await self\.manager\.submit_prompt\(ms\.record\.session_id",
-                     r"queued = await self\.manager\.submit_prompt\(session_id"):
+        # Taken before the prompt goes in: an answer can beat the reply to the call, which a boundary
+        # taken afterwards would leave behind it.
+        for path in (r"delivery = await self\.manager\.submit_prompt\(ms\.record\.session_id",
+                     r"delivery = await self\.manager\.submit_prompt\(session_id"):
             submit = re.search(path, source)
             stamp = source.rindex("since = self._now_stamp(", 0, submit.start())
             self.assertLess(stamp, submit.start())

@@ -8,9 +8,11 @@ import signal
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import quote
 
+from termdeck.terminal_client_queue import TerminalClientQueue
 from termdeck import agents
 from termdeck.agent_instructions import AgentInstructionService
 from termdeck.agent_session_tracker import AgentSessionTracker
@@ -20,7 +22,7 @@ from termdeck.config import TermdeckConfig
 from termdeck.file_history_service import FileHistoryService
 from termdeck.proc_tree import ProcTreeSnapshot
 from termdeck.draft_tracker import DraftInputTracker
-from termdeck.models import ApiFields, SessionRecord, WsMessageFields
+from termdeck.models import ApiFields, PromptDelivery, PromptOutcome, SessionRecord, WsMessageFields
 from termdeck.project_registry import ProjectRegistry
 from termdeck.pty_process import PtyProcess
 from termdeck.repaint_filter import RepaintFilter
@@ -29,6 +31,15 @@ from termdeck.session_store import ClosedSessionStore, SessionStore
 from termdeck.state_backup import StateBackupManager
 from termdeck.util import OscTitleParser, TimeUtil
 from termdeck.worktree_service import WorktreeMetadata
+
+
+class PromptLanding:
+    """How the wait for a submitted prompt to show up ended."""
+
+    CONFIRMED = "confirmed"   # the agent recorded it
+    UNCHECKED = "unchecked"   # nothing records prompts for this terminal, and an Enter there always lands
+    EXITED = "exited"         # the terminal went away before anything showed it
+    MISSING = "missing"       # not seen by the deadline
 
 
 class ManagedSession:
@@ -82,9 +93,11 @@ class ManagedSession:
         # keep its collapsed_lines counter meaningful -- the rewrite itself carries no cross-chunk state.
         self.repaint_filter = RepaintFilter() if TermdeckConfig.REPAINT_FILTER_ENABLED else None
         self.scrollback_sync_carry = b""
+        self.scrollback_inside_sync = False
         self.screen_lives_only_in_stripped_sync_frames = False
         self.raw_replay_buffer = bytearray()
         self.raw_replay_title_carry = b""
+        self.raw_replay_discard_title = False
         self.raw_replay_last_title = b""
         self.scrollback_checkpoint_pending = bytearray()
         self.scrollback_compaction_generation = 0
@@ -99,6 +112,12 @@ class ManagedSession:
         # simultaneous pty resize nudge for every single one of them on every future reattach.
         self.cold_attach_repaint_done = False
         self.screen_repaint_task: asyncio.Task | None = None
+        # While a prompt is being pasted and sent, what the person types is held here and written straight
+        # after, in order, so the two never interleave in the one composer they share. One prompt goes in
+        # at a time.
+        self.prompt_going_in = False
+        self.held_user_input: list[str] = []
+        self.prompt_submit_lock: asyncio.Lock | None = None
         self.draft_tracker = DraftInputTracker(record.draft)
         self.detect_attempts = 0
         self.detect_deadline_monotonic = 0.0
@@ -177,6 +196,7 @@ class TerminalSessionManager:
         self._sessions: dict[str, ManagedSession] = {}
         self._status_queues: set[asyncio.Queue] = set()
         self._draft_persist_task: asyncio.Task | None = None
+        self._prompt_confirmations: set[asyncio.Task] = set()
         self._background_loop: asyncio.AbstractEventLoop | None = None
         self._replay_sweep_task: asyncio.Task[None] | None = None
         self._agent_activity_refresh_handles: dict[Path, asyncio.TimerHandle] = {}
@@ -508,19 +528,43 @@ class TerminalSessionManager:
         self._persist()
         return ms
 
+    async def afork_session(self, session_id: str, title: str, worktree: WorktreeMetadata | None = None) -> ManagedSession:
+        """Fork, dispatching through the live terminal when the CLI branches that way (muse's /fork)."""
+        src = self._sessions[session_id].record
+        agent = agents.agent_cli(src.agent_kind)
+        if agent.is_agent and src.agent_session_id and agent.fork_via_live_source:
+            fork_id = await agent.fork_through_source(self, self._sessions[session_id])
+            initial = agent.resume_command(agent.fresh_session_command(src.command), fork_id)
+            forked = self._spawn_fork(src, agent, title, worktree, initial)
+            self._set_agent_session_binding(forked, fork_id)
+            self._persist()
+            return forked
+        return self.fork_session(session_id, title, worktree)
+
     def fork_session(self, session_id: str, title: str, worktree: WorktreeMetadata | None = None) -> ManagedSession:
         src = self._sessions[session_id].record
         agent = agents.agent_cli(src.agent_kind)
+        if agent.is_agent and not agent.supports_fork and src.agent_session_id:
+            # The CLI cannot branch a live session, so forking would attach a second terminal to
+            # that same session.
+            raise ValueError(f"{agent.label} sessions cannot be forked; start a new {agent.label} terminal instead")
+        if agent.is_agent and src.agent_session_id and agent.fork_via_live_source:
+            # Live dispatch is async (send /fork, wait for the branch); use afork_session.
+            raise ValueError(f"{agent.label} sessions fork through their live terminal")
         if agent.is_agent and src.agent_session_id:
             initial = agent.fork_command(src.command, src.agent_session_id, title)
         else:
             initial = None
+        return self._spawn_fork(src, agent, title, worktree, initial)
+
+    def _spawn_fork(self, src: SessionRecord, agent, title: str, worktree: WorktreeMetadata | None,
+                    initial_command: str | None) -> ManagedSession:
         source_worktree = worktree
         if source_worktree is None and src.worktree_path and src.worktree_repository and src.worktree_branch and src.worktree_base_ref and src.worktree_base_commit:
             source_worktree = WorktreeMetadata(src.worktree_path, src.worktree_repository, src.worktree_branch,
                                                src.worktree_base_ref, src.worktree_base_commit, src.worktree_managed,
                                                src.worktree_id)
-        forked = self._create(src.command, Path(src.cwd), title, initial_command=initial,
+        forked = self._create(src.command, Path(src.cwd), title, initial_command=initial_command,
                               agent_rename=title if agent.supports_fork else None, project=src.project,
                               worktree=source_worktree, worktree_id=source_worktree.worktree_id if source_worktree else src.worktree_id,
                               fork_parent_agent_session_id=src.agent_session_id if agent.fork_tracks_parent else None)
@@ -1061,28 +1105,28 @@ class TerminalSessionManager:
         Live clients still receive the raw frame from _handle_output; this only
         filters TermDeck's saved/replayed/searchable buffer.
         """
-        if not data and not ms.scrollback_sync_carry:
-            return b""
-        start_marker = TermdeckConfig.SYNC_UPDATE_START
-        end_marker = TermdeckConfig.SYNC_UPDATE_END
         data = ms.scrollback_sync_carry + data
         ms.scrollback_sync_carry = b""
         durable = bytearray()
         position = 0
         while position < len(data):
-            start = data.find(start_marker, position)
-            if start < 0:
-                durable.extend(data[position:])
+            marker = TermdeckConfig.SYNC_UPDATE_END if ms.scrollback_inside_sync else TermdeckConfig.SYNC_UPDATE_START
+            found = data.find(marker, position)
+            if found < 0:
+                tail = data[position:]
+                partial = max((size for size in range(1, len(marker)) if tail.endswith(marker[:size])), default=0)
+                if not ms.scrollback_inside_sync:
+                    durable.extend(tail[:-partial] if partial else tail)
+                ms.scrollback_sync_carry = tail[-partial:] if partial else b""
                 break
-            durable.extend(data[position:start])
-            ms.screen_lives_only_in_stripped_sync_frames = True
-            end = data.find(end_marker, start + len(start_marker))
-            if end < 0:
-                ms.scrollback_sync_carry = data[start:]
-                break
-            position = end + len(end_marker)
-            while position < len(data) and data[position] in b"\r\n":
-                position += 1
+            if not ms.scrollback_inside_sync:
+                durable.extend(data[position:found])
+                ms.screen_lives_only_in_stripped_sync_frames = True
+            ms.scrollback_inside_sync = not ms.scrollback_inside_sync
+            position = found + len(marker)
+            if not ms.scrollback_inside_sync:
+                while position < len(data) and data[position] in b"\r\n":
+                    position += 1
         return bytes(durable)
 
     def _append_collapsing_repaints(self, ms: ManagedSession, data: bytes) -> None:
@@ -1426,7 +1470,7 @@ class TerminalSessionManager:
             self._spawn(ms, resume=True, screen_repaint=screen_repaint and not preserve_client_buffer and
                         not use_claude_raw_replay, preserve_raw_replay=use_claude_raw_replay)
             self._broadcast_status(ms)
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue = TerminalClientQueue()
         ms.client_queues.add(queue)
         if preserve_client_buffer:
             if client_buffer_is_stale or (screen_repaint and repaint_preserved_buffer) or \
@@ -1510,6 +1554,18 @@ class TerminalSessionManager:
         """
         last = getattr(ms, "last_typing_monotonic", 0.0) or 0.0
         return bool(last) and (time.monotonic() - last) < seconds
+
+    def write_user_input(self, session_id: str, text: str) -> None:
+        """What a person sends from a window. Held while a prompt is going in; written as-is otherwise.
+
+        Only typing is held. The terminal's own replies -- a cursor report, a focus event -- answer
+        something the agent asked, and an agent left waiting on one mid-paste stalls.
+        """
+        ms = self._sessions[session_id]
+        if ms.prompt_going_in and self._input_is_user_typing(text):
+            ms.held_user_input.append(text)
+            return
+        self.write_input(session_id, text)
 
     def write_input(self, session_id: str, text: str) -> None:
         ms = self._sessions[session_id]
@@ -1610,44 +1666,141 @@ class TerminalSessionManager:
         # cached client's live typing, which is the loss this refuses to cause.
         self._apply_draft_change(ms, normalized, rebuild_tracker=True)
 
-    async def submit_prompt(self, session_id: str, text: str, bracketed: bool, queue: bool = False) -> bool:
+    async def deliver_prompt(self, session_id: str, text: str, bracketed: bool, queue: bool = False) -> bool:
+        """Submit a prompt and return once it has gone in, leaving the wait for it to land to run on.
+
+        For a caller that must not wait on the confirmation: the terminal's own websocket also carries
+        the person's typing, which waiting there held back. Returns whether it was queued; a failure
+        before it went in is raised.
+        """
+        delivered: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+
+        def went_in(queued: bool) -> None:
+            if not delivered.done():
+                delivered.set_result(queued)
+
+        def finished(task: asyncio.Task) -> None:
+            self._prompt_confirmations.discard(task)
+            # A failure before the prompt went in is the caller's to hear; one after has no caller left.
+            if delivered.done() and not task.cancelled() and task.exception() is not None:
+                print(f"termdeck prompt for {session_id} failed after it went in: {task.exception()!r}", flush=True)
+
+        submission = asyncio.create_task(self.submit_prompt(session_id, text, bracketed, queue, on_delivered=went_in))
+        self._prompt_confirmations.add(submission)
+        submission.add_done_callback(finished)
+        await asyncio.wait({submission, delivered}, return_when=asyncio.FIRST_COMPLETED)
+        if delivered.done():
+            return delivered.result()
+        return submission.result().queued
+
+    async def submit_prompt(self, session_id: str, text: str, bracketed: bool, queue: bool = False,
+                            on_delivered: Callable[[bool], None] | None = None) -> PromptDelivery:
         """Paste a Markdown prompt, then send Enter or Tab after the agent TUI has consumed it.
 
-        Returns whether it was queued rather than submitted. Queueing is Tab, and Tab only queues for an
-        agent whose composer does that -- for any other it does nothing at all, which left the prompt
-        sitting in the composer looking typed but unsent, with nothing watching for it to land.
+        Returns, once the prompt has landed or the wait for it has run out, whether it was queued rather
+        than submitted and what became of it. Queueing is Tab, and Tab only queues for an agent whose
+        composer does that -- for any other it does nothing at all, which left the prompt sitting in the
+        composer looking typed but unsent, with nothing watching for it to land. `on_delivered` hears
+        whether it was queued as soon as the Enter or Tab is in.
         """
         await self._wait_for_prompt_ready(self._sessions[session_id])
-        normalized = str(text or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
         ms = self._sessions[session_id]
-        queue = queue and agents.agent_cli(ms.record.agent_kind).has_prompt_queue
-        agents.agent_cli(ms.record.agent_kind).on_api_prompt_submitted(self, ms, queue)
+        # One prompt at a time: two going into the same composer at once each cleared the other's paste.
+        if ms.prompt_submit_lock is None:
+            ms.prompt_submit_lock = asyncio.Lock()
+        async with ms.prompt_submit_lock:
+            return await self._submit_prompt_now(ms, text, bracketed, queue, on_delivered)
+
+    async def _submit_prompt_now(self, ms: ManagedSession, text: str, bracketed: bool, queue: bool,
+                                 on_delivered: Callable[[bool], None] | None = None) -> PromptDelivery:
+        session_id = ms.record.session_id
+        normalized = str(text or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
+        agent = agents.agent_cli(ms.record.agent_kind)
+        queue = queue and agent.has_prompt_queue
+        # A dialog on screen takes a prompt's keys as its answer: the paste is thrown away and the Enter
+        # picks its first choice, which for Codex's offer to update ends the session. Nothing goes in.
+        blocked = agent.prompt_blocked_by(ms)
+        if blocked:
+            return PromptDelivery(queue, PromptOutcome.FAILED, blocked)
+        # The clear below throws away whatever the person was in the middle of typing -- in the terminal,
+        # and in transcript mode, which shows the same draft -- so hold it and put it back afterwards.
+        held_draft = ms.record.draft
+        agent.on_api_prompt_submitted(self, ms, queue)
         payload = "\x15"
         if normalized:
             if bracketed:
                 payload += TermdeckConfig.BRACKETED_PASTE_START.decode() + normalized + TermdeckConfig.BRACKETED_PASTE_END.decode()
             else:
                 payload += normalized
-        self.write_input(session_id, payload)
-        await self._wait_for_paste_to_settle(ms)
-        self.write_input(session_id, "\t" if queue else "\r")
-        if queue:
-            self._apply_draft_change(ms, "", rebuild_tracker=True)
-        if not queue:
-            confirmed = await self._press_enter_until_prompt_lands(ms, normalized)
-            if not confirmed and self._submit_source_exists(ms):
-                # The transcript never showed the prompt: the Enter was absorbed and the text is
-                # still sitting in the composer, while the tracker cleared on the first Enter. Put
-                # the draft back so a restart replays what the composer holds instead of nothing --
-                # unless someone typed meanwhile, whose text is live and must not be touched.
-                self._restore_unconfirmed_submit(ms, normalized)
+        ms.prompt_going_in = True
+        given_back = {"draft": False, "typing": False}
+
+        def release(landed: bool) -> None:
+            # The person gets the composer back: their earlier text first, but only once the prompt is
+            # in -- until then the Enters that confirm it would send it, and a prompt that never landed
+            # is still sitting in the composer, which putting it back would clear -- then what they
+            # typed meanwhile, in the order they typed it. Each happens once; the text can follow the
+            # typing when the prompt is only confirmed after the hold ran out.
+            if landed and held_draft and not given_back["draft"]:
+                given_back["draft"] = True
+                self._put_back_held_draft(ms, held_draft)
+            if not given_back["typing"]:
+                given_back["typing"] = True
+                ms.prompt_going_in = False
+                held, ms.held_user_input = ms.held_user_input, []
+                for typed in held:
+                    self.write_input(session_id, typed)
+
+        try:
+            sent_at = time.time()
+            self.write_input(session_id, payload)
+            await self._wait_for_paste_to_settle(ms)
+            blocked = agent.prompt_blocked_by(ms)
+            if blocked:
+                # It came up while the paste went in, and the Enter would answer it. The composer behind
+                # it holds what it held before, as far as anything here can tell.
+                self._apply_draft_change(ms, held_draft, rebuild_tracker=True)
+                delivery = PromptDelivery(queue, PromptOutcome.FAILED, blocked)
+            else:
+                self.write_input(session_id, "\t" if queue else "\r")
+                if on_delivered is not None:
+                    on_delivered(queue)
+                if queue:
+                    self._apply_draft_change(ms, "", rebuild_tracker=True)
+                    release(True)
+                    delivery = PromptDelivery(True, PromptOutcome.UNCONFIRMED,
+                                              "queued in the agent's own queue, to go in when its current turn ends")
+                else:
+                    landing = await self._press_enter_until_prompt_lands(ms, normalized, on_check=release,
+                                                                         sent_at=sent_at)
+                    if landing == PromptLanding.MISSING and self._submit_source_exists(ms):
+                        # Nothing showed the prompt: the Enter was absorbed and the text is still sitting in
+                        # the composer, while the tracker cleared on the first Enter. Put the draft back so
+                        # a restart replays what the composer holds instead of nothing -- unless someone
+                        # typed meanwhile, whose text is live and must not be touched.
+                        self._restore_unconfirmed_submit(ms, normalized)
+                    release(landing in (PromptLanding.CONFIRMED, PromptLanding.UNCHECKED))
+                    delivery = self._delivery_for_landing(landing)
+        finally:
+            release(False)
         # A submitted prompt must not be resurrected from the debounce window
         # if the browser is refreshed immediately afterward.
         self._persist()
         self._broadcast_control(self._sessions[session_id],
                                 {WsMessageFields.TYPE: WsMessageFields.PROMPT_SUBMITTED,
                                  WsMessageFields.DRAFT_REVISION: self._sessions[session_id].record.draft_revision})
-        return queue
+        return delivery
+
+    @staticmethod
+    def _delivery_for_landing(landing: str) -> PromptDelivery:
+        if landing == PromptLanding.CONFIRMED:
+            return PromptDelivery(False, PromptOutcome.CONFIRMED)
+        if landing == PromptLanding.EXITED:
+            return PromptDelivery(False, PromptOutcome.FAILED, "the terminal exited before the prompt was taken")
+        if landing == PromptLanding.UNCHECKED:
+            return PromptDelivery(False, PromptOutcome.UNCONFIRMED, "nothing records prompts for this terminal")
+        return PromptDelivery(False, PromptOutcome.UNCONFIRMED,
+                              "the agent has not recorded it; it may still be sitting in the composer")
 
     async def _wait_for_paste_to_settle(self, ms: ManagedSession) -> None:
         """Wait until the terminal has stopped producing output, so Enter lands after the paste.
@@ -1664,32 +1817,54 @@ class TerminalSessionManager:
                 return
             await asyncio.sleep(min(TermdeckConfig.PROMPT_SUBMIT_SETTLE_QUIET_SECONDS - quiet_for, 0.1))
 
-    async def _press_enter_until_prompt_lands(self, ms: ManagedSession, text: str) -> bool:
-        """Keep pressing Enter until the prompt shows up in the agent's transcript, or time runs out.
+    async def _press_enter_until_prompt_lands(self, ms: ManagedSession, text: str,
+                                              on_check: Callable[[bool], None] | None = None,
+                                              sent_at: float | None = None) -> str:
+        """Keep pressing Enter until the agent has recorded the prompt, or time runs out.
 
         An absorbed Enter leaves the prompt sitting in the composer looking sent, and nothing notices.
-        The transcript is the authority on whether the agent has it -- the same signal the transcript
-        view waits for before it stops calling a prompt unconfirmed. Returns whether the prompt was
-        confirmed; anything without a transcript to check against counts as landed.
+        What the agent records is the authority on whether it has the prompt: its transcript, or a
+        record of its own written the moment a prompt is submitted, for an agent whose transcript takes
+        a mid-turn prompt only later. Returns a PromptLanding; a terminal with nothing to check against
+        is UNCHECKED, since an Enter there always lands.
         """
         if not text.strip() or self._transcript_service is None:
-            return True
+            return PromptLanding.UNCHECKED
         agent = agents.agent_cli(ms.record.agent_kind)
         if not agent.is_agent:
-            return True
-        deadline = time.monotonic() + TermdeckConfig.PROMPT_SUBMIT_CONFIRM_SECONDS
+            return PromptLanding.UNCHECKED
+        sent_at = time.time() if sent_at is None else sent_at
+        started = time.monotonic()
+        deadline = started + TermdeckConfig.PROMPT_SUBMIT_CONFIRM_SECONDS
         presses = 0
         while time.monotonic() < deadline:
             await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_CONFIRM_POLL_SECONDS)
+            if await asyncio.to_thread(self._prompt_was_taken, ms, text, sent_at):
+                return PromptLanding.CONFIRMED
+            # Gone without anything having shown the prompt: Codex taking the Enter as "Update now", or
+            # Claude taking it as "No, exit".
             if not ms.running:
-                return True
-            if await asyncio.to_thread(self._transcript_has_prompt, ms, text):
-                return True
+                return PromptLanding.EXITED
+            # The person's typing has waited long enough; from here on they and the retries share the
+            # composer, so a retry only presses when nothing of theirs is in it.
+            if on_check is not None and time.monotonic() - started >= TermdeckConfig.PROMPT_SUBMIT_INPUT_HOLD_SECONDS:
+                on_check(False)
+            if ms.record.draft and ms.record.draft != text:
+                continue
+            if presses == 0:
+                # A paste the agent never saw end swallows every key after it, Enters included: the
+                # composer shows nothing and takes nothing typed into it, and pressing again only adds
+                # newlines to it. Closing it costs nothing when none is open.
+                self.write_input(ms.record.session_id, TermdeckConfig.BRACKETED_PASTE_END.decode())
             self.write_input(ms.record.session_id, "\r")
             presses += 1
         print(f"termdeck prompt for {ms.record.session_id} was not confirmed in the transcript after "
               f"{int(TermdeckConfig.PROMPT_SUBMIT_CONFIRM_SECONDS)}s and {presses} further Enter(s)", flush=True)
-        return False
+        return PromptLanding.MISSING
+
+    def _prompt_was_taken(self, ms: ManagedSession, text: str, sent_at: float) -> bool:
+        return (agents.agent_cli(ms.record.agent_kind).prompt_taken(self, ms, text, sent_at)
+                or self._transcript_has_prompt(ms, text))
 
     def _submit_source_exists(self, ms: ManagedSession) -> bool:
         """Whether a transcript exists that an unconfirmed prompt could be checked against.
@@ -1706,15 +1881,22 @@ class TerminalSessionManager:
         except (KeyError, OSError, ValueError):
             return False
 
+    def _put_back_held_draft(self, ms: ManagedSession, draft: str) -> None:
+        # Someone who typed while the prompt went in has text in the composer now, and it is theirs.
+        if ms.record.draft:
+            return
+        # One bracketed paste and no Enter: typed back as keys, every newline in it would be an Enter.
+        self.write_input(ms.record.session_id, "\x15" + TermdeckConfig.BRACKETED_PASTE_START.decode() + draft +
+                         TermdeckConfig.BRACKETED_PASTE_END.decode())
+
     def _restore_unconfirmed_submit(self, ms: ManagedSession, text: str) -> None:
         if text.strip() and not ms.record.draft:
             self._apply_draft_change(ms, text, rebuild_tracker=True)
 
     def _transcript_has_prompt(self, ms: ManagedSession, text: str) -> bool:
         """Whether the tail of the agent's transcript already carries this prompt as a user turn."""
-        # The first line is enough to match on, and is what survives an agent's own reformatting of a
-        # long pasted prompt. Transcripts run to tens of megabytes, so only the tail is read.
-        needle = next((line.strip() for line in text.splitlines() if line.strip()), "")[:120]
+        # Transcripts run to tens of megabytes, so only the tail is read.
+        needle = agents.AgentCli.prompt_needle(text)
         if not needle:
             return False
         try:
@@ -2354,6 +2536,11 @@ class TerminalSessionManager:
 
     def session_summary_by_id(self, session_id: str) -> dict[str, object]:
         return self.session_summary(self._sessions[session_id])
+
+    def agent_session_ids_in_use(self, except_session: ManagedSession | None = None) -> set[str]:
+        """The agent sessions the terminals here are tied to, leaving one terminal out."""
+        return {ms.record.agent_session_id for ms in self._sessions.values()
+                if ms is not except_session and ms.record.agent_session_id}
 
     def session_history_source(self, session_id: str) -> tuple[str, str, str | None]:
         record = self._sessions[session_id].record

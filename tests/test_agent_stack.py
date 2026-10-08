@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from termdeck.models import SessionRecord
+from termdeck.models import PromptDelivery, PromptOutcome, SessionRecord
 from termdeck.server import RunTerminalTaskRequest, TermdeckServer
 from termdeck.session_manager import TerminalSessionManager
 
@@ -170,7 +170,7 @@ class TaskApiRecordsOriginTest(unittest.IsolatedAsyncioTestCase):
         server.manager.session_summary.return_value = {"session_id": "child-01", "project": "stock"}
         server.manager.session_summary_by_id.return_value = {"cwd": "/tmp", "project": "stock",
                                                              "worktree_id": "root"}
-        server.manager.submit_prompt = AsyncMock()
+        server.manager.submit_prompt = AsyncMock(return_value=PromptDelivery(False, PromptOutcome.CONFIRMED))
         for method in ("_broadcast_project_state_snapshot", "_place_session_after",
                        "_raise_if_model_dependency_missing"):
             patcher = patch.object(TermdeckServer, method, lambda *a, **k: None)

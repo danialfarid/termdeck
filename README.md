@@ -118,7 +118,7 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
   with collapsible thinking blocks, a conversation outline, and a composer for follow-up questions.
 - **[Let agents delegate](docs/agents-termdeck-api.md)** — use the local API to start named agents with a chosen
   model, permission level, and prompt, then monitor their responses. Each task appears as an ordinary session in
-  your workspace.
+  your workspace. MCP-capable models get the same API as typed tools via `termdeck mcp`.
 - **Review and edit alongside your agents** — open referenced files, search code, inspect changes, and use Git
   and language-server tools without leaving the workspace.
 - **Any agent CLI** — Codex, Claude Code, Muse, AGY, Aider, OpenCode, and plain shells, side by side. Teaching it a
@@ -243,8 +243,8 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 
 - The agent's own session file rendered as Markdown: code edits and thinking collapsible; model, reasoning
   effort, and elapsed time shown.
-- A composer where Enter is a newline, Shift+Enter sends, ⌘Enter queues; queued prompts run in order, stay
-  editable, and any one can be sent now.
+- A composer where Enter and Shift+Enter are newlines (as in the terminal), ⌘Enter sends, ⌘⇧Enter queues;
+  queued prompts run in order, stay editable, and any one can be sent now.
 - The agent's slash commands from a palette.
 - Filters: hide prompts or thinking, show only code edits, fold near-duplicate responses.
 - Conversation outline with timestamps for jumping between turns.

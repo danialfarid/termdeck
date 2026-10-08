@@ -67,10 +67,19 @@ const AGENT_CLIENT_BEHAVIORS = {
     blankRepaintDespiteScrollback: true, // codex can present a blank screen even with scrollback
     blankScreenMarkers: /OpenAI Codex|Ask Codex|Context \d+% used|view transcript|q to quit|Press enter to continue/i,
     commandTranscriptShortcut: true,    // ctrl+t opens codex's own transcript overlay
+    rebuildOnBlankHole: true,           // pages of blank between history and the live tail: rebuild from the recording
   },
   claude: {
     attentionScreenDetection: true,     // scan the visible screen for permission-prompt markers
     statusRowRefresh: true,             // periodic bottom status-row repaint while following
+    // A restart rebuilds the pane from claude's recording, and the recording can stop short of the
+    // live screen -- the server's last unflushed bytes go with it -- leaving old conversation with no
+    // composer or footer under it. That is not blank, so without these nothing asked claude to redraw
+    // until it next resized. The hint line under the composer is on every healthy screen: one of
+    // these was on five of six live ones, and the sixth replayed to nothing at all.
+    blankRepaintDespiteScrollback: true,
+    blankRepaintRequiresScrollback: true, // a fresh session with no history yet is just starting
+    blankScreenMarkers: /shift\+tab to cycle|\? for shortcuts|esc to interrupt/i,
   },
   muse: {
     blankRepaintDespiteScrollback: true, // muse can sit idle with a cleared screen over old scrollback
@@ -78,6 +87,7 @@ const AGENT_CLIENT_BEHAVIORS = {
     // Chrome that is always on a healthy muse screen: the status bar (model, cwd, approval mode),
     // the composer (voice hint, prompt marker), and turn summaries. Read off four live sessions.
     blankScreenMarkers: /muse-spark|muse code|voice input|worked for|recap|◆|❯|ctrl\+o|YOLO|~\/|esc to|approv|interrup/i,
+    rebuildOnBlankHole: true,           // pages of blank between history and the live tail: rebuild from the recording
   },
 };
 // Fallback snapshot of /api/agents, used only when the boot-time fetch fails (transient hiccup on a
@@ -127,7 +137,7 @@ const AGENT_SPEC_DEFAULTS = {
   muse: { kind: "muse", label: "Muse", is_agent: true, prompt_marker: "", icon_svg: FALLBACK_ICON_SVGS.muse,
     permissions: [{ value: "default", label: "Default (approve on request)" }, { value: "untrusted", label: "Untrusted" },
       { value: "never", label: "Never ask" }, { value: "full-access", label: "Full access (--yolo)" }],
-    supports_resume: true, supports_fork: false, accepts_session_ref: true,
+    supports_resume: true, supports_fork: true, accepts_session_ref: true,
     model_command: "/model",
     records_raw_replay: true, has_prompt_queue: false,
     transcript_commands: [{ command: "/model", description: "Change the active model" },
@@ -176,7 +186,6 @@ const MOBILE_SIDEBAR_CONTEXT_LONG_PRESS_MS = 500;
 const MOBILE_SIDEBAR_CONTEXT_MOVE_TOLERANCE = 12;
 const MOBILE_TERMINAL_SELECTION_BACKGROUND = "#287fd1";
 const MOBILE_TERMINAL_SELECTION_FOREGROUND = "#ffffff";
-const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
 const EXPANDED_AGENT_STACKS_KEY = "termdeck.expanded_agent_stacks";
 // Spawned agents named on the collapsed summary line before it trails off. Two fit beside the count in
 // a sidebar's width; the point of the line is that there are children and roughly who, not a roster.
@@ -305,6 +314,16 @@ const TALL_BLANK_REPAINT_MS = 900;
 const TERMINAL_BLANK_RECOVERY_DELAY_MS = 1000;
 const TERMINAL_BLANK_RECOVERY_IDLE_MS = 2000;
 const TERMINAL_BLANK_RECOVERY_COOLDOWN_MS = 30000;
+// A hole is at least a screenful of blank rows between content (never fewer than this many), seen
+// twice a moment apart, and rebuilt from the recording at most this often per terminal.
+const TERMINAL_HOLE_MIN_ROWS = 20;
+const TERMINAL_HOLE_CHECK_DELAY_MS = 2500;
+const TERMINAL_HOLE_CONFIRM_MS = 2500;
+const TERMINAL_HOLE_REBUILD_COOLDOWN_MS = 120000;
+// The server answers a prompt send once the agent has recorded the prompt or some fifteen seconds have
+// passed without it, and it starts only after the one ahead of it for the same terminal has had the
+// same. Giving up sooner said "message kept" about a prompt the server went on to deliver.
+const PROMPT_SEND_TIMEOUT_MS = 60000;
 // A freshly attached tab is not one paint but several: the saved recording replays, then the agent
 // redraws its own screen over the tail of it (a lazily respawned codex reprints its whole conversation),
 // and every frame in between is a position this view can be left at if the last one lands wrong -- the
@@ -729,6 +748,9 @@ const THEME_BY_ID = Object.fromEntries(THEME_DEFINITIONS.map((theme) => [theme.i
 
 class TermdeckApp {
   constructor() {
+    // First, before anything below reaches for an element: defined further down, the project label
+    // set from the address threw, the app never started, and every page stuck at "Loading…".
+    this.$ = (id) => document.getElementById(id);
     this.vscodeMode = VS_CODE_MODE;
     this.nativeVscodeMode = NATIVE_VSCODE_MODE;
     this.vscodeEditorMode = VSCODE_EDITOR_MODE;
@@ -991,6 +1013,8 @@ class TermdeckApp {
     // Thinking items the reader has opened past their four-line preview, keyed by turn and position,
     // so a re-render while streaming does not fold them back.
     this.historyThinkingExpandedItems = new Set();
+    this.historyPromptExpandedTurns = new Set();
+    this.historyCopyActionTurnKey = "";
     this.unreadSessions = new Set();
     this.unreadManualHolds = new Set();
     this.statHistory = [];
@@ -1037,6 +1061,8 @@ class TermdeckApp {
     this.pendingNewAgentSelectionUseHistory = false;
     this.nativeSessionIds = new Set();
     this.sessionModelById = new Map();
+    this.historyModelUsageBySession = new Map();
+    this.historyModelUsageRequests = new Set();
     // Notes this page has deleted. Arriving project state can still carry them -- the copy on the server
     // is only as new as the last write to land -- and without this they would be put back by the very
     // merge that stops a new note being dropped.
@@ -1103,6 +1129,7 @@ class TermdeckApp {
     const projectMatch = location.pathname.match(/^\/[pfg]\/([^/]+)(?:\/([^/]+))?(?:\/(.*))?$/);
     this.projectSlug = projectMatch ? decodeURIComponent(projectMatch[1])
       : this.vscodeEditorMode ? (LOCATION_PARAMS.get("project") || null) : null;
+    this.$("project-select-label").textContent = this.projectSlug || "All projects";
     this.requestedWorktreeUrlSegment = projectMatch?.[2] ? decodeURIComponent(projectMatch[2]) : "";
     this.requestedNavigationPath = projectMatch?.[3]
       ? projectMatch[3].split("/").map((segment) => decodeURIComponent(segment)).join("/") : "";
@@ -1149,7 +1176,7 @@ class TermdeckApp {
                           word: urlParams.get("w") === "1", case_sensitive: urlParams.get("c") === "1",
                           regex: urlParams.get("re") === "1" };
     } else this.initialNav = this.requestedNavigationPath ? { kind: "path", selector: this.requestedNavigationPath } : null;
-    this.$ = (id) => document.getElementById(id);
+    this.positionHistoryComposerControls();
     this.ensureDesktopTerminalsHeader();
     this.applyVscodeModeLayout();
   }
@@ -1218,26 +1245,43 @@ class TermdeckApp {
     }
   }
 
-  mobileSidebarPinned() {
-    return localStorage.getItem(MOBILE_SIDEBAR_PINNED_KEY) === "1";
-  }
-
-  syncMobileSidebarControls() {
-    const pinned = this.mobileSidebarPinned();
-    document.body.classList.toggle("mobile-sidebar-pinned", pinned);
-    const pin = this.$("mobile-sidebar-pin");
-    if (!pin) return;
-    pin.setAttribute("aria-pressed", String(pinned));
-    pin.title = pinned ? "Unpin sidebar" : "Keep sidebar open after selection";
-    pin.setAttribute("aria-label", pin.title);
-    const icon = pin.querySelector(".codicon");
-    icon?.classList.toggle("codicon-pin", !pinned);
-    icon?.classList.toggle("codicon-pinned", pinned);
+  syncMobileSidebarIdentity(session = this.session(this.activeId)) {
+    const button = this.$("mobile-sidebar-toggle");
+    const iconHost = this.$("mobile-sidebar-agent-icon");
+    const title = this.$("mobile-sidebar-title");
+    const modelHost = this.$("mobile-sidebar-model");
+    if (!button || !iconHost || !title || !modelHost) return;
+    if (!session) {
+      iconHost.replaceChildren();
+      title.textContent = "";
+      modelHost.textContent = "";
+      modelHost.classList.add("hidden");
+      button.title = "Show sidebar";
+      button.setAttribute("aria-label", "Show sidebar");
+      return;
+    }
+    const sessionTitle = this.titlePresentation(session).text;
+    const agentName = this.agentLabel(session.agent_kind, "Shell");
+    const icon = this.terminalTypeIcon(session);
+    icon.classList.add("on", "mobile-sidebar-agent-icon-rendered");
+    icon.classList.remove("terminal-status-active");
+    iconHost.replaceChildren(icon);
+    title.textContent = sessionTitle;
+    const turns = this.historyTurnsBySession?.get(session.session_id) || [];
+    const usage = this.historyModelUsage(session);
+    const statusModel = session.agent_kind === "claude" ? "" : this.terminalStatusModel(this.views.get(session.session_id));
+    const model = this.historyModelDisplayForCurrentSession(session, turns, statusModel, usage);
+    const visibleModel = this.historyModelIsGeneric(model) ? "" : model;
+    modelHost.textContent = visibleModel;
+    modelHost.classList.toggle("hidden", !visibleModel);
+    const modelDescription = visibleModel ? ` · ${visibleModel}` : "";
+    button.title = `Show sidebar · ${agentName} · ${sessionTitle}${modelDescription}`;
+    button.setAttribute("aria-label", `Show sidebar · ${agentName} · ${sessionTitle}${modelDescription}`);
   }
 
   setMobileSidebarCollapsed(collapsed) {
     if (!this.touchMobileLayoutEnabled()) return;
-    const next = !!collapsed && !this.mobileSidebarPinned();
+    const next = !!collapsed;
     document.body.classList.toggle("mobile-sidebar-collapsed", next);
     if (!next) this.closeHistoryFilterMenu?.();
     document.body.scrollTo({ left: 0, behavior: "auto" });
@@ -1248,30 +1292,21 @@ class TermdeckApp {
   }
 
   collapseMobileSidebarAfterSelection() {
-    if (this.touchMobileLayoutEnabled() && !this.mobileSidebarPinned()) this.setMobileSidebarCollapsed(true);
+    if (this.touchMobileLayoutEnabled()) this.setMobileSidebarCollapsed(true);
   }
 
   initializeMobileSidebar() {
     if (!this.touchMobileLayoutEnabled()) return;
     document.body.classList.add("mobile-touch-layout");
-    document.body.classList.toggle("mobile-sidebar-collapsed", !this.mobileSidebarPinned());
-    this.syncMobileSidebarControls();
-    this.$("mobile-sidebar-collapse").onclick = () => this.setMobileSidebarCollapsed(true);
+    document.body.classList.add("mobile-sidebar-collapsed");
     this.$("mobile-sidebar-toggle").onclick = () => this.setMobileSidebarCollapsed(false);
-    // A tap on the transcript or terminal while the sidebar is open means the choosing is over: the
-    // sidebar folds away like a drawer touched behind, unless it is pinned open on purpose.
+    this.syncMobileSidebarIdentity();
     this.$("main")?.addEventListener("click", () => {
-      if (document.body.classList.contains("mobile-sidebar-collapsed") || this.mobileSidebarPinned()) return;
+      if (document.body.classList.contains("mobile-sidebar-collapsed")) return;
       this.setMobileSidebarCollapsed(true);
     }, { capture: true });
     this.$("mobile-display-smaller").onclick = () => this.setMobileDisplayScale(this.mobileDisplayScale() - MOBILE_DISPLAY_SCALE_STEP);
     this.$("mobile-display-larger").onclick = () => this.setMobileDisplayScale(this.mobileDisplayScale() + MOBILE_DISPLAY_SCALE_STEP);
-    this.$("mobile-sidebar-pin").onclick = () => {
-      const pinned = !this.mobileSidebarPinned();
-      localStorage.setItem(MOBILE_SIDEBAR_PINNED_KEY, pinned ? "1" : "0");
-      this.syncMobileSidebarControls();
-      if (pinned) this.setMobileSidebarCollapsed(false);
-    };
   }
 
   syncMobileVisualViewport() {
@@ -3012,7 +3047,18 @@ class TermdeckApp {
       if (source?.type === "layout" && source.token !== targetToken &&
           (!source.worktreeId || source.worktreeId === this.stateWorktreeId())) {
         if (source.kind === "session") {
-          this.repositionSelectedSessionsAroundLayoutToken(this.sessionIdsFromDragItem(source), targetToken, after);
+          const sessionIds = this.sessionIdsFromDragItem(source);
+          // The zones sit at the list's top level, so a spawned child dropped into one is leaving
+          // its stack -- the same escape a drop onto an outside row performs. Without the un-file
+          // first, the layout move below runs against a row that is not drawn from the layout and
+          // the drop visibly does nothing.
+          const dragged = new Set(sessionIds);
+          const escaping = sessionIds.filter((id) =>
+            (this.session(id)?.spawned_by_session_id || "") && !dragged.has(this.session(id).spawned_by_session_id));
+          if (escaping.length) {
+            void this.setSpawnedParent(escaping, "").then(() =>
+              this.repositionSelectedSessionsAroundLayoutToken(sessionIds, targetToken, after));
+          } else this.repositionSelectedSessionsAroundLayoutToken(sessionIds, targetToken, after);
         } else this.reorderTerminalLayout(source.token, targetToken, after);
       }
       zone.classList.remove("drop-target");
@@ -4601,8 +4647,7 @@ class TermdeckApp {
     };
     this.$("history-queued-toggle").onclick = () => this.toggleHistoryQueueCollapsed();
     this.$("history-prompt-history-btn").onclick = () => this.togglePromptHistory();
-    this.$("history-prompt-help-text").textContent = this.touchMobileLayoutEnabled() ? "" :
-      `Shift+Enter submit · ${PRIMARY_MODIFIER_DISPLAY}+Enter queue · Enter newline · ↑↓ edit queued`;
+    this.updateHistoryPromptHelpText();
     this.$("history-prompt").addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -4660,8 +4705,12 @@ class TermdeckApp {
         return;
       }
       if (e.key !== "Enter" || e.isComposing) return;
-      const submitPrompt = e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey;
-      const queuePrompt = !e.shiftKey && !e.altKey && (e.metaKey || e.ctrlKey);
+      // Shift+Enter is a new line here as it is in the terminal, where it is what every agent's composer
+      // takes for one -- sending on it meant the same keys did opposite things a toggle apart. Sending
+      // is the primary modifier instead, and queueing that with Shift.
+      const primary = e.metaKey || e.ctrlKey;
+      const submitPrompt = primary && !e.shiftKey && !e.altKey;
+      const queuePrompt = primary && e.shiftKey && !e.altKey;
       if (!submitPrompt && !queuePrompt) return;
       e.preventDefault();
       e.stopPropagation();
@@ -4841,6 +4890,13 @@ class TermdeckApp {
       this.runAction(actionId);
     }, true);
     document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !this.$("settings-popover").classList.contains("hidden")) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        this.$("settings-popover").classList.add("hidden");
+        this.$("settings-gear")?.focus();
+        return;
+      }
       if (!this.$("keys-backdrop").classList.contains("hidden")) {
         if (e.key === "Escape") this.$("keys-backdrop").classList.add("hidden");
         return;
@@ -4948,6 +5004,8 @@ class TermdeckApp {
       // has already shrunk, so measuring here would read the transcript as scrolled away from the end
       // and never pin it -- the very state being corrected.
       const wasAtBottom = this.historyReaderAtBottom;
+      this.positionHistoryComposerControls();
+      this.updateHistoryPromptHelpText();
       scheduleLayoutFit();
       if (this.touchMobileLayoutEnabled()) {
         this.keepHistoryPinnedToBottom(wasAtBottom);
@@ -5396,6 +5454,7 @@ class TermdeckApp {
     } else {
       this.updateSessionRows();
     }
+    this.syncMobileSidebarIdentity();
     // Recently modified files are a standalone-only sidebar section.
     if (!this.vscodeMode) this.updateRecentFilesWatch();
     if (this.revealActiveSessionOnLoad) {
@@ -5926,6 +5985,7 @@ class TermdeckApp {
     }
     if (rowStateChanged) this.updateSessionRows(session.session_id);
     if (session.session_id === this.activeId) {
+      if (displayedTitleChanged || previousAgentKind !== session.agent_kind) this.syncMobileSidebarIdentity(session);
       if (this.historyOpen && previousAgentSessionId !== session.agent_session_id) {
         this.connectHistoryStream(session.session_id, { fresh: true });
       }
@@ -6226,7 +6286,19 @@ class TermdeckApp {
       (s.needs_attention === true || this.attentionSessions.has(s.session_id))).map((s) => s.session_id);
   }
 
+  placeAttentionBell() {
+    const button = this.$("attention-bell-btn");
+    const worktreeRow = this.$("worktree-header-row");
+    const projectRow = this.$("project-header-row");
+    if (!button || !worktreeRow || !projectRow) return;
+    // Home is the worktree row's right end, clear of row 1; views without a worktree
+    // row (all-projects, worktree-less, vscode) fall back to row 1 after the + button.
+    const home = worktreeRow.classList.contains("hidden") ? projectRow : worktreeRow;
+    if (button.parentElement !== home) home.appendChild(button);
+  }
+
   updateAttentionBell() {
+    this.placeAttentionBell();
     const ids = this.attentionSessionIds();
     const signature = ids.join(",");
     if (signature === this.attentionBellSignature) return;
@@ -6784,10 +6856,14 @@ class TermdeckApp {
           const rowRect = item.getBoundingClientRect();
           const reorderAfter = item.classList.contains("drop-after") ||
             event.clientY >= rowRect.top + rowRect.height / 2;
+          const reordered = sourceSessionIds.filter((id) => id !== targetId);
           this.applyLocalProjectStatePatch({
-            session_order: this.sessionOrderWithSelectedIdsAroundTarget(
-              sourceSessionIds.filter((id) => id !== targetId), targetId, reorderAfter),
+            session_order: this.sessionOrderWithSelectedIdsAroundTarget(reordered, targetId, reorderAfter),
           });
+          // The order has to reach the server too. Applied here alone it lasted until the next state
+          // any window broadcast -- a phone left open on the deck writes its own every few seconds --
+          // and that state, with the old order in it, put the row straight back where it had been.
+          this.queueSessionOrderMove(reordered, targetId, reorderAfter);
           this.sessions = this.applySessionOrder(this.sessions);
           this.renderList();
           this.clearDragLandingIndicator();
@@ -6838,8 +6914,10 @@ class TermdeckApp {
           const rect = item.getBoundingClientRect();
           this.groupSelectedSessionsFromDrop(sourceSessionIds, targetId, event.clientY >= rect.top + rect.height / 2);
         } else {
+          // Boolean, not the rect chain's null: group targets have no rect, and drop-before leaves
+          // `false || null`, which the server 422s -- the move then snapped back on the reload.
           const after = item.classList.contains("drop-after") ||
-            (targetRect && event.clientY >= targetRect.top + targetRect.height / 2);
+            !!(targetRect && event.clientY >= targetRect.top + targetRect.height / 2);
           if (source.kind === "session" && kind === "session" && targetGroup) {
             this.moveSelectedSessionsIntoGroup(sourceSessionIds, targetGroup, targetId, after);
           } else if (source.kind === "session" && kind === "session") {
@@ -7197,8 +7275,8 @@ class TermdeckApp {
     const controls = document.createElement("span");
     controls.className = "section-header-controls";
     const toggle = document.createElement("button");
-    toggle.className = "section-toggle section-collapse-toggle";
-    toggle.innerHTML = `<span class="codicon codicon-chevron-${collapsed ? "right" : "down"}"></span>`;
+    toggle.className = "section-toggle section-collapse-toggle" + (collapsed ? "" : " open");
+    toggle.innerHTML = '<span class="codicon codicon-chevron-right"></span>';
     toggle.title = collapsed ? `Expand ${text}` : `Collapse ${text}`;
     toggle.setAttribute("aria-label", toggle.title);
     toggle.setAttribute("aria-expanded", String(!collapsed));

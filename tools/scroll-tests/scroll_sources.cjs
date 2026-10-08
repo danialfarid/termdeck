@@ -45,6 +45,8 @@ const state = (p, id, label) => p.evaluate((i) => {
   await p.waitForTimeout(1500);
   const tear = await p.evaluate(async (i) => {
     const v = window.__td.views.get(i);
+    const pointer = { bubbles: true, pointerId: 1, pointerType: 'mouse', button: 1, buttons: 4 };
+    v.container.dispatchEvent(new PointerEvent('pointerdown', pointer));
     const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
     let movedByApp = 0, dragging = true;
     Object.defineProperty(v.container, 'scrollTop', {
@@ -74,6 +76,7 @@ const state = (p, id, label) => p.evaluate((i) => {
       requestAnimationFrame(tick);
     });
     dragging = false;
+    window.dispatchEvent(new PointerEvent('pointerup', { ...pointer, buttons: 0 }));
     await new Promise((r) => setTimeout(r, 900));
     return { movedByApp, whenFrames: (window.__when || []).slice(0, 12), following: v.tallFollowing, settled: Math.round(v.container.scrollTop), ceiling: v.tallMaxScrollTop };
   }, id);
@@ -86,7 +89,10 @@ const state = (p, id, label) => p.evaluate((i) => {
   // ---- B: autoscroll (no wheel events at all) up, then back down ----
   await p.evaluate((i) => {
     const v = window.__td.views.get(i);
-    v.container.scrollTop = 0;                     // "middle-click drag to the top"
+    const pointer = { bubbles: true, pointerId: 1, pointerType: 'mouse', button: 1, buttons: 4 };
+    v.container.dispatchEvent(new PointerEvent('pointerdown', pointer));
+    v.container.scrollTop = 0;
+    window.dispatchEvent(new PointerEvent('pointerup', { ...pointer, buttons: 0 }));
   }, id);
   await p.waitForTimeout(900);
   await state(p, id, 'B after autoscroll up  ');
@@ -99,7 +105,10 @@ const state = (p, id, label) => p.evaluate((i) => {
   // Now autoscroll straight back to the bottom (again, no wheel events).
   await p.evaluate((i) => {
     const v = window.__td.views.get(i);
+    const pointer = { bubbles: true, pointerId: 1, pointerType: 'mouse', button: 1, buttons: 4 };
+    v.container.dispatchEvent(new PointerEvent('pointerdown', pointer));
     v.container.scrollTop = v.container.scrollHeight;
+    window.dispatchEvent(new PointerEvent('pointerup', { ...pointer, buttons: 0 }));
   }, id);
   await p.waitForTimeout(1200);
   const b = await state(p, id, 'B after autoscroll down');

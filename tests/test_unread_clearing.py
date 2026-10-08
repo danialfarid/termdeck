@@ -33,6 +33,7 @@ const app = {
   worktreeId: "root",
   activeId: scenario.activeId,
   unreadSessions: new Set(scenario.unread),
+  unreadManualHolds: new Set(),
   processingStates: new Map(),
   viewedCompletedSessions: new Set(),
   persisted: [],

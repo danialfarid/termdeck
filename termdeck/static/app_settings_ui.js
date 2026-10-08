@@ -582,6 +582,7 @@ Object.assign(TermdeckApp.prototype, {
     pop.onkeydown = (event) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
+      event.stopPropagation();
       pop.classList.add("hidden");
       anchor.focus();
     };
@@ -1026,6 +1027,77 @@ Object.assign(TermdeckApp.prototype, {
     }
     if (!blankDespiteScrollback && visibleLines.length) return false;
     if (blankDespiteScrollback && behavior?.blankScreenMarkers?.test(visibleLines.join("\n"))) return false;
+    return true;
+  },
+
+
+  // A codex or muse pane can come back with a hole in it: the conversation, then pages of blank rows,
+  // then the live tail. The agent's own recording replays without one -- measured on a pane showing a
+  // 193-row hole, a full replay of its recording had content from the first row -- so it is the page's
+  // rebuild that went wrong, and only now and then: a switch landing mid-redraw while the agent works.
+  // The recording is known good, so the repair is to rebuild from it, which is what a refresh does.
+  // Looked at twice a moment apart, because a redraw caught in flight closes its gap by itself.
+  scheduleTerminalHoleCheck(view) {
+    if (!view || view.closed || !this.agentBehavior(this.session(view.sessionId)?.agent_kind)?.rebuildOnBlankHole) return;
+    clearTimeout(view.holeCheckTimer);
+    view.holeCheckTimer = setTimeout(() => {
+      view.holeCheckTimer = 0;
+      if (!this.terminalHasBlankHole(view)) return;
+      view.holeCheckTimer = setTimeout(() => {
+        view.holeCheckTimer = 0;
+        if (this.terminalHasBlankHole(view)) this.rebuildTerminalFromReplay(view);
+      }, TERMINAL_HOLE_CONFIRM_MS);
+    }, TERMINAL_HOLE_CHECK_DELAY_MS);
+  },
+
+
+  terminalHasBlankHole(view) {
+    if (!view || view.closed || view.replaying || view.awaitingSnapshot) return false;
+    return this.terminalBlankHoleRows(view) >= this.terminalVisibleRows(view);
+  },
+
+
+  // The longest run of blank rows with content on both sides of it, over the screen and a screen's
+  // worth of history above it. Not the blank rows under the last line: every pane taller than the
+  // agent drawing in it has those.
+  terminalBlankHoleRows(view) {
+    const buffer = view?.term?.buffer?.active;
+    if (!buffer) return 0;
+    const blank = (row) => !(buffer.getLine(row)?.translateToString(true).trim());
+    let last = buffer.length - 1;
+    while (last >= 0 && blank(last)) last -= 1;
+    const first = Math.max(0, Number(buffer.baseY || 0) - Number(view.term.rows || 0));
+    let longest = 0;
+    let run = 0;
+    let seenContent = false;
+    for (let row = first; row <= last; row += 1) {
+      if (blank(row)) {
+        if (seenContent) run += 1;
+      } else {
+        seenContent = true;
+        longest = Math.max(longest, run);
+        run = 0;
+      }
+    }
+    return longest;
+  },
+
+
+  terminalVisibleRows(view) {
+    const cellHeight = view?.term?._core?._renderService?.dimensions?.css?.cell?.height;
+    const height = view?.container?.clientHeight;
+    return Math.max(TERMINAL_HOLE_MIN_ROWS, cellHeight && height ? Math.floor(height / cellHeight) : 0);
+  },
+
+
+  rebuildTerminalFromReplay(view) {
+    if (!view || view.closed || !view.ws || view.ws.readyState !== WebSocket.OPEN) return false;
+    if (Date.now() - (view.holeRebuildAt || 0) < TERMINAL_HOLE_REBUILD_COOLDOWN_MS) return false;
+    view.holeRebuildAt = Date.now();
+    view.replayFromScratchOnNextConnect = true;
+    view.reconnectAfterClose = true;
+    view.suppressReconnect = false;
+    view.ws.close();
     return true;
   },
 

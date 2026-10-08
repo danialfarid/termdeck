@@ -44,6 +44,26 @@ const TAG = `attnbell${process.pid}`;
 
   const idle = await bell();
   console.log('idle:', JSON.stringify(idle));
+  // Row 1 must use the full header width: + sits at the padding, nothing invisible
+  // (bell, empty action slots) may hold space right of it.
+  const plusGap = await p.evaluate(() => {
+    const plus = document.querySelector('#project-add-btn').getBoundingClientRect();
+    const header = document.querySelector('#sidebar-header').getBoundingClientRect();
+    return Math.round(header.right - plus.right);
+  });
+  console.log('plus-to-edge gap:', plusGap);
+  const placement = await p.evaluate(() => {
+    const td = window.__td;
+    const row = td.$('worktree-header-row');
+    row.classList.add('hidden');
+    td.updateAttentionBell();
+    const noRow = td.$('attention-bell-btn').parentElement.id;
+    row.classList.remove('hidden');
+    td.updateAttentionBell();
+    const withRow = td.$('attention-bell-btn').parentElement.id;
+    return { noRow, withRow };
+  });
+  console.log('placement:', JSON.stringify(placement));
   for (const id of [b, c, a]) await p.evaluate((i) => window.__td.activate(i), id);
   await p.waitForFunction((i) => window.__td.activeId === i, a, { timeout: 10000 });
   await p.waitForTimeout(1000);
@@ -83,6 +103,9 @@ const TAG = `attnbell${process.pid}`;
   const checks = [
     ['sessions claimed agy detection', kinds[b] === 'agy' && kinds[c] === 'agy'],
     ['bell hidden while nothing needs attention', idle.exists && idle.hidden === true],
+    ['+ sits at the header edge (no dead gap)', plusGap <= 8],
+    ['bell falls back to row 1 without a worktree row', placement.noRow === 'project-header-row'],
+    ['bell sits on row 2 with one', placement.withRow === 'worktree-header-row'],
     ['server-side detection raised both flags', flags[b] === true && flags[c] === true],
     ['bell appears with count 2', raised.hidden === false && raised.count === '2'],
     ['first click opens an attention session', first === b || first === c],

@@ -114,7 +114,7 @@ class MobileTranscriptChromeTest(unittest.TestCase):
 
     def test_failed_badge_moves_inside_only_on_touch(self) -> None:
         self.assertIn(
-            'if (deliveryState === "unconfirmed" && this.touchMobileLayoutEnabled()) {',
+            'if (deliveryState === "unconfirmed" && this.touchMobileLayoutEnabled() && !promptClampable) {',
             self.client)
 
     def test_open_sidebar_floats_translucent(self) -> None:

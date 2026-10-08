@@ -7,15 +7,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from termdeck import agents
 from termdeck.config import TermdeckConfig
 from termdeck.file_history_service import FileHistoryService
 from termdeck.models import SessionRecord
-from termdeck.session_manager import ManagedSession, TerminalSessionManager
+from termdeck.session_manager import ManagedSession, PromptLanding, TerminalSessionManager
 
 
 def managed(session_id: str = "s1", agent_kind: str = "claude"):
     return SimpleNamespace(
-        record=SimpleNamespace(session_id=session_id, agent_kind=agent_kind, draft=""),
+        record=SimpleNamespace(session_id=session_id, agent_kind=agent_kind, draft="", agent_session_id=None,
+                               cwd="/tmp"),
         running=True, last_output_monotonic=0.0)
 
 
@@ -89,7 +91,8 @@ class EnterUntilConfirmedTest(unittest.IsolatedAsyncioTestCase):
         self.manager = TerminalSessionManager.__new__(TerminalSessionManager)
         self.manager._transcript_service = object()
         self.presses: list[str] = []
-        self.manager.write_input = lambda session_id, text: self.presses.append(text)
+        # Enters only: the retry also closes any paste left open, which is not a press.
+        self.manager.write_input = lambda session_id, text: self.presses.append(text) if text == "\r" else None
         for name in ("PROMPT_SUBMIT_CONFIRM_POLL_SECONDS", "PROMPT_SUBMIT_CONFIRM_SECONDS"):
             patcher = patch.object(TermdeckConfig, name, 0.02 if "POLL" in name else 0.3)
             patcher.start()
@@ -140,15 +143,34 @@ class EnterUntilConfirmedTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_confirmation_is_reported(self) -> None:
         with patch.object(TerminalSessionManager, "_transcript_has_prompt", lambda *a: True):
-            confirmed = await self.manager._press_enter_until_prompt_lands(managed(), "do the thing")
+            landing = await self.manager._press_enter_until_prompt_lands(managed(), "do the thing")
 
-        self.assertTrue(confirmed)
+        self.assertEqual(landing, PromptLanding.CONFIRMED)
 
     async def test_giving_up_is_reported(self) -> None:
         with patch.object(TerminalSessionManager, "_transcript_has_prompt", lambda *a: False):
-            confirmed = await self.manager._press_enter_until_prompt_lands(managed(), "do the thing")
+            landing = await self.manager._press_enter_until_prompt_lands(managed(), "do the thing")
 
-        self.assertFalse(confirmed)
+        self.assertEqual(landing, PromptLanding.MISSING)
+
+    async def test_a_terminal_that_exited_first_is_reported(self) -> None:
+        # Codex taking the Enter as "Update now" ends it; the prompt never went anywhere.
+        ms = managed()
+        ms.running = False
+
+        with patch.object(TerminalSessionManager, "_transcript_has_prompt", lambda *a: False):
+            landing = await self.manager._press_enter_until_prompt_lands(ms, "do the thing")
+
+        self.assertEqual(landing, PromptLanding.EXITED)
+
+    async def test_a_record_of_the_agent_own_confirms_it_too(self) -> None:
+        # The transcript has not got it yet -- a mid-turn prompt -- but the agent recorded the submit.
+        with patch.object(TerminalSessionManager, "_transcript_has_prompt", lambda *a: False), \
+             patch.object(agents.agent_cli("claude").__class__, "prompt_taken", lambda *a: True):
+            landing = await self.manager._press_enter_until_prompt_lands(managed(), "do the thing")
+
+        self.assertEqual(landing, PromptLanding.CONFIRMED)
+        self.assertEqual(self.presses, [])
 
     async def test_no_transcript_to_check_against_counts_as_landed(self) -> None:
         # A shell's Enter always lands, and without a transcript service there is nothing that could
@@ -159,8 +181,8 @@ class EnterUntilConfirmedTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(TerminalSessionManager, "_transcript_has_prompt", lambda *a: False):
             serviceless = await self.manager._press_enter_until_prompt_lands(managed(), "do the thing")
 
-        self.assertTrue(shell)
-        self.assertTrue(serviceless)
+        self.assertEqual(shell, PromptLanding.UNCHECKED)
+        self.assertEqual(serviceless, PromptLanding.UNCHECKED)
 
 
 class TranscriptMatchTest(unittest.TestCase):
@@ -216,7 +238,7 @@ class UnconfirmedSubmitRestoreTest(unittest.IsolatedAsyncioTestCase):
         self.manager._schedule_draft_persist = lambda: None  # type: ignore[method-assign]
         self.manager._persist = lambda: None  # type: ignore[method-assign]
         self.manager.replay = SimpleNamespace(schedule_checkpoint=lambda ms: None)
-        self.press_enter = AsyncMock(return_value=True)
+        self.press_enter = AsyncMock(return_value=PromptLanding.CONFIRMED)
         patcher = patch.object(TerminalSessionManager, "_press_enter_until_prompt_lands", self.press_enter)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -225,7 +247,7 @@ class UnconfirmedSubmitRestoreTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(source.stop)
 
     async def test_unconfirmed_prompt_is_put_back_as_the_draft(self) -> None:
-        self.press_enter.return_value = False
+        self.press_enter.return_value = PromptLanding.MISSING
 
         await self.manager.submit_prompt("s1", "do the thing", False, False)
 
@@ -233,7 +255,7 @@ class UnconfirmedSubmitRestoreTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.draft_tracker.draft, "do the thing")
 
     async def test_confirmed_prompt_stays_submitted(self) -> None:
-        self.press_enter.return_value = True
+        self.press_enter.return_value = PromptLanding.CONFIRMED
 
         await self.manager.submit_prompt("s1", "do the thing", False, False)
 
@@ -242,9 +264,9 @@ class UnconfirmedSubmitRestoreTest(unittest.IsolatedAsyncioTestCase):
     async def test_typing_since_is_not_touched(self) -> None:
         # Someone typed while the confirmation was pending: their text is live, and the unconfirmed
         # prompt stays in the history rather than overwriting it.
-        async def typed_while_confirming(ms, text):
+        async def typed_while_confirming(ms, text, **_):
             self.session.record.draft = "meanwhile"
-            return False
+            return PromptLanding.MISSING
 
         self.press_enter.side_effect = typed_while_confirming
 
@@ -253,7 +275,7 @@ class UnconfirmedSubmitRestoreTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.record.draft, "meanwhile")
 
     async def test_nothing_to_confirm_against_nothing_restored(self) -> None:
-        self.press_enter.return_value = False
+        self.press_enter.return_value = PromptLanding.MISSING
         with patch.object(TerminalSessionManager, "_submit_source_exists", lambda self_, ms: False):
             await self.manager.submit_prompt("s1", "do the thing", False, False)
 
