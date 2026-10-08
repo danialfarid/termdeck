@@ -36,7 +36,7 @@ class HomebrewFormulaGenerator:
     BUILD_BACKEND = "hatchling"
     PYTHON_TAG = "3.13"
     PYTHON_FORMULA = "python@3.13"
-    ABI = "cp313"
+    ABI_TAGS = ("cp313", "abi3")
     ARM_PLATFORMS = ("macosx_11_0_arm64", "macosx_10_12_universal2")
     INTEL_PLATFORMS = ("macosx_10_13_x86_64", "macosx_10_12_x86_64", "macosx_11_0_x86_64", "macosx_10_9_x86_64")
     UNIVERSAL_WHEEL_SUFFIX = "py3-none-any.whl"
@@ -135,14 +135,28 @@ end
     def download_wheels(specs: list[str], platforms: tuple[str, ...], destination: Path) -> None:
         destination.mkdir(parents=True, exist_ok=True)
         for spec in specs:
-            for platform in platforms:
-                argv = [sys.executable, "-m", "pip", "download", spec, "--only-binary", ":all:", "--no-deps",
-                        "--python-version", HomebrewFormulaGenerator.PYTHON_TAG, "--implementation", "cp",
-                        "--abi", HomebrewFormulaGenerator.ABI, "--platform", platform, "--dest", str(destination)]
-                if subprocess.run(argv, capture_output=True).returncode == 0:
+            package_name = spec.split(HomebrewFormulaGenerator.PIP_FREEZE_SEPARATOR, 1)[0].lower().replace("_", "-")
+            candidates = [spec]
+            if platforms == HomebrewFormulaGenerator.INTEL_PLATFORMS and package_name == "cryptography":
+                pinned_version = spec.split(HomebrewFormulaGenerator.PIP_FREEZE_SEPARATOR, 1)[1]
+                major_version = int(pinned_version.split(".", 1)[0])
+                candidates.append(f"cryptography<{major_version + 1}")
+            downloaded = False
+            for candidate in candidates:
+                for platform in platforms:
+                    argv = [sys.executable, "-m", "pip", "download", candidate, "--only-binary", ":all:",
+                            "--no-deps", "--python-version", HomebrewFormulaGenerator.PYTHON_TAG,
+                            "--implementation", "cp"]
+                    for abi in HomebrewFormulaGenerator.ABI_TAGS:
+                        argv.extend(("--abi", abi))
+                    argv.extend(("--platform", platform, "--dest", str(destination)))
+                    if subprocess.run(argv, capture_output=True).returncode == 0:
+                        downloaded = True
+                        break
+                if downloaded:
                     break
-            else:
-                raise RuntimeError(f"no {HomebrewFormulaGenerator.ABI} wheel for {spec} on {platforms}")
+            if not downloaded:
+                raise RuntimeError(f"no compatible wheel for {spec} on {platforms}")
 
     @staticmethod
     def package_from_wheel(filename: str) -> str:
