@@ -212,6 +212,11 @@ class AgentCli:
         """The CLI's own on-disk transcript for one session, or None if it does not exist."""
         return None
 
+    def transcript_segments(self, path: Path) -> list[tuple[Path, int | None]]:
+        """The files a transcript is read from, oldest first, each up to the byte where the next one
+        takes over (None: to its end), ending with `path`. One file, for an agent that keeps one."""
+        return [(path, None)]
+
     def candidate_session_files(self, cwd: Path) -> list[tuple[Path, str]]:
         """(transcript path, session id) pairs a new session in cwd could bind to."""
         return []

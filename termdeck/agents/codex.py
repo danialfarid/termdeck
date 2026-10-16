@@ -97,13 +97,26 @@ class CodexCli(AgentCli):
     # arrived with the gpt-6 models; without them "gpt-6-astra max" was read as a model called
     # "gpt-6-astra max" and started nothing.
     REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max", "ultra"})
+    # "rollout-<started>-<thread>.jsonl", and since codex keeps a thread's history in pages, also
+    # "rollout-<started>-<thread>_<page>.jsonl" for each later page. Group 1 is the thread, group 2 the
+    # page; a file's own id -- what a later page names it by -- is its page, or for the first, the thread.
     ROLLOUT_UUID_RE = re.compile(
-        r"rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
+        r"rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+        r"(?:_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))?\.jsonl$")
+    # How often a thread is looked at again for a page newer than the one it was last found writing.
+    ROLLOUT_PAGE_CHECK_SECONDS = 2.0
+    # A bound on how many of a thread's pages are read back through.
+    ROLLOUT_PAGE_CHAIN_MAX = 64
     subagent_file_marker = b'"source":{"subagent"'
 
     def __init__(self) -> None:
-        # A rollout path never changes once the session exists; cache the rglob hit.
+        # The page a thread was last found writing, and when a newer one was last looked for: a thread
+        # moves to a new page, so the rglob hit is kept but not trusted for ever.
         self._rollout_paths: dict[str, Path] = {}
+        self._rollout_checked: dict[str, float] = {}
+        # What a page reads on from, and where each file id lives: neither changes once written.
+        self._history_bases: dict[Path, tuple[str, int] | None] = {}
+        self._history_files: dict[str, Path] = {}
         self._runtime_settings_cache: dict[str, tuple[int, int, dict[str, str]]] = {}
         self._subagent_counts: dict[str, tuple[float, int]] = {}
         # Per terminal: when its screen was last replayed, and what it said.
@@ -174,16 +187,91 @@ class CodexCli(AgentCli):
         return cleaned
 
     def transcript_path(self, cwd: Path | None, agent_session_id: str) -> Path | None:
+        """The page codex is writing this thread to now: the newest of its files.
+
+        Taken back to an earlier point, a thread goes on in a new page and the one before stops where it
+        was. Reading the first file kept showing that point: nothing said since appeared, and every
+        prompt sent since stayed unconfirmed.
+        """
+        now = time.monotonic()
         cached = self._rollout_paths.get(agent_session_id)
+        if cached is not None and cached.exists():
+            if now - self._rollout_checked.get(agent_session_id, 0.0) < self.ROLLOUT_PAGE_CHECK_SECONDS:
+                return cached
+            self._rollout_checked[agent_session_id] = now
+            # A new page is a file made now, so only the days around today need looking at.
+            newest = max((page for day in self._recent_day_dirs() if day.is_dir()
+                          for page in day.glob(f"rollout-*-{agent_session_id}_*.jsonl")
+                          if self.session_id_from_path(page) == agent_session_id),
+                         key=lambda page: page.name, default=cached)
+            if newest.name > cached.name:
+                self._rollout_paths[agent_session_id] = newest
+            return self._rollout_paths[agent_session_id]
+        try:
+            pages = [page for page in self.sessions_root.rglob(f"rollout-*-{agent_session_id}*.jsonl")
+                     if self.session_id_from_path(page) == agent_session_id]
+        except OSError:
+            return None
+        if not pages:
+            return None
+        # Named for when each was started, so the newest sorts last.
+        newest = max(pages, key=lambda page: page.name)
+        self._rollout_paths[agent_session_id] = newest
+        self._rollout_checked[agent_session_id] = now
+        return newest
+
+    def transcript_segments(self, path: Path) -> list[tuple[Path, int | None]]:
+        """This thread's history, oldest first: each earlier page up to the byte where the next one goes
+        on from it, then `path` to its end.
+
+        A page holds only what came after the point it goes on from, and names that point: a file, by
+        its own id, and the byte its history ends at. A fork names its parent's file the same way; that
+        history is the parent's, and is not read here, as it was not before codex kept pages.
+        """
+        thread = self.session_id_from_path(path)
+        segments: list[tuple[Path, int | None]] = [(path, None)]
+        current = path
+        while len(segments) < self.ROLLOUT_PAGE_CHAIN_MAX:
+            base = self._history_base(current)
+            earlier = self._history_file(base[0]) if base is not None else None
+            if earlier is None or self.session_id_from_path(earlier) != thread or \
+                    any(earlier == seen for seen, _ in segments):
+                break
+            segments.insert(0, (earlier, base[1]))
+            current = earlier
+        return segments
+
+    def _history_base(self, path: Path) -> tuple[str, int] | None:
+        if path in self._history_bases:
+            return self._history_bases[path]
+        base: tuple[str, int] | None = None
+        try:
+            with path.open("rb") as handle:
+                first = json.loads(handle.readline() or b"{}")
+        except (OSError, ValueError):
+            return None
+        found = (first.get("payload") or {}).get("history_base") if isinstance(first, dict) else None
+        if isinstance(found, dict) and isinstance(found.get("thread_id"), str) and \
+                isinstance(found.get("end_byte_offset"), int):
+            base = (found["thread_id"], found["end_byte_offset"])
+        self._history_bases[path] = base
+        return base
+
+    def _history_file(self, file_id: str) -> Path | None:
+        """The file a page goes on from, by that file's own id: a thread's first file is named for
+        the thread, every later one for its page."""
+        cached = self._history_files.get(file_id)
         if cached is not None and cached.exists():
             return cached
         try:
-            for path in self.sessions_root.rglob(f"rollout-*-{agent_session_id}.jsonl"):
-                self._rollout_paths[agent_session_id] = path
-                return path
+            found = next((path for path in self.sessions_root.rglob(f"rollout-*{file_id}.jsonl")
+                          if (match := self.ROLLOUT_UUID_RE.search(path.name))
+                          and (match.group(2) or match.group(1)) == file_id), None)
         except OSError:
             return None
-        return None
+        if found is not None:
+            self._history_files[file_id] = found
+        return found
 
     def candidate_session_files(self, cwd: Path) -> list[tuple[Path, str]]:
         pairs: list[tuple[Path, str]] = []
@@ -563,8 +651,9 @@ class CodexCli(AgentCli):
         now = time.monotonic()
         if cached is not None and now - cached[0] < self.SUBAGENT_LOOKUP_TTL_SECONDS:
             return cached[1]
-        count = sum(1 for path in self._recently_written_rollouts()
-                    if self._forked_from(path) == agent_session_id)
+        # By thread, not file: a child taken back to an earlier point writes on in a new page.
+        count = len({self.session_id_from_path(path) or path for path in self._recently_written_rollouts()
+                     if self._forked_from(path) == agent_session_id})
         self._subagent_counts[agent_session_id] = (now, count)
         return count
 
@@ -639,7 +728,8 @@ class CodexCli(AgentCli):
         manager._sync_processing_started(ms)
 
     def on_transcript_event(self, manager, ms, path: Path) -> None:
-        if not path.name.endswith(f"-{ms.record.agent_session_id}.jsonl"):
+        # By the thread the file belongs to, not a name ending in it: a later page ends in its own id.
+        if self.session_id_from_path(path) != ms.record.agent_session_id:
             return
         previous = manager._processing_state(ms)
         ms.agent_state.transcript_active = manager._tracker.codex_session_is_active(ms.record.agent_session_id)

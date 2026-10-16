@@ -29,6 +29,7 @@ body {
 }
 button { font-family: inherit; }
 
+#mobile-sidebar-pin, #mobile-sidebar-collapse, #mobile-sidebar-selection-bar,
 #mobile-sidebar-toggle, #mobile-history-controls, #mobile-connection-warning { display: none; }
 
 #sidebar { position: relative; width: 250px; min-width: 250px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: visible; }
@@ -529,6 +530,11 @@ body.dragging { user-select: none; cursor: col-resize; }
    how a keyboard shifted the whole page on phones. Nothing ever scrolls #main on purpose. hidden stays
    for browsers without clip, where the keyboard-resize handlers reset the scroll instead. */
 #main { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; overflow: clip; }
+.terminal-debug-panel { position: absolute; z-index: 25; top: 0; left: 0; right: 0; display: flex; flex-direction: column; min-height: 0; background: var(--term-bg); border: 1px solid var(--border); }
+.terminal-debug-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; background: var(--panel); color: var(--text); font-size: var(--system-font-size); flex: none; }
+.terminal-debug-header button { flex: none; }
+.terminal-debug-viewport { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.terminal-debug-screen { min-width: max-content; }
 #bottombar { position: relative; z-index: 2; display: flex; align-items: center; gap: 9px; padding: 3px 2px 3px 12px; border-top: 1px solid var(--border); background: var(--panel); min-height: max(29px, calc(var(--bottom-font-size) + 15px)); flex: none; }
 /* The usage readout is also the handle for the maintenance menu, so it carries a button's affordances. */
 #bottombar-stats { display: flex; flex: none; align-items: center; gap: 2px; margin-left: auto; padding: 2px 4px; border: 1px solid transparent; border-radius: 5px; cursor: pointer; }
@@ -571,21 +577,23 @@ body.termdeck-read-only #history-prompt { color: var(--dim); cursor: not-allowed
 #status-usage.hidden { display: none; }
 #history-meta { max-width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font: var(--ui-font-size) Menlo, monospace; opacity: 0.9; }
 #history-meta.hidden { display: none; }
-#history-btn, #attach-btn, #terminal-resync-btn, #scroll-bottom-btn, #reveal-session-btn, #file-history-toggle, #editor-wrap-toggle, #file-split-toggle, #session-description-toggle, #notebook-toggle, #problems-toggle, #conversation-outline-toggle { background: none; border: 1px solid transparent; color: var(--dim); border-radius: 5px; height: 23px; min-width: 26px; cursor: pointer; }
+#history-btn, #attach-btn, #terminal-resync-btn, #scroll-bottom-btn, #reveal-session-btn, #file-history-toggle, #editor-wrap-toggle, #file-split-toggle, #session-description-toggle, #notebook-toggle, #problems-toggle, #conversation-outline-toggle, #terminal-debug-toggle { background: none; border: 1px solid transparent; color: var(--dim); border-radius: 5px; height: 23px; min-width: 26px; cursor: pointer; }
 #attach-btn.hidden, #history-btn.hidden, #terminal-resync-btn.hidden, #scroll-bottom-btn.hidden,
-#history-edits-toggle.hidden, #history-scroll-bottom.hidden, #reveal-session-btn.hidden, #file-history-toggle.hidden,
+#history-edits-toggle.hidden, #history-scroll-bottom.hidden, #terminal-debug-toggle.hidden, #reveal-session-btn.hidden, #file-history-toggle.hidden,
 #editor-wrap-toggle.hidden, #file-split-toggle.hidden, #session-description-toggle.hidden, #notebook-toggle.hidden, #problems-toggle.hidden { display: none; }
 #history-btn.transcript-unavailable, #vscode-history-btn.transcript-unavailable,
 #conversation-outline-toggle.transcript-unavailable { display: none; }
 #history-btn:hover, #attach-btn:hover, #terminal-resync-btn:hover, #scroll-bottom-btn:hover, #editor-wrap-toggle:hover, #session-description-toggle:hover,
-#history-edits-toggle:hover, #history-scroll-bottom:hover, #reveal-session-btn:hover, #file-history-toggle:hover,
+#history-edits-toggle:hover, #history-scroll-bottom:hover, #reveal-session-btn:hover, #file-history-toggle:hover, #terminal-debug-toggle:hover,
 #file-split-toggle:hover, #notebook-toggle:hover, #problems-toggle:hover, #conversation-outline-toggle:hover { color: var(--text); border-color: var(--border); }
 #file-history-toggle.on, #file-split-toggle.on, #notebook-toggle.on, #problems-toggle.on, #conversation-outline-toggle.on,
 #session-description-toggle.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 #history-btn.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 #history-btn .codicon, #attach-btn .codicon, #terminal-resync-btn .codicon, #scroll-bottom-btn .codicon, #file-history-toggle .codicon, #session-description-toggle .codicon,
 #editor-wrap-toggle .codicon, #file-split-toggle .codicon, #notebook-toggle .codicon, #history-edits-toggle .codicon, #history-scroll-bottom .codicon,
-#reveal-session-btn .codicon, #conversation-outline-toggle .codicon, #problems-toggle .codicon { font-size: var(--bottom-font-size); }
+#reveal-session-btn .codicon, #conversation-outline-toggle .codicon, #problems-toggle .codicon, #terminal-debug-toggle .codicon { font-size: var(--bottom-font-size); }
+/* While the preview is open, the browser's own button colours it showed before it had a style. */
+#terminal-debug-toggle[aria-pressed="true"] { background: ButtonFace; color: ButtonText; }
 #bottombar button { min-width: max(26px, calc(var(--bottom-font-size) + 12px)); height: max(23px, calc(var(--bottom-font-size) + 9px)); font-size: var(--bottom-font-size); }
 #history-edits-toggle, #history-scroll-bottom { background: none; border: 1px solid transparent; color: var(--dim); border-radius: 5px; height: 23px; min-width: 26px; cursor: pointer; }
 #history-edits-toggle.on { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
@@ -1352,7 +1360,8 @@ body.vscode-native-mode #vscode-scroll-bottom-btn { display: none; }
 #initial-loading-line { display: flex; align-items: center; justify-content: center; min-height: 18px; }
 #initial-loading-spinner { display: none; width: 11px; height: 11px; margin-right: 8px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; }
 #initial-loading-state.loading #initial-loading-spinner { display: inline-block; animation: termdeck-report-spin 0.8s linear infinite; }
-#initial-loading-recovery { width: min(520px, calc(100vw - 48px)); padding: 17px 18px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28); }
+#initial-loading-recovery { position: fixed; z-index: 100; left: 50%; bottom: max(48px, calc(env(safe-area-inset-bottom) + 48px)); transform: translateX(-50%); width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 108px); overflow-y: auto; padding: 17px 18px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28); }
+#initial-loading-recovery-actions button.hidden { display: none; }
 #initial-loading-recovery.hidden { display: none; }
 #initial-loading-recovery-title { color: var(--text); font-size: 14px; font-weight: 600; }
 #initial-loading-recovery-description { margin-top: 5px; color: var(--dim); line-height: 1.45; }
@@ -2371,14 +2380,44 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   #sidebar {
     touch-action: pan-x pan-y pinch-zoom;
   }
-  body.mobile-touch-layout .session-item.active .item-close { display: none; }
-  body.mobile-touch-layout .session-item.active .item-mobile-actions {
+  body.mobile-touch-layout .session-item.active .item-close,
+  body.mobile-sidebar-selecting .session-item.sidebar-selected .item-close { display: none; }
+  body.mobile-touch-layout .session-item.active .item-mobile-actions,
+  body.mobile-sidebar-selecting .session-item.sidebar-selected .item-mobile-actions {
     display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; flex: none;
     border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--dim);
   }
-  body.mobile-touch-layout .session-item.active .item-mobile-actions .codicon { font-size: 18px; }
-  body.mobile-touch-layout .session-item.active .item-mobile-actions:active,
-  body.mobile-touch-layout .session-item.mobile-context-hold { color: var(--accent); background: var(--active-bg); }
+  body.mobile-touch-layout .session-item .item-mobile-actions .codicon { font-size: 18px; }
+  body.mobile-touch-layout .session-item .item-mobile-actions:active,
+  body.mobile-touch-layout .session-item.mobile-context-hold,
+  body.mobile-touch-layout .terminal-group-label.mobile-context-hold { color: var(--accent); background: var(--active-bg); }
+  /* Held, a row is being picked up: the phone's word selection and link callout would answer it too. */
+  body.mobile-touch-layout .session-item, body.mobile-touch-layout .terminal-group-label {
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  body.mobile-sidebar-selecting #mobile-sidebar-selection-bar {
+    display: flex; align-items: center; gap: 8px; flex: none; padding: 4px 6px 4px 10px;
+    border-bottom: 1px solid var(--border); background: var(--active-bg); color: var(--text);
+    font: calc(var(--ui-font-size) - 1px)/1.2 Menlo, monospace;
+  }
+  #mobile-sidebar-selection-count { flex: none; color: var(--accent); font-weight: 600; }
+  #mobile-sidebar-selection-hint { min-width: 0; flex: 1; overflow: hidden; color: var(--dim); text-overflow: ellipsis; white-space: nowrap; }
+  #mobile-sidebar-selection-done {
+    flex: none; height: 30px; padding: 0 12px; border: 1px solid var(--active-border); border-radius: 6px;
+    background: transparent; color: var(--accent); font: inherit; font-weight: 600;
+  }
+  /* Two classes, to outrank the picked row's translucent background it was copied with. */
+  body > .session-item.mobile-drag-ghost, body > .terminal-group-label.mobile-drag-ghost {
+    position: fixed; z-index: 200; top: 0; margin: 0; pointer-events: none; opacity: 1;
+    border-color: var(--accent); border-radius: 8px; background: var(--panel2); color: var(--text);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  }
+  /* How many terminals the finger is carrying, when it is more than the one it shows. */
+  body > .mobile-drag-ghost[data-count]::after {
+    content: attr(data-count); position: absolute; top: -7px; right: -4px; min-width: 18px; height: 18px;
+    box-sizing: border-box; padding: 0 5px; border-radius: 9px; background: var(--accent); color: var(--bg);
+    font: 600 11px/18px Menlo, monospace; text-align: center;
+  }
   /* A dialog is position:fixed, so `inset: 0` measures the whole screen even while the keyboard is
      covering the bottom half of it, and the field being typed into ended up underneath the keyboard.
      Bound every dialog to the visual viewport instead -- the part still visible -- and let it scroll,
@@ -2401,6 +2440,12 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
     touch-action: pan-x pan-y pinch-zoom;
   }
   #sidebar-header .panel-actions { display: flex; }
+  #mobile-sidebar-pin, #mobile-sidebar-collapse {
+    display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; flex: none;
+    border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--dim);
+  }
+  #mobile-sidebar-pin .codicon, #mobile-sidebar-collapse .codicon { font-size: 18px; }
+  #mobile-sidebar-pin[aria-pressed="true"] { color: var(--accent); background: var(--active-bg); border-color: var(--active-border); }
   #mobile-sidebar-toggle {
     position: fixed; z-index: 90; top: 0; left: max(8px, env(safe-area-inset-left));
     display: none; align-items: center; justify-content: flex-start; gap: 6px; width: auto; height: 34px;
@@ -2412,6 +2457,7 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   #mobile-sidebar-toggle .mobile-sidebar-drawer-icon {
     flex: none; color: var(--accent); font-size: 20px; opacity: .58;
   }
+  #initial-loading-state { top: max(44px, calc(env(safe-area-inset-top) + 44px)); }
   #mobile-sidebar-agent-icon:empty, #mobile-sidebar-title:empty, #mobile-sidebar-model:empty { display: none; }
   #mobile-sidebar-toggle .mobile-sidebar-agent-icon-rendered {
     position: static; display: inline-flex; flex: none;
@@ -2538,7 +2584,7 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
     touch-action: pan-x pan-y pinch-zoom;
   }
   #notebook-editor-host .monaco-editor textarea.inputarea { font-size: 16px !important; }
-  #mobile-connection-warning { position: fixed; z-index: 150; top: max(7px, env(safe-area-inset-top)); left: max(7px, env(safe-area-inset-left)); right: max(7px, env(safe-area-inset-right)); display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--panel2) 94%, var(--accent) 6%); color: var(--text); box-shadow: 0 8px 28px rgba(0, 0, 0, .48); font: var(--ui-font-size)/1.3 Menlo, monospace; }
+  #mobile-connection-warning { position: fixed; z-index: 150; top: max(44px, calc(env(safe-area-inset-top) + 44px)); left: max(7px, env(safe-area-inset-left)); right: max(7px, env(safe-area-inset-right)); display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--panel2) 94%, var(--accent) 6%); color: var(--text); box-shadow: 0 8px 28px rgba(0, 0, 0, .48); font: var(--ui-font-size)/1.3 Menlo, monospace; }
   #mobile-connection-warning.hidden { display: none; }
   #sidebar-footer {
     padding-right: max(calc(10px * var(--ui-scale)), env(safe-area-inset-right));
@@ -2574,11 +2620,15 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
   #history-area.transcript-first .markdown pre { padding: 7px 8px; margin: 0 0 8px; }
   /* A phone keeps one more line of the conversation: the scroll area's bottom air, the
      thinking banner, and the composer all tighten up. */
-  body.mobile-touch-layout.mobile-history-surface #history-body { padding-bottom: 12px; }
-  body.mobile-touch-layout.mobile-history-surface #history-area.transcript-first #history-body { padding-bottom: 12px; }
+  body.mobile-touch-layout.mobile-history-surface #history-body { padding-bottom: 4px; }
+  body.mobile-touch-layout.mobile-history-surface #history-area.transcript-first #history-body { padding-bottom: 4px; }
   body.mobile-touch-layout.mobile-history-surface #history-thinking-banner { padding: 2px 9px; }
-  body.mobile-touch-layout.mobile-history-surface #history-composer { padding: 8px 10px 9px; }
-  body.mobile-touch-layout.mobile-history-surface #history-area.transcript-first #history-composer { padding: 5px 9px 6px; }
+  body.mobile-touch-layout.mobile-history-surface #history-composer { padding: 3px 10px 9px; }
+  body.mobile-touch-layout.mobile-history-surface #history-area.transcript-first #history-composer { padding: 3px 9px 6px; }
+  body.mobile-touch-layout.mobile-history-surface #history-prompt-row { gap: 5px; }
+  body.mobile-touch-layout.mobile-history-surface #history-send-split,
+  body.mobile-touch-layout.mobile-history-surface #history-send,
+  body.mobile-touch-layout.mobile-history-surface #history-send-menu-toggle { width: 30px; }
   body.mobile-touch-layout.mobile-history-surface #history-area.transcript-first .history-event { margin-bottom: 12px; }
   /* A sent message sits greyed until the transcript confirms it, instead of a status
      row with a cloud icon beneath it. A failed send stays readable: its warning and

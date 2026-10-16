@@ -316,7 +316,8 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 - TermDeck Remote: Google sign-in through a hosted relay, with pairing controls.
 - Optional bearer-token protection for direct LAN, VPN, SSH-tunnel, and reverse-proxy access; server-wide
   read-only mode keeps monitoring live while blocking terminal input and mutations.
-- Touch layouts with long-press row actions, drafts kept through outages, and automatic reconnection.
+- Touch layouts where holding a sidebar row picks it and drags it to reorder or group, with taps picking
+  more; a pinnable sidebar; drafts kept through outages; and automatic reconnection.
 - Agent CLIs use the touch-friendly Transcript surface on phones; plain shell sessions keep the live terminal
   and mobile keyboard/paste input for commands that do not depend on TUI arrow-key menus.
 

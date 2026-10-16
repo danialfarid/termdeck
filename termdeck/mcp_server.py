@@ -10,6 +10,7 @@ import asyncio
 import os
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from mcp.server.mcpserver import MCPServer
@@ -92,7 +93,7 @@ class TermdeckMcpClient:
                           prompt: str = "", origin_session: str = "", session_ref: str = "",
                           cwd: str = "", project: str = "", after: str | None = None,
                           worktree: bool = False, worktree_branch: str = "",
-                          worktree_base: str = "", worktree_id: str = "root",
+                          worktree_base: str = "", worktree_id: str = "",
                           fork: bool = False, output_path: str = "", write_back: bool = False,
                           steer: bool | None = None, bracketed: bool = True) -> dict[str, Any]:
         """Start an agent session, optionally already working on a prompt.
@@ -106,7 +107,8 @@ class TermdeckMcpClient:
         $TERMDECK_SESSION_ID, which is what a delegated child wants.
         """
         origin = origin_session.strip() or os.environ.get(ENV_SESSION_ID, "").strip()
-        return await self._request("POST", "/api/sessions", json={
+        route = f"/api/projects/{quote(project, safe='')}/sessions" if project else "/api/sessions"
+        return await self._request("POST", route, json={
             "model": model, "model_name": model_name, "permission": permission,
             "additional_args": additional_args, "title": title, "description": description,
             "prompt": prompt, "origin_session": origin, "session_ref": session_ref, "cwd": cwd,
@@ -186,6 +188,12 @@ class TermdeckMcpClient:
         """Stop the agent's current turn."""
         return await self._request("POST", f"/api/sessions/{session_id}/interrupt")
 
+    async def list_projects(self) -> list[dict[str, Any]]:
+        return await self._request("GET", "/api/projects")
+
+    async def list_worktrees(self, project: str) -> list[dict[str, Any]]:
+        return await self._request("GET", "/api/worktrees", params={"project": project})
+
     async def list_sessions(self, project: str = "", worktree_id: str = "") -> list[dict[str, Any]]:
         """List sessions, optionally confined to one project and worktree."""
         return await self._request("GET", "/api/sessions",
@@ -229,7 +237,7 @@ def build_server(client: TermdeckMcpClient | None = None) -> MCPServer:
                         api.wait_for_response, api.session_status, api.children_status,
                         api.interrupt, api.list_sessions, api.get_session, api.close_session,
                         api.set_description, api.worktree_review, api.worktree_finish,
-                        api.session_history):
+                        api.session_history, api.list_projects, api.list_worktrees):
         server.tool()(tool_method)
     return server
 

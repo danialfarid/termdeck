@@ -21,6 +21,7 @@ class RemoteConnector:
     # "ready" with nothing to explain why the phone is showing another computer's projects.
     RELAY_NOTICE_CLOSE_CODES = frozenset({4001, 4003, 4401})
     HANDSHAKE_TIMEOUT_SECONDS = 15.0
+    TERMINAL_OUTPUT_CHUNK_BYTES = 1024 * 1024
     TOKEN_REJECTED_MESSAGE = "the relay no longer accepts this computer's remote token; pair again from Remote access"
     REQUEST_HEADER_EXCLUSIONS = frozenset({
         "connection", "content-length", "cookie", "host", "proxy-connection", "transfer-encoding", "upgrade",
@@ -33,8 +34,10 @@ class RemoteConnector:
 
     def __init__(self, relay_url: str, connector_token: str, local_url: str, reconnect_min_seconds: float,
                  reconnect_max_seconds: float, http_timeout_seconds: float, demand_poll_seconds: float = 5.0,
-                 local_access_token: str = "") -> None:
+                 local_access_token: str = "", public_url: str = "") -> None:
         self.relay_url = relay_url.rstrip("/")
+        public_address = urlsplit(public_url or self.relay_url)
+        self.browser_origin = urlunsplit((public_address.scheme, public_address.netloc, "", "", ""))
         self.connector_token = connector_token
         self.local_url = local_url.rstrip("/")
         self.reconnect_min_seconds = reconnect_min_seconds
@@ -210,17 +213,18 @@ class RemoteConnector:
                               "text": f"local TermDeck websocket failed: {websocket_error}"})
             return
         self._local_websockets[channel_id] = local_websocket
+        await self._send({"type": RemoteMessageType.WS_OPENED, "channel_id": channel_id})
         pump_task = asyncio.create_task(self._pump_local_websocket(channel_id, local_websocket))
         self._local_websocket_tasks[channel_id] = pump_task
         pump_task.add_done_callback(self._discard_local_websocket_task)
-        await self._send({"type": RemoteMessageType.WS_OPENED, "channel_id": channel_id})
 
     async def _pump_local_websocket(self, channel_id: str, local_websocket: ClientConnection) -> None:
         try:
             async for payload in local_websocket:
                 if isinstance(payload, bytes):
-                    await self._send({"type": RemoteMessageType.WS_SERVER_BINARY, "channel_id": channel_id,
-                                      "body": payload})
+                    for start in range(0, max(1, len(payload)), self.TERMINAL_OUTPUT_CHUNK_BYTES):
+                        await self._send({"type": RemoteMessageType.WS_SERVER_BINARY, "channel_id": channel_id,
+                                          "body": payload[start:start + self.TERMINAL_OUTPUT_CHUNK_BYTES]})
                 else:
                     await self._send({"type": RemoteMessageType.WS_SERVER_TEXT, "channel_id": channel_id,
                                       "text": payload})
@@ -297,7 +301,7 @@ class RemoteConnector:
 
     def _browser_origin_allowed(self, headers: list[tuple[str, str]]) -> bool:
         origins = [value for name, value in headers if name.lower() == "origin"]
-        return not origins or (len(origins) == 1 and origins[0] == self.relay_url)
+        return not origins or (len(origins) == 1 and origins[0] == self.browser_origin)
 
     def _local_request_headers(self, headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
         filtered = [(name, value) for name, value in self._filtered_request_headers(headers) if name.lower() != "origin"]

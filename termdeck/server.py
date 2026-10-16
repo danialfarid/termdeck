@@ -88,7 +88,7 @@ class CreateSessionRequest(BaseModel):
     worktree: bool = False
     worktree_branch: str = ""
     worktree_base: str = ""
-    worktree_id: str = "root"
+    worktree_id: str = ""
     # What the session is being made to do. Given one, this call makes the terminal and sends it, which
     # is the whole of what a separate "task" call was for.
     prompt: str = ""
@@ -124,7 +124,7 @@ class RunTerminalTaskRequest(BaseModel):
     worktree: bool = False
     worktree_branch: str = ""
     worktree_base: str = ""
-    worktree_id: str = "root"
+    worktree_id: str = ""
 
 
 class ProjectRegistrationRequest(BaseModel):
@@ -852,6 +852,7 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_CODEX_MODELS_ROUTE, response_model=None)(self._list_codex_models)
         app.get(TermdeckConfig.API_AGENT_MODELS_ROUTE, response_model=None)(self._list_agent_models)
         app.get(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._list_sessions)
+        app.post(TermdeckConfig.API_PROJECT_SESSIONS_ROUTE, response_model=None)(self._create_project_session)
         app.post(TermdeckConfig.API_SESSIONS_ROUTE, response_model=None)(self._create_session)
         app.get(TermdeckConfig.API_SESSION_EXPORT_ROUTE, response_model=None)(self._export_session)
         app.post(TermdeckConfig.API_SESSION_IMPORT_ROUTE, response_model=None)(self._import_session)
@@ -1014,6 +1015,7 @@ class TermdeckServer:
         app.websocket(TermdeckConfig.TRANSCRIPT_WS_ROUTE)(self._ws_transcript)
         app.websocket(TermdeckConfig.LSP_WS_ROUTE)(self._ws_lsp)
         app.websocket(TermdeckConfig.WS_ROUTE)(self._ws_terminal)
+        app.websocket(TermdeckConfig.WS_ROUTE + "/debug")(self._ws_terminal_debug)
         return app
 
     async def _list_closed(self, project: str = "", worktree_id: str = "") -> list[dict[str, object]]:
@@ -3132,6 +3134,36 @@ class TermdeckServer:
             return project_name, None
         return project_name, self.worktree_registry.get(project_name, root, selected_id)
 
+    async def _create_project_session(self, project: str, request: CreateSessionRequest) -> dict[str, object]:
+        if request.project.strip() and request.project.strip() != project:
+            raise HTTPException(status_code=400, detail="project in path and body must agree")
+        return await self._create_session(request.model_copy(update={"project": project}))
+
+    def _resolve_creation_scope(self, request: CreateSessionRequest | RunTerminalTaskRequest
+                                ) -> CreateSessionRequest | RunTerminalTaskRequest:
+        origin_id = self._resolve_origin_session(request.origin_session) if request.origin_session.strip() else None
+        origin = self.manager.session_summary_by_id(origin_id) if origin_id else {}
+        explicit_project = request.project.strip()
+        project = explicit_project or str(origin.get("project", ""))
+        worktree_id = request.worktree_id.strip() or (
+            "root" if explicit_project else str(origin.get("worktree_id") or "root"))
+        cwd = request.cwd.strip() or ("" if explicit_project else str(origin.get("cwd", "")))
+        if explicit_project and request.fork and explicit_project != origin.get("project"):
+            raise ValueError("fork must stay in the originating project")
+        if request.fork and not request.worktree and worktree_id == "root" and origin.get("worktree_id", "root") != "root":
+            raise ValueError("forking into root from another worktree is not supported; omit project to inherit")
+        if project:
+            root = self.manager.registry.root_for(project)
+            if root is None:
+                raise ValueError(f"unknown project: {project}")
+            selected = self.worktree_registry.get(project, root, worktree_id) if worktree_id != "root" else None
+            scope_root = Path(selected.path if selected else root).expanduser().resolve()
+            if request.cwd.strip() and not Path(request.cwd).expanduser().resolve().is_relative_to(scope_root):
+                raise ValueError("cwd conflicts with the selected project/worktree")
+            if explicit_project or request.worktree_id.strip():
+                cwd = request.cwd.strip() or str(scope_root)
+        return request.model_copy(update={"project": project, "worktree_id": worktree_id, "cwd": cwd})
+
     async def _create_session(self, request: CreateSessionRequest) -> dict[str, object]:
         """Make a terminal, and start it on a prompt when one is given.
 
@@ -3142,6 +3174,10 @@ class TermdeckServer:
             return await self._run_terminal_task(RunTerminalTaskRequest(
                 **{field: getattr(request, field) for field in RunTerminalTaskRequest.model_fields
                    if hasattr(request, field)}))
+        try:
+            request = self._resolve_creation_scope(request)
+        except ValueError as scope_error:
+            raise HTTPException(status_code=400, detail=str(scope_error)) from scope_error
         worktree: WorktreeMetadata | None = None
         worktree_id = request.worktree_id.strip() or "root"
         try:
@@ -3173,7 +3209,7 @@ class TermdeckServer:
                 worktree_id=worktree_id,
             )
         except (ValueError, OSError) as bad_request:
-            if worktree is not None:
+            if request.worktree and worktree is not None:
                 self.worktrees.finish(worktree, "discard")
             raise HTTPException(status_code=400, detail=str(bad_request)) from bad_request
         result = self.manager.session_summary(ms)
@@ -3193,6 +3229,7 @@ class TermdeckServer:
         worktree: WorktreeMetadata | None = None
         created_session_id: str | None = None
         try:
+            request = self._resolve_creation_scope(request)
             origin_session_id = self._resolve_origin_session(request.origin_session) if request.origin_session.strip() else None
             if request.fork and not origin_session_id:
                 raise ValueError("fork requires origin_session")
@@ -3272,7 +3309,7 @@ class TermdeckServer:
                 self._schedule_task_result_delivery(ms.record.session_id, origin_session_id, since)
             return summary
         except (ValueError, OSError) as task_error:
-            if worktree is not None and created_session_id is None:
+            if request.worktree and worktree is not None and created_session_id is None:
                 self.worktrees.finish(worktree, "discard")
             raise HTTPException(status_code=400, detail=str(task_error)) from task_error
 
@@ -4026,41 +4063,54 @@ class TermdeckServer:
             raise HTTPException(status_code=404, detail=session_id)
         previous = self.manager.session_summary_by_id(session_id)
         group_name = request.group_name if request else ""
-        # The browser sends the group with the request; a script calling the API has no reason to
-        # know it, and without it the closed entry recorded no group at all. The server knows, so
-        # it looks the group up itself -- otherwise the closed list fell back to reading the live
-        # assignment, which is why a closed terminal still showed under its old group.
-        released_name, released_id = self._release_session_group(session_id)
+        ancestor_session_ids: list[str] = []
+        parent_id = previous.get("spawned_by_session_id")
+        seen = {session_id}
+        while parent_id and str(parent_id) not in seen and self.manager.has_session(str(parent_id)):
+            parent_id = str(parent_id)
+            seen.add(parent_id)
+            parent = self.manager.session_summary_by_id(parent_id)
+            if parent["project"] != previous["project"] or parent.get("worktree_id", "root") != previous.get("worktree_id", "root"):
+                break
+            ancestor_session_ids.append(parent_id)
+            parent_id = parent.get("spawned_by_session_id")
+        child_session_ids: list[str] = []
+        for child_id in self.manager.child_session_ids(session_id):
+            child = self.manager.session_summary_by_id(child_id)
+            if child["project"] == previous["project"] and child.get("worktree_id", "root") == previous.get("worktree_id", "root"):
+                child_session_ids.append(child_id)
+        released_name, released_id = self._release_session_group(session_id, ancestor_session_ids, child_session_ids, persist=False)
         group_name = group_name or released_name
         socket_removed = await self.manager.delete_session(session_id, group_name, released_id)
         if not socket_removed:
             raise HTTPException(status_code=409, detail="could not terminate the detached terminal process tree")
+        self._release_session_group(session_id, ancestor_session_ids, child_session_ids)
         self._broadcast_project_state_snapshot(str(previous.get("project", "")),
                                                 str(previous.get("worktree_id") or "root"))
         return {ApiFields.DELETED: session_id, "socket_removed": True, "group_name": group_name}
 
-    def _release_session_group(self, session_id: str) -> tuple[str, str]:
-        """Drop a closing terminal's group assignment, returning the group it was in.
-
-        Assignments outlive their terminals otherwise: every closed terminal left one behind, and
-        they accumulate for the life of the deck. The group goes on the closed record instead, so
-        reopening the terminal puts it back where it was rather than at the end of the list.
-        """
+    def _release_session_group(self, session_id: str, ancestor_session_ids: list[str] | None = None,
+                               child_session_ids: list[str] | None = None, persist: bool = True) -> tuple[str, str]:
         settings = UiSettings(**self.settings_store.load())
         name, group = "", ""
-        released = False
+        changed = False
         for key, state in settings.project_state.items():
-            group_id = state.session_groups.get(session_id)
+            group_id = next((state.session_groups[member] for member in [session_id, *(ancestor_session_ids or [])]
+                             if member in state.session_groups), None)
             if group_id is None:
                 continue
-            released = True
             group = group or str(group_id)
             name = name or next((entry.get("name", "") for entry in state.terminal_groups
                                  if entry.get("id") == group_id), "")
-            state.session_groups = {member: assigned for member, assigned in state.session_groups.items()
-                                    if member != session_id}
+            if session_id in state.session_groups:
+                del state.session_groups[session_id]
+                changed = True
+            for child_id in child_session_ids or []:
+                if child_id not in state.session_groups:
+                    state.session_groups[child_id] = group_id
+                    changed = True
             settings.project_state[key] = state
-        if released:
+        if changed and persist:
             self.settings_store.save(settings.model_dump())
         return name, group
 
@@ -4169,11 +4219,17 @@ class TermdeckServer:
                         headers={"Content-Disposition": f'attachment; filename="termdeck-diagnostics-{timestamp}.zip"'})
 
     async def _ws_terminal(self, websocket: WebSocket, session_id: str) -> None:
+        await self._serve_terminal_websocket(websocket, session_id, debug_preview=False)
+
+    async def _ws_terminal_debug(self, websocket: WebSocket, session_id: str) -> None:
+        await self._serve_terminal_websocket(websocket, session_id, debug_preview=True)
+
+    async def _serve_terminal_websocket(self, websocket: WebSocket, session_id: str, debug_preview: bool) -> None:
         if not self.manager.has_session(session_id):
             await websocket.close(code=TermdeckConfig.WS_CODE_UNKNOWN_SESSION)
             return
-        read_only = bool(websocket.scope.get("state", {}).get("termdeck_read_only"))
-        if read_only and self.manager.session_summary_by_id(session_id).get("dormant"):
+        read_only = debug_preview or bool(websocket.scope.get("state", {}).get("termdeck_read_only"))
+        if read_only and not debug_preview and self.manager.session_summary_by_id(session_id).get("dormant"):
             await websocket.close(code=4403, reason="read-only mode cannot start a dormant terminal")
             return
         await websocket.accept()
@@ -4181,9 +4237,16 @@ class TermdeckServer:
         have_buffer = websocket.query_params.get("have_buffer", "0").lower() not in {"0", "false", "no", "off"}
         repaint_preserved_buffer = websocket.query_params.get("repaint_preserved_buffer", "0").lower() not in {"0", "false", "no", "off"}
         full_claude_raw_replay = websocket.query_params.get("full_claude_raw_replay", "0").lower() not in {"0", "false", "no", "off"}
-        scrollback, queue = self.manager.attach_client(
-            session_id, screen_repaint, have_buffer, repaint_preserved_buffer, full_claude_raw_replay)
+        if debug_preview:
+            scrollback, queue = self.manager.attach_debug_client(session_id)
+        else:
+            scrollback, queue = self.manager.attach_client(
+                session_id, screen_repaint, have_buffer, repaint_preserved_buffer, full_claude_raw_replay)
         try:
+            if debug_preview:
+                summary = self.manager.session_summary_by_id(session_id)
+                await websocket.send_json({"type": "debug_geometry", "cols": summary["cols"], "rows": summary["rows"],
+                                           "running": summary["running"]})
             await asyncio.wait_for(websocket.send_bytes(scrollback), TerminalClientQueue.SEND_TIMEOUT_SECONDS)
             await websocket.send_text(json.dumps({WsMessageFields.TYPE: WsMessageFields.DRAFT,
                                                    WsMessageFields.DRAFT: self.manager.session_draft(session_id),
@@ -4398,12 +4461,30 @@ class TermdeckServer:
                     await self._send_transcript_snapshot(websocket, session_id, revision, page["turns"],
                                                           before=page.get("before"), has_more=bool(page.get("has_more")),
                                                           latest_first=latest_first)
+            heartbeat_due = time.monotonic() + TermdeckConfig.TRANSCRIPT_WS_HEARTBEAT_SECONDS
             while True:
                 try:
-                    update = await asyncio.wait_for(queue.get(), timeout=TermdeckConfig.TRANSCRIPT_WS_HEARTBEAT_SECONDS)
+                    update = await asyncio.wait_for(queue.get(), timeout=TermdeckConfig.TRANSCRIPT_WS_SOURCE_CHECK_SECONDS)
                 except TimeoutError:
-                    await websocket.send_text(json.dumps({WsMessageFields.TYPE: "transcript_heartbeat",
-                                                           WsMessageFields.SESSION_ID: session_id}))
+                    # Subscribed to one file, a transcript went quiet for good once its session moved on
+                    # to another: nothing said after that appeared, and every prompt stayed unconfirmed.
+                    agent_kind, cwd, agent_session_id = self.manager.session_history_source(session_id)
+                    moved_to = await asyncio.to_thread(self.transcripts.source_path, agent_kind, cwd, agent_session_id)
+                    if moved_to != path:
+                        self.transcripts.unsubscribe(path, queue)
+                        path, _, revision, queue = self.transcripts.subscribe(agent_kind, cwd, agent_session_id)
+                        page = await asyncio.to_thread(self.transcripts.history_page, agent_kind, cwd,
+                                                       agent_session_id, None, initial_limit)
+                        if path is not None:
+                            revision = await asyncio.to_thread(self.transcripts.prime_subscription, agent_kind, path)
+                        await self._send_transcript_snapshot(websocket, session_id, revision, page["turns"],
+                                                              before=page.get("before"),
+                                                              has_more=bool(page.get("has_more")),
+                                                              latest_first=latest_first)
+                    elif time.monotonic() >= heartbeat_due:
+                        heartbeat_due = time.monotonic() + TermdeckConfig.TRANSCRIPT_WS_HEARTBEAT_SECONDS
+                        await websocket.send_text(json.dumps({WsMessageFields.TYPE: "transcript_heartbeat",
+                                                               WsMessageFields.SESSION_ID: session_id}))
                 else:
                     update[WsMessageFields.SESSION_ID] = session_id
                     await websocket.send_text(json.dumps(update))

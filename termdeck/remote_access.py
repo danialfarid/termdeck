@@ -193,7 +193,7 @@ class RemoteAccessManager:
             relay_url=credentials.relay_url, connector_token=credentials.connector_token, local_url=self.local_url,
             reconnect_min_seconds=self.reconnect_min_seconds, reconnect_max_seconds=self.reconnect_max_seconds,
             http_timeout_seconds=self.http_timeout_seconds, demand_poll_seconds=self.demand_poll_seconds,
-            local_access_token=self.local_access_token)
+            local_access_token=self.local_access_token, public_url=self.public_url)
         self.connector_task = asyncio.create_task(self.connector.run())
 
     async def _stop_connector(self) -> None:

@@ -817,58 +817,88 @@ Object.assign(TermdeckApp.prototype, {
       this.setInteractionWorktreeFromElement(label);
       this.openTerminalGroupContextMenu(event, group);
     };
-    this.installMobileSidebarContextMenu(label, (x, y) => {
-      this.setInteractionWorktreeFromElement(label);
-      this.openTerminalGroupContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: x, clientY: y }, group);
+    this.installMobileSidebarHold(label, {
+      openMenuAt: (x, y) => {
+        this.setInteractionWorktreeFromElement(label);
+        this.openTerminalGroupContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: x, clientY: y }, group);
+      },
     });
     this.makeLayoutDraggable(label, `group:${group.id}`, "group");
     return label;
   },
 
 
-  installMobileSidebarContextMenu(element, openAtPoint) {
+  // A finger held on a row picks it up. On a terminal the hold adds it to the terminals being picked --
+  // taps then add or drop others -- and moving the finger carries all of them, landing where it lifts by
+  // the rules a mouse drag follows. A terminal's menu is on its ⋯ button. A group has no such button, so
+  // letting go of a group where it was held opens its menu, and moving carries the group.
+  installMobileSidebarHold(element, { sessionId = null, openMenuAt = null } = {}) {
     if (!this.touchMobileLayoutEnabled()) return;
-    let pressState = null;
+    let press = null;
     let suppressClickUntil = 0;
-    const cancelPress = () => {
-      if (pressState?.timer) window.clearTimeout(pressState.timer);
-      pressState = null;
+    const release = () => {
+      if (press?.timer) window.clearTimeout(press.timer);
+      if (press) element.draggable = press.draggable;
+      press = null;
       element.classList.remove("mobile-context-hold");
     };
-    element.addEventListener("pointerdown", (event) => {
-      if (event.pointerType !== "touch" || !event.isPrimary || event.button !== 0 || event.target.closest("button")) return;
-      cancelPress();
-      pressState = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, opened: false, timer: 0 };
-      const currentPress = pressState;
-      currentPress.timer = window.setTimeout(() => {
-        if (pressState !== currentPress) return;
-        currentPress.timer = 0;
-        currentPress.opened = true;
-        suppressClickUntil = performance.now() + 800;
-        element.classList.add("mobile-context-hold");
-        openAtPoint(currentPress.x, currentPress.y);
-      }, MOBILE_SIDEBAR_CONTEXT_LONG_PRESS_MS);
-    }, { passive: true });
-    element.addEventListener("pointermove", (event) => {
-      if (!pressState || pressState.pointerId !== event.pointerId) return;
-      if (Math.hypot(event.clientX - pressState.x, event.clientY - pressState.y) > MOBILE_SIDEBAR_CONTEXT_MOVE_TOLERANCE) cancelPress();
-    }, { passive: true });
-    element.addEventListener("pointerup", (event) => {
-      if (!pressState || pressState.pointerId !== event.pointerId) return;
-      const opened = pressState.opened;
-      cancelPress();
-      if (opened) {
-        suppressClickUntil = performance.now() + 800;
-        event.preventDefault();
+    const hold = () => {
+      if (!press || press.held) return;
+      press.timer = 0;
+      press.held = true;
+      suppressClickUntil = performance.now() + 800;
+      element.classList.add("mobile-context-hold");
+      navigator.vibrate?.(12);
+      if (sessionId) {
+        this.setInteractionWorktreeFromElement(element, this.session(sessionId));
+        this.addMobileSidebarSelection(sessionId);
       }
+    };
+    const ownTouch = (event) => press && [...event.changedTouches].find((touch) => touch.identifier === press.id);
+    element.addEventListener("touchstart", (event) => {
+      release();
+      if (event.touches.length !== 1 || event.target.closest("button")) return;
+      const touch = event.touches[0];
+      // Not draggable while a finger is on it, or a browser that does run an HTML drag for a finger
+      // would take the touch over from the drag below.
+      press = { id: touch.identifier, x: touch.clientX, y: touch.clientY, held: false, timer: 0, draggable: element.draggable };
+      element.draggable = false;
+      press.timer = window.setTimeout(hold, MOBILE_SIDEBAR_CONTEXT_LONG_PRESS_MS);
+    }, { passive: true });
+    // Not passive: once the row is held, the finger is moving the row and not scrolling the list.
+    element.addEventListener("touchmove", (event) => {
+      const touch = ownTouch(event);
+      if (!touch) return;
+      const moved = Math.hypot(touch.clientX - press.x, touch.clientY - press.y) > MOBILE_SIDEBAR_CONTEXT_MOVE_TOLERANCE;
+      if (!press.held) {
+        if (moved) release();
+        return;
+      }
+      event.preventDefault();
+      if (this.mobileSidebarDrag) this.moveMobileSidebarDrag(touch.clientX, touch.clientY);
+      else if (moved) this.startMobileSidebarDrag(element, touch.clientX, touch.clientY);
+    }, { passive: false });
+    element.addEventListener("touchend", (event) => {
+      if (!ownTouch(event)) return;
+      const { held, x, y } = press;
+      release();
+      if (!held) return;
+      // A hold is not a tap: no click comes after it.
+      event.preventDefault();
+      suppressClickUntil = performance.now() + 800;
+      if (this.mobileSidebarDrag) this.finishMobileSidebarDrag(true);
+      else openMenuAt?.(x, y);
     });
-    element.addEventListener("pointercancel", cancelPress, { passive: true });
-    element.addEventListener("dragstart", cancelPress, { passive: true });
+    element.addEventListener("touchcancel", () => {
+      release();
+      this.finishMobileSidebarDrag(false);
+    }, { passive: true });
     element.addEventListener("contextmenu", (event) => {
-      if (performance.now() < suppressClickUntil) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-      } else cancelPress();
+      // The phone's own long press, which the hold answers: not its menu, and not a word selected.
+      if (!press && performance.now() >= suppressClickUntil) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      hold();
     }, true);
     element.addEventListener("click", (event) => {
       if (performance.now() >= suppressClickUntil) return;
@@ -1005,10 +1035,7 @@ Object.assign(TermdeckApp.prototype, {
       this.setInteractionWorktreeFromElement(item, s);
       this.openSessionContextMenu(event, s);
     };
-    this.installMobileSidebarContextMenu(item, (x, y) => {
-      this.setInteractionWorktreeFromElement(item, s);
-      this.openSessionContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: x, clientY: y }, s);
-    });
+    this.installMobileSidebarHold(item, { sessionId: s.session_id });
     this.makeLayoutDraggable(item, `session:${s.session_id}`, "session");
     list.appendChild(item);
     this.renderSpawnedStack(s, list);
@@ -1229,7 +1256,7 @@ Object.assign(TermdeckApp.prototype, {
       const groupsById = new Map(groups.map((group) => [group.id, group]));
       const sessionGroups = state.session_groups || {};
       const allVisibleSessions = this.hideInactiveTerminals
-        ? sessions.filter((session) => this.isActiveTerminal(session))
+        ? this.activeTerminalsWithParents(sessions)
         : sessions;
       const terminalSearchQuery = this.terminalSearchText.trim();
       const visibleSessions = terminalSearchQuery
@@ -1351,6 +1378,12 @@ Object.assign(TermdeckApp.prototype, {
 
 
   renderList() {
+    // Redrawn mid-drag, the rows under a finger would be new ones, with the drag's marks gone from them.
+    if (this.mobileSidebarDrag) {
+      this.mobileSidebarRenderDeferred = true;
+      return;
+    }
+    this.mobileSidebarRenderDeferred = false;
     const list = this.$("session-list");
     this.hideTerminalSearchHoverPopup();
     const terminalSearchEditor = this.terminalSearchEditorOpen ? list.querySelector("#terminal-search-inline") : null;
@@ -1368,6 +1401,7 @@ Object.assign(TermdeckApp.prototype, {
     if (!this.sidebarSelectedSessionIds.has(this.sidebarSelectionAnchorId)) {
       this.sidebarSelectionAnchorId = [...this.sidebarSelectedSessionIds][0] || null;
     }
+    if (this.mobileSidebarSelecting) this.syncMobileSidebarSelection();
     this.sessionTitleEls.clear();
     this.sessionDescriptionEls.clear();
     this.sessionSpinnerEls.clear();
@@ -4495,13 +4529,29 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
-  showSessionInfo(session) {
+  async showSessionInfo(session) {
+    const parentId = session.spawned_by_session_id;
+    let parent = parentId ? this.sessionOrClosed(parentId) : null;
+    let parentName = "unavailable";
+    if (parentId && !parent) {
+      try {
+        const response = await fetch(`/api/sessions/${encodeURIComponent(parentId)}`);
+        if (response.ok) parent = await response.json();
+        else parentName = response.status === 404 ? "closed or removed" : `unavailable (${response.status})`;
+      } catch (error) {
+        if (!(error instanceof TypeError) && !(error instanceof SyntaxError)) throw error;
+        parentName = `unavailable (${error.message})`;
+      }
+    }
+    if (parent) parentName = this.titlePresentation(parent).text;
     const lines = [
       `Name: ${this.titlePresentation(session).text}`,
       `Status: ${session.running ? "running" : "closed"}`,
       `Model: ${session.agent_kind || "shell"}`,
       session.agent_session_id ? `Agent session: ${session.agent_session_id}` : "",
       `Session id: ${session.session_id}`,
+      parentId ? `Parent name: ${parentName}` : "",
+      parentId ? `Parent session id: ${parentId}` : "",
       `Project: ${session.project || ""}`,
       `Directory: ${session.cwd || ""}`,
       session.command ? `Command: ${session.command}` : "",

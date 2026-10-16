@@ -1442,6 +1442,15 @@ class TerminalSessionManager:
 
     # A complete OSC 0/1/2 window-title sequence. The body excludes ESC so a match can never run across
     # the ST terminator or into a following escape.
+    def attach_debug_client(self, session_id: str) -> tuple[bytes, asyncio.Queue]:
+        ms = self._sessions[session_id]
+        replay = self.replay.raw_bytes(ms) if agents.agent_cli(ms.record.agent_kind).records_raw_replay else self.replay.replay_bytes(ms)
+        if self.replay.ends_inside_sync_update(replay):
+            replay += TermdeckConfig.SYNC_UPDATE_END
+        queue: asyncio.Queue = TerminalClientQueue()
+        ms.client_queues.add(queue)
+        return replay, queue
+
     def attach_client(self, session_id: str, screen_repaint: bool = True, have_buffer: bool = False,
                       repaint_preserved_buffer: bool = False, full_claude_raw_replay: bool = False) -> tuple[bytes, asyncio.Queue]:
         ms = self._sessions[session_id]

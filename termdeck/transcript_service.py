@@ -1,4 +1,6 @@
 import asyncio
+import os
+import select
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -10,13 +12,9 @@ from watchdog.observers import Observer
 
 from termdeck import agents
 from termdeck.agents.base import AgentCli
+from termdeck.config import TermdeckConfig
 from termdeck.platform_paths import PlatformPaths
 from termdeck.transcript_turns import TurnBuilder
-
-if PlatformPaths.IS_MACOS:
-    from watchdog.observers.kqueue import KqueueObserver
-else:
-    KqueueObserver = None
 
 
 @dataclass
@@ -33,6 +31,35 @@ class _TranscriptState:
     last_user_at: float | None = None
     last_access: float = 0.0
     refresh_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+
+class _TranscriptChain:
+    """A transcript kept in several files, read as one stream: each earlier file up to where the next
+    takes over, then the file the agent is writing, to its end as it is now.
+
+    Offsets are into that stream. One in an earlier file never moves, and the stream only grows at its
+    end, so an offset handed out stays good while the agent writes on -- as one into a single file did.
+    """
+
+    def __init__(self, segments: list[tuple[Path, int | None]]) -> None:
+        self.parts: list[tuple[Path, int, int]] = []
+        start = 0
+        for path, end in segments:
+            length = path.stat().st_size if end is None else end
+            self.parts.append((path, start, length))
+            start += length
+        self.size = start
+
+    def read(self, start: int, end: int) -> bytes:
+        chunks: list[bytes] = []
+        for path, part_start, length in self.parts:
+            low, high = max(start, part_start), min(end, part_start + length)
+            if low >= high:
+                continue
+            with path.open("rb") as source:
+                source.seek(low - part_start)
+                chunks.append(source.read(high - low))
+        return b"".join(chunks)
 
 
 class _TranscriptFileHandler(FileSystemEventHandler):
@@ -63,6 +90,127 @@ class _TranscriptFileHandler(FileSystemEventHandler):
             self._emit(event.dest_path)
 
 
+class _TranscriptAppendWatch:
+    """Appends to the transcripts an agent keeps open, on macOS: FSEvents reports a file when it is first
+    written and then not again until it is closed, and Codex writes its rollout through one handle for the
+    whole session. One thread waits on one kqueue holding a watch on each transcript file itself.
+
+    This used to be watchdog's KqueueObserver over every directory holding a transcript, which is a thread
+    per directory, each waking every second and re-listing its directory on every write -- and Muse gives
+    each session its own directory. At ~800 directories those threads fighting for the GIL starved the
+    event loop as soon as the machine was busy: the deck stopped answering for 40 minutes, and each
+    watchdog restart spent another 12 minutes stuck coming up.
+    """
+
+    _FILE_EVENTS = (select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND
+                    | select.KQ_NOTE_DELETE | select.KQ_NOTE_RENAME) if PlatformPaths.IS_MACOS else 0
+    _GONE_EVENTS = (select.KQ_NOTE_DELETE | select.KQ_NOTE_RENAME) if PlatformPaths.IS_MACOS else 0
+    # Only bounds how long stop() waits for the thread; nothing is polled.
+    _WAIT_SECONDS = 1.0
+
+    def __init__(self, roots: list[Path], callback: Callable[[Path], None]) -> None:
+        self._roots = roots
+        self._callback = callback
+        self._kqueue = select.kqueue()
+        self._lock = threading.Lock()
+        self._fd_by_path: dict[Path, int] = {}
+        self._path_by_fd: dict[int, Path] = {}
+        self._stopping = threading.Event()
+        self._scanned = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="termdeck-transcript-appends", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def covers(self, path: Path) -> bool:
+        return path.suffix == ".jsonl" and any(path.is_relative_to(root) for root in self._roots)
+
+    def watch(self, path: Path) -> None:
+        if not self.covers(path):
+            return
+        with self._lock:
+            if path in self._fd_by_path or self._stopping.is_set():
+                return
+            try:
+                # O_EVTONLY: a watch, not a reader -- it does not keep the volume from being unmounted.
+                descriptor = os.open(path, os.O_EVTONLY)
+            except OSError:
+                return
+            try:
+                self._kqueue.control([select.kevent(descriptor, filter=select.KQ_FILTER_VNODE,
+                                                    flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                                                    fflags=self._FILE_EVENTS)], 0)
+            except OSError:
+                os.close(descriptor)
+                return
+            self._fd_by_path[path] = descriptor
+            self._path_by_fd[descriptor] = path
+
+    def watched_count(self) -> int:
+        with self._lock:
+            return len(self._fd_by_path)
+
+    def stop(self) -> None:
+        self._stopping.set()
+
+    def join(self, timeout: float | None = None) -> None:
+        self._thread.join(timeout)
+        if self._thread.is_alive():
+            return
+        with self._lock:
+            for descriptor in self._path_by_fd:
+                os.close(descriptor)
+            self._fd_by_path.clear()
+            self._path_by_fd.clear()
+            self._kqueue.close()
+
+    def _forget(self, path: Path) -> None:
+        descriptor = self._fd_by_path.pop(path, None)
+        if descriptor is not None:
+            self._path_by_fd.pop(descriptor, None)
+            os.close(descriptor)
+
+    def _watch_recent(self) -> None:
+        cutoff = time.time() - TermdeckConfig.TRANSCRIPT_APPEND_WATCH_DAYS * 86400
+        for root in self._roots:
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*.jsonl"):
+                if self._stopping.is_set():
+                    return
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        continue
+                except OSError:
+                    continue
+                self.watch(path)
+
+    def _run(self) -> None:
+        # The scan is here rather than in start() so the server does not wait on it to bind its port.
+        self._watch_recent()
+        self._scanned.set()
+        while not self._stopping.is_set():
+            try:
+                events = self._kqueue.control(None, 64, self._WAIT_SECONDS)
+            except OSError:
+                if self._stopping.is_set():
+                    return
+                time.sleep(self._WAIT_SECONDS)
+                continue
+            changed: dict[Path, None] = {}
+            with self._lock:
+                for event in events:
+                    path = self._path_by_fd.get(event.ident)
+                    if path is None:
+                        continue
+                    changed[path] = None
+                    # Deleted or renamed away: whatever takes the name is a new file, which FSEvents does report.
+                    if event.fflags & self._GONE_EVENTS:
+                        self._forget(path)
+            for path in changed:
+                self._callback(path)
+
+
 class TranscriptService:
     """Reads an agent session's own on-disk log (codex rollout / claude project jsonl) into a clean conversation
     transcript. This is the complete, durable record — independent of what the CLI's resume redraw restores on
@@ -81,7 +229,7 @@ class TranscriptService:
         self._subscribers: dict[Path, set[asyncio.Queue]] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._observer: Observer | None = None
-        self._codex_leaf_observer = None
+        self._append_watch: _TranscriptAppendWatch | None = None
         self._file_change_listeners: list[Callable[[Path], None]] = []
         self._refresh_tasks: dict[Path, asyncio.Task] = {}
         self._refresh_pending_paths: set[Path] = set()
@@ -105,22 +253,12 @@ class TranscriptService:
                 observer.schedule(handler, str(root), recursive=True)
         observer.start()
         self._observer = observer
-        # The recursive observer is useful for discovering new rollout files,
-        # but macOS FSEvents can omit appends to a JSONL file that Codex keeps
-        # open. Watch the existing leaf directories with kqueue as well so
-        # active Markdown sessions receive each append promptly. This is
-        # event-driven: it does not poll files or rescan the transcript tree.
-        if KqueueObserver is not None and any(root.is_dir() for root in watch_roots):
-            leaf_observer = KqueueObserver()
-            leaf_dirs: set[Path] = set()
-            for root in watch_roots:
-                if root.is_dir():
-                    leaf_dirs.update(path.parent for path in root.rglob("*.jsonl"))
-            for leaf in sorted(leaf_dirs):
-                leaf_observer.schedule(handler, str(leaf), recursive=False)
-            if leaf_dirs:
-                leaf_observer.start()
-                self._codex_leaf_observer = leaf_observer
+        # The recursive observer finds new transcript files; the append watch follows the writes to them
+        # that FSEvents leaves out (see _TranscriptAppendWatch).
+        if PlatformPaths.IS_MACOS and watch_roots:
+            append_watch = _TranscriptAppendWatch(watch_roots, self._on_file_change_from_thread)
+            append_watch.start()
+            self._append_watch = append_watch
 
     # Bounded on the stop() call itself, not just the join. An observer that will not come down blocks
     # here forever, and this runs inside the app's shutdown: measured with SIGTERM, the server logged
@@ -131,8 +269,8 @@ class TranscriptService:
     # a daemon thread does not hold it back.
     def stop(self) -> None:
         observer, self._observer = self._observer, None
-        leaf_observer, self._codex_leaf_observer = self._codex_leaf_observer, None
-        for watcher in (leaf_observer, observer):
+        append_watch, self._append_watch = self._append_watch, None
+        for watcher in (append_watch, observer):
             if watcher is None:
                 continue
             closer = threading.Thread(target=self._close_observer, args=(watcher,), daemon=True)
@@ -163,6 +301,9 @@ class TranscriptService:
         # this registration must stay cheap so the browser can start loading
         # without waiting for a potentially huge JSONL file.
         agents.agent_cli(agent_kind)
+        if self._append_watch is not None:
+            # A transcript older than the startup window can still be held open by its agent.
+            self._append_watch.watch(path)
         state = self._states.get(path)
         self._touch_state(path)
         self._subscribers.setdefault(path, set()).add(queue)
@@ -257,9 +398,10 @@ class TranscriptService:
         self._touch_state(path)
         self._prune_state_cache()
         try:
-            size = path.stat().st_size
+            chain = self._chain(agent, path)
         except (FileNotFoundError, OSError):
             return {"turns": [], "before": None, "has_more": False}
+        size = chain.size
         if before is not None and int(before) > size:
             return {"turns": [], "before": None, "has_more": False, "reset": True}
         end_byte = size if before is None else max(0, int(before))
@@ -268,7 +410,7 @@ class TranscriptService:
         records: list[tuple[int, bytes]] = []
         parsed_records: list[tuple[int, list[dict[str, object]]]] = []
         while True:
-            _, records = self._read_history_window(path, end_byte, window_bytes)
+            _, records = self._read_history_window(chain, end_byte, window_bytes)
             parsed_records = []
             for offset, raw_line in records:
                 parsed = agent.parse_transcript_lines([raw_line.decode(errors="replace")])
@@ -307,17 +449,15 @@ class TranscriptService:
         return TurnBuilder.collapse_thinking_events(turns)
 
     @staticmethod
-    def _read_history_window(path: Path, end_byte: int, max_bytes: int) -> tuple[int, list[tuple[int, bytes]]]:
+    def _chain(agent: AgentCli, path: Path) -> _TranscriptChain:
+        return _TranscriptChain(agent.transcript_segments(path))
+
+    @staticmethod
+    def _read_history_window(chain: _TranscriptChain, end_byte: int, max_bytes: int) -> tuple[int, list[tuple[int, bytes]]]:
         start_byte = max(0, end_byte - max_bytes)
         try:
-            with path.open("rb") as source:
-                if start_byte > 0:
-                    source.seek(start_byte - 1)
-                    previous = source.read(1)
-                    source.seek(start_byte)
-                else:
-                    previous = b"\n"
-                data = source.read(max(0, end_byte - start_byte))
+            previous = chain.read(start_byte - 1, start_byte) if start_byte > 0 else b"\n"
+            data = chain.read(start_byte, end_byte)
         except OSError:
             return end_byte, []
         if start_byte > 0 and previous not in (b"\n", b"\r"):
@@ -366,6 +506,11 @@ class TranscriptService:
             self._states.pop(path)
 
     def _on_file_change_from_thread(self, path: Path) -> None:
+        append_watch = self._append_watch
+        if append_watch is not None:
+            # Before the refresh below is queued, so a write landing after FSEvents' one report of a new
+            # file is either read by that refresh or seen by the watch.
+            append_watch.watch(path)
         for listener in self._file_change_listeners:
             listener(path)
         if self._loop is not None:
@@ -412,6 +557,7 @@ class TranscriptService:
     def _reload_state(self, state: _TranscriptState, max_bytes: int | None = None) -> None:
         try:
             stat = state.path.stat()
+            chain = self._chain(state.agent, state.path)
         except (FileNotFoundError, OSError):
             state.raw_turns = []
             state.turns = []
@@ -426,9 +572,9 @@ class TranscriptService:
         window_bytes = self.HISTORY_PAGE_INITIAL_BYTES
         complete: list[bytes] = []
         carry = b""
-        offset = stat.st_size
+        offset = chain.size
         while True:
-            _, complete, carry, offset = self._read_recent_transcript_lines(state.path, stat.st_size, window_bytes)
+            _, complete, carry, offset = self._read_recent_transcript_lines(chain, chain.size, window_bytes)
             parsed_count = len(state.agent.parse_transcript_lines([line.decode(errors="replace") for line in complete]))
             if parsed_count >= self.MAX_RAW_TURNS or offset == 0 or window_bytes >= reload_limit:
                 break
@@ -444,17 +590,11 @@ class TranscriptService:
         state.update_log.clear()
 
     @staticmethod
-    def _read_recent_transcript_lines(path: Path, end_byte: int, max_bytes: int) -> tuple[int, list[bytes], bytes, int]:
+    def _read_recent_transcript_lines(chain: _TranscriptChain, end_byte: int, max_bytes: int) -> tuple[int, list[bytes], bytes, int]:
         start_byte = max(0, end_byte - max_bytes)
         try:
-            with path.open("rb") as source:
-                if start_byte > 0:
-                    source.seek(start_byte - 1)
-                    previous = source.read(1)
-                    source.seek(start_byte)
-                else:
-                    previous = b"\n"
-                data = source.read(max(0, end_byte - start_byte))
+            previous = chain.read(start_byte - 1, start_byte) if start_byte > 0 else b"\n"
+            data = chain.read(start_byte, end_byte)
         except OSError:
             return end_byte, [], b"", end_byte
         if start_byte > 0 and previous not in (b"\n", b"\r"):
@@ -478,21 +618,20 @@ class TranscriptService:
     def _refresh_state(self, state: _TranscriptState) -> None:
         try:
             stat = state.path.stat()
+            chain = self._chain(state.agent, state.path)
         except (FileNotFoundError, OSError):
             if state.turns:
                 self._reload_state(state)
             return
         inode = getattr(stat, "st_ino", None)
-        if state.inode != inode or stat.st_size < state.offset:
+        if state.inode != inode or chain.size < state.offset:
             self._reload_state(state)
             return
-        if stat.st_size == state.offset:
+        if chain.size == state.offset:
             return
         try:
-            with state.path.open("rb") as stream:
-                stream.seek(state.offset + len(state.carry))
-                data = state.carry + stream.read()
-                new_offset = stream.tell()
+            data = state.carry + chain.read(state.offset + len(state.carry), chain.size)
+            new_offset = chain.size
         except OSError:
             return
         chunks = data.splitlines(keepends=True)

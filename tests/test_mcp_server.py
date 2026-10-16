@@ -27,7 +27,7 @@ class McpClientTest(unittest.TestCase):
                           "wait_for_response", "session_status", "children_status",
                           "interrupt", "list_sessions", "get_session", "close_session",
                           "set_description", "worktree_review", "worktree_finish",
-                          "session_history"])
+                          "session_history", "list_projects", "list_worktrees"])
 
     def test_tool_descriptions_document_the_since_contract(self) -> None:
         server = build_server(self.make_client(lambda request: httpx.Response(200, json={})))

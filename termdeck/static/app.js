@@ -184,6 +184,13 @@ const MOBILE_TERMINAL_LONG_PRESS_MS = 450;
 const MOBILE_TERMINAL_SELECTION_MOVE_TOLERANCE = 12;
 const MOBILE_SIDEBAR_CONTEXT_LONG_PRESS_MS = 500;
 const MOBILE_SIDEBAR_CONTEXT_MOVE_TOLERANCE = 12;
+const MOBILE_SIDEBAR_PINNED_KEY = "termdeck.mobile_sidebar_pinned";
+// A finger dragging a row this close to the list's top or bottom edge scrolls the list, faster nearer it.
+const MOBILE_SIDEBAR_DRAG_EDGE_PX = 48;
+const MOBILE_SIDEBAR_DRAG_SCROLL_MAX_PX = 14;
+// A held finger has to keep saying where it is, as a mouse drag does: the hold-to-group timers and the
+// indicators they raise are driven by repeated dragover, which a still finger sends no moves for.
+const MOBILE_SIDEBAR_DRAG_REPEAT_MS = 100;
 const MOBILE_TERMINAL_SELECTION_BACKGROUND = "#287fd1";
 const MOBILE_TERMINAL_SELECTION_FOREGROUND = "#ffffff";
 const EXPANDED_AGENT_STACKS_KEY = "termdeck.expanded_agent_stacks";
@@ -989,6 +996,12 @@ class TermdeckApp {
     this.dragGroupHoverKey = null;
     this.sidebarSelectedSessionIds = new Set();
     this.sidebarSelectionAnchorId = null;
+    // On a phone, a held row starts picking terminals: until it ends, a tap adds or drops one instead of
+    // opening it. A finger dragging rows is the touch drag below, and the list waits to redraw until it lands.
+    this.mobileSidebarSelecting = false;
+    this.mobileSidebarDrag = null;
+    this.mobileSidebarRenderDeferred = false;
+    this.mobileSidebarPinned = false;
     this.contextMenuTarget = null;
     this.modalGroupId = null;
     this.modalAfterSessionId = null;
@@ -1281,9 +1294,10 @@ class TermdeckApp {
 
   setMobileSidebarCollapsed(collapsed) {
     if (!this.touchMobileLayoutEnabled()) return;
-    const next = !!collapsed;
+    const next = !!collapsed && this.initialPageContentReady;
     document.body.classList.toggle("mobile-sidebar-collapsed", next);
     if (!next) this.closeHistoryFilterMenu?.();
+    if (next) this.endMobileSidebarSelection();
     document.body.scrollTo({ left: 0, behavior: "auto" });
     requestAnimationFrame(() => {
       this.syncMobileVisualViewport();
@@ -1291,19 +1305,56 @@ class TermdeckApp {
     });
   }
 
+  // Pinned, the sidebar stays open through choosing a terminal and through taps on the transcript, so
+  // terminals can be stepped through one after another. Only its own collapse button folds it then.
+  storedMobileSidebarPinned() {
+    try {
+      return localStorage.getItem(MOBILE_SIDEBAR_PINNED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  setMobileSidebarPinned(pinned) {
+    this.mobileSidebarPinned = pinned;
+    try {
+      localStorage.setItem(MOBILE_SIDEBAR_PINNED_KEY, pinned ? "1" : "0");
+    } catch { /* a private window refuses storage; the pin holds until the page is closed */ }
+    this.syncMobileSidebarControls();
+  }
+
+  syncMobileSidebarControls() {
+    const pinned = this.mobileSidebarPinned;
+    document.body.classList.toggle("mobile-sidebar-pinned", pinned);
+    const pin = this.$("mobile-sidebar-pin");
+    if (!pin) return;
+    pin.setAttribute("aria-pressed", String(pinned));
+    pin.title = pinned ? "Unpin sidebar" : "Keep sidebar open after selection";
+    pin.setAttribute("aria-label", pin.title);
+    const icon = pin.querySelector(".codicon");
+    icon?.classList.toggle("codicon-pin", !pinned);
+    icon?.classList.toggle("codicon-pinned", pinned);
+  }
+
   collapseMobileSidebarAfterSelection() {
-    if (this.touchMobileLayoutEnabled()) this.setMobileSidebarCollapsed(true);
+    if (!this.touchMobileLayoutEnabled() || this.mobileSidebarPinned) return;
+    this.setMobileSidebarCollapsed(true);
   }
 
   initializeMobileSidebar() {
     if (!this.touchMobileLayoutEnabled()) return;
     document.body.classList.add("mobile-touch-layout");
-    document.body.classList.add("mobile-sidebar-collapsed");
+    document.body.classList.remove("mobile-sidebar-collapsed");
+    this.mobileSidebarPinned = this.storedMobileSidebarPinned();
+    this.syncMobileSidebarControls();
     this.$("mobile-sidebar-toggle").onclick = () => this.setMobileSidebarCollapsed(false);
+    this.$("mobile-sidebar-collapse").onclick = () => this.setMobileSidebarCollapsed(true);
+    this.$("mobile-sidebar-pin").onclick = () => this.setMobileSidebarPinned(!this.mobileSidebarPinned);
+    this.$("mobile-sidebar-selection-done").onclick = () => this.endMobileSidebarSelection();
     this.syncMobileSidebarIdentity();
     this.$("main")?.addEventListener("click", () => {
       if (document.body.classList.contains("mobile-sidebar-collapsed")) return;
-      this.setMobileSidebarCollapsed(true);
+      this.collapseMobileSidebarAfterSelection();
     }, { capture: true });
     this.$("mobile-display-smaller").onclick = () => this.setMobileDisplayScale(this.mobileDisplayScale() - MOBILE_DISPLAY_SCALE_STEP);
     this.$("mobile-display-larger").onclick = () => this.setMobileDisplayScale(this.mobileDisplayScale() + MOBILE_DISPLAY_SCALE_STEP);
@@ -2337,6 +2388,10 @@ class TermdeckApp {
   }
 
   handleSessionRowSelection(event, sessionId) {
+    if (this.mobileSidebarSelecting) {
+      this.toggleMobileSidebarSelection(sessionId);
+      return;
+    }
     this.setInteractionWorktreeFromElement(event.currentTarget, this.session(sessionId));
     const selectedWorktreeId = this.stateWorktreeId();
     const orderedIds = this.sidebarSessionIdsInRenderOrder()
@@ -2391,6 +2446,45 @@ class TermdeckApp {
       this.applySidebarSelectionStyles();
     }
     return this.selectedSessionIdsForDrag(sessionId);
+  }
+
+  // A hold on a phone: the first one starts picking from just that terminal, later ones add to it.
+  addMobileSidebarSelection(sessionId) {
+    if (!this.mobileSidebarSelecting) {
+      this.mobileSidebarSelecting = true;
+      this.sidebarSelectedSessionIds = new Set();
+    }
+    this.sidebarSelectedSessionIds.add(sessionId);
+    this.sidebarSelectionAnchorId = sessionId;
+    this.sidebarSelectedFileKeys.clear();
+    this.applySidebarFileSelectionStyles();
+    this.syncMobileSidebarSelection();
+  }
+
+  toggleMobileSidebarSelection(sessionId) {
+    if (!this.sidebarSelectedSessionIds.delete(sessionId)) this.sidebarSelectedSessionIds.add(sessionId);
+    this.syncMobileSidebarSelection();
+  }
+
+  endMobileSidebarSelection() {
+    if (!this.mobileSidebarSelecting) return;
+    this.mobileSidebarSelecting = false;
+    const active = this.activeId && this.activeFileKey === null ? this.activeId : null;
+    this.sidebarSelectedSessionIds = new Set(active ? [active] : []);
+    this.sidebarSelectionAnchorId = active;
+    this.syncMobileSidebarSelection();
+  }
+
+  // Picking ends by itself once nothing is left picked: the last one tapped off, or its terminal closed.
+  syncMobileSidebarSelection() {
+    if (this.mobileSidebarSelecting && !this.sidebarSelectedSessionIds.size) {
+      this.endMobileSidebarSelection();
+      return;
+    }
+    document.body.classList.toggle("mobile-sidebar-selecting", this.mobileSidebarSelecting);
+    const count = this.$("mobile-sidebar-selection-count");
+    if (count) count.textContent = `${this.sidebarSelectedSessionIds.size} selected`;
+    this.applySidebarSelectionStyles();
   }
 
   sessionIdsFromDragItem(dragItem) {
@@ -4258,6 +4352,7 @@ class TermdeckApp {
         if (!this.sectionCollapsed("recent_files_collapsed")) void this.refreshRecentFiles(true);
       }
     });
+    this.initializeMobileSidebar();
     await Promise.all([this.loadAgentSpecs(), this.loadSettings(), this.loadAccessMode()]);
     if (this.settings.notify_attention !== false || this.settings.notify_agent_idle !== false) {
       // Chrome ignores a permission request that arrives without a user gesture, so a
@@ -4271,7 +4366,6 @@ class TermdeckApp {
       window.addEventListener("pointerdown", requestOnFirstGesture, true);
       window.addEventListener("keydown", requestOnFirstGesture, true);
     }
-    this.initializeMobileSidebar();
     this.loadSearchHistory();
     await this.loadProjects();
     this.initializeEventlyDemoPresentation();
@@ -4282,6 +4376,7 @@ class TermdeckApp {
       this.loadIconMap();
     }
     this.$("settings-gear").onclick = (e) => this.openSettingsPopover(e.currentTarget);
+    this.$("terminal-debug-toggle").onclick = () => this.toggleTerminalDebugPreview();
     // Null-safe: #file-view-close is not in index.html yet. This runs during setup, so the throw
     // aborted the rest of this initialisation rather than just failing one button.
     const fileViewClose = this.$("file-view-close");
@@ -5679,6 +5774,8 @@ class TermdeckApp {
     }
     if (!disconnected) this.remoteConnectorAwake = null;
     warning.classList.toggle("hidden", !disconnected || !this.touchMobileLayoutEnabled());
+    if (disconnected) window.TermdeckLoadingRecovery?.schedule();
+    else window.TermdeckLoadingRecovery?.finish();
   }
 
   // Through the remote relay a session lasts hours, not forever. When it runs out under an open
@@ -5830,11 +5927,12 @@ class TermdeckApp {
     const view = this.views.get(this.activeId);
     const terminalContentPending = !this.vscodeMode && this.activeFileKey === null && !this.historyOpen &&
       !!session && !!view && (view.awaitingSnapshot || view.replaying || !view.everConnected);
-    if (terminalContentPending) {
+    const transcriptContentPending = this.activeFileKey === null && this.historyOpen && !!session && !this.historyLoaded;
+    if (terminalContentPending || transcriptContentPending) {
       const loadingState = this.$("initial-loading-state");
       loadingState.classList.add("loading");
       loadingState.classList.remove("hidden");
-      this.$("initial-loading-message").textContent = "loading terminal session…";
+      this.$("initial-loading-message").textContent = transcriptContentPending ? "loading transcript…" : "loading terminal session…";
       window.TermdeckLoadingRecovery?.schedule();
       return;
     }
@@ -5875,10 +5973,14 @@ class TermdeckApp {
 
   finishInitialPageContentLoading(sessionId = this.activeId) {
     if (sessionId !== this.activeId) return;
+    if (this.activeFileKey === null && this.historyOpen && !this.historyLoaded) return;
+    const firstSuccessfulLoad = !this.initialPageContentReady;
     this.initialPageContentReady = true;
     const loadingState = this.$("initial-loading-state");
     loadingState.classList.remove("loading");
     loadingState.classList.add("hidden");
+    window.TermdeckLoadingRecovery?.finish();
+    if (firstSuccessfulLoad) this.collapseMobileSidebarAfterSelection();
   }
 
   applySessionStatus(message) {
@@ -6936,6 +7038,97 @@ class TermdeckApp {
     };
   }
 
+  // A finger drags rows through the same handlers a mouse does. A phone's browser does not run an HTML
+  // drag for a finger, so the drag's events are made here -- dragstart on the row picked up, dragover on
+  // whatever is under the finger as it moves, drop where it lifts -- and every rule about where a
+  // terminal may land and what landing there means stays in one place.
+  startMobileSidebarDrag(source, x, y) {
+    const dataTransfer = new DataTransfer();
+    source.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer }));
+    if (!this.dragItem) return false;
+    const rect = source.getBoundingClientRect();
+    const ghost = source.cloneNode(true);
+    ghost.classList.remove("dragging-tab", "mobile-context-hold");
+    ghost.classList.add("mobile-drag-ghost");
+    ghost.style.left = `${rect.left}px`;
+    ghost.style.width = `${rect.width}px`;
+    const carried = this.sessionIdsFromDragItem(this.dragItem).length;
+    if (carried > 1) ghost.dataset.count = String(carried);
+    document.body.appendChild(ghost);
+    // Carried just above the finger rather than under it, so the line saying where it lands stays in sight.
+    this.mobileSidebarDrag = {
+      source, dataTransfer, ghost, x, y, lift: rect.height + 10, target: null, accepted: false, frame: 0,
+      scroller: this.$("session-list"),
+      repeat: window.setInterval(() => this.dispatchMobileSidebarDragOver(), MOBILE_SIDEBAR_DRAG_REPEAT_MS),
+    };
+    this.moveMobileSidebarDrag(x, y);
+    return true;
+  }
+
+  moveMobileSidebarDrag(x, y) {
+    const drag = this.mobileSidebarDrag;
+    if (!drag) return;
+    drag.x = x;
+    drag.y = y;
+    drag.ghost.style.transform = `translateY(${y - drag.lift}px)`;
+    this.dispatchMobileSidebarDragOver();
+    if (!drag.frame) drag.frame = requestAnimationFrame(() => this.scrollMobileSidebarDrag());
+  }
+
+  dispatchMobileSidebarDragOver() {
+    const drag = this.mobileSidebarDrag;
+    if (!drag) return;
+    const init = { bubbles: true, cancelable: true, clientX: drag.x, clientY: drag.y, dataTransfer: drag.dataTransfer };
+    const target = document.elementFromPoint(drag.x, drag.y);
+    if (drag.target && drag.target !== target) {
+      drag.target.dispatchEvent(new DragEvent("dragleave", { ...init, relatedTarget: target }));
+    }
+    drag.target = target;
+    if (!target) {
+      drag.accepted = false;
+      return;
+    }
+    const over = new DragEvent("dragover", init);
+    target.dispatchEvent(over);
+    drag.accepted = over.defaultPrevented;
+  }
+
+  scrollMobileSidebarDrag() {
+    const drag = this.mobileSidebarDrag;
+    if (!drag) return;
+    drag.frame = 0;
+    const box = drag.scroller.getBoundingClientRect();
+    const reach = MOBILE_SIDEBAR_DRAG_EDGE_PX;
+    const depth = drag.y < box.top + reach ? drag.y - box.top - reach : drag.y > box.bottom - reach ? drag.y - box.bottom + reach : 0;
+    if (!depth) return;
+    const before = drag.scroller.scrollTop;
+    drag.scroller.scrollTop += Math.max(-1, Math.min(1, depth / reach)) * MOBILE_SIDEBAR_DRAG_SCROLL_MAX_PX;
+    if (drag.scroller.scrollTop === before) return;
+    // The rows moved under a finger that did not, so what it is over has changed.
+    this.dispatchMobileSidebarDragOver();
+    drag.frame = requestAnimationFrame(() => this.scrollMobileSidebarDrag());
+  }
+
+  // Lifted over somewhere that took the last dragover, the rows land there; otherwise nothing moves.
+  finishMobileSidebarDrag(drop) {
+    const drag = this.mobileSidebarDrag;
+    if (!drag) return;
+    window.clearInterval(drag.repeat);
+    if (drag.frame) cancelAnimationFrame(drag.frame);
+    drag.ghost.remove();
+    // Cleared first: the list redraws on a drop, and does not while a drag is under way.
+    this.mobileSidebarDrag = null;
+    const init = { bubbles: true, cancelable: true, clientX: drag.x, clientY: drag.y, dataTransfer: drag.dataTransfer };
+    const landed = drop && drag.accepted && !!drag.target;
+    if (landed) drag.target.dispatchEvent(new DragEvent("drop", init));
+    else if (drag.target) drag.target.dispatchEvent(new DragEvent("dragleave", { ...init, relatedTarget: null }));
+    drag.source.dispatchEvent(new DragEvent("dragend", init));
+    this.clearDragLandingIndicator(true);
+    this.dragItem = null;
+    if (this.mobileSidebarRenderDeferred) this.renderList();
+    if (landed) this.endMobileSidebarSelection();
+  }
+
   clearDragLandingIndicator(clearSource = false) {
     this.clearDragGroupingTimer();
     // Scoped to the document, not the session list: group labels, the file tree and the terminal's
@@ -7452,6 +7645,23 @@ class TermdeckApp {
     if (this.processingStates.get(session.session_id) === true || session.processing === true ||
         session.needs_attention === true || this.unreadSessions.has(session.session_id)) return true;
     return this.terminalUsedWithinWindow(session);
+  }
+
+  // What the eye shows: the active terminals, and every terminal one of them was spawned under. A quiet
+  // parent hidden under a busy child left the child nothing to sit under, so it surfaced at the top of
+  // the list, out of the parent's group, looking moved. The walk stops at a terminal already kept, which
+  // also ends it on a loop of parentage.
+  activeTerminalsWithParents(sessions) {
+    const byId = new Map(sessions.map((session) => [session.session_id, session]));
+    const kept = new Set(sessions.filter((session) => this.isActiveTerminal(session)).map((session) => session.session_id));
+    for (const sessionId of [...kept]) {
+      let parentId = byId.get(sessionId)?.spawned_by_session_id || "";
+      while (parentId && byId.has(parentId) && !kept.has(parentId)) {
+        kept.add(parentId);
+        parentId = byId.get(parentId).spawned_by_session_id || "";
+      }
+    }
+    return sessions.filter((session) => kept.has(session.session_id));
   }
 
   // A small menu under the filter button offering the window. Deliberately transient: it is a refinement

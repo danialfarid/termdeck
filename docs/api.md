@@ -9,6 +9,17 @@ These endpoints start real persistent TermDeck terminals. A successful prompt re
 written to the terminal and submitted; it does not mean the agent has finished processing it. Use
 `GET /api/sessions/{session_id}/response` for the status and for whatever the agent has said back.
 
+## Project-scoped creation
+
+`POST /api/projects/{project}/sessions` takes the same body as `POST /api/sessions`,
+with optional `worktree_id` (omitted means `root`). The project must already exist.
+Without an explicit project, `/api/sessions` inherits the originating session's project and
+worktree; an explicit project defaults to its root, not the parent's working directory.
+A conflicting `cwd` or body project is rejected. Responses include `project`, `worktree_id`, and `cwd`.
+MCP `spawn_agent(project="stock", worktree_id="wt-id", ...)` uses the scoped route;
+`list_projects` and `list_worktrees(project="stock")` discover destinations.
+Session IDs remain global for prompt, response, status, and interrupt calls.
+
 ## Projects and worktrees
 
 The project header can switch between the repository root and every Git worktree discovered for that repository.

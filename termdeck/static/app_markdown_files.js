@@ -1452,6 +1452,7 @@ Object.assign(TermdeckApp.prototype, {
 
 
   applyMainLayout() {
+    this.updateTerminalDebugPreview();
     this.updateHistoryFilterControls();
     const fileMode = this.activeFileKey !== null;
     if (!fileMode && this.fileHistoryOpen) {
@@ -2056,6 +2057,8 @@ Object.assign(TermdeckApp.prototype, {
     } else {
       view = this.ensureView(this.activeId);
       if (view) {
+        view.container.classList.add("visible");
+        this.prepareTerminalForFirstPaint(view);
         this.resumeMobileTerminalSocket(view);
         if (this.nativeVscodeMode) this.postVscodeNativeSession(this.session(this.activeId), true);
         else view.term.focus();
@@ -2121,6 +2124,7 @@ Object.assign(TermdeckApp.prototype, {
 
   connectHistoryStream(sessionId, options = {}) {
     if (!sessionId || !this.historyOpen || this.activeFileKey !== null) return;
+    if (!this.historyLoaded) window.TermdeckLoadingRecovery?.schedule();
     this.disconnectHistoryStream();
     const fresh = options.fresh === true;
     this.historyStreamFresh = fresh;
@@ -4506,6 +4510,7 @@ Object.assign(TermdeckApp.prototype, {
     this.observeHistoryTopForPaging();
     this.schedulePendingHistorySearchReveal();
     requestAnimationFrame(() => this.scheduleFilteredHistoryContinuation(sessionId));
+    this.finishInitialPageContentLoading(sessionId);
   },
 
 

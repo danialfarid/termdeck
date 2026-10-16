@@ -14,7 +14,16 @@ class ResourceStatsService:
         proc = await asyncio.create_subprocess_exec(TermdeckConfig.PS_BIN, "-axo", "pid=,ppid=,rss=,pcpu=,command=",
                                                     stdout=asyncio.subprocess.PIPE,
                                                     stderr=asyncio.subprocess.DEVNULL)
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=TermdeckConfig.SUBPROCESS_TIMEOUT_SECONDS)
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=TermdeckConfig.SUBPROCESS_TIMEOUT_SECONDS)
+        except TimeoutError:
+            # Abandoned, ps blocks for good writing a pipe nobody reads: one stuck ps per slow sample, each
+            # holding its pipe, piling up exactly while the machine is too busy to answer in time. Drained
+            # rather than waited on: wait() alone returns only once the pipe closes, which a reader that
+            # stopped reading never sees.
+            proc.kill()
+            await proc.communicate()
+            raise
         rows: list[tuple[int, int, int, float, str]] = []
         for line in stdout.decode().splitlines():
             parts = line.split(None, 4)

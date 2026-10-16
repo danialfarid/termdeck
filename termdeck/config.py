@@ -107,6 +107,7 @@ class TermdeckConfig:
     UPLOAD_FALLBACK_NAME = "pasted"
     PROJECT_FALLBACK_SLUG = "project"
     API_PROJECTS_ROUTE = "/api/projects"
+    API_PROJECT_SESSIONS_ROUTE = "/api/projects/{project}/sessions"
     API_AGENT_SESSIONS_ROUTE = "/api/agent-sessions"
     API_WORKTREES_ROUTE = "/api/worktrees"
     API_WORKTREE_BRANCHES_ROUTE = "/api/worktrees/branches"
@@ -453,6 +454,15 @@ class TermdeckConfig:
     FILE_TREE_WS_HEARTBEAT_SECONDS = 15.0
     TRANSCRIPT_WS_ROUTE = "/ws/transcript/{session_id}"
     TRANSCRIPT_WS_HEARTBEAT_SECONDS = 20.0
+    # How soon an open transcript follows its session to a new file -- a Codex thread taken back to an
+    # earlier point goes on in a new page, and the old one is not written again.
+    TRANSCRIPT_WS_SOURCE_CHECK_SECONDS = 2.0
+    # On macOS, which transcripts the deck watches for appends from the moment it starts: those written
+    # in this many days. One FSEvents misses after the first write to a file an agent keeps open, so a
+    # file left out here and still held open by a session that outlived the restart is followed only
+    # once it is opened in the deck or closed. Each watched file costs one descriptor, and the agents'
+    # stores only grow -- watching all of them is a descriptor per transcript ever written.
+    TRANSCRIPT_APPEND_WATCH_DAYS = 14
     WS_CODE_UNKNOWN_SESSION = 4404
     DEFAULT_CWD = PlatformPaths.env_directory(PlatformPaths.ENV_DEFAULT_CWD, Path.home())
     SHELL = PlatformPaths.login_shell()

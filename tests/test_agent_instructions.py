@@ -22,7 +22,9 @@ class AgentInstructionServiceTest(unittest.TestCase):
         # the same one over and over; it is worth the room.
         self.assertIn("prompt_submitted false", AgentInstructionService.INSTRUCTION_TEXT)
         self.assertIn("never resend", AgentInstructionService.INSTRUCTION_TEXT)
-        self.assertLess(len(AgentInstructionService.INSTRUCTION_TEXT), 820)
+        self.assertIn("termdeck MCP server is installed, use its tools instead of curl",
+                      AgentInstructionService.INSTRUCTION_TEXT)
+        self.assertLess(len(AgentInstructionService.INSTRUCTION_TEXT), 890)
         self.assertNotIn("github.com", AgentInstructionService.INSTRUCTION_TEXT)
 
     def test_ensures_one_termdeck_owned_instruction_file(self) -> None:

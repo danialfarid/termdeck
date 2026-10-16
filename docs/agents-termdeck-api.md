@@ -5,6 +5,17 @@ TermDeck-launched processes receive `TERMDECK_SESSION_ID`, `TERMDECK_SESSION_NAM
 `TERMDECK_CWD`, and `TERMDECK_SESSION_URL`. Always keep `$TERMDECK_SESSION_ID` and pass it unchanged as
 `origin_session` for every delegated child task; this is how TermDeck knows where to add the child.
 
+## Project-scoped creation
+
+`POST /api/projects/{project}/sessions` takes the same body as `POST /api/sessions`,
+with optional `worktree_id` (omitted means `root`). The project must already exist.
+Without an explicit project, `/api/sessions` inherits the originating session's project and
+worktree; an explicit project defaults to its root, not the parent's working directory.
+A conflicting `cwd` or body project is rejected. Responses include `project`, `worktree_id`, and `cwd`.
+MCP `spawn_agent(project="stock", worktree_id="wt-id", ...)` uses the scoped route;
+`list_projects` and `list_worktrees(project="stock")` discover destinations.
+Session IDs remain global for prompt, response, status, and interrupt calls.
+
 ## MCP server
 
 MCP-capable models can use the same API as typed tools instead of curl. `termdeck mcp` serves
@@ -22,7 +33,7 @@ configuration at it:
 The tools mirror the calls below one for one: `spawn_agent`, `spawn_batch`, `send_prompt`,
 `get_response`, `session_status`, `children_status`, `interrupt`, `list_sessions`,
 `get_session`, `close_session`, `set_description`, `worktree_review`, `worktree_finish`, and
-`session_history`. Two conveniences over raw HTTP: `spawn_agent` defaults `origin_session` to
+`session_history`, `list_projects`, and `list_worktrees`. Two conveniences over raw HTTP: `spawn_agent` defaults `origin_session` to
 the caller's own `$TERMDECK_SESSION_ID`, and `wait_for_response` polls `get_response` with the
 prompt's `since` stamp until the agent answers or a bounded timeout runs out, so models need
 not hand-roll polling loops. The `since` contract is unchanged: only responses stamped after

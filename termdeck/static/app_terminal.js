@@ -1548,6 +1548,7 @@ Object.assign(TermdeckApp.prototype, {
       window.removeEventListener("pointerdown", onPointer, { capture: true });
       document.removeEventListener("visibilitychange", onVisibility);
     });
+    this.installKeyboardDiagnostics(state);
 
     // --- periodic geometry, plus the scroll-fault detector ---------------------------------------------
     let sinkSince = 0, sinkFlagged = 0;
@@ -1580,6 +1581,87 @@ Object.assign(TermdeckApp.prototype, {
     state.flushTimer = window.setInterval(() => this.flushDiagnostics(), 3000);
     this.diagLog("start", { ua: navigator.userAgent, screen: `${window.innerWidth}x${window.innerHeight}`,
                             dpr: window.devicePixelRatio, settings: this.diagSettingsSummary() });
+  },
+
+
+  // A phone keyboard that closes by itself: what had focus, what took it, and what the keyboard sent
+  // around it. Shape only, like the rest of the recorder -- event types, lengths and element names,
+  // never the text typed. Focus and composer writes made by code carry the calling functions, so a
+  // write or a focus change the app made shows where it came from.
+  installKeyboardDiagnostics(state) {
+    const prompt = this.$("history-prompt");
+    const name = (element) => {
+      if (!element || element === document || element === window) return element === window ? "window" : null;
+      if (element.id) return `#${element.id}`;
+      const tag = String(element.tagName || "").toLowerCase();
+      const cls = String(element.className?.baseVal ?? element.className ?? "").trim().split(/\s+/)[0];
+      return cls ? `${tag}.${cls}` : tag;
+    };
+    const caller = () => String(new Error().stack || "").split("\n").slice(3, 8)
+      .map((line) => line.trim().replace(/^at /, "").replace(/\(?https?:\/\/[^/]+\/static\//, "").replace(/\)$/, ""))
+      .join(" < ");
+    const onFocusChange = (event) => this.diagLog(`kb.${event.type}`, { target: name(event.target),
+      related: name(event.relatedTarget), active: name(document.activeElement) });
+    const onComposerEvent = (event) => this.diagLog(`kb.${event.type}`, {
+      inputType: event.inputType, composing: event.isComposing, dataLength: event.data?.length,
+      valueLength: prompt?.value.length, selection: prompt ? `${prompt.selectionStart}-${prompt.selectionEnd}` : null,
+      // A printable key is recorded as "char": which key it was is what was typed.
+      key: event.key === undefined ? undefined : (event.key.length === 1 ? "char" : event.key), keyCode: event.keyCode });
+    const onTouch = (event) => this.diagLog(`kb.${event.type}`, { target: name(event.target),
+      touches: event.touches?.length, prevented: event.defaultPrevented, active: name(document.activeElement) });
+    const onWindowFocus = (event) => this.diagLog(`kb.window-${event.type}`, { active: name(document.activeElement) });
+    const onViewport = () => this.diagLog("kb.viewport", { visual: Math.round(window.visualViewport?.height || 0),
+      inner: window.innerHeight, active: name(document.activeElement) });
+    const listeners = [
+      [document, "focusin", onFocusChange, true], [document, "focusout", onFocusChange, true],
+      [window, "blur", onWindowFocus, false], [window, "focus", onWindowFocus, false],
+      [window, "touchstart", onTouch, { capture: true, passive: true }], [window, "touchend", onTouch, { capture: false, passive: true }],
+      [window, "mousedown", onTouch, false], [window, "click", onTouch, false],
+      [window, "resize", onViewport, false], [window.visualViewport, "resize", onViewport, false],
+    ];
+    if (prompt) {
+      for (const type of ["keydown", "keyup", "beforeinput", "input", "compositionstart", "compositionupdate", "compositionend"]) {
+        listeners.push([prompt, type, onComposerEvent, true]);
+      }
+    }
+    for (const [target, type, handler, options] of listeners) target?.addEventListener(type, handler, options);
+    state.undo.push(() => {
+      for (const [target, type, handler, options] of listeners) target?.removeEventListener(type, handler, options);
+    });
+    const focusProto = HTMLElement.prototype;
+    const originalFocus = focusProto.focus;
+    const originalBlur = focusProto.blur;
+    const diag = this;
+    focusProto.focus = function (...args) {
+      diag.diagLog("kb.code-focus", { target: name(this), from: name(document.activeElement), caller: caller() });
+      return originalFocus.apply(this, args);
+    };
+    focusProto.blur = function (...args) {
+      diag.diagLog("kb.code-blur", { target: name(this), caller: caller() });
+      return originalBlur.apply(this, args);
+    };
+    state.undo.push(() => { focusProto.focus = originalFocus; focusProto.blur = originalBlur; });
+    if (!prompt) return;
+    const valueProperty = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
+    Object.defineProperty(prompt, "value", {
+      configurable: true,
+      get() { return valueProperty.get.call(this); },
+      set(value) {
+        const current = valueProperty.get.call(this);
+        diag.diagLog("kb.code-write", { same: String(value) === current, from: current.length,
+          to: String(value).length, focused: document.activeElement === prompt, caller: caller() });
+        valueProperty.set.call(this, value);
+      },
+    });
+    const originalSelectionRange = prompt.setSelectionRange;
+    prompt.setSelectionRange = function (...args) {
+      diag.diagLog("kb.code-select", { range: `${args[0]}-${args[1]}`, caller: caller() });
+      return originalSelectionRange.apply(this, args);
+    };
+    state.undo.push(() => {
+      delete prompt.value;
+      delete prompt.setSelectionRange;
+    });
   },
 
 
@@ -3721,29 +3803,48 @@ Object.assign(TermdeckApp.prototype, {
     }, delay);
   },
 
-  // A notification click arrives before the browser has actually brought the tab forward, and
-  // activating into a hidden page leaves the terminal sized against a zero-height viewport --
-  // clicks then land on a surface that is still settling. Wait for the page to be visible, and
-  // reveal the row so the sidebar scrolls the terminal into view rather than selecting it
-  // somewhere off screen.
   activateFromNotification(sessionId) {
-    const open = () => this.activate(sessionId, { reveal: true });
-    if (!document.hidden) {
-      open();
-      return;
-    }
-    let done = false;
-    const onVisible = () => {
-      if (done || document.hidden) return;
-      done = true;
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", onVisible);
-      open();
+    this.cancelNotificationActivation();
+    const pending = {
+      sessionId, previousId: this.activeId, frame: 0,
+      ready: this.scheduleNotificationActivation.bind(this),
+      cancel: this.cancelNotificationActivation.bind(this),
     };
-    document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", onVisible);
-    // Some browsers focus the window without firing either event; do not strand the click.
-    window.setTimeout(onVisible, 1200);
+    this.pendingNotificationActivation = pending;
+    document.addEventListener("visibilitychange", pending.ready);
+    window.addEventListener("focus", pending.ready);
+    window.addEventListener("pointerdown", pending.cancel, true);
+    window.addEventListener("keydown", pending.cancel, true);
+    pending.timeout = window.setTimeout(pending.cancel, 5000);
+    this.scheduleNotificationActivation();
+  },
+
+  scheduleNotificationActivation() {
+    const pending = this.pendingNotificationActivation;
+    if (!pending || pending.frame || document.hidden || !document.hasFocus()) return;
+    pending.frame = requestAnimationFrame(this.finishNotificationActivation.bind(this));
+  },
+
+  finishNotificationActivation() {
+    const pending = this.pendingNotificationActivation;
+    if (!pending) return;
+    pending.frame = 0;
+    if (document.hidden || !document.hasFocus()) return;
+    this.cancelNotificationActivation();
+    if (this.activeId !== pending.previousId || !this.session(pending.sessionId)) return;
+    this.activate(pending.sessionId, { reveal: true });
+  },
+
+  cancelNotificationActivation() {
+    const pending = this.pendingNotificationActivation;
+    if (!pending) return;
+    document.removeEventListener("visibilitychange", pending.ready);
+    window.removeEventListener("focus", pending.ready);
+    window.removeEventListener("pointerdown", pending.cancel, true);
+    window.removeEventListener("keydown", pending.cancel, true);
+    clearTimeout(pending.timeout);
+    cancelAnimationFrame(pending.frame);
+    this.pendingNotificationActivation = null;
   },
 
   postAgentNotification(session, body) {
@@ -3754,10 +3855,11 @@ Object.assign(TermdeckApp.prototype, {
         body: `TermDeck${this.projectSlug ? ` · ${this.projectSlug}` : ""}`,
         icon: "/static/termdeck-192.png",
       });
-      notification.onclick = () => {
-        window.focus();
+      notification.onclick = (event) => {
+        event.preventDefault();
         notification.close();
         this.activateFromNotification(session.session_id);
+        window.focus();
       };
     } catch { /* notification construction can throw in odd embedding contexts */ }
   },

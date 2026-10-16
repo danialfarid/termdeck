@@ -6,6 +6,69 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Terminal info shows the parent terminal's name and session ID for spawned agents.
+
+- Mobile transcripts offer an on-demand, read-only terminal debug preview. Closing it releases the
+  preview and its connection without stopping the agent or changing terminal dimensions.
+
+- Project-scoped agent creation at `POST /api/projects/{project}/sessions`, with optional `worktree_id`.
+  Unscoped delegation inherits the parent workspace; MCP also lists projects and worktrees.
+
+- On a phone, holding a terminal in the sidebar picks it, and taps then pick more terminals or drop
+  them from the pick. Moving the held finger carries every picked terminal: they land where the finger
+  lifts, by the same rules as a mouse drag, and the list scrolls when the finger nears its edge. A bar
+  shows how many are picked and has a Done button. A picked terminal's ⋯ opens the menu for all of
+  them. A held group moves the same way, and letting go of it without moving opens its menu.
+- The mobile sidebar's pin is back, with its collapse button. Pinned, the sidebar stays open after you
+  choose a terminal and when you tap the transcript, and only the collapse button folds it.
+
+### Fixed
+
+- With "show active terminals only" on, a quiet terminal stays in the list while an agent it spawned
+  is showing. It used to be hidden, so the agent was drawn on its own at the top of the list, outside
+  the parent's group, and the parent looked gone.
+
+- Closing a parent terminal keeps its surviving children in the same group, including nested agent
+  stacks, without flattening their descendants. Failed closes leave group assignments unchanged.
+
+- Desktop notification clicks wait for browser focus before selecting a terminal; pending activation
+  is cancelled if you click or type elsewhere.
+
+- Stalled remote page and transcript loading offer sign-in and server restart actions, including
+  when the transcript view is open.
+- Remote terminal and transcript connections accept the configured public browser address when it
+  differs from the relay backend address, avoiding repeated connection rejections and loading screens.
+- Large terminal replays travel through the remote relay in smaller chunks so they do not disconnect
+  the shared tunnel or interrupt transcript loading.
+- Opening terminal mode from a remote transcript shows the newly created terminal pane.
+
+- The server no longer stalls when the machine is busy. On macOS it followed agent transcripts with one
+  thread for every directory that had ever held one, and Muse gives each session its own directory. At
+  about 800 threads, a loaded machine kept the deck from answering for 40 minutes, and each automatic
+  restart stayed stuck for another 12. One thread now watches the transcripts written in the last 14
+  days, plus each new one and each one opened in the deck.
+- A resource sample that times out stops its `ps` instead of leaving it blocked for good.
+- A Codex terminal whose thread has moved on to a later history page updates its busy state from
+  what is written there again.
+
+- Mobile loading keeps the sidebar available for projects and settings until content loads successfully,
+  then collapses it. Loading and reconnect notices leave room for the drawer button.
+
+### Changed
+
+- Mobile transcripts leave less space above the composer and use a narrower send-button column,
+  giving the conversation and prompt more room.
+- The mobile terminal debug button looks like the other bottom-bar buttons, and is shaded only while
+  the preview is open.
+- On a phone, holding a sidebar terminal no longer opens its context menu. That menu is on the
+  terminal's ⋯ button.
+- Diagnostics recordings also capture what a phone keyboard and the page did around the composer:
+  focus moves and what took focus, keyboard and composition events, touches, viewport resizes, and
+  any write to the composer made by code, with the functions that made it. Like the rest of the
+  recording, it keeps event types and lengths only, never the text typed.
+
 ## [0.33.1] — 2026-10-08
 
 ### Fixed
@@ -74,6 +137,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Codex transcripts keep up once Codex 0.162 moves a thread to a new page (`rollout-…-<thread>_<page>.jsonl`),
+  as it does when the conversation is taken back to an earlier point: TermDeck kept reading the first file,
+  so nothing said after that appeared and every prompt sent since stayed "not sent". The transcript is
+  read from the page being written, back through the earlier pages up to where each one branches, and an
+  open transcript moves to a new page by itself.
 - "Send now" on a queued transcript prompt takes it out of the queue: the browser gave up after fifteen
   seconds and kept a prompt the server went on to deliver.
 - A prompt sent from the terminal's own composer no longer holds up that window's typing while
