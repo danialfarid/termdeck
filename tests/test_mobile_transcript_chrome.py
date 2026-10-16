@@ -141,11 +141,14 @@ class MobileTranscriptChromeTest(unittest.TestCase):
     def test_mobile_chrome_tightens(self) -> None:
         for fragment in (
             "body.mobile-touch-layout.mobile-history-surface "
-            "#history-area.transcript-first #history-body { padding-bottom: 12px; }",
+            "#history-area.transcript-first #history-body { padding-bottom: 4px; }",
             "body.mobile-touch-layout.mobile-history-surface "
             "#history-thinking-banner { padding: 2px 9px; }",
             "body.mobile-touch-layout.mobile-history-surface "
-            "#history-area.transcript-first #history-composer { padding: 5px 9px 6px; }",
+            "#history-area.transcript-first #history-composer { padding: 3px 9px 6px; }",
+            "body.mobile-touch-layout.mobile-history-surface "
+            "#history-prompt-row { gap: 5px; }",
+            "#history-send-menu-toggle { width: 30px; }",
             "#history-area.transcript-first .turn { grid-template-columns: 10px "
             "minmax(0, 1fr); column-gap: 4px; margin: 0 0 10px; }",
         ):
