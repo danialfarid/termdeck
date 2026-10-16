@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.34.0] — 2026-10-16
+
 ### Added
 
 - Terminal info shows the parent terminal's name and session ID for spawned agents.
@@ -1879,7 +1881,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.33.1...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.34.0...HEAD
+[0.34.0]: https://github.com/danialfarid/termdeck/compare/v0.33.1...v0.34.0
 [0.33.1]: https://github.com/danialfarid/termdeck/compare/v0.33.0...v0.33.1
 [0.33.0]: https://github.com/danialfarid/termdeck/compare/v0.32.2...v0.33.0
 [0.30.0]: https://github.com/danialfarid/termdeck/compare/v0.29.0...v0.30.0
