@@ -147,11 +147,10 @@ Press **+** to open a terminal, then choose an agent or shell and a project fold
 ## Cross-agent communication
 
 Agents can use the [TermDeck API](docs/agents-termdeck-api.md) to communicate, delegate reviews or subtasks,
-monitor progress, and bring results back to the parent conversation. TermDeck adds a
-[compact guide](termdeck/agent-api-instructions.md) to their
-system/instruction context through native instruction-file support or the agent's global instructions,
-so they know how to use it. This is enabled by default and can be turned on or off with
-**TermDeck API guidance for spawned agents** in Settings.
+monitor progress, and bring results back to the parent conversation. Claude Code, Codex, and Muse get it as
+[MCP tools](#mcp-server); agents without per-launch MCP support get a
+[compact guide](termdeck/agent-api-instructions.md) to the HTTP API in their instructions instead. This is
+enabled by default and can be turned on or off with **TermDeck MCP for spawned agents** in Settings.
 
 ```
 ┌──────────────────────────┬────────────────────────────────────────────────────┐
@@ -170,6 +169,32 @@ so they know how to use it. This is enabled by default and can be turned on or o
 │ Files Search Git Notes   │ transcript  refresh  bottom  upload  model · stats │
 └──────────────────────────┴────────────────────────────────────────────────────┘
 ```
+
+### MCP server
+
+MCP-capable agents can use the same API as typed tools (`spawn_agent`, `send_prompt`, `wait_for_response`, …)
+instead of curl. Claude Code, Codex, and Muse started in TermDeck get these tools automatically: TermDeck adds
+its MCP server to their launch command, for that run only, while **TermDeck MCP for spawned agents** is on.
+
+To use the tools from an agent started outside TermDeck, register `termdeck mcp`, which serves them over stdio
+against the running deck:
+
+```sh
+claude mcp add -s user termdeck -- termdeck mcp   # Claude Code
+codex mcp add termdeck -- termdeck mcp            # Codex
+```
+
+Muse has no add command; put the entry under `mcpServers` in `~/.config/muse/settings.json`:
+
+```json
+"mcpServers": {
+  "termdeck": { "mode": "optional", "transport": "stdio", "command": "termdeck", "args": ["mcp"] }
+}
+```
+
+Other MCP clients take the usual entry: `{"mcpServers": {"termdeck": {"command": "termdeck", "args": ["mcp"]}}}`.
+If an agent cannot find `termdeck`, give the full path from `command -v termdeck`. For a deck on another port, put the flag before the subcommand: `termdeck --port 8531 mcp`.
+The full tool list is in the [agents API guide](docs/agents-termdeck-api.md#mcp-server).
 
 ## Requirements
 

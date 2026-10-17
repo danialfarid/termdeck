@@ -102,6 +102,13 @@ class ClaudeCli(AgentCli):
     def termdeck_instruction_arguments(self, instruction_file: Path) -> tuple[str, ...]:
         return ("--append-system-prompt-file", str(instruction_file))
 
+    def termdeck_mcp_arguments(self, server_command: str, server_arguments: tuple[str, ...]) -> tuple[str, ...]:
+        config = {"mcpServers": {TermdeckConfig.MCP_SERVER_NAME: {
+            "command": server_command, "args": list(server_arguments)}}}
+        # One token with `=`: --mcp-config takes several values, and given as its own token the value
+        # would let it go on to swallow a prompt that follows.
+        return (f"--mcp-config={json.dumps(config)}",)
+
     def new_session_resume_arguments(self, session_ref: str, tracker) -> tuple[str, ...]:
         return (self.RESUME_FLAG, session_ref)
 

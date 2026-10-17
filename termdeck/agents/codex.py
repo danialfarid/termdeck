@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 from termdeck.agents.base import AgentCli, AgentSessionState
+from termdeck.config import TermdeckConfig
 from termdeck.transcript_turns import TurnBuilder
 from termdeck.util import TimeUtil
 
@@ -141,6 +142,15 @@ class CodexCli(AgentCli):
 
     def termdeck_instruction_arguments(self, instruction_file: Path) -> tuple[str, ...]:
         return ("-c", f"model_instructions_file={json.dumps(str(instruction_file))}")
+
+    def termdeck_mcp_arguments(self, server_command: str, server_arguments: tuple[str, ...]) -> tuple[str, ...]:
+        # JSON strings and arrays of strings are TOML too, which is what -c parses. Codex hands an MCP
+        # server only the environment it is told to, and without the terminal's session id the server
+        # cannot file the agents it spawns under this one.
+        key = f"mcp_servers.{TermdeckConfig.MCP_SERVER_NAME}"
+        return ("-c", f"{key}.command={json.dumps(server_command)}",
+                "-c", f"{key}.args={json.dumps(list(server_arguments))}",
+                "-c", f"{key}.env_vars={json.dumps([TermdeckConfig.SESSION_ID_ENV_KEY])}")
 
     def new_session_resume_arguments(self, session_ref: str, tracker) -> tuple[str, ...]:
         resolved = tracker.codex_session_id_for_reference(session_ref)

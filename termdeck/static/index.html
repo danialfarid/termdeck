@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" href="/static/termdeck-192.png">
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <link rel="stylesheet" href="/static/vendor/codicons/codicon.css">
-<link rel="stylesheet" href="/static/style.css?v=20261014-sidebar-hold-drag">
+<link rel="stylesheet" href="/static/style.css?v=20261017-recovery-close">
 <link rel="stylesheet" href="/filebrowser/static/file_browser_shared.css">
 <script>
 // An installed app always launches at the manifest's start_url, which is the all-projects page, so
@@ -421,6 +421,7 @@
   <div id="initial-loading-state" class="loading">
     <div id="initial-loading-line" role="status" aria-live="polite"><span id="initial-loading-spinner" aria-hidden="true"></span><span id="initial-loading-message">loading TermDeck&hellip;</span></div>
     <section id="initial-loading-recovery" class="hidden" aria-label="TermDeck loading recovery">
+      <button id="initial-loading-recovery-close" type="button" title="Hide" aria-label="Hide"><span class="codicon codicon-close"></span></button>
       <div id="initial-loading-recovery-title">Taking longer than expected</div>
       <div id="initial-loading-recovery-description">Sign in again to refresh your remote login, or restart TermDeck while keeping running terminals alive.</div>
       <div id="initial-loading-recovery-actions">
@@ -673,7 +674,7 @@
   </div>
 </div>
 <script src="/static/dialogs.js?v=20260904-model-picker"></script>
-<script src="/static/loading_recovery.js?v=20260911-force-server-restart"></script>
+<script src="/static/loading_recovery.js?v=20261017-recovery-close"></script>
 <script src="/static/vendor/xterm.js"></script>
 <script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/vendor/addon-webgl.js"></script>
@@ -687,12 +688,12 @@
 <script src="/static/unicorn_lang.js"></script>
 <!-- One class, split across files: app.js declares TermdeckApp (constants, constructor, core);
      the app_*.js files attach method groups to its prototype; app_boot.js instantiates. Order matters. -->
-<script src="/static/app.js?v=20261015-eye-keeps-parents"></script>
+<script src="/static/app.js?v=20261017-recovery-close"></script>
 <script src="/static/app_search_git.js?v=20261015-eye-keeps-parents"></script>
-<script src="/static/app_markdown_files.js?v=20261008-prompt-show-less-single-line"></script>
+<script src="/static/app_markdown_files.js?v=20261017-prompt-always-steers"></script>
 <script src="/static/app_terminal.js?v=20261012-keyboard-diagnostics"></script>
 <script src="/static/app_terminal_debug.js"></script>
-<script src="/static/app_settings_ui.js?v=20260917-resume-agent-id"></script>
+<script src="/static/app_settings_ui.js?v=20261017-mcp-setting"></script>
 <script src="/static/app_misc_ui.js?v=20260917-info-copy"></script>
 <script src="/static/app_boot.js"></script>
 </body>

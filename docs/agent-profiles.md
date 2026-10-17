@@ -102,7 +102,7 @@ Profiles are intentionally bounded to data mapping and command templates. A CLI 
 whole-document transcript, subagents, or protocol-specific attention handling should use a Python
 `AgentCli` subclass described in [Agent CLI API](agent-cli-api.md).
 
-`instruction_arguments` is optional. When the TermDeck API guidance setting is enabled, its arguments receive
+`instruction_arguments` is optional. When **TermDeck MCP for spawned agents** is enabled, its arguments receive
 the path to a TermDeck-owned instruction file through `{instructions_file}`. Use this only when the CLI accepts
 an instruction file as part of its launch command; the saved session command remains free of this launch-time
 augmentation.

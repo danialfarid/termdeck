@@ -171,8 +171,16 @@ class AgentCli:
     def termdeck_global_instruction_files(self) -> tuple[Path, ...]:
         return ()
 
+    def termdeck_mcp_arguments(self, server_command: str, server_arguments: tuple[str, ...]) -> tuple[str, ...]:
+        """Launch arguments that give this run TermDeck's MCP server, started as server_command with
+        server_arguments. Empty for an agent with no per-run switch for it."""
+        return ()
+
     def command_with_termdeck_instructions(self, command: str, instruction_file: Path) -> str:
-        arguments = self.termdeck_instruction_arguments(instruction_file)
+        return self.command_with_launch_arguments(command, self.termdeck_instruction_arguments(instruction_file))
+
+    def command_with_launch_arguments(self, command: str, arguments: tuple[str, ...]) -> str:
+        """The command with arguments set straight after the executable, ahead of any subcommand."""
         if not arguments:
             return command
         parts = self.command_parts(command)

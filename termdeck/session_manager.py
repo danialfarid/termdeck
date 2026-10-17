@@ -6,6 +6,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Callable
@@ -622,17 +623,7 @@ class TerminalSessionManager:
                                 mark_activity=False)
         ms.terminal_history_cleared_for_spawn = False
         ms.exit_code = None
-        process_command = command
-        if agent.is_agent and not reattach and self._ui_setting("agent_api_instructions_enabled", True):
-            instruction_file = TermdeckConfig.AGENT_INSTRUCTIONS_FILE
-            global_instruction_files = agent.termdeck_global_instruction_files()
-            if global_instruction_files:
-                self.agent_instructions.synchronize_global_instruction_files(True, global_instruction_files)
-            elif agent.termdeck_instruction_arguments(instruction_file):
-                process_command = agent.command_with_termdeck_instructions(
-                    command, self.agent_instructions.ensure_instruction_file())
-        elif agent.is_agent and not reattach:
-            self.agent_instructions.synchronize_global_instruction_files(False)
+        process_command = self._agent_launch_command(agent, command) if agent.is_agent and not reattach else command
         resuming = not reattach and bool(ms.record.agent_session_id) and agent.canonical_resume_command
         ms.resume_spawn_monotonic = time.monotonic() if resuming else 0.0
         try:
@@ -2203,6 +2194,34 @@ class TerminalSessionManager:
     @classmethod
     def _termdeck_session_url(cls, record: SessionRecord) -> str:
         return f"http://127.0.0.1:{TermdeckConfig.PORT}{cls._termdeck_session_url_path(record)}"
+
+    def _agent_launch_command(self, agent, command: str) -> str:
+        """The command an agent process is started with: the saved one, plus TermDeck's MCP server while
+        "TermDeck MCP for spawned agents" is on. The setting keeps the key it had when it switched the curl
+        guide, so a saved choice carries over."""
+        if not self._ui_setting("agent_api_instructions_enabled", True):
+            self.agent_instructions.synchronize_global_instruction_files(False)
+            return command
+        mcp_arguments = agent.termdeck_mcp_arguments(*self.termdeck_mcp_launch())
+        if mcp_arguments:
+            # For this run only: nothing is written to the agent's own configuration, and the saved command
+            # stays as it was. The tools describe themselves, so no curl guide goes with them.
+            return agent.command_with_launch_arguments(command, mcp_arguments)
+        # An agent that cannot be handed the server at launch gets the curl guide instead.
+        global_instruction_files = agent.termdeck_global_instruction_files()
+        if global_instruction_files:
+            self.agent_instructions.synchronize_global_instruction_files(True, global_instruction_files)
+            return command
+        if agent.termdeck_instruction_arguments(TermdeckConfig.AGENT_INSTRUCTIONS_FILE):
+            return agent.command_with_termdeck_instructions(command, self.agent_instructions.ensure_instruction_file())
+        return command
+
+    @staticmethod
+    def termdeck_mcp_launch() -> tuple[str, tuple[str, ...]]:
+        """How an agent starts TermDeck's MCP server: this server's own Python, so the tools always
+        match the running deck whatever `termdeck` the PATH holds, and its own address."""
+        return sys.executable, ("-m", "termdeck", "--host", TermdeckConfig.HOST,
+                                "--port", str(TermdeckConfig.PORT), "mcp")
 
     def move_session_to_project(self, session_id: str, project: str) -> None:
         project_name = project.strip()

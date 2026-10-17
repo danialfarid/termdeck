@@ -19,8 +19,18 @@ Session IDs remain global for prompt, response, status, and interrupt calls.
 ## MCP server
 
 MCP-capable models can use the same API as typed tools instead of curl. `termdeck mcp` serves
-them over stdio against the local deck (honoring `--host`/`--port`); point the model's MCP
-configuration at it:
+them over stdio against the local deck (honoring `--host`/`--port`).
+
+Claude Code, Codex, and Muse terminals started by TermDeck already have it: while **TermDeck MCP
+for spawned agents** is on in Settings, TermDeck adds the server to the launch command for that run
+only (`--mcp-config` for Claude, `-c mcp_servers.termdeck.*` for Codex, `-c mcpServers.termdeck` for
+Muse), started with the deck's own Python and address, and passes it the terminal's
+`TERMDECK_SESSION_ID` so the agents it spawns are filed under that terminal. These agents get the
+tools in place of the curl guide; agents without per-launch MCP support still get the guide. Muse
+refuses a run whose `-c` names a server its settings already define, so a `termdeck` entry in
+`~/.config/muse/settings.json` is left to stand on its own.
+
+For anything started outside TermDeck, point the model's MCP configuration at it:
 
 ```json
 {
@@ -62,7 +72,7 @@ curl -sS -X POST http://127.0.0.1:8530/api/sessions \
 | `cwd`, `project`, `after` | Directory, project, and optional placement anchor. |
 | `worktree`, `worktree_id` | Start in a new isolated worktree or an existing project worktree. |
 | `fork` | Fork the `origin_session` instead of starting a fresh agent. |
-| `output_path`, `write_back`, `steer`, `bracketed` | Optional output file, parent result delivery, prompt steering (`steer: false` queues), and bracketed prompt input. |
+| `output_path`, `write_back`, `bracketed` | Optional output file, parent result delivery, and bracketed prompt input. Prompts always steer: they are submitted immediately, even mid-turn. |
 
 The response contains `session_id`. Leave `prompt` out to create the terminal without starting it on
 anything, and send one later with `POST /api/sessions/{session_id}/prompt` and `{"text":"..."}`.

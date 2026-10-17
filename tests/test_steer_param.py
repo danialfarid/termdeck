@@ -1,9 +1,8 @@
-"""steer asks for a change of direction; queue is the name it had before.
+"""A prompt sent through the API always steers.
 
-Posting a prompt steers the agent by default: the prompt is submitted now and the agent changes
-direction. steer:false queues it behind the current turn instead, where the agent has a queue.
-The previous name, queue, is still honored -- steer wins when both are sent -- so scripts written
-against it keep working; what is written down is steer.
+It is submitted now, even mid-turn, and the agent changes direction. The steer flag that could ask
+for it to wait behind the current turn instead -- and queue, the name that flag had before -- are
+gone. A caller still sending either is not refused; the field is ignored and the prompt steers.
 """
 
 import asyncio
@@ -12,34 +11,20 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from termdeck.models import PromptDelivery, PromptOutcome
-from termdeck.server import SubmitPromptRequest, TermdeckServer, _steer_wanted
+from termdeck.server import (BatchTerminalSpec, BatchTerminalsRequest, CreateSessionRequest,
+                             RunTerminalTaskRequest, SubmitPromptRequest, TermdeckServer)
 
 
-class SteerResolutionTest(unittest.TestCase):
-    def test_unspecified_steers(self) -> None:
-        self.assertTrue(_steer_wanted(None, None))
-
-    def test_steer_is_taken_as_said(self) -> None:
-        self.assertTrue(_steer_wanted(True, None))
-        self.assertFalse(_steer_wanted(False, None))
-
-    def test_legacy_queue_is_honored(self) -> None:
-        self.assertFalse(_steer_wanted(None, True))
-        self.assertTrue(_steer_wanted(None, False))
-
-    def test_steer_wins_when_both_are_sent(self) -> None:
-        self.assertTrue(_steer_wanted(True, True))
-        self.assertFalse(_steer_wanted(False, False))
-
-    def test_request_defaults_steer(self) -> None:
-        request = SubmitPromptRequest(text="go")
-
-        self.assertIsNone(request.steer)
-        self.assertTrue(_steer_wanted(request.steer, request.queue))
+class NoSteerFieldTest(unittest.TestCase):
+    def test_no_request_offers_steer_or_queue(self) -> None:
+        for model in (SubmitPromptRequest, CreateSessionRequest, RunTerminalTaskRequest,
+                      BatchTerminalSpec, BatchTerminalsRequest):
+            self.assertNotIn("steer", model.model_fields, model.__name__)
+            self.assertNotIn("queue", model.model_fields, model.__name__)
 
 
-class SubmitPromptSteerTest(unittest.TestCase):
-    def submit(self, processing: bool, **fields: object) -> bool:
+class SubmitPromptSteersTest(unittest.TestCase):
+    def submit(self, processing: bool, **fields: object) -> tuple[object, ...]:
         server = TermdeckServer.__new__(TermdeckServer)
         submit = AsyncMock(return_value=PromptDelivery(False, PromptOutcome.CONFIRMED))
         server.manager = SimpleNamespace(
@@ -50,22 +35,19 @@ class SubmitPromptSteerTest(unittest.TestCase):
         )
         asyncio.run(server._submit_prompt(
             "s1", SubmitPromptRequest(text="go", **fields)))  # type: ignore[arg-type]
-        return submit.await_args.args[3]
+        return submit.await_args.args
 
-    def test_default_submits_now(self) -> None:
-        self.assertFalse(self.submit(False))
+    def test_a_prompt_is_submitted_not_queued(self) -> None:
+        # Nothing after bracketed: the manager's queue flag is left at its default, submit now.
+        self.assertEqual(self.submit(False), ("s1", "go", True))
 
-    def test_steer_false_queues(self) -> None:
-        self.assertTrue(self.submit(False, steer=False))
+    def test_a_busy_session_is_steered(self) -> None:
+        self.assertEqual(self.submit(True), ("s1", "go", True))
 
-    def test_legacy_queue_true_queues(self) -> None:
-        self.assertTrue(self.submit(False, queue=True))
+    def test_an_old_caller_asking_to_queue_still_steers(self) -> None:
+        self.assertEqual(self.submit(True, steer=False), ("s1", "go", True))
+        self.assertEqual(self.submit(True, queue=True), ("s1", "go", True))
 
-    def test_steer_wins_over_legacy_queue(self) -> None:
-        self.assertFalse(self.submit(False, steer=True, queue=True))
 
-    def test_busy_session_still_steers_by_default(self) -> None:
-        self.assertFalse(self.submit(True))
-
-    def test_steer_false_queues_when_busy(self) -> None:
-        self.assertTrue(self.submit(True, steer=False))
+if __name__ == "__main__":
+    unittest.main()

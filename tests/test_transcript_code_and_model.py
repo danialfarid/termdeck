@@ -354,7 +354,7 @@ class AgentWithItsOwnModelCommandTest(unittest.TestCase):
 
         self.assertEqual(result["applied"][0],
                          {"url": "/api/sessions/s1/prompt",
-                          "body": {"text": "/model opus", "bracketed": False, "steer": True}})
+                          "body": {"text": "/model opus", "bracketed": False}})
 
     def test_a_model_with_no_levels_needs_no_second_question(self) -> None:
         self.assertEqual([step["title"] for step in self.pick(["claude-fable-5-1"], published=[

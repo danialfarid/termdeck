@@ -97,8 +97,6 @@ class CreateSessionRequest(BaseModel):
     fork: bool = False
     write_back: bool = False
     bracketed: bool = True
-    queue: bool = False
-    steer: bool | None = None
 
 
 class RunTerminalTaskRequest(BaseModel):
@@ -119,8 +117,6 @@ class RunTerminalTaskRequest(BaseModel):
     fork: bool = False
     write_back: bool = False
     bracketed: bool = True
-    queue: bool = False
-    steer: bool | None = None
     worktree: bool = False
     worktree_branch: str = ""
     worktree_base: str = ""
@@ -146,11 +142,11 @@ class WorktreeDeleteRequest(BaseModel):
 
 
 class SubmitPromptRequest(BaseModel):
+    # A prompt always steers: it is submitted now and the agent changes direction. The steer and queue
+    # fields that once asked to wait behind the current turn are gone; a caller still sending them is
+    # ignored, not refused, and steers.
     text: str
     bracketed: bool = True
-    # The name steer had before; still honored. steer wins when both are sent.
-    queue: bool = False
-    steer: bool | None = None
 
 
 class FollowUpTaskPromptRequest(BaseModel):
@@ -170,8 +166,6 @@ class BatchTerminalSpec(BaseModel):
     permission: str | None = None
     session_ref: str | None = None
     bracketed: bool | None = None
-    queue: bool | None = None
-    steer: bool | None = None
     after: str | None = None
     worktree: bool | None = None
     worktree_branch: str | None = None
@@ -189,8 +183,6 @@ class BatchTerminalsRequest(BaseModel):
     additional_args: str = ""
     permission: str = "default"
     bracketed: bool = True
-    queue: bool = False
-    steer: bool | None = None
     after: str | None = None
     worktree: bool = False
     worktree_branch: str = ""
@@ -205,20 +197,6 @@ class RenameSessionRequest(BaseModel):
 class SessionDescriptionRequest(BaseModel):
     description: str
     append: bool = False
-
-
-def _steer_wanted(steer: bool | None, queue: bool | None) -> bool:
-    """Whether a submitted prompt should change the agent's direction now.
-
-    steer is the name callers use: true submits immediately, false queues behind the current turn
-    where the agent has a queue, and the default steers. queue is the name steer had before; it is
-    still honored, with steer winning when both are sent.
-    """
-    if steer is not None:
-        return steer
-    if queue is not None:
-        return not queue
-    return True
 
 
 class SessionSpawnedByRequest(BaseModel):
@@ -656,6 +634,8 @@ class UiSettings(BaseModel):
     # macOS user notifications on agent transitions (see notifier.AgentNotifier).
     notify_attention: bool = True
     notify_agent_idle: bool = True
+    # "TermDeck MCP for spawned agents". Named for the curl guide it first switched, and kept so a saved
+    # choice carries over; agents that cannot take the MCP tools still get the guide from it.
     agent_api_instructions_enabled: bool = True
     prompt_history: dict[str, list[str]] = {}
     md_prompt_queues: dict[str, list[str]] = {}
@@ -3298,8 +3278,7 @@ class TermdeckServer:
             # Taken before the prompt goes in: an answer can beat the reply to this call, and a boundary
             # taken afterwards would leave that answer behind it.
             since = self._now_stamp(prompt)
-            wanted_queue = not _steer_wanted(request.steer, request.queue)
-            delivery = await self.manager.submit_prompt(ms.record.session_id, prompt, request.bracketed, wanted_queue)
+            delivery = await self.manager.submit_prompt(ms.record.session_id, prompt, request.bracketed)
             latest = self.manager.session_summary(ms)
             latest["placement"] = summary.get("placement")
             latest["placement_error"] = summary.get("placement_error")
@@ -3645,15 +3624,10 @@ class TermdeckServer:
             raise HTTPException(status_code=400, detail="prompt text cannot be empty")
         try:
             self.manager.ensure_session_running(session_id)
-            steer = _steer_wanted(request.steer, request.queue)
-            wanted_queue = not steer
-            # What actually happened, not what was asked for: an agent whose composer has no queue is
-            # submitted to instead, and a caller told "queued" about a prompt that was sent has been
-            # told the wrong thing.
             # Taken before the prompt goes in: an answer can beat the reply to this call, and a boundary
             # taken afterwards would leave that answer behind it.
             since = self._now_stamp(request.text)
-            delivery = await self.manager.submit_prompt(session_id, request.text, request.bracketed, wanted_queue)
+            delivery = await self.manager.submit_prompt(session_id, request.text, request.bracketed)
         except ValueError as prompt_error:
             raise HTTPException(status_code=409, detail=str(prompt_error)) from prompt_error
         return {"session": self.manager.session_summary_by_id(session_id), **self._delivery_fields(delivery, since)}
@@ -3736,9 +3710,6 @@ class TermdeckServer:
                 project = request.project if item.project is None else item.project
                 session_ref = item.session_ref or ""
                 bracketed = request.bracketed if item.bracketed is None else item.bracketed
-                steer = item.steer if item.steer is not None else request.steer
-                item_queue = item.queue if item.queue is not None else request.queue
-                queue = not _steer_wanted(steer, item_queue)
                 placement_after = request.after if item.after is None else item.after
                 worktree_enabled = request.worktree if item.worktree is None else item.worktree
                 worktree_branch = request.worktree_branch if item.worktree_branch is None else item.worktree_branch
@@ -3787,7 +3758,7 @@ class TermdeckServer:
                 self._broadcast_project_state_snapshot(ms.record.project, ms.record.worktree_id)
                 self.manager.ensure_session_running(ms.record.session_id)
                 since = self._now_stamp(prompt)
-                delivery = await self.manager.submit_prompt(ms.record.session_id, prompt, bracketed, queue)
+                delivery = await self.manager.submit_prompt(ms.record.session_id, prompt, bracketed)
                 result.update(self._delivery_fields(delivery, since))
                 result["session"] = self.manager.session_summary(ms)
             except (ValueError, OSError) as batch_error:
@@ -4573,14 +4544,11 @@ class TermdeckServer:
                 self.manager.set_draft(session_id, message.get(WsMessageFields.DRAFT, ""),
                                        message.get(WsMessageFields.BASE_REVISION))
             elif message_type == WsMessageFields.SUBMIT:
-                steer = message.get("steer", None)
-                queue = message.get("queue", None)
                 # Delivered, not confirmed: this loop also reads the person's typing, which waiting out
-                # the confirmation held back for as long as fifteen seconds.
+                # the confirmation held back for as long as fifteen seconds. Like the HTTP prompt, it
+                # always steers.
                 await self.manager.deliver_prompt(
-                    session_id, message.get(WsMessageFields.TEXT, ""), bool(message.get("bracketed", False)),
-                    not _steer_wanted(None if steer is None else bool(steer),
-                                      None if queue is None else bool(queue)))
+                    session_id, message.get(WsMessageFields.TEXT, ""), bool(message.get("bracketed", False)))
             elif message_type == WsMessageFields.QUEUE_EDIT:
                 await self.manager.edit_queued_prompt(
                     session_id,

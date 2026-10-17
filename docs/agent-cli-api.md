@@ -47,8 +47,10 @@ permissions, transcript handling, and the brand icon continue to come from the u
 
 ## Spawn-time TermDeck guidance
 
-The `agent_api_instructions_enabled` setting is on by default. For a newly spawned agent process with instruction
-file support, TermDeck creates `agent-api-instructions.md` in its data directory and passes that file through the
+The `agent_api_instructions_enabled` setting, shown in Settings as **TermDeck MCP for spawned agents**, is on by
+default. An adapter whose `termdeck_mcp_arguments` returns launch arguments gets TermDeck's MCP server through
+them and no guide; the rest of this section applies to adapters that return none. For a newly spawned agent
+process with instruction file support, TermDeck creates `agent-api-instructions.md` in its data directory and passes that file through the
 adapter's native instruction-file mechanism without modifying the project checkout or the saved session command.
 Built-in support covers Codex (`model_instructions_file`), Claude (`--append-system-prompt-file`), and Aider
 (`--read`) through launch-time arguments. AGY and Gemini use a marked block in the global `~/.gemini/GEMINI.md`,

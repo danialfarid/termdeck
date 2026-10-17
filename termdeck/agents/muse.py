@@ -79,6 +79,9 @@ class MuseCli(AgentCli):
     # A Path the transcript watcher reads directly, like every other agent's.
     _DATA_HOME = Path(os.environ["XDG_DATA_HOME"]) if os.environ.get("XDG_DATA_HOME") else Path.home() / ".local" / "share"
     sessions_root = _DATA_HOME / "muse" / "sessions"
+    # The user's own settings, where the README has people register MCP servers by hand.
+    _CONFIG_HOME = Path(os.environ["XDG_CONFIG_HOME"]) if os.environ.get("XDG_CONFIG_HOME") else Path.home() / ".config"
+    settings_file = _CONFIG_HOME / "muse" / "settings.json"
 
     supports_resume = True
     canonical_resume_command = True
@@ -316,6 +319,30 @@ class MuseCli(AgentCli):
             model_name = " ".join(parts[:-1])
         arguments.extend(("--model", model_name))
         return tuple(arguments)
+
+    def termdeck_mcp_arguments(self, server_command: str, server_arguments: tuple[str, ...]) -> tuple[str, ...]:
+        # Muse refuses to start a run whose -c names a server its settings already define ("the server
+        # name is reserved"), so someone who registered TermDeck there by hand keeps that entry and gets
+        # nothing from here. "optional": a server that fails to start leaves the run going without it.
+        if self._settings_may_define_mcp_server(TermdeckConfig.MCP_SERVER_NAME):
+            return ()
+        # Muse passes an MCP server none of its own environment, and takes a variable only as a
+        # whole-value reference; the session id is what files spawned agents under this one.
+        session_key = TermdeckConfig.SESSION_ID_ENV_KEY
+        entry = {"mode": "optional", "transport": "stdio", "command": server_command,
+                 "args": list(server_arguments), "env": {session_key: f"${{{session_key}}}"}}
+        return ("-c", f"mcpServers.{TermdeckConfig.MCP_SERVER_NAME}={json.dumps(entry)}")
+
+    def _settings_may_define_mcp_server(self, name: str) -> bool:
+        try:
+            settings = json.loads(self.settings_file.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError):
+            # Unreadable, so whether it names the server is unknown -- and guessing no refuses the run.
+            return True
+        servers = settings.get("mcpServers") if isinstance(settings, dict) else None
+        return isinstance(servers, dict) and name in servers
 
     def model_command(self) -> str:
         # Seen invoked in a real session log (`command.invoked` with command `/model`): the

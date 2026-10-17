@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import os
 import unittest
@@ -56,18 +57,23 @@ class McpClientTest(unittest.TestCase):
         run(client.spawn_agent(model="codex", prompt="do it", origin_session="other-2"))
         self.assertEqual(json.loads(seen[1].content.decode("utf-8"))["origin_session"], "other-2")
 
-    def test_send_prompt_posts_text_and_steer(self) -> None:
+    def test_send_prompt_posts_text_only(self) -> None:
         seen: list[httpx.Request] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             seen.append(request)
             return httpx.Response(200, json={"since": "stamp", "queued": False})
 
-        run(self.make_client(handler).send_prompt("abc", "follow up", steer=False))
+        run(self.make_client(handler).send_prompt("abc", "follow up"))
         self.assertEqual(seen[0].method, "POST")
         self.assertEqual(seen[0].url.path, "/api/sessions/abc/prompt")
         self.assertEqual(json.loads(seen[0].content.decode("utf-8")),
-                         {"text": "follow up", "steer": False, "bracketed": True})
+                         {"text": "follow up", "bracketed": True})
+
+    def test_no_tool_offers_steer(self) -> None:
+        # Prompts always steer; a tool that still offered steer would let an agent ask to queue.
+        for name in ("spawn_agent", "spawn_batch", "send_prompt"):
+            self.assertNotIn("steer", inspect.signature(getattr(TermdeckMcpClient, name)).parameters, name)
 
     def test_get_response_passes_since_limit_and_final_route(self) -> None:
         seen: list[httpx.Request] = []

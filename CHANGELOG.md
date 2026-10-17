@@ -6,6 +6,36 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.35.0] — 2026-10-17
+
+### Added
+
+- Claude Code, Codex, and Muse terminals get TermDeck's MCP tools with nothing to register: TermDeck
+  adds its MCP server to the agent's launch command for that run only, started with the deck's own
+  Python and address, and passes it the terminal's session id so spawned agents are filed under it.
+  Nothing is written to the agent's own configuration. A `termdeck` server already in Muse's settings
+  is left alone, since Muse refuses a run that redefines one. The README gains MCP setup steps for
+  agents started outside TermDeck.
+
+### Changed
+
+- The **TermDeck API guidance for spawned agents** setting is now **TermDeck MCP for spawned
+  agents**. With it on, Claude Code, Codex, and Muse get the MCP tools in place of the curl guide;
+  agents that cannot take an MCP server at launch (AGY, OpenCode, Aider) still get the guide. A saved
+  on/off choice carries over.
+
+- Prompts sent through the API and the MCP tools always steer: they are submitted at once, even
+  mid-turn. The `steer` parameter, and `queue`, its older name, are gone from `POST /api/sessions`,
+  `/api/sessions/batch`, `/api/sessions/{id}/prompt`, the terminal websocket's submit, and the
+  `spawn_agent`, `spawn_batch` and `send_prompt` tools. A caller still sending either is not
+  refused; the field is ignored.
+
+### Fixed
+
+- The "Taking longer than expected" panel has a close button. With the connection cut, loading never
+  finishes, so the panel used to cover the page for the whole outage. Closed, it stays hidden until
+  loading ends; the next stall shows it again.
+
 ## [0.34.0] — 2026-10-16
 
 ### Added
@@ -1881,7 +1911,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.34.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.35.0...HEAD
+[0.35.0]: https://github.com/danialfarid/termdeck/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/danialfarid/termdeck/compare/v0.33.1...v0.34.0
 [0.33.1]: https://github.com/danialfarid/termdeck/compare/v0.33.0...v0.33.1
 [0.33.0]: https://github.com/danialfarid/termdeck/compare/v0.32.2...v0.33.0

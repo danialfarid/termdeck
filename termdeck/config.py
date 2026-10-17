@@ -478,6 +478,9 @@ class TermdeckConfig:
     COLORTERM_ENV_VALUE = "truecolor"
     LANG_ENV_KEY = "LANG"
     LANG_ENV_VALUE = "en_US.UTF-8"
+    # The name TermDeck's MCP server goes by in the configuration it hands an agent at launch: the same
+    # name the README has people register by hand, so the two land on one entry rather than two.
+    MCP_SERVER_NAME = "termdeck"
     SESSION_ID_ENV_KEY = "TERMDECK_SESSION_ID"
     SESSION_NAME_ENV_KEY = "TERMDECK_SESSION_NAME"
     SESSION_PROJECT_ENV_KEY = "TERMDECK_PROJECT"

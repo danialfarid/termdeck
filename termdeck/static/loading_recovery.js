@@ -13,8 +13,12 @@ class TermdeckLoadingRecoveryController {
     this.stopButton = document.getElementById("initial-loading-stop-terminals");
     this.status = document.getElementById("initial-loading-recovery-status");
     this.recoveryTimer = 0;
+    // Hidden by hand, it stays hidden until loading ends: offline it would otherwise sit over the
+    // page for as long as the outage lasts. The next stall after that shows it again.
+    this.dismissed = false;
     document.body.appendChild(this.recovery);
     this.loginButton.classList.toggle("hidden", location.protocol !== "https:");
+    document.getElementById("initial-loading-recovery-close").addEventListener("click", this.dismiss.bind(this));
     this.markdownButton.addEventListener("click", this.switchToTranscript.bind(this));
     this.loginButton.addEventListener("click", this.signInAgain.bind(this));
     this.refreshButton.addEventListener("click", this.refreshPage.bind(this));
@@ -32,7 +36,7 @@ class TermdeckLoadingRecoveryController {
   }
 
   schedule() {
-    if (this.recoveryTimer || !this.recovery.classList.contains("hidden")) return;
+    if (this.dismissed || this.recoveryTimer || !this.recovery.classList.contains("hidden")) return;
     this.recoveryTimer = window.setTimeout(this.showRecoveryIfLoading.bind(this),
       TermdeckLoadingRecoveryController.RECOVERY_ACTION_DELAY_MS);
   }
@@ -40,14 +44,27 @@ class TermdeckLoadingRecoveryController {
   showRecoveryIfLoading() {
     this.recoveryTimer = 0;
     if (!this.isLoading()) return;
+    this.show();
+  }
+
+  show() {
+    if (this.dismissed) return;
     this.markdownButton.classList.toggle("hidden", !!window.__td?.historyOpen);
     this.recovery.classList.remove("hidden");
+  }
+
+  dismiss() {
+    this.dismissed = true;
+    clearTimeout(this.recoveryTimer);
+    this.recoveryTimer = 0;
+    this.recovery.classList.add("hidden");
   }
 
   finish() {
     if (this.isLoading()) return;
     clearTimeout(this.recoveryTimer);
     this.recoveryTimer = 0;
+    this.dismissed = false;
     this.recovery.classList.add("hidden");
     this.status.textContent = "";
   }

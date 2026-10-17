@@ -30,7 +30,8 @@ SERVER_INSTRUCTIONS = (
     "TermDeck: a local deck of persistent agent terminals. Spawn an agent with spawn_agent "
     "(or send_prompt on an existing session); both hand back a `since` stamp. Pass that stamp "
     "to wait_for_response or get_response: only responses stamped after it answer that prompt. "
-    "A session id or name from list_sessions addresses every other tool."
+    "A session id or name from list_sessions addresses every other tool. Delegate only within "
+    "the user-authorized scope."
 )
 
 
@@ -95,7 +96,7 @@ class TermdeckMcpClient:
                           worktree: bool = False, worktree_branch: str = "",
                           worktree_base: str = "", worktree_id: str = "",
                           fork: bool = False, output_path: str = "", write_back: bool = False,
-                          steer: bool | None = None, bracketed: bool = True) -> dict[str, Any]:
+                          bracketed: bool = True) -> dict[str, Any]:
         """Start an agent session, optionally already working on a prompt.
 
         Returns the session summary with `session_id`, and `since` when a prompt was sent:
@@ -115,12 +116,12 @@ class TermdeckMcpClient:
             "project": project, "after": after, "worktree": worktree,
             "worktree_branch": worktree_branch, "worktree_base": worktree_base,
             "worktree_id": worktree_id, "fork": fork, "output_path": output_path,
-            "write_back": write_back, "steer": steer, "bracketed": bracketed})
+            "write_back": write_back, "bracketed": bracketed})
 
     async def spawn_batch(self, terminals: list[dict[str, Any]], prompt: str = "", cwd: str = "",
                           project: str = "", model: str = "codex", model_name: str = "",
                           additional_args: str = "", permission: str = "default",
-                          bracketed: bool = True, steer: bool | None = None,
+                          bracketed: bool = True,
                           after: str | None = None, worktree: bool = False,
                           worktree_branch: str = "", worktree_base: str = "",
                           worktree_id: str = "root") -> dict[str, Any]:
@@ -130,19 +131,18 @@ class TermdeckMcpClient:
         return await self._request("POST", "/api/sessions/batch", json={
             "terminals": terminals, "prompt": prompt, "cwd": cwd, "project": project,
             "model": model, "model_name": model_name, "additional_args": additional_args,
-            "permission": permission, "bracketed": bracketed, "steer": steer, "after": after,
+            "permission": permission, "bracketed": bracketed, "after": after,
             "worktree": worktree, "worktree_branch": worktree_branch,
             "worktree_base": worktree_base, "worktree_id": worktree_id})
 
-    async def send_prompt(self, session_id: str, text: str, steer: bool | None = None,
-                          bracketed: bool = True) -> dict[str, Any]:
-        """Send a follow-up prompt to a session. Returns `since`: the stamp tying the agent's
-        next responses to this prompt. steer false queues behind the current turn where the
-        agent has a queue; the default steers immediately. `prompt_submitted` false (`delivery`
-        "failed", reason in `delivery_detail`, no `since`) means it did not go in and is safe to
-        send again; "unconfirmed" may have arrived, so never send it again."""
+    async def send_prompt(self, session_id: str, text: str, bracketed: bool = True) -> dict[str, Any]:
+        """Send a follow-up prompt to a session. It steers: submitted now, even mid-turn, and the
+        agent changes direction. Returns `since`: the stamp tying the agent's next responses to
+        this prompt. `prompt_submitted` false (`delivery` "failed", reason in `delivery_detail`,
+        no `since`) means it did not go in and is safe to send again; "unconfirmed" may have
+        arrived, so never send it again."""
         return await self._request("POST", f"/api/sessions/{session_id}/prompt",
-                                   json={"text": text, "steer": steer, "bracketed": bracketed})
+                                   json={"text": text, "bracketed": bracketed})
 
     async def get_response(self, session_id: str, since: str = "", limit: int = 1,
                            final: bool = False) -> dict[str, Any]:

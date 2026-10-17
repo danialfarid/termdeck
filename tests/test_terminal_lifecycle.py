@@ -2032,7 +2032,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
 
         await server._pump_client_to_pty(websocket, "codex-session")
 
-        server.manager.deliver_prompt.assert_awaited_once_with("codex-session", "run the checks", True, False)
+        server.manager.deliver_prompt.assert_awaited_once_with("codex-session", "run the checks", True)
         server.manager.submit_prompt.assert_not_called()
 
     async def test_follow_up_prompt_directly_steers_busy_task_session(self) -> None:
@@ -2046,7 +2046,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         response = await server._follow_up_task_prompt(
             "child-01", FollowUpTaskPromptRequest(prompt="summarize the result"))
 
-        server.manager.submit_prompt.assert_awaited_once_with("child-01", "summarize the result", True, False)
+        server.manager.submit_prompt.assert_awaited_once_with("child-01", "summarize the result", True)
         self.assertTrue(response["prompt_submitted"])
         self.assertFalse(response["queued"])
 
@@ -2060,7 +2060,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         response = await server._submit_prompt("busy-01", SubmitPromptRequest(
             text="run this next"))
 
-        server.manager.submit_prompt.assert_awaited_once_with("busy-01", "run this next", True, False)
+        server.manager.submit_prompt.assert_awaited_once_with("busy-01", "run this next", True)
         self.assertTrue(response["prompt_submitted"])
         self.assertFalse(response["queued"])
 
@@ -2131,7 +2131,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
         server.manager.command_for_new_session.assert_not_called()
         server.manager.create_session.assert_not_called()
         place.assert_called_once_with("stock", "fork-01", "session:origin-01", worktree_id=child.record.worktree_id)
-        server.manager.submit_prompt.assert_awaited_once_with("fork-01", "inspect this", True, False)
+        server.manager.submit_prompt.assert_awaited_once_with("fork-01", "inspect this", True)
         server._schedule_task_result_delivery.assert_not_called()
         self.assertEqual(response["placement"], {"position": "after"})
 
@@ -2168,7 +2168,7 @@ class TerminalTaskApiTest(unittest.IsolatedAsyncioTestCase):
             worktree_id="root",
         )
         server.manager.ensure_session_running.assert_called_once_with("task-01")
-        server.manager.submit_prompt.assert_awaited_once_with("task-01", "run checks", True, False)
+        server.manager.submit_prompt.assert_awaited_once_with("task-01", "run checks", True)
         self.assertEqual(response["prompt_submitted"], True)
         self.assertEqual(response["session_id"], "task-01")
         self.assertNotIn("monitoring_url", response)

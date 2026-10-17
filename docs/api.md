@@ -76,8 +76,7 @@ task_json=$(curl -sS -X POST http://127.0.0.1:8530/api/sessions \
     "output_path": "/tmp/termdeck/reviewer.out",
     "after": "termde",
     "origin_session": "termde",
-    "bracketed": true,
-    "steer": true
+    "bracketed": true
   }')
 ```
 
@@ -172,7 +171,7 @@ commit. This does not make the request blocking and it does not commit changes f
 ## Launch several named terminals
 
 `POST /api/sessions/batch` creates up to 32 terminals and submits their prompts. The top-level `prompt`,
-`cwd`, `project`, `model`, `permission`, `bracketed`, `steer`, `after`, and `worktree` values are defaults for every item.
+`cwd`, `project`, `model`, `permission`, `bracketed`, `after`, and `worktree` values are defaults for every item.
 An item can override any of them. `after` accepts an existing session name or group name (case-insensitive),
 or the stable `session:<id>` / `group:<id>` layout token. It inserts each new terminal immediately after that
 anchor. If the anchor is a member of a group, the new terminal inherits that group and is inserted immediately
@@ -257,14 +256,14 @@ curl -sS -X POST "http://127.0.0.1:8530/api/sessions/$session_id/prompt" \
   -H 'Content-Type: application/json' \
   -d '{
     "text": "Inspect the current task, make the requested change, and report the result.",
-    "bracketed": true,
-    "steer": true
+    "bracketed": true
   }'
 ```
 
 `bracketed` defaults to `true` and sends the prompt as one paste operation before pressing Enter. Prompts
-steer by default: the prompt is submitted immediately and the agent changes direction. Set `steer: false`
-for Codex to place the prompt in its queue with Tab instead. If a requested placement target is missing
+always steer: the prompt is submitted immediately, even while the agent is mid-turn, and the agent changes
+direction. There is no option to queue it behind the current turn; a `steer` or `queue` field from an older
+script is ignored. If a requested placement target is missing
 or ambiguous, that terminal is still created and its prompt is still submitted; the item reports
 `placement_error` and the response increments `placement_failed`.
 

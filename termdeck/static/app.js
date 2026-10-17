@@ -5892,7 +5892,7 @@ class TermdeckApp {
     const loadingState = this.$("initial-loading-state");
     loadingState.classList.remove("loading", "hidden");
     this.$("initial-loading-message").textContent = message;
-    this.$("initial-loading-recovery").classList.remove("hidden");
+    window.TermdeckLoadingRecovery?.show();
   }
 
   // The last line of defence for an address the deck cannot open: whatever threw during boot, the

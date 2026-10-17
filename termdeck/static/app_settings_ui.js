@@ -608,7 +608,9 @@ Object.assign(TermdeckApp.prototype, {
         this.settings.notify_agent_idle = next;
         if (next) this.maybeRequestNotificationPermission();
       }));
-    pop.appendChild(this.buildToggleRow("TermDeck API guidance for spawned agents",
+    // Still stored under its old name: the switch once gave spawned agents a curl guide, and now
+    // gives them the MCP tools (and the guide only to agents that cannot take those).
+    pop.appendChild(this.buildToggleRow("TermDeck MCP for spawned agents",
       () => (this.settings.agent_api_instructions_enabled !== false ? "on" : "off"),
       () => { this.settings.agent_api_instructions_enabled = this.settings.agent_api_instructions_enabled === false; }));
     if (this.touchMobileLayoutEnabled()) pop.appendChild(this.buildMobileDisplayScaleRow());
