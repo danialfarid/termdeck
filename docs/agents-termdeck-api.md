@@ -63,7 +63,7 @@ curl -sS -X POST http://127.0.0.1:8530/api/sessions \
 |---|---|
 | `model` | `codex`, `claude`, `agy`, or `none`. |
 | `model_name` | Agent model identifier, optionally including reasoning effort. |
-| `permission` | Agent permission mode, such as `default`, `workspace-write`, or `full-access`. |
+| `permission` | TermDeck's name for the permission mode, not the agent's own: `default` and `full-access` work for every agent. Codex also takes `read-only` and `workspace-write`; Claude takes `plan`, `accept-edits`, `auto`, `dont-ask`, and `bypassPermissions`. An unknown value is refused with the accepted list. |
 | `additional_args` | Optional shell-style launch parameters; matching or conflicting generated options are replaced and other arguments are appended. |
 | `title`, `prompt` | Child title and initial prompt. |
 | `description` | Optional short, user-visible task description, saved during creation. |
@@ -111,6 +111,9 @@ Each item also accepts its own optional `description`.
   have arrived: never send it again, wait for the response instead. See
   [Did the prompt go in](api.md#did-the-prompt-go-in).
 - `POST /api/sessions/{session_id}/interrupt` stops the turn.
+- `POST /api/sessions/{session_id}/escape` presses Esc once, to close a search or picker the agent has
+  open over its composer. A prompt or model change sent while Codex's find-in-transcript is up presses it
+  first by itself.
 - `GET /api/sessions` lists sessions and `GET /api/sessions/{session_id}` returns one session.
 
 For isolated work, `GET /api/sessions/{session_id}/worktree/review` shows the branch and diff. Finish it with

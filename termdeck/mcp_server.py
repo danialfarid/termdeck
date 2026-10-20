@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 import httpx
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 SERVER_NAME = "termdeck"
 # TermDeck-launched processes receive their own session id here; a child spawned without an
@@ -35,8 +36,13 @@ SERVER_INSTRUCTIONS = (
 )
 
 
-class TermdeckMcpError(RuntimeError):
-    """The deck answered with an error, or could not be reached at all."""
+class TermdeckMcpError(ToolError):
+    """The deck answered with an error, or could not be reached at all.
+
+    A ToolError so the agent reads why. The MCP library treats any other exception from a tool as a
+    crash and hands the agent only "Error executing tool <name>": an agent that asked for a Codex
+    permission Codex does not have was told nothing it could correct.
+    """
 
 
 def default_base_url() -> str:
@@ -106,6 +112,9 @@ class TermdeckMcpClient:
         never send it again.
         origin_session files the child under its parent; empty means this process's own
         $TERMDECK_SESSION_ID, which is what a delegated child wants.
+        permission is TermDeck's name for the mode, not the agent's own: `default` or `full-access`
+        work for every agent. Codex also takes `read-only` and `workspace-write`; Claude takes `plan`,
+        `accept-edits`, `auto`, `dont-ask`, and `bypassPermissions`.
         """
         origin = origin_session.strip() or os.environ.get(ENV_SESSION_ID, "").strip()
         route = f"/api/projects/{quote(project, safe='')}/sessions" if project else "/api/sessions"
@@ -127,7 +136,8 @@ class TermdeckMcpClient:
                           worktree_id: str = "root") -> dict[str, Any]:
         """Start several agents at once. Each terminals item needs a `name` and takes its own
         `prompt`, `description`, `cwd`, `project`, `model`, `model_name`, `permission`, and
-        worktree fields; the shared arguments cover what an item leaves out."""
+        worktree fields; the shared arguments cover what an item leaves out. permission takes the
+        values spawn_agent lists: `default` or `full-access` for any agent."""
         return await self._request("POST", "/api/sessions/batch", json={
             "terminals": terminals, "prompt": prompt, "cwd": cwd, "project": project,
             "model": model, "model_name": model_name, "additional_args": additional_args,

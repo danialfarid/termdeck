@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The transcript's send menu always offers **Send Esc**, which presses Esc once in the terminal. On a
+  phone there is no terminal to press it in, and Stop showed only while the agent was working. Backed
+  by `POST /api/sessions/{id}/escape`.
+
+### Fixed
+
+- A prompt or model change sent while Codex's find-in-transcript was open went into its search box:
+  the prompt never arrived and the model stayed the same, with nothing said. TermDeck now presses Esc
+  once first when that search is up, and reports why when Esc does not close it.
+- An MCP tool call the deck refused told the agent only "Error executing tool spawn_agent": the MCP
+  library hides the message of any error it does not recognise as anticipated. The deck's reason now
+  reaches the agent, and an unknown permission lists the values that agent takes. The tool and API docs
+  say which permission names work: `default` and `full-access` for every agent, plus each agent's own
+  (Claude's `bypassPermissions` is not a Codex one).
 ## [0.35.0] — 2026-10-17
 
 ### Added

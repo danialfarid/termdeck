@@ -868,6 +868,7 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_SESSION_TASK_RESULT_ROUTE, response_model=None)(self._session_last_turn)
         app.post(TermdeckConfig.API_SESSION_PROMPT_ROUTE, response_model=None)(self._submit_prompt)
         app.post(TermdeckConfig.API_SESSION_INTERRUPT_ROUTE, response_model=None)(self._interrupt_session)
+        app.post(TermdeckConfig.API_SESSION_ESCAPE_ROUTE, response_model=None)(self._escape_session)
         app.post(TermdeckConfig.API_AGENT_HOOK_ROUTE, response_model=None)(self._agent_hook)
         app.post(TermdeckConfig.API_KILL_ALL_TERMINALS_ROUTE, response_model=None)(self._kill_all_terminals)
         app.post(TermdeckConfig.API_KILL_STALE_TERMINALS_ROUTE, response_model=None)(self._kill_stale_terminals)
@@ -3664,6 +3665,15 @@ class TermdeckServer:
         return self.manager.session_summary_by_id(session_id)
 
     async def _agent_hook(self, request: AgentHookRequest, state: str = "") -> dict[str, object]:
+    async def _escape_session(self, session_id: str) -> dict[str, object]:
+        # One Esc, as a key press: closes whatever the agent has open over its composer. Not an interrupt,
+        # whose three presses would go on to act on the composer once that is shut.
+        if not self.manager.has_session(session_id):
+            raise HTTPException(status_code=404, detail=session_id)
+        self.manager.ensure_session_running(session_id)
+        self.manager.write_input(session_id, "\x1b")
+        return self.manager.session_summary_by_id(session_id)
+
         """Receive a Claude Code hook payload and flag the matching terminal as waiting on the user.
 
         Claude posts its own hook JSON verbatim, so the body carries `session_id` (the agent session,

@@ -1719,7 +1719,7 @@ class TerminalSessionManager:
         queue = queue and agent.has_prompt_queue
         # A dialog on screen takes a prompt's keys as its answer: the paste is thrown away and the Enter
         # picks its first choice, which for Codex's offer to update ends the session. Nothing goes in.
-        blocked = agent.prompt_blocked_by(ms)
+        blocked = agent.prompt_blocked_by(ms) or await self._leave_escapable_mode(ms, agent)
         if blocked:
             return PromptDelivery(queue, PromptOutcome.FAILED, blocked)
         # The clear below throws away whatever the person was in the middle of typing -- in the terminal,
@@ -1784,6 +1784,21 @@ class TerminalSessionManager:
         finally:
             release(False)
         # A submitted prompt must not be resurrected from the debounce window
+    async def _leave_escapable_mode(self, ms: ManagedSession, agent) -> str:
+        """Press Esc once if a mode that stands in for the composer is up -- Codex's transcript search,
+        where a prompt became a search -- and wait for it to go. Returns why keys cannot go in, or "".
+
+        Once only: a second Esc at an idle Codex composer arms its edit-previous-message, which the next
+        key would act on.
+        """
+        if not agent.in_escapable_mode(ms):
+            return ""
+        self.write_input(ms.record.session_id, "\x1b")
+        await self._wait_for_paste_to_settle(ms)
+        if agent.in_escapable_mode(ms):
+            return "the agent is in a search or history view that Esc did not close; press Esc in that terminal"
+        return ""
+
         # if the browser is refreshed immediately afterward.
         self._persist()
         self._broadcast_control(self._sessions[session_id],
@@ -2075,6 +2090,10 @@ class TerminalSessionManager:
             # dialog chose: someone writing it out by hand is being more specific than someone choosing
             # from a list.
             ms.record.command = self.append_additional_start_arguments(ms.record.command, additional_args)
+            # The keys below are typed blind; in Codex's transcript search they were the search.
+            blocked = await self._leave_escapable_mode(ms, agents.agent_cli("codex"))
+            if blocked:
+                raise RuntimeError(blocked)
         self._persist()
         if not await self._terminate_proc(ms):
             raise RuntimeError(f"could not stop dtach session before restart: {session_id}")

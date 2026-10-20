@@ -95,7 +95,9 @@ class TranscriptAppendWatchTest(unittest.TestCase):
         watch.watch(old)
         with old.open("a") as handle:
             handle.write('{"n": 1}\n')
-        self.assertEqual(self.wait_for_changes(old, 1), 1)
+        # At least once: kqueue can report one write as two events (written, then extended), and a
+        # reader re-reads the file either way.
+        self.assertGreaterEqual(self.wait_for_changes(old, 1), 1)
 
     def test_only_transcripts_under_its_roots_are_watched(self) -> None:
         watch = self.started()

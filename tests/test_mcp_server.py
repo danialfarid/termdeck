@@ -7,7 +7,9 @@ from typing import Any
 from unittest import mock
 
 import httpx
+from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 
+from termdeck import agents
 from termdeck.mcp_server import TermdeckMcpClient, TermdeckMcpError, build_server, default_base_url
 
 
@@ -75,6 +77,19 @@ class McpClientTest(unittest.TestCase):
         for name in ("spawn_agent", "spawn_batch", "send_prompt"):
             self.assertNotIn("steer", inspect.signature(getattr(TermdeckMcpClient, name)).parameters, name)
 
+    def test_an_unknown_permission_names_the_ones_that_work(self) -> None:
+        with self.assertRaises(ValueError) as raised:
+            agents.agent_cli("codex").normalized_permission_flags("bypassPermissions")
+        self.assertIn("default, full-access, read-only, workspace-write", str(raised.exception))
+
+    def test_the_permissions_the_tool_names_are_ones_the_agents_take(self) -> None:
+        described = TermdeckMcpClient.spawn_agent.__doc__ or ""
+        for kind, names in (("codex", ("default", "full-access", "read-only", "workspace-write")),
+                            ("claude", ("default", "full-access", "plan", "accept-edits", "bypassPermissions"))):
+            for name in names:
+                self.assertIn(f"`{name}`", described, name)
+                agents.agent_cli(kind).normalized_permission_flags(name)
+
     def test_get_response_passes_since_limit_and_final_route(self) -> None:
         seen: list[httpx.Request] = []
 
@@ -131,6 +146,16 @@ class McpClientTest(unittest.TestCase):
             run(client.session_status("missing"))
         self.assertIn("404", str(raised.exception))
         self.assertIn("no such session", str(raised.exception))
+
+    def test_the_deck_s_refusal_reaches_the_agent_through_the_tool(self) -> None:
+        # The MCP library hides any exception but a ToolError behind "Error executing tool <name>":
+        # an agent that passed Claude's bypassPermissions for Codex was told nothing it could correct.
+        detail = "unknown codex permission: bypassPermissions; use one of default, full-access"
+        server = build_server(self.make_client(lambda request: httpx.Response(400, json={"detail": detail})))
+        with self.assertRaises(ToolError) as raised:
+            run(server.call_tool("spawn_agent", {"model": "codex", "permission": "bypassPermissions"}))
+        self.assertNotIsInstance(raised.exception, UnexpectedToolError)
+        self.assertIn(detail, str(raised.exception))
 
     def test_connection_failure_names_the_deck_and_the_fix(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

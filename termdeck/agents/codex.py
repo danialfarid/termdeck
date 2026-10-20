@@ -38,6 +38,9 @@ class CodexCli(AgentCli):
         ("Codex is asking whether to update; answer it in that terminal, then send the prompt again",
          ("Update available", "Update now", "Skip until next version")),
     )
+    # Codex's find-in-transcript, which hides the composer behind its own footer: a prompt typed there
+    # became a search, and a model change's "/model" and menu numbers went into the search box.
+    PROMPT_ESCAPABLE_MODES = (("ctrl+p older", "ctrl+n newer", "esc latest"),)
     # One file per thread that a running codex holds open, named for the thread it writes.
     THREAD_LOCK_DIR = Path.home() / ".codex" / "thread-writer-locks"
     THREAD_LOCK_SUFFIX = ".lock"

@@ -715,10 +715,10 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 .history-slash-command:hover, .history-slash-command.selected { border-color: var(--active-border); background: var(--active-bg); }
 .history-slash-command-name { color: var(--accent); font: 600 var(--code-font-size)/1.25 Menlo, monospace; }
 .history-slash-command-description { min-width: 0; overflow: hidden; color: var(--dim); font: calc(var(--ui-font-size) - 1px)/1.25 Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
-#history-queue, #history-stop { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 6px 9px; border-radius: 5px; cursor: pointer; border: 1px solid transparent; background: transparent; color: var(--text); text-align: left; white-space: nowrap; }
-#history-queue:hover, #history-stop:hover { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
+#history-queue, #history-stop, #history-escape { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 6px 9px; border-radius: 5px; cursor: pointer; border: 1px solid transparent; background: transparent; color: var(--text); text-align: left; white-space: nowrap; }
+#history-queue:hover, #history-stop:hover, #history-escape:hover { color: var(--accent); border-color: var(--active-border); background: var(--active-bg); }
 #history-queue.hidden, #history-stop.hidden { display: none; }
-#history-queue .codicon, #history-stop .codicon { font-size: 12px; }
+#history-queue .codicon, #history-stop .codicon, #history-escape .codicon { font-size: 12px; }
 #history-prompt-history-btn { flex: none; width: 25px; height: 19px; margin: 0; padding: 0; border-radius: 4px; cursor: pointer; opacity: 0.78; }
 #history-prompt-history-btn { border: 1px solid var(--border); background: none; color: var(--dim); }
 #history-prompt-footer #history-prompt-history-btn .history-prompt-history-label { display: none; }

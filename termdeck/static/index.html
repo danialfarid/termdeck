@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" href="/static/termdeck-192.png">
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <link rel="stylesheet" href="/static/vendor/codicons/codicon.css">
-<link rel="stylesheet" href="/static/style.css?v=20261017-recovery-close">
+<link rel="stylesheet" href="/static/style.css?v=20261017-send-esc">
 <link rel="stylesheet" href="/filebrowser/static/file_browser_shared.css">
 <script>
 // An installed app always launches at the manifest's start_url, which is the all-projects page, so
@@ -384,6 +384,7 @@
             <button id="history-send-menu-toggle" type="button" title="More send options" aria-label="More send options" aria-haspopup="menu" aria-expanded="false"><span class="codicon codicon-chevron-down"></span></button>
             <div id="history-send-menu" class="hidden" role="menu">
               <button id="history-stop" class="hidden" type="button" role="menuitem"><span class="codicon codicon-debug-stop"></span><span>Stop response</span></button>
+              <button id="history-escape" type="button" role="menuitem"><span class="codicon codicon-close"></span><span>Send Esc</span></button>
               <button id="history-queue" type="button" role="menuitem"><span class="codicon codicon-list-ordered"></span><span>Send to queue</span></button>
               <div id="history-send-extra-controls" role="group" aria-label="Transcript controls">
                 <span id="history-model" class="hidden"></span>
@@ -688,9 +689,9 @@
 <script src="/static/unicorn_lang.js"></script>
 <!-- One class, split across files: app.js declares TermdeckApp (constants, constructor, core);
      the app_*.js files attach method groups to its prototype; app_boot.js instantiates. Order matters. -->
-<script src="/static/app.js?v=20261017-recovery-close"></script>
+<script src="/static/app.js?v=20261017-send-esc"></script>
 <script src="/static/app_search_git.js?v=20261015-eye-keeps-parents"></script>
-<script src="/static/app_markdown_files.js?v=20261017-prompt-always-steers"></script>
+<script src="/static/app_markdown_files.js?v=20261017-send-esc"></script>
 <script src="/static/app_terminal.js?v=20261012-keyboard-diagnostics"></script>
 <script src="/static/app_terminal_debug.js"></script>
 <script src="/static/app_settings_ui.js?v=20261017-mcp-setting"></script>

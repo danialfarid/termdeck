@@ -4740,6 +4740,10 @@ class TermdeckApp {
       this.closeHistorySendMenu();
       this.interruptHistoryPrompt();
     };
+    this.$("history-escape").onclick = () => {
+      this.closeHistorySendMenu();
+      void this.sendHistoryEscape();
+    };
     this.$("history-queued-toggle").onclick = () => this.toggleHistoryQueueCollapsed();
     this.$("history-prompt-history-btn").onclick = () => this.togglePromptHistory();
     this.updateHistoryPromptHelpText();

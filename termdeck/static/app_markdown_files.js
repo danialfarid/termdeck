@@ -1754,6 +1754,24 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // One Esc to the terminal, offered whatever the agent is doing: on a phone there is no terminal to
+  // press it in, and an agent stuck behind a search or picker of its own takes nothing else.
+  async sendHistoryEscape() {
+    if (!this.historyOpen || !this.activeId) return;
+    const sessionId = this.activeId;
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/escape`, { method: "POST" });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({}));
+        throw new Error(String(failure.detail || `Esc failed (${response.status})`));
+      }
+      this.$("status-name").textContent = "Esc sent";
+    } catch (error) {
+      this.$("status-name").textContent = error instanceof Error ? error.message : "unable to send Esc";
+    }
+  },
+
+
   updateActiveThinkingBlock() {
     const body = this.$("history-body");
     if (!body) return;

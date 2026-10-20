@@ -107,7 +107,10 @@ class AgentCli:
         requested = (permission or "").strip().lower() or "default"
         flags = self.permission_flags.get(requested)
         if flags is None:
-            raise ValueError(f"unknown {self.kind} permission: {permission}")
+            # The accepted names, so a caller who used another agent's word -- Claude's
+            # bypassPermissions for Codex -- can correct it rather than guess.
+            raise ValueError(f"unknown {self.kind} permission: {permission}; use one of "
+                             f"{', '.join(sorted(self.permission_flags))}")
         return flags
 
     def model_arguments(self, model_name: str) -> tuple[str, ...]:
@@ -451,6 +454,9 @@ class AgentCli:
     # A dialog whose Enter answers it: a pasted prompt is thrown away by it and the Enter after the paste
     # picks its first choice. Each is the reason given, and phrases all of which are on screen while it is.
     PROMPT_BLOCKING_DIALOGS: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # A mode that stands in for the composer until Esc leaves it: what is typed goes to the mode, not the
+    # agent, and Esc changes nothing else. Each is phrases all of which are on screen while it is up.
+    PROMPT_ESCAPABLE_MODES: tuple[tuple[str, ...], ...] = ()
 
     def prompt_taken(self, manager, ms, text: str, sent_at: float) -> bool:
         """Whether a record the agent writes the moment a prompt is submitted shows this one.
@@ -467,6 +473,13 @@ class AgentCli:
         screen = self.screen_bottom_text(ms)
         return next((reason for reason, phrases in self.PROMPT_BLOCKING_DIALOGS
                      if all(phrase in screen for phrase in phrases)), "")
+
+    def in_escapable_mode(self, ms) -> bool:
+        """Whether a mode Esc leaves is holding the composer's place on screen now."""
+        if not self.PROMPT_ESCAPABLE_MODES:
+            return False
+        screen = self.screen_bottom_text(ms)
+        return any(all(phrase in screen for phrase in phrases) for phrases in self.PROMPT_ESCAPABLE_MODES)
 
     def screen_bottom_text(self, ms) -> str:
         """The lowest rows of the terminal with anything on them, as it shows them now.
