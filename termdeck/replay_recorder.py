@@ -616,7 +616,6 @@ class ReplayRecorder:
         # resumed claude paints its fresh screen below. Only the parse carries and repaint bookkeeping
         # reset, since they describe the terminated process's stream.
         ms.title_carry = b""
-        ms.osc_query_carry = b""
         ms.scrollback_sync_carry = b""
         ms.scrollback_inside_sync = False
         ms.raw_replay_title_carry = b""

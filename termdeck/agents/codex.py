@@ -118,6 +118,9 @@ class CodexCli(AgentCli):
         # moves to a new page, so the rglob hit is kept but not trusted for ever.
         self._rollout_paths: dict[str, Path] = {}
         self._rollout_checked: dict[str, float] = {}
+        # When each recent day directory last gained or lost an entry: a thread pages to a new
+        # file, so an unchanged set of directories means no thread paged and cached pages hold.
+        self._rollout_day_mtimes: dict[Path, int] = {}
         # What a page reads on from, and where each file id lives: neither changes once written.
         self._history_bases: dict[Path, tuple[str, int] | None] = {}
         self._history_files: dict[str, Path] = {}
@@ -212,7 +215,21 @@ class CodexCli(AgentCli):
             if now - self._rollout_checked.get(agent_session_id, 0.0) < self.ROLLOUT_PAGE_CHECK_SECONDS:
                 return cached
             self._rollout_checked[agent_session_id] = now
-            # A new page is a file made now, so only the days around today need looking at.
+            # A new page is a file made now, so only the days around today need looking at --
+            # and only when one of them changed: an unchanged set of directories means no
+            # thread paged since the last look, and the cached page is still the newest.
+            mtimes: dict[Path, int] | None = {}
+            for day in self._recent_day_dirs():
+                if mtimes is None or not day.is_dir():
+                    continue
+                try:
+                    mtimes[day] = day.stat().st_mtime_ns
+                except OSError:
+                    mtimes = None
+            if mtimes is not None:
+                if mtimes == self._rollout_day_mtimes:
+                    return cached
+                self._rollout_day_mtimes = mtimes
             newest = max((page for day in self._recent_day_dirs() if day.is_dir()
                           for page in day.glob(f"rollout-*-{agent_session_id}_*.jsonl")
                           if self.session_id_from_path(page) == agent_session_id),

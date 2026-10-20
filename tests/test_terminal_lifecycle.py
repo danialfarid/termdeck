@@ -130,6 +130,11 @@ class PlacementNameTest(unittest.TestCase):
                     {"session_id": "other-id", "title": "other", "cli_title": "other"},
                 ]
 
+            # Placement files sessions by id or display name, so it reads the light key rows.
+            @staticmethod
+            def list_session_keys(project: str | None = None, worktree_id: str | None = None) -> list[dict[str, object]]:
+                return Manager.list_sessions(project, worktree_id)
+
             # Placement now tells connected clients what moved, so the double has to be able to receive
             # that. It is the notification, not the placement, so recording it is enough.
             @staticmethod
@@ -1456,6 +1461,20 @@ class CodexSessionActivityTest(unittest.TestCase):
                     json.dumps({"type": "event_msg", "payload": {"type": "task_complete"}}),
                 ]))
                 self.assertFalse(AgentSessionTracker().codex_session_is_active("019f9a3e-1915-7bd3-8183-cce1db8a1e20"))
+
+    def test_a_new_turn_after_a_finished_one_is_running(self) -> None:
+        # The verdict comes from the LAST decisive event: a transcript holding a finished turn
+        # followed by a started one is mid-turn, even though an old task_complete sits above it.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "rollout-2026-08-02T00-00-00-019f9a3e-1915-7bd3-8183-cce1db8a1e20.jsonl"
+            path.write_text("\n".join([
+                json.dumps({"type": "event_msg", "payload": {"type": "task_started"}}),
+                json.dumps({"type": "event_msg", "payload": {"type": "task_complete"}}),
+                json.dumps({"type": "event_msg", "payload": {"type": "task_started"}}),
+            ]))
+            with patch.object(agents.CodexCli, "sessions_root", root):
+                self.assertTrue(AgentSessionTracker().codex_session_is_active("019f9a3e-1915-7bd3-8183-cce1db8a1e20"))
 
     def test_an_unfinished_turn_in_a_long_idle_transcript_is_not_running(self) -> None:
         # A turn ends with task_complete or turn_aborted. A codex killed mid-turn -- a server restart,

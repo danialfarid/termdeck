@@ -80,7 +80,6 @@ class ManagedSession:
         self.pending_agent_rename_deadline = 0.0
         self.agent_rename_task: asyncio.Task | None = None
         self.command_interaction_lock = asyncio.Lock()
-        self.osc_query_carry = b""
         # Trailing bytes, so a compaction marker split across two pty reads is still matched;
         # and the conversation as it stood when a compaction started, held until that
         # compaction finishes. See TerminalSessionManager._detect_compaction_marker.
@@ -1153,26 +1152,9 @@ class TerminalSessionManager:
         except OSError:
             ms.output_path_locked = True
 
-    def _answer_and_strip_color_queries(self, ms: ManagedSession, data: bytes) -> bytes:
-        data = ms.osc_query_carry + data
-        ms.osc_query_carry = b""
-        for query, response in TermdeckConfig.OSC_COLOR_QUERY_RESPONSES:
-            if query in data:
-                data = data.replace(query, b"")
-                if ms.proc is not None:
-                    ms.proc.write(response)
-        tail_keep = 0
-        for query, _ in TermdeckConfig.OSC_COLOR_QUERY_RESPONSES:
-            for length in range(1, min(len(query), TermdeckConfig.OSC_QUERY_CARRY_MAX, len(data)) + 1):
-                if length < len(query) and data.endswith(query[:length]):
-                    tail_keep = max(tail_keep, length)
-        if tail_keep:
-            ms.osc_query_carry = data[-tail_keep:]
-            data = data[:-tail_keep]
-        return data
-
     def _handle_output(self, ms: ManagedSession, data: bytes, mark_activity: bool = True) -> None:
-        data = self._answer_and_strip_color_queries(ms, data)
+        # Color queries never reach this far: the pty reader thread answers and strips them, so a
+        # newborn CLI's theme answers never wait behind loop-blocking handler work.
         if not data:
             return
         ms.last_output_monotonic = time.monotonic()
@@ -1784,21 +1766,6 @@ class TerminalSessionManager:
         finally:
             release(False)
         # A submitted prompt must not be resurrected from the debounce window
-    async def _leave_escapable_mode(self, ms: ManagedSession, agent) -> str:
-        """Press Esc once if a mode that stands in for the composer is up -- Codex's transcript search,
-        where a prompt became a search -- and wait for it to go. Returns why keys cannot go in, or "".
-
-        Once only: a second Esc at an idle Codex composer arms its edit-previous-message, which the next
-        key would act on.
-        """
-        if not agent.in_escapable_mode(ms):
-            return ""
-        self.write_input(ms.record.session_id, "\x1b")
-        await self._wait_for_paste_to_settle(ms)
-        if agent.in_escapable_mode(ms):
-            return "the agent is in a search or history view that Esc did not close; press Esc in that terminal"
-        return ""
-
         # if the browser is refreshed immediately afterward.
         self._persist()
         self._broadcast_control(self._sessions[session_id],
@@ -1816,6 +1783,21 @@ class TerminalSessionManager:
             return PromptDelivery(False, PromptOutcome.UNCONFIRMED, "nothing records prompts for this terminal")
         return PromptDelivery(False, PromptOutcome.UNCONFIRMED,
                               "the agent has not recorded it; it may still be sitting in the composer")
+
+    async def _leave_escapable_mode(self, ms: ManagedSession, agent) -> str:
+        """Press Esc once if a mode that stands in for the composer is up -- Codex's transcript search,
+        where a prompt became a search -- and wait for it to go. Returns why keys cannot go in, or "".
+
+        Once only: a second Esc at an idle Codex composer arms its edit-previous-message, which the next
+        key would act on.
+        """
+        if not agent.in_escapable_mode(ms):
+            return ""
+        self.write_input(ms.record.session_id, "\x1b")
+        await self._wait_for_paste_to_settle(ms)
+        if agent.in_escapable_mode(ms):
+            return "the agent is in a search or history view that Esc did not close; press Esc in that terminal"
+        return ""
 
     async def _wait_for_paste_to_settle(self, ms: ManagedSession) -> None:
         """Wait until the terminal has stopped producing output, so Enter lands after the paste.
@@ -2090,10 +2072,6 @@ class TerminalSessionManager:
             # dialog chose: someone writing it out by hand is being more specific than someone choosing
             # from a list.
             ms.record.command = self.append_additional_start_arguments(ms.record.command, additional_args)
-            # The keys below are typed blind; in Codex's transcript search they were the search.
-            blocked = await self._leave_escapable_mode(ms, agents.agent_cli("codex"))
-            if blocked:
-                raise RuntimeError(blocked)
         self._persist()
         if not await self._terminate_proc(ms):
             raise RuntimeError(f"could not stop dtach session before restart: {session_id}")
@@ -2112,6 +2090,10 @@ class TerminalSessionManager:
         if effort_key is None:
             raise ValueError(f"unsupported Codex reasoning effort: {reasoning_effort}")
         async with ms.command_interaction_lock:
+            # The keys below are typed blind; in Codex's transcript search they were the search.
+            blocked = await self._leave_escapable_mode(ms, agents.agent_cli("codex"))
+            if blocked:
+                raise RuntimeError(blocked)
             self.write_input(session_id, "\x15/model")
             await asyncio.sleep(0.05)
             self.write_input(session_id, "\r")
@@ -2558,6 +2540,21 @@ class TerminalSessionManager:
         return [self.session_summary(ms) for ms in self._sessions.values()
                 if (project is None or ms.record.project == project) and
                 (worktree_id is None or ms.record.worktree_id == worktree_id)]
+
+    def list_session_keys(self, project: str | None, worktree_id: str | None = None) -> list[dict[str, object]]:
+        """session_id/title/cli_title rows without building summaries.
+
+        Placement only files sessions by id or display name: full summaries stat transcripts and
+        replay terminals, which kept every create/fork slow on large workspaces (and starved the pty
+        pump long enough for a fresh agent CLI to give up on its theme answers).
+        """
+        rows = []
+        for ms in self._sessions.values():
+            if (project is None or ms.record.project == project) and \
+                    (worktree_id is None or ms.record.worktree_id == worktree_id):
+                rows.append({"session_id": ms.record.session_id, "title": ms.record.title,
+                             "cli_title": ms.cli_title})
+        return rows
 
     def session_summary(self, ms: ManagedSession) -> dict[str, object]:
         self._refresh_session_activity(ms)

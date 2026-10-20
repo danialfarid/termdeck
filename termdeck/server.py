@@ -2924,7 +2924,7 @@ class TermdeckServer:
         selected_worktree_id = worktree_id.strip() or "root"
         key = self._project_state_key(project, selected_worktree_id)
         state = settings.project_state.get(key, ProjectUiState())
-        sessions = self.manager.list_sessions(project or None, selected_worktree_id)
+        sessions = self.manager.list_session_keys(project or None, selected_worktree_id)
         groups = [group for group in state.terminal_groups
                   if str(group.get("id", "")).strip() and str(group.get("name", "")).strip()]
         session_ids = {str(session.get("session_id", "")) for session in sessions}
@@ -2985,7 +2985,8 @@ class TermdeckServer:
             state.session_order = order
             settings.project_state[key] = state
             self.settings_store.save(settings.model_dump())
-            self._broadcast_project_state_snapshot(project, selected_worktree_id)
+            # No broadcast here: every placement caller broadcasts right after. A second full
+            # layout build per create/fork doubled the request's loop block on large workspaces.
             return {"after": requested, "anchor": anchor_token, "token": f"session:{session_id}",
                     "group": f"group:{group_id}", "position": "after"}
 
@@ -3003,7 +3004,7 @@ class TermdeckServer:
         state.session_groups = session_groups
         settings.project_state[key] = state
         self.settings_store.save(settings.model_dump())
-        self._broadcast_project_state_snapshot(project, selected_worktree_id)
+        # No broadcast here: every placement caller broadcasts right after (see above).
         return {"after": requested, "anchor": anchor_token, "token": new_token, "position": "after"}
 
     @staticmethod
@@ -3664,7 +3665,6 @@ class TermdeckServer:
                 await asyncio.sleep(0.75)
         return self.manager.session_summary_by_id(session_id)
 
-    async def _agent_hook(self, request: AgentHookRequest, state: str = "") -> dict[str, object]:
     async def _escape_session(self, session_id: str) -> dict[str, object]:
         # One Esc, as a key press: closes whatever the agent has open over its composer. Not an interrupt,
         # whose three presses would go on to act on the composer once that is shut.
@@ -3674,6 +3674,7 @@ class TermdeckServer:
         self.manager.write_input(session_id, "\x1b")
         return self.manager.session_summary_by_id(session_id)
 
+    async def _agent_hook(self, request: AgentHookRequest, state: str = "") -> dict[str, object]:
         """Receive a Claude Code hook payload and flag the matching terminal as waiting on the user.
 
         Claude posts its own hook JSON verbatim, so the body carries `session_id` (the agent session,

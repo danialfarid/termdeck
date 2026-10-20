@@ -115,7 +115,7 @@ class TermdeckCli:
         from termdeck.config import TermdeckConfig
         from termdeck.environment_check import EnvironmentCheck
 
-        reports = EnvironmentCheck.collect_reports()
+        reports = EnvironmentCheck.collect_reports(force_refresh=True)
         print(f"termdeck  http://{TermdeckConfig.HOST}:{TermdeckConfig.PORT}")
         print(f"data dir  {TermdeckConfig.DATA_DIR}")
         print(f"file root {TermdeckConfig.FILE_ACCESS_ROOT}")

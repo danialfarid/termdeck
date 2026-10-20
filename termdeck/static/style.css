@@ -436,6 +436,7 @@ body.termdeck-page-hidden * { animation-play-state: paused !important; }
   .session-title.session-title-working .session-title-wave-text { animation: none; }
   .status-dot.processing { animation: none; }
   .status-dot.attention { animation: none; }
+  .agent-stack-summary.agent-stack-summary-drop { animation: none; }
   .status-dot.attention::after { display: none; }
   #history-thinking-banner #history-thinking-duration { animation: none; }
 }
@@ -993,8 +994,11 @@ body.vscode-native-mode #project-terminal-search-btn { display: none !important;
   display: flex; align-items: center; gap: 5px; min-width: 0;
   padding: 1px 8px 1px 4px; cursor: pointer; color: var(--dim);
   border-radius: 6px; line-height: 1.5;
-  animation: agentStackSummaryDrop 0.16s ease-out;
 }
+/* The drop-in plays only for the toggle that reveals the line (see toggleAgentStack): renderList
+   rebuilds this element on every sidebar refresh, so an always-on entrance animation replays --
+   and visibly blinks -- on unrelated changes like switching tabs. */
+.agent-stack-summary.agent-stack-summary-drop { animation: agentStackSummaryDrop 0.16s ease-out; }
 .agent-stack-summary:hover { background: var(--panel2); color: var(--text); }
 /* The row's status dot is absolutely placed in its gutter; here it is the first item of a flex line. */
 .agent-stack-dot {

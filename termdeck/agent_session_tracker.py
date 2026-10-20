@@ -152,8 +152,15 @@ class AgentSessionTracker:
             idle_seconds = time.time() - path.stat().st_mtime
         except OSError:
             return False
+        # The verdict comes from the LAST decisive event, so scan backwards and stop at the first
+        # one: parsing multi-megabyte tool-output lines only to discard them kept session summaries
+        # (and every broadcast built from them) slow on large threads. The substring prefilter is
+        # exact -- a matching event line always names its type -- so skipping the rest parses nothing.
         state: bool | None = None
-        for line in lines:
+        for line in reversed(lines):
+            if ("task_started" not in line and "task_complete" not in line
+                    and "turn_aborted" not in line):
+                continue
             try:
                 payload = json.loads(line)
             except json.JSONDecodeError:
@@ -163,8 +170,10 @@ class AgentSessionTracker:
             event_type = (payload.get("payload") or {}).get("type")
             if event_type == "task_started":
                 state = True
-            elif event_type in {"task_complete", "turn_aborted"}:
+                break
+            if event_type in {"task_complete", "turn_aborted"}:
                 state = False
+                break
         # A turn that has not written anything in half an hour is not running, whatever the last event
         # says. Only applied to an unfinished turn: a finished one is already False.
         if state and idle_seconds > self._CODEX_ACTIVITY_STALE_SECONDS:

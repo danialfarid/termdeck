@@ -1,4 +1,6 @@
+import asyncio
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +36,15 @@ class EnvironmentCheck:
     MODEL_INSTALL_COMMANDS = {"codex": "brew install --cask codex", "claude": "brew install --cask claude-code",
                               "agy": "brew install --cask antigravity", "aider": AIDER_INSTALL_HINT,
                               "opencode": OPENCODE_INSTALL_HINT}
+    # Probing every `--version` costs ~0.5s of sequential subprocess spawns, and the probe runs on
+    # the session-create request path. Blocking the event loop that long starves the pty pump: a
+    # freshly spawned agent CLI asks the terminal for its colors in its first output burst and only
+    # waits about a second for the answer before giving up and painting its composer without the
+    # panel background -- permanently, for that session's whole life. Cache the reports briefly.
+    REPORT_CACHE_TTL_SECONDS = 300.0
+    _REPORTS_CACHE: list["DependencyReport"] | None = None
+    _REPORTS_CACHE_MONOTONIC = 0.0
+    _REPORT_REFRESH_IN_FLIGHT = False
 
     @staticmethod
     def package_install_hint(program: str) -> str:
@@ -60,7 +71,49 @@ class EnvironmentCheck:
         return result.returncode == 0
 
     @staticmethod
-    def collect_reports() -> list[DependencyReport]:
+    def collect_reports(force_refresh: bool = False) -> list[DependencyReport]:
+        """Dependency reports, cached briefly so the session-create path never blocks on probes.
+
+        A stale cache is served while a refresh runs in a worker thread, so the event loop stays
+        free for pty traffic. Pass force_refresh for diagnostics (doctor), which want live truth.
+        """
+        now = time.monotonic()
+        if not force_refresh and EnvironmentCheck._REPORTS_CACHE is not None:
+            if now - EnvironmentCheck._REPORTS_CACHE_MONOTONIC < EnvironmentCheck.REPORT_CACHE_TTL_SECONDS:
+                return list(EnvironmentCheck._REPORTS_CACHE)
+            if EnvironmentCheck._schedule_reports_refresh():
+                return list(EnvironmentCheck._REPORTS_CACHE)
+        reports = EnvironmentCheck._collect_reports_uncached()
+        EnvironmentCheck._REPORTS_CACHE = reports
+        EnvironmentCheck._REPORTS_CACHE_MONOTONIC = now
+        return list(reports)
+
+    @staticmethod
+    def _schedule_reports_refresh() -> bool:
+        """Refresh stale reports without blocking the caller; True when stale may be served."""
+        if EnvironmentCheck._REPORT_REFRESH_IN_FLIGHT:
+            return True
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        EnvironmentCheck._REPORT_REFRESH_IN_FLIGHT = True
+
+        async def _refresh() -> None:
+            try:
+                reports = await asyncio.to_thread(EnvironmentCheck._collect_reports_uncached)
+            except Exception:
+                EnvironmentCheck._REPORT_REFRESH_IN_FLIGHT = False
+                return
+            EnvironmentCheck._REPORTS_CACHE = reports
+            EnvironmentCheck._REPORTS_CACHE_MONOTONIC = time.monotonic()
+            EnvironmentCheck._REPORT_REFRESH_IN_FLIGHT = False
+
+        loop.create_task(_refresh())
+        return True
+
+    @staticmethod
+    def _collect_reports_uncached() -> list[DependencyReport]:
         from termdeck import agents
         from termdeck.config import TermdeckConfig
 
@@ -102,7 +155,13 @@ class EnvironmentCheck:
         normalized_model = EnvironmentCheck.normalize_model(model)
         for report in EnvironmentCheck.collect_reports():
             if report.program == normalized_model and not report.is_present:
-                return report
+                # A missing verdict from a stale cache would wrongly refuse a just-installed CLI,
+                # so re-probe once on the slow path before reporting it missing. This runs before
+                # the child starts, so the wait cannot starve its terminal answers.
+                for fresh in EnvironmentCheck.collect_reports(force_refresh=True):
+                    if fresh.program == normalized_model and not fresh.is_present:
+                        return fresh
+                return None
         return None
 
     @staticmethod

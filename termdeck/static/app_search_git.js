@@ -1130,6 +1130,15 @@ Object.assign(TermdeckApp.prototype, {
     if (!this.expandedAgentStacks.delete(parentId)) this.expandedAgentStacks.add(parentId);
     this.persistExpandedAgentStacks();
     this.renderList();
+    // The summary line is rebuilt by every render, so its drop-in lives on a transient class that
+    // only this toggle adds: otherwise switching tabs replays it and the folded line blinks.
+    const summary = document.querySelector(
+      `.agent-stack[data-parent-id="${CSS.escape(parentId)}"] .agent-stack-summary`);
+    if (summary) {
+      summary.classList.add("agent-stack-summary-drop");
+      summary.addEventListener("animationend", () => summary.classList.remove("agent-stack-summary-drop"),
+        { once: true });
+    }
   },
 
 

@@ -3,10 +3,12 @@ import fcntl
 import functools
 import os
 import pty
+import selectors
 import signal
 import struct
 import subprocess
 import termios
+import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -41,7 +43,16 @@ class PtyProcess:
             os.close(slave_fd)
             raise
         os.close(slave_fd)
-        self._loop.add_reader(master_fd, self._pump_master_output)
+        # The read side lives on its own thread, not on the event loop: a newborn agent CLI asks
+        # for the terminal's colors in its first milliseconds and gives up well under a second
+        # later, painting its composer without a panel for life. Loop-blocking work after a spawn
+        # (summaries, broadcasts) used to hold the answers past that deadline. Reading here means
+        # the answers go out the moment the bytes arrive, whatever the loop is doing; the stripped
+        # output still reaches on_output on the loop, in order.
+        self._query_carry = b""
+        self._reader_thread = threading.Thread(target=self._pump_output_thread,
+                                               name=f"termdeck-pty-{master_fd}", daemon=True)
+        self._reader_thread.start()
 
     @property
     def pid(self) -> int:
@@ -75,24 +86,64 @@ class PtyProcess:
             env.update(child_environment)
         return env
 
-    def _pump_master_output(self) -> None:
+    def _pump_output_thread(self) -> None:
+        selector = selectors.DefaultSelector()
         try:
-            data = os.read(self._master_fd, TermdeckConfig.PTY_READ_CHUNK)
-        except BlockingIOError:
+            selector.register(self._master_fd, selectors.EVENT_READ)
+        except (OSError, ValueError):
+            self._loop.call_soon_threadsafe(self._finish)
             return
-        except OSError:
-            self._finish()
-            return
-        if not data:
-            self._finish()
-            return
-        self._on_output(data)
+        while not self._closed:
+            try:
+                ready = selector.select(timeout=1.0)
+            except (OSError, ValueError):
+                break
+            if self._closed or not ready:
+                continue
+            try:
+                data = os.read(self._master_fd, TermdeckConfig.PTY_READ_CHUNK)
+            except BlockingIOError:
+                continue
+            except OSError:
+                break
+            if not data:
+                break
+            data = self._answer_color_queries(data)
+            if data:
+                self._loop.call_soon_threadsafe(self._on_output, data)
+        selector.close()
+        if not self._closed:
+            self._loop.call_soon_threadsafe(self._finish)
+
+    def _answer_color_queries(self, data: bytes) -> bytes:
+        """Answer OSC 10/11 color queries at once, and strip them from the stream.
+
+        Runs on the reader thread: only this thread touches _query_carry, and each answer is one
+        small os.write, which cannot interleave with the loop thread's input writes mid-sequence.
+        """
+        data = self._query_carry + data
+        self._query_carry = b""
+        for query, response in TermdeckConfig.OSC_COLOR_QUERY_RESPONSES:
+            if query in data:
+                data = data.replace(query, b"")
+                try:
+                    os.write(self._master_fd, response)
+                except OSError:
+                    pass
+        tail_keep = 0
+        for query, _ in TermdeckConfig.OSC_COLOR_QUERY_RESPONSES:
+            for length in range(1, min(len(query), TermdeckConfig.OSC_QUERY_CARRY_MAX, len(data)) + 1):
+                if length < len(query) and data.endswith(query[:length]):
+                    tail_keep = max(tail_keep, length)
+        if tail_keep:
+            self._query_carry = data[-tail_keep:]
+            data = data[:-tail_keep]
+        return data
 
     def _finish(self) -> None:
         if self._closed:
             return
         self._closed = True
-        self._loop.remove_reader(self._master_fd)
         if self._writer_registered:
             self._loop.remove_writer(self._master_fd)
             self._writer_registered = False

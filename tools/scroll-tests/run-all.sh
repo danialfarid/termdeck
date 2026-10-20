@@ -91,6 +91,7 @@ TESTS=(
   muse_shift_enter_newline
   page_title_segments
   stack_child_reorder
+  stack_summary_settles
   stack_child_escape_zone
   group_label_reorder
 )

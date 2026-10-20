@@ -22,6 +22,23 @@ All notable changes to this project are documented here. The format follows
   reaches the agent, and an unknown permission lists the values that agent takes. The tool and API docs
   say which permission names work: `default` and `full-access` for every agent, plus each agent's own
   (Claude's `bypassPermissions` is not a Codex one).
+- A Codex terminal opened or cloned while other sessions were starting could lose its composer's grey
+  panel background for its whole life: every create ran a half-second round of `--version` probes that
+  blocked the event loop, so the terminal's color answers arrived after Codex stopped waiting for them.
+  Dependency reports are now cached briefly (refreshed in the background), keeping session creation fast.
+- A folded spawned-agents line blinked whenever the sidebar refreshed: its drop-in animation replayed
+  on every re-render, so switching tabs flashed it a couple of times. The animation now plays only for
+  the toggle that reveals the line.
+- Opening or cloning a terminal stayed slow on large workspaces even after dependency caching: every
+  create and fork rebuilt the whole sidebar state twice and gave every open session a full summary,
+  each of which re-read the tail of its agent transcript. Placement now reads light session rows and
+  broadcasts once, and the Codex activity check scans its transcript tail backwards, stopping at the
+  last decisive turn event instead of parsing every line.
+- A Codex terminal opened or cloned while the server was busy could still lose its composer's grey
+  panel background: the terminal's color answers were written from the event loop, so loop-blocking
+  work right after a spawn held them past the moment Codex stops waiting. The pty reader now runs
+  on its own thread and answers those queries the instant they arrive, whatever the loop is doing.
+
 ## [0.35.0] — 2026-10-17
 
 ### Added
