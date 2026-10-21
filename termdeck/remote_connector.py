@@ -22,7 +22,8 @@ class RemoteConnector:
     RELAY_NOTICE_CLOSE_CODES = frozenset({4001, 4003, 4401})
     HANDSHAKE_TIMEOUT_SECONDS = 15.0
     TERMINAL_OUTPUT_CHUNK_BYTES = 1024 * 1024
-    TOKEN_REJECTED_MESSAGE = "the relay no longer accepts this computer's remote token; pair again from Remote access"
+    TOKEN_REJECTED_MESSAGE = ("the relay no longer accepts this computer's remote token (expired or replaced); "
+                              "sign in again from Remote access")
     REQUEST_HEADER_EXCLUSIONS = frozenset({
         "connection", "content-length", "cookie", "host", "proxy-connection", "transfer-encoding", "upgrade",
     })

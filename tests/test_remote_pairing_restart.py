@@ -15,6 +15,8 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
+
 from termdeck.remote_access import RemoteAccessManager, RemotePairingState
 from termdeck.remote_credentials import RemoteCredentialStore
 
@@ -102,6 +104,21 @@ class PairingRestartsTheConnectorTest(unittest.IsolatedAsyncioTestCase):
         await self.pair()
 
         self.assertEqual(self.manager.last_error, "")
+
+    async def test_a_relay_500_mid_pairing_is_polled_past(self) -> None:
+        answers = iter([500, 200])
+
+        async def flaky_result(url: str, **kwargs) -> object:
+            if next(answers) == 500:
+                request = httpx.Request("POST", url)
+                return httpx.Response(500, request=request)
+            return await self.pairing_result(url, **kwargs)
+
+        self.manager._http_client = SimpleNamespace(post=flaky_result)
+
+        await self.pair()
+
+        self.assertEqual(self.stored_token(), "fresh-token")
 
 
 if __name__ == "__main__":

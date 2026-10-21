@@ -482,6 +482,8 @@ class TermdeckConfig:
     # The name TermDeck's MCP server goes by in the configuration it hands an agent at launch: the same
     # name the README has people register by hand, so the two land on one entry rather than two.
     MCP_SERVER_NAME = "termdeck"
+    # First line of a prompt one TermDeck agent sends another through MCP, naming the sender's session.
+    CALLER_HEADER_PREFIX = "[TermDeck message from session "
     SESSION_ID_ENV_KEY = "TERMDECK_SESSION_ID"
     SESSION_NAME_ENV_KEY = "TERMDECK_SESSION_NAME"
     SESSION_PROJECT_ENV_KEY = "TERMDECK_PROJECT"

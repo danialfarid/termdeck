@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.35.2] — 2026-10-21
+
+### Added
+
+- A prompt one agent sends another through the MCP tools (`send_prompt`, `spawn_agent`, `spawn_batch`)
+  starts with `[TermDeck message from session <id>]`, naming the sender's TermDeck session, so the
+  receiving agent knows who is asking. Added only when the sender runs in a TermDeck terminal and the
+  prompt does not already name that session.
+- TermDeck Remote's "Waiting for your computer" page offers **Sign out of Google** once it has waited
+  30 seconds, for a phone signed in with a different account than the computer paired with.
+
+### Fixed
+
+- When the relay stops accepting the computer's remote token (it expires 30 days after pairing on the
+  hosted relay), Settings shows the error with **Sign in** to pair again. It used to read "ready" and
+  offer only Disconnect, which the relay refused with the same token, so the phone waited forever.
+- A single 5xx from the relay while TermDeck waits for Google sign-in no longer ends the pairing; it keeps
+  waiting until sign-in or the 10-minute timeout.
+
 ## [0.35.1] — 2026-10-20
 
 ### Added
@@ -1944,7 +1965,9 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.35.0...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.35.2...HEAD
+[0.35.2]: https://github.com/danialfarid/termdeck/compare/v0.35.0...v0.35.2
+[0.35.1]: https://github.com/danialfarid/termdeck/compare/v0.35.0...v0.35.1
 [0.35.0]: https://github.com/danialfarid/termdeck/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/danialfarid/termdeck/compare/v0.33.1...v0.34.0
 [0.33.1]: https://github.com/danialfarid/termdeck/compare/v0.33.0...v0.33.1

@@ -501,8 +501,10 @@ class AgentCli:
     @staticmethod
     def prompt_needle(text: str) -> str:
         """The part of a prompt to look for: its first line, which survives an agent reformatting a long
-        pasted prompt."""
-        return next((line.strip() for line in text.splitlines() if line.strip()), "")[:120]
+        pasted prompt. Not a caller header: the same on every prompt one session sends, it would match an
+        earlier one still in the transcript."""
+        return next((line.strip() for line in text.splitlines()
+                     if line.strip() and not line.startswith(TermdeckConfig.CALLER_HEADER_PREFIX)), "")[:120]
 
     @staticmethod
     def tail_lines(path: Path | None, max_bytes: int) -> list[str]:

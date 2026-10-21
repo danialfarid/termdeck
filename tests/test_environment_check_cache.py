@@ -8,6 +8,7 @@ background. These tests pin the cache that keeps the request path fast.
 """
 
 import asyncio
+import time
 import unittest
 from unittest.mock import patch
 
@@ -85,7 +86,8 @@ class StaleCacheRefreshTest(unittest.IsolatedAsyncioTestCase):
     async def test_stale_cache_serves_immediately_and_refreshes_behind(self) -> None:
         stale = [_report("codex", present=False)]
         EnvironmentCheck._REPORTS_CACHE = stale
-        EnvironmentCheck._REPORTS_CACHE_MONOTONIC = 0.0
+        # Not 0.0: monotonic counts from boot, and a CI machine up for less than the TTL found 0.0 fresh.
+        EnvironmentCheck._REPORTS_CACHE_MONOTONIC = time.monotonic() - EnvironmentCheck.REPORT_CACHE_TTL_SECONDS - 1
         EnvironmentCheck._REPORT_REFRESH_IN_FLIGHT = False
         fresh = [_report("codex", present=True)]
 

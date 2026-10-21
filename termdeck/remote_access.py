@@ -117,6 +117,9 @@ class RemoteAccessManager:
             state = "error" if self.last_error else "disconnected"
         elif self.connector is not None and self.connector.connected:
             state = "connected"
+        elif connector_error == RemoteConnector.TOKEN_REJECTED_MESSAGE:
+            # Not "ready": Settings would offer only Disconnect, which the relay refuses with the same token.
+            state = "error"
         else:
             state = "ready"
         return {
@@ -154,10 +157,18 @@ class RemoteAccessManager:
             return
         try:
             while time.monotonic() - pairing_state.started_monotonic < self.pair_timeout_seconds:
-                response = await self._http_client.post(
-                    f"{self.relay_url}/_remote/api/pairings/{pairing_state.pairing_id}/result",
-                    json={"pairing_secret": pairing_state.pairing_secret})
-                response.raise_for_status()
+                try:
+                    response = await self._http_client.post(
+                        f"{self.relay_url}/_remote/api/pairings/{pairing_state.pairing_id}/result",
+                        json={"pairing_secret": pairing_state.pairing_secret})
+                    response.raise_for_status()
+                except httpx.HTTPError as poll_error:
+                    # One failed poll is not a failed pairing: on 2026-10-21 a lone 500 from Cloud Run's
+                    # front end ended one while the person had yet to sign in.
+                    if isinstance(poll_error, httpx.HTTPStatusError) and poll_error.response.status_code < 500:
+                        raise
+                    await asyncio.sleep(self.pair_poll_seconds)
+                    continue
                 payload = RemotePairingResultPayload(**response.json())
                 if payload["state"] == "complete":
                     credentials = RemoteCredentials(relay_url=self.relay_url,

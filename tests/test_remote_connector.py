@@ -141,5 +141,25 @@ class ConnectorRevivalTest(unittest.TestCase):
         self.assertEqual(status["notice"], "")
 
 
+class RejectedTokenTest(unittest.TestCase):
+    def test_a_token_the_relay_refuses_reads_as_an_error_so_settings_offers_sign_in(self) -> None:
+        """On 2026-10-21 an expired token left Settings on "ready", offering only Disconnect, which the relay
+        refused with that same token."""
+        with TemporaryDirectory() as directory:
+            store = RemoteCredentialStore(Path(directory) / "remote-credentials.json")
+            manager = RemoteAccessManager(
+                relay_url=RELAY_URL, public_url="https://public.example", local_url=LOCAL_URL,
+                credential_store=store, pair_poll_seconds=0.01, pair_timeout_seconds=1,
+                reconnect_min_seconds=0.01, reconnect_max_seconds=0.02, http_timeout_seconds=1,
+                demand_poll_seconds=0.01)
+            manager.credentials = RemoteCredentials(relay_url=RELAY_URL, connector_token="token",
+                                                    email="user@example.com")
+            manager.connector = connector()
+            manager.connector.last_error = RemoteConnector.TOKEN_REJECTED_MESSAGE
+            status = manager.status()
+        self.assertEqual(status["state"], "error")
+        self.assertEqual(status["error"], RemoteConnector.TOKEN_REJECTED_MESSAGE)
+
+
 if __name__ == "__main__":
     unittest.main()

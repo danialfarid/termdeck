@@ -55,6 +55,17 @@ def default_base_url() -> str:
     return f"http://{host}:{TermdeckConfig.PORT}"
 
 
+def from_caller(text: str) -> str:
+    """The prompt with a first line naming the TermDeck session that sends it, so the agent receiving it
+    knows who is asking -- when this process runs in one and the prompt does not name it already."""
+    from termdeck.config import TermdeckConfig
+
+    session_id = os.environ.get(ENV_SESSION_ID, "").strip()
+    if not text.strip() or not session_id or session_id in text:
+        return text
+    return f"{TermdeckConfig.CALLER_HEADER_PREFIX}{session_id}]\n{text}"
+
+
 class TermdeckMcpClient:
     """The agent-facing REST surface, one method per tool. A custom transport (for example
     httpx.MockTransport) stands in for the network in tests."""
@@ -121,7 +132,7 @@ class TermdeckMcpClient:
         return await self._request("POST", route, json={
             "model": model, "model_name": model_name, "permission": permission,
             "additional_args": additional_args, "title": title, "description": description,
-            "prompt": prompt, "origin_session": origin, "session_ref": session_ref, "cwd": cwd,
+            "prompt": from_caller(prompt), "origin_session": origin, "session_ref": session_ref, "cwd": cwd,
             "project": project, "after": after, "worktree": worktree,
             "worktree_branch": worktree_branch, "worktree_base": worktree_base,
             "worktree_id": worktree_id, "fork": fork, "output_path": output_path,
@@ -139,7 +150,9 @@ class TermdeckMcpClient:
         worktree fields; the shared arguments cover what an item leaves out. permission takes the
         values spawn_agent lists: `default` or `full-access` for any agent."""
         return await self._request("POST", "/api/sessions/batch", json={
-            "terminals": terminals, "prompt": prompt, "cwd": cwd, "project": project,
+            "terminals": [{**item, "prompt": from_caller(item["prompt"])} if item.get("prompt") else item
+                          for item in terminals],
+            "prompt": from_caller(prompt), "cwd": cwd, "project": project,
             "model": model, "model_name": model_name, "additional_args": additional_args,
             "permission": permission, "bracketed": bracketed, "after": after,
             "worktree": worktree, "worktree_branch": worktree_branch,
@@ -152,7 +165,7 @@ class TermdeckMcpClient:
         no `since`) means it did not go in and is safe to send again; "unconfirmed" may have
         arrived, so never send it again."""
         return await self._request("POST", f"/api/sessions/{session_id}/prompt",
-                                   json={"text": text, "bracketed": bracketed})
+                                   json={"text": from_caller(text), "bracketed": bracketed})
 
     async def get_response(self, session_id: str, since: str = "", limit: int = 1,
                            final: bool = False) -> dict[str, Any]:

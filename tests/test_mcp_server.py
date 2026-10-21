@@ -18,6 +18,12 @@ def run(coro: Any) -> Any:
 
 
 class McpClientTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # Run from a TermDeck terminal, the suite inherits a session id that would name a caller here.
+        patcher = mock.patch.dict(os.environ, {"TERMDECK_SESSION_ID": ""})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def make_client(self, handler: Any) -> TermdeckMcpClient:
         return TermdeckMcpClient(base_url="http://127.0.0.1:8530",
                                  transport=httpx.MockTransport(handler))
@@ -71,6 +77,35 @@ class McpClientTest(unittest.TestCase):
         self.assertEqual(seen[0].url.path, "/api/sessions/abc/prompt")
         self.assertEqual(json.loads(seen[0].content.decode("utf-8")),
                          {"text": "follow up", "bracketed": True})
+
+    def test_prompts_name_the_session_that_sends_them(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(200, json={})
+
+        client = self.make_client(handler)
+        with mock.patch.dict(os.environ, {"TERMDECK_SESSION_ID": "parent-1"}):
+            run(client.send_prompt("abc", "follow up"))
+            run(client.spawn_agent(model="codex", prompt="do it"))
+            run(client.spawn_batch([{"name": "a", "prompt": "item"}, {"name": "b"}], prompt="shared"))
+            run(client.send_prompt("abc", "parent-1 here: follow up"))
+            run(client.spawn_agent(model="codex"))
+        header = "[TermDeck message from session parent-1]\n"
+        self.assertEqual(seen[0]["text"], header + "follow up")
+        self.assertEqual(seen[1]["prompt"], header + "do it")
+        self.assertEqual(seen[2]["prompt"], header + "shared")
+        self.assertEqual(seen[2]["terminals"], [{"name": "a", "prompt": header + "item"}, {"name": "b"}])
+        # Already named, or nothing to send: left as it is.
+        self.assertEqual(seen[3]["text"], "parent-1 here: follow up")
+        self.assertEqual(seen[4]["prompt"], "")
+
+    def test_delivery_checks_look_past_the_caller_header(self) -> None:
+        # The header is the same on every prompt one session sends; matching it would confirm a new
+        # prompt by an old one still in the transcript.
+        self.assertEqual(agents.AgentCli.prompt_needle("[TermDeck message from session p-1]\nfollow up"),
+                         "follow up")
 
     def test_no_tool_offers_steer(self) -> None:
         # Prompts always steer; a tool that still offered steer would let an agent ask to queue.

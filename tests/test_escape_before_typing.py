@@ -10,7 +10,6 @@ phone there is no terminal to press it in.
 import asyncio
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from termdeck import agents

@@ -43,8 +43,10 @@ For anything started outside TermDeck, point the model's MCP configuration at it
 The tools mirror the calls below one for one: `spawn_agent`, `spawn_batch`, `send_prompt`,
 `get_response`, `session_status`, `children_status`, `interrupt`, `list_sessions`,
 `get_session`, `close_session`, `set_description`, `worktree_review`, `worktree_finish`, and
-`session_history`, `list_projects`, and `list_worktrees`. Two conveniences over raw HTTP: `spawn_agent` defaults `origin_session` to
-the caller's own `$TERMDECK_SESSION_ID`, and `wait_for_response` polls `get_response` with the
+`session_history`, `list_projects`, and `list_worktrees`. Three conveniences over raw HTTP: `spawn_agent` defaults `origin_session` to
+the caller's own `$TERMDECK_SESSION_ID`; a prompt sent through the tools starts with
+`[TermDeck message from session <id>]` naming that session, unless it names it already, so the
+receiving agent knows who is asking; and `wait_for_response` polls `get_response` with the
 prompt's `since` stamp until the agent answers or a bounded timeout runs out, so models need
 not hand-roll polling loops. The `since` contract is unchanged: only responses stamped after
 a prompt's own stamp answer that prompt.
