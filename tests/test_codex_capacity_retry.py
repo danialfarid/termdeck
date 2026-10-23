@@ -144,7 +144,8 @@ class CodexCapacityRetryTest(unittest.TestCase):
         manager._processing_state.return_value = False
         retry = CodexCapacityRetry(manager)
         with patch('termdeck.codex_capacity_retry.agents.agent_cli') as agent, \
-                patch.object(CodexCapacityRetry, 'read_candidate', wraps=CodexCapacityRetry.read_candidate) as read:
+                patch.object(CodexCapacityRetry, 'read_candidate', wraps=CodexCapacityRetry.read_candidate) as read, \
+                patch('termdeck.codex_capacity_retry.time.monotonic', return_value=1000):
             agent.return_value.transcript_path.return_value = self.path
             asyncio.run(retry.retry_session(session))
             asyncio.run(retry.retry_session(session))
