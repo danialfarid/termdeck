@@ -586,7 +586,7 @@ class TermdeckConfig:
     # itself with SIGTERM) never comes back up.
     UVICORN_GRACEFUL_SHUTDOWN_SECONDS = 5
     REMOTE_SERVICE_URL = PlatformPaths.env_text(
-        PlatformPaths.ENV_REMOTE_URL, "https://termdeck-remote-298065490746.us-central1.run.app")
+        PlatformPaths.ENV_REMOTE_URL, "https://remote.termdeck.workers.dev")
     REMOTE_PUBLIC_URL = PlatformPaths.env_text(
         PlatformPaths.ENV_REMOTE_PUBLIC_URL, "https://remote.termdeck.workers.dev")
     REMOTE_PAIR_POLL_SECONDS = 2.0

@@ -8,6 +8,7 @@ from typing import Iterable
 from termdeck.agents.base import AgentCli, OutputActivityState
 from termdeck.agents.profile_schema import AgentProfile
 from termdeck.config import TermdeckConfig
+from termdeck.preserved_terminal_composer import PreservedTerminalComposer
 from termdeck.transcript_turns import TurnBuilder
 
 
@@ -159,12 +160,14 @@ class DeclarativeAgentCli(AgentCli):
             await asyncio.sleep(ready_delay)
         if ms.proc is None or not ms.proc.alive or not ms.record.agent_session_id:
             return
-        command = self.profile.rename_input.format(title=clean_title)
-        payload = ((b"\x15" if clear_composer else b"") + TermdeckConfig.BRACKETED_PASTE_START +
-                   command.encode() + TermdeckConfig.BRACKETED_PASTE_END).decode()
-        manager.write_input(ms.record.session_id, payload)
-        await asyncio.sleep(TermdeckConfig.FORK_RENAME_SUBMIT_DELAY_SECONDS)
-        manager.write_input(ms.record.session_id, "\r")
+        async with PreservedTerminalComposer(manager, ms, self):
+            command = self.profile.rename_input.format(title=clean_title)
+            payload = ((b"\x15" if clear_composer else b"") + TermdeckConfig.BRACKETED_PASTE_START +
+                       command.encode() + TermdeckConfig.BRACKETED_PASTE_END).decode()
+            manager.write_input(ms.record.session_id, payload)
+            await asyncio.sleep(TermdeckConfig.FORK_RENAME_SUBMIT_DELAY_SECONDS)
+            manager.write_input(ms.record.session_id, "\r")
+            await manager._wait_for_paste_to_settle(ms)
 
     def transcript_path(self, cwd: Path | None, agent_session_id: str) -> Path | None:
         transcript = self.profile.transcript

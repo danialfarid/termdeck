@@ -57,11 +57,12 @@ def default_base_url() -> str:
 
 def from_caller(text: str) -> str:
     """The prompt with a first line naming the TermDeck session that sends it, so the agent receiving it
-    knows who is asking -- when this process runs in one and the prompt does not name it already."""
+    knows who is asking -- when this process runs in one and the prompt does not name it already. Never on a
+    slash command such as `/goal resume`: the agent only runs one typed as the prompt's first characters."""
     from termdeck.config import TermdeckConfig
 
     session_id = os.environ.get(ENV_SESSION_ID, "").strip()
-    if not text.strip() or not session_id or session_id in text:
+    if not text.strip() or text.lstrip().startswith("/") or not session_id or session_id in text:
         return text
     return f"{TermdeckConfig.CALLER_HEADER_PREFIX}{session_id}]\n{text}"
 
@@ -141,20 +142,23 @@ class TermdeckMcpClient:
     async def spawn_batch(self, terminals: list[dict[str, Any]], prompt: str = "", cwd: str = "",
                           project: str = "", model: str = "codex", model_name: str = "",
                           additional_args: str = "", permission: str = "default",
-                          bracketed: bool = True,
+                          bracketed: bool = True, origin_session: str = "",
                           after: str | None = None, worktree: bool = False,
                           worktree_branch: str = "", worktree_base: str = "",
-                          worktree_id: str = "root") -> dict[str, Any]:
+                          worktree_id: str = "") -> dict[str, Any]:
         """Start several agents at once. Each terminals item needs a `name` and takes its own
         `prompt`, `description`, `cwd`, `project`, `model`, `model_name`, `permission`, and
         worktree fields; the shared arguments cover what an item leaves out. permission takes the
-        values spawn_agent lists: `default` or `full-access` for any agent."""
+        values spawn_agent lists: `default` or `full-access` for any agent. origin_session files
+        every agent under its parent, as for spawn_agent; empty means this process's own
+        $TERMDECK_SESSION_ID."""
+        origin = origin_session.strip() or os.environ.get(ENV_SESSION_ID, "").strip()
         return await self._request("POST", "/api/sessions/batch", json={
             "terminals": [{**item, "prompt": from_caller(item["prompt"])} if item.get("prompt") else item
                           for item in terminals],
             "prompt": from_caller(prompt), "cwd": cwd, "project": project,
             "model": model, "model_name": model_name, "additional_args": additional_args,
-            "permission": permission, "bracketed": bracketed, "after": after,
+            "permission": permission, "bracketed": bracketed, "after": after, "origin_session": origin,
             "worktree": worktree, "worktree_branch": worktree_branch,
             "worktree_base": worktree_base, "worktree_id": worktree_id})
 

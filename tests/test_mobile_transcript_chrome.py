@@ -26,12 +26,16 @@ global.setInterval = () => 0;
 global.clearInterval = () => {};
 const duration = { textContent: "stale" };
 const indicator = { classList: { toggle: () => {} } };
+const activity = { id: "history-thinking-activity" };
+let dots = null;
 const app = {
   $(id) {
     if (id === "history-thinking-banner") return indicator;
     if (id === "history-thinking-duration") return duration;
+    if (id === "history-thinking-activity") return activity;
     return null;
   },
+  renderActivityDots(host, id) { dots = { host: host && host.id, session: id }; },
   session() { return {}; },
   processingStates: new Map(scenario.busy ? [["s1", true]] : []),
   historyPendingProcessing: new Map(),
@@ -44,7 +48,7 @@ const app = {
   __METHODS__
 };
 app.updateHistoryThinkingIndicator();
-process.stdout.write(JSON.stringify({ text: duration.textContent }));
+process.stdout.write(JSON.stringify({ text: duration.textContent, dots }));
 """
 
 
@@ -60,13 +64,22 @@ class ThinkingBannerTextTest(unittest.TestCase):
             "\n  ".join(method_source(source, name) for name in
                         ("updateHistoryThinkingIndicator()", "formatElapsed(seconds)")))
 
-    def banner_text(self, busy: bool, elapsed_ms: int) -> str:
+    def banner(self, busy: bool, elapsed_ms: int) -> dict:
         env = dict(os.environ, TERMDECK_BANNER_SCENARIO=json.dumps(
             {"busy": busy, "elapsedMs": elapsed_ms}))
         completed = subprocess.run([self.node, "-e", self.harness], env=env,
                                    capture_output=True, text=True, timeout=30)
         self.assertEqual(completed.returncode, 0, completed.stderr[-500:])
-        return json.loads(completed.stdout)["text"]
+        return json.loads(completed.stdout)
+
+    def banner_text(self, busy: bool, elapsed_ms: int) -> str:
+        return self.banner(busy, elapsed_ms)["text"]
+
+    def test_the_banner_carries_the_tab_s_activity_dots(self) -> None:
+        # What the tab shows under its title -- subagents, background jobs, monitors -- on a phone,
+        # where the sidebar is out of sight.
+        self.assertEqual(self.banner(True, 5000)["dots"],
+                         {"host": "history-thinking-activity", "session": "s1"})
 
     def test_spinning_names_thinking_before_the_count(self) -> None:
         self.assertEqual(self.banner_text(True, 65000), "Thinking 1m 5s")

@@ -160,6 +160,48 @@ class RejectedTokenTest(unittest.TestCase):
         self.assertEqual(status["state"], "error")
         self.assertEqual(status["error"], RemoteConnector.TOKEN_REJECTED_MESSAGE)
 
+    def test_a_computer_paired_with_another_relay_follows_the_configured_one(self) -> None:
+        """Pairings made with the Cloud Run relay go to the Cloudflare relay, which refuses them, so Settings
+        offers signing in again instead of reading "ready" against a relay that is gone."""
+        async def scenario() -> str:
+            with TemporaryDirectory() as directory:
+                store = RemoteCredentialStore(Path(directory) / "remote-credentials.json")
+                store.save(RemoteCredentials(relay_url="https://old.example", connector_token="token",
+                                             email="user@example.com"))
+                manager = RemoteAccessManager(
+                    relay_url=RELAY_URL, public_url="https://public.example", local_url=LOCAL_URL,
+                    credential_store=store, pair_poll_seconds=0.01, pair_timeout_seconds=1,
+                    reconnect_min_seconds=0.01, reconnect_max_seconds=0.02, http_timeout_seconds=1,
+                    demand_poll_seconds=0.01)
+                with patch.object(RemoteConnector, "run", lambda self: never_in_demand()):
+                    await manager.start()
+                    relay = manager.connector.relay_url
+                    await manager.stop()
+                return relay
+
+        self.assertEqual(asyncio.run(scenario()), RELAY_URL)
+
+    def test_a_refused_token_stops_polling_the_relay_every_few_seconds(self) -> None:
+        """Computers with expired tokens polled every 5 seconds forever, billing the relay for nothing."""
+        async def scenario() -> int:
+            remote = connector()
+            polls = 0
+
+            async def refused() -> bool:
+                nonlocal polls
+                polls += 1
+                raise ValueError(RemoteConnector.TOKEN_REJECTED_MESSAGE)
+
+            remote._relay_requests_connection = refused  # type: ignore[method-assign]
+            task = asyncio.create_task(remote.run())
+            await asyncio.sleep(0.3)
+            remote._stop_event.set()
+            await asyncio.wait_for(task, timeout=5)
+            await remote._http_client.aclose()
+            return polls
+
+        self.assertEqual(asyncio.run(scenario()), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

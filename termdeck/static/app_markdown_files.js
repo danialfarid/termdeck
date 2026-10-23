@@ -1561,6 +1561,7 @@ Object.assign(TermdeckApp.prototype, {
       const seconds = since ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0;
       duration.textContent = spinning ? `Thinking ${this.formatElapsed(seconds)}` : "";
     }
+    this.renderActivityDots(this.$("history-thinking-activity"), this.activeId);
     if (spinning && !this.processingTimer) {
       this.processingTimer = setInterval(() => this.updateHistoryThinkingIndicator(), 1000);
     } else if (!spinning && this.processingTimer) {
@@ -7103,6 +7104,8 @@ Object.assign(TermdeckApp.prototype, {
     if (!value) return;
     if (closeNotebook && this.settings.notebook_open) this.setNotebookOpen(false, { focus: false });
     this.hideSelectionActions(true);
+    // What was just pasted is the likeliest next paste, so it goes back to the top of the list.
+    this.recordSelectionCopyHistory(value);
     if (this.activeFileKey !== null) {
       const editor = this.editor;
       const selection = editor?.getSelection();

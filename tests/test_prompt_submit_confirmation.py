@@ -17,8 +17,8 @@ from termdeck.session_manager import ManagedSession, PromptLanding, TerminalSess
 def managed(session_id: str = "s1", agent_kind: str = "claude"):
     return SimpleNamespace(
         record=SimpleNamespace(session_id=session_id, agent_kind=agent_kind, draft="", agent_session_id=None,
-                               cwd="/tmp"),
-        running=True, last_output_monotonic=0.0)
+                               cwd="/tmp", cols=120, rows=40),
+        running=True, last_output_monotonic=0.0, raw_replay_buffer=bytearray(), buffer=bytearray())
 
 
 class PasteSettleTest(unittest.IsolatedAsyncioTestCase):

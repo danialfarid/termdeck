@@ -25,7 +25,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from termdeck.agents.claude import ClaudeCli
 from termdeck.agents.codex import CodexCli
 from termdeck.models import PromptDelivery, PromptOutcome
-from termdeck.server import RunTerminalTaskRequest, SubmitPromptRequest, TermdeckServer
+from termdeck.server import (BatchTerminalSpec, BatchTerminalsRequest, RunTerminalTaskRequest, SubmitPromptRequest,
+                             TermdeckServer)
 from tests.test_api_prompt_input_gate import GateHarness
 
 # The frame codex 0.159.3 drew over its composer at startup, as a terminal here recorded it -- after
@@ -294,6 +295,32 @@ class ApiReportTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(response["prompt_submitted"], False)
         self.assertEqual(response["session_id"], "child-01")
         server._schedule_task_result_delivery.assert_not_called()
+
+    async def test_a_batch_files_its_agents_under_the_origin(self) -> None:
+        """spawn_batch's agents landed loose in the sidebar: the batch route had no origin_session."""
+        server = self.server_answering(PromptDelivery(True, PromptOutcome.CONFIRMED, ""))
+        child = MagicMock()
+        child.record.session_id = "child-01"
+        child.record.project = "stock"
+        child.record.worktree_id = "wt-1"
+        server.manager.create_session.return_value = child
+        server.manager.command_for_new_session.return_value = "codex"
+        server.manager.session_summary.return_value = {"session_id": "child-01"}
+        server.manager.session_summary_by_id.return_value = {
+            "session_id": "origin", "cwd": "/tmp/wt", "project": "stock", "worktree_id": "wt-1"}
+        server._resolve_origin_session = MagicMock(return_value="origin")
+        server._selected_worktree = MagicMock(return_value=("stock", None))
+        server._place_session_after = MagicMock(return_value={"token": "t"})
+        server._broadcast_project_state_snapshot = MagicMock()
+
+        response = await server._launch_terminal_batch(BatchTerminalsRequest(
+            terminals=[BatchTerminalSpec(name="a", prompt="go")], origin_session="origin"))
+
+        self.assertEqual(response["created"], 1)
+        server.manager.set_spawned_by.assert_called_once_with("child-01", "origin")
+        # The origin's project, worktree and cwd, and a place right after it.
+        server._selected_worktree.assert_called_once_with("stock", "/tmp/wt", "wt-1")
+        self.assertEqual(server._place_session_after.call_args.args[2], "session:origin")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from termdeck import agents
 from termdeck.agent_instructions import AgentInstructionService
 from termdeck.agent_session_tracker import AgentSessionTracker
 from termdeck.claude_activity_watcher import ClaudeActivityWatcher
+from termdeck.codex_capacity_retry import CodexCapacityRetry
 from termdeck.compaction_rescue import build_rescue_payload, extract_recent_bytes
 from termdeck.config import TermdeckConfig
 from termdeck.file_history_service import FileHistoryService
@@ -26,6 +27,7 @@ from termdeck.draft_tracker import DraftInputTracker
 from termdeck.models import ApiFields, PromptDelivery, PromptOutcome, SessionRecord, WsMessageFields
 from termdeck.project_registry import ProjectRegistry
 from termdeck.pty_process import PtyProcess
+from termdeck.preserved_terminal_composer import PreservedTerminalComposer
 from termdeck.repaint_filter import RepaintFilter
 from termdeck.replay_recorder import ReplayRecorder
 from termdeck.session_store import ClosedSessionStore, SessionStore
@@ -207,6 +209,7 @@ class TerminalSessionManager:
         self.draft_history = FileHistoryService(TermdeckConfig.DRAFT_HISTORY_DATABASE,
                                                 TermdeckConfig.DRAFT_HISTORY_MAX_VERSIONS_PER_DRAFT)
         self.replay = ReplayRecorder(self)
+        self.capacity_retry = CodexCapacityRetry(self)
         self.agent_instructions = AgentInstructionService(TermdeckConfig.AGENT_INSTRUCTIONS_FILE)
         self._claude_activity_watcher = ClaudeActivityWatcher(
             agents.agent_cli("claude").sessions_root, self._on_claude_file_change_from_thread)
@@ -241,6 +244,7 @@ class TerminalSessionManager:
     def start_background_tasks(self) -> None:
         self._background_loop = asyncio.get_running_loop()
         self._claude_activity_watcher.start()
+        self.capacity_retry.start()
         self._replay_sweep_task = asyncio.create_task(self._sweep_replays_periodically())
 
     async def _sweep_replays_periodically(self) -> None:
@@ -268,6 +272,7 @@ class TerminalSessionManager:
 
     def stop_background_tasks(self) -> None:
         self._claude_activity_watcher.stop()
+        self.capacity_retry.stop()
         if self._replay_sweep_task is not None:
             self._replay_sweep_task.cancel()
             self._replay_sweep_task = None
@@ -1842,6 +1847,8 @@ class TerminalSessionManager:
             # Claude taking it as "No, exit".
             if not ms.running:
                 return PromptLanding.EXITED
+            if agent.prompt_blocked_by(ms):
+                return PromptLanding.MISSING
             # The person's typing has waited long enough; from here on they and the retries share the
             # composer, so a retry only presses when nothing of theirs is in it.
             if on_check is not None and time.monotonic() - started >= TermdeckConfig.PROMPT_SUBMIT_INPUT_HOLD_SECONDS:
@@ -1948,28 +1955,29 @@ class TerminalSessionManager:
         replacement = str(text or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
         resulting_queue = texts[:index] + ([] if remove or not replacement.strip() else [replacement]) + texts[index + 1:]
         try:
-            # With TERM_PROGRAM intentionally absent, Codex detects this as an unknown terminal
-            # and binds queued-message editing to Alt+Up (CSI 1;3 A).
-            for _ in range(len(texts) - index):
-                self.write_input(session_id, "\x1b[1;3A")
+            async with PreservedTerminalComposer(self, ms, agents.agent_cli(ms.record.agent_kind)):
+                # With TERM_PROGRAM intentionally absent, Codex detects this as an unknown terminal
+                # and binds queued-message editing to Alt+Up (CSI 1;3 A).
+                for _ in range(len(texts) - index):
+                    self.write_input(session_id, "\x1b[1;3A")
+                    await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
+
+                # Alt+Up restores the target into Codex's composer. Ctrl+U removes it from the
+                # composer; a non-empty replacement is then queued with the normal Tab action.
+                self.write_input(session_id, "\x15")
                 await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
+                if not remove and replacement.strip():
+                    await self._queue_prompt_text(session_id, replacement, bracketed)
 
-            # Alt+Up restores the target into Codex's composer. Ctrl+U removes it from the
-            # composer; a non-empty replacement is then queued with the normal Tab action.
-            self.write_input(session_id, "\x15")
-            await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
-            if not remove and replacement.strip():
-                await self._queue_prompt_text(session_id, replacement, bracketed)
+                # Rebuild only the messages newer than the edited row. Their order is preserved.
+                for newer_text in texts[index + 1:]:
+                    await self._queue_prompt_text(session_id, newer_text, bracketed)
 
-            # Rebuild only the messages newer than the edited row. Their order is preserved.
-            for newer_text in texts[index + 1:]:
-                await self._queue_prompt_text(session_id, newer_text, bracketed)
-
-            self._apply_draft_change(ms, "", rebuild_tracker=True)
-            self._persist()
-            self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.QUEUE_MUTATION,
-                                         WsMessageFields.OK: True,
-                                         WsMessageFields.QUEUE: resulting_queue})
+                self._apply_draft_change(ms, "", rebuild_tracker=True)
+                self._persist()
+                self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.QUEUE_MUTATION,
+                                             WsMessageFields.OK: True,
+                                             WsMessageFields.QUEUE: resulting_queue})
         except Exception as exc:
             self._broadcast_control(ms, {WsMessageFields.TYPE: WsMessageFields.QUEUE_MUTATION,
                                          WsMessageFields.OK: False,
@@ -2089,11 +2097,7 @@ class TerminalSessionManager:
         effort_key = effort_keys.get(reasoning_effort)
         if effort_key is None:
             raise ValueError(f"unsupported Codex reasoning effort: {reasoning_effort}")
-        async with ms.command_interaction_lock:
-            # The keys below are typed blind; in Codex's transcript search they were the search.
-            blocked = await self._leave_escapable_mode(ms, agents.agent_cli("codex"))
-            if blocked:
-                raise RuntimeError(blocked)
+        async with ms.command_interaction_lock, PreservedTerminalComposer(self, ms, agents.agent_cli("codex")):
             self.write_input(session_id, "\x15/model")
             await asyncio.sleep(0.05)
             self.write_input(session_id, "\r")
@@ -2105,6 +2109,7 @@ class TerminalSessionManager:
                 await asyncio.sleep(0.25)
                 self._write_agent_menu_input(ms, "1" if reasoning_effort == "max" else "2")
             self.set_draft(session_id, "")
+            await self._wait_for_paste_to_settle(ms)
 
     def _write_agent_menu_input(self, ms: ManagedSession, text: str) -> None:
         if ms.proc is None or not ms.proc.alive:
@@ -2125,16 +2130,24 @@ class TerminalSessionManager:
         agent = agents.agent_cli(ms.record.agent_kind)
         if agent.supports_agent_rename:
             if ms.record.agent_session_id:
-                if ms.agent_rename_task is not None and not ms.agent_rename_task.done():
-                    ms.agent_rename_task.cancel()
+                previous_rename = ms.agent_rename_task
                 ms.agent_rename_task = asyncio.create_task(
-                    agent.send_rename(self, ms, clean_title, clear_composer=True))
+                    self._rename_after_previous(ms, clean_title, previous_rename))
             else:
                 ms.pending_agent_rename = clean_title
                 ms.pending_agent_rename_deadline = time.monotonic() + 20.0
                 self._schedule_detection(ms, 0.1)
         self._persist()
         self._broadcast_status(ms)
+
+    async def _rename_after_previous(self, ms: ManagedSession, title: str,
+                                     previous: asyncio.Task | None) -> None:
+        if previous is not None and not previous.done():
+            try:
+                await asyncio.shield(previous)
+            except (RuntimeError, ValueError, OSError) as error:
+                print(f"termdeck prior rename failed for {ms.record.session_id}: {error}", flush=True)
+        await agents.agent_cli(ms.record.agent_kind).send_rename(self, ms, title, clear_composer=True)
 
     def set_session_description(self, session_id: str, description: str, append: bool = False) -> None:
         ms = self._sessions[session_id]

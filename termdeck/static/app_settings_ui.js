@@ -613,6 +613,9 @@ Object.assign(TermdeckApp.prototype, {
     pop.appendChild(this.buildToggleRow("TermDeck MCP for spawned agents",
       () => (this.settings.agent_api_instructions_enabled !== false ? "on" : "off"),
       () => { this.settings.agent_api_instructions_enabled = this.settings.agent_api_instructions_enabled === false; }));
+    pop.appendChild(this.buildToggleRow("Retry Codex capacity errors (exponential backoff)",
+      () => (this.settings.codex_capacity_retry === true ? "on" : "off"),
+      () => { this.settings.codex_capacity_retry = this.settings.codex_capacity_retry !== true; }));
     if (this.touchMobileLayoutEnabled()) pop.appendChild(this.buildMobileDisplayScaleRow());
     // Experiment switch: see tallRowPlan(). GPU rendering, at the cost of a much shorter scrollable
     // canvas -- the whole trade is explained there.
@@ -3427,6 +3430,7 @@ Object.assign(TermdeckApp.prototype, {
     // its own: not in the group the selected one is in, not filed under it, not tucked in beside it.
     // Opening one from a group's own + or from a row's "New terminal after this" still says where.
     this.modalTopLevel = options.topLevel === true;
+    this.modalAsChild = options.asChild === true && !!this.modalAfterSessionId;
     this.populateModalModelOptions();
     const model = this.settings.last_model || DEFAULT_COMMAND;
     this.$("modal-model").value = this.agentSpecs[model] ? model : DEFAULT_COMMAND;
@@ -3438,6 +3442,7 @@ Object.assign(TermdeckApp.prototype, {
     this.updateModalSessionSuggestions();
     this.$("modal-project-add-btn").classList.toggle("hidden", !!this.vscodeMode);
     this.$("modal-session-title").value = "";
+    this.$("modal-count").value = "1";
     this.$("modal-cwd").value = this.resolveVscodeDefaultCwd();
     this.$("modal-cwd").dataset.projectSeeded = "0";
     this.setModalCreating(false);
@@ -3539,11 +3544,12 @@ Object.assign(TermdeckApp.prototype, {
   // screen, which is past the whole stack -- so asking a spawned agent for another one dropped the new
   // terminal below the agent that spawned IT. Under the terminal it was asked from is what "after this"
   // means when "this" is inside a stack.
-  async placeCreatedSessionByAnchor(createdSessionId, anchorSessionId) {
+  async placeCreatedSessionByAnchor(createdSessionIds, anchorSessionId, asChild = false) {
     const anchor = this.session(anchorSessionId);
-    if (!anchor || !this.session(createdSessionId)) return;
-    if (anchor.spawned_by_session_id) await this.setSpawnedParent([createdSessionId], anchorSessionId);
-    else this.repositionSelectedSessions([createdSessionId], anchorSessionId, true);
+    const ids = createdSessionIds.filter((id) => this.session(id));
+    if (!anchor || !ids.length) return;
+    if (asChild || anchor.spawned_by_session_id) await this.setSpawnedParent(ids, anchorSessionId);
+    else this.repositionSelectedSessions(ids, anchorSessionId, true);
   },
 
 
@@ -3553,6 +3559,8 @@ Object.assign(TermdeckApp.prototype, {
     const targetGroupId = this.modalGroupId;
     const requestedAfterSessionId = this.modalAfterSessionId;
     const topLevel = this.modalTopLevel === true;
+    const asChild = this.modalAsChild === true;
+    const count = Math.min(20, Math.max(1, Number.parseInt(this.$("modal-count").value, 10) || 1));
     const model = this.$("modal-model").value;
     const modelName = this.modelNameWithEffort(this.$("modal-model-name").value, "modal-model-effort");
     const additionalArgs = this.$("modal-additional-args").value.trim();
@@ -3565,6 +3573,10 @@ Object.assign(TermdeckApp.prototype, {
       return;
     }
     const { title, session_ref: sessionRef } = resolved;
+    if (sessionRef && count > 1) {
+      this.showModalDependencyError({ message: "Resuming a session opens one terminal; set How many to 1." });
+      return;
+    }
     const project = this.projectSlug || "";
     const cwd = this.worktreeRoot() || this.resolveVscodeDefaultCwd();
     this.settings.last_model = model;
@@ -3581,36 +3593,47 @@ Object.assign(TermdeckApp.prototype, {
     const anchorSessionId = topLevel ? null
       : !targetGroupId && requestedAfterSessionId && this.session(requestedAfterSessionId)
       ? requestedAfterSessionId : !targetGroupId && this.activeId && this.session(this.activeId) ? this.activeId : null;
-    const res = await fetch("/api/sessions", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, model_name: modelName, permission, session_ref: sessionRef, cwd, title,
-        project, additional_args: additionalArgs, disable_effects: disableEffects,
-        worktree_id: this.stateWorktreeId() }),
-    });
-    if (!res.ok) {
-      const detail = await res.json().catch(() => ({}));
-      if (detail.detail?.code === "model_dependency_missing") this.showModalDependencyError(detail.detail);
-      else void uiAlert(typeof detail.detail === "string" ? detail.detail : "failed to create session");
-      return;
+    const createdSessions = [];
+    for (let index = 0; index < count; index += 1) {
+      this.$("modal-progress-label").textContent = count > 1
+        ? `Opening terminal ${index + 1} of ${count}…` : "Opening terminal…";
+      const res = await fetch("/api/sessions", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, model_name: modelName, permission, session_ref: sessionRef, cwd,
+          title: count > 1 && title ? `${title} ${index + 1}` : title,
+          project, additional_args: additionalArgs, disable_effects: disableEffects,
+          worktree_id: this.stateWorktreeId() }),
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}));
+        if (detail.detail?.code === "model_dependency_missing") this.showModalDependencyError(detail.detail);
+        else void uiAlert(typeof detail.detail === "string" ? detail.detail : "failed to create session");
+        // The ones already open stay open and still get placed.
+        if (!createdSessions.length) return;
+        break;
+      }
+      createdSessions.push(await res.json());
     }
-    const created = await res.json();
+    const created = createdSessions[0];
+    const createdIds = createdSessions.map((session) => session.session_id);
     this.closeModal();
     if (!this.vscodeMode && created.project && created.project !== (this.projectSlug || "")) {
       location.href = `/p/${encodeURIComponent(created.project)}`;
       return;
     }
-    if (this.nativeVscodeMode) this.postVscodeNativeSession(created, true);
+    if (this.nativeVscodeMode) for (const session of createdSessions) this.postVscodeNativeSession(session, true);
     await this.refresh();
     if (targetGroupId && this.terminalGroups().some((group) => group.id === targetGroupId)) {
       const state = this.getProjectState();
+      const assignments = Object.fromEntries(createdIds.map((id) => [id, targetGroupId]));
       this.applyLocalProjectStatePatch({
-        session_groups: { ...(state.session_groups || {}), [created.session_id]: targetGroupId },
-        terminal_layout: this.terminalLayout().filter((entry) => entry !== `session:${created.session_id}`),
+        session_groups: { ...(state.session_groups || {}), ...assignments },
+        terminal_layout: this.terminalLayout().filter((entry) => !createdIds.includes(entry.replace(/^session:/, ""))),
       });
-      this.queueSessionGroupAssignments({ [created.session_id]: targetGroupId });
+      this.queueSessionGroupAssignments(assignments);
       this.renderList();
     } else if (anchorSessionId) {
-      await this.placeCreatedSessionByAnchor(created.session_id, anchorSessionId);
+      await this.placeCreatedSessionByAnchor(createdIds, anchorSessionId, asChild);
     }
     this.activate(created.session_id, { reveal: true });
     const createdSession = this.session(created.session_id) || created;

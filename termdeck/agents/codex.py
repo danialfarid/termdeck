@@ -35,6 +35,10 @@ class CodexCli(AgentCli):
     # Codex's offer to update, drawn over the composer a moment after it first shows: its first choice
     # is "Update now", which ends the session to run the update. It clears itself once answered.
     PROMPT_BLOCKING_DIALOGS = (
+        ("Codex goal editor is open; finish or cancel editing the goal, then retry this message",
+         ("Edit goal", "enter submit", "esc back")),
+        ("Codex is asking whether to resume a goal; answer it in the terminal, then retry",
+         ("Resume paused goal?", "Leave paused")),
         ("Codex is asking whether to update; answer it in that terminal, then send the prompt again",
          ("Update available", "Update now", "Skip until next version")),
     )

@@ -24,6 +24,7 @@ class RemoteConnector:
     TERMINAL_OUTPUT_CHUNK_BYTES = 1024 * 1024
     TOKEN_REJECTED_MESSAGE = ("the relay no longer accepts this computer's remote token (expired or replaced); "
                               "sign in again from Remote access")
+    TOKEN_REJECTED_RETRY_SECONDS = 3600.0
     REQUEST_HEADER_EXCLUSIONS = frozenset({
         "connection", "content-length", "cookie", "host", "proxy-connection", "transfer-encoding", "upgrade",
     })
@@ -81,8 +82,13 @@ class RemoteConnector:
                 await self._close_local_websockets()
             if self._stop_event.is_set():
                 break
+            # A refused token stays refused until someone signs in again, which starts a new connector.
+            # Retrying it every few seconds billed the relay around the clock for computers with expired
+            # tokens; once an hour still notices a relay that was only briefly confused.
+            rejected = self.last_error == self.TOKEN_REJECTED_MESSAGE
             try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=reconnect_delay)
+                await asyncio.wait_for(self._stop_event.wait(),
+                                       timeout=self.TOKEN_REJECTED_RETRY_SECONDS if rejected else reconnect_delay)
             except TimeoutError:
                 reconnect_delay = min(self.reconnect_max_seconds, reconnect_delay * 2)
 
@@ -98,8 +104,11 @@ class RemoteConnector:
         await self._http_client.aclose()
 
     async def _connect_once(self) -> None:
+        # The token also rides on the upgrade: the Cloudflare relay routes the socket to the account's own
+        # Durable Object before any message is read, and the account is named in the token.
         async with connect(self._connector_websocket_url(), max_size=None, ping_interval=20, ping_timeout=20,
-                           open_timeout=15) as connection:
+                           open_timeout=15,
+                           additional_headers={"Authorization": f"Bearer {self.connector_token}"}) as connection:
             self._connection = connection
             await self._send({"type": RemoteMessageType.HELLO, "token": self.connector_token,
                               "protocol": RemoteMessageCodec.PROTOCOL_VERSION})

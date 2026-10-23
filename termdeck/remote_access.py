@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal, TypedDict
 
 import httpx
@@ -70,6 +70,11 @@ class RemoteAccessManager:
 
     async def start(self) -> None:
         self.credentials = self.credential_store.load()
+        if self.credentials is not None and self.credentials.relay_url.rstrip("/") != self.relay_url:
+            # Paired with a relay this computer no longer uses -- the Cloud Run relay, before the move to
+            # Cloudflare. Kept on the old one, it would stay "ready" against a relay that is gone; on the
+            # configured one the token is refused, and Settings offers signing in again.
+            self.credentials = replace(self.credentials, relay_url=self.relay_url)
         if self.credentials is not None:
             self._start_connector(self.credentials)
 

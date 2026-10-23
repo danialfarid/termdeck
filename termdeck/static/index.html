@@ -374,6 +374,7 @@
     </div>
     <div id="history-thinking-banner" class="hidden" aria-live="polite">
       <span id="history-thinking-duration"></span>
+      <span id="history-thinking-activity"></span>
     </div>
     <div id="history-composer">
       <div id="history-prompt-wrap">
@@ -599,8 +600,9 @@
     <label id="modal-additional-args-field">Additional start parameters (optional)<input id="modal-additional-args" placeholder="e.g. --flag value" spellcheck="false" autocomplete="off"><small>Matching generated options are replaced; other parameters are appended.</small></label>
     <label>Session name / Resume existing session<input id="modal-session-title" list="modal-session-refs" placeholder="optional: name this terminal or saved ID/name to resume" spellcheck="false"></label>
     <datalist id="modal-session-refs"></datalist>
+    <label>How many<input id="modal-count" type="number" min="1" max="20" value="1" inputmode="numeric"></label>
     <label>Directory<div id="modal-project-picker"><input id="modal-cwd" placeholder="~/projects/my-app" spellcheck="false"><button id="modal-project-add-btn" type="button" title="Add project folder" aria-label="Add project folder"><span class="codicon codicon-new-folder"></span></button></div></label>
-    <div id="modal-progress" class="hidden" role="status" aria-live="polite"><span class="worktree-spinner" aria-hidden="true"></span><span>Opening terminal…</span></div>
+    <div id="modal-progress" class="hidden" role="status" aria-live="polite"><span class="worktree-spinner" aria-hidden="true"></span><span id="modal-progress-label">Opening terminal…</span></div>
     <div id="modal-error" class="hidden" role="alert" aria-live="assertive">
       <div id="modal-error-message"></div>
       <button id="modal-error-install" class="hidden" type="button">Install with Homebrew</button>

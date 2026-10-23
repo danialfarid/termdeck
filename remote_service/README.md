@@ -48,5 +48,5 @@ Cloud Run limits WebSockets to 60 minutes and session affinity is only best effo
 already reconnect, but this version intentionally caps the service at one instance so both sides share the same
 in-memory connection registry.
 
-Remote pages pause after `TERMDECK_REMOTE_BROWSER_IDLE_SECONDS`, which defaults to 600 seconds. The authenticated
+Remote pages pause after `TERMDECK_REMOTE_BROWSER_IDLE_SECONDS`, which defaults to 120 seconds. The authenticated
 idle page holds no local tunnel or polling connection and reloads the prior TermDeck route on the next interaction.

@@ -6,6 +6,48 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.36.0] — 2026-10-23
+
+### Added
+
+- Multiple selected terminals now offer Restart, Stop, Mark as read, and Copy names/IDs in the sidebar context menu.
+
+- Optional Codex model-capacity retry for idle running sessions, with exponential backoff from 3 minutes to 48 hours, reset after 15 minutes of continuous progress.
+  Resumes a known active goal or sends `go`; usage-limit errors are not retried.
+- The transcript's Thinking bar, above the composer, shows the same activity dots the tab shows under
+  its title (subagents, background jobs, monitors, each with its count), so a phone shows what the
+  agent has running without opening the sidebar.
+- The New terminal dialog opens up to 20 terminals at once (**How many**). A name given is numbered
+  (`fix 1`, `fix 2`, …), and they land together where one would.
+- **New child terminal** in a terminal's context menu opens a terminal filed under that one.
+- Pasting from the copied-text history (Cmd+Shift+V) moves that text back to the top of the list.
+
+### Changed
+
+- The hosted remote relay moves from Cloud Run to Cloudflare Workers (`remote_service/cloudflare/`), and the
+  default relay address becomes `https://remote.termdeck.workers.dev`. A paired computer now holds one idle
+  connection the relay keeps for free, instead of polling it every five seconds and paying for every open phone
+  page by the second. Computers paired with the Cloud Run relay sign in again once from Remote access.
+
+### Fixed
+
+- Automatic renames, model selection, queued-message edits, and Muse forks preserve the typed draft
+  and serialize their input with incoming messages. Codex goal editing blocks automatic delivery
+  until the user finishes or cancels the editor.
+
+- A computer whose remote token the relay refuses (expired or replaced) checks back once an hour instead of
+  every few seconds; until someone signs in again it cannot connect anyway, and each check bills the relay.
+- Remote pages on the relay pause after 2 minutes without interaction instead of 10, so a phone left open
+  stops holding a connection that keeps the relay billed.
+- A terminal filed under another, from the menu, the dialog, or a drag, stays drawn under it. The
+  session list a just-created terminal sent could reach the window after the filing and draw it back
+  outside its parent until a reload; filing now sends a fresh list to every window.
+- A slash command sent to another agent through the MCP tools (such as `/goal resume`) is sent as it is,
+  without the `[TermDeck message from session <id>]` line, which kept it from running as a command.
+- Agents started with the MCP `spawn_batch` tool are filed under the agent that started them, as
+  `spawn_agent`'s are. `POST /api/sessions/batch` takes `origin_session`, defaulting placement, project,
+  worktree, and working directory to that session the way a single create does.
+
 ## [0.35.2] — 2026-10-21
 
 ### Added

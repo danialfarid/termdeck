@@ -1,0 +1,23 @@
+name = "remote"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+preview_urls = false
+
+[vars]
+TERMDECK_REMOTE_PUBLIC_URL = "https://remote.termdeck.workers.dev"
+TERMDECK_REMOTE_GOOGLE_CLIENT_ID = "298065490746-0ben2lr26fpehmi6a47dteapch2es5b0.apps.googleusercontent.com"
+TERMDECK_REMOTE_BROWSER_IDLE_SECONDS = "120"
+TERMDECK_REMOTE_SESSION_MAX_AGE = "2592000"
+# TERMDECK_REMOTE_SESSION_SECRET is a secret: `wrangler secret put TERMDECK_REMOTE_SESSION_SECRET`.
+
+[[durable_objects.bindings]]
+name = "RELAY_USERS"
+class_name = "RelayUser"
+
+[[durable_objects.bindings]]
+name = "RELAY_PAIRINGS"
+class_name = "RelayPairing"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayUser", "RelayPairing"]

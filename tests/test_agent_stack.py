@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from termdeck.models import PromptDelivery, PromptOutcome, SessionRecord
-from termdeck.server import RunTerminalTaskRequest, TermdeckServer
+from termdeck.server import RunTerminalTaskRequest, SessionSpawnedByRequest, TermdeckServer
 from termdeck.session_manager import TerminalSessionManager
 
 
@@ -196,6 +196,30 @@ class TaskApiRecordsOriginTest(unittest.IsolatedAsyncioTestCase):
             RunTerminalTaskRequest(prompt="run checks", cwd="/tmp", project="stock"))
 
         server.manager.set_spawned_by.assert_not_called()
+
+
+class FilingBroadcastsTheListTest(unittest.IsolatedAsyncioTestCase):
+    """Filing a terminal by hand sends every window the session list, as creating one does.
+
+    Windows take their session list from these snapshots. Without one after the filing, the snapshot the
+    create had sent was the last, and arriving after the window's own refresh it drew the new terminals
+    back outside their parent until the page was reloaded.
+    """
+
+    async def test_filing_and_unfiling_both_send_the_list(self) -> None:
+        server = TermdeckServer.__new__(TermdeckServer)
+        server.manager = MagicMock()
+        server.manager.would_cycle_spawned_by.return_value = False
+        server.manager.session_summary_by_id.return_value = {"project": "stock", "worktree_id": "root"}
+        server._broadcast_project_state_snapshot = MagicMock()
+
+        await server._set_session_spawned_by("child", SessionSpawnedByRequest(parent_session_id="parent"))
+        await server._set_session_spawned_by("child", SessionSpawnedByRequest(parent_session_id=""))
+
+        server.manager.set_spawned_by.assert_called_once_with("child", "parent")
+        server.manager.clear_spawned_by.assert_called_once_with("child")
+        self.assertEqual(server._broadcast_project_state_snapshot.call_count, 2)
+        server._broadcast_project_state_snapshot.assert_called_with("stock", "root")
 
 
 if __name__ == "__main__":

@@ -143,7 +143,7 @@ const app = {
   repositionSelectedSessions(ids, anchorId, after) { calls.push({ moved: ids, after: anchorId, below: after }); },
   __METHODS__
 };
-app.placeCreatedSessionByAnchor(scenario.createdId, scenario.anchorId)
+app.placeCreatedSessionByAnchor([scenario.createdId], scenario.anchorId)
   .then(() => process.stdout.write(JSON.stringify({ calls })));
 """
 
@@ -164,7 +164,7 @@ class NewTerminalPlacementTest(unittest.TestCase):
             raise unittest.SkipTest("node is not installed")
         source = (STATIC / "app_settings_ui.js").read_text()
         cls.harness = PLACEMENT_HARNESS.replace(
-            "__METHODS__", method_source(source, "async placeCreatedSessionByAnchor(createdSessionId, anchorSessionId)"))
+            "__METHODS__", method_source(source, "async placeCreatedSessionByAnchor(createdSessionIds, anchorSessionId, asChild = false)"))
 
     def place(self, anchor_id, created_id="fresh"):
         sessions = SESSIONS + [{"session_id": "fresh", "title": "new one", "spawned_by_session_id": None}]

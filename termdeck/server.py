@@ -184,10 +184,11 @@ class BatchTerminalsRequest(BaseModel):
     permission: str = "default"
     bracketed: bool = True
     after: str | None = None
+    origin_session: str = ""
     worktree: bool = False
     worktree_branch: str = ""
     worktree_base: str = ""
-    worktree_id: str = "root"
+    worktree_id: str = ""
 
 
 class RenameSessionRequest(BaseModel):
@@ -634,6 +635,7 @@ class UiSettings(BaseModel):
     # macOS user notifications on agent transitions (see notifier.AgentNotifier).
     notify_attention: bool = True
     notify_agent_idle: bool = True
+    codex_capacity_retry: bool = False
     # "TermDeck MCP for spawned agents". Named for the curl guide it first switched, and kept so a saved
     # choice carries over; agents that cannot take the MCP tools still get the guide from it.
     agent_api_instructions_enabled: bool = True
@@ -3700,6 +3702,19 @@ class TermdeckServer:
                                 detail=f"at most {TermdeckConfig.TERMINAL_BATCH_MAX_ITEMS} terminals per request")
         if not request.prompt.strip() and not any(item.prompt and item.prompt.strip() for item in request.terminals):
             raise HTTPException(status_code=400, detail="a shared prompt or per-terminal prompt is required")
+        # The same defaults a single spawn takes from its origin (_resolve_creation_scope): its project,
+        # worktree and cwd unless a project is named, and a place right after it.
+        try:
+            origin_session_id = self._resolve_origin_session(request.origin_session) if request.origin_session.strip() else None
+        except ValueError as origin_error:
+            raise HTTPException(status_code=400, detail=str(origin_error)) from origin_error
+        origin = self.manager.session_summary_by_id(origin_session_id) if origin_session_id else {}
+        explicit_project = request.project.strip()
+        shared_project = explicit_project or str(origin.get("project", ""))
+        shared_worktree_id = request.worktree_id.strip() or (
+            "root" if explicit_project else str(origin.get("worktree_id") or "root"))
+        shared_cwd = request.cwd.strip() or ("" if explicit_project else str(origin.get("cwd", "")))
+        shared_after = f"session:{origin_session_id}" if origin_session_id else request.after
 
         results: list[dict[str, object]] = []
         placement_cursors: dict[tuple[str, str, str], str] = {}
@@ -3717,15 +3732,15 @@ class TermdeckServer:
                 model_name = request.model_name if item.model_name is None else item.model_name
                 additional_args = request.additional_args if item.additional_args is None else item.additional_args
                 permission = request.permission if item.permission is None else item.permission
-                cwd = request.cwd if item.cwd is None else item.cwd
-                project = request.project if item.project is None else item.project
+                cwd = shared_cwd if item.cwd is None else item.cwd
+                project = shared_project if item.project is None else item.project
                 session_ref = item.session_ref or ""
                 bracketed = request.bracketed if item.bracketed is None else item.bracketed
-                placement_after = request.after if item.after is None else item.after
+                placement_after = shared_after if item.after is None else item.after
                 worktree_enabled = request.worktree if item.worktree is None else item.worktree
                 worktree_branch = request.worktree_branch if item.worktree_branch is None else item.worktree_branch
                 worktree_base = request.worktree_base if item.worktree_base is None else item.worktree_base
-                requested_worktree_id = request.worktree_id if item.worktree_id is None else item.worktree_id
+                requested_worktree_id = shared_worktree_id if item.worktree_id is None else item.worktree_id
                 if worktree_enabled and session_ref.strip():
                     raise ValueError("an existing agent session cannot be resumed in a new worktree")
                 project = self._resolve_project_from_after_anchor(placement_after, project)
@@ -3748,6 +3763,8 @@ class TermdeckServer:
                     worktree=worktree,
                     worktree_id=worktree_id,
                 )
+                if origin_session_id:
+                    self.manager.set_spawned_by(ms.record.session_id, origin_session_id)
                 result["session"] = self.manager.session_summary(ms)
 
                 if placement_after and placement_after.strip():
@@ -4015,15 +4032,20 @@ class TermdeckServer:
         parent_session_id = request.parent_session_id.strip()
         if not parent_session_id:
             self.manager.clear_spawned_by(session_id)
-            return self.manager.session_summary_by_id(session_id)
-        if parent_session_id == session_id:
+        elif parent_session_id == session_id:
             raise HTTPException(status_code=400, detail="a terminal cannot be filed under itself")
-        if not self.manager.has_session(parent_session_id):
+        elif not self.manager.has_session(parent_session_id):
             raise HTTPException(status_code=404, detail=parent_session_id)
-        if self.manager.would_cycle_spawned_by(session_id, parent_session_id):
+        elif self.manager.would_cycle_spawned_by(session_id, parent_session_id):
             raise HTTPException(status_code=400, detail="that parent is already filed under this terminal")
-        self.manager.set_spawned_by(session_id, parent_session_id)
-        return self.manager.session_summary_by_id(session_id)
+        else:
+            self.manager.set_spawned_by(session_id, parent_session_id)
+        summary = self.manager.session_summary_by_id(session_id)
+        # The session list each window holds comes from these snapshots. Without one here, a snapshot sent
+        # just before (say, by the create this terminal came from) was the last word, and arriving behind
+        # the window's own refresh it put the terminal back out of its parent's stack until a reload.
+        self._broadcast_project_state_snapshot(str(summary.get("project", "")), str(summary.get("worktree_id") or ""))
+        return summary
 
     async def _move_session_to_project(self, session_id: str, request: MoveSessionProjectRequest) -> dict[str, object]:
         if not self.manager.has_session(session_id):

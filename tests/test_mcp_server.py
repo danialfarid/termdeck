@@ -92,14 +92,19 @@ class McpClientTest(unittest.TestCase):
             run(client.spawn_batch([{"name": "a", "prompt": "item"}, {"name": "b"}], prompt="shared"))
             run(client.send_prompt("abc", "parent-1 here: follow up"))
             run(client.spawn_agent(model="codex"))
+            run(client.send_prompt("abc", "/goal resume"))
         header = "[TermDeck message from session parent-1]\n"
         self.assertEqual(seen[0]["text"], header + "follow up")
         self.assertEqual(seen[1]["prompt"], header + "do it")
         self.assertEqual(seen[2]["prompt"], header + "shared")
         self.assertEqual(seen[2]["terminals"], [{"name": "a", "prompt": header + "item"}, {"name": "b"}])
+        # Filed under the caller, as spawn_agent's child is.
+        self.assertEqual(seen[2]["origin_session"], "parent-1")
         # Already named, or nothing to send: left as it is.
         self.assertEqual(seen[3]["text"], "parent-1 here: follow up")
         self.assertEqual(seen[4]["prompt"], "")
+        # A slash command only runs as the prompt's first characters.
+        self.assertEqual(seen[5]["text"], "/goal resume")
 
     def test_delivery_checks_look_past_the_caller_header(self) -> None:
         # The header is the same on every prompt one session sends; matching it would confirm a new

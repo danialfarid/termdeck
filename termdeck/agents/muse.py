@@ -11,6 +11,7 @@ from typing import Iterable
 
 from termdeck.agents.base import UUID_RE, AgentCli, OutputActivityState
 from termdeck.config import TermdeckConfig
+from termdeck.preserved_terminal_composer import PreservedTerminalComposer
 from termdeck.platform_paths import PlatformPaths
 from termdeck.proc_tree import ProcTreeSnapshot
 from termdeck.transcript_turns import TurnBuilder
@@ -380,31 +381,30 @@ class MuseCli(AgentCli):
         parent_id = ms.record.agent_session_id or ""
         if not ms.running or ms.proc is None or not ms.proc.alive:
             raise ValueError("that Muse terminal is not running; open it and fork again")
-        if (ms.record.draft or "").strip():
-            raise ValueError("clear the Muse composer's draft first, so /fork is not pasted into it")
         if self.is_processing(ms):
             raise ValueError("that Muse session is still working; fork once it finishes")
-        since = time.time()
-        # One atomic paste, like a rename: the TUI takes it as a unit however far behind it is.
-        payload = ((b"\x15" + TermdeckConfig.BRACKETED_PASTE_START + self.FORK_COMMAND.encode() +
-                    TermdeckConfig.BRACKETED_PASTE_END).decode())
-        manager.write_input(ms.record.session_id, payload)
-        await asyncio.sleep(TermdeckConfig.FORK_RENAME_SUBMIT_DELAY_SECONDS)
-        manager.write_input(ms.record.session_id, "\r")
-        # A swallowed Enter leaves /fork sitting composed, so press again while nothing branched --
-        # but the branch's own record stops this the instant it exists, since an Enter past the
-        # switch would fork the fork.
-        deadline = time.monotonic() + self.FORK_DISCOVERY_TIMEOUT_SECONDS
-        next_resubmit = time.monotonic() + self.FORK_RESUBMIT_AFTER_SECONDS
-        while time.monotonic() < deadline:
-            fork_id = await asyncio.to_thread(self.latest_fork_of, parent_id, since)
-            if fork_id:
-                return fork_id
-            if time.monotonic() >= next_resubmit:
-                manager.write_input(ms.record.session_id, "\r")
-                next_resubmit = time.monotonic() + self.FORK_RESUBMIT_EVERY_SECONDS
-            await asyncio.sleep(self.FORK_DISCOVERY_POLL_SECONDS)
-        raise ValueError("Muse did not answer /fork; fork again from its terminal")
+        async with PreservedTerminalComposer(manager, ms, self):
+            since = time.time()
+            # One atomic paste, like a rename: the TUI takes it as a unit however far behind it is.
+            payload = ((b"\x15" + TermdeckConfig.BRACKETED_PASTE_START + self.FORK_COMMAND.encode() +
+                        TermdeckConfig.BRACKETED_PASTE_END).decode())
+            manager.write_input(ms.record.session_id, payload)
+            await asyncio.sleep(TermdeckConfig.FORK_RENAME_SUBMIT_DELAY_SECONDS)
+            manager.write_input(ms.record.session_id, "\r")
+            # A swallowed Enter leaves /fork sitting composed, so press again while nothing branched --
+            # but the branch's own record stops this the instant it exists, since an Enter past the
+            # switch would fork the fork.
+            deadline = time.monotonic() + self.FORK_DISCOVERY_TIMEOUT_SECONDS
+            next_resubmit = time.monotonic() + self.FORK_RESUBMIT_AFTER_SECONDS
+            while time.monotonic() < deadline:
+                fork_id = await asyncio.to_thread(self.latest_fork_of, parent_id, since)
+                if fork_id:
+                    return fork_id
+                if time.monotonic() >= next_resubmit:
+                    manager.write_input(ms.record.session_id, "\r")
+                    next_resubmit = time.monotonic() + self.FORK_RESUBMIT_EVERY_SECONDS
+                await asyncio.sleep(self.FORK_DISCOVERY_POLL_SECONDS)
+            raise ValueError("Muse did not answer /fork; fork again from its terminal")
 
     @staticmethod
     def _uuid7_epoch(session_id: str) -> float | None:

@@ -56,11 +56,12 @@ Once paired, sign into the relay from a phone or another browser with the same G
 the browser and computer using Google's stable account subject. A new computer pairing replaces the previous
 connector for that account.
 
-The local connector polls for demand while idle. It opens its multiplexed WebSocket when a remote browser arrives
-and the relay closes it after the last browser channel disappears. This permits request-billed hosting platforms
-to scale down while remote access is unused.
+The hosted relay runs on Cloudflare Workers with one Durable Object per Google account. The local connector asks
+the relay whether to connect and, told yes, keeps one multiplexed WebSocket open. The Durable Object hibernates
+while that connection is idle, so an open connection costs nothing until a remote browser uses it, and the
+computer does not poll. A relay that answers no (such as the older Cloud Run relay) is polled every few seconds.
 
-The hosted browser pauses after ten minutes without keyboard, pointer, touch, or scroll interaction. It switches to
+The hosted browser pauses after two minutes without keyboard, pointer, touch, or scroll interaction. It switches to
 an authenticated idle page with no polling or WebSockets, then reconnects through a fresh TermDeck page load on the
 next interaction. Terminals continue running locally while the remote browser is paused. Set
 `TERMDECK_REMOTE_BROWSER_IDLE_SECONDS` on the relay to change the timeout or set it to `0` to disable browser idling.
@@ -69,7 +70,7 @@ next interaction. Terminals continue running locally while the remote browser is
 
 - The relay validates Google ID token signature, issuer, audience, expiry, verified email, and stable subject.
 - Browser sessions and connector credentials use separate signed token domains and expiration periods.
-- Firestore stores only the Google subject, display email, and SHA-256 connector-token digest.
+- The relay stores only the Google subject, display email, and SHA-256 connector-token digest.
 - Pairing secrets are random, short-lived, rate-limited, and stored only as digests by the relay.
 - Browser mutations and WebSocket handshakes require the configured HTTPS origin.
 - The remote connector strips hosted cookies and WebSocket negotiation headers before forwarding locally.
@@ -79,16 +80,24 @@ next interaction. Terminals continue running locally while the remote browser is
 
 ## Limits
 
-The initial Cloud Run deployment must use one maximum instance because browser and connector WebSockets are
-paired in memory. Clients reconnect when Cloud Run reaches its WebSocket request timeout. A multi-instance version
-requires a shared connection router rather than relying on session affinity.
-
-Remote HTTP request bodies are capped below Cloud Run's HTTP/1 request limit. Large local uploads should be made
-from the computer until chunked remote uploads are implemented.
+Remote HTTP request bodies are capped at 24 MiB. Large local uploads should be made from the computer until
+chunked remote uploads are implemented.
 
 ## Self-hosting the relay
 
-The relay source is in `remote_service/`. It requires:
+The Cloudflare relay is in `remote_service/cloudflare/` and shares its pages with the Cloud Run relay in
+`remote_service/`. From that directory:
+
+```sh
+npm install
+npx wrangler secret put TERMDECK_REMOTE_SESSION_SECRET
+npx wrangler deploy
+```
+
+Set `TERMDECK_REMOTE_PUBLIC_URL` and `TERMDECK_REMOTE_GOOGLE_CLIENT_ID` in `wrangler.toml`. The Durable Objects
+use SQLite storage, which the Workers Free plan includes.
+
+The older Cloud Run relay in `remote_service/` requires:
 
 - `TERMDECK_REMOTE_GOOGLE_CLIENT_ID`
 - `TERMDECK_REMOTE_SESSION_SECRET`

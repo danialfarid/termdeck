@@ -42,7 +42,7 @@ class RemoteServiceConfig:
             max_body_bytes=int(os.environ.get("TERMDECK_REMOTE_MAX_BODY_BYTES", "25165824")),
             cookie_secure=public_url.startswith("https://"),
             connector_idle_seconds=float(os.environ.get("TERMDECK_REMOTE_CONNECTOR_IDLE_SECONDS", "45")),
-            browser_idle_seconds=float(os.environ.get("TERMDECK_REMOTE_BROWSER_IDLE_SECONDS", "600")),
+            browser_idle_seconds=float(os.environ.get("TERMDECK_REMOTE_BROWSER_IDLE_SECONDS", "120")),
             anonymous_requests_per_hour=int(os.environ.get("TERMDECK_REMOTE_ANONYMOUS_REQUESTS_PER_HOUR", "30")),
             connector_wait_seconds=float(os.environ.get("TERMDECK_REMOTE_CONNECTOR_WAIT_SECONDS", "15")),
         )

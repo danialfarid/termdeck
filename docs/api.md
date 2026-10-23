@@ -176,7 +176,8 @@ An item can override any of them. `after` accepts an existing session name or gr
 or the stable `session:<id>` / `group:<id>` layout token. It inserts each new terminal immediately after that
 anchor. If the anchor is a member of a group, the new terminal inherits that group and is inserted immediately
 after that member; when several items share the same `after`, their request order is preserved. Every request
-creates new terminals; it is not idempotent.
+creates new terminals; it is not idempotent. A top-level `origin_session` files every new terminal under that
+session as a spawned child and, like a single create, defaults `after`, project, worktree, and `cwd` to it.
 
 For a new Codex terminal, `name` is also submitted as Codex's thread name after the new session is detected.
 The initial prompt is sent only after that rename and the Codex composer are ready, so it is not lost during

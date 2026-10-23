@@ -1196,14 +1196,16 @@ class ForkTest(unittest.TestCase):
         self.assertIsNone(self.cli.latest_fork_of("01a0-parent", time.time() - 60))
 
     def ms(self, **overrides) -> SimpleNamespace:
-        fields = dict(running=True, proc=SimpleNamespace(alive=True),
+        fields = dict(running=True, proc=SimpleNamespace(alive=True), prompt_submit_lock=None,
+                      prompt_going_in=False, held_user_input=[],
                       record=SimpleNamespace(session_id="tab-1", agent_session_id="01a0-parent", draft=""))
         fields.update(overrides)
         return SimpleNamespace(**fields)
 
     def test_fork_sends_slash_fork_and_returns_the_branch(self) -> None:
         writes: list[tuple[str, str]] = []
-        manager = SimpleNamespace(write_input=lambda session_id, text: writes.append((session_id, text)))
+        manager = SimpleNamespace(write_input=lambda session_id, text: writes.append((session_id, text)),
+                                  _leave_escapable_mode=AsyncMock(return_value=""))
         with patch.object(self.cli, "is_processing", return_value=False), \
                 patch.object(self.cli, "latest_fork_of", side_effect=[None, "01a0-branch"]) as discovered:
             fork_id = asyncio.run(self.cli.fork_through_source(manager, self.ms()))
@@ -1222,12 +1224,8 @@ class ForkTest(unittest.TestCase):
 
         manager.write_input.assert_not_called()
 
-    def test_fork_refuses_a_draft_and_a_dead_terminal(self) -> None:
+    def test_fork_refuses_a_dead_terminal(self) -> None:
         manager = SimpleNamespace(write_input=AsyncMock())
-        with self.assertRaisesRegex(ValueError, "draft"):
-            asyncio.run(self.cli.fork_through_source(manager, self.ms(
-                record=SimpleNamespace(session_id="tab-1", agent_session_id="01a0-parent",
-                                       draft="half typed"))))
         with self.assertRaisesRegex(ValueError, "not running"):
             asyncio.run(self.cli.fork_through_source(manager, self.ms(running=False)))
 

@@ -4452,6 +4452,8 @@ Object.assign(TermdeckApp.prototype, {
       }
       this.addContextItem(menu, "New terminal after this",
         () => this.openModal(null, session.session_id), "add");
+      this.addContextItem(menu, "New child terminal",
+        () => this.openModal(null, session.session_id, "", { asChild: true }), "type-hierarchy-sub");
       this.addContextItem(menu, this.shortcutLabel("Restart", "restart-terminal"),
         () => this.restartSession(session.session_id), "refresh");
       if (this.agentSpec(session.agent_kind)?.is_agent) {
@@ -4471,6 +4473,20 @@ Object.assign(TermdeckApp.prototype, {
       }
     }
     const selectionLabel = multiple ? `${sessionIds.length} selected` : "";
+    if (multiple) {
+      this.addContextItem(menu, `Restart ${selectionLabel}…`,
+        () => this.runSelectedSessionAction(sessionIds, "restart"), "refresh");
+      const runningIds = sessionIds.filter((id) => this.session(id)?.running);
+      this.addContextItem(menu, `Stop selected (${runningIds.length} running)…`,
+        runningIds.length ? () => this.runSelectedSessionAction(runningIds, "stop") : null, "debug-stop");
+      this.addContextItem(menu, `Mark ${selectionLabel} as read`,
+        () => this.setSessionsUnread(sessionIds, false), "eye");
+      this.addContextItem(menu, "Copy selected names",
+        () => this.copyTextToClipboard(sessionIds.map((id) => this.session(id)).filter(Boolean)
+          .map((item) => this.titlePresentation(item).text).join("\n"), "session names copied"), "copy");
+      this.addContextItem(menu, "Copy selected IDs",
+        () => this.copyTextToClipboard(sessionIds.join("\n"), "session IDs copied"), "copy");
+    }
     this.addContextItem(menu, multiple ? `Mark ${selectionLabel} as unread`
       : this.shortcutLabel("Mark as unread", "mark-terminal-unread"),
     () => this.setSessionsUnread(sessionIds, true), "eye-closed");

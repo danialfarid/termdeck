@@ -6132,10 +6132,16 @@ class TermdeckApp {
 
   updateSessionActivityDots(id) {
     const host = this.sessionActivityEls.get(id);
-    if (!host) return;
+    if (host) host.closest(".session-item")?.classList.toggle("has-activity", this.renderActivityDots(host, id));
+    if (id === this.activeId) this.renderActivityDots(this.$("history-thinking-activity"), id);
+  }
+
+  // The tab's activity chips, also shown in the transcript's thinking bar. True when there are any.
+  renderActivityDots(host, id) {
+    if (!host) return false;
     const entries = this.activityDotEntries(this.sessionActivityById.get(id));
     const signature = JSON.stringify(entries);
-    if (host.dataset.signature === signature) return;
+    if (host.dataset.signature === signature) return entries.length > 0;
     host.dataset.signature = signature;
     host.replaceChildren(...entries.map((entry) => {
       const chip = document.createElement("span");
@@ -6149,7 +6155,7 @@ class TermdeckApp {
       chip.append(count, dot);
       return chip;
     }));
-    host.closest(".session-item")?.classList.toggle("has-activity", entries.length > 0);
+    return entries.length > 0;
   }
 
   updateSessionDraftPen(sessionId) {

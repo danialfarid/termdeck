@@ -1088,6 +1088,50 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  async runSelectedSessionAction(sessionIds, action) {
+    if (!["restart", "stop"].includes(action) || this.selectedSessionActionRunning) return;
+    const selected = [...new Set(sessionIds)].map((id) => this.session(id)).filter(Boolean)
+      .filter((session) => action !== "stop" || session.running);
+    if (!selected.length) return;
+    const label = action === "restart" ? "Restart" : "Stop";
+    const explanation = action === "restart"
+      ? "This interrupts current work and restarts each terminal with its existing model and permissions."
+      : "This stops their running processes. History is kept and the tabs stay in the sidebar.";
+    if (!await uiConfirm(`${label} ${selected.length} selected terminals? ${explanation}`)) return;
+    if (this.selectedSessionActionRunning) return;
+    this.selectedSessionActionRunning = true;
+    const failures = [];
+    let completed = 0;
+    try {
+      for (const session of selected) {
+        this.$("status-name").textContent = `${label}: ${completed + 1}/${selected.length}…`;
+        try {
+          const response = await fetch(`/api/sessions/${session.session_id}/${action}`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            ...(action === "restart" ? { body: JSON.stringify({}) } : {}),
+          });
+          if (!response.ok) {
+            const detail = await response.json().catch(() => ({}));
+            throw new Error(detail?.detail || `${label} failed (${response.status})`);
+          }
+          completed += 1;
+        } catch (error) {
+          failures.push(`${this.titlePresentation(session).text}: ${error.message || error}`);
+          break;
+        }
+      }
+      await this.refresh();
+      const activeView = this.views.get(this.activeId);
+      if (action === "restart" && selected.some((session) => session.session_id === this.activeId)
+          && activeView && !activeView.ws) this.connect(this.activeId, activeView);
+      this.$("status-name").textContent = `${label}: ${completed}/${selected.length} completed`;
+      if (failures.length) await uiAlert(`${label}: ${completed}/${selected.length} completed. Stopped after an error; no further terminals were requested. If the connection failed, check the affected terminal before retrying.\n\n${failures.join("\n")}`);
+    } finally {
+      this.selectedSessionActionRunning = false;
+    }
+  },
+
+
   async closeSelectedSessions(sessionIds) {
     const selectedSessions = [...new Set(sessionIds)].map((sessionId) => this.session(sessionId)).filter(Boolean);
     if (!selectedSessions.length) return;

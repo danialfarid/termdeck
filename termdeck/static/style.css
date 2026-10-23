@@ -657,6 +657,7 @@ body.vscode-mode #bottombar #editor-wrap-toggle { display: none; }
 }
 #history-thinking-banner { display: flex; align-items: center; gap: 8px; padding: 5px 12px 4px; border-top: 1px solid var(--border); color: var(--accent); font: 600 calc(var(--ui-font-size) - 1px) Menlo, monospace; letter-spacing: 0.04em; }
 #history-thinking-banner.hidden { display: none; }
+#history-thinking-activity { display: flex; align-items: center; gap: 10px; color: var(--dim); font-weight: 400; letter-spacing: 0; }
 #history-thinking-banner #history-thinking-duration { min-width: 30px; opacity: 0.82; will-change: opacity; animation: history-thinking-duration-pulse var(--thinking-blink-interval) ease-in-out infinite; }
 @keyframes history-thinking-duration-pulse {
   0%, 100% { opacity: 0.42; }
