@@ -82,11 +82,44 @@ class FindingThePageTest(PagedThreadHarness):
 
         self.assertEqual(self.codex.transcript_path(None, THREAD), page)
 
+    def test_a_thread_with_no_file_is_searched_for_in_recent_days_only_after_the_first_miss(self) -> None:
+        missing = "01a1ffff-0000-7000-8000-000000000000"
+        self.assertIsNone(self.codex.transcript_path(None, missing))
+        with patch.object(Path, "rglob", side_effect=AssertionError("whole tree searched again")):
+            self.assertIsNone(self.codex.transcript_path(None, missing))
+            started = self.day_two / f"rollout-2026-10-12T21-00-00-{missing}.jsonl"
+            started.write_text(meta(missing))
+            self.assertEqual(self.codex.transcript_path(None, missing), started)
+
     def test_a_page_started_after_the_first_look_is_followed(self) -> None:
         self.assertEqual(self.codex.transcript_path(None, THREAD), self.first)
         page = self.write_page()
 
         self.assertEqual(self.codex.transcript_path(None, THREAD), page)
+
+    def test_a_page_that_goes_away_falls_back_to_the_first_file_in_an_old_day(self) -> None:
+        # The first file sits outside the recent days; only the page is in one.
+        old_day = self.root / "2026" / "10" / "01"
+        old_day.mkdir(parents=True)
+        first = self.first.rename(old_day / self.first.name)
+        page = self.write_page()
+        self.assertEqual(self.codex.transcript_path(None, THREAD), page)
+
+        page.unlink()
+
+        with patch.object(CodexCli, "ROLLOUT_GONE_RECHECK_SECONDS", 0.0):
+            self.assertEqual(self.codex.transcript_path(None, THREAD), first)
+
+    def test_a_page_that_goes_away_mid_rewrite_is_looked_for_again(self) -> None:
+        page = self.write_page()
+        self.assertEqual(self.codex.transcript_path(None, THREAD), page)
+        page.unlink()
+        moved = self.first.rename(self.first.with_suffix(".tmp"))
+
+        with patch.object(CodexCli, "ROLLOUT_GONE_RECHECK_SECONDS", 0.0):
+            self.assertIsNone(self.codex.transcript_path(None, THREAD))
+            moved.rename(self.first)
+            self.assertEqual(self.codex.transcript_path(None, THREAD), self.first)
 
     def test_a_page_belongs_to_its_thread(self) -> None:
         page = self.write_page()

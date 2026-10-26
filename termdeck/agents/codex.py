@@ -1,4 +1,5 @@
 import json
+import math
 import re
 import shlex
 import time
@@ -113,6 +114,7 @@ class CodexCli(AgentCli):
         r"(?:_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))?\.jsonl$")
     # How often a thread is looked at again for a page newer than the one it was last found writing.
     ROLLOUT_PAGE_CHECK_SECONDS = 2.0
+    ROLLOUT_GONE_RECHECK_SECONDS = 10.0
     # A bound on how many of a thread's pages are read back through.
     ROLLOUT_PAGE_CHAIN_MAX = 64
     subagent_file_marker = b'"source":{"subagent"'
@@ -125,6 +127,11 @@ class CodexCli(AgentCli):
         # When each recent day directory last gained or lost an entry: a thread pages to a new
         # file, so an unchanged set of directories means no thread paged and cached pages hold.
         self._rollout_day_mtimes: dict[Path, int] = {}
+        # Threads a full search found no file for. Searching the whole tree again on every session list,
+        # for every such thread, took a tenth of the server's time.
+        self._rollout_missing: set[str] = set()
+        # When a thread whose cached page vanished last failed a full search, so the retries are spaced.
+        self._rollout_gone_checked: dict[str, float] = {}
         # What a page reads on from, and where each file id lives: neither changes once written.
         self._history_bases: dict[Path, tuple[str, int] | None] = {}
         self._history_files: dict[str, Path] = {}
@@ -241,13 +248,42 @@ class CodexCli(AgentCli):
             if newest.name > cached.name:
                 self._rollout_paths[agent_session_id] = newest
             return self._rollout_paths[agent_session_id]
+        if cached is not None:
+            # The page we were reading is gone -- codex folded its pages back into the thread's first
+            # file, which sits in the day directory the thread started in. The recent-days shortcut
+            # below never looks there, so this searches everywhere instead, and keeps the gone page
+            # cached so a search that lands mid-rewrite is tried again rather than given up on.
+            if now - self._rollout_gone_checked.get(agent_session_id, -math.inf) < self.ROLLOUT_GONE_RECHECK_SECONDS:
+                return None
+            self._rollout_gone_checked[agent_session_id] = now
+            try:
+                pages = [page for page in self.sessions_root.rglob(f"rollout-*-{agent_session_id}*.jsonl")
+                         if self.session_id_from_path(page) == agent_session_id]
+            except OSError:
+                return None
+            if not pages:
+                return None
+            newest = max(pages, key=lambda page: page.name)
+            self._rollout_paths[agent_session_id] = newest
+            self._rollout_gone_checked.pop(agent_session_id, None)
+            return newest
+        missing = agent_session_id in self._rollout_missing
+        if missing and now - self._rollout_checked.get(agent_session_id, 0.0) < self.ROLLOUT_PAGE_CHECK_SECONDS:
+            return None
+        # shortcut: once missed, only the days around today are searched, where codex creates a new file;
+        # a file copied into an older day directory is found after a restart.
+        candidates = (page for day in self._recent_day_dirs() if day.is_dir()
+                      for page in day.glob(f"rollout-*-{agent_session_id}*.jsonl")) if missing \
+            else self.sessions_root.rglob(f"rollout-*-{agent_session_id}*.jsonl")
         try:
-            pages = [page for page in self.sessions_root.rglob(f"rollout-*-{agent_session_id}*.jsonl")
-                     if self.session_id_from_path(page) == agent_session_id]
+            pages = [page for page in candidates if self.session_id_from_path(page) == agent_session_id]
         except OSError:
             return None
+        self._rollout_checked[agent_session_id] = now
         if not pages:
+            self._rollout_missing.add(agent_session_id)
             return None
+        self._rollout_missing.discard(agent_session_id)
         # Named for when each was started, so the newest sorts last.
         newest = max(pages, key=lambda page: page.name)
         self._rollout_paths[agent_session_id] = newest
