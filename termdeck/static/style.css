@@ -2468,6 +2468,11 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
     max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain;
   }
   body.mobile-touch-layout #context-menu .context-item { min-height: 40px; padding-top: 8px; padding-bottom: 8px; }
+  /* The menu scrolls, which clips anything flying out beside it, so a submenu opens in place below its row. */
+  body.mobile-touch-layout #context-menu .context-submenu-menu {
+    position: static; min-width: 0 !important; max-width: none !important; margin: 0 0 4px 22px;
+    padding: 0; border: 0; border-left: 1px solid var(--border); border-radius: 0; box-shadow: none;
+  }
   body.mobile-touch-layout #main, body.mobile-touch-layout .term-container, body.mobile-touch-layout .xterm {
     touch-action: pan-x pan-y pinch-zoom;
   }
@@ -2536,8 +2541,11 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
      show through: a translucent panel over a blurred backdrop, with its own text fully
      opaque. The transcript underneath never reflows, so closing comes back to the same
      place; tapping it still folds the sidebar away. */
+  /* The drawer sits just above #main, whose layers are sealed inside it, and below every popup and
+     dialog (the lowest is z-index 10), so whatever the sidebar's menus open lands on top of it. */
+  body.mobile-touch-layout #main { z-index: 0; }
   body.mobile-touch-layout:not(.mobile-sidebar-collapsed) #sidebar {
-    position: fixed; z-index: 80; top: 0; bottom: 0; left: 0;
+    position: fixed; z-index: 9; top: 0; bottom: 0; left: 0;
     background: color-mix(in srgb, var(--panel) 80%, transparent);
     -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
     box-shadow: 12px 0 30px rgba(0, 0, 0, 0.35);
@@ -2631,23 +2639,7 @@ body.evently-demo-presentation #history-btn:not(.hidden):not(.transcript-unavail
     scrollbar-width: none;
   }
   #bottombar::-webkit-scrollbar { display: none; }
-  /* Popups and dialogs sit above the open sidebar drawer (z-index 80): each keeps its desktop order,
-     raised by 100. */
-  #settings-popover { z-index: 130; max-height: calc(100dvh - 24px); }
-  #worktree-modal-backdrop { z-index: 110; }
-  #worktree-result-backdrop { z-index: 111; }
-  #keys-backdrop { z-index: 112; }
-  #worktree-review-backdrop { z-index: 118; }
-  #terminal-process-report-backdrop { z-index: 131; }
-  #lsp-backdrop { z-index: 132; }
-  #history-search-backdrop { z-index: 135; }
-  #selection-actions { z-index: 140; }
-  #selection-actions.history-picker { z-index: 141; }
-  #search-history-menu { z-index: 145; }
-  #file-type-filter-menu { z-index: 146; }
-  #restart-modal-backdrop, #modal-backdrop { z-index: 150; }
-  #font-samples-backdrop { z-index: 155; }
-  #recent-hours-menu, #quick-open-backdrop { z-index: 160; }
+  #settings-popover { max-height: calc(100dvh - 24px); }
   /* A phone has no room to spare: the transcript keeps its side margins to the safe area, and lists
      lose the deep indent and the airy gaps between items, so more of the answer fits on the screen. */
   #history-area.transcript-first #history-body,

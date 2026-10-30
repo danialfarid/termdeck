@@ -4248,12 +4248,22 @@ Object.assign(TermdeckApp.prototype, {
     menu.appendChild(wrapper);
     wrapper.addEventListener("mouseenter", () => this.positionContextSubmenu(wrapper));
     wrapper.addEventListener("focusin", () => this.positionContextSubmenu(wrapper));
+    item.addEventListener("click", () => this.positionContextSubmenu(wrapper, true));
   },
 
 
-  positionContextSubmenu(wrapper) {
+  positionContextSubmenu(wrapper, reveal = false) {
     const submenu = wrapper.querySelector(":scope > .context-submenu-menu");
     if (!submenu || !submenu.offsetHeight) return;
+    // A phone opens it in place below its row, inside the scrolling menu.
+    // Revealed only on the row's click: scrolled any sooner, the tap that opened it lands on an entry.
+    if (getComputedStyle(submenu).position === "static") {
+      if (!reveal) return;
+      const menu = wrapper.closest("#context-menu");
+      const overflow = submenu.getBoundingClientRect().bottom - menu.getBoundingClientRect().bottom + 8;
+      if (overflow > 0) menu.scrollTop += overflow;
+      return;
+    }
     const anchor = wrapper.getBoundingClientRect();
     submenu.style.maxHeight = Math.max(0, Math.min(420, window.innerHeight - 16)) + "px";
     submenu.style.maxWidth = Math.max(0, window.innerWidth - 16) + "px";

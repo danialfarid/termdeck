@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.36.2] — 2026-10-30
+
+### Fixed
+
+- On a phone, every dialog and popup opens above the open sidebar, including those opened from its
+  context menu (Restart with…, New terminal, Rename, and the rest). The sidebar drawer now sits just above
+  the main view and below all popups, instead of above most of them.
+- On a phone, context-menu submenus such as Move to… open in place below their row instead of flying out
+  beside the menu, where the scrolling menu cut them off.
+
 ## [0.36.1] — 2026-10-30
 
 ### Added
@@ -2043,7 +2053,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.36.1...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.36.2...HEAD
+[0.36.2]: https://github.com/danialfarid/termdeck/compare/v0.36.1...v0.36.2
 [0.36.1]: https://github.com/danialfarid/termdeck/compare/v0.36.0...v0.36.1
 [0.36.0]: https://github.com/danialfarid/termdeck/compare/v0.35.2...v0.36.0
 [0.35.2]: https://github.com/danialfarid/termdeck/compare/v0.35.0...v0.35.2

@@ -133,7 +133,8 @@ class MobileTranscriptChromeTest(unittest.TestCase):
     def test_open_sidebar_floats_translucent(self) -> None:
         for fragment in (
             "body.mobile-touch-layout:not(.mobile-sidebar-collapsed) #sidebar {",
-            "position: fixed; z-index: 80; top: 0; bottom: 0; left: 0;",
+            "body.mobile-touch-layout #main { z-index: 0; }",
+            "position: fixed; z-index: 9; top: 0; bottom: 0; left: 0;",
             "background: color-mix(in srgb, var(--panel) 80%, transparent);",
             "-webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);",
             "body.mobile-touch-layout:not(.mobile-sidebar-collapsed) "
