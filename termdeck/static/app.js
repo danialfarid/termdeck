@@ -4375,13 +4375,18 @@ class TermdeckApp {
       this.initMonaco();
       this.loadIconMap();
     }
-    this.$("settings-gear").onclick = (e) => this.openSettingsPopover(e.currentTarget);
+    this.$("settings-gear").onclick = (e) => {
+      const pop = this.$("settings-popover");
+      if (pop.classList.contains("hidden")) this.openSettingsPopover(e.currentTarget);
+      else pop.classList.add("hidden");
+    };
     this.$("terminal-debug-toggle").onclick = () => this.toggleTerminalDebugPreview();
     // Null-safe: #file-view-close is not in index.html yet. This runs during setup, so the throw
     // aborted the rest of this initialisation rather than just failing one button.
     const fileViewClose = this.$("file-view-close");
     if (fileViewClose) fileViewClose.onclick = () => this.navigateBackFromActiveFile();
     this.$("file-history-toggle").onclick = () => this.toggleFileHistory();
+    this.$("root-file-history-toggle").onclick = () => this.openRootFileHistory();
     this.$("file-history-toggle").oncontextmenu = (event) => this.openActiveFileHistoryMenu(event);
     this.$("git-review-close").onclick = () => this.closeGitReview();
     this.$("git-review-open-file").onclick = () => this.openFocusedGitWorkingFile();
@@ -4555,6 +4560,7 @@ class TermdeckApp {
         // The stats readout toggles its own menu on click. Auto-hiding here would let the click
         // that follows reopen it, so a second click could never close it.
         if (id === "context-menu" && this.statsMaintenanceMenuOpen() && e.target.closest?.("#bottombar-stats")) continue;
+        if (id === "settings-popover" && e.target.closest?.("#settings-gear")) continue;
         pop.classList.add("hidden");
         if (id === "context-menu") this.contextMenuTarget = null;
       }
@@ -6897,13 +6903,16 @@ class TermdeckApp {
       const sourceGroupIds = [...new Set(sourceSessionIds.map((id) => sessionGroups[id]).filter(Boolean))];
       const targetGroup = targetId ? sessionGroups[targetId] : null;
       const rect = item.getBoundingClientRect();
-      const holdToFile = source.kind === "session" && kind === "session" && !!targetId && !settledParentId &&
+      // Over a sibling the edges reorder and a held middle files under it, nesting one agent in another.
+      const holdToFile = source.kind === "session" && kind === "session" && !!targetId &&
         this.canFileUnderSession(targetId, sourceSessionIds);
       const holdToCreate = source.kind === "session" && kind === "session" && !settledParentId &&
         !sourceGroupIds.length && !targetGroup;
       const centerDrop = (holdToCreate || holdToFile) && event.clientY >= rect.top + rect.height * 0.25 &&
         event.clientY <= rect.top + rect.height * 0.75;
       if (centerDrop) {
+        // The stack around a sibling would otherwise take the event and replace this row's hold.
+        if (settledParentId) event.stopPropagation();
         this.holdOverSessionRow(item, token, targetId, source.token, holdToCreate);
         return;
       }

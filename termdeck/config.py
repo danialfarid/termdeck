@@ -52,6 +52,9 @@ class TermdeckConfig:
     # per window however much it writes, and each append carries only the bytes since the last one.
     REPLAY_CHECKPOINT_DEBOUNCE_SECONDS = 1.0
     RAW_REPLAY_SESSION_BYTES = 24_000_000
+    # Trimmed past the cap by this much, so a session at the cap compacts (and rewrites its checkpoint) once
+    # per this much output instead of on every chunk.
+    RAW_REPLAY_TRIM_SLACK_BYTES = 3_000_000
     RAW_REPLAY_TOTAL_BYTES = 5_000_000_000
     # OFF (0). Scrolling the screen into scrollback ahead of a redraw's erase does keep a compaction
     # from taking the conversation with it, but a cursor jump does not say which redraw is a
@@ -343,6 +346,7 @@ class TermdeckConfig:
     API_FILE_CREATE_ROUTE = "/api/files/create"
     API_FILE_DUPLICATE_ROUTE = "/api/files/duplicate"
     API_FILE_HISTORY_ROUTE = "/api/files/history"
+    API_FILE_HISTORY_FILES_ROUTE = "/api/files/history/files"
     API_FILE_HISTORY_VERSION_ROUTE = "/api/files/history/{version_id}"
     API_FILE_HISTORY_RESTORE_ROUTE = "/api/files/history/restore"
     API_FILE_GIT_HISTORY_ROUTE = "/api/files/git-history"
@@ -422,9 +426,10 @@ class TermdeckConfig:
     # every debounce window would hammer a failing disk; waiting for the next transcript to change would
     # mean an idle deck never recovers, and never runs retention again either.
     HISTORY_INDEX_RETRY_SECONDS = 300.0
-    FILE_HISTORY_DATABASE = DATA_DIR / "file-history.sqlite3"
+    FILE_HISTORY_DIRECTORY = DATA_DIR / "file-history"
+    LEGACY_FILE_HISTORY_DATABASE = DATA_DIR / "file-history.sqlite3"
     FILE_HISTORY_MAX_VERSIONS_PER_FILE = 100
-    FILE_HISTORY_MAX_BYTES = 512 * 1024 * 1024
+    FILE_HISTORY_MAX_BYTES_PER_ROOT = 512 * 1024 * 1024
     FILE_HISTORY_COALESCE_SECONDS = 10
     # Every version of every note ever saved, kept apart from the files' own history so a note's past
     # is not trimmed away by a busy repository.
@@ -483,7 +488,7 @@ class TermdeckConfig:
     # name the README has people register by hand, so the two land on one entry rather than two.
     MCP_SERVER_NAME = "termdeck"
     # First line of a prompt one TermDeck agent sends another through MCP, naming the sender's session.
-    CALLER_HEADER_PREFIX = "[TermDeck message from session "
+    CALLER_HEADER_PREFIX = "[from "
     SESSION_ID_ENV_KEY = "TERMDECK_SESSION_ID"
     SESSION_NAME_ENV_KEY = "TERMDECK_SESSION_NAME"
     SESSION_PROJECT_ENV_KEY = "TERMDECK_PROJECT"

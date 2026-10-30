@@ -1056,7 +1056,9 @@ Object.assign(TermdeckApp.prototype, {
     const s = this.session(sessionId);
     if (!s) return;
     if (!await uiConfirm(`Close "${this.effectiveTitle(s)}"? This kills the process (it moves to closed history).`)) return;
-    const wasActive = this.activeId === sessionId;
+    const wasActive = this.activeId === sessionId && !this.activeFileKey;
+    let closeSelectionRevision = this.selectionRevision || 0;
+    const closeProjectQuery = this.projectQuery();
     const closeOrder = this.sessions.map((session) => session.session_id);
     const closeIndex = closeOrder.indexOf(sessionId);
     const previouslyOpened = this.previouslyOpenedTerminalId(new Set([sessionId]));
@@ -1074,12 +1076,15 @@ Object.assign(TermdeckApp.prototype, {
     }
     this.restoreLastClosedTerminalNeedsConfirmation = false;
     this.postVscodeNativeClose(sessionId);
-    if (wasActive && nextOnClose && this.session(nextOnClose)) {
+    if (wasActive && closeSelectionRevision === (this.selectionRevision || 0)
+        && closeProjectQuery === this.projectQuery() && nextOnClose && this.session(nextOnClose)) {
       this.activate(nextOnClose, { history: false, reveal: true });
       this.replaceNav({ kind: "term", id: nextOnClose });
+      closeSelectionRevision = this.selectionRevision || 0;
     }
     await this.refresh();
-    if (wasActive && nextOnClose) {
+    if (wasActive && closeSelectionRevision === (this.selectionRevision || 0)
+        && closeProjectQuery === this.projectQuery() && nextOnClose) {
       const nextSession = this.session(nextOnClose);
       if (nextSession && this.activeId !== nextSession.session_id) {
         this.activate(nextSession.session_id, { history: false, reveal: true });
@@ -1137,7 +1142,9 @@ Object.assign(TermdeckApp.prototype, {
     if (!selectedSessions.length) return;
     if (!await uiConfirm(`Close ${selectedSessions.length} selected terminals? This kills their processes and moves them to closed history.`)) return;
     const selectedIds = new Set(selectedSessions.map((session) => session.session_id));
-    const activeWasSelected = selectedIds.has(this.activeId);
+    const activeWasSelected = selectedIds.has(this.activeId) && !this.activeFileKey;
+    let closeSelectionRevision = this.selectionRevision || 0;
+    const closeProjectQuery = this.projectQuery();
     const activeIndex = this.sessions.findIndex((session) => session.session_id === this.activeId);
     const previouslyOpenedId = this.previouslyOpenedTerminalId(selectedIds);
     const nextSession = this.session(previouslyOpenedId) ||
@@ -1153,12 +1160,16 @@ Object.assign(TermdeckApp.prototype, {
     for (const sessionId of closedIds) this.postVscodeNativeClose(sessionId);
     this.sidebarSelectedSessionIds = new Set([...this.sidebarSelectedSessionIds]
       .filter((sessionId) => !closedIds.includes(sessionId)));
-    if (activeWasSelected && nextSession && this.session(nextSession.session_id)) {
+    if (activeWasSelected && closeSelectionRevision === (this.selectionRevision || 0)
+        && closeProjectQuery === this.projectQuery() && nextSession && this.session(nextSession.session_id)) {
       this.activate(nextSession.session_id, { history: false, reveal: true });
       this.replaceNav({ kind: "term", id: nextSession.session_id });
+      closeSelectionRevision = this.selectionRevision || 0;
     }
     await this.refresh();
-    if (activeWasSelected && nextSession && this.session(nextSession.session_id) && this.activeId !== nextSession.session_id) {
+    if (activeWasSelected && closeSelectionRevision === (this.selectionRevision || 0)
+        && closeProjectQuery === this.projectQuery() && nextSession
+        && this.session(nextSession.session_id) && this.activeId !== nextSession.session_id) {
       this.activate(nextSession.session_id, { history: false, reveal: true });
     }
     const failedCount = results.length - closedIds.length;

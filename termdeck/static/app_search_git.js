@@ -330,11 +330,13 @@ Object.assign(TermdeckApp.prototype, {
       count: 1, snippets: [{ line: "name", text: result.title, kind: "name" }],
     }]));
     this.terminalSearchClosedMatches = new Map(this.closedSessions
-      .filter((session) => String(session.title || "").toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+      .filter((session) => [session.title, session.session_id, session.agent_session_id]
+        .some((value) => String(value || "").toLocaleLowerCase().includes(query.toLocaleLowerCase())))
       .map((session) => [session.session_id, { count: 1, snippets: [{ line: "name", text: session.title, kind: "name" }] }]));
     this.filterTerminalSearchMatchesToGroup();
     this.expandGlobalTerminalSearchClosedSections();
     this.renderList();
+    this.$("session-list")?.querySelector(".terminal-id-match")?.scrollIntoView({ block: "nearest" });
     const searchingSummary = this.$("terminal-search-summary");
     if (searchingSummary) {
       searchingSummary.textContent = "searching…";
@@ -362,7 +364,8 @@ Object.assign(TermdeckApp.prototype, {
         count: 1, snippets: [{ line: "name", text: result.title, kind: "name" }],
       }]));
       this.terminalSearchClosedMatches = new Map(this.closedSessions
-        .filter((session) => String(session.title || "").toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+        .filter((session) => [session.title, session.session_id, session.agent_session_id]
+        .some((value) => String(value || "").toLocaleLowerCase().includes(query.toLocaleLowerCase())))
         .map((session) => [session.session_id, { count: 1, snippets: [{ line: "name", text: session.title, kind: "name" }] }]));
       for (const result of liveResults) this.mergeTerminalSearchMatch(this.terminalSearchMatches, result.session_id, result);
       for (const result of this.historySearchResults) {
@@ -402,7 +405,7 @@ Object.assign(TermdeckApp.prototype, {
     if (!terms.length) return [];
     return this.sessions.flatMap((session) => {
       const title = this.titlePresentation(session).text;
-      const candidates = [title, session.title, session.cli_title, session.agent_session_id]
+      const candidates = [title, session.title, session.cli_title, session.agent_session_id, session.session_id]
         .filter(Boolean).map((value) => String(value).toLocaleLowerCase());
       if (!terms.every((term) => candidates.some((value) => value.includes(term)))) return [];
       return [{ terminal_title_match: true, open_session_id: session.session_id, title, status: "open", count: 1 }];
@@ -908,11 +911,18 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // The search names this terminal by its id (or the first 4+ characters of it), not just by text in it.
+  terminalIdSearchMatch(sessionId) {
+    const query = String(this.terminalSearchText || "").trim().toLocaleLowerCase();
+    return query.length >= 4 && String(sessionId || "").toLocaleLowerCase().startsWith(query);
+  },
+
+
   renderTerminalItem(s, list) {
     const searchMatch = this.terminalSearchMatches.get(s.session_id);
     const item = document.createElement("div");
     item.className = "session-item" + (s.session_id === this.activeId && this.activeFileKey === null ? " active" : "") +
-      (searchMatch ? " terminal-search-match" : "");
+      (searchMatch ? " terminal-search-match" : "") + (searchMatch && this.terminalIdSearchMatch(s.session_id) ? " terminal-id-match" : "");
     if (searchMatch) item.tabIndex = 0;
     item.dataset.sessionId = s.session_id;
     item.dataset.worktreeId = this.worktreeIdForSession(s);
@@ -5173,7 +5183,8 @@ Object.assign(TermdeckApp.prototype, {
     for (const c of visibleClosed) {
       const item = document.createElement("div");
       const searchMatch = search ? this.terminalSearchClosedMatches.get(c.session_id) : null;
-      item.className = "closed-item" + (searchMatch ? " terminal-search-match" : "");
+      item.className = "closed-item" + (searchMatch ? " terminal-search-match" : "") +
+        (searchMatch && this.terminalIdSearchMatch(c.session_id) ? " terminal-id-match" : "");
       item.dataset.worktreeId = worktreeId;
       if (searchMatch) item.tabIndex = 0;
       const groupName = c.group_name || this.terminalGroupNameForSession(c.session_id, worktreeId);

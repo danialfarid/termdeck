@@ -26,6 +26,7 @@ from termdeck.access_control import DirectAccessMiddleware, DirectAccessPolicy
 from termdeck.codex_model_catalog import CodexModelCatalog
 from termdeck.config import TermdeckConfig
 from termdeck.file_history_service import FileHistoryService
+from termdeck.workspace_file_history import WorkspaceFileHistoryService
 from termdeck.file_service import ProjectFileService
 from filedeck.git_remote_service import GitRemoteService
 from filedeck.git_service import FileDeckGitService
@@ -708,7 +709,8 @@ class TermdeckServer:
         self.github_pull_requests = GitHubPullRequestService()
         self.worktrees = GitWorktreeService(TermdeckConfig.WORKTREES_DIR)
         self.worktree_registry = WorktreeRegistry(TermdeckConfig.WORKTREE_REGISTRY_FILE, self.state_backup, self.worktrees)
-        self.file_history = FileHistoryService(TermdeckConfig.FILE_HISTORY_DATABASE)
+        self.file_history = WorkspaceFileHistoryService(TermdeckConfig.FILE_HISTORY_DIRECTORY,
+                                                      TermdeckConfig.LEGACY_FILE_HISTORY_DATABASE)
         self.notebook_history = FileHistoryService(TermdeckConfig.NOTEBOOK_HISTORY_DATABASE,
                                                   TermdeckConfig.NOTEBOOK_HISTORY_MAX_VERSIONS_PER_NOTE)
         self.search = ProjectSearchService(self.files)
@@ -719,7 +721,7 @@ class TermdeckServer:
         # Read lazily: the settings store is built further down, and the index only asks for its ceiling
         # once it is running, which also means a changed setting applies without a restart.
         self.history_index = HistorySearchIndex(TermdeckConfig.HISTORY_INDEX_FILE,
-                                                settings_reader=lambda: self.settings_store.load())
+                                                settings_reader=lambda: self.settings_store.load_shared())
         if self.manager is not None:
             self.manager.attach_transcript_service(self.transcripts)
             self.manager.attach_history_index(self.history_index)
@@ -729,7 +731,7 @@ class TermdeckServer:
         self.settings_store = UiSettingsStore(TermdeckConfig.SETTINGS_FILE, self.state_backup)
         if self.manager is not None:
             self.manager.attach_notifier(AgentNotifier(self.settings_store.load))
-            self.manager.attach_settings_reader(self.settings_store.load)
+            self.manager.attach_settings_reader(self.settings_store.load_shared)
         self.lsp_workspace_edits = LspWorkspaceEditService(self.files, self.file_history)
         self.language_servers = LanguageServerManager(
             self.files, self.lsp_workspace_edits, self._lsp_command_overrides, self._lsp_enabled,
@@ -938,6 +940,7 @@ class TermdeckServer:
         app.get(TermdeckConfig.API_FILE_SEARCH_ROUTE, response_model=None)(self._search_files)
         app.get(TermdeckConfig.API_FILE_FIND_ROUTE, response_model=None)(self._find_files)
         app.post(TermdeckConfig.API_FILE_HISTORY_RESTORE_ROUTE, response_model=None)(self._restore_file_history)
+        app.get(TermdeckConfig.API_FILE_HISTORY_FILES_ROUTE, response_model=None)(self._file_history_files)
         app.get(TermdeckConfig.API_FILE_HISTORY_VERSION_ROUTE, response_model=None)(self._file_history_version)
         app.get(TermdeckConfig.API_FILE_HISTORY_ROUTE, response_model=None)(self._file_history)
         app.get(TermdeckConfig.API_FILE_GIT_HISTORY_ROUTE, response_model=None)(self._git_file_history)
@@ -1683,11 +1686,17 @@ class TermdeckServer:
         except (ValueError, OSError) as history_error:
             raise HTTPException(status_code=400, detail=str(history_error)) from history_error
 
-    async def _file_history_version(self, version_id: int) -> dict[str, object]:
-        version = self.file_history.get_version(version_id)
+    async def _file_history_version(self, version_id: int, root: str) -> dict[str, object]:
+        version = self.file_history.get_version(version_id, root)
         if version is None:
             raise HTTPException(status_code=404, detail="file history version not found")
         return version
+
+    async def _file_history_files(self, root: str, q: str = "", offset: int = 0, limit: int = 50) -> dict[str, object]:
+        try:
+            return await asyncio.to_thread(self.file_history.list_files, root, q, offset, limit)
+        except (ValueError, OSError) as history_error:
+            raise HTTPException(status_code=400, detail=str(history_error)) from history_error
 
     async def _git_file_history(self, root: str, path: str, limit: int = 50) -> list[dict[str, str]]:
         try:
@@ -1735,7 +1744,7 @@ class TermdeckServer:
 
     async def _restore_file_history(self, request: FileHistoryRestoreRequest) -> dict[str, object]:
         try:
-            version = self.file_history.get_version(request.version_id)
+            version = self.file_history.get_version(request.version_id, request.root)
             if version is None or not self.file_history.version_belongs_to_file(request.version_id, request.root, request.path):
                 raise FileNotFoundError(f"file history version not found: {request.version_id}")
             current = self.files.read_file(request.root, request.path)

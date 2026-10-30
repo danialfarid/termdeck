@@ -1,6 +1,7 @@
 import hashlib
 import sqlite3
 import threading
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -16,7 +17,7 @@ class FileHistoryService:
         self._max_versions_per_file = max_versions_per_file or TermdeckConfig.FILE_HISTORY_MAX_VERSIONS_PER_FILE
         self._lock = threading.RLock()
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as database:
+        with closing(self._connect()) as database, database:
             database.executescript(
                 "CREATE TABLE IF NOT EXISTS file_history ("
                 "version_id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -83,10 +84,10 @@ class FileHistoryService:
             (root, path, self._max_versions_per_file),
         )
         while True:
-            total = database.execute("SELECT COALESCE(SUM(byte_size), 0) FROM file_history").fetchone()[0]
-            if total <= TermdeckConfig.FILE_HISTORY_MAX_BYTES:
+            total = database.execute("SELECT COALESCE(SUM(byte_size), 0) FROM file_history WHERE root = ?", (root,)).fetchone()[0]
+            if total <= TermdeckConfig.FILE_HISTORY_MAX_BYTES_PER_ROOT:
                 return
-            oldest = database.execute("SELECT version_id FROM file_history ORDER BY version_id LIMIT 1").fetchone()
+            oldest = database.execute("SELECT version_id FROM file_history WHERE root = ? ORDER BY version_id LIMIT 1", (root,)).fetchone()
             if oldest is None:
                 return
             database.execute("DELETE FROM file_history WHERE version_id = ?", (oldest[0],))
@@ -96,7 +97,7 @@ class FileHistoryService:
         canonical_path = self._canonical_path(path)
         content_hash = self._content_hash(content)
         captured_at_est = TimeUtil.now_est_naive().isoformat(sep=" ")
-        with self._lock, self._connect() as database:
+        with self._lock, closing(self._connect()) as database, database:
             latest = self._latest(database, canonical_root, canonical_path)
             if latest is not None and latest["content_hash"] == content_hash:
                 return int(latest["version_id"])
@@ -119,7 +120,7 @@ class FileHistoryService:
             return int(cursor.lastrowid)
 
     def observe_file(self, root: str, path: str, content: str) -> int:
-        with self._lock, self._connect() as database:
+        with self._lock, closing(self._connect()) as database, database:
             canonical_root = self._canonical_root(root)
             canonical_path = self._canonical_path(path)
             latest = self._latest(database, canonical_root, canonical_path)
@@ -134,7 +135,7 @@ class FileHistoryService:
     def list_versions(self, root: str, path: str) -> list[dict[str, object]]:
         canonical_root = self._canonical_root(root)
         canonical_path = self._canonical_path(path)
-        with self._lock, self._connect() as database:
+        with self._lock, closing(self._connect()) as database, database:
             rows = database.execute(
                 "SELECT version_id, source, captured_at_est, byte_size FROM file_history "
                 "WHERE root = ? AND path = ? ORDER BY version_id DESC",
@@ -144,7 +145,7 @@ class FileHistoryService:
                  "captured_at_est": str(row["captured_at_est"]), "byte_size": int(row["byte_size"])} for row in rows]
 
     def get_version(self, version_id: int) -> dict[str, object] | None:
-        with self._lock, self._connect() as database:
+        with self._lock, closing(self._connect()) as database, database:
             row = database.execute(
                 "SELECT version_id, root, path, content, source, captured_at_est, byte_size "
                 "FROM file_history WHERE version_id = ?", (version_id,)
@@ -154,6 +155,52 @@ class FileHistoryService:
         return {"version_id": int(row["version_id"]), "root": str(row["root"]), "path": str(row["path"]),
                 "content": str(row["content"]), "source": str(row["source"]),
                 "captured_at_est": str(row["captured_at_est"]), "byte_size": int(row["byte_size"])}
+
+    def retained_file_rows(self, root: str) -> list[sqlite3.Row]:
+        canonical_root = self._canonical_root(root)
+        root_prefix = canonical_root.rstrip("/") + "/"
+        with self._lock, closing(self._connect()) as database, database:
+            return database.execute(
+                "WITH retained_files AS ("
+                "SELECT root, path, MAX(version_id) AS latest_version_id, COUNT(*) AS version_count "
+                "FROM file_history WHERE root = ? OR substr(root, 1, ?) = ? OR substr(path, 1, ?) = ? "
+                "OR instr(path, '..') > 0 GROUP BY root, path) "
+                "SELECT retained_files.*, version.captured_at_est FROM retained_files "
+                "JOIN file_history AS version ON version.version_id = retained_files.latest_version_id "
+                "ORDER BY retained_files.latest_version_id DESC",
+                (canonical_root, len(root_prefix), root_prefix, len(root_prefix), root_prefix),
+            ).fetchall()
+
+    def list_files(self, root: str, query: str = "", offset: int = 0, limit: int = 50) -> dict[str, object]:
+        return self.retained_file_page(root, self.retained_file_rows(root), query, offset, limit)
+
+    @classmethod
+    def retained_file_page(cls, root: str, rows: list[sqlite3.Row], query: str, offset: int,
+                           limit: int) -> dict[str, object]:
+        canonical_root = cls._canonical_root(root)
+        limit = max(1, min(limit, 100))
+        offset = max(0, offset)
+        matched = 0
+        files: list[dict[str, object]] = []
+        has_more = False
+        for row in rows:
+            target = (Path(str(row["root"])) / str(row["path"])).resolve()
+            if not target.is_relative_to(canonical_root):
+                continue
+            relative_path = target.relative_to(canonical_root).as_posix()
+            if query.strip().casefold() not in relative_path.casefold():
+                continue
+            matched += 1
+            if matched <= offset:
+                continue
+            if len(files) == limit:
+                has_more = True
+                break
+            files.append({"root": str(row["root"]), "path": str(row["path"]), "relative_path": relative_path,
+                          "latest_version_id": int(row["latest_version_id"]), "version_count": int(row["version_count"]),
+                          "captured_at_est": str(row["captured_at_est"]), "missing": not target.is_file()})
+        return {"root": canonical_root, "files": files, "has_more": has_more,
+                "next_offset": offset + len(files)}
 
     def version_belongs_to_file(self, version_id: int, root: str, path: str) -> bool:
         version = self.get_version(version_id)

@@ -6,6 +6,42 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.36.1] — 2026-10-30
+
+### Added
+
+- Browse retained local history across a file root, search paths, and preview older versions of
+  existing, deleted, or moved files from the file viewer's Root file history button.
+
+### Changed
+
+- Local file history now has a separate folder and 512 MB retention budget per workspace root outside
+  the repository. Existing snapshots migrate automatically with a backup; deleting an unused
+  workspace's history folder does not affect other projects or restore it from the old shared store.
+
+### Fixed
+
+- Selecting another terminal or file while a terminal closes cancels its delayed automatic tab selection, including bulk closes.
+- An agent spawned into another worktree is drawn under its parent in the parent's worktree too, instead of
+  only appearing in its own worktree's list.
+- On a phone, Settings opens above the sidebar and the bottom bar instead of under the open sidebar or
+  over the bottom bar, and tapping the gear again closes it (on desktop too). Dialogs and popups such as
+  New terminal, Restart, keyboard shortcuts, and quick open also open above the sidebar instead of under it.
+- On a phone, the keyboard closes when Send is tapped rather than once the send is confirmed, so tapping
+  the composer straight away to type the next message no longer has the keyboard snap shut.
+- A terminal dragged onto a sibling under the same parent and held in the middle of its row is filed under
+  that sibling; the row's top and bottom edges still reorder them. Siblings previously only reordered.
+- Terminal search in the side panel finds a terminal by its TermDeck id (such as `6ade19f891d4`), open or
+  closed; closed terminals also match their agent session id. The terminal whose id the search names (or
+  starts, from 4 characters) is outlined and scrolled into view.
+- The line naming the sender of an agent-to-agent prompt is shortened to `[from <id>]`, saving tokens on
+  every prompt.
+- Typing no longer lags with many terminals open. Each replay save copied every running terminal's whole
+  recording (up to 24 MB each) once a second, and a terminal at the recording cap recompacted and rewrote it
+  on every chunk of output; with ~90 terminals that kept the server busy enough that keys echoed late.
+  Each one-setting check also re-read the whole settings file (several MB of prompt history), and each
+  session list searched every Codex transcript directory again for a thread with no file.
+
 ## [0.36.0] — 2026-10-23
 
 ### Added
@@ -2007,7 +2043,9 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.35.2...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.36.1...HEAD
+[0.36.1]: https://github.com/danialfarid/termdeck/compare/v0.36.0...v0.36.1
+[0.36.0]: https://github.com/danialfarid/termdeck/compare/v0.35.2...v0.36.0
 [0.35.2]: https://github.com/danialfarid/termdeck/compare/v0.35.0...v0.35.2
 [0.35.1]: https://github.com/danialfarid/termdeck/compare/v0.35.0...v0.35.1
 [0.35.0]: https://github.com/danialfarid/termdeck/compare/v0.34.0...v0.35.0

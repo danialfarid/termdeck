@@ -1807,6 +1807,30 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
                 append_checkpoint.assert_called_once_with(checkpoint, b"second frame\n")
             self.assertEqual(checkpoint.read_bytes(), b"first frame\nsecond frame\n")
 
+    async def test_a_session_at_its_replay_cap_does_not_copy_or_rewrite_its_buffer_on_every_chunk(self) -> None:
+        """With ~90 terminals open, copying every buffer each flush and recompacting a capped one on every
+        chunk kept the event loop busy enough that typed keys echoed seconds late."""
+        manager = TerminalSessionManager()
+        claude_record = record("capped-claude")
+        claude_record.agent_kind = "claude"
+        claude = ManagedSession(claude_record)
+        claude.detached_live = True
+        manager._sessions[claude.record.session_id] = claude
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(TermdeckConfig, "SCROLLBACK_DIR", Path(directory)), \
+                patch.object(TermdeckConfig, "RAW_REPLAY_SESSION_BYTES", 100), \
+                patch.object(TermdeckConfig, "RAW_REPLAY_TRIM_SLACK_BYTES", 40):
+            manager.replay.record_output(claude, b"x" * 110)
+            self.assertEqual(len(claude.raw_replay_buffer), 60)
+            generation = claude.raw_replay_compaction_generation
+            await manager.replay._checkpoint_active()
+            for _ in range(4):
+                manager.replay.record_output(claude, b"y" * 10)
+            self.assertEqual(claude.raw_replay_compaction_generation, generation)
+            with patch.object(type(manager.replay), "raw_bytes", side_effect=AssertionError("full copy")):
+                self.assertEqual(manager.replay._pending_snapshots(True)[0][4], b"y" * 40)
+
     async def test_startup_reuses_shell_and_claude_checkpoints_without_consuming_them(self) -> None:
         manager = TerminalSessionManager()
         shell_record = record("restore-shell")

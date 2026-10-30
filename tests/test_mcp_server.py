@@ -93,7 +93,7 @@ class McpClientTest(unittest.TestCase):
             run(client.send_prompt("abc", "parent-1 here: follow up"))
             run(client.spawn_agent(model="codex"))
             run(client.send_prompt("abc", "/goal resume"))
-        header = "[TermDeck message from session parent-1]\n"
+        header = "[from parent-1]\n"
         self.assertEqual(seen[0]["text"], header + "follow up")
         self.assertEqual(seen[1]["prompt"], header + "do it")
         self.assertEqual(seen[2]["prompt"], header + "shared")
@@ -109,7 +109,7 @@ class McpClientTest(unittest.TestCase):
     def test_delivery_checks_look_past_the_caller_header(self) -> None:
         # The header is the same on every prompt one session sends; matching it would confirm a new
         # prompt by an old one still in the transcript.
-        self.assertEqual(agents.AgentCli.prompt_needle("[TermDeck message from session p-1]\nfollow up"),
+        self.assertEqual(agents.AgentCli.prompt_needle("[from p-1]\nfollow up"),
                          "follow up")
 
     def test_no_tool_offers_steer(self) -> None:

@@ -7,6 +7,7 @@ from urllib.parse import unquote, urlsplit
 
 from termdeck.file_history_service import FileHistoryService
 from termdeck.file_service import ProjectFileService
+from termdeck.workspace_file_history import WorkspaceFileHistoryService
 
 
 JsonObject: TypeAlias = dict[str, Any]
@@ -20,7 +21,7 @@ class PlannedFileEdit:
 
 
 class LspWorkspaceEditService:
-    def __init__(self, files: ProjectFileService, history: FileHistoryService) -> None:
+    def __init__(self, files: ProjectFileService, history: FileHistoryService | WorkspaceFileHistoryService) -> None:
         self._files = files
         self._history = history
 

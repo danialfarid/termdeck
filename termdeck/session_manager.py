@@ -2550,9 +2550,16 @@ class TerminalSessionManager:
         self._persist()
 
     def list_sessions(self, project: str | None, worktree_id: str | None = None) -> list[dict[str, object]]:
-        return [self.session_summary(ms) for ms in self._sessions.values()
-                if (project is None or ms.record.project == project) and
-                (worktree_id is None or ms.record.worktree_id == worktree_id)]
+        in_project = [ms for ms in self._sessions.values() if project is None or ms.record.project == project]
+        if worktree_id is None:
+            return [self.session_summary(ms) for ms in in_project]
+        # An agent spawned into another worktree is still drawn under its parent, so it is listed
+        # with the parent's worktree as well as its own.
+        listed = {ms.record.session_id for ms in in_project if ms.record.worktree_id == worktree_id}
+        while children := {ms.record.session_id for ms in in_project
+                           if ms.record.spawned_by_session_id in listed} - listed:
+            listed |= children
+        return [self.session_summary(ms) for ms in in_project if ms.record.session_id in listed]
 
     def list_session_keys(self, project: str | None, worktree_id: str | None = None) -> list[dict[str, object]]:
         """session_id/title/cli_title rows without building summaries.

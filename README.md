@@ -302,6 +302,13 @@ More in [docs/troubleshooting.md](docs/troubleshooting.md).
 - Language servers add rename, code actions, hover documentation, and diagnostics.
 - Markdown renders as a document with working links; images, video, audio, and PDFs open in place.
 - Local snapshots and Git history for any open file, with diffs and targeted restore.
+- Root-wide local history browsing, including retained versions of deleted or moved files. Up to 100
+  versions per file and 512 MB per workspace root. Each workspace has its own folder under
+  `~/.termdeck/file-history/<workspace-name>-<root-id>/` (or your configured TermDeck data directory),
+  with a database and `workspace.json` identifying its root. Removing an unused workspace's folder
+  removes only its saved file history, not project files, notes, or terminal sessions. Existing shared
+  history is migrated once; the original database is kept as a `file-history.migrated-*.sqlite3` backup
+  and is not automatically imported again.
 - Create, rename, duplicate, move, refresh, and trash from the tree — deletes go to the system trash.
 - Open files and navigation history survive reloads; external changes are re-read.
 

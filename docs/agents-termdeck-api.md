@@ -45,7 +45,7 @@ The tools mirror the calls below one for one: `spawn_agent`, `spawn_batch`, `sen
 `get_session`, `close_session`, `set_description`, `worktree_review`, `worktree_finish`, and
 `session_history`, `list_projects`, and `list_worktrees`. Three conveniences over raw HTTP: `spawn_agent` and `spawn_batch` default `origin_session` to
 the caller's own `$TERMDECK_SESSION_ID`; a prompt sent through the tools starts with
-`[TermDeck message from session <id>]` naming that session, unless it names it already or is a
+`[from <id>]` naming that session, unless it names it already or is a
 slash command, so the receiving agent knows who is asking; and `wait_for_response` polls `get_response` with the
 prompt's `since` stamp until the agent answers or a bounded timeout runs out, so models need
 not hand-roll polling loops. The `since` contract is unchanged: only responses stamped after

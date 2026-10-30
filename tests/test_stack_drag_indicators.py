@@ -93,12 +93,12 @@ class WiredIntoTheDragTest(unittest.TestCase):
         self.assertIn("stackParentAlreadyHolding(targetId, sourceSessionIds)", dragover)
         self.assertIn("already under", dragover)
 
-    def test_a_sibling_row_offers_a_reorder_rather_than_a_group(self) -> None:
+    def test_a_sibling_row_files_under_it_on_hold_but_never_groups(self) -> None:
         dragover = re.search(r"item\.ondragover = \(event\) => \{(.*?)\n    \};", self.app, re.S).group(1)
         hold_to_file = re.search(r"const holdToFile = ([^;]*);", dragover, re.S).group(1)
         hold_to_create = re.search(r"const holdToCreate = ([^;]*);", dragover, re.S).group(1)
 
-        self.assertIn("!settledParentId", hold_to_file)
+        self.assertNotIn("settledParentId", hold_to_file)
         self.assertIn("!settledParentId", hold_to_create)
 
     def test_dropping_on_the_parents_row_does_what_it_said(self) -> None:

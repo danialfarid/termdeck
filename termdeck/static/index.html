@@ -84,6 +84,7 @@
         <div id="file-header-controls" class="hidden">
           <button id="mtime-toggle" title="Show last-modified times"><span class="codicon codicon-calendar"></span></button>
           <button id="tree-sort-toggle" title="Sort files alphabetically"><span class="codicon codicon-sort-precedence"></span></button>
+          <button id="root-file-history-toggle" title="Browse local history for all files in this root, including deleted files" aria-label="Root file history"><span class="codicon codicon-history"></span></button>
           <button id="hide-excluded-toggle" title="Hide excluded folders"><span class="codicon codicon-filter"></span></button>
         </div>
         <button id="attention-bell-btn" class="hidden" title="No terminal needs attention" aria-label="No terminal needs attention"><span class="codicon codicon-bell"></span><span id="attention-bell-count" class="attention-bell-count"></span></button>
@@ -693,6 +694,7 @@
      the app_*.js files attach method groups to its prototype; app_boot.js instantiates. Order matters. -->
 <script src="/static/app.js?v=20261017-send-esc"></script>
 <script src="/static/app_search_git.js?v=20261019-stack-settles"></script>
+<script src="/static/app_root_file_history.js"></script>
 <script src="/static/app_markdown_files.js?v=20261017-send-esc"></script>
 <script src="/static/app_terminal.js?v=20261012-keyboard-diagnostics"></script>
 <script src="/static/app_terminal_debug.js"></script>

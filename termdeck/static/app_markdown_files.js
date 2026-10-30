@@ -553,7 +553,7 @@ Object.assign(TermdeckApp.prototype, {
   async loadFileHistoryItemContent(item, entry) {
     const url = item.kind === "git"
       ? `/api/files/git-history/${encodeURIComponent(item.commit_id)}?root=${encodeURIComponent(entry.root)}&path=${encodeURIComponent(entry.path)}`
-      : `/api/files/history/${encodeURIComponent(item.version_id)}`;
+      : `/api/files/history/${encodeURIComponent(item.version_id)}?root=${encodeURIComponent(entry.root)}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error("history version unavailable");
     const payload = await res.json();
@@ -3068,6 +3068,7 @@ Object.assign(TermdeckApp.prototype, {
       this.dispatchNextMarkdownPrompt(view);
       return;
     }
+    if (this.touchMobileLayoutEnabled()) prompt.blur();
     void this.submitHistoryPromptViaApi(view, text);
   },
 
@@ -3160,8 +3161,9 @@ Object.assign(TermdeckApp.prototype, {
     if (this.historyOpen && this.activeId === sessionId) {
       this.showPromptDraft(view);
       this.scrollHistoryToBottom();
-      if (this.touchMobileLayoutEnabled()) prompt.blur();
-      else prompt.focus();
+      // A phone lets go of the keyboard when Send is tapped; this runs once the server answers, by
+      // which time the composer may have been tapped again for the next message.
+      if (!this.touchMobileLayoutEnabled()) prompt.focus();
     }
     clearTimeout(view.promptSubmitTimer);
     view.promptSubmitTimer = setTimeout(() => {
@@ -8463,6 +8465,7 @@ Object.assign(TermdeckApp.prototype, {
 
 
   activate(id, options = {}) {
+    this.selectionRevision = (this.selectionRevision || 0) + 1;
     this.closePromptHistory();
     this.closeHistorySendMenu();
     this.hideSelectionActions(true);

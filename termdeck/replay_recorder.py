@@ -2,6 +2,8 @@ import asyncio
 import os
 import re
 import uuid
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 
 from termdeck import agents
@@ -141,7 +143,7 @@ class ReplayRecorder:
     # -- checkpoint scheduling ---------------------------------------------
 
     @staticmethod
-    def _snapshot(ms, replay_kind: str, target: Path, full_payload: bytes,
+    def _snapshot(ms, replay_kind: str, target: Path, full_payload: Callable[[], bytes],
                   pending: bytearray, byte_limit: int, compaction_generation: int,
                   checkpoint_compaction_generation: int) -> tuple | None:
         if not pending and compaction_generation == checkpoint_compaction_generation and target.exists():
@@ -150,7 +152,9 @@ class ReplayRecorder:
         target_bytes = target.stat().st_size if target.exists() else 0
         replace = not target.exists() or compaction_generation != checkpoint_compaction_generation or \
             target_bytes + len(pending_payload) > byte_limit
-        write_payload = full_payload if replace else pending_payload
+        # Built only when replacing: copying every running session's whole buffer once a second, on the
+        # event loop, held typing back by seconds with ~90 terminals open.
+        write_payload = full_payload() if replace else pending_payload
         if not write_payload:
             return None
         return ms, replay_kind, compaction_generation, target, write_payload, pending_payload, replace
@@ -163,7 +167,7 @@ class ReplayRecorder:
             agent = agents.agent_cli(ms.record.agent_kind)
             if not agent.is_agent and ms.buffer:
                 snapshot = self._snapshot(
-                    ms, self.SCROLLBACK_KIND, self.scrollback_path(ms.record.session_id), bytes(ms.buffer),
+                    ms, self.SCROLLBACK_KIND, self.scrollback_path(ms.record.session_id), partial(bytes, ms.buffer),
                     ms.scrollback_checkpoint_pending, TermdeckConfig.SCROLLBACK_BYTES,
                     ms.scrollback_compaction_generation, ms.scrollback_checkpoint_compaction_generation)
                 if snapshot is not None:
@@ -171,7 +175,7 @@ class ReplayRecorder:
             if self.enabled and agent.records_raw_replay and ms.raw_replay_buffer:
                 snapshot = self._snapshot(
                     ms, self.RAW_KIND, self.raw_path(ms.record.session_id),
-                    self.raw_bytes(ms), ms.raw_replay_checkpoint_pending,
+                    partial(self.raw_bytes, ms),ms.raw_replay_checkpoint_pending,
                     TermdeckConfig.RAW_REPLAY_SESSION_BYTES, ms.raw_replay_compaction_generation,
                     ms.raw_replay_checkpoint_compaction_generation)
                 if snapshot is not None:
@@ -397,7 +401,7 @@ class ReplayRecorder:
         ms.raw_replay_checkpoint_pending.extend(filtered)
         session_overflow = len(ms.raw_replay_buffer) - TermdeckConfig.RAW_REPLAY_SESSION_BYTES
         if session_overflow > 0:
-            self._trim_front(ms.raw_replay_buffer, session_overflow,
+            self._trim_front(ms.raw_replay_buffer, session_overflow + TermdeckConfig.RAW_REPLAY_TRIM_SLACK_BYTES,
                              boot_boundary_only=agents.agent_cli(ms.record.agent_kind).fullscreen_tui)
             ms.raw_replay_compaction_generation += 1
         self._total_bytes += len(ms.raw_replay_buffer) - previous_bytes

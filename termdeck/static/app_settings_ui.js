@@ -2206,9 +2206,13 @@ Object.assign(TermdeckApp.prototype, {
     const rect = anchor.getBoundingClientRect();
     pop.classList.remove("hidden");
     const below = rect.bottom + 6;
-    const top = below + pop.offsetHeight > window.innerHeight - 8 ? rect.top - pop.offsetHeight - 6 : below;
-    pop.style.top = Math.max(8, top) + "px";
-    pop.style.left = Math.min(rect.left, window.innerWidth - pop.offsetWidth - 12) + "px";
+    const fitsBelow = below + pop.offsetHeight <= window.innerHeight - 8;
+    // Above the anchor it hangs from its bottom edge, so rows that load later grow it upward,
+    // never down over the anchor (the phone's bottom bar holds the settings gear).
+    pop.style.top = fitsBelow ? below + "px" : "";
+    pop.style.bottom = fitsBelow ? "" : window.innerHeight - rect.top + 6 + "px";
+    pop.style.maxHeight = fitsBelow ? "" : rect.top - 14 + "px";
+    pop.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - pop.offsetWidth - 12)) + "px";
   },
 
 
@@ -2434,6 +2438,7 @@ Object.assign(TermdeckApp.prototype, {
 
 
   async activateFile(key, line, options = {}) {
+    this.selectionRevision = (this.selectionRevision || 0) + 1;
     const entry = this.openFiles.get(key);
     if (!entry) return;
     const activeFileChanged = this.activeFileKey !== key;

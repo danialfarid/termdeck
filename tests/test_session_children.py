@@ -34,6 +34,18 @@ class ChildSessionIdsTest(unittest.TestCase):
 
         self.assertEqual(manager.child_session_ids("parent"), ["child-a", "child-b"])
 
+    def test_a_worktree_lists_children_spawned_into_other_worktrees(self) -> None:
+        manager = TerminalSessionManager.__new__(TerminalSessionManager)
+        manager._sessions = {session_id: ManagedSession(record(session_id, spawned_by))
+                             for session_id, spawned_by in
+                             (("parent", None), ("child", "parent"), ("grandchild", "child"), ("other", None))}
+        for session_id in ("child", "grandchild", "other"):
+            manager._sessions[session_id].record.worktree_id = "wt-side"
+        manager.session_summary = lambda ms: ms.record.session_id
+
+        self.assertEqual(manager.list_sessions("test", "root"), ["parent", "child", "grandchild"])
+        self.assertEqual(manager.list_sessions("test", "wt-side"), ["child", "grandchild", "other"])
+
     def test_parent_without_children_lists_none(self) -> None:
         manager = TerminalSessionManager.__new__(TerminalSessionManager)
         manager._sessions = {"parent": ManagedSession(record("parent"))}
