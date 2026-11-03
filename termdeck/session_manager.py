@@ -1275,7 +1275,12 @@ class TerminalSessionManager:
             return False
         # Typing, not input: a terminal's input channel also carries xterm's own protocol replies, which
         # arrive constantly while nobody is touching the keyboard (see last_typing_monotonic).
-        return ms.last_typing_monotonic < ms.resume_spawn_monotonic
+        if ms.last_typing_monotonic >= ms.resume_spawn_monotonic:
+            return False
+        # A thread with a saved transcript was not refused for being empty: something else stopped it --
+        # a dead login exits just as fast -- and letting go of it rebinds the tab to a stranger.
+        cwd = Path(ms.record.cwd) if ms.record.cwd else None
+        return agents.agent_cli(ms.record.agent_kind).transcript_path(cwd, ms.record.agent_session_id) is None
 
     def _start_fresh_after_refused_resume(self, ms: ManagedSession) -> None:
         agent = agents.agent_cli(ms.record.agent_kind)

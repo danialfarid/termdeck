@@ -238,6 +238,8 @@ const SERVER_LOCAL_SETTING_KEYS = new Set(["tall_webgl", "notebook_open"]);
 const MOBILE_DISPLAY_SCALE_MIN = 0.5;
 const MOBILE_DISPLAY_SCALE_MAX = 1.6;
 const MOBILE_DISPLAY_SCALE_STEP = 0.1;
+const MOBILE_SIDEBAR_SWIPE_PX = 60;
+const MOBILE_SIDEBAR_SWIPE_MS = 600;
 // How near the end of the transcript still counts as reading the end, matching captureHistoryScroll.
 const HISTORY_BOTTOM_SLACK_PX = 80;
 // Telling an iPhone keyboard from an Android one: iPhone Safari pans to the focused field itself,
@@ -1341,6 +1343,74 @@ class TermdeckApp {
     this.setMobileSidebarCollapsed(true);
   }
 
+  // The sidebar follows a sideways swipe: right draws it out, left folds it. Let go past half way, or flick,
+  // and it finishes; otherwise it springs back. A swipe that something under the finger can still scroll
+  // that way (a wide code block, the debug terminal) is that element's.
+  installMobileSidebarSwipe() {
+    const sidebar = this.$("sidebar");
+    let start = null;
+    window.addEventListener("touchstart", (event) => {
+      const touch = event.touches[0];
+      start = event.touches.length === 1
+        ? { x: touch.clientX, y: touch.clientY, at: Date.now(), scrollers: this.sidewaysScrollers(event.target),
+          drag: null, offset: 0 } : null;
+    }, { passive: true, capture: true });
+    window.addEventListener("touchmove", (event) => {
+      const touch = event.touches[0];
+      if (!start || start.drag === false || !touch) return;
+      const dx = touch.clientX - start.x;
+      if (start.drag === null) {
+        const dy = touch.clientY - start.y;
+        // Far enough that whatever under the finger scrolls sideways has started to.
+        if (Math.abs(dx) < 16 && Math.abs(dy) < 16) return;
+        const collapsed = document.body.classList.contains("mobile-sidebar-collapsed");
+        start.drag = Math.abs(dx) >= 2 * Math.abs(dy) && (collapsed ? dx > 0 : dx < 0) &&
+          start.scrollers.every(([left, right]) => (dx > 0 ? left : right) <= 1) && { opening: collapsed };
+        if (!start.drag) return;
+        document.body.classList.remove("mobile-sidebar-collapsed");
+        start.drag.width = sidebar.offsetWidth;
+      }
+      const { opening, width } = start.drag;
+      start.offset = Math.max(-width, Math.min(0, opening ? dx - width : dx));
+      sidebar.style.transform = `translateX(${start.offset}px)`;
+    }, { passive: true, capture: true });
+    const release = (event) => {
+      const touch = event.changedTouches[0];
+      const drag = start?.drag;
+      if (!drag || !touch) {
+        start = null;
+        return;
+      }
+      const dx = touch.clientX - start.x;
+      const flick = Math.abs(dx) >= MOBILE_SIDEBAR_SWIPE_PX && Date.now() - start.at <= MOBILE_SIDEBAR_SWIPE_MS;
+      const open = event.type === "touchend" ? (flick ? dx > 0 : start.offset > -drag.width / 2) : !drag.opening;
+      start = null;
+      sidebar.style.transition = "transform 180ms ease-out";
+      sidebar.style.transform = `translateX(${open ? 0 : -drag.width}px)`;
+      setTimeout(() => {
+        sidebar.style.transition = "";
+        sidebar.style.transform = "";
+        this.setMobileSidebarCollapsed(!open);
+      }, 180);
+    };
+    window.addEventListener("touchend", release, { passive: true, capture: true });
+    window.addEventListener("touchcancel", release, { passive: true, capture: true });
+  }
+
+  // What under the finger the finger itself could scroll sideways, as [room to the left, room to the
+  // right]. Only one with room in the swipe's direction takes it. Watching scrollLeft move instead lost
+  // every swipe over a wide table or code block once iOS rubber-banded it at its edge, and an
+  // overflow-hidden box left a few pixels off its edge swallowed every swipe after it.
+  sidewaysScrollers(target) {
+    const scrollers = [];
+    for (let el = target instanceof Element ? target : null; el && el !== document.body; el = el.parentElement) {
+      if (el.scrollWidth > el.clientWidth + 1 && /auto|scroll/.test(getComputedStyle(el).overflowX)) {
+        scrollers.push([el.scrollLeft, el.scrollWidth - el.clientWidth - el.scrollLeft]);
+      }
+    }
+    return scrollers;
+  }
+
   initializeMobileSidebar() {
     if (!this.touchMobileLayoutEnabled()) return;
     document.body.classList.add("mobile-touch-layout");
@@ -1352,6 +1422,13 @@ class TermdeckApp {
     this.$("mobile-sidebar-pin").onclick = () => this.setMobileSidebarPinned(!this.mobileSidebarPinned);
     this.$("mobile-sidebar-selection-done").onclick = () => this.endMobileSidebarSelection();
     this.syncMobileSidebarIdentity();
+    this.installMobileSidebarSwipe();
+    const activeView = () => this.views.get(this.activeId);
+    this.terminalKeys = this.terminalKeyPad(() => activeView()?.term, (data) => {
+      if (activeView() && !this.readOnlyMode) this.sendTrackedInput(activeView(), data);
+    });
+    this.terminalKeys.id = "terminal-keys";
+    this.$("terminal-area").after(this.terminalKeys);
     this.$("main")?.addEventListener("click", () => {
       if (document.body.classList.contains("mobile-sidebar-collapsed")) return;
       this.collapseMobileSidebarAfterSelection();

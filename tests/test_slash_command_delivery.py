@@ -4,8 +4,7 @@ A "/" line the deck does not handle itself -- "/goal resume" on an agent with
 no /goal command -- is still a command: the agent runs it without writing it
 back as a user turn, so transcript matching could never confirm it and the
 entry sat greyed as "not confirmed" until it aged out. These now resolve the
-moment the prompt API accepts them, leaving a "sent to the agent terminal"
-record behind; a send that fails still lands unconfirmed with its retry. A
+moment the prompt API accepts them, said on the status line only; a send that fails still lands unconfirmed with its retry. A
 path is not a command, and ordinary prompts still wait on the transcript.
 """
 
@@ -152,10 +151,8 @@ class SlashCommandDeliveryTest(unittest.TestCase):
         output = self.run_scenario({"mode": "submit", "text": "/goal resume"})
         self.assertTrue(output["sent"])
         self.assertEqual(output["pending"], [])
-        self.assertEqual(len(output["commandResults"]), 1)
-        self.assertEqual(output["commandResults"][0]["title"], "/goal")
-        self.assertTrue(output["commandResults"][0]["text"].startswith(
-            "/goal resume was sent to the agent terminal."))
+        # No card in the transcript: the agent's own reply there already says what happened.
+        self.assertEqual(output["commandResults"], [])
         self.assertEqual(output["status"], "/goal sent")
         self.assertEqual(output["submitTextCalls"], 0)
         self.assertIn("/goal resume", output["history"])
@@ -214,6 +211,23 @@ class SlashCommandDeliveryTest(unittest.TestCase):
         self.assertEqual(len(output["merged"]), 1)
         self.assertEqual(output["merged"][0]["pending_delivery_state"], "sending")
         self.assertEqual(len(output["remaining"]), 1)
+
+    def test_an_old_failed_send_is_never_dropped(self) -> None:
+        # Its only copy is here: dropping it after ten minutes lost the message for good.
+        output = self.run_scenario({"mode": "merge", "turns": [], "pending": [
+            {"text": "hello there", "beforeCount": 0, "pending_id": "p1", "timestamp": 1,
+             "delivery_state": "unconfirmed", "busy_at_submit": False, "idle_since": 0},
+        ]})
+        self.assertEqual(output["remaining"], [{"text": "hello there", "delivery_state": "unconfirmed"}])
+        self.assertEqual(output["merged"][0]["pending_delivery_state"], "unconfirmed")
+
+    def test_an_old_accepted_send_ages_out(self) -> None:
+        output = self.run_scenario({"mode": "merge", "turns": [], "pending": [
+            {"text": "hello there", "beforeCount": 0, "pending_id": "p1", "timestamp": 1,
+             "delivery_state": "unconfirmed", "busy_at_submit": False, "idle_since": 0, "accepted": True},
+        ]})
+        self.assertEqual(output["remaining"], [])
+        self.assertEqual(output["merged"], [])
 
     def test_merge_keeps_normal_pending(self) -> None:
         output = self.run_scenario({"mode": "merge", "turns": [], "pending": [

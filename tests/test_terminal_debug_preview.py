@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 
 from termdeck.config import TermdeckConfig
@@ -39,7 +39,30 @@ class TerminalDebugPreviewTest(unittest.TestCase):
         replay, _ = manager.attach_debug_client("test")
         self.assertTrue(replay.endswith(TermdeckConfig.SYNC_UPDATE_END))
 
-    def test_debug_socket_is_read_only_and_can_inspect_a_dormant_session(self) -> None:
+    def test_debug_socket_types_but_never_resizes_or_repaints(self) -> None:
+        server = object.__new__(TermdeckServer)
+        server.manager = Mock()
+        server.manager.has_session.return_value = True
+        server.manager.session_summary_by_id.return_value = {"cols": 101, "rows": 200, "running": True}
+        server.manager.attach_debug_client.return_value = (b"screen", asyncio.Queue())
+        server.manager.session_draft.return_value = ""
+        server.manager.session_draft_revision.return_value = 0
+        app = FastAPI()
+        app.websocket("/ws/{session_id}/debug")(server._ws_terminal_debug)
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/test/debug") as websocket:
+                websocket.receive_json()
+                websocket.receive_bytes()
+                websocket.receive_json()
+                websocket.send_json({"type": "input", "data": "\x1b[A"})
+                websocket.send_json({"type": "repaint"})
+                websocket.send_json({"type": "resize", "cols": 40, "rows": 10})
+                self.assertEqual(websocket.receive_json(), {"type": "resize_rejected", "cols": 101, "rows": 200})
+        server.manager.write_user_input.assert_called_once_with("test", "\x1b[A")
+        server.manager.request_screen_repaint.assert_not_called()
+        server.manager.resize.assert_not_called()
+
+    def test_remote_read_only_debug_socket_cannot_type_and_can_inspect_a_dormant_session(self) -> None:
         server = object.__new__(TermdeckServer)
         server.manager = Mock()
         server.manager.has_session.return_value = True
@@ -48,7 +71,12 @@ class TerminalDebugPreviewTest(unittest.TestCase):
         server.manager.session_draft.return_value = ""
         server.manager.session_draft_revision.return_value = 0
         app = FastAPI()
-        app.websocket("/ws/{session_id}/debug")(server._ws_terminal_debug)
+
+        async def remote_read_only(websocket: WebSocket, session_id: str) -> None:
+            websocket.scope.setdefault("state", {})["termdeck_read_only"] = True
+            await server._ws_terminal_debug(websocket, session_id)
+
+        app.websocket("/ws/{session_id}/debug")(remote_read_only)
         with TestClient(app) as client:
             with client.websocket_connect("/ws/test/debug") as websocket:
                 self.assertEqual(websocket.receive_json(), {"type": "debug_geometry", "cols": 101, "rows": 200, "running": False})

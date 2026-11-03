@@ -130,6 +130,12 @@ class MobileTranscriptChromeTest(unittest.TestCase):
             'if (deliveryState === "unconfirmed" && this.touchMobileLayoutEnabled() && !promptClampable) {',
             self.client)
 
+    def test_a_confirmed_send_leaves_the_next_message_in_the_composer(self) -> None:
+        # Emptied on Send; emptying again when the server answers wiped what was typed meanwhile.
+        body = method_source(self.client, "submitHistoryPromptText(view, text, options = {})")
+        self.assertNotIn("persistMarkdownPromptDraft", body)
+        self.assertNotIn("showPromptDraft", body)
+
     def test_open_sidebar_floats_translucent(self) -> None:
         for fragment in (
             "body.mobile-touch-layout:not(.mobile-sidebar-collapsed) #sidebar {",

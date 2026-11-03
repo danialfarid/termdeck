@@ -125,8 +125,9 @@ class CodexCli(AgentCli):
         self._rollout_paths: dict[str, Path] = {}
         self._rollout_checked: dict[str, float] = {}
         # When each recent day directory last gained or lost an entry: a thread pages to a new
-        # file, so an unchanged set of directories means no thread paged and cached pages hold.
-        self._rollout_day_mtimes: dict[Path, int] = {}
+        # file, so an unchanged set of directories means no thread paged and cached pages hold. Kept per
+        # thread: shared, the first thread to look used up the change and another's new page went unseen.
+        self._rollout_day_mtimes: dict[str, dict[Path, int]] = {}
         # Threads a full search found no file for. Searching the whole tree again on every session list,
         # for every such thread, took a tenth of the server's time.
         self._rollout_missing: set[str] = set()
@@ -238,9 +239,9 @@ class CodexCli(AgentCli):
                 except OSError:
                     mtimes = None
             if mtimes is not None:
-                if mtimes == self._rollout_day_mtimes:
+                if mtimes == self._rollout_day_mtimes.get(agent_session_id):
                     return cached
-                self._rollout_day_mtimes = mtimes
+                self._rollout_day_mtimes[agent_session_id] = mtimes
             newest = max((page for day in self._recent_day_dirs() if day.is_dir()
                           for page in day.glob(f"rollout-*-{agent_session_id}_*.jsonl")
                           if self.session_id_from_path(page) == agent_session_id),

@@ -4241,7 +4241,7 @@ class TermdeckServer:
         if not self.manager.has_session(session_id):
             await websocket.close(code=TermdeckConfig.WS_CODE_UNKNOWN_SESSION)
             return
-        read_only = debug_preview or bool(websocket.scope.get("state", {}).get("termdeck_read_only"))
+        read_only = bool(websocket.scope.get("state", {}).get("termdeck_read_only"))
         if read_only and not debug_preview and self.manager.session_summary_by_id(session_id).get("dormant"):
             await websocket.close(code=4403, reason="read-only mode cannot start a dormant terminal")
             return
@@ -4267,7 +4267,8 @@ class TermdeckServer:
                                                        self.manager.session_draft_revision(session_id)}))
             if read_only:
                 await websocket.send_text(json.dumps({WsMessageFields.TYPE: "access_mode", "read_only": True}))
-            client_pump = asyncio.create_task(self._pump_client_to_pty(websocket, session_id, read_only))
+            client_pump = asyncio.create_task(self._pump_client_to_pty(
+                websocket, session_id, read_only, typing_only=debug_preview and not read_only))
             output_pump = asyncio.create_task(self._pump_queue_to_client(websocket, queue))
             done, pending = await asyncio.wait({client_pump, output_pump}, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
@@ -4556,14 +4557,20 @@ class TermdeckServer:
                                                "has_more": has_more,
                                                "chunks": len(chunks)}))
 
-    async def _pump_client_to_pty(self, websocket: WebSocket, session_id: str, read_only: bool = False) -> None:
+    async def _pump_client_to_pty(self, websocket: WebSocket, session_id: str, read_only: bool = False,
+                                  typing_only: bool = False) -> None:
         while True:
             try:
                 raw = await websocket.receive_text()
             except WebSocketDisconnect:
                 return
             message = json.loads(raw)
-            if read_only:
+            # The phone's debug preview types into the terminal but never resizes or repaints it.
+            if typing_only and message.get(WsMessageFields.TYPE) == WsMessageFields.INPUT:
+                self.manager.ensure_session_running(session_id)
+                self.manager.write_user_input(session_id, message[WsMessageFields.DATA])
+                continue
+            if read_only or typing_only:
                 if message.get(WsMessageFields.TYPE) == WsMessageFields.RESIZE:
                     summary = self.manager.session_summary_by_id(session_id)
                     await websocket.send_json({"type": "resize_rejected", "cols": summary[WsMessageFields.COLS],

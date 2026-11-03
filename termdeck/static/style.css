@@ -556,7 +556,20 @@ body.dragging { user-select: none; cursor: col-resize; }
    how a keyboard shifted the whole page on phones. Nothing ever scrolls #main on purpose. hidden stays
    for browsers without clip, where the keyboard-resize handlers reset the scroll instead. */
 #main { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; overflow: clip; }
-.terminal-debug-panel { position: absolute; z-index: 25; top: 0; left: 0; right: 0; display: flex; flex-direction: column; min-height: 0; background: var(--term-bg); border: 1px solid var(--border); }
+#history-area.terminal-debug-open #history-body, #history-area.terminal-debug-open #history-composer { display: none; }
+/* A phone closes it from the toolbar's debug button: the keys bar takes the header's place, one row. */
+body.mobile-touch-layout .terminal-debug-header { display: none; }
+body.mobile-touch-layout .terminal-debug-keys { position: static; order: 1; flex: none; padding: 4px 6px; background: var(--panel); }
+/* Under a plain terminal too, while it has the keyboard. */
+#terminal-keys { display: none; }
+body.mobile-touch-layout #terminal-area:not(.hidden):not(.history-suspended):focus-within + #terminal-keys { display: flex; order: 0; }
+body.mobile-touch-layout .terminal-debug-keys button { flex: 1; width: auto; height: 34px; }
+.terminal-debug-keys { position: absolute; right: 10px; bottom: 10px; display: flex; gap: 6px; }
+.terminal-debug-keys button { width: 32px; height: 32px; padding: 0; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--panel2) 90%, transparent); color: var(--text); opacity: 0.95; touch-action: manipulation; }
+.terminal-debug-keys button[aria-pressed="true"] { background: var(--accent); color: var(--bg); opacity: 1; }
+/* Only while typing: the terminal holds focus exactly while the keyboard is up. */
+.terminal-debug-panel:not(:focus-within) .terminal-debug-keys { display: none; }
+.terminal-debug-panel { position: relative; flex: 1; display: flex; flex-direction: column; min-height: 0; background: var(--term-bg); border: 1px solid var(--border); }
 .terminal-debug-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; background: var(--panel); color: var(--text); font-size: var(--system-font-size); flex: none; }
 .terminal-debug-header button { flex: none; }
 .terminal-debug-viewport { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }

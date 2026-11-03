@@ -342,6 +342,14 @@ class RefusedResumeStartsFreshTest(unittest.TestCase):
 
         self.assertEqual(self.spawned, [])
 
+    def test_a_saved_thread_is_never_let_go_of(self) -> None:
+        # A logged-out account exits just as fast as a refused resume; the thread itself is fine.
+        with patch("termdeck.agents.codex.CodexCli.transcript_path", lambda *a: Path("/tmp/rollout.jsonl")):
+            self.exit_after(3.0)
+
+        self.assertEqual(self.spawned, [])
+        self.assertEqual(self.session.record.agent_session_id, "thread-1")
+
     def test_it_only_tries_once(self) -> None:
         # Otherwise an agent that exits during startup for any other reason is respawned forever.
         self.exit_after(3.0)

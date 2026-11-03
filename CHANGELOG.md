@@ -6,6 +6,38 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.36.3] - 2026-11-02
+
+### Fixed
+
+- A Codex transcript follows its thread onto a new page even when another thread looked at the session
+  folders first; it used to stay on the old page, so the transcript stopped matching the terminal.
+- Swiping the mobile sidebar open no longer stops working over wide tables and code blocks: a box
+  only takes the swipe when it can scroll that way, not when iOS bounces it at its edge.
+- A tab whose agent exits right after a resume (a logged-out account, say) keeps its thread when that
+  thread has a saved transcript. Only an empty, never-saved thread is now let go and replaced by a new
+  session; before, the tab was rebound to a fresh thread that never saved, and every restart then closed it.
+- Text typed into the transcript composer right after Send is no longer wiped when the server confirms
+  the send. The composer empties once, on Send.
+- A message whose send failed, or never finished because the page closed mid-send, is no longer dropped
+  from the transcript ten minutes later. Its only copy is that entry, so it stays with its retry until
+  it is sent or dismissed. Only a message the server took still ages out.
+- A slash command the agent runs without a transcript line, such as `/goal resume`, no longer leaves a
+  "was sent to the agent terminal" card in the transcript that stayed until a reload. The status line
+  says it was sent, and the agent's own reply shows in the transcript.
+
+### Changed
+
+- On a phone, the terminal debug view takes typing: it opens in place of the transcript and its
+  composer, tapping the terminal raises the keyboard into it, and floating arrow and Esc keys, shown while the keyboard is up,
+  cover what a phone keyboard lacks. Shift, Option, Control and Command are push buttons that stay
+  down until tapped again, so Option+← can be pressed over and over. The same key bar shows under a plain
+  terminal (a zsh tab) while it has the keyboard. It still never resizes or repaints the terminal, and a read-only
+  remote viewer still cannot type.
+- On a phone, the sidebar follows your finger: swipe right to draw it out, left to fold it. Let go past
+  half way, or flick, and it finishes; otherwise it springs back. A swipe over something that can still
+  scroll that way, such as a wide code block, scrolls it instead.
+
 ## [0.36.2] — 2026-10-30
 
 ### Fixed
@@ -2053,7 +2085,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.36.2...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.36.3...HEAD
+[0.36.3]: https://github.com/danialfarid/termdeck/compare/v0.36.2...v0.36.3
 [0.36.2]: https://github.com/danialfarid/termdeck/compare/v0.36.1...v0.36.2
 [0.36.1]: https://github.com/danialfarid/termdeck/compare/v0.36.0...v0.36.1
 [0.36.0]: https://github.com/danialfarid/termdeck/compare/v0.35.2...v0.36.0

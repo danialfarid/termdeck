@@ -2821,7 +2821,9 @@ Object.assign(TermdeckApp.prototype, {
         item.idle_since = Date.now();
       }
       const waited = Date.now() - (item.idle_since || item.timestamp || Date.now());
-      if (waited > PENDING_PROMPT_DISCARD_MS) {
+      // Only a prompt the server took: one whose send failed, or never came back (the page was closed
+      // mid-send), exists nowhere else, so it stays with its retry until sent or dismissed.
+      if (waited > PENDING_PROMPT_DISCARD_MS && item.accepted) {
         // It is never coming back as a user turn. The transcript itself is authoritative from here.
         if (optimisticIndex >= 0) merged.splice(optimisticIndex, 1);
         continue;
@@ -2887,6 +2889,7 @@ Object.assign(TermdeckApp.prototype, {
             ? item.delivery_state : "awaiting_transcript",
           busy_at_submit: item?.busy_at_submit === true,
           idle_since: Number(item?.idle_since) || 0,
+          accepted: item?.accepted === true,
         })).filter((item) => item.text.trim() && !this.historySlashCommandForText(item.text, sessionId));
       }
     } catch (_error) {
@@ -2949,6 +2952,7 @@ Object.assign(TermdeckApp.prototype, {
     const item = pending.find((candidate) => candidate.pending_id === pendingId);
     if (!item) return;
     item.delivery_state = deliveryState;
+    if (deliveryState === "awaiting_transcript") item.accepted = true;
     this.historyPendingPrompts.set(sessionId, pending);
     this.persistHistoryPendingPrompts(sessionId, pending);
     const live = this.historyLiveTurnsBySession.get(sessionId) || this.historyTurnsBySession.get(sessionId) || [];
@@ -3112,14 +3116,11 @@ Object.assign(TermdeckApp.prototype, {
       }
       if (this.historyTextIsUntrackedSlashCommand(text, view.sessionId)) {
         // The transcript will never show this line, so the send succeeding is the
-        // confirmation. Waiting on a match instead left it unconfirmed until it aged out.
+        // confirmation. Waiting on a match instead left it unconfirmed until it aged out. The status line
+        // says so; a card in the transcript only repeated what the agent's own reply there says.
         this.dismissHistoryPendingPrompt(view.sessionId, pendingId);
         if (!options.fromQueue) this.recordPromptHistory(view.sessionId, text);
-        const commandLine = String(text).trim();
-        const command = commandLine.split(/\s+/)[0];
-        this.showHistorySlashCommandResult(view, command,
-          `${commandLine} was sent to the agent terminal. It does not create a transcript message, ` +
-          "so delivery is confirmed here instead.");
+        const command = String(text).trim().split(/\s+/)[0];
         if (result.session) this.applySessionStatus({ ...result.session, session_id: view.sessionId });
         this.$("status-name").textContent = `${command} sent`;
         return true;
@@ -3157,9 +3158,9 @@ Object.assign(TermdeckApp.prototype, {
       this.scrollTallContainerToCursor(view);
     }
     if (!options.fromQueue) this.recordPromptHistory(sessionId, promptText);
-    if (!options.fromQueue) this.persistMarkdownPromptDraft(view, "", { immediate: true });
+    // The composer was emptied when Send was tapped. Emptying it again here, once the server answers,
+    // wiped whatever was typed for the next message in between.
     if (this.historyOpen && this.activeId === sessionId) {
-      this.showPromptDraft(view);
       this.scrollHistoryToBottom();
       // A phone lets go of the keyboard when Send is tapped; this runs once the server answers, by
       // which time the composer may have been tapped again for the next message.

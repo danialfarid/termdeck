@@ -514,7 +514,7 @@ Object.assign(TermdeckApp.prototype, {
         this.$("status-name").textContent = "read-only mode · terminal input is disabled";
         return;
       }
-      const normalizedInput = this.normalizeMobileTerminalInput(view, data);
+      const normalizedInput = this.normalizeMobileTerminalInput(view, this.withTerminalKeyModifiers(this.terminalKeys, data));
       if (normalizedInput) this.sendTrackedInput(view, normalizedInput);
     });
     term.onResize(({ cols, rows }) => {

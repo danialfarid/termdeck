@@ -97,6 +97,17 @@ class FindingThePageTest(PagedThreadHarness):
 
         self.assertEqual(self.codex.transcript_path(None, THREAD), page)
 
+    def test_another_thread_looking_first_does_not_hide_the_new_page(self) -> None:
+        # The day directories changed once; whichever thread looked first used that up for all of them.
+        other = "01a1eeee-0000-7000-8000-000000000000"
+        (self.day_one / f"rollout-2026-10-11T10-00-00-{other}.jsonl").write_text(meta(other))
+        self.assertEqual(self.codex.transcript_path(None, THREAD), self.first)
+        self.codex.transcript_path(None, other)
+        page = self.write_page()
+        self.codex.transcript_path(None, other)
+
+        self.assertEqual(self.codex.transcript_path(None, THREAD), page)
+
     def test_a_page_that_goes_away_falls_back_to_the_first_file_in_an_old_day(self) -> None:
         # The first file sits outside the recent days; only the page is in one.
         old_day = self.root / "2026" / "10" / "01"
