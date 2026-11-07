@@ -76,8 +76,42 @@ class StackParentAlreadyHoldingTest(unittest.TestCase):
         self.assertEqual(
             self.holding("parent", ["one", "two"], parent="", other="", one="parent", two="other"), "")
 
+    def test_siblings_of_a_closed_parent_are_not_in_a_stack(self) -> None:
+        # With the parent closed they are drawn as plain rows from the layout, so moving one past the
+        # other is a real move; a stack's reorder changed an order those rows are not drawn from.
+        self.assertEqual(self.holding("sibling", ["child"], child="closed", sibling="closed"), "")
+
     def test_nothing_dragged(self) -> None:
         self.assertEqual(self.holding("parent", [], parent=""), "")
+
+
+class SpawnDropParentTest(unittest.TestCase):
+    """Dropping onto a spawned agent's row files under that agent's parent, if that parent is still open."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is not installed")
+        source = (STATIC / "app.js").read_text()
+        cls.harness = HARNESS.replace(
+            "__METHODS__", method_source(source, "spawnDropParentFor(targetId, sourceSessionIds)")
+        ).replace("app.stackParentAlreadyHolding(", "app.spawnDropParentFor(")
+
+    def parent_for(self, target: str, dragged: list[str], **parents: str) -> str:
+        scenario = {"target": target, "dragged": dragged, "sessions": sessions(**parents)}
+        done = subprocess.run([self.node, "-e", self.harness], capture_output=True, text=True, check=False,
+                              env={**os.environ, "TERMDECK_STACK_DRAG_SCENARIO": json.dumps(scenario)})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_a_row_whose_parent_is_open(self) -> None:
+        self.assertEqual(self.parent_for("row", ["loose"], parent="", row="parent", loose=""), "parent")
+
+    def test_a_row_whose_parent_is_closed(self) -> None:
+        # The row sits in the list on its own. Offering its closed parent drew no indicator, because
+        # naming that parent threw, and the drop was refused with a 404 so nothing moved.
+        self.assertEqual(self.parent_for("row", ["loose"], row="closed", loose=""), "")
 
 
 class WiredIntoTheDragTest(unittest.TestCase):

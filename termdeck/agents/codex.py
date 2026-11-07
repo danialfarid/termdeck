@@ -581,6 +581,24 @@ class CodexCli(AgentCli):
             "total_tokens": count(total, "total_tokens") or None,
         }
 
+    def thread_model_name(self, command: str, cwd: Path, agent_session_id: str | None) -> str:
+        """What the thread last ran on, when the command pins something else.
+
+        A flag on the command beats the thread, and /model never updates the command, so restarting
+        went back to whatever was chosen when the terminal was opened. A command with no pin is left
+        alone: codex resumes such a thread on its own model.
+        """
+        parts = self.command_parts(command)
+        if not any(part == "--model" or part.startswith(("--model=", "model_reasoning_effort=")) for part in parts):
+            return ""
+        settings = self.latest_runtime_settings(cwd, agent_session_id)
+        model = settings.get("model", "")
+        if model in ("", "default"):
+            return ""
+        effort = settings.get("reasoning_effort", "")
+        name = f"{model} {effort}" if effort in self.REASONING_EFFORTS else model
+        return "" if set(self.model_arguments(name)) <= set(parts) else name
+
     def latest_runtime_settings(self, cwd: Path | None, agent_session_id: str | None) -> dict[str, str]:
         if not agent_session_id:
             return {}

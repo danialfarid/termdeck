@@ -588,6 +588,10 @@ class AgentCli:
         """Permission to re-apply on restart when the caller did not specify one."""
         return ""
 
+    def thread_model_name(self, command: str, cwd: Path, agent_session_id: str | None) -> str:
+        """Model to start on when the caller did not choose one; blank leaves the command as it is."""
+        return ""
+
     async def verify_detected_session_id(self, manager, ms, found: str | None, socket: Path) -> str | None:
         return found
 

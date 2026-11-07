@@ -495,6 +495,16 @@ class TerminalSessionManager:
             return
         record.command = agent.set_permission(record.command, permission)
 
+    @staticmethod
+    def _thread_model_name(record: SessionRecord) -> str:
+        return agents.agent_cli(record.agent_kind).thread_model_name(
+            record.command, Path(record.cwd), record.agent_session_id)
+
+    def _set_start_model(self, record: SessionRecord, model_name: str) -> None:
+        if model_name:
+            record.command = self.append_additional_start_arguments(
+                record.command, shlex.join(agents.agent_cli(record.agent_kind).model_arguments(model_name)))
+
     def _canonicalize_agent_resume_command(self, record: SessionRecord) -> None:
         if not record.agent_session_id:
             return
@@ -588,6 +598,9 @@ class TerminalSessionManager:
 
     def _spawn(self, ms: ManagedSession, resume: bool, initial_command: str | None = None,
                screen_repaint: bool = True, preserve_raw_replay: bool = False) -> None:
+        # A terminal started on first use is a restart too, and goes on the same model.
+        if getattr(ms, "lazy_start_pending", False):
+            self._set_start_model(ms.record, self._thread_model_name(ms.record))
         ms.lazy_start_pending = False
         agent = agents.agent_cli(ms.record.agent_kind)
         agent.before_spawn(self, ms)
@@ -2074,9 +2087,7 @@ class TerminalSessionManager:
             permission = agent.restart_permission(self, ms)
         if permission:
             self._set_restart_permission(ms.record, permission)
-        if model_name.strip():
-            ms.record.command = self.append_additional_start_arguments(
-                ms.record.command, shlex.join(agent.model_arguments(model_name.strip())))
+        self._set_start_model(ms.record, model_name.strip() or self._thread_model_name(ms.record))
         if disable_effects:
             ms.record.command = self.append_additional_start_arguments(
                 ms.record.command, shlex.join(agent.disable_effect_arguments()))

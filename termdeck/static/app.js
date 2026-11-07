@@ -6877,7 +6877,8 @@ class TermdeckApp {
     // an ordinary reorder. Only rows that are themselves spawned agents: everything else in the list
     // is positioned by the layout, and this must not take over dropping onto a plain terminal.
     const parentId = targetId ? (this.session(targetId)?.spawned_by_session_id || "") : "";
-    if (!parentId || sourceSessionIds.includes(parentId)) return "";
+    // A closed parent leaves its children as plain rows in the list, with no stack to file anything into.
+    if (!parentId || !this.session(parentId) || sourceSessionIds.includes(parentId)) return "";
     // Already in this group: leave it as the reorder it looks like rather than re-filing it where it is.
     if (sourceSessionIds.every((id) => (this.session(id)?.spawned_by_session_id || "") === parentId)) return "";
     return parentId;
@@ -6891,7 +6892,7 @@ class TermdeckApp {
     if (!targetId || !sourceSessionIds.length) return "";
     const parents = new Set(sourceSessionIds.map((id) => this.session(id)?.spawned_by_session_id || ""));
     const parentId = parents.size === 1 ? [...parents][0] : "";
-    if (!parentId) return "";
+    if (!parentId || !this.session(parentId)) return "";
     const targetParentId = targetId === parentId ? parentId : (this.session(targetId)?.spawned_by_session_id || "");
     return targetParentId === parentId ? parentId : "";
   }

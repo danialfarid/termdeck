@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.36.4] - 2026-11-07
+
+### Fixed
+
+- Restarting a Codex terminal keeps the model and reasoning level its thread last ran on, unless a
+  different one is chosen in the restart. A `--model` left on the command from when the terminal was
+  opened used to win, undoing any `/model` switch made since; a terminal woken on first use does the same.
+- A terminal can be dragged next to a row whose parent was closed. That row showed no drop indicator and
+  the drop did nothing, because it tried to file the terminal under the closed parent.
+
 ## [0.36.3] - 2026-11-02
 
 ### Fixed
@@ -2085,7 +2095,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.36.3...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.36.4...HEAD
+[0.36.4]: https://github.com/danialfarid/termdeck/compare/v0.36.3...v0.36.4
 [0.36.3]: https://github.com/danialfarid/termdeck/compare/v0.36.2...v0.36.3
 [0.36.2]: https://github.com/danialfarid/termdeck/compare/v0.36.1...v0.36.2
 [0.36.1]: https://github.com/danialfarid/termdeck/compare/v0.36.0...v0.36.1

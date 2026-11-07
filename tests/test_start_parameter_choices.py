@@ -157,6 +157,34 @@ class RestartWithModelTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.session.record.command, before)
 
+    async def test_no_choice_keeps_the_model_the_thread_was_switched_to(self) -> None:
+        # /model never touches the command, so the flag on it still names what the terminal opened on.
+        with patch("termdeck.agents.codex.CodexCli.latest_runtime_settings",
+                   lambda *a: {"model": "gpt-6.1-sol", "reasoning_effort": "high"}):
+            await self.manager.restart_session("s1", "")
+
+        self.assertIn("--model gpt-6.1-sol", self.session.record.command)
+        self.assertIn('model_reasoning_effort="high"', self.session.record.command)
+        self.assertNotIn("gpt-5.6-luna", self.session.record.command)
+        self.assertNotIn("xhigh", self.session.record.command)
+
+    async def test_a_chosen_model_beats_the_one_the_thread_was_on(self) -> None:
+        with patch("termdeck.agents.codex.CodexCli.latest_runtime_settings",
+                   lambda *a: {"model": "gpt-6.1-sol", "reasoning_effort": "high"}):
+            await self.manager.restart_session("s1", "", "", "gpt-6-astra max")
+
+        self.assertIn("--model gpt-6-astra", self.session.record.command)
+        self.assertNotIn("gpt-6.1-sol", self.session.record.command)
+
+    async def test_a_default_terminal_stays_unpinned(self) -> None:
+        # Nothing on the command means codex resumes the thread on its own model; a pin would freeze it.
+        self.session.record.command = "codex --no-alt-screen resume agent-1"
+        with patch("termdeck.agents.codex.CodexCli.latest_runtime_settings",
+                   lambda *a: {"model": "gpt-6.1-sol", "reasoning_effort": "high"}):
+            await self.manager.restart_session("s1", "")
+
+        self.assertEqual(self.session.record.command, "codex --no-alt-screen resume agent-1")
+
     async def test_the_effects_checkbox_reaches_the_restarted_command(self) -> None:
         await self.manager.restart_session("s1", "", "", "", True)
 
