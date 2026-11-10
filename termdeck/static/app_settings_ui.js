@@ -2870,6 +2870,58 @@ Object.assign(TermdeckApp.prototype, {
   },
 
 
+  // Whether row index+1 carries on a web address that row `index` runs into the right edge with. Codex
+  // breaks a long URL itself and indents the rest, so the terminal does not mark the row as wrapped and
+  // the link stopped at the break. A row that is one unbroken run is the middle of a still longer URL.
+  terminalUrlContinuesAt(buffer, cols, index, depth = 0) {
+    const left = buffer.getLine(index)?.translateToString(true) || "";
+    const right = buffer.getLine(index + 1)?.translateToString(true) || "";
+    if (index < 0 || left.length < cols - 4 || !/^\s*[^\s<>"'`]/.test(right)) return false;
+    if (/https?:\/\/[^\s<>"'`]+$/.test(left)) return true;
+    return depth < 8 && /^\s*[^\s<>"'`]+$/.test(left) &&
+      this.terminalUrlContinuesAt(buffer, cols, index - 1, depth + 1);
+  },
+
+
+  // Web addresses on the target row, opened in the browser; their spans in logical-text offsets, so the
+  // path links can stay out of them.
+  terminalUrlLinks(buffer, cols, segments, targetIndex, bufferLineNumber) {
+    const chars = [];
+    const starts = [];
+    segments.forEach((segment, segmentIndex) => {
+      const line = buffer.getLine(segment.index);
+      const joined = segmentIndex > 0 && !line?.isWrapped && this.terminalUrlContinuesAt(buffer, cols, segment.index - 1);
+      const trim = joined ? (segment.text.match(/^\s*/)?.[0].length ?? 0) : 0;
+      for (let charIndex = trim; charIndex < segment.text.length; charIndex += 1) {
+        chars.push(segment.text[charIndex]);
+        starts.push(segment.logicalStart + charIndex);
+      }
+    });
+    const spans = [];
+    const links = [];
+    const target = segments.find((segment) => segment.index === targetIndex);
+    for (const { start, end, url } of webUrlRanges(chars.join(""))) {
+      const logicalStart = starts[start];
+      const logicalEnd = starts[end - 1] + 1;
+      spans.push([logicalStart, logicalEnd]);
+      if (!target) continue;
+      const segmentEnd = target.logicalStart + target.text.length;
+      // From the URL's first character on this row: the indent Codex puts before a continued URL is not part of it.
+      const firstHere = starts.slice(start, end).find((offset) => offset >= target.logicalStart);
+      if (firstHere === undefined) continue;
+      const from = firstHere - target.logicalStart;
+      const to = Math.min(logicalEnd, segmentEnd) - target.logicalStart;
+      if (to <= from) continue;
+      links.push({
+        range: { start: { x: from + 1, y: bufferLineNumber }, end: { x: to, y: bufferLineNumber } },
+        text: url,
+        activate: () => { void this.openTerminalHyperlink(url); },
+      });
+    }
+    return { links, spans };
+  },
+
+
   providePathLinks(term, sessionId, bufferLineNumber, callback) {
     const buffer = term.buffer.active;
     const targetIndex = bufferLineNumber - 1;
@@ -2880,7 +2932,8 @@ Object.assign(TermdeckApp.prototype, {
       const current = buffer.getLine(firstIndex);
       const previous = buffer.getLine(firstIndex - 1);
       if (current?.isWrapped || this.terminalPathBoundaryContinues(
-        previous?.translateToString(true), current?.translateToString(true))) firstIndex -= 1;
+        previous?.translateToString(true), current?.translateToString(true)) ||
+        this.terminalUrlContinuesAt(buffer, term.cols, firstIndex - 1)) firstIndex -= 1;
       else break;
     }
     const segments = [];
@@ -2894,10 +2947,12 @@ Object.assign(TermdeckApp.prototype, {
       logicalOffset += text.length;
       const nextLine = buffer.getLine(nextIndex + 1);
       if (!nextLine || (!nextLine.isWrapped && !this.terminalPathBoundaryContinues(
-        text, nextLine.translateToString(true)))) break;
+        text, nextLine.translateToString(true)) && !this.terminalUrlContinuesAt(buffer, term.cols, nextIndex))) break;
       nextIndex += 1;
     }
     const logicalText = segments.map((segment) => segment.text).join("");
+    const urls = this.terminalUrlLinks(buffer, term.cols, segments, targetIndex, bufferLineNumber);
+    const insideUrl = (from, to) => urls.spans.some(([start, end]) => from < end && to > start);
     const links = [];
     for (const segment of segments) {
       const segmentStart = segment.logicalStart;
@@ -2909,7 +2964,7 @@ Object.assign(TermdeckApp.prototype, {
           const matchEnd = matchStart + raw.length;
           const ext = raw.split(":")[0].split(".").pop().toLowerCase();
           if (!raw.includes("/") && !KNOWN_EXTS.has(ext)) continue;
-          if (matchStart >= segmentEnd || matchEnd <= segmentStart) continue;
+          if (matchStart >= segmentEnd || matchEnd <= segmentStart || insideUrl(matchStart, matchEnd)) continue;
           const start = Math.max(matchStart, segmentStart) - segmentStart;
           const end = Math.min(matchEnd, segmentEnd) - segmentStart;
           if (end <= start) continue;
@@ -2948,7 +3003,8 @@ Object.assign(TermdeckApp.prototype, {
             const logicalMatchEnd = logicalCharStarts[matchEnd] ?? logicalText.length;
             const ext = raw.split(":")[0].split(".").pop().toLowerCase();
             if (!raw.includes("/") && !KNOWN_EXTS.has(ext)) continue;
-            if (logicalMatchStart >= segmentEnd || logicalMatchEnd <= segmentStart) continue;
+            if (logicalMatchStart >= segmentEnd || logicalMatchEnd <= segmentStart ||
+                insideUrl(logicalMatchStart, logicalMatchEnd)) continue;
             const start = Math.max(logicalMatchStart, segmentStart) - segmentStart;
             const end = Math.min(logicalMatchEnd, segmentEnd) - segmentStart;
             if (end <= start) continue;
@@ -2961,6 +3017,7 @@ Object.assign(TermdeckApp.prototype, {
         }
       }
     }
+    links.push(...urls.links);
     callback(links.length ? links : undefined);
   },
 

@@ -111,6 +111,14 @@ class McpClientTest(unittest.TestCase):
         # prompt by an old one still in the transcript.
         self.assertEqual(agents.AgentCli.prompt_needle("[from p-1]\nfollow up"),
                          "follow up")
+        # A sender's own tag on its own line is skipped the same way.
+        self.assertEqual(agents.AgentCli.prompt_needle("[from p-1]\n[from build7 coordinator]\nupdate"), "update")
+
+    def test_a_message_that_opens_with_its_own_tag_is_still_looked_for(self) -> None:
+        # Its only line starts "[from "; skipping it left nothing to confirm the prompt by, so it was
+        # restored to the composer and sent again by the next prompt's Enter.
+        self.assertEqual(agents.AgentCli.prompt_needle("[from p-1]\n[from parity agent 295c] Bug #6: counts differ"),
+                         "[from parity agent 295c] Bug #6: counts differ")
 
     def test_no_tool_offers_steer(self) -> None:
         # Prompts always steer; a tool that still offered steer would let an agent ask to queue.

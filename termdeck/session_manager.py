@@ -1848,7 +1848,9 @@ class TerminalSessionManager:
         a mid-turn prompt only later. Returns a PromptLanding; a terminal with nothing to check against
         is UNCHECKED, since an Enter there always lands.
         """
-        if not text.strip() or self._transcript_service is None:
+        # Nothing to look for -- a prompt that is only a caller tag -- can never be confirmed. Calling it
+        # missing pressed Enter ten more times and put it back in the composer, to be sent again.
+        if not agents.AgentCli.prompt_needle(text) or self._transcript_service is None:
             return PromptLanding.UNCHECKED
         agent = agents.agent_cli(ms.record.agent_kind)
         if not agent.is_agent:

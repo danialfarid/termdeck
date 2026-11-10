@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.36.5] - 2026-11-10
+
+### Fixed
+
+- A web address printed in a terminal opens in the browser instead of as a file named after part of its
+  host. A long URL that Codex breaks onto an indented next row opens whole, from either row. Transcript
+  file links also stay out of web addresses.
+- A message one agent sends another is no longer sent twice when its text opens with the sender's own
+  `[from …]` tag. TermDeck skipped every line starting `[from ` when checking that the prompt arrived, so
+  a short message had nothing left to check. It was never confirmed, Enter was pressed ten more times,
+  and the text was put back in the composer, where the next message's Enter sent it again.
+
 ## [0.36.4] - 2026-11-07
 
 ### Fixed
@@ -2095,7 +2107,8 @@ First public release.
   nothing compiles; `uv`/`pipx` from the GitHub release everywhere else. Apache 2.0 license; full README,
   installation, configuration, troubleshooting, and architecture documentation.
 
-[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.36.4...HEAD
+[Unreleased]: https://github.com/danialfarid/termdeck/compare/v0.36.5...HEAD
+[0.36.5]: https://github.com/danialfarid/termdeck/compare/v0.36.4...v0.36.5
 [0.36.4]: https://github.com/danialfarid/termdeck/compare/v0.36.3...v0.36.4
 [0.36.3]: https://github.com/danialfarid/termdeck/compare/v0.36.2...v0.36.3
 [0.36.2]: https://github.com/danialfarid/termdeck/compare/v0.36.1...v0.36.2

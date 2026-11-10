@@ -503,9 +503,15 @@ class AgentCli:
     def prompt_needle(text: str) -> str:
         """The part of a prompt to look for: its first line, which survives an agent reformatting a long
         pasted prompt. Not a caller header: the same on every prompt one session sends, it would match an
-        earlier one still in the transcript."""
+        earlier one still in the transcript.
+
+        A header is a line that is only the tag. An agent that opens its message with a tag of its own --
+        "[from parity agent 295c0b56] Bug #6: ..." -- puts the message on that line, and skipping every
+        line starting "[from " left a two-line prompt with nothing to look for: it was never confirmed,
+        and the text was put back in the composer, where the next prompt's Enter sent it a second time."""
+        prefix = re.escape(TermdeckConfig.CALLER_HEADER_PREFIX)
         return next((line.strip() for line in text.splitlines()
-                     if line.strip() and not line.startswith(TermdeckConfig.CALLER_HEADER_PREFIX)), "")[:120]
+                     if line.strip() and not re.fullmatch(rf"{prefix}[^\]]*\]", line.strip())), "")[:120]
 
     @staticmethod
     def tail_lines(path: Path | None, max_bytes: int) -> list[str]:

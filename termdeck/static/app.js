@@ -583,6 +583,27 @@ const QUERY_RESPONSE_RE = /^(?:\x1b\[[?>=]?[\d;]*[Rcnu]|\x1b\[\?[\d;]*\$y|\x1bP[
 // also the arrow keys used to navigate a prompt. Mirrors the server's _TERMINAL_REPLY_RE.
 const TERMINAL_REPLY_RE = /\x1b\[[IO]|\x1b\[[0-9;]*n|\x1b\[[?>][0-9;]*c|\x1b\[[0-9;]*R|\x1b\[\?[0-9;]*\$y|\x1b\[\?[0-9;]*u|\x1b\[M[\s\S]{3}|\x1b\[<[0-9;]*[Mm]|\x1bP[\s\S]*?\x1b\\|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const PATH_LINK_RE = /(?:~\/|\.{1,2}\/|\/)?[\w@%+=.-]+(?:\/[\w@%+=.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d+){0,2}/g;
+// A web address in plain text. Without this the path pattern read the host as a file:
+// "https://cisco.wd5.myworkdayjobs.com/Cisco_Careers/..." opened "/cisco.wd5.myworkdayjobs.com".
+const WEB_URL_RE = /\bhttps?:\/\/[^\s<>"'`]+/g;
+
+function webUrlRanges(text) {
+  const ranges = [];
+  for (const match of String(text || "").matchAll(WEB_URL_RE)) {
+    let url = match[0];
+    // Sentence punctuation after a link is not part of it, and neither is a closing bracket it never opened.
+    for (;;) {
+      const last = url.slice(-1);
+      if (/[.,;:!?'"]/.test(last)) url = url.slice(0, -1);
+      else if (last === ")" && url.split("(").length < url.split(")").length) url = url.slice(0, -1);
+      else if (last === "]" && url.split("[").length < url.split("]").length) url = url.slice(0, -1);
+      else break;
+    }
+    if (url.length > "https://".length) ranges.push({ start: match.index, end: match.index + url.length, url });
+  }
+  return ranges;
+}
+
 const KNOWN_EXTS = new Set(["py", "md", "json", "js", "ts", "tsx", "css", "html", "sh", "zsh", "txt", "yaml", "yml",
   "toml", "csv", "log", "plist", "sql", "xml", "ini", "cfg", "lock", "ipynb", "rs", "go", "c", "h", "cpp", "hpp", "java"]);
 const MATERIAL_ICONS_BASE = "/static/vendor/material-icons/icons/";

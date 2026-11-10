@@ -4579,8 +4579,11 @@ Object.assign(TermdeckApp.prototype, {
     }
     for (const node of textNodes) {
       const source = node.nodeValue || "";
+      const urlSpans = webUrlRanges(source);
       const matches = [...source.matchAll(new RegExp(PATH_LINK_RE.source, "g"))].filter((match) => {
         const raw = match[0];
+        const end = match.index + raw.length;
+        if (urlSpans.some((span) => match.index < span.end && end > span.start)) return false;
         const extension = raw.split(":")[0].split(".").pop().toLowerCase();
         return raw.includes("/") || KNOWN_EXTS.has(extension);
       });
