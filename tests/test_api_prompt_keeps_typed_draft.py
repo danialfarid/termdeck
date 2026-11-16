@@ -99,6 +99,15 @@ class HeldDraftTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.writes[-1], "\x15" + PASTE_START + "line one\nline two" + PASTE_END)
 
+    async def test_a_multi_line_draft_is_cleared_whole_before_the_prompt(self) -> None:
+        # One Ctrl-U cleared only the cursor's line: "line one" went out in front of the prompt.
+        self.session.record.draft = "line one\nline two"
+        self.session.draft_tracker = type(self.session.draft_tracker)("line one\nline two")
+
+        await self.manager.submit_prompt("s1", "status", True, False)
+
+        self.assertEqual(self.writes[0], "\x0b\x0b\x0b\x15\x15\x15" + PASTE_START + "status" + PASTE_END)
+
     async def test_typing_since_is_left_alone(self) -> None:
         self.type_draft("half a thought")
 

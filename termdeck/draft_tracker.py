@@ -20,6 +20,7 @@ class DraftInputTracker:
     BACKSPACE = "\x7f"
     CTRL_C = "\x03"
     CTRL_KILL_LINE = "\x15"
+    CTRL_KILL_TO_END = "\x0b"
     CTRL_KILL_WORD = "\x17"
     ENTER_CHARS = ("\r", "\n")
     PASTE_START_SEQ = "\x1b[200~"
@@ -83,7 +84,21 @@ class DraftInputTracker:
         while self._chars and self._chars[-1] not in self.WORD_BOUNDARY_CHARS:
             self._chars.pop()
 
+    @classmethod
+    def clear_keys(cls, draft: str) -> str:
+        """Keys that empty a Claude or Codex composer holding `draft`, wherever its cursor sits. One Ctrl-U
+        kills only the cursor's line back to its start, so a draft over several lines kept its other
+        lines, and they went out in front of the next pasted prompt. In both composers Ctrl-K kills to the
+        line's end and Ctrl-U to its start, each taking the newline when already there, so a line and a
+        newline per key in each direction covers the whole draft."""
+        kills = 2 * draft.count("\n") + 1
+        return cls.CTRL_KILL_TO_END * kills + cls.CTRL_KILL_LINE * kills
+
     def _pop_current_line(self) -> None:
+        # At a line's start, Ctrl-U deletes the newline before it, as the agents' composers do.
+        if self._chars and self._chars[-1] == "\n":
+            self._chars.pop()
+            return
         while self._chars and self._chars[-1] != "\n":
             self._chars.pop()
 

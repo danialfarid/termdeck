@@ -52,3 +52,15 @@ class DraftInputTrackerTest(unittest.TestCase):
         self.assertEqual(fed("one two", "\x17"), "one ")
         self.assertEqual(fed("one two", "\x15"), "")
         self.assertEqual(fed("\x1b[200~a\rb\x1b[201~"), "a\nb")
+
+    def test_ctrl_u_at_a_line_start_joins_the_line_above(self) -> None:
+        self.assertEqual(fed("\x1b[200~one\rtwo\x1b[201~", "\x15"), "one\n")
+        self.assertEqual(fed("\x1b[200~one\rtwo\x1b[201~", "\x15\x15"), "one")
+
+    def test_clear_keys_empty_a_multi_line_draft(self) -> None:
+        # One Ctrl-U left "first line\n" in the composer, and the next pasted prompt went out behind it.
+        draft = "first line\nsecond\nthird"
+        self.assertEqual(fed("\x1b[200~" + draft.replace("\n", "\r") + "\x1b[201~",
+                             DraftInputTracker.clear_keys(draft)), "")
+        self.assertEqual(DraftInputTracker.clear_keys(draft), "\x0b" * 5 + "\x15" * 5)
+        self.assertEqual(DraftInputTracker.clear_keys(""), "\x0b\x15")

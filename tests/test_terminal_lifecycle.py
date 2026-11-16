@@ -1999,7 +1999,7 @@ class TerminalLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(saved.title, "renamed thread")
         self.assertEqual(proc.writes, [
-            b"\x15" + TermdeckConfig.BRACKETED_PASTE_START + b"/rename renamed thread" +
+            b"\x0b\x15" + TermdeckConfig.BRACKETED_PASTE_START + b"/rename renamed thread" +
             TermdeckConfig.BRACKETED_PASTE_END,
             b"\r",
         ])

@@ -5,11 +5,15 @@ import re
 import shlex
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 from termdeck.config import TermdeckConfig
+from termdeck.draft_tracker import DraftInputTracker
 from termdeck.preserved_terminal_composer import PreservedTerminalComposer
 from termdeck.transcript_turns import TurnBuilder
+
+if TYPE_CHECKING:
+    from termdeck.session_manager import ManagedSession, TerminalSessionManager
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
@@ -537,6 +541,9 @@ class AgentCli:
 
     # -- rename ------------------------------------------------------------
 
+    async def prepare_composer_clear(self, manager: "TerminalSessionManager", ms: "ManagedSession", draft: str) -> str:
+        return DraftInputTracker.clear_keys(draft)
+
     async def send_rename(self, manager, ms, title: str, *, ready_delay: float = 0.0,
                           clear_composer: bool = True) -> None:
         """Send the CLI's own /rename command so tab title and agent session name converge."""
@@ -550,9 +557,9 @@ class AgentCli:
         async with PreservedTerminalComposer(manager, ms, self):
             self._before_send_rename(ms, title)
             command = f"/rename {title}"
-            payload = ((b"\x15" if clear_composer else b"") +
-                       TermdeckConfig.BRACKETED_PASTE_START + command.encode() +
-                       TermdeckConfig.BRACKETED_PASTE_END).decode()
+            payload = ((await self.prepare_composer_clear(manager, ms, ms.record.draft) if clear_composer else "") +
+                       (TermdeckConfig.BRACKETED_PASTE_START + command.encode() +
+                        TermdeckConfig.BRACKETED_PASTE_END).decode())
             manager.write_input(ms.record.session_id, payload)
             await asyncio.sleep(TermdeckConfig.FORK_RENAME_SUBMIT_DELAY_SECONDS)
             manager.write_input(ms.record.session_id, "\r")

@@ -1731,7 +1731,7 @@ class TerminalSessionManager:
         # and in transcript mode, which shows the same draft -- so hold it and put it back afterwards.
         held_draft = ms.record.draft
         agent.on_api_prompt_submitted(self, ms, queue)
-        payload = "\x15"
+        payload = ""
         if normalized:
             if bracketed:
                 payload += TermdeckConfig.BRACKETED_PASTE_START.decode() + normalized + TermdeckConfig.BRACKETED_PASTE_END.decode()
@@ -1757,6 +1757,7 @@ class TerminalSessionManager:
                     self.write_input(session_id, typed)
 
         try:
+            payload = await agent.prepare_composer_clear(self, ms, held_draft) + payload
             sent_at = time.time()
             self.write_input(session_id, payload)
             await self._wait_for_paste_to_settle(ms)
@@ -2005,7 +2006,8 @@ class TerminalSessionManager:
 
     async def _queue_prompt_text(self, session_id: str, text: str, bracketed: bool) -> None:
         normalized = str(text or "")[:TermdeckConfig.DRAFT_MAX_CHARS]
-        payload = "\x15"
+        ms = self._sessions[session_id]
+        payload = await agents.agent_cli(ms.record.agent_kind).prepare_composer_clear(self, ms, ms.record.draft)
         if normalized:
             if bracketed:
                 payload += TermdeckConfig.BRACKETED_PASTE_START.decode() + normalized + TermdeckConfig.BRACKETED_PASTE_END.decode()

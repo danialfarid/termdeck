@@ -29,7 +29,7 @@ class PromptQueueFallbackTest(unittest.IsolatedAsyncioTestCase):
             self.manager._sessions[kind] = SimpleNamespace(record=record(kind, kind), draft_tracker=None,
                                                            prompt_going_in=False, held_user_input=[],
                                                            prompt_submit_lock=None, raw_replay_buffer=bytearray(),
-                                                           buffer=bytearray())
+                                                           buffer=bytearray(), cols=80)
         # Each adapter marks its own activity when a prompt is submitted, over a good deal of live
         # session state. What is under test is which key is sent, so that hook is stubbed out.
         for agent in (agents.agent_cli("claude"), agents.agent_cli("codex")):

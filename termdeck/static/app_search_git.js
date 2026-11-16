@@ -1541,7 +1541,7 @@ Object.assign(TermdeckApp.prototype, {
     requestAnimationFrame(() => {
       const row = this.$("session-list")?.querySelector(`[data-session-id="${CSS.escape(sessionId)}"]`);
       if (!row) return;
-      row.scrollIntoView({ block: "center" });
+      row.scrollIntoView({ block: "nearest", inline: "nearest" });
       if (focus) row.focus({ preventScroll: true });
     });
   },

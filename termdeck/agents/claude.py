@@ -4,16 +4,21 @@ import os
 import re
 import shlex
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 from termdeck.agents.base import UUID_RE, AgentCli, AgentSessionState
 from termdeck.config import TermdeckConfig
+from termdeck.draft_tracker import DraftInputTracker
 from termdeck.platform_paths import PlatformPaths
 from termdeck.proc_tree import ProcTreeSnapshot
 from termdeck.transcript_turns import TurnBuilder
 from termdeck.util import TimeUtil
+
+if TYPE_CHECKING:
+    from termdeck.session_manager import ManagedSession, TerminalSessionManager
 
 
 class ClaudeSessionState(AgentSessionState):
@@ -290,7 +295,7 @@ class ClaudeCli(AgentCli):
     @staticmethod
     def _normalize_user_text(role: str, text: str) -> str:
         # A queued prompt replayed into the composer starts with NAK; the transcript keeps it.
-        return text.lstrip("\x15") if role == TurnBuilder.ROLE_USER else text
+        return text.lstrip("\x15\x0b") if role == TurnBuilder.ROLE_USER else text
 
     def is_user_payload(self, payload: dict[str, object]) -> bool:
         return payload.get("type") == "user" or self._mid_turn_prompt_turn(payload) is not None
@@ -791,6 +796,17 @@ class ClaudeCli(AgentCli):
         return tracker.claude_session_title(cwd, agent_session_id)
 
     # -- input / rename / spawn / detection --------------------------------
+
+    async def prepare_composer_clear(self, manager: "TerminalSessionManager", ms: "ManagedSession", draft: str) -> str:
+        wrap_budget = max(1, (ms.cols - 4) // 2)
+        rows = sum(1 + sum(2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+                           for char in line.expandtabs(8)) // wrap_budget for line in draft.split("\n"))
+        kills = rows + draft.count("\n")
+        keys = DraftInputTracker.CTRL_KILL_TO_END * kills + DraftInputTracker.CTRL_KILL_LINE * kills
+        for key in keys:
+            manager.write_input(ms.record.session_id, key)
+            await asyncio.sleep(TermdeckConfig.PROMPT_SUBMIT_KEY_DELAY_SECONDS)
+        return ""
 
     def pre_write_input(self, manager, ms, text: str, draft_before: str) -> None:
         # Escape cancels a Claude turn exactly as Ctrl-C does, and it is the key people actually use.

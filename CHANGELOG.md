@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.36.6] - 2026-11-16
+
+### Fixed
+
+- Switching terminals keeps the sidebar still when the selected row is visible, scrolling only enough
+  to reveal an off-screen selection instead of centering it.
+- Incoming agent messages clear Claude's wrapped and multiline composer before pasting, keeping
+  unfinished user drafts out of the submitted message and restoring them afterward.
+
 ## [0.36.5] - 2026-11-10
 
 ### Fixed
